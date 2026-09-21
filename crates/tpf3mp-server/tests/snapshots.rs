@@ -13,7 +13,7 @@ use tpf3mp_agent::ClientError;
 use tpf3mp_net::read_message;
 use tpf3mp_proto::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkRequest, BulkResponse,
-    FixedBytes, Invite, JoinRoom, RequestError, SnapshotId,
+    FixedBytes, Invite, RequestError, SnapshotId,
 };
 use tpf3mp_server::{ServerConfig, SnapshotConfig};
 
@@ -56,11 +56,17 @@ async fn running(mut clients: Vec<TestClient>) -> (Vec<Player>, Invite) {
     (players, invite)
 }
 
-fn newcomer(invite: &Invite, content_of: Option<u8>) -> JoinRoom {
-    JoinRoom {
-        content: content_of.map(content),
-        ..join(invite)
+/// Joins the running game of `invite` as a newcomer whose game runs the
+/// content `content_of`, or who declared none.
+async fn newcomer(
+    player: &TestClient,
+    invite: &Invite,
+    content_of: Option<u8>,
+) -> Result<tpf3mp_proto::RoomView, ClientError> {
+    if let Some(value) = content_of {
+        player.client.declare_content(content(value)).await?;
     }
+    player.client.join_room(join(invite)).await
 }
 
 #[tokio::test]
@@ -68,23 +74,48 @@ async fn a_newcomer_must_run_the_games_content() {
     let dir = tempfile::tempdir().unwrap();
     let server = RunningServer::start(saving(dir.path())).await;
     let (_players, invite) = running(vec![server.client("ann").await]).await;
-    let cat = server.client("cat").await;
+    let mut cat = server.client("cat").await;
     for wrong in [None, Some(2)] {
         assert_eq!(
-            cat.client
-                .join_room(newcomer(&invite, wrong))
-                .await
-                .unwrap_err(),
+            newcomer(&cat, &invite, wrong).await.unwrap_err(),
             ClientError::Refused(RequestError::ContentMismatch),
             "content {wrong:?}"
         );
     }
-    let room = cat
-        .client
-        .join_room(newcomer(&invite, Some(1)))
-        .await
-        .unwrap();
+    // The refusal says how the newcomer's game differs from the game's.
+    let diff = cat.content_diff().await.unwrap();
+    let builds = diff.game.unwrap();
+    assert_eq!(
+        (builds.room.as_str(), builds.yours.as_str()),
+        ("build-1", "build-2")
+    );
+    let room = newcomer(&cat, &invite, Some(1)).await.unwrap();
     assert_eq!(room.members.len(), 2, "a seat at the running game");
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn a_restored_game_still_says_how_a_newcomer_differs() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = [4; 32];
+    let server = RunningServer::start(saving_and_logging(dir.path(), secret)).await;
+    let (mut players, invite) = running(vec![server.client("ann").await]).await;
+    players[0].play_until(|p| p.executed >= 20).await;
+    drop(players);
+    server.shut_down().await;
+
+    // The game's content survives in its log.
+    let server = RunningServer::start(saving_and_logging(dir.path(), secret)).await;
+    let mut cat = server.client("cat").await;
+    assert_eq!(
+        newcomer(&cat, &invite, Some(3)).await.unwrap_err(),
+        ClientError::Refused(RequestError::ContentMismatch)
+    );
+    let builds = cat.content_diff().await.unwrap().game.unwrap();
+    assert_eq!(
+        (builds.room.as_str(), builds.yours.as_str()),
+        ("build-1", "build-3")
+    );
     server.shut_down().await;
 }
 
@@ -97,23 +128,14 @@ async fn a_kicked_player_stays_out_even_after_a_restart() {
     // Bob joins the running game, then Ann removes him.
     let bob = server.client("bob").await;
     let bob_identity = std::sync::Arc::clone(&bob.identity);
-    bob.client
-        .join_room(newcomer(&invite, Some(1)))
-        .await
-        .unwrap();
+    newcomer(&bob, &invite, Some(1)).await.unwrap();
     players[0].client().kick(bob.client.player()).await.unwrap();
     drop(bob);
     let refused = ClientError::Refused(RequestError::BadInvite);
     let bob = server
         .client_as(std::sync::Arc::clone(&bob_identity), "bob")
         .await;
-    assert_eq!(
-        bob.client
-            .join_room(newcomer(&invite, Some(1)))
-            .await
-            .unwrap_err(),
-        refused
-    );
+    assert_eq!(newcomer(&bob, &invite, Some(1)).await.unwrap_err(), refused);
     drop(bob);
     // Ann plays on, so the kick is logged.
     players[0].play_until(|p| p.executed >= 20).await;
@@ -123,10 +145,7 @@ async fn a_kicked_player_stays_out_even_after_a_restart() {
     let server = RunningServer::start(saving_and_logging(dir.path(), secret)).await;
     let bob = server.client_as(bob_identity, "bob").await;
     assert_eq!(
-        bob.client
-            .join_room(newcomer(&invite, Some(1)))
-            .await
-            .unwrap_err(),
+        newcomer(&bob, &invite, Some(1)).await.unwrap_err(),
         refused,
         "the restored room remembers the kick"
     );

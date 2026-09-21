@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 base64.workspace = true
 postcard.workspace = true
+ring.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

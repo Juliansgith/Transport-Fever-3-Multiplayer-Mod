@@ -95,7 +95,6 @@ async fn resume(server: &RunningServer, players: Vec<Player>, invite: &Invite) -
                 invite: invite.clone(),
                 password: None,
                 resume,
-                content: None,
             })
             .await
             .unwrap();
@@ -232,7 +231,6 @@ async fn restored_rooms_need_the_same_secret() {
             invite,
             password: None,
             resume: None,
-            content: None,
         })
         .await
         .unwrap_err();

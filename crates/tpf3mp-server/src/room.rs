@@ -18,10 +18,11 @@ use tokio::{
 };
 use tpf3mp_net::{bulk, close};
 use tpf3mp_proto::{
-    ChatText, ContentFingerprint, Event, EventBody, FRAME_HEADER_LEN, FixedBytes, IntentRejection,
-    LaneDigest, MemberView, Payload, Platform, PlayerId, RequestError, Resume, RoomId, RoomPhase,
-    RoomSettings, RoomView, RulesName, SavedWorld, ServerMessage, SnapshotId, Speed,
-    TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, WorldOffer, decode_frame, encode_frame,
+    ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN, FixedBytes,
+    IntentRejection, LaneDigest, MemberView, Payload, Platform, PlayerId, RequestError, Resume,
+    RoomId, RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, ServerMessage, SnapshotId,
+    Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, WorldOffer, decode_frame,
+    encode_frame,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -119,6 +120,24 @@ pub(crate) struct NewMember {
     pub(crate) name: Text<32>,
     pub(crate) platform: Platform,
     pub(crate) link: MemberLink,
+    /// What the player's game runs, if the player declared it.
+    pub(crate) content: Option<Arc<Declared>>,
+}
+
+/// What a player's game runs, as the player declared it.
+#[derive(Debug)]
+pub(crate) struct Declared {
+    pub(crate) fingerprint: ContentFingerprint,
+    pub(crate) manifest: ContentManifest,
+}
+
+impl Declared {
+    pub(crate) fn new(manifest: ContentManifest) -> Self {
+        Self {
+            fingerprint: manifest.fingerprint(),
+            manifest,
+        }
+    }
 }
 
 pub(crate) type Reply<T = ()> = oneshot::Sender<Result<T, RequestError>>;
@@ -129,7 +148,6 @@ pub(crate) enum RoomCommand {
         token: FixedBytes<32>,
         password: Option<Text<64>>,
         resume: Option<Resume>,
-        content: Option<ContentFingerprint>,
         reply: Reply<RoomView>,
     },
     Leave {
@@ -147,7 +165,7 @@ pub(crate) enum RoomCommand {
     },
     DeclareContent {
         player: PlayerId,
-        content: ContentFingerprint,
+        content: Arc<Declared>,
         reply: Reply,
     },
     Start {
@@ -379,6 +397,11 @@ struct Member {
     platform: Platform,
     ready: bool,
     content: Option<ContentFingerprint>,
+    /// The manifest behind `content`, when this connection declared it.
+    declared: Option<Arc<Declared>>,
+    /// The room's content and this member's when this member was last
+    /// told they differ; `None` when it has not been told of a difference.
+    told_diff: Option<(ContentFingerprint, ContentFingerprint)>,
     link: Option<MemberLink>,
     /// Whether this member's current link has an open turn stream.
     streaming: bool,
@@ -547,6 +570,9 @@ pub(crate) struct Room {
     /// The game build and mods of a running game, which players who join
     /// it must match.
     content: Option<ContentFingerprint>,
+    /// The manifest behind `content`, to tell players who do not match
+    /// how they differ.
+    game_content: Option<Arc<Declared>>,
     /// The server's snapshots; `None` if it keeps none, and then nobody can
     /// join a running game.
     snapshots: Option<Arc<Snapshots>>,
@@ -634,6 +660,7 @@ impl Room {
             banned: BTreeSet::new(),
             _share: Some(spec.share),
             content: None,
+            game_content: None,
             snapshots: spec.env.snapshots,
             closed: false,
         };
@@ -780,6 +807,13 @@ impl Room {
             Some(base) => base.content,
             None => start.members.first().and_then(|member| member.content),
         };
+        // The manifest only counts if it is the game's.
+        let game_content = start
+            .manifest
+            .clone()
+            .map(Declared::new)
+            .filter(|declared| Some(declared.fingerprint) == content)
+            .map(Arc::new);
         let members: Vec<Member> = game
             .seated
             .iter()
@@ -790,6 +824,8 @@ impl Room {
                 platform,
                 ready: true,
                 content,
+                declared: None,
+                told_diff: None,
                 link: None,
                 streaming: false,
                 pace: Pace::CatchingUp(None),
@@ -873,6 +909,7 @@ impl Room {
             banned,
             _share: None,
             content,
+            game_content,
             snapshots: env.snapshots,
             closed: false,
         }))
@@ -947,10 +984,9 @@ impl Room {
                 token,
                 password,
                 resume,
-                content,
                 reply,
             } => {
-                let result = self.join(member, &token, password.as_ref(), resume, content);
+                let result = self.join(member, &token, password.as_ref(), resume);
                 let joined = result.is_ok();
                 let _ = reply.send(result);
                 if joined {
@@ -977,9 +1013,7 @@ impl Room {
                 content,
                 reply,
             } => {
-                let result = self
-                    .in_lobby(player)
-                    .map(|member| member.content.replace(content) != Some(content));
+                let result = self.declare_content(player, content);
                 self.answer_and_broadcast_if_changed(reply, result);
             }
             RoomCommand::Start { player, reply } => {
@@ -1099,9 +1133,9 @@ impl Room {
         token: &FixedBytes<32>,
         password: Option<&Text<64>>,
         resume: Option<Resume>,
-        content: Option<ContentFingerprint>,
     ) -> Result<RoomView, RequestError> {
         let now = Instant::now();
+        let content = new.content.as_ref().map(|declared| declared.fingerprint);
         if self.banned.contains(&new.player) {
             return Err(RequestError::BadInvite);
         }
@@ -1121,6 +1155,7 @@ impl Room {
             let rejoin = match &self.phase {
                 Phase::Lobby => Rejoin::Lobby,
                 Phase::Running(_) if content.is_some() && content != self.content => {
+                    self.tell_refused(&new);
                     return Err(RequestError::ContentMismatch);
                 }
                 // Without a world of this game, a player receives one.
@@ -1140,6 +1175,12 @@ impl Room {
             member.platform = new.platform;
             member.streaming = false;
             member.offered = None;
+            // A new connection has not been told how its content differs.
+            member.told_diff = None;
+            if let Some(declared) = new.content {
+                member.content = Some(declared.fingerprint);
+                member.declared = Some(declared);
+            }
             match rejoin {
                 Rejoin::Lobby => {}
                 Rejoin::Stream(feed) => {
@@ -1170,6 +1211,7 @@ impl Room {
                 return Err(RequestError::RoomFull);
             }
             if content.is_none() || content != self.content {
+                self.tell_refused(&new);
                 return Err(RequestError::ContentMismatch);
             }
             game.append(
@@ -1184,7 +1226,6 @@ impl Room {
             metrics::increment(&self.metrics.late_joins);
             let mut member = Member::new(new);
             member.ready = true;
-            member.content = content;
             member.needs = Needs::World;
             self.members.push(member);
             self.offer_worlds(now);
@@ -1345,6 +1386,7 @@ impl Room {
         };
         let open = game.turn_start(self.id, self.settings, &self.rules, &first, None);
         self.content = first_content;
+        self.game_content = self.members[0].declared.clone();
         // With snapshots, the owner's world is everyone's: the owner loads
         // it, the room saves it before the first step, and every other
         // player loads that save. Worlds generated on each machine could
@@ -1407,6 +1449,10 @@ impl Room {
             id: self.id,
             name: self.name.clone(),
             rules: self.rules.clone(),
+            manifest: self
+                .game_content
+                .as_ref()
+                .map(|declared| declared.manifest.clone()),
             owner: self.owner,
             max_players: self.max_players,
             settings: self.settings,
@@ -2361,6 +2407,76 @@ impl Room {
         for index in 0..self.members.len() {
             self.push(index, ServerMessage::RoomUpdate(view.clone()));
         }
+        self.tell_content();
+    }
+
+    /// The content every member must match: the owner's in the lobby, the
+    /// game's once it runs.
+    fn reference_content(&self) -> Option<Arc<Declared>> {
+        match self.phase {
+            Phase::Lobby => self
+                .members
+                .iter()
+                .find(|member| member.player == self.owner)
+                .and_then(|owner| owner.declared.clone()),
+            Phase::Running(_) => self.game_content.clone(),
+        }
+    }
+
+    /// Tells each member whose content differs from the room's how, once
+    /// for each difference, and tells a member once it no longer differs.
+    fn tell_content(&mut self) {
+        let reference = self.reference_content();
+        for index in 0..self.members.len() {
+            let member = &self.members[index];
+            let differs = match (&reference, &member.declared) {
+                (Some(room), Some(own)) if room.fingerprint != own.fingerprint => {
+                    Some((room.fingerprint, own.fingerprint))
+                }
+                _ => None,
+            };
+            if differs == member.told_diff || member.link.is_none() {
+                continue;
+            }
+            let message = match (&reference, &member.declared, differs) {
+                (Some(room), Some(own), Some(_)) => room.manifest.compare(&own.manifest),
+                _ => None,
+            };
+            self.members[index].told_diff = differs;
+            self.push(index, ServerMessage::ContentDiff(message));
+        }
+    }
+
+    /// Tells a player refused for their content how it differs from the
+    /// game's, when both are known.
+    fn tell_refused(&self, new: &NewMember) {
+        if let (Some(room), Some(own)) = (&self.game_content, &new.content) {
+            let diff = room.manifest.compare(&own.manifest);
+            // A full queue loses only this explanation; the refusal follows.
+            let _ = new.link.control.try_send(ServerMessage::ContentDiff(diff));
+        }
+    }
+
+    /// A member declares what their game runs. In a running game only the
+    /// content the game started with is accepted, and it changes nothing.
+    fn declare_content(
+        &mut self,
+        player: PlayerId,
+        content: Arc<Declared>,
+    ) -> Result<bool, RequestError> {
+        let running = matches!(self.phase, Phase::Running(_));
+        let member = self.member_mut(player).ok_or(RequestError::NotInRoom)?;
+        if running {
+            return if member.content == Some(content.fingerprint) {
+                member.declared = Some(content);
+                Ok(false)
+            } else {
+                Err(RequestError::GameRunning)
+            };
+        }
+        let changed = member.content.replace(content.fingerprint) != Some(content.fingerprint);
+        member.declared = Some(content);
+        Ok(changed)
     }
 
     fn close_all(&mut self, code: quinn::VarInt, reason: &[u8]) {
@@ -2381,7 +2497,9 @@ impl Member {
             name: new.name,
             platform: new.platform,
             ready: false,
-            content: None,
+            content: new.content.as_ref().map(|declared| declared.fingerprint),
+            declared: new.content,
+            told_diff: None,
             link: Some(new.link),
             streaming: false,
             pace: Pace::CatchingUp(None),
@@ -3105,6 +3223,7 @@ mod tests {
             id,
             name: Text::new("strict room").unwrap(),
             rules: RulesName::new("strict").unwrap(),
+            manifest: None,
             owner: player(1),
             max_players: 8,
             settings,
@@ -3174,6 +3293,7 @@ mod tests {
             id,
             name: Text::new("compacted").unwrap(),
             rules: native(),
+            manifest: None,
             owner: player(1),
             max_players: 8,
             settings,
@@ -3371,6 +3491,7 @@ mod tests {
             id,
             name: Text::new("crafted").unwrap(),
             rules: native(),
+            manifest: None,
             owner: player(1),
             max_players: 8,
             settings: RoomSettings::DEFAULT,
@@ -3446,6 +3567,7 @@ mod tests {
             id,
             name: Text::new("owners").unwrap(),
             rules: native(),
+            manifest: None,
             owner: player(1),
             max_players: 8,
             settings: RoomSettings::DEFAULT,
@@ -3476,6 +3598,8 @@ mod tests {
             platform: Platform::current(),
             ready: false,
             content: None,
+            declared: None,
+            told_diff: None,
             link: None,
             streaming: false,
             pace: Pace::Loading,

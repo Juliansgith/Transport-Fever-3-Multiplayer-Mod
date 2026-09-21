@@ -28,14 +28,14 @@ use tokio::{
 };
 use tpf3mp_net::{Identity, ServerTrust};
 use tpf3mp_proto::{
-    ContentFingerprint, CreateRoom, Invite, JoinRoom, RoomPhase, RoomSettings, Text,
+    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomSettings, Text,
 };
 use tracing::{info, warn};
 
 pub use self::api::Action;
 use self::api::View;
 use crate::{
-    Client, ClientEvent, ConnectOptions, Events, TunnelChoice, Worlds,
+    Client, ClientError, ClientEvent, ConnectOptions, Events, TunnelChoice, Worlds,
     bridge::{self, Bridge, BridgeEnd, BridgeOptions, Control, Rejoin, SharedStatus, Status},
     connect,
 };
@@ -63,8 +63,8 @@ pub struct LauncherConfig {
     pub identity: Arc<Identity>,
     /// The name the page offers first.
     pub name: String,
-    /// What this player's game runs.
-    pub content: ContentFingerprint,
+    /// What this player's game runs, declared on every connection.
+    pub content: ContentManifest,
     /// The shared-memory link the game's hook opens.
     pub link: String,
     pub worlds: Worlds,
@@ -288,16 +288,12 @@ async fn act(
                 settings: config.room_settings,
                 rules,
             };
-            let (invite, _room) = current
+            let (invite, room) = current
                 .client
                 .create_room(create.clone())
                 .await
                 .map_err(|error| error.to_string())?;
-            current
-                .client
-                .declare_content(config.content)
-                .await
-                .map_err(|error| error.to_string())?;
+            shared.status().room = Some(room);
             begin_session(shared, config, connected, session, invite, create.password)
         }
         Action::Join { invite, password } => {
@@ -376,7 +372,7 @@ fn begin_session(
         options: options.clone(),
         invite: invite.clone(),
         password,
-        content: Some(config.content),
+        content: Some(config.content.clone()),
         give_up_after: REJOIN_PATIENCE,
     };
     let task = tokio::spawn(async move {
@@ -449,10 +445,18 @@ async fn connect_to(
         view.connecting = true;
         view.server = Some(server.to_owned());
     }
-    let result = connect(options.clone()).await;
+    let result = match connect(options.clone()).await {
+        // What the game runs goes with every connection, so rooms can
+        // compare it and say how it differs.
+        Ok((client, events)) => match client.declare_content(config.content.clone()).await {
+            Ok(()) => Ok((client, events)),
+            Err(error) => Err(error.to_string()),
+        },
+        Err(error) => Err(error.to_string()),
+    };
     let mut view = shared.view();
     view.connecting = false;
-    let (client, events) = result.map_err(|error| error.to_string())?;
+    let (client, events) = result?;
     view.connected = true;
     view.tunneled = client.tunneled();
     view.error = None;
@@ -513,26 +517,47 @@ async fn join(
     invite: Invite,
     password: Option<Text<64>>,
 ) -> Result<(), String> {
-    let current = connected.as_ref().ok_or("connect to a server first")?;
-    let room = current
+    let current = connected.as_mut().ok_or("connect to a server first")?;
+    let joined = current
         .client
         .join_room(JoinRoom {
             invite: invite.clone(),
             password: password.clone(),
             resume: None,
-            content: Some(config.content),
         })
-        .await
-        .map_err(|error| error.to_string())?;
-    if room.phase == RoomPhase::Lobby {
-        current
-            .client
-            .declare_content(config.content)
-            .await
-            .map_err(|error| error.to_string())?;
-    }
+        .await;
+    let room = match joined {
+        Ok(room) => room,
+        Err(ClientError::Refused(RequestError::ContentMismatch)) => {
+            // The room says how, on its own message.
+            let diff = content_diff(&mut current.events).await;
+            let message = match &diff {
+                Some(diff) => format!("your game differs from the room's: {diff}"),
+                None => RequestError::ContentMismatch.to_string(),
+            };
+            shared.status().content_diff = diff;
+            return Err(message);
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     shared.status().room = Some(room);
     begin_session(shared, config, connected, session, invite, password)
+}
+
+/// How the game differs from a room that refused it, if the room says so
+/// within a second.
+async fn content_diff(events: &mut Events) -> Option<ContentDiff> {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(event) = events.recv().await {
+            if let ClientEvent::ContentDiff(diff) = event {
+                return diff;
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// An invite as players pass it on: the room's invite, perhaps with the

@@ -6,8 +6,9 @@ release: this page says so where it applies.
 
 ## What you need
 
-- Transport Fever 3, the same build and mods as everyone in your room. The
-  room compares everyone's content before a game starts.
+- Transport Fever 3, the same build and mods as everyone in your room, in
+  the same order. The room compares everyone's before a game starts, and
+  tells you exactly which mods to add, remove or update if yours differ.
 - The TPF3-MP package for your system, from the project's releases:
   Windows x64, Linux x64 or macOS on Apple silicon. Players on different
   systems can share one room.
@@ -95,8 +96,12 @@ server.
   cost a little more delay.
 - **A version mismatch**: your package and the server are different
   versions. The message says which side is older.
-- **"players have different game versions or mods"**: someone's game build
-  or mod list differs. Everyone needs the same.
+- **"Your game differs from the room's"**: the page lists what to change:
+  the game build, the mods you lack, the mods the room does not run, and
+  the mods you have in another version. Everyone needs the owner's build
+  and mods in the same order. In the room, the **Game and mods** column
+  shows whose game differs from the owner's; each player sees their own
+  list.
 - **"too many players are connected from this network"**: the server
   limits connections per network. Close another game, or ask the operator.
 - **"the invite or password is not valid"**: the invite is from another

@@ -10,6 +10,7 @@
 //! field (see [`Text`] and [`Payload`]), so a decoded message is within limits.
 
 mod bytes;
+mod content;
 mod control;
 mod ids;
 mod snapshot;
@@ -20,6 +21,10 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 pub use bytes::{FixedBytes, MAX_PAYLOAD, Payload, PayloadTooLarge};
+pub use content::{
+    ContentDiff, ContentManifest, GameBuilds, MAX_DIFF_LISTED, MAX_LISTED_MODS, MAX_MANIFEST_BYTES,
+    ModChange, ModId, ModRef, ModVersion, Unlisted,
+};
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, ChatText, ClientMessage, ContentFingerprint, CreateRoom,
     GameMessage, Hello, IntentRejection, JoinRoom, LaneDigest, MAX_CHECKPOINT_LANES,
@@ -35,8 +40,9 @@ pub use text::{Text, TextError};
 pub use turn::{Event, EventBody, Turn, TurnMessage, TurnStart};
 
 /// Protocol version. Client and server must match exactly. Version 2 lets
-/// hosts choose the rules a room is played by.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// hosts choose the rules a room is played by; version 3 declares a game's
+/// mods by name, so players learn which differ.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

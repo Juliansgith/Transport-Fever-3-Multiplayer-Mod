@@ -24,8 +24,9 @@ use tpf3mp_bridge::{
 };
 use tpf3mp_net::close;
 use tpf3mp_proto::{
-    ChatText, ContentFingerprint, Event, EventBody, Invite, JoinRoom, LaneDigest, PlayerId,
-    Request, RequestError, Resume, RoomView, SavedWorld, SnapshotId, Speed, Text, WorldOffer,
+    ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom, LaneDigest,
+    PlayerId, Request, RequestError, Resume, RoomView, SavedWorld, SnapshotId, Speed, Text,
+    WorldOffer,
 };
 use tpf3mp_snapshot::ManifestId;
 use tracing::{debug, info, warn};
@@ -147,6 +148,8 @@ pub struct Status {
     /// What the player should know, oldest first: divergences, refusals,
     /// rejoins.
     pub notices: VecDeque<String>,
+    /// How this player's game differs from the room's, while it does.
+    pub content_diff: Option<ContentDiff>,
 }
 
 impl Default for Status {
@@ -159,6 +162,7 @@ impl Default for Status {
             speed: Speed::NORMAL,
             chat: VecDeque::new(),
             notices: VecDeque::new(),
+            content_diff: None,
         }
     }
 }
@@ -676,6 +680,12 @@ impl<L: HookLink> Bridge<L> {
                 self.status(|status| push_bounded(&mut status.chat, (from, text)));
             }
             ClientEvent::RoomUpdate(room) => self.status(|status| status.room = Some(room)),
+            ClientEvent::ContentDiff(diff) => self.status(|status| {
+                if let Some(diff) = &diff {
+                    status.notice(format!("your game differs from the room's: {diff}"));
+                }
+                status.content_diff = diff;
+            }),
             ClientEvent::Kicked => return Ok(Some(BridgeEnd::Kicked)),
             ClientEvent::Closed(reason) => return Ok(Some(BridgeEnd::Closed(reason))),
         }
@@ -1006,9 +1016,9 @@ pub struct Rejoin {
     pub options: ConnectOptions,
     pub invite: Invite,
     pub password: Option<Text<64>>,
-    /// This player's game build and mods, for joining the running game
-    /// afresh when it can no longer be resumed.
-    pub content: Option<ContentFingerprint>,
+    /// This player's game build and mods, declared on every new
+    /// connection: a running game can only be joined afresh with them.
+    pub content: Option<ContentManifest>,
     /// Stop trying after this long without a connection.
     pub give_up_after: Duration,
 }
@@ -1105,12 +1115,17 @@ async fn rejoin_room<L: HookLink>(
             let (client, events) = connect(options.clone())
                 .await
                 .map_err(|error| (error.to_string(), false))?;
+            if let Some(content) = &rejoin.content {
+                client
+                    .declare_content(content.clone())
+                    .await
+                    .map_err(|error| (error.to_string(), false))?;
+            }
             client
                 .join_room(JoinRoom {
                     invite: rejoin.invite.clone(),
                     password: rejoin.password.clone(),
                     resume,
-                    content: rejoin.content,
                 })
                 .await
                 .map_err(|error| {

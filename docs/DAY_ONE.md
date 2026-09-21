@@ -48,6 +48,10 @@ each finding carries one label:
   stability for string keys across runs.
 - The mod layout and `mod.lua` format, and what a Mod Hub script mod may
   contain.
+- How to list the active mods in load order, each with a name and a
+  version, and the game's build: the hook reports them over the bridge,
+  and the agent declares them (`ContentManifest`) in place of the
+  `--game-build` and `--mods` options it takes until then.
 
 ## 4. Determinism measurement (the D2 calibration)
 

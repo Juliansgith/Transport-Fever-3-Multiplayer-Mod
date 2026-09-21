@@ -6,7 +6,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Platform, Text,
+    ContentDiff, ContentManifest, Platform, Text,
     bytes::{FixedBytes, Payload},
     ids::{Invite, PlayerId, RoomId, SessionId, Signature},
     snapshot::{SavedWorld, SnapshotId},
@@ -61,6 +61,9 @@ pub enum ServerMessage {
         from: PlayerId,
         text: ChatText,
     },
+    /// How this player's game differs from the room's, sent whenever that
+    /// changes, and before a refused join. `None`: it no longer differs.
+    ContentDiff(Option<ContentDiff>),
 }
 
 /// One chat message: a line of text, no longer than a short paragraph.
@@ -132,7 +135,10 @@ pub enum Request {
     JoinRoom(JoinRoom),
     LeaveRoom,
     SetReady(bool),
-    DeclareContent(ContentFingerprint),
+    /// What this player's game runs. Declared once per connection, before
+    /// joining a running game; a room's lobby takes it on joining, and
+    /// again whenever the player declares anew.
+    DeclareContent(ContentManifest),
     StartGame,
     SetSpeed(Speed),
     /// The owner removes a player from the room for good, for example one
@@ -162,10 +168,6 @@ pub struct JoinRoom {
     /// receives one to load (see `TurnStart::world`), or, from a server that
     /// keeps no snapshots, the game from its first turn.
     pub resume: Option<Resume>,
-    /// The client's game build and mods, which must match the room's to
-    /// join a running game as a new player. In the lobby, players declare
-    /// theirs with [`Request::DeclareContent`] instead.
-    pub content: Option<ContentFingerprint>,
 }
 
 /// Where a returning client continues a running game.
@@ -212,6 +214,8 @@ pub enum RequestError {
     CannotKickSelf,
     /// The server does not offer the rules asked for.
     UnknownRules,
+    /// The declared content exceeds a manifest's limits.
+    InvalidContent,
 }
 
 impl fmt::Display for RequestError {
@@ -233,6 +237,7 @@ impl fmt::Display for RequestError {
             Self::NoSuchPlayer => "no such player is in the room",
             Self::CannotKickSelf => "the owner cannot kick themselves; leave the room instead",
             Self::UnknownRules => "this server does not offer those rules",
+            Self::InvalidContent => "the game's list of mods is too long to declare",
         })
     }
 }
@@ -266,8 +271,8 @@ impl RoomSettings {
     }
 }
 
-/// Digest of the game build and the ordered, content-hashed mod set. Players
-/// must match exactly to start a game together.
+/// Digest of a [`ContentManifest`]: the game build and the mods in load
+/// order. Players must match exactly to play together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContentFingerprint(pub FixedBytes<32>);
 

@@ -367,7 +367,6 @@ async fn a_reconnecting_player_resumes_exactly() {
             invite,
             password: None,
             resume,
-            content: None,
         })
         .await
         .unwrap();
@@ -428,7 +427,6 @@ async fn resuming_from_the_future_is_refused() {
                 after_turn: 1_000_000,
                 history,
             }),
-            content: None,
         })
         .await
         .unwrap_err();

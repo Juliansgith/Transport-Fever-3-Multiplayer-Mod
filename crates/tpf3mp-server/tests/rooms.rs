@@ -6,7 +6,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{FAST, RunningServer, content, join, room};
+use common::{FAST, RunningServer, content, join, modded, room};
 use tpf3mp_agent::{ClientError, ClientEvent};
 use tpf3mp_proto::{
     CreateRoom, FixedBytes, Invite, JoinRoom, RequestError, RoomId, RoomPhase, RoomSettings, Text,
@@ -63,7 +63,6 @@ async fn every_bad_invite_fails_the_same_way() {
                 invite,
                 password: password.map(|p| Text::new(p).unwrap()),
                 resume: None,
-                content: None,
             })
             .await
             .unwrap_err();
@@ -75,7 +74,6 @@ async fn every_bad_invite_fails_the_same_way() {
             invite,
             password: Some(Text::new("hunter2").unwrap()),
             resume: None,
-            content: None,
         })
         .await
         .unwrap();
@@ -340,6 +338,107 @@ async fn starting_requires_the_owner_readiness_and_matching_content() {
     assert_eq!(
         bob.client.set_ready(false).await,
         refused(RequestError::GameRunning)
+    );
+    // The game's content can be declared again, but not changed.
+    bob.client.declare_content(content(1)).await.unwrap();
+    assert_eq!(
+        bob.client.declare_content(content(2)).await,
+        refused(RequestError::GameRunning)
+    );
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn players_learn_which_mods_differ_from_the_owners() {
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    let mut bob = server.client("bob").await;
+    let mut cat = server.client("cat").await;
+    // Content goes with the connection: declared before creating or joining.
+    ann.client
+        .declare_content(modded(&["trains 1.2", "stations 3", "maps 1"]))
+        .await
+        .unwrap();
+    bob.client
+        .declare_content(modded(&["trains 1.1", "maps 1", "trees 2"]))
+        .await
+        .unwrap();
+    cat.client
+        .declare_content(modded(&["trains 1.2", "stations 3", "maps 1"]))
+        .await
+        .unwrap();
+    let (invite, _) = ann.client.create_room(room("table", FAST)).await.unwrap();
+    bob.client.join_room(join(&invite)).await.unwrap();
+    let room = cat.client.join_room(join(&invite)).await.unwrap();
+    let fingerprints: Vec<_> = room.members.iter().map(|m| m.content).collect();
+    assert_eq!(fingerprints[0], fingerprints[2]);
+    assert_ne!(fingerprints[0], fingerprints[1]);
+
+    // Bob hears exactly what to change; Cat, who matches, hears nothing.
+    let diff = bob.content_diff().await.expect("Bob's game differs");
+    let named = |mods: &[tpf3mp_proto::ModRef]| -> Vec<String> {
+        mods.iter()
+            .map(|m| format!("{} {}", m.id, m.version))
+            .collect()
+    };
+    assert_eq!(diff.game, None);
+    assert_eq!(named(&diff.missing), ["stations 3"]);
+    assert_eq!(named(&diff.extra), ["trees 2"]);
+    assert_eq!(diff.changed.len(), 1);
+    assert_eq!(
+        (
+            diff.changed[0].id.as_str(),
+            diff.changed[0].room.as_str(),
+            diff.changed[0].yours.as_str()
+        ),
+        ("trains", "1.2", "1.1")
+    );
+    for player in [&ann, &bob, &cat] {
+        player.client.set_ready(true).await.unwrap();
+    }
+    assert_eq!(
+        ann.client.start_game().await,
+        Err(ClientError::Refused(RequestError::ContentMismatch))
+    );
+
+    // Once Bob matches, he hears that he does, and the game can start.
+    bob.client
+        .declare_content(modded(&["trains 1.2", "stations 3", "maps 1"]))
+        .await
+        .unwrap();
+    assert_eq!(bob.content_diff().await, None);
+    ann.client.start_game().await.unwrap();
+    // Cat never differed, so was never told anything.
+    let told = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+        while let Some(event) = cat.events.recv().await {
+            if matches!(event, ClientEvent::ContentDiff(_)) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_ne!(told, Ok(true));
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn an_overlong_mod_list_is_refused() {
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    let manifest = tpf3mp_proto::ContentManifest {
+        game: Text::new("build-1").unwrap(),
+        mods: (0..=tpf3mp_proto::MAX_LISTED_MODS)
+            .map(|n| tpf3mp_proto::ModRef {
+                id: Text::new(format!("m{n}")).unwrap(),
+                version: Text::new("1").unwrap(),
+            })
+            .collect(),
+        unlisted: None,
+    };
+    assert_eq!(
+        ann.client.declare_content(manifest).await,
+        Err(ClientError::Refused(RequestError::InvalidContent))
     );
     server.shut_down().await;
 }
