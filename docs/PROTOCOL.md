@@ -182,12 +182,13 @@ events for `sealed_through + 1` at once, without running a step.
 - **Stalls.** A member stops holding the room when either:
   - it has sealed steps to run but has not advanced for the stall timeout
     (20 s by default: long enough for an autosave);
-  - it is still loading after the load timeout (5 min).
+  - it is still loading after the load timeout (5 min by default).
 
-  Both numbers come from stock-sized TPF2 worlds. On a big map an autosave
+  Both defaults come from stock-sized TPF2 worlds. On a big map an autosave
   writes about 1.4 GB and pauses the game for 15-20 s, and a world entry
-  measured 230-290 s ([BIGMAPS.md](BIGMAPS.md)), so a room that allows such
-  maps needs both timeouts scaled to the world.
+  measured 230-290 s ([BIGMAPS.md](BIGMAPS.md)), so a server for such maps
+  raises both (`--stall-timeout-secs`, `--load-timeout-mins`; see "Big
+  maps" in [OPERATIONS.md](OPERATIONS.md)).
 
   This way one frozen game, or a client that stops reporting, cannot stop a
   room for good. The member rejoins the pacing set by catching up; nobody is
