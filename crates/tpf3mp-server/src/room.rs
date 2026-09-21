@@ -681,10 +681,14 @@ impl Room {
     ) -> Result<Option<Self>, RecoverError> {
         let mut reader = RoomLog::read(path)?;
         let first = reader.next_record()?.ok_or(RecoverError::Empty)?;
-        let start: StartRecord = postcard::from_bytes(&first).map_err(RecoverError::Start)?;
-        if start.version != persist::FORMAT_VERSION {
-            return Err(RecoverError::Version(start.version));
+        // The version leads the start record. Read it alone first: a log of
+        // another format has another layout, and is named as such rather
+        // than reported unreadable.
+        let (version, _) = postcard::take_from_bytes::<u16>(&first).map_err(RecoverError::Start)?;
+        if version != persist::FORMAT_VERSION {
+            return Err(RecoverError::Version(version));
         }
+        let start: StartRecord = postcard::from_bytes(&first).map_err(RecoverError::Start)?;
         if !start.settings.is_valid() {
             return Err(RecoverError::Settings);
         }
@@ -3205,6 +3209,28 @@ mod tests {
         };
         let key = hmac::Key::new(hmac::HMAC_SHA256, &[0; 32]);
         Room::recover(path, key, menu, env)
+    }
+
+    #[test]
+    fn a_log_of_an_older_format_is_named_as_such() {
+        let dir = std::env::temp_dir().join(format!("tpf3mp-old-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = RoomId(FixedBytes([7; 16]));
+        // A version 5 start record: the version, then a layout this server
+        // no longer reads.
+        let payload = postcard::to_stdvec(&(5u16, 1u64, "an older layout")).unwrap();
+        let mut record = Vec::new();
+        record.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
+        record.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
+        record.extend_from_slice(&payload);
+        let path = RoomLog::path_for(&dir, &id);
+        std::fs::write(&path, record).unwrap();
+        assert!(matches!(
+            recover_by(&path, &dir, &recorder_menu()),
+            Err(RecoverError::Version(5))
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
