@@ -232,9 +232,10 @@ async fn paced_players_feel_their_round_trip_plus_a_small_buffer() {
     )
     .await
     .unwrap();
+    // A long input delay, so that feeling it could not pass for noise.
     let settings = RoomSettings {
         steps_per_second: 20,
-        input_delay_ms: 60,
+        input_delay_ms: 400,
         checkpoint_interval: 20,
     };
     let mut plan_bots = bots(4, 200, 3);
@@ -253,8 +254,10 @@ async fn paced_players_feel_their_round_trip_plus_a_small_buffer() {
         "paced intent-to-apply latency over 150 ms RTT: p50 {p50} ms, p95 {p95} ms, p99 {p99} ms, max {max} ms"
     );
     // A player feels the round trip plus their own jitter buffer, not the
-    // room's input delay.
-    assert!(p50 < 350, "median latency {p50} ms");
+    // room's input delay. Feeling the delay would put the median past
+    // 550 ms, the round trip and the delay; it is about 220 ms, and an
+    // overloaded CI machine measured up to 350.
+    assert!(p50 < 450, "median latency {p50} ms");
     drop(netem);
     server.stop().await;
 }
