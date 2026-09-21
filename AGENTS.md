@@ -36,6 +36,24 @@ Rules:
   promote around it or disable the check.
 - Old milestone branches (`m0-foundations`, `m1-core`) are history. New
   work starts from `dev`.
+- **Pull requests into `main` or `acceptance` are not the way in.**
+  Merging one creates a commit that no check has seen and skips the stage
+  before. Open pull requests into `dev` if you want a review; promote with
+  the fast-forwards below.
+
+### What GitHub enforces
+
+`tools/github/protect-branches.sh`, run once by a repository administrator,
+makes GitHub hold everyone, administrators included, to the rules above:
+
+- `dev`, `acceptance` and `main` cannot be force-pushed or deleted;
+- `acceptance` takes only commits whose `ci` checks passed;
+- `main` takes only commits whose `ci` and `acceptance` checks passed.
+
+A promotion pushes a commit already tested on the branch before, so it
+passes; a merge commit made on `acceptance` or `main` has no checks and is
+refused. When a job in `ci.yml` or `acceptance.yml` is renamed or added,
+update the script's lists and run it again.
 
 ## The checks
 
