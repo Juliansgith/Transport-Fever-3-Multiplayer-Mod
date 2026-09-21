@@ -241,6 +241,23 @@ PROTOCOL.md describes the flow.
   both share are stored once. Closed games release theirs, and at start the
   server releases snapshots of games that are gone.
 
+## Big maps
+
+A room waits 20 seconds for a game that stops advancing and 5 minutes for
+one loading its world, then plays on and lets that game catch up. Big maps
+outgrow both: on TPF2 a big-map save paused the game for 15-20 s and
+entering such a world took 4-5 minutes ([BIGMAPS.md](BIGMAPS.md)). For a
+server that hosts them, raise both:
+
+```sh
+tpf3mp-server ... --stall-timeout-secs 60 --load-timeout-mins 15
+```
+
+Longer waits also mean a frozen game holds its room up for longer before
+the others play on. Their saves are larger too: a 1.4 GB world must upload
+within the 90-minute limit, so at least about 260 KB/s from the player who
+uploads it.
+
 ## Releases
 
 `.github/workflows/release.yml` builds the player's package for Windows x64,

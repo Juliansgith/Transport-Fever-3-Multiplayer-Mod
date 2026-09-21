@@ -111,6 +111,19 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     abandon_after_mins: u64,
 
+    /// Seconds a player's game may stop advancing, for an autosave or a
+    /// hitch, before its room plays on without waiting for it; it catches
+    /// up afterwards. Raise it for big maps, whose saves pause the game for
+    /// 15 to 20 seconds.
+    #[arg(long, default_value_t = 20)]
+    stall_timeout_secs: u64,
+
+    /// Minutes a player's game may take to load the room's world before
+    /// the room plays on without waiting for it. Raise it for big maps,
+    /// which took four to five minutes to enter on TPF2.
+    #[arg(long, default_value_t = 5)]
+    load_timeout_mins: u64,
+
     /// Size in MiB past which a running game's log is compacted to start
     /// from the game's current state.
     #[arg(long, default_value_t = 64)]
@@ -176,6 +189,7 @@ async fn main() -> Result<()> {
     config.compact_log_at = args.compact_log_mib.max(1).saturating_mul(1 << 20);
     config.abandoned_timeout =
         Duration::from_secs(args.abandon_after_mins.max(1).saturating_mul(60));
+    (config.stall_timeout, config.load_timeout) = room_timeouts(&args);
     if !args.tunnel_path.starts_with('/') {
         bail!("--tunnel-path must start with /");
     }
@@ -271,6 +285,15 @@ fn load_or_create_secret(path: &Path) -> Result<[u8; 32]> {
     }
 }
 
+/// How long a room waits for a stalled game and for a loading one, from
+/// `--stall-timeout-secs` and `--load-timeout-mins`, at least a second each.
+fn room_timeouts(args: &Args) -> (Duration, Duration) {
+    (
+        Duration::from_secs(args.stall_timeout_secs.max(1)),
+        Duration::from_secs(args.load_timeout_mins.max(1).saturating_mul(60)),
+    )
+}
+
 /// Completes on Ctrl-C, and on SIGTERM where it exists (`docker stop` sends it).
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -295,4 +318,43 @@ async fn shutdown_signal() {
     }
     #[cfg(not(unix))]
     ctrl_c.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(extra: &[&str]) -> Args {
+        let mut argv = vec!["tpf3mp-server", "--dev-self-signed", "dev.der"];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv).unwrap()
+    }
+
+    #[test]
+    fn rooms_wait_as_long_as_the_operator_says() {
+        assert_eq!(
+            room_timeouts(&args(&[])),
+            (Duration::from_secs(20), Duration::from_secs(300))
+        );
+        // A server for big maps, whose saves and loads take longer.
+        assert_eq!(
+            room_timeouts(&args(&[
+                "--stall-timeout-secs",
+                "60",
+                "--load-timeout-mins",
+                "15"
+            ])),
+            (Duration::from_secs(60), Duration::from_secs(900))
+        );
+        // Zero would drop every game from its room at once; it means the least.
+        assert_eq!(
+            room_timeouts(&args(&[
+                "--stall-timeout-secs",
+                "0",
+                "--load-timeout-mins",
+                "0"
+            ])),
+            (Duration::from_secs(1), Duration::from_secs(60))
+        );
+    }
 }
