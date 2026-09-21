@@ -191,8 +191,7 @@ function cell(row, value) {
 // own, or others the server offers. The first is the server's default.
 function renderRules(rules) {
   const select = $("rules");
-  const names = rules.map(r => r.name).join("
-");
+  const names = JSON.stringify(rules.map(r => r.name));
   if (select.dataset.names !== names) {
     const chosen = select.value;
     select.replaceChildren();

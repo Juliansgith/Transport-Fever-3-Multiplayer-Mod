@@ -48,6 +48,24 @@ jobs:
           ./target/release/tpf3mp-agent --version
           ./target/release/tpf3mp-server --version
 
+  page:
+    name: launcher page
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The page's script runs only in a browser, which no test drives; a
+      # syntax error there leaves the launcher a dead page. It must parse.
+      - name: The launcher page's script parses
+        run: |
+          python3 - <<'EOF'
+          import re
+          page = open("crates/tpf3mp-agent/src/launcher/page.html", encoding="utf-8").read()
+          scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+          assert scripts, "the page has no script"
+          open("page.js", "w", encoding="utf-8").write(chr(10).join(scripts))
+          EOF
+          node --check page.js
+
   image:
     name: server image
     runs-on: ubuntu-latest
