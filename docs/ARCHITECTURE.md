@@ -21,9 +21,49 @@ and the alternatives they rejected are logged in [DECISIONS.md](DECISIONS.md).
 
 - Consoles. Mod Hub content is data and script only; the native layer this
   design needs cannot run there.
-- Running TPF3 on the server. There is no headless build, and every instance
-  needs its own licence. The server is authoritative for canonical state, not
-  for the native simulation.
+- Running TPF3 on the server as the authority. There is no headless build,
+  and every instance needs its own licence. The server is authoritative for
+  canonical state, not for the native simulation.
+
+  A game *can* run on a server, though, and TPF2 Multiplayer has done it
+  since 2026-09-18 (its `docs/DEDICATED_SERVER.md`): a stock Windows build
+  under Proton in a Linux Steam client on Xvfb, joined by players like any
+  host. What that measured, for the day this non-goal is revisited:
+
+  - **The game insists on a logged-in Steam client**; `SteamAPI_Init` failing
+    throws at start and there is no offline path in the binary. The answer was
+    a client logged in once, then kept in offline mode, which lets the same
+    account play online elsewhere. One licence per server, and it must own
+    every DLC a shared save uses.
+  - **No GPU is needed, but rendering must be suppressed, not just shrunk.**
+    Mesa's lavapipe rendered a 640x480 window on six CPU threads at 180% and
+    the simulation, which advances per frame, fell 45 steps behind one joiner.
+    The mod now wraps `vkQueueSubmit` and submits with the command buffers
+    removed (fences and semaphores still signalled, query results zeroed);
+    a 112 MB world then loads in about two minutes instead of five. Answering
+    acquire and present in the DLL crashed under Wine; the window screen mode
+    crashes before the first frame; borderless fills the virtual screen.
+  - **It is a lockstep peer, not an oracle.** The server plays every command
+    through the same lockstep as a player and resyncs like one. What it buys
+    is an always-on world, a stable join code across restarts, and a host
+    that is not somebody's PC. Nobody stands at its controls, so it has no
+    speed vote, its own pause is never read as a player's, and a session
+    resumes at the players' votes (never at 0, which the first frozen join
+    did).
+  - **A VPS lies about its clock.** Under 10-14% CPU steal the engine's own
+    estimate of its 200 ms batch interval crept to 380 ms with the sim thread
+    half idle; the server now pins the interval and the pacing caps the room
+    at what the host actually sustains (about 2x on a stock world on an EPYC
+    vCPU under Wine). Capacity is judged by steps made per second, never by
+    the engine's estimate. This is what the server-owned clock above avoids.
+  - **A watchdog must not judge by crash dumps.** The engine's crash reporter
+    also runs for a game the watchdog killed, about 15 s later, and writes
+    its marker into the next run's log: two self-feeding crash loops in one
+    day. Liveness is a log's modification time; every kill is `-9` so no
+    handler runs.
+  - **Version gate exact.** The server runs the same release as the players
+    or nobody joins; a Lua-only change ships by copying into the game folder
+    and restarting.
 - Community-hosted servers. Possible later, but the trust model below assumes
   operated servers.
 
