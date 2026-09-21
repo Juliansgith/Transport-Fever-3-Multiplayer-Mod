@@ -184,6 +184,11 @@ events for `sealed_through + 1` at once, without running a step.
     (20 s by default: long enough for an autosave);
   - it is still loading after the load timeout (5 min).
 
+  Both numbers come from stock-sized TPF2 worlds. On a big map an autosave
+  writes about 1.4 GB and pauses the game for 15-20 s, and a world entry
+  measured 230-290 s ([BIGMAPS.md](BIGMAPS.md)), so a room that allows such
+  maps needs both timeouts scaled to the world.
+
   This way one frozen game, or a client that stops reporting, cannot stop a
   room for good. The member rejoins the pacing set by catching up; nobody is
   kicked. Pausing restarts every member's stall timer.
@@ -311,6 +316,43 @@ the current one.
 the first world the room agrees on after the divergence, and the room saves
 soon to have one. A member is rebased at most once every five minutes; a
 replica that keeps diverging is told each time.
+
+**Learned on TPF2 Multiplayer's transfer path.** Its shared-save flow is the
+same shape (the host forces a native autosave at a held step, ships it,
+everyone loads it and resumes at the votes), and these are what broke in
+the field:
+
+- **The received world must have somewhere to go.** A player who had never
+  saved a single-player game had no save folder; the transfer verified, the
+  placement failed with a path error, and it was reported twice as "the mod
+  transfer didn't work". Create the game's save folder before placing a
+  world, and log the destination path on failure, not only the source.
+- **A world is useless without its mod set, and the mod set does not
+  travel.** One player's Workshop set was 556 mods, 93 GB on disk, 19 GB
+  zipped; packing runs at about 250 MB/s of mod data. The working shape is
+  register what the joiner already has on disk and fetch only what is
+  missing, with the registry published after every batch rather than at the
+  end of a round (a 359-batch round never reached its end). A folder the
+  joiner's game cannot read counts as absent: a mod skipped at the title
+  menu is fatal when a shared save forces it to load, at 78% of every load.
+- **The world epoch is the credential.** Freezing the roster by session id
+  after a resync refused a player whose game had restarted, forever, and
+  every broadcast then waited on the dead session until the send window
+  blocked the host for everybody. Admit any sender presenting the current
+  world epoch, evict after 10 s of silence, and never gate a later join on a
+  recovery token that is not cleared when the recovery ends (gate on the
+  phase; one resync locked the roster for the life of the process, into a
+  brand-new game).
+- **Loading looks like quitting.** TPF2 builds the title-menu page on the
+  way from the old world to the loading screen, so a "left the world, leave
+  the room" rule fired on every resync joiner and the host's barrier failed
+  with "player disconnected" at step loading. Any rule keyed on a menu page
+  must ask the engine whether a load is in progress first.
+- **A home-made reliable UDP transfer topped out at 10 MB/s** (window over
+  RTT, one send per 1,350-byte chunk in Python, a whole-window rewind on a
+  lost feedback), 5 MB/s at 15% loss, against 2 GB/s for a plain TCP stream
+  on the same link; bulk moved to a TCP side channel the same day. The QUIC
+  bulk stream above is the right shape; keep the datagrams for turns only.
 
 **Bulk streams.** The client opens one, sends the version preamble and a
 `BulkOpen`, and reads the server's preamble:

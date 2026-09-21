@@ -417,4 +417,168 @@ exactly, consistent with the RE survey's ~88,000 assert-string references found
 in the same on-disk section. On-disk verification is therefore valid *for this
 build*. It is not guaranteed in general - a future build could encrypt `.text` -
 which is why the production resolver scans the in-memory, unpacked module image,
-and why on-disk scanning is documented as a development convenience only.
+and why on-disk scanning is documented as a development convenience only.
+
+## What a shipped mod hooks on the same build
+
+Build 35924 has a shipped lockstep mod hooking it, [TpF2 Multiplayer](https://github.com/silver2127/tpf2-multiplayer)
+(0.6.1.12, 2026-09-20), so every target in the profile and everything in this
+section runs in players' games rather than in a test. RVAs are from image base
+`0x140000000`. Names are the ones the binary carries in its `__FUNCSIG__` assert
+strings where it has one (`tools/re/name_functions.py` recovers those); the
+rest are the mod's own names for functions it identified by decompiling or by
+differential capture. Steal sizes are the bytes that mod's detour engine
+overwrites; its engine refuses RIP-relative instructions in a prologue rather
+than relocating them, so its steals are a conservative bound for one that does.
+
+### The five profile targets, as the mod uses them
+
+| target | RVA | how the mod uses it |
+|---|---|---|
+| `GameSim::Step` | `0x15aa00` | Not detoured whole. Two sites inside it are patched: the calls to `CGameTime::GetSpeed` at `0x15aa30` and `0x15aae4` (a fractional speed scales the batch interval) and the paused branch's `call 0xaea970` (GameTime advance) at `0x15aa4a`, so a paused game advances `GameTime+0x30` per simulation step and not per render batch. Both siblings of `GetSpeed` are real: the profile's extended signature is the right call. |
+| `CGame::Step` | `0x118e90` | Detoured, 16-byte steal, for pacing (the leader is the clock; joiners pace to it). |
+| `CGameTime::GetSpeed` | `0x2877a0` | Read through its call sites rather than hooked; `GameTime::get` at `0x2877c0` returns the counter at `+0x30`. |
+| `UI::CMenuUI::StartSavegame` | `0x6785c0` | Detoured (the share observer: a host that loads another world pushes it), and called directly to load a shared save in-process: build a `SaveGameId` `{wstring path; string name; string namespace}`, get its `SavegameInfo` from the save manager (`0x2e6ca0`; the manager is `+200` on the app object from `0xbb23c0`), default-construct `LoadGameParams` (`0x553b70`, 0x138 bytes) and call from `CMenuUI`'s own per-frame update, vftable `0x301dc38` slot 33 (`0x672b10`), on the main thread, where the game starts its own queued loads. Guards on the menu object: `+0x4e8` non-zero while a game runs, `+0x1988` "initialization already active", `+0x19a0` a queued load. |
+| `UI::CMenuUI::CreatePage` | `0x663370` | Detoured, 20-byte steal (the Multiplayer panel on the title menu). Two more menu entries go with it: the list-add at `0x22d99e0` (15) and the main-page builder at `0x667bc0` (14). |
+
+### The command pipeline: two hooks, not one
+
+Every player action becomes a `Command` built by a `make_cmd::*` factory and
+handed to `CommandList::Add(list, OUT handle, cmd, ..., callback)`. The mod
+hooks both, and the reason is worth carrying into a TPF3 profile:
+
+- The **factory** hook sees *what* the command is, while its arguments are still
+  the caller's typed structures (a proposal, a `component::Line`, a vehicle
+  configuration), which is the only moment they are cheap to decode.
+- The **`Add`** hook is the only place a command can be *cancelled*: it zeroes
+  the result handle and returns without queueing. The factory cannot cancel;
+  its caller still holds the command.
+- The mod's own replays go through the same factories (the script's
+  `api.cmd.*` path), so the **return address of the factory call** is the only
+  thing that tells a player's command from the mod's replay of one. That
+  caller-RVA filter is load-bearing, not tidiness: without it every replay is
+  captured again.
+
+| factory | RVA | steal | |
+|---|---|---|---|
+| `BuildProposal` | `0x9dc750` | 19 | roads, track, constructions, terrain, assets, the bulldozer: one command, told apart by the proposal's shape ([BUILDING.md](BUILDING.md)) |
+| `CommandList::Add` | `0x9d2a00` | 18 | the cancel point |
+| `BuyVehicle` | `0x9dca00` | 15 | its UI waits on the result entity |
+| `SellVehicle` | `0x9de380` | 20 | |
+| `ReplaceVehicle` | `0x9dddb0` | 15 | its UI waits on the result entity |
+| `SendToDepot` | `0x9de6f0` | 20 | |
+| `SetLine` | `0x9dea10` | 18 | |
+| `CreateLine` | `0x9dcde0` | 19 | its UI asserts on an empty result |
+| `UpdateLine` | `0x9df4e0` | 19 | |
+| `DeleteLine` | `0x9dd190` | 20 | |
+| `Reverse` | `0x9ddfe0` | 20 | a toggle: replaying an uncancelled one applies it twice |
+| `SetColor` | `0x9de8a0` | 20 | `r9 -> CVec3f*` |
+| `SetName` | `0x9deb70` | 15 | `r9 -> std::string*` (MSVC SSO) |
+| `SetGameSpeed` | `0x9de9e0` | 21 | the clock buttons |
+| `SetDate`, `SetCalendarSpeed` | `0x9de9b0`, `0x9de870` | 21 | the editor's date controls |
+
+Three rules the cancel point taught, each after a crash or a wedged tool:
+
+1. **A cancelled command's completion callback is a contract.** Commands whose
+   UI waits on the result (the build tools, `BuyVehicle`, `ReplaceVehicle`)
+   must have their callback fired with a zeroed result at `Add`, or the tool
+   hangs for the rest of the session. The callback is a `std::function` whose
+   impl the game builds on the stack (`{vftable, captured this}`; `_Do_call`
+   is vftable slot 2) or on the heap (impl pointer at `r9+0x38`).
+2. **Fire-and-forget commands must not have it fired.** `SetLine` and
+   `Reverse` fired with the success byte still 0 make the UI take its failure
+   branch ("unable to find a path to a stop"). Suppress without firing.
+3. **A callback that asserts on an empty result is moved, not fired.**
+   `CreateLine`'s callers (`UI::LineList` `0x610490`, `UI::LineManager`
+   `0x6154a0`) assert `resultEntity != ecs::Entity()`. The mod moves the
+   callback object into a stash and fires it later, from a later `Add` on the
+   same thread, with a stand-in result naming the entity the replay created
+   (a 16-byte entry `{int32 entity; double gen; int32}` whose generation must
+   match the registry's, `[reg+0xb8]+id*12`).
+
+And one that holds everywhere: **never cancel when the decode failed.** A
+command the mod cannot ship in full runs natively and is read back afterwards;
+cancelling it would lose the player's action.
+
+### Layouts the capture depends on
+
+Every vector is read at the game's own length (`{begin, end, cap}`), with a
+sanity bound on the span and a readability check on every page it touches,
+under SEH: a misread pointer fails the decode loudly, and a failed decode is
+never cancelled.
+
+- `component::Line`: `vector<Stop>` at `+0x00`, `int waitingTime` `+0x18`,
+  `VehicleInfo` `+0x1c` (8 bytes: a `std::bitset<16>` of transport modes plus
+  4). `VehicleInfo` is **engine-maintained**: the sim-side `UpdateLine`
+  handler (`0x9d9fd0`) restores its own copy, and a command cannot set it.
+- `Line::Stop`, 0xa8 bytes: `Entity stationGroup` `+0x00`, `int station`
+  `+0x04`, `int terminal` `+0x08`, `vector<StationTerminal{int,int}>
+  alternativeTerminals` `+0x10`, `int loadMode` `+0x28` (0..3), two `float`
+  waits `+0x2c`/`+0x30`, `vector waypoints` `+0x38`.
+- A proposal's edge record, 120 bytes: node ids `+0x00`/`+0x04`, tangents
+  `+0x10`/`+0x1c` (3 floats each), `BaseEdge` type and type index
+  `+0x28`/`+0x2c` (1 bridge, 2 tunnel), and an optional `PlayerOwned` as
+  `{int32 player +0x70; uint8 present +0x74}`.
+- `TransportNetwork` and the other components are reached through the engine's
+  type index: `GetComponentDataIndex` (`0xd0920`) with the component's
+  `RTTI_Type_Descriptor`, then `engine+0x88[typeIndex]`, entries of 0x48
+  bytes, data at `+0x68` (indices below `0x40000000`) or paged at `+0x80`.
+
+### The game has two engines
+
+`CGame::RunGameSimLoop` (`0x1184d0`) keeps two `GameState` objects at
+`CGame+0x168 -> { GameState*[2], ..., int current at +0x20 }` and copies one
+into the other every frame with `GameState::Replicate` (`0x241630`);
+`CGame+0x158` is whichever is current this frame, and that is what the UI's
+`GameStateProvider` returns (`0x8badf0`: `mov rax,[rcx+8]; mov rax,[rax+0x158]`).
+`GameState+0x28` is that state's `ecs::Engine`, and each engine owns its own
+system objects. A command carries a specific engine pointer, so anything
+computed on its behalf (the mod re-runs the line editor's platform assignment
+at the replay) has to take the state whose `+0x28` is that engine, never
+"this frame's".
+
+### What lockstep needed beyond command capture
+
+Identical commands at identical steps were not enough; the mod patches four
+places where the engine's order depended on memory layout or on a seed:
+
+| | RVA | steal | |
+|---|---|---|---|
+| train reservation order | `0xabe02d` | 16 | the engine shuffles the order trains claim track with a `minstd_rand` seeded from `GameTime+0x30` over node-list positions, which differ per machine; the detour orders by train name with a seeded jitter |
+| free space on a road edge | `0x2117350`, `0x2117140` | 5 | the sum is taken in ascending order in `double`, so every peer gets the same float |
+| road edge use entries | `0xa64473` | | kept in name order after `EdgeUseManager::Add` |
+| ship and aircraft claim order | `0xa6c1e0`, `0xa2bc60` | 5 | measured only: the family node vector is engine-owned |
+
+The world comparison that finds the remaining divergences hashes geometry and
+state, never entity ids: ids, seeds and town growth differ legitimately
+between machines that agree on the world.
+
+### UI patches for companies mode
+
+Small in-place patches, each verified against the exact bytes at the site
+before it is applied: the line editor's station owner gate (`0x609631`, a
+5-byte `cmp eax,[rbx+0x28]; je` with accept `0x609605` and reject `0x609636`),
+three owner gates that hide other players' icons, the icon draw call
+(`0x80b613`), the station label background (`0x80a0ee`), a foreign entity's
+window opening read-only (`jne` at `0x8b3060`), the window bind (`0x8b2390`),
+and the HUD station and depot icons (`0x5e38e1`, `0x5e45d0`, depot ctor
+`0x5e2b70`). The `setPlayer` binding's ownership assert is bypassed at the
+`je` `0x11677a1`. Each is a separate patch with its own byte check, so a build
+change disables one feature rather than the mod.
+
+### Detour rules that held up
+
+- **Verify, then steal.** Every target's expected bytes are compared before
+  the patch; a mismatch logs and leaves that feature off. Steals stop on an
+  instruction boundary at or past 14 bytes and cover only plain,
+  position-independent instructions; a `call`, a jump or a RIP-relative
+  operand in the prologue is a refusal. Where only five bytes are safe to
+  take, a page within ±2 GiB of the site is allocated for the detour and the
+  five bytes become a `jmp rel32` into it.
+- **Install before the target's first run.** The mod's proxy `alut.dll` loads
+  every DLL from `DllMain`, before the game's entry point, so no thread can
+  be inside a target when it is patched.
+- **The cancel is gated on evidence.** Cancelling is only safe because
+  something replays, so it is switched on by fresh evidence from the script
+  half on disk (its per-tick status file). With the mod's Lua side absent, the
+  hooks capture nothing and cancel nothing, and the base game is unchanged.
