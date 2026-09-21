@@ -33,7 +33,7 @@ use crate::{
     admission::{self, Handshake, Origin},
     limit::TokenBucket,
     metrics,
-    room::{MemberLink, NewMember, Reply, RoomCommand, RoomHandle, TurnFeed},
+    room::{Declared, MemberLink, NewMember, Reply, RoomCommand, RoomHandle, TurnFeed},
     snapshots::{BULK_IDLE, Snapshots},
 };
 
@@ -260,6 +260,8 @@ struct Client {
     player: PlayerId,
     hello: Hello,
     link: MemberLink,
+    /// What this player's game runs, once declared.
+    content: Option<Arc<Declared>>,
     room: Option<RoomHandle>,
     /// The room, for the task that serves bulk streams.
     rooms: watch::Sender<Option<RoomHandle>>,
@@ -288,6 +290,7 @@ impl Client {
             player: hello.identity,
             hello,
             link,
+            content: None,
             room: None,
             rooms: watch::Sender::new(None),
             control: Some(control_rx),
@@ -404,6 +407,7 @@ impl Client {
             name: self.hello.name.clone(),
             platform: self.hello.platform,
             link: self.link.clone(),
+            content: self.content.clone(),
         }
     }
 
@@ -441,7 +445,6 @@ impl Client {
                         token: join.invite.token,
                         password: join.password,
                         resume: join.resume,
-                        content: join.content,
                         reply,
                     })
                     .await?;
@@ -464,13 +467,28 @@ impl Client {
                 })
                 .await
             }
-            Request::DeclareContent(content) => {
-                self.in_room(|player, reply| RoomCommand::DeclareContent {
-                    player,
-                    content,
-                    reply,
-                })
-                .await
+            Request::DeclareContent(manifest) => {
+                if !manifest.is_valid() {
+                    return Err(RequestError::InvalidContent);
+                }
+                let content = Arc::new(Declared::new(manifest));
+                self.content = Some(Arc::clone(&content));
+                if self.room.is_none() {
+                    return Ok(Response::Done);
+                }
+                match self
+                    .in_room(|player, reply| RoomCommand::DeclareContent {
+                        player,
+                        content,
+                        reply,
+                    })
+                    .await
+                {
+                    // The room closed meanwhile: the declaration still holds
+                    // for the next room.
+                    Err(RequestError::NotInRoom) => Ok(Response::Done),
+                    result => result,
+                }
             }
             Request::StartGame => {
                 self.in_room(|player, reply| RoomCommand::Start { player, reply })

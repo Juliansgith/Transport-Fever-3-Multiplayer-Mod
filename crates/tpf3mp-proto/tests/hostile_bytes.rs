@@ -14,11 +14,11 @@ use proptest::{collection::vec, prelude::*, sample::Index};
 use serde::{Serialize, de::DeserializeOwned};
 use tpf3mp_proto::{
     Arch, BulkOpen, BulkRequest, BulkResponse, ChunkHash, ClientMessage, ContentFingerprint,
-    CreateRoom, Event, EventBody, FixedBytes, GameMessage, Hello, IntentRejection, Invite,
-    JoinRoom, LaneDigest, MemberView, Os, Payload, Platform, PlayerId, Reject, RejectReason,
-    Request, RequestError, Response, Resume, RoomId, RoomPhase, RoomSettings, RoomView, RulesOffer,
-    SavedWorld, ServerMessage, SessionId, Signature, SnapshotId, Speed, Text, Turn, TurnMessage,
-    TurnStart, Welcome, WorldOffer, decode_frame,
+    ContentManifest, CreateRoom, Event, EventBody, FixedBytes, GameMessage, Hello, IntentRejection,
+    Invite, JoinRoom, LaneDigest, MemberView, ModRef, Os, Payload, Platform, PlayerId, Reject,
+    RejectReason, Request, RequestError, Response, Resume, RoomId, RoomPhase, RoomSettings,
+    RoomView, RulesOffer, SavedWorld, ServerMessage, SessionId, Signature, SnapshotId, Speed, Text,
+    Turn, TurnMessage, TurnStart, Welcome, WorldOffer, decode_frame,
 };
 
 /// Decodes `bytes` as a `T`: an error, or a message that survives a round
@@ -98,6 +98,23 @@ fn lanes() -> Vec<LaneDigest> {
 }
 
 /// A valid message of every kind a peer sends, with the check for its type.
+/// A game with a few mods, as players declare it.
+fn manifest() -> ContentManifest {
+    ContentManifest::new(
+        Text::new("35924").unwrap(),
+        ["trains 1.2", "stations 3", "maps 1"]
+            .iter()
+            .map(|line| {
+                let (id, version) = line.split_once(' ').unwrap();
+                ModRef {
+                    id: Text::new(id).unwrap(),
+                    version: Text::new(version).unwrap(),
+                }
+            })
+            .collect(),
+    )
+}
+
 fn samples() -> Vec<(Check, Vec<u8>)> {
     let snapshot = SnapshotId(FixedBytes([7; 32]));
     let client = [
@@ -127,8 +144,11 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                     after_turn: 40,
                     history: 99,
                 }),
-                content: Some(ContentFingerprint(FixedBytes([9; 32]))),
             }),
+        },
+        ClientMessage::Request {
+            id: 11,
+            request: Request::DeclareContent(manifest()),
         },
         ClientMessage::Request {
             id: 9,
@@ -201,6 +221,10 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             from: player(1),
             text: Text::new("gg").unwrap(),
         },
+        ServerMessage::ContentDiff(
+            ContentManifest::new(Text::new("35925").unwrap(), Vec::new()).compare(&manifest()),
+        ),
+        ServerMessage::ContentDiff(None),
     ];
     let turns = [
         TurnMessage::Start(TurnStart {

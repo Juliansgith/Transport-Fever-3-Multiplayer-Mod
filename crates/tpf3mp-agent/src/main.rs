@@ -3,15 +3,15 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use tpf3mp_agent::{
-    Client, ClientEvent, ConnectOptions, Events, TunnelChoice, Worlds,
+    Client, ClientError, ClientEvent, ConnectOptions, Events, TunnelChoice, Worlds,
     bridge::{self, Bridge, BridgeOptions, Rejoin},
-    connect,
+    connect, content,
     launcher::{Launcher, LauncherConfig, Remembered},
 };
 use tpf3mp_net::{CertificateDer, Identity, ServerTrust, tunnel::TunnelUrl};
 use tpf3mp_proto::{
-    ContentFingerprint, CreateRoom, FixedBytes, Invite, JoinRoom, RoomPhase, RoomSettings,
-    RoomView, Text,
+    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomPhase,
+    RoomSettings, RoomView, Text,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -76,10 +76,15 @@ struct Game {
     #[arg(long, num_args = 0..=1, default_missing_value = tpf3mp_bridge::DEFAULT_LINK)]
     game_link: Option<String>,
 
-    /// What this player's game runs (build and mods). Every player in a
-    /// room must declare the same.
+    /// The game's build. Every player in a room must run the same.
     #[arg(long, default_value = "tpf3")]
-    content: String,
+    game_build: String,
+
+    /// A file listing the game's active mods in load order, one per line:
+    /// the mod's name, then its version. Every player in a room must run
+    /// the same; the room says which differ.
+    #[arg(long)]
+    mods: Option<PathBuf>,
 
     /// Where worlds are kept: saves the room agreed on, and worlds received
     /// to join running games. Defaults to a directory per game link in the
@@ -93,14 +98,9 @@ struct Game {
 }
 
 impl Game {
-    /// The digest of what this player's game runs.
-    fn fingerprint(&self) -> Result<ContentFingerprint> {
-        let digest = ring::digest::digest(&ring::digest::SHA256, self.content.as_bytes());
-        let bytes: [u8; 32] = digest
-            .as_ref()
-            .try_into()
-            .context("a SHA-256 digest is 32 bytes")?;
-        Ok(ContentFingerprint(FixedBytes(bytes)))
+    /// What this player's game runs.
+    fn manifest(&self) -> Result<ContentManifest> {
+        Ok(content::manifest(&self.game_build, self.mods.as_deref())?)
     }
 
     fn open_worlds(&self, link: &str) -> Result<Worlds> {
@@ -153,9 +153,14 @@ struct LauncherArgs {
     #[arg(long, default_value = tpf3mp_bridge::DEFAULT_LINK)]
     game_link: String,
 
-    /// What this player's game runs (build and mods).
+    /// The game's build. Every player in a room must run the same.
     #[arg(long, default_value = "tpf3")]
-    content: String,
+    game_build: String,
+
+    /// A file listing the game's active mods in load order, one per line:
+    /// the mod's name, then its version.
+    #[arg(long)]
+    mods: Option<PathBuf>,
 
     /// Where worlds are kept. Defaults to the per-user data directory.
     #[arg(long)]
@@ -269,6 +274,8 @@ async fn run(command: Command) -> Result<()> {
         } => {
             let options = options(&server).await?;
             let (client, mut events) = connect(options.clone()).await?;
+            let content = game.manifest()?;
+            client.declare_content(content.clone()).await?;
             let password = password.map(Text::new).transpose().context("password")?;
             let (invite, room) = client
                 .create_room(CreateRoom {
@@ -281,7 +288,7 @@ async fn run(command: Command) -> Result<()> {
                 .await?;
             println!("invite: {invite}");
             print_room(&room);
-            get_ready(&client, &game).await?;
+            get_ready(&client).await?;
             if let Some(players) = start_with {
                 start_when_ready(&client, &mut events, players).await?;
             }
@@ -289,7 +296,7 @@ async fn run(command: Command) -> Result<()> {
                 options,
                 invite,
                 password,
-                content: Some(game.fingerprint()?),
+                content: Some(content),
                 give_up_after: REJOIN_PATIENCE,
             };
             play(client, events, &game, rejoin).await?;
@@ -303,21 +310,30 @@ async fn run(command: Command) -> Result<()> {
         } => {
             let invite: Invite = invite.parse()?;
             let options = options(&server).await?;
-            let (client, events) = connect(options.clone()).await?;
+            let (client, mut events) = connect(options.clone()).await?;
             let password = password.map(Text::new).transpose().context("password")?;
-            let content = game.fingerprint()?;
-            let room = client
+            let content = game.manifest()?;
+            client.declare_content(content.clone()).await?;
+            let joined = client
                 .join_room(JoinRoom {
                     invite: invite.clone(),
                     password: password.clone(),
                     resume: None,
-                    content: Some(content),
                 })
-                .await?;
+                .await;
+            let room = match joined {
+                Err(ClientError::Refused(RequestError::ContentMismatch)) => {
+                    match refused_diff(&mut events).await {
+                        Some(diff) => anyhow::bail!("your game differs from the room's: {diff}"),
+                        None => anyhow::bail!("{}", RequestError::ContentMismatch),
+                    }
+                }
+                joined => joined?,
+            };
             print_room(&room);
             // A running game was joined as it is; a lobby wants readiness.
             if room.phase == RoomPhase::Lobby {
-                get_ready(&client, &game).await?;
+                get_ready(&client).await?;
             }
             let rejoin = Rejoin {
                 options,
@@ -347,7 +363,8 @@ async fn launch(args: LauncherArgs) -> Result<()> {
     let remembered = Remembered::load(&remember);
     let game = Game {
         game_link: Some(args.game_link.clone()),
-        content: args.content.clone(),
+        game_build: args.game_build.clone(),
+        mods: args.mods.clone(),
         worlds: args.worlds.clone(),
         worlds_gib: args.worlds_gib,
     };
@@ -362,7 +379,7 @@ async fn launch(args: LauncherArgs) -> Result<()> {
             .name
             .or(remembered.name)
             .unwrap_or_else(|| "player".to_owned()),
-        content: game.fingerprint()?,
+        content: game.manifest()?,
         link: args.game_link.clone(),
         worlds: game.open_worlds(&args.game_link)?,
         room_settings: RoomSettings::DEFAULT,
@@ -401,11 +418,27 @@ fn open_browser(url: &str) {
 /// server, for example while it restarts.
 const REJOIN_PATIENCE: Duration = Duration::from_secs(300);
 
-/// Declares this player's content and readiness.
-async fn get_ready(client: &Client, game: &Game) -> Result<()> {
-    client.declare_content(game.fingerprint()?).await?;
+/// Says this player is ready. What the game runs was declared on
+/// connecting; the room says if it differs.
+async fn get_ready(client: &Client) -> Result<()> {
     client.set_ready(true).await?;
     Ok(())
+}
+
+/// How the game differs from a room that refused it, if the room says so
+/// within a second.
+async fn refused_diff(events: &mut Events) -> Option<ContentDiff> {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(event) = events.recv().await {
+            if let ClientEvent::ContentDiff(diff) = event {
+                return diff;
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Waits until `players` members are in the room and ready, then starts.
@@ -420,6 +453,9 @@ async fn start_when_ready(client: &Client, events: &mut Events, players: usize) 
                     println!("game started");
                     return Ok(());
                 }
+            }
+            Some(ClientEvent::ContentDiff(Some(diff))) => {
+                println!("a player's game differs from yours: {diff}");
             }
             Some(ClientEvent::Closed(reason)) => anyhow::bail!("disconnected: {reason}"),
             Some(_) => {}

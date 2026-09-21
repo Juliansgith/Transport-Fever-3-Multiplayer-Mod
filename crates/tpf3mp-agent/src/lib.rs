@@ -3,6 +3,7 @@
 //! link to the in-game hook builds on this (see `docs/ARCHITECTURE.md`).
 
 pub mod bridge;
+pub mod content;
 mod follower;
 pub mod launcher;
 mod playout;
@@ -30,10 +31,10 @@ use tpf3mp_net::{
     write_message, write_preamble,
 };
 use tpf3mp_proto::{
-    CONTROL_MAX_FRAME, ChatText, ClientMessage, ContentFingerprint, CreateRoom, GameMessage, Hello,
-    IntentRejection, Invite, JoinRoom, LaneDigest, PROTOCOL_VERSION, Payload, Platform, PlayerId,
-    RejectReason, Request, RequestError, Response, RoomView, SavedWorld, ServerMessage, SnapshotId,
-    Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, Welcome,
+    CONTROL_MAX_FRAME, ChatText, ClientMessage, ContentDiff, ContentManifest, CreateRoom,
+    GameMessage, Hello, IntentRejection, Invite, JoinRoom, LaneDigest, PROTOCOL_VERSION, Payload,
+    Platform, PlayerId, RejectReason, Request, RequestError, Response, RoomView, SavedWorld,
+    ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, Welcome,
 };
 
 pub use follower::{Action, FollowError, TurnFollower};
@@ -237,6 +238,9 @@ pub enum ClientEvent {
         from: PlayerId,
         text: ChatText,
     },
+    /// How this player's game differs from the room's, or `None` once it
+    /// no longer does.
+    ContentDiff(Option<ContentDiff>),
     /// The connection ended.
     Closed(quinn::ConnectionError),
 }
@@ -597,7 +601,9 @@ impl Client {
         self.done(Request::SetReady(ready)).await
     }
 
-    pub async fn declare_content(&self, content: ContentFingerprint) -> Result<(), ClientError> {
+    /// Declares what this player's game runs: for this connection, and to
+    /// the room it is in. A running game can only be joined after this.
+    pub async fn declare_content(&self, content: ContentManifest) -> Result<(), ClientError> {
         self.done(Request::DeclareContent(content)).await
     }
 
@@ -784,6 +790,7 @@ async fn read_control(
             ServerMessage::Kicked => ClientEvent::Kicked,
             ServerMessage::Upload { event, snapshot } => ClientEvent::Upload { event, snapshot },
             ServerMessage::Chat { from, text } => ClientEvent::Chat { from, text },
+            ServerMessage::ContentDiff(diff) => ClientEvent::ContentDiff(diff),
             ServerMessage::Welcome(_) | ServerMessage::Reject(_) => {
                 connection.close(close::PROTOCOL_VIOLATION, b"unexpected handshake message");
                 break;

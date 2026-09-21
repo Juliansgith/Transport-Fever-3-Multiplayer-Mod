@@ -10,8 +10,8 @@ use tokio::{sync::oneshot, task::JoinHandle};
 use tpf3mp_agent::{Action, Client, ClientEvent, ConnectOptions, Events, TurnFollower, connect};
 use tpf3mp_net::{Identity, ServerIdentity, ServerTrust, client_config};
 use tpf3mp_proto::{
-    ContentFingerprint, CreateRoom, Event, FixedBytes, IntentRejection, Invite, JoinRoom,
-    LaneDigest, PlayerId, RoomSettings, RoomView, Text, TurnStart,
+    ContentDiff, ContentManifest, CreateRoom, Event, IntentRejection, Invite, JoinRoom, LaneDigest,
+    ModRef, PlayerId, RoomSettings, RoomView, Text, TurnStart,
 };
 use tpf3mp_server::{Server, ServerConfig, ServerStats};
 
@@ -127,8 +127,25 @@ pub fn new_identity() -> Arc<Identity> {
     Arc::new(Identity::generate().unwrap().0)
 }
 
-pub fn content(value: u8) -> ContentFingerprint {
-    ContentFingerprint(FixedBytes([value; 32]))
+/// A game of build `build-<value>` without mods.
+pub fn content(value: u8) -> ContentManifest {
+    ContentManifest::new(Text::new(format!("build-{value}")).unwrap(), Vec::new())
+}
+
+/// A game of build `build-1` running `mods`, each `name version`.
+pub fn modded(mods: &[&str]) -> ContentManifest {
+    ContentManifest::new(
+        Text::new("build-1").unwrap(),
+        mods.iter()
+            .map(|line| {
+                let (id, version) = line.split_once(' ').unwrap();
+                ModRef {
+                    id: Text::new(id).unwrap(),
+                    version: Text::new(version).unwrap(),
+                }
+            })
+            .collect(),
+    )
 }
 
 pub fn room(name: &str, settings: RoomSettings) -> CreateRoom {
@@ -146,7 +163,6 @@ pub fn join(invite: &Invite) -> JoinRoom {
         invite: invite.clone(),
         password: None,
         resume: None,
-        content: None,
     }
 }
 
@@ -164,6 +180,16 @@ pub struct TestClient {
 }
 
 impl TestClient {
+    /// The next word from the room on how this player's content differs,
+    /// discarding other events.
+    pub async fn content_diff(&mut self) -> Option<ContentDiff> {
+        self.wait_for(|event| match event {
+            ClientEvent::ContentDiff(diff) => Some(diff),
+            _ => None,
+        })
+        .await
+    }
+
     /// Waits for the first event `pick` accepts, discarding the others. Only
     /// for tests that do not follow the turn stream.
     pub async fn wait_for<T>(&mut self, mut pick: impl FnMut(ClientEvent) -> Option<T>) -> T {
@@ -294,6 +320,7 @@ impl Player {
             ClientEvent::Diverged { step, lanes } => self.diverged.push((step, lanes)),
             ClientEvent::Upload { .. } => {}
             ClientEvent::Chat { from, text } => self.chat.push((from, text.as_str().to_owned())),
+            ClientEvent::ContentDiff(_) => {}
             ClientEvent::Kicked => self.kicked = true,
             ClientEvent::Closed(_) => self.closed = true,
         }

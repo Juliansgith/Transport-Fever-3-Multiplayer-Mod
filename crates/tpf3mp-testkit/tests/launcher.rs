@@ -16,10 +16,11 @@ use tpf3mp_agent::{
     launcher::{Launcher, LauncherConfig},
 };
 use tpf3mp_net::{Identity, ServerIdentity, ServerTrust};
-use tpf3mp_proto::{ContentFingerprint, FixedBytes, RoomSettings};
+use tpf3mp_proto::{ContentManifest, ModRef, RoomSettings, Text};
 use tpf3mp_server::{Server, ServerConfig, SnapshotConfig};
 use tpf3mp_testkit::{
     fake_hook::{self, FakeHookConfig},
+    scenario::toy_content,
     toy::toy_rules_menu,
 };
 
@@ -71,7 +72,7 @@ impl Page {
 
     /// Waits until the page's state satisfies `done`.
     async fn wait_for(&self, what: &str, done: impl Fn(&Value) -> bool) -> Value {
-        tokio::time::timeout(WAIT, async {
+        let found = tokio::time::timeout(WAIT, async {
             loop {
                 let state = self.state().await;
                 if done(&state) {
@@ -80,8 +81,14 @@ impl Page {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+        .await;
+        match found {
+            Ok(state) => state,
+            Err(_) => panic!(
+                "timed out waiting for {what}; the page shows {}",
+                self.state().await
+            ),
+        }
     }
 }
 
@@ -128,7 +135,7 @@ fn launcher_config(
         trust: trust.clone(),
         identity,
         name: name.into(),
-        content: ContentFingerprint(FixedBytes([0x70; 32])),
+        content: toy_content(),
         link: format!("tpf3mp-launcher-{}-{name}", std::process::id()),
         worlds: Worlds::open(&root.join(name), 1 << 30).unwrap(),
         room_settings: RoomSettings {
@@ -251,6 +258,53 @@ async fn two_players_play_a_room_from_their_launchers() {
         invite.starts_with(&format!("{server_address} TPF3MP1.")),
         "the invite names its server: {invite}"
     );
+
+    // Cat's game runs a mod the room does not: Cat's page says which, and
+    // Ann's page shows that Cat's game differs. Cat leaves again.
+    let mut cat_config = launcher_config(
+        root.path(),
+        "cat",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    cat_config.content = ContentManifest::new(
+        toy_content().game,
+        vec![ModRef {
+            id: Text::new("trains").unwrap(),
+            version: Text::new("1.2").unwrap(),
+        }],
+    );
+    let cat = Launcher::start(cat_config).await.unwrap();
+    let cat_page = Page::of(&cat);
+    cat_page
+        .act(json!({ "action": "connect", "server": invite, "name": "Cat" }))
+        .await;
+    let state = cat_page
+        .wait_for("Cat hearing how the game differs", |state| {
+            state["content_diff"].is_object()
+        })
+        .await;
+    assert_eq!(state["content_diff"]["extra"], json!(["trains 1.2"]));
+    assert_eq!(
+        state["content_diff"]["summary"],
+        "the room lacks trains 1.2"
+    );
+    ann_page
+        .wait_for("Cat's game marked as different", |state| {
+            state["room"]["members"]
+                .as_array()
+                .is_some_and(|members| members.iter().any(|m| m["content"] == "differs"))
+        })
+        .await;
+    cat_page.act(json!({ "action": "leave" })).await;
+    ann_page
+        .wait_for("Cat gone", |state| {
+            state["room"]["members"]
+                .as_array()
+                .is_some_and(|members| members.len() == 1)
+        })
+        .await;
+    drop(cat);
 
     // Bob pastes Ann's whole invite where the server goes: connected and
     // joined in one step.

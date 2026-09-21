@@ -109,17 +109,34 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
 - **Updates.** Members receive the full room view (`RoomUpdate`) whenever it
   changes. Updates and responses are independent messages: a `RoomUpdate`
   caused by a request can arrive before that request's `Response`.
-- **Starting.** In the lobby, members declare their **content fingerprint**
-  (game build plus mod set digest) and toggle **ready**. The owner can start
-  the game only when every member is ready and all fingerprints are equal.
+- **Content.** A client declares what its game runs with `DeclareContent`,
+  once per connection, before joining a running game: a `ContentManifest`
+  of the game's build and its active mods in load order, each a name of up
+  to 96 bytes and a version of up to 32. A manifest lists at most 2,048
+  mods within 48 KiB; `ContentManifest::new` summarises the mods beyond
+  those by their count and a digest (`Unlisted`), and the server refuses
+  a larger one (`InvalidContent`). The server derives the **content
+  fingerprint** from the manifest, a SHA-256 that is equal only for the
+  same build and the same mods in the same order, and rooms compare those.
+  A room tells each member whose content differs from its own (the owner's
+  in the lobby, the game's once it runs) how, with `ContentDiff`: the
+  builds if they differ, the mods the member lacks, the mods the room
+  lacks, and the mods both run in other versions, naming up to 32 of each
+  and counting the rest. It says so again whenever that changes, and sends
+  `ContentDiff(None)` once the member matches. The game's manifest is kept
+  in its log, so a restored game can still say how a newcomer differs.
+- **Starting.** In the lobby, members declare their content and toggle
+  **ready**. The owner can start the game only when every member is ready
+  and all fingerprints are equal.
 - **The first world.** On a server that keeps snapshots, the owner's world
   is everyone's: the owner's game loads it, the room saves it before the
   first step, and every other player loads that save (see "Snapshots").
   Worlds generated separately on each machine could differ between
   platforms. Everyone still holds the clock until loaded. Without
   snapshots, every player loads the same world locally.
-- **Joining a running game.** A newcomer names its content fingerprint in
-  `JoinRoom`, and it must equal the game's. Every replica sees
+- **Joining a running game.** A newcomer's declared content must equal the
+  game's; otherwise the room sends it a `ContentDiff` and refuses the join
+  with `ContentMismatch`. Every replica sees
   `PlayerJoined` at one step, and the newcomer receives the room's world to
   load (see "Snapshots"). Only a server that keeps snapshots allows this;
   others answer `GameRunning`.

@@ -1,7 +1,9 @@
 //! What the page reads (the state, as JSON) and what it asks (actions).
 
 use serde::{Deserialize, Serialize};
-use tpf3mp_proto::{Arch, FixedBytes, Os, Platform, PlayerId, RoomPhase, RulesOffer};
+use tpf3mp_proto::{
+    Arch, ContentDiff, FixedBytes, ModRef, Os, Platform, PlayerId, RoomPhase, RulesOffer,
+};
 
 use crate::bridge::{Status, WorldStatus};
 
@@ -71,9 +73,66 @@ struct State<'a> {
     tunneled: bool,
     error: Option<&'a str>,
     room: Option<Room>,
+    /// How this player's game differs from the room's, while it does.
+    content_diff: Option<Differences>,
     game: Game,
     chat: Vec<Chat>,
     notices: Vec<&'a str>,
+}
+
+#[derive(Serialize)]
+struct Differences {
+    /// All of it in a sentence.
+    summary: String,
+    /// The room's build and this player's, when they differ.
+    game: Option<(String, String)>,
+    missing: Vec<String>,
+    missing_more: u32,
+    extra: Vec<String>,
+    extra_more: u32,
+    /// Mod, the room's version, this player's.
+    changed: Vec<(String, String, String)>,
+    changed_more: u32,
+    reordered: bool,
+    unlisted: bool,
+}
+
+impl Differences {
+    fn of(diff: &ContentDiff) -> Self {
+        let named = |mods: &[ModRef]| -> Vec<String> {
+            mods.iter()
+                .map(|listed| format!("{} {}", listed.id, listed.version))
+                .collect()
+        };
+        let more = |total: u32, listed: usize| {
+            total.saturating_sub(u32::try_from(listed).unwrap_or(u32::MAX))
+        };
+        Self {
+            summary: diff.to_string(),
+            game: diff
+                .game
+                .as_ref()
+                .map(|builds| (builds.room.to_string(), builds.yours.to_string())),
+            missing: named(&diff.missing),
+            missing_more: more(diff.missing_total, diff.missing.len()),
+            extra: named(&diff.extra),
+            extra_more: more(diff.extra_total, diff.extra.len()),
+            changed: diff
+                .changed
+                .iter()
+                .map(|change| {
+                    (
+                        change.id.to_string(),
+                        change.room.to_string(),
+                        change.yours.to_string(),
+                    )
+                })
+                .collect(),
+            changed_more: more(diff.changed_total, diff.changed.len()),
+            reordered: diff.reordered,
+            unlisted: diff.unlisted,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -103,6 +162,9 @@ struct Member {
     connected: bool,
     owner: bool,
     you: bool,
+    /// Whether this member's game matches the owner's: "same", "differs",
+    /// or "unknown" before the member or the owner declared it.
+    content: &'static str,
 }
 
 #[derive(Serialize)]
@@ -132,11 +194,13 @@ pub(crate) fn render(view: &View, status: &Status) -> String {
     } else {
         "disconnected"
     };
-    let room = status
-        .room
-        .as_ref()
-        .filter(|_| view.in_room)
-        .map(|room| Room {
+    let room = status.room.as_ref().filter(|_| view.in_room).map(|room| {
+        let owners = room
+            .members
+            .iter()
+            .find(|member| member.player == room.owner)
+            .and_then(|owner| owner.content);
+        Room {
             name: room.name.as_str().to_owned(),
             rules: room.rules.as_str().to_owned(),
             phase: match room.phase {
@@ -158,9 +222,15 @@ pub(crate) fn render(view: &View, status: &Status) -> String {
                     connected: member.connected,
                     owner: member.player == room.owner,
                     you: Some(member.player) == you,
+                    content: match (owners, member.content) {
+                        (Some(owners), Some(theirs)) if owners == theirs => "same",
+                        (Some(_), Some(_)) => "differs",
+                        _ => "unknown",
+                    },
                 })
                 .collect(),
-        });
+        }
+    });
     let (world, bytes, total) = match status.world {
         WorldStatus::None => ("none", 0, 0),
         WorldStatus::Fetching { bytes, total } => ("fetching", bytes, total),
@@ -194,6 +264,7 @@ pub(crate) fn render(view: &View, status: &Status) -> String {
         tunneled: view.connected && view.tunneled,
         error: view.error.as_deref(),
         room,
+        content_diff: status.content_diff.as_ref().map(Differences::of),
         game: Game {
             attached: status.game.clone(),
             world,
@@ -296,6 +367,37 @@ mod tests {
         assert_eq!(parse_player(&format!("p-{hex}")), Some(player));
         assert_eq!(parse_player("abc"), None);
         assert_eq!(parse_player(&"zz".repeat(32)), None);
+    }
+
+    #[test]
+    fn the_state_says_which_mods_differ() {
+        let mods = |list: &[&str]| {
+            tpf3mp_proto::ContentManifest::new(
+                tpf3mp_proto::Text::new("35924").unwrap(),
+                list.iter()
+                    .map(|id| ModRef {
+                        id: tpf3mp_proto::Text::new(*id).unwrap(),
+                        version: tpf3mp_proto::Text::new("1").unwrap(),
+                    })
+                    .collect(),
+            )
+        };
+        let status = Status {
+            content_diff: mods(&["trains", "stations"]).compare(&mods(&["trains", "trees"])),
+            ..Status::default()
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&render(&View::default(), &status)).unwrap();
+        let diff = &json["content_diff"];
+        assert_eq!(diff["missing"], serde_json::json!(["stations 1"]));
+        assert_eq!(diff["extra"], serde_json::json!(["trees 1"]));
+        assert_eq!(
+            diff["summary"],
+            "you lack stations 1; the room lacks trees 1"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&render(&View::default(), &Status::default())).unwrap();
+        assert!(json["content_diff"].is_null());
     }
 
     #[test]

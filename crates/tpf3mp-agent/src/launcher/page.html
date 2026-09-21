@@ -44,6 +44,12 @@
               border-radius: 6px; border: 1px solid var(--line); margin-bottom: 8px; }
   #chat-log div { margin: 2px 0; word-wrap: break-word; }
   #notices div { color: var(--muted); font-size: 13px; }
+  #content-diff { border: 1px solid var(--warn); border-radius: 8px; padding: 10px 12px;
+                  margin-bottom: 12px; }
+  #content-diff h3 { margin: 0 0 6px; font-size: 14px; color: var(--warn); }
+  #content-diff ul { margin: 4px 0 8px 18px; padding: 0; }
+  #content-diff p { margin: 4px 0; }
+  .differs { color: var(--warn); }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -57,6 +63,13 @@
 </header>
 <main>
   <div id="error" class="error hidden"></div>
+
+  <div id="content-diff" class="hidden">
+    <h3>Your game differs from the room's</h3>
+    <div id="content-diff-body"></div>
+    <p class="muted">Everyone needs the room's game build and the same mods, in the same
+      order. Change yours to match, then start the game and the launcher again.</p>
+  </div>
 
   <section id="connect">
     <h2>Server</h2>
@@ -97,7 +110,7 @@
       <button id="copy-button" class="secondary">Copy invite</button>
     </div>
     <table>
-      <thead><tr><th>Player</th><th>Platform</th><th>Ready</th><th></th></tr></thead>
+      <thead><tr><th>Player</th><th>Platform</th><th>Game and mods</th><th>Ready</th><th></th></tr></thead>
       <tbody id="members"></tbody>
     </table>
     <div class="row" style="margin-top: 12px">
@@ -198,6 +211,46 @@ function renderRules(rules) {
   text($("rules-description"), picked ? "Rules: " + picked.name + " — " + picked.description : "");
 }
 
+// What this player must change to play in the room: the build, and the mods
+// to add, remove or update, as the room told it.
+function renderContentDiff(diff) {
+  show("content-diff", !!diff);
+  const body = $("content-diff-body");
+  const key = diff ? JSON.stringify(diff) : "";
+  if (body.dataset.key === key) return;
+  body.dataset.key = key;
+  body.replaceChildren();
+  if (!diff) return;
+  const para = (value) => {
+    const p = document.createElement("p");
+    p.textContent = value;
+    body.appendChild(p);
+  };
+  const list = (title, items, more) => {
+    if (!items.length) return;
+    para(title);
+    const ul = document.createElement("ul");
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.textContent = item;
+      ul.appendChild(li);
+    }
+    if (more > 0) {
+      const li = document.createElement("li");
+      li.textContent = "and " + more + " more";
+      ul.appendChild(li);
+    }
+    body.appendChild(ul);
+  };
+  if (diff.game) para("Game build: the room runs " + diff.game[0] + ", you run " + diff.game[1] + ".");
+  list("Mods you lack:", diff.missing, diff.missing_more);
+  list("Mods the room lacks (turn them off):", diff.extra, diff.extra_more);
+  list("Other versions:", diff.changed.map((c) => c[0] + ": the room has " + c[1] + ", you have " + c[2]),
+    diff.changed_more);
+  if (diff.reordered) para("The same mods load in another order.");
+  if (diff.unlisted) para("The mods beyond the listed ones differ.");
+}
+
 function render(s) {
   state = s;
   const badge = $("connection");
@@ -208,6 +261,8 @@ function render(s) {
   if (s.error) showError(s.error);
   if (!$("server").value && s.server) $("server").value = s.server;
   if (!$("name").value && s.name) $("name").value = s.name;
+
+  renderContentDiff(s.content_diff);
 
   const connected = s.connection === "connected";
   show("connect", !connected && !s.room);
@@ -231,6 +286,9 @@ function render(s) {
       cell(row, member.name + (member.owner ? " ★" : "") + (member.you ? " (you)" : "")
         + (member.connected ? "" : " · away"));
       cell(row, member.platform);
+      const mods = cell(row, member.owner ? "the room's"
+        : { same: "same as the owner's", differs: "differ", unknown: "–" }[member.content]);
+      if (member.content === "differs") mods.className = "differs";
       cell(row, room.phase === "lobby" ? (member.ready ? "✓" : "–") : "");
       const actions = cell(row, "");
       if (room.you_own && !member.you) {

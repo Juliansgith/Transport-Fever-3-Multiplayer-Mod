@@ -337,7 +337,6 @@ async fn a_room_password_cannot_be_guessed_at_line_rate() {
                 invite: invite.clone(),
                 password: Some(Text::new(format!("{pin:04}")).unwrap()),
                 resume: None,
-                content: None,
             }),
         };
         burst.extend(tpf3mp_proto::encode_frame(&request, CONTROL_MAX_FRAME).unwrap());
@@ -645,7 +644,6 @@ async fn turns_lost_in_a_crash_are_not_replaced_under_a_client_that_saw_them() {
             invite: invite.clone(),
             password: None,
             resume: Some(bob_old.follower.as_ref().unwrap().resume_point()),
-            content: None,
         })
         .await;
     assert_eq!(
@@ -680,7 +678,6 @@ async fn turns_lost_in_a_crash_are_not_replaced_under_a_client_that_saw_them() {
             invite,
             password: None,
             resume: ann_resume,
-            content: None,
         })
         .await;
     if resumed.is_ok() {

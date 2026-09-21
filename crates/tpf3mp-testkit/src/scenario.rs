@@ -19,17 +19,17 @@ use tpf3mp_agent::{
 };
 use tpf3mp_ipc::{Config as LinkConfig, Link, Role};
 use tpf3mp_net::{Identity, ServerTrust, tunnel::TunnelUrl};
-use tpf3mp_proto::{
-    ContentFingerprint, CreateRoom, FixedBytes, Invite, JoinRoom, RoomSettings, Speed, Text,
-};
+use tpf3mp_proto::{ContentManifest, CreateRoom, Invite, JoinRoom, RoomSettings, Speed, Text};
 
 use crate::{
     bot::{Bot, BotConfig, BotReport},
     fake_hook::{self, FakeHookConfig, HookReport},
 };
 
-/// Every bot plays the same toy content.
-const TOY_CONTENT: ContentFingerprint = ContentFingerprint(FixedBytes([0x70; 32]));
+/// What every bot plays: the toy game, without mods.
+pub fn toy_content() -> ContentManifest {
+    ContentManifest::new(Text::new("toy").expect("short build name"), Vec::new())
+}
 
 pub struct RoomPlan {
     pub server: SocketAddr,
@@ -123,6 +123,9 @@ async fn seat_and_start(
     let Some((owner, others)) = clients.split_first() else {
         bail!("a room needs at least one player");
     };
+    for client in clients {
+        client.declare_content(toy_content()).await?;
+    }
     let (invite, _) = owner
         .create_room(CreateRoom {
             name: Text::new("testkit").context("room name")?,
@@ -138,12 +141,10 @@ async fn seat_and_start(
                 invite: invite.clone(),
                 password: None,
                 resume: None,
-                content: None,
             })
             .await?;
     }
     for client in clients {
-        client.declare_content(TOY_CONTENT).await?;
         client.set_ready(true).await?;
     }
     owner.start_game().await?;
@@ -233,12 +234,12 @@ pub async fn play_bridged_room(plan: BridgedPlan) -> Result<Vec<HookReport>> {
         let (client, events) = connect(options.clone())
             .await
             .context("connecting a late player")?;
+        client.declare_content(toy_content()).await?;
         client
             .join_room(JoinRoom {
                 invite: invite.clone(),
                 password: None,
                 resume: None,
-                content: Some(TOY_CONTENT),
             })
             .await
             .context("joining the running game")?;
@@ -283,7 +284,7 @@ fn play_through_hook(
         options,
         invite: invite.clone(),
         password: None,
-        content: Some(TOY_CONTENT),
+        content: Some(toy_content()),
         give_up_after: plan.deadline,
     };
     let worlds = match &plan.worlds {
