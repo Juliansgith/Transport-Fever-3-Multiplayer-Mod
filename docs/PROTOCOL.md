@@ -184,6 +184,11 @@ events for `sealed_through + 1` at once, without running a step.
     (20 s by default: long enough for an autosave);
   - it is still loading after the load timeout (5 min).
 
+  Both numbers come from stock-sized TPF2 worlds. On a big map an autosave
+  writes about 1.4 GB and pauses the game for 15-20 s, and a world entry
+  measured 230-290 s ([BIGMAPS.md](BIGMAPS.md)), so a room that allows such
+  maps needs both timeouts scaled to the world.
+
   This way one frozen game, or a client that stops reporting, cannot stop a
   room for good. The member rejoins the pacing set by catching up; nobody is
   kicked. Pausing restarts every member's stall timer.

@@ -22,7 +22,8 @@ waits for the [release-day investigation](docs/DAY_ONE.md).
 The full design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the
 reasoning behind it in [docs/DECISIONS.md](docs/DECISIONS.md), and what a
 build has to carry to replay on another machine in
-[docs/BUILDING.md](docs/BUILDING.md). Players start
+[docs/BUILDING.md](docs/BUILDING.md); what a large world costs to load,
+hold and save is in [docs/BIGMAPS.md](docs/BIGMAPS.md). Players start
 with [docs/PLAYING.md](docs/PLAYING.md); server operators with
 [docs/OPERATIONS.md](docs/OPERATIONS.md).
 

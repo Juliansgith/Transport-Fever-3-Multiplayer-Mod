@@ -285,6 +285,7 @@ gating steps, controlling speed and save/load, and the fast IPC path.
 |---|---|
 | `tf2mod` (TPF2MP) | Authority model, fail-closed rules, canonical identities, station rendezvous, economy model and parity vectors, content fingerprinting, recovery discipline, installer/updater. |
 | `tf2mp-relay` | Credential design, digest-bound lobby state machine, redacted diagnostics and support IDs, hardened container deployment. |
+| `tpf2-bigmap` | The world's layout and its size ceilings, what a load recomputes and where its time and memory go, the fixed-address terrain pager and the bit-identical fast paths, the density and placement model ([BIGMAPS.md](BIGMAPS.md)). |
 | `tpf2-multiplayer` | Step-exact application, pacing and catch-up lessons, lane hashing with adaptive cadence, resync flow, companies as engine players, position-based command encoding, the build intents and their resolution rules ([BUILDING.md](BUILDING.md)), deterministic wrapper for third-party scripts, the `__FUNCSIG__`/RTTI/Ghidra RE pipeline. |
 
 Not carried over:
