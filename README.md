@@ -19,8 +19,10 @@ waits for the [release-day investigation](docs/DAY_ONE.md).
 - **Mixed platforms work.** The design never depends on different game builds
   simulating identically.
 
-The full design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the
-reasoning behind it in [docs/DECISIONS.md](docs/DECISIONS.md). Players start
+The full design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the
+reasoning behind it in [docs/DECISIONS.md](docs/DECISIONS.md), and what a
+build has to carry to replay on another machine in
+[docs/BUILDING.md](docs/BUILDING.md). Players start
 with [docs/PLAYING.md](docs/PLAYING.md); server operators with
 [docs/OPERATIONS.md](docs/OPERATIONS.md).
 

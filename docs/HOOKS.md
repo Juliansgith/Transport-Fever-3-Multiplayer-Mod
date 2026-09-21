@@ -461,7 +461,7 @@ hooks both, and the reason is worth carrying into a TPF3 profile:
 
 | factory | RVA | steal | |
 |---|---|---|---|
-| `BuildProposal` | `0x9dc750` | 19 | roads, track, constructions, terrain, assets, the bulldozer |
+| `BuildProposal` | `0x9dc750` | 19 | roads, track, constructions, terrain, assets, the bulldozer: one command, told apart by the proposal's shape ([BUILDING.md](BUILDING.md)) |
 | `CommandList::Add` | `0x9d2a00` | 18 | the cancel point |
 | `BuyVehicle` | `0x9dca00` | 15 | its UI waits on the result entity |
 | `SellVehicle` | `0x9de380` | 20 | |

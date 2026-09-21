@@ -99,7 +99,9 @@ the hook's Lua bindings once they exist.
    is applied optimistically on the issuing replica and has its residue
    handled fail-closed, as TPF2MP does for line editors. The Lua mod converts
    the capture into a portable intent: positions, resource names and canonical
-   IDs, never machine-local entity IDs.
+   IDs, never machine-local entity IDs. What that intent has to carry for a
+   road, a track, a station or a stop, and how a receiver resolves it against
+   a world with different ids, is in [BUILDING.md](BUILDING.md).
 2. **Validate and order.** The agent sends the intent to the server, which
    checks it against canonical state: role, company, ownership, funds, schema,
    size and rate. The server assigns canonical IDs to anything the intent
@@ -283,7 +285,7 @@ gating steps, controlling speed and save/load, and the fast IPC path.
 |---|---|
 | `tf2mod` (TPF2MP) | Authority model, fail-closed rules, canonical identities, station rendezvous, economy model and parity vectors, content fingerprinting, recovery discipline, installer/updater. |
 | `tf2mp-relay` | Credential design, digest-bound lobby state machine, redacted diagnostics and support IDs, hardened container deployment. |
-| `tpf2-multiplayer` | Step-exact application, pacing and catch-up lessons, lane hashing with adaptive cadence, resync flow, companies as engine players, position-based command encoding, deterministic wrapper for third-party scripts, the `__FUNCSIG__`/RTTI/Ghidra RE pipeline. |
+| `tpf2-multiplayer` | Step-exact application, pacing and catch-up lessons, lane hashing with adaptive cadence, resync flow, companies as engine players, position-based command encoding, the build intents and their resolution rules ([BUILDING.md](BUILDING.md)), deterministic wrapper for third-party scripts, the `__FUNCSIG__`/RTTI/Ghidra RE pipeline. |
 
 Not carried over:
 
