@@ -63,7 +63,8 @@ update the script's lists and run it again.
   - `clippy -D warnings`;
   - the whole test suite;
   - release builds of the binaries players and servers run;
-  - the server container image.
+  - the server container image;
+  - that the launcher page's script parses.
 - **`acceptance`** (`.github/workflows/acceptance.yml`) runs on pushes to
   `acceptance`. It runs optimized load tests on all three platforms, each
   failing on any failed bot or diverged replica:
