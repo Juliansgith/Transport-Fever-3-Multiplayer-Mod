@@ -417,7 +417,7 @@ exactly, consistent with the RE survey's ~88,000 assert-string references found
 in the same on-disk section. On-disk verification is therefore valid *for this
 build*. It is not guaranteed in general - a future build could encrypt `.text` -
 which is why the production resolver scans the in-memory, unpacked module image,
-and why on-disk scanning is documented as a development convenience only.
+and why on-disk scanning is documented as a development convenience only.
 
 ## What a shipped mod hooks on the same build
 
