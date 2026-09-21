@@ -524,6 +524,23 @@ Retention:
   - If saves turn out to be compressed, the options are chunking the
     uncompressed payload (only if the game loads it, or it can be
     recompressed bit-exactly) or accepting full transfers.
+  - **TPF2's answer is the bad case.** A TPF2 `.sav` is one zstd stream over
+    the whole serializer payload: the tile counts are read by decompressing
+    the stream and finding the `tf**` header, and the serializer pushes a
+    single zstd compressor (level 3, a 128-byte input buffer) over the save
+    stream (tpf2-bigmap, `docs/save-performance.md`). Chunking the file as
+    written would share almost nothing between two saves of one world. The
+    escape is also measured: the game loads any valid zstd encoding of the
+    payload (saves written at level 1 through the patched compressor loaded
+    and played), so the payload can be chunked decompressed and recompressed
+    by the receiver, with no bit-exact requirement. If TPF3 keeps the
+    serializer, expect the same.
+- **Sizes on a large world.** The 50-500 MB range holds for stock maps. On a
+  big-map world (see [BIGMAPS.md](BIGMAPS.md)) a save was 1.4 GB over a
+  2.56 GB payload, autosaves took 20 s at level 3, and a 1.5 GB save was
+  transferred in play. At 128 KiB/s the upload deadline formula in
+  [PROTOCOL.md](PROTOCOL.md) allows about three hours for such a file
+  before its 90-minute cap; the cap is what applies.
 - **Measured on synthetic data.** The parameters and compression level should
   be rechecked with real saves. Retuning needs no protocol change.
 - **Ingest is single-threaded** and compression-bound at about 300 MiB/s.
