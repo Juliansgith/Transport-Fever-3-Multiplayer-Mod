@@ -119,6 +119,7 @@ tpf3mp-server ─ identity, rooms, lobby, sequencer and turn seals, canonical
 | `tpf3mp-net` | QUIC endpoints, TLS configuration, framed stream I/O. |
 | `tpf3mp-server` | The dedicated server. |
 | `tpf3mp-agent` | The client daemon next to the game. |
+| `tpf3mp-launcher` | The players' window over the agent's launcher backend, with its log files and signed self-updates. |
 | `tpf3mp-hook` | In-game native library per platform. **[needs game]** |
 | `tpf3mp-testkit` | Toy deterministic game, bots and network emulator for integration and load tests (milestone M1). |
 
@@ -126,10 +127,15 @@ Everything is Rust. The hook and agent talk through a small shared-memory ABI,
 never the network protocol, so the hook stays small and independently
 testable.
 
-Players drive the agent from the launcher, a page it serves on the loopback
-interface (`tpf3mp-agent launcher`): connecting, rooms, readiness, chat and
-the game's progress. An in-game interface can use the same actions through
-the hook's Lua bindings once they exist.
+Players drive the agent from the launcher: a native window
+(`tpf3mp-launcher`, egui) that runs the agent's launcher backend in the
+same process, or the same backend as a page served on the loopback
+interface (`tpf3mp-agent launcher`, also the window's fallback where no
+window can open). Both show one `State` and send one set of `Action`s:
+connecting, rooms, readiness, chat and the game's progress. An in-game
+interface can use the same actions through the hook's Lua bindings once
+they exist. The window logs to daily files and updates the package it came
+in from signed GitHub releases (DECISIONS.md, D7).
 
 ## Authority and data flow
 

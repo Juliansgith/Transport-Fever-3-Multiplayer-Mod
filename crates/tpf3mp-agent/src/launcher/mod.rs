@@ -1,7 +1,10 @@
-//! The launcher: a page in the player's browser from which they connect,
-//! create or join a room, get ready, chat and play, with this agent doing
-//! the work. It is the launcher backend of `docs/ARCHITECTURE.md`; an
-//! in-game interface can drive the same actions later.
+//! The launcher: where the player connects, creates or joins a room, gets
+//! ready, chats and plays, with this agent doing the work. It is the
+//! launcher backend of `docs/ARCHITECTURE.md`. Front ends read its
+//! [`State`] and send it [`Action`]s: the native window of the
+//! `tpf3mp-launcher` crate through a [`LauncherHandle`], or a page in the
+//! player's browser (`Launcher::start`); an in-game interface can drive the
+//! same actions later.
 //!
 //! The page is served on the loopback interface only. Every API request
 //! carries a secret token that only the launched page knows, and requests
@@ -10,6 +13,7 @@
 
 mod api;
 mod http;
+pub mod setup;
 
 use std::{
     fs,
@@ -32,8 +36,11 @@ use tpf3mp_proto::{
 };
 use tracing::{info, warn};
 
-pub use self::api::Action;
-use self::api::View;
+pub use self::api::{
+    Action, ChatLine, Connection, Differences, Game, Member, MemberContent, Phase, Room,
+    RulesChoice, State, World,
+};
+use self::{api::View, http::Page};
 use crate::{
     Client, ClientError, ClientEvent, ConnectOptions, Events, TunnelChoice, Worlds,
     bridge::{self, Bridge, BridgeEnd, BridgeOptions, Control, Rejoin, SharedStatus, Status},
@@ -74,7 +81,9 @@ pub struct LauncherConfig {
 
 /// A running launcher.
 pub struct Launcher {
-    url: String,
+    /// The page's address, when it serves one.
+    url: Option<String>,
+    shared: Arc<Shared>,
     task: JoinHandle<()>,
 }
 
@@ -89,34 +98,47 @@ impl Launcher {
         }
         let listener = TcpListener::bind(config.listen).await?;
         let address = listener.local_addr()?;
-        let token = random_token();
-        let (actions, actions_rx) = mpsc::channel(ACTION_QUEUE);
-        let shared = Arc::new(Shared {
-            token: token.clone(),
+        let page = Arc::new(Page {
+            token: random_token(),
             address,
-            view: Mutex::new(View {
-                server: config.server.clone(),
-                name: config.name.clone(),
-                player: Some(config.identity.player()),
-                ..View::default()
-            }),
-            status: SharedStatus::default(),
-            actions,
         });
-        let control = tokio::spawn(control(Arc::clone(&shared), config, actions_rx));
-        let serve = tokio::spawn(http::serve(listener, Arc::clone(&shared)));
+        let url = format!("http://{address}/#{}", page.token);
+        let (shared, actions) = Shared::new(&config);
+        let control = tokio::spawn(control(Arc::clone(&shared), config, actions));
+        let serve = tokio::spawn(http::serve(listener, Arc::clone(&shared), page));
         let task = tokio::spawn(async move {
             let _ = tokio::join!(control, serve);
         });
         Ok(Self {
-            url: format!("http://{address}/#{token}"),
+            url: Some(url),
+            shared,
             task,
         })
     }
 
-    /// The page's address, with the token it needs.
-    pub fn url(&self) -> &str {
-        &self.url
+    /// Starts the launcher without a page, for a front end in this process
+    /// that drives it through [`Launcher::handle`]. Call it within a Tokio
+    /// runtime.
+    pub fn start_local(config: LauncherConfig) -> Self {
+        let (shared, actions) = Shared::new(&config);
+        let task = tokio::spawn(control(Arc::clone(&shared), config, actions));
+        Self {
+            url: None,
+            shared,
+            task,
+        }
+    }
+
+    /// The page's address, with the token it needs, if it serves one.
+    pub fn url(&self) -> Option<&str> {
+        self.url.as_deref()
+    }
+
+    /// Reads the launcher's state and sends it actions.
+    pub fn handle(&self) -> LauncherHandle {
+        LauncherHandle {
+            shared: Arc::clone(&self.shared),
+        }
     }
 
     /// Runs until the task ends, which it does only if both halves stop.
@@ -131,16 +153,58 @@ impl Drop for Launcher {
     }
 }
 
-/// What the page's requests and the controller share.
+/// A front end's way into a running launcher.
+#[derive(Clone)]
+pub struct LauncherHandle {
+    shared: Arc<Shared>,
+}
+
+impl LauncherHandle {
+    /// Carries out `action` after those sent before it. A refusal is also
+    /// kept in the state's `error` until an action succeeds.
+    pub async fn act(&self, action: Action) -> Result<(), String> {
+        let (reply, answer) = oneshot::channel();
+        self.shared
+            .actions
+            .send((action, reply))
+            .await
+            .map_err(|_| "the launcher stopped".to_owned())?;
+        answer
+            .await
+            .unwrap_or_else(|_| Err("the launcher stopped".to_owned()))
+    }
+
+    /// What the launcher shows now.
+    pub fn state(&self) -> State {
+        api::snapshot(&self.shared.view(), &self.shared.status())
+    }
+}
+
+type Actions = mpsc::Receiver<(Action, oneshot::Sender<Result<(), String>>)>;
+
+/// What the front ends and the controller share.
 pub(crate) struct Shared {
-    token: String,
-    address: SocketAddr,
     view: Mutex<View>,
     status: SharedStatus,
     actions: mpsc::Sender<(Action, oneshot::Sender<Result<(), String>>)>,
 }
 
 impl Shared {
+    fn new(config: &LauncherConfig) -> (Arc<Self>, Actions) {
+        let (actions, receiver) = mpsc::channel(ACTION_QUEUE);
+        let shared = Arc::new(Self {
+            view: Mutex::new(View {
+                server: config.server.clone(),
+                name: config.name.clone(),
+                player: Some(config.identity.player()),
+                ..View::default()
+            }),
+            status: SharedStatus::default(),
+            actions,
+        });
+        (shared, receiver)
+    }
+
     fn view(&self) -> std::sync::MutexGuard<'_, View> {
         self.view.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -165,11 +229,7 @@ struct Session {
 }
 
 /// Carries out the page's actions, one at a time, and keeps the view.
-async fn control(
-    shared: Arc<Shared>,
-    config: LauncherConfig,
-    mut actions: mpsc::Receiver<(Action, oneshot::Sender<Result<(), String>>)>,
-) {
+async fn control(shared: Arc<Shared>, config: LauncherConfig, mut actions: Actions) {
     let mut connected: Option<Connected> = None;
     let mut session: Option<Session> = None;
     loop {
@@ -179,9 +239,7 @@ async fn control(
                     return;
                 };
                 let result = act(&shared, &config, action, &mut connected, &mut session).await;
-                if let Err(error) = &result {
-                    shared.view().error = Some(error.clone());
-                }
+                shared.view().error = result.as_ref().err().cloned();
                 let _ = reply.send(result);
             }
             ended = session_end(&mut session) => {

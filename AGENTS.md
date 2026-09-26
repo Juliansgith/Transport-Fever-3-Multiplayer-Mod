@@ -75,8 +75,11 @@ update the script's lists and run it again.
   - a 15-minute soak on Linux.
 - **Manual acceptance**, before promoting to `main`, for changes they
   touch:
-  - the launcher, used by hand against a local server: connect, create a
-    room, join by invite, play (see [docs/PLAYING.md](docs/PLAYING.md));
+  - the launcher window, used by hand against a local server: connect,
+    create a room, join by invite, play (see
+    [docs/PLAYING.md](docs/PLAYING.md)). `cargo test -p tpf3mp-launcher
+    --test screenshots -- --ignored` renders its screens to
+    `target/launcher-screenshots/` for a look at the layout;
   - a server upgrade that keeps running games (see "Upgrades" in
     [docs/OPERATIONS.md](docs/OPERATIONS.md)), when the log format, the
     protocol or persistence changed;

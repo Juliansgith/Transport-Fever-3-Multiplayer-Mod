@@ -122,3 +122,35 @@ Rejected:
 - **Changing rules mid-game.** The rules' state and the log would have to be
   converted. A new room is the way to switch.
 
+## D7 (2026-09-26): a native launcher window that updates itself from signed releases
+
+Players start TPF3-MP from a native window on Windows, Linux and macOS,
+drawn with egui (`eframe`), in place of a page in their browser. The window
+runs the agent's launcher backend in its own process; the page remains, as
+`tpf3mp-agent launcher` and as the window's fallback on systems where no
+window can open.
+
+- **One program, one window.** No browser tab to keep open, no console on
+  Windows, and closing the window during a game asks first.
+- **Rust and one code base.** egui builds on all three platforms with the
+  same crates as the rest; its UI is tested headless through AccessKit
+  (`egui_kittest`), and screens can be rendered to images for review.
+- **Updates are signed.** The launcher downloads the latest published
+  release and installs it only if its manifest carries an Ed25519
+  signature from the project's key, names a newer version, and describes
+  the package byte for byte (SHA-256). The private key is a repository
+  secret, the public half is built into every launcher. A launcher built
+  without the key never updates. An update never interrupts a game: it
+  installs when the player chooses or at the next start, and a failed
+  install puts the old files back.
+
+Rejected:
+
+- **Tauri or another web view.** A web page in a native frame: still the
+  browser engine, now shipped or required per platform (WebView2,
+  WebKitGTK), and a second language for the UI.
+- **Qt or GTK.** C++ or C libraries to build and ship on three platforms,
+  against D1.
+- **Unsigned updates over HTTPS.** Anyone who could publish a release, or
+  replace an asset, would run code on every player's machine.
+

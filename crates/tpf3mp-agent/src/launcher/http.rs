@@ -12,7 +12,7 @@
 //! - The page may not be framed, and its content security policy lets it
 //!   talk to this server only.
 
-use std::{io, sync::Arc, time::Duration};
+use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -45,8 +45,15 @@ const SECURITY_HEADERS: &str = "Cache-Control: no-store\r\n\
     style-src 'unsafe-inline'; connect-src 'self'; img-src data:; \
     frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n";
 
+/// What the page is served under: its address, and the token its API
+/// requests must carry.
+pub(crate) struct Page {
+    pub(crate) token: String,
+    pub(crate) address: SocketAddr,
+}
+
 /// Serves the page and its API for as long as the launcher runs.
-pub(crate) async fn serve(listener: TcpListener, shared: Arc<Shared>) {
+pub(crate) async fn serve(listener: TcpListener, shared: Arc<Shared>, page: Arc<Page>) {
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
         let Ok(slot) = Arc::clone(&slots).acquire_owned().await else {
@@ -61,8 +68,9 @@ pub(crate) async fn serve(listener: TcpListener, shared: Arc<Shared>) {
             }
         };
         let shared = Arc::clone(&shared);
+        let page = Arc::clone(&page);
         tokio::spawn(async move {
-            let _ = tokio::time::timeout(REQUEST_TIMEOUT, answer(stream, &shared)).await;
+            let _ = tokio::time::timeout(REQUEST_TIMEOUT, answer(stream, &shared, &page)).await;
             drop(slot);
         });
     }
@@ -108,11 +116,11 @@ impl Response {
     }
 }
 
-async fn answer(mut stream: TcpStream, shared: &Shared) -> io::Result<()> {
+async fn answer(mut stream: TcpStream, shared: &Shared, page: &Page) -> io::Result<()> {
     let Some(request) = read_request(&mut stream).await? else {
         return Ok(());
     };
-    let response = respond(&request, shared).await;
+    let response = respond(&request, shared, page).await;
     let head = format!(
         "HTTP/1.1 {}\r\nContent-Type: {}; charset=utf-8\r\nContent-Length: {}\r\n{SECURITY_HEADERS}Connection: close\r\n\r\n",
         response.status,
@@ -191,8 +199,8 @@ async fn read_request(stream: &mut TcpStream) -> io::Result<Option<Request>> {
 }
 
 /// Answers a request.
-pub(crate) async fn respond(request: &Request, shared: &Shared) -> Response {
-    let port = shared.address.port();
+pub(crate) async fn respond(request: &Request, shared: &Shared, page: &Page) -> Response {
+    let port = page.address.port();
     let host_ok = request.header("host").is_some_and(|host| {
         [
             format!("127.0.0.1:{port}"),
@@ -213,14 +221,14 @@ pub(crate) async fn respond(request: &Request, shared: &Shared) -> Response {
             body: PAGE.to_owned(),
         },
         ("GET", "/api/state") => {
-            if !authorized(request, shared) {
+            if !authorized(request, page) {
                 return Response::error("401 Unauthorized", "missing or wrong token");
             }
             let body = api::render(&shared.view(), &shared.status());
             Response::json("200 OK", body)
         }
         ("POST", "/api/action") => {
-            if !authorized(request, shared) {
+            if !authorized(request, page) {
                 return Response::error("401 Unauthorized", "missing or wrong token");
             }
             let Ok(action) = serde_json::from_slice::<api::Action>(&request.body) else {
@@ -241,11 +249,11 @@ pub(crate) async fn respond(request: &Request, shared: &Shared) -> Response {
 }
 
 /// Whether the request carries the token, compared in constant time.
-fn authorized(request: &Request, shared: &Shared) -> bool {
+fn authorized(request: &Request, page: &Page) -> bool {
     let Some(token) = request.header(TOKEN_HEADER) else {
         return false;
     };
-    let (given, expected) = (token.as_bytes(), shared.token.as_bytes());
+    let (given, expected) = (token.as_bytes(), page.token.as_bytes());
     given.len() == expected.len()
         && given
             .iter()

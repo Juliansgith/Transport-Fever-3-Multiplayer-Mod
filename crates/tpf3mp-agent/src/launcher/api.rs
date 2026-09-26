@@ -1,4 +1,5 @@
-//! What the page reads (the state, as JSON) and what it asks (actions).
+//! What a launcher front end shows ([`State`]) and what it asks for
+//! ([`Action`]): the web page as JSON, the native window as Rust values.
 
 use serde::{Deserialize, Serialize};
 use tpf3mp_proto::{
@@ -28,7 +29,7 @@ pub(crate) struct View {
     pub(crate) error: Option<String>,
 }
 
-/// Something the page asks for.
+/// Something the player asks for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
@@ -65,42 +66,70 @@ pub enum Action {
     Leave,
 }
 
-#[derive(Serialize)]
-struct State<'a> {
-    name: &'a str,
-    player: Option<String>,
-    server: Option<&'a str>,
-    server_version: Option<&'a str>,
+/// Everything a launcher front end shows: the web page reads it as JSON,
+/// the native window as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct State {
+    pub name: String,
+    /// This player's short ID, as others see it.
+    pub player: Option<String>,
+    pub server: Option<String>,
+    pub server_version: Option<String>,
     /// What the player quotes to the server's operator: the connection's
     /// name in the server's log.
-    support_id: Option<String>,
-    rules: Vec<Rules<'a>>,
-    connection: &'static str,
-    tunneled: bool,
-    error: Option<&'a str>,
-    room: Option<Room>,
+    pub support_id: Option<String>,
+    /// The rules the server offers new rooms, the default first.
+    pub rules: Vec<RulesChoice>,
+    pub connection: Connection,
+    /// The connection runs through a tunnel, not over UDP.
+    pub tunneled: bool,
+    /// What went wrong last, until something succeeds.
+    pub error: Option<String>,
+    pub room: Option<Room>,
     /// How this player's game differs from the room's, while it does.
-    content_diff: Option<Differences>,
-    game: Game,
-    chat: Vec<Chat>,
-    notices: Vec<&'a str>,
+    pub content_diff: Option<Differences>,
+    pub game: Game,
+    pub chat: Vec<ChatLine>,
+    /// What the player should know, oldest first.
+    pub notices: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct Differences {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Connection {
+    #[default]
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RulesChoice {
+    pub name: String,
+    pub description: String,
+}
+
+/// How this player's game differs from the room's, ready to show.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Differences {
     /// All of it in a sentence.
-    summary: String,
+    pub summary: String,
     /// The room's build and this player's, when they differ.
-    game: Option<(String, String)>,
-    missing: Vec<String>,
-    missing_more: u32,
-    extra: Vec<String>,
-    extra_more: u32,
+    pub game: Option<(String, String)>,
+    /// Mods the room runs and this player does not, as "name version".
+    pub missing: Vec<String>,
+    /// How many more there are than `missing` names.
+    pub missing_more: u32,
+    /// Mods this player runs and the room does not.
+    pub extra: Vec<String>,
+    pub extra_more: u32,
     /// Mod, the room's version, this player's.
-    changed: Vec<(String, String, String)>,
-    changed_more: u32,
-    reordered: bool,
-    unlisted: bool,
+    pub changed: Vec<(String, String, String)>,
+    pub changed_more: u32,
+    /// The same mods, loaded in another order.
+    pub reordered: bool,
+    /// The mods beyond the listed ones differ.
+    pub unlisted: bool,
 }
 
 impl Differences {
@@ -141,64 +170,89 @@ impl Differences {
     }
 }
 
-#[derive(Serialize)]
-struct Rules<'a> {
-    name: &'a str,
-    description: &'a str,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Room {
+    pub name: String,
+    pub rules: String,
+    pub phase: Phase,
+    /// What to send friends: the server and the room's invite.
+    pub invite: Option<String>,
+    pub you_own: bool,
+    pub max_players: u8,
+    pub has_password: bool,
+    pub members: Vec<Member>,
 }
 
-#[derive(Serialize)]
-struct Room {
-    name: String,
-    rules: String,
-    phase: &'static str,
-    invite: Option<String>,
-    you_own: bool,
-    max_players: u8,
-    has_password: bool,
-    members: Vec<Member>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Lobby,
+    Running,
 }
 
-#[derive(Serialize)]
-struct Member {
-    id: String,
-    name: String,
-    platform: String,
-    ready: bool,
-    connected: bool,
-    owner: bool,
-    you: bool,
-    /// Whether this member's game matches the owner's: "same", "differs",
-    /// or "unknown" before the member or the owner declared it.
-    content: &'static str,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Member {
+    /// The player's full key, which [`Action::Kick`] takes.
+    pub id: String,
+    pub name: String,
+    pub platform: String,
+    pub ready: bool,
+    pub connected: bool,
+    pub owner: bool,
+    pub you: bool,
+    /// Whether this member's game matches the owner's.
+    pub content: MemberContent,
 }
 
-#[derive(Serialize)]
-struct Game {
-    attached: Option<String>,
-    world: &'static str,
-    bytes: u64,
-    total: u64,
-    step: Option<u64>,
-    speed: u16,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberContent {
+    Same,
+    Differs,
+    /// The member or the owner has not declared theirs.
+    Unknown,
 }
 
-#[derive(Serialize)]
-struct Chat {
-    from: String,
-    text: String,
-    you: bool,
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Game {
+    /// The game's build, once its hook attached.
+    pub attached: Option<String>,
+    pub world: World,
+    /// While fetching: bytes received of `total`.
+    pub bytes: u64,
+    pub total: u64,
+    /// The last step the game ran.
+    pub step: Option<u64>,
+    /// The room's speed in percent; 0 is paused.
+    pub speed: u16,
 }
 
-/// The state the page shows, as JSON.
-pub(crate) fn render(view: &View, status: &Status) -> String {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum World {
+    #[default]
+    None,
+    Fetching,
+    Loading,
+    Playing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChatLine {
+    pub from: String,
+    pub text: String,
+    pub you: bool,
+}
+
+/// What the launcher shows now.
+pub(crate) fn snapshot(view: &View, status: &Status) -> State {
     let you = view.player;
     let connection = if view.connected {
-        "connected"
+        Connection::Connected
     } else if view.connecting {
-        "connecting"
+        Connection::Connecting
     } else {
-        "disconnected"
+        Connection::Disconnected
     };
     let room = status.room.as_ref().filter(|_| view.in_room).map(|room| {
         let owners = room
@@ -210,8 +264,8 @@ pub(crate) fn render(view: &View, status: &Status) -> String {
             name: room.name.as_str().to_owned(),
             rules: room.rules.as_str().to_owned(),
             phase: match room.phase {
-                RoomPhase::Lobby => "lobby",
-                RoomPhase::Running => "running",
+                RoomPhase::Lobby => Phase::Lobby,
+                RoomPhase::Running => Phase::Running,
             },
             invite: view.invite.clone(),
             you_own: Some(room.owner) == you,
@@ -229,19 +283,19 @@ pub(crate) fn render(view: &View, status: &Status) -> String {
                     owner: member.player == room.owner,
                     you: Some(member.player) == you,
                     content: match (owners, member.content) {
-                        (Some(owners), Some(theirs)) if owners == theirs => "same",
-                        (Some(_), Some(_)) => "differs",
-                        _ => "unknown",
+                        (Some(owners), Some(theirs)) if owners == theirs => MemberContent::Same,
+                        (Some(_), Some(_)) => MemberContent::Differs,
+                        _ => MemberContent::Unknown,
                     },
                 })
                 .collect(),
         }
     });
     let (world, bytes, total) = match status.world {
-        WorldStatus::None => ("none", 0, 0),
-        WorldStatus::Fetching { bytes, total } => ("fetching", bytes, total),
-        WorldStatus::Loading => ("loading", 0, 0),
-        WorldStatus::Playing => ("playing", 0, 0),
+        WorldStatus::None => (World::None, 0, 0),
+        WorldStatus::Fetching { bytes, total } => (World::Fetching, bytes, total),
+        WorldStatus::Loading => (World::Loading, 0, 0),
+        WorldStatus::Playing => (World::Playing, 0, 0),
     };
     let name_of = |player: &PlayerId| {
         status
@@ -253,11 +307,11 @@ pub(crate) fn render(view: &View, status: &Status) -> String {
                 |member| member.name.as_str().to_owned(),
             )
     };
-    let state = State {
-        name: &view.name,
+    State {
+        name: view.name.clone(),
         player: you.map(|player| player.to_string()),
-        server: view.server.as_deref(),
-        server_version: view.server_version.as_deref(),
+        server: view.server.clone(),
+        server_version: view.server_version.clone(),
         support_id: status
             .session
             .map(|session| session.to_string())
@@ -266,14 +320,14 @@ pub(crate) fn render(view: &View, status: &Status) -> String {
         rules: view
             .rules
             .iter()
-            .map(|offer| Rules {
-                name: offer.name.as_str(),
-                description: offer.description.as_str(),
+            .map(|offer| RulesChoice {
+                name: offer.name.as_str().to_owned(),
+                description: offer.description.as_str().to_owned(),
             })
             .collect(),
         connection,
         tunneled: view.connected && view.tunneled,
-        error: view.error.as_deref(),
+        error: view.error.clone(),
         room,
         content_diff: status.content_diff.as_ref().map(Differences::of),
         game: Game {
@@ -287,15 +341,19 @@ pub(crate) fn render(view: &View, status: &Status) -> String {
         chat: status
             .chat
             .iter()
-            .map(|(from, text)| Chat {
+            .map(|(from, text)| ChatLine {
                 from: name_of(from),
                 text: text.as_str().to_owned(),
                 you: Some(*from) == you,
             })
             .collect(),
-        notices: status.notices.iter().map(String::as_str).collect(),
-    };
-    serde_json::to_string(&state).unwrap_or_else(|_| "{}".to_owned())
+        notices: status.notices.iter().cloned().collect(),
+    }
+}
+
+/// The state the page shows, as JSON.
+pub(crate) fn render(view: &View, status: &Status) -> String {
+    serde_json::to_string(&snapshot(view, status)).unwrap_or_else(|_| "{}".to_owned())
 }
 
 /// A player's full key as 64 hex digits, as the page names players.

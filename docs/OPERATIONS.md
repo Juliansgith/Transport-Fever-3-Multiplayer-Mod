@@ -281,8 +281,10 @@ uploads it.
 ## Releases
 
 `.github/workflows/release.yml` builds the player's package for Windows x64,
-Linux x64 and macOS arm64: the agent with its launcher, the in-game hook
-library and the server, plus a script that opens the launcher.
+Linux x64 and macOS arm64: the launcher window (`TPF3-MP.exe`,
+`TPF3-MP.app`, `tpf3mp-launcher`), the command-line agent, the in-game hook
+library and the server. The Linux package is built on Ubuntu 22.04, so it
+runs on distributions with an older C library too.
 
 - **Cutting one.** Every push to `main`, which only receives what passed
   `acceptance` (see [AGENTS.md](../AGENTS.md)), builds the packages and
@@ -293,9 +295,28 @@ library and the server, plus a script that opens the launcher.
 - **The server players see first.** Set the repository variable
   `TPF3MP_DEFAULT_SERVER` (Settings, Secrets and variables, Actions,
   Variables) to the public server's `host:port`, and the packages' launcher
-  offers it (`--default-server`) until a player has connected elsewhere;
-  the launcher remembers each player's last server and name. The packages
-  also carry `PLAYING.md`.
+  offers it until a player has connected elsewhere; the launcher remembers
+  each player's last server and name. It is built into the launcher, so a
+  player only starts it. The packages also carry `PLAYING.md`.
+- **Updates.** The launcher installs a release only if it is signed with
+  the project's update key. Create the key once, on a trusted machine:
+
+  ```sh
+  openssl genpkey -algorithm ed25519 -out tpf3mp-update-key.pem
+  openssl pkey -in tpf3mp-update-key.pem -pubout -outform DER | tail -c 32 | base64
+  ```
+
+  Put the whole `.pem` file in the repository secret
+  `TPF3MP_UPDATE_SIGNING_KEY`, and the line the second command prints in
+  the variable `TPF3MP_UPDATE_PUBLIC_KEY`. Keep a copy of the `.pem`
+  offline. The release workflow then builds the public key into every
+  launcher, and signs each release's `release.json` (per platform: the
+  package's name, size and SHA-256) as `release.json.sig`. Launchers check
+  the latest published release, never a draft, and install it only if the
+  signature verifies, its version is newer than theirs and the package
+  matches. Without the key, releases are not offered to updaters, and
+  launchers built without it never update. Losing or changing the key
+  means players download the next version by hand once.
 - **Building without releasing.** Run the workflow by hand. The packages
   stay workflow artifacts, but the repository is public, so anyone can
   download them.
