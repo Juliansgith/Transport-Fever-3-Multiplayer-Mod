@@ -254,6 +254,24 @@ the payload may wrap around the end of the buffer.
   that sees `session` change knows the rings were reset and drops anything in
   flight, then re-syncs from the new generation.
 
+### Several games on one PC
+
+By default the hook opens the link `tpf3mp.default`, the agent's and
+launcher's default `--game-link`, and keeps its log (`hook.log`) and build
+profiles (`profiles/*.toml`) in the per-user `TPF3-MP` data folder. Two
+variables in the game's environment change both, so several games on one
+PC each reach their own agent:
+
+| variable | effect |
+|---|---|
+| `TPF3MP_GAME_LINK` | the link name to open, matching that agent's `--game-link` |
+| `TPF3MP_DATA_DIR` | the folder for the hook's log and profiles |
+
+An unset or empty variable keeps the default. `tpf3mp-fakegame` reads
+`TPF3MP_GAME_LINK` too, when no link is given on its command line. The
+multiplayer rig (`tpf3mp-rig`, in the README's "Development") sets both for
+every game it starts.
+
 ## The bridge: what travels over the link
 
 `tpf3mp-bridge` defines the messages, postcard-encoded, one per ring frame,

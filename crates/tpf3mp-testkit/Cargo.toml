@@ -16,7 +16,8 @@ quinn.workspace = true
 ring.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+# Games run as child processes of the rig.
+tokio = { workspace = true, features = ["process"] }
 tpf3mp-agent.workspace = true
 tpf3mp-bridge.workspace = true
 tpf3mp-ipc.workspace = true

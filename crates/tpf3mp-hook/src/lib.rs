@@ -28,8 +28,17 @@ use tpf3mp_ipc::{Link, Role};
 
 mod platform;
 
-/// The shared-memory link name the agent publishes. Both ends must agree.
+/// The shared-memory link name the agent publishes by default. Both ends
+/// must agree.
 pub const AGENT_IPC_NAME: &str = "tpf3mp.default";
+
+/// Names the link this game opens instead of [`AGENT_IPC_NAME`], for
+/// several games on one PC, each with its own agent (`--game-link`).
+pub const LINK_ENV: &str = "TPF3MP_GAME_LINK";
+
+/// Puts the hook's data directory (its log and profiles) here instead of
+/// the per-user one, for several games on one PC.
+pub const DATA_DIR_ENV: &str = "TPF3MP_DATA_DIR";
 
 /// Application name used for the per-user data directory.
 const APP_DIR: &str = "TPF3-MP";
@@ -56,17 +65,18 @@ pub fn bootstrap() {
         }
     }
 
-    match Link::open(AGENT_IPC_NAME, Role::Hook) {
+    let link_name = link_name();
+    match Link::open(&link_name, Role::Hook) {
         Ok(link) => {
             link.heartbeat();
             log.line(&format!(
-                "connected to agent IPC (abi {}, session {:#010x}, agent pid {})",
+                "connected to agent IPC {link_name:?} (abi {}, session {:#010x}, agent pid {})",
                 link.abi_version(),
                 link.session(),
                 link.peer_pid()
             ));
         }
-        Err(error) => log.line(&format!("agent IPC not present: {error}")),
+        Err(error) => log.line(&format!("agent IPC {link_name:?} not present: {error}")),
     }
 
     log.line("hook bootstrap complete");
@@ -173,7 +183,20 @@ pub fn select_profile<'a>(
         .find(|profile| profile.verify_identity(identity).is_ok())
 }
 
-/// The per-user data directory for logs and profiles.
+/// The name of the link to the agent: [`LINK_ENV`] when set, otherwise
+/// [`AGENT_IPC_NAME`].
+pub fn link_name() -> String {
+    link_name_from(|key| std::env::var(key).ok())
+}
+
+fn link_name_from(get: impl Fn(&str) -> Option<String>) -> String {
+    get(LINK_ENV)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| AGENT_IPC_NAME.to_owned())
+}
+
+/// The data directory for logs and profiles: [`DATA_DIR_ENV`] when set,
+/// otherwise the per-user one.
 pub fn data_dir() -> Option<PathBuf> {
     data_dir_from(|key| std::env::var(key).ok())
 }
@@ -181,6 +204,9 @@ pub fn data_dir() -> Option<PathBuf> {
 /// Resolves the data directory from an environment getter, so the mapping can
 /// be tested without touching the real environment.
 fn data_dir_from(get: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    if let Some(dir) = get(DATA_DIR_ENV).filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
     #[cfg(windows)]
     {
         get("LOCALAPPDATA").map(|base| PathBuf::from(base).join(APP_DIR))
@@ -292,6 +318,26 @@ prologue = "40 53"
     #[test]
     fn data_dir_is_none_without_the_environment() {
         assert!(data_dir_from(|_| None).is_none());
+    }
+
+    #[test]
+    fn data_dir_and_link_can_be_set_per_game() {
+        let env = HashMap::from([
+            (DATA_DIR_ENV, "/rig/p2".to_string()),
+            (LINK_ENV, "rig-p2".to_string()),
+            ("LOCALAPPDATA", "C:/Users/x/AppData/Local".to_string()),
+            ("HOME", "/home/x".to_string()),
+        ]);
+        let get = |key: &str| env.get(key).cloned();
+        assert_eq!(data_dir_from(get), Some(PathBuf::from("/rig/p2")));
+        assert_eq!(link_name_from(get), "rig-p2");
+
+        // Unset or empty, the defaults hold.
+        let empty = HashMap::from([(DATA_DIR_ENV, String::new()), (LINK_ENV, String::new())]);
+        let get = |key: &str| empty.get(key).cloned();
+        assert_eq!(link_name_from(get), AGENT_IPC_NAME);
+        assert_eq!(link_name_from(|_| None), AGENT_IPC_NAME);
+        assert!(data_dir_from(get).is_none());
     }
 
     #[test]
