@@ -195,6 +195,8 @@ async fn run(args: Args) -> Result<ExitCode> {
             identity,
             name: name.clone(),
             content: content.clone(),
+            // The rig's players run the fake game, not one Steam installed.
+            installed: None,
             link: link.clone(),
             worlds,
             room_settings,
