@@ -237,6 +237,18 @@ fn a_launcher_older_than_the_server_says_where_to_get_the_new_one() {
 }
 
 #[test]
+fn the_operators_notice_stands_out() {
+    let window = window(State {
+        name: "Ann".into(),
+        connection: Connection::Connected,
+        announcement: Some("Restarting for an update in 5 minutes".into()),
+        ..State::default()
+    });
+    window.get_by_label("From the server:");
+    window.get_by_label("Restarting for an update in 5 minutes");
+}
+
+#[test]
 fn chat_is_sent_to_the_room() {
     let mut window = window(in_room(vec![member("Ann", true, true, false)], true));
     let chat = window.get_by_role_and_label(Role::TextInput, "Message");

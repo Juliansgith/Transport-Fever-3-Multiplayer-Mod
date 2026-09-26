@@ -254,6 +254,8 @@ pub enum ClientEvent {
     /// How this player's game differs from the room's, or `None` once it
     /// no longer does.
     ContentDiff(Option<ContentDiff>),
+    /// The server's operator says something to everyone connected.
+    Notice(ChatText),
     /// The connection ended.
     Closed(quinn::ConnectionError),
 }
@@ -804,6 +806,7 @@ async fn read_control(
             ServerMessage::Upload { event, snapshot } => ClientEvent::Upload { event, snapshot },
             ServerMessage::Chat { from, text } => ClientEvent::Chat { from, text },
             ServerMessage::ContentDiff(diff) => ClientEvent::ContentDiff(diff),
+            ServerMessage::Notice(text) => ClientEvent::Notice(text),
             ServerMessage::Welcome(_) | ServerMessage::Reject(_) => {
                 connection.close(close::PROTOCOL_VIOLATION, b"unexpected handshake message");
                 break;

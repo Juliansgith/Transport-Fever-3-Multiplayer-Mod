@@ -68,6 +68,8 @@ your own machine, in the tab the launcher opened.
 
 The **Game** part of the window follows your game: downloading the room's
 world, loading it, and playing. **Chat** reaches everyone in the room.
+A message **From the server** is its operator's, such as a restart coming:
+when the server comes back, the launcher rejoins by itself.
 **Notices** tell you what happened, such as your world being replaced by
 the room's, or your connection coming back.
 

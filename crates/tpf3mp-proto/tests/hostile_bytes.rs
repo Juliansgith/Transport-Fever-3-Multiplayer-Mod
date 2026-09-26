@@ -221,6 +221,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             from: player(1),
             text: Text::new("gg").unwrap(),
         },
+        ServerMessage::Notice(Text::new("Restarting for an update in 5 minutes").unwrap()),
         ServerMessage::ContentDiff(
             ContentManifest::new(Text::new("35925").unwrap(), Vec::new()).compare(&manifest()),
         ),

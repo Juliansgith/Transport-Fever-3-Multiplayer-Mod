@@ -97,6 +97,11 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   bytes). Every member hears it, the sender too, so everyone sees one
   conversation. A player may send one message a second, with a burst of
   five.
+- **The operator's notices.** The server sends `Notice` (up to 280 bytes)
+  to every connected client, in a room or not, when its operator announces
+  something, such as a restart coming (`POST /announce` on the admin
+  endpoint, see OPERATIONS.md). A client whose queue is full misses it
+  rather than holding the others up.
 - **Kicking.** The owner can remove another player (`Kick`), for example
   one whose game froze. The player receives `Kicked` and leaves as if they
   had chosen to; in a running game every replica sees `PlayerLeft` at one

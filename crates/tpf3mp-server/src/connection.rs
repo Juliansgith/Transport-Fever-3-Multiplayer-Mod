@@ -22,9 +22,9 @@ use tpf3mp_net::{
 };
 use tpf3mp_proto::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkResponse, CONTROL_MAX_FRAME,
-    ClientMessage, GameMessage, Hello, IntentRejection, MAX_CHECKPOINT_LANES, PROTOCOL_VERSION,
-    PlayerId, Reject, RejectReason, Request, RequestError, Response, ServerMessage, SessionId,
-    TURN_MAX_FRAME, TurnMessage, TurnStart, Welcome,
+    ChatText, ClientMessage, GameMessage, Hello, IntentRejection, MAX_CHECKPOINT_LANES,
+    PROTOCOL_VERSION, PlayerId, Reject, RejectReason, Request, RequestError, Response,
+    ServerMessage, SessionId, TURN_MAX_FRAME, TurnMessage, TurnStart, Welcome,
 };
 use tracing::{debug, info};
 
@@ -315,6 +315,10 @@ impl Client {
             link: self.link.id,
             rooms: self.rooms.subscribe(),
         }));
+        let notices = tokio::spawn(forward_announcements(
+            self.shared.announcements.subscribe(),
+            self.link.control.clone(),
+        ));
         if let Err(violation) = self.serve(&mut recv).await {
             debug!(player = %self.player, %violation, "closing a client that broke the protocol");
             metrics::increment(&self.shared.metrics.protocol_violations);
@@ -330,9 +334,10 @@ impl Client {
         control_writer.abort();
         turn_writer.abort();
         bulk.abort();
+        notices.abort();
         // Each holds the connection, and with it the server's socket: the
         // connection's task ends only once they have.
-        let _ = tokio::join!(control_writer, turn_writer, bulk);
+        let _ = tokio::join!(control_writer, turn_writer, bulk, notices);
     }
 
     /// Enters or leaves a room, and returns the room left.
@@ -824,4 +829,23 @@ async fn refuse(send: &mut SendStream, open: BulkOpen) -> Result<(), BulkError> 
 
 async fn transfer_permit(snapshots: &Snapshots) -> Option<OwnedSemaphorePermit> {
     Arc::clone(&snapshots.transfers).acquire_owned().await.ok()
+}
+
+/// Passes the operator's notices to this client. A notice that finds the
+/// client's queue full is skipped rather than waited for: it is advice,
+/// and the queue carries the game.
+async fn forward_announcements(
+    mut announcements: tokio::sync::broadcast::Receiver<ChatText>,
+    control: mpsc::Sender<ServerMessage>,
+) {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        match announcements.recv().await {
+            Ok(text) => {
+                let _ = control.try_send(ServerMessage::Notice(text));
+            }
+            Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => return,
+        }
+    }
 }

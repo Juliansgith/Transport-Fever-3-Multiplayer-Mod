@@ -1,6 +1,8 @@
-//! The admin endpoint: Prometheus metrics at `/metrics` and a health check at
-//! `/healthz`, over plain HTTP. It has no authentication, so it must only
-//! listen on a private address: loopback, or a VPN interface.
+//! The admin endpoint: Prometheus metrics at `/metrics`, a health check at
+//! `/healthz`, and `POST /announce`, which tells everyone connected the
+//! request's body (up to 280 bytes of UTF-8), over plain HTTP. It has no
+//! authentication, so it must only listen on a private address: loopback,
+//! or a VPN interface.
 
 use std::{sync::Arc, time::Duration};
 
@@ -10,6 +12,8 @@ use tokio::{
     sync::Semaphore,
 };
 use tracing::warn;
+
+use tpf3mp_proto::ChatText;
 
 use crate::ServerStats;
 
@@ -57,8 +61,32 @@ async fn answer(mut stream: TcpStream, stats: &ServerStats) -> std::io::Result<(
         }
         head.extend_from_slice(&chunk[..read]);
     }
+    let end = head
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map_or(head.len(), |at| at + 4);
     let request_line = head.split(|byte| *byte == b'\r').next().unwrap_or_default();
     let (status, content_type, body) = match request_line {
+        b"POST /announce HTTP/1.1" | b"POST /announce HTTP/1.0" => {
+            match read_body(&mut stream, &head[..end], head[end..].to_vec()).await? {
+                Some(text) => match ChatText::new(text.trim()) {
+                    Ok(text) if !text.as_str().is_empty() => {
+                        let told = stats.announce(text);
+                        ("200 OK", "text/plain", format!("told {told} connections\n"))
+                    }
+                    _ => (
+                        "400 Bad Request",
+                        "text/plain",
+                        "the notice must be 1 to 280 bytes of printable text\n".to_owned(),
+                    ),
+                },
+                None => (
+                    "400 Bad Request",
+                    "text/plain",
+                    "send the notice as the body, with a Content-Length\n".to_owned(),
+                ),
+            }
+        }
         b"GET /metrics HTTP/1.1" | b"GET /metrics HTTP/1.0" => (
             "200 OK",
             "text/plain; version=0.0.4",
@@ -75,4 +103,37 @@ async fn answer(mut stream: TcpStream, stats: &ServerStats) -> std::io::Result<(
     );
     stream.write_all(response.as_bytes()).await?;
     stream.shutdown().await
+}
+
+/// The request's body as UTF-8, read to its `Content-Length`, of at most a
+/// kilobyte: a notice is a line.
+async fn read_body(
+    stream: &mut TcpStream,
+    head: &[u8],
+    mut body: Vec<u8>,
+) -> std::io::Result<Option<String>> {
+    const MAX_BODY: usize = 1024;
+    let head = String::from_utf8_lossy(head);
+    let Some(length) = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    }) else {
+        return Ok(None);
+    };
+    if length > MAX_BODY {
+        return Ok(None);
+    }
+    let mut chunk = [0; 512];
+    while body.len() < length {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(None);
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    body.truncate(length);
+    Ok(String::from_utf8(body).ok())
 }

@@ -24,7 +24,11 @@ use tpf3mp_net::{
     ServerIdentity, TlsError, close,
     tunnel::{MuxSocket, Tunnels},
 };
-use tpf3mp_proto::Text;
+use tpf3mp_proto::{ChatText, Text};
+
+/// Operator notices a slow connection may fall behind by before it skips
+/// the oldest.
+const ANNOUNCEMENTS: usize = 16;
 
 pub use crate::{
     admin::serve_admin,
@@ -193,6 +197,8 @@ pub(crate) struct Shared {
     pub(crate) metrics: Arc<Metrics>,
     pub(crate) snapshots: Option<Arc<Snapshots>>,
     pub(crate) tunnels: Option<Arc<Tunnels>>,
+    /// The operator's notices, which every connection passes to its client.
+    pub(crate) announcements: tokio::sync::broadcast::Sender<ChatText>,
 }
 
 impl Shared {
@@ -288,6 +294,7 @@ impl Server {
             metrics,
             snapshots,
             tunnels,
+            announcements: tokio::sync::broadcast::channel(ANNOUNCEMENTS).0,
         });
         let capacity = config.max_sessions.saturating_add(config.max_handshakes);
         Ok(Self {
@@ -423,6 +430,13 @@ impl ServerStats {
 
     pub fn sessions(&self) -> usize {
         self.shared.max_sessions - self.shared.sessions.available_permits()
+    }
+
+    /// Tells everyone connected `text`, such as a restart coming. Returns
+    /// how many connections were told.
+    pub fn announce(&self, text: ChatText) -> usize {
+        tracing::info!(%text, "announcing to everyone connected");
+        self.shared.announcements.send(text).unwrap_or(0)
     }
 
     /// Every counter and gauge in the Prometheus text format.

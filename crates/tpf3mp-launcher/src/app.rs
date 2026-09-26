@@ -187,6 +187,15 @@ impl<B: Backend> LauncherApp<B> {
         if state.outdated {
             self.outdated(ui);
         }
+        if let Some(text) = &state.announcement {
+            let accent = ui.visuals().hyperlink_color;
+            notice_frame(ui, accent, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("From the server:").strong().color(accent));
+                    ui.label(text);
+                });
+            });
+        }
         if let Some(error) = &state.error {
             notice_frame(ui, ui.visuals().error_fg_color, |ui| {
                 ui.label(RichText::new(error).color(ui.visuals().error_fg_color));

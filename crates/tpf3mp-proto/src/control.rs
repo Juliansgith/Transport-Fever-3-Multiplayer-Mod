@@ -64,6 +64,9 @@ pub enum ServerMessage {
     /// How this player's game differs from the room's, sent whenever that
     /// changes, and before a refused join. `None`: it no longer differs.
     ContentDiff(Option<ContentDiff>),
+    /// A message from the server's operator to everyone connected, such as
+    /// a restart coming.
+    Notice(ChatText),
 }
 
 /// One chat message: a line of text, no longer than a short paragraph.
