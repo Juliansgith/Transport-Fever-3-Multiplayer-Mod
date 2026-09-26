@@ -8,7 +8,12 @@
 //! payload length followed by a postcard-encoded message. A frame above the
 //! stream's cap is a protocol violation. Decoding enforces the bounds of every
 //! field (see [`Text`] and [`Payload`]), so a decoded message is within limits.
+//!
+//! What a player's action carries inside an intent's payload is the
+//! [`action`] schema; the network layer never looks inside it.
 
+pub mod action;
+mod bounded;
 mod bytes;
 mod content;
 mod control;
@@ -20,6 +25,7 @@ mod turn;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
+pub use bounded::{BoundedVec, TooMany};
 pub use bytes::{FixedBytes, MAX_PAYLOAD, Payload, PayloadTooLarge};
 pub use content::{
     ContentDiff, ContentManifest, GameBuilds, MAX_DIFF_LISTED, MAX_LISTED_MODS, MAX_MANIFEST_BYTES,

@@ -154,3 +154,27 @@ Rejected:
 - **Unsigned updates over HTTPS.** Anyone who could publish a release, or
   replace an asset, would run code on every player's machine.
 
+## D8 (2026-09-26): player actions as a typed schema in millimetres, inside the opaque payload
+
+A player action travels as `tpf3mp_proto::action::Action`: positions as
+`i32` millimetres, resources by file name, and things that have no stable
+position (companies, lines, vehicles, stations) by ids the server assigns.
+See "The action schema" in [BUILDING.md](BUILDING.md).
+
+- **Integers, not floats.** The same action is the same bytes on every
+  platform, compares exactly and hashes the same; a millimetre is far below
+  the tolerances replicas match geometry with.
+- **Typed and bounded.** TPF2's text commands were parsed field by field and
+  a mis-parse became a wrong build; here decoding checks every length and
+  every index, so a replica only ever sees a well-formed action.
+- **Its own version, inside the payload.** The network layer relays actions
+  without reading them, so the schema can grow without a protocol change.
+
+Rejected:
+
+- **Floats in metres.** Not bit-identical once converted twice, and a
+  canonical server cannot use them (D2).
+- **Engine entity ids.** They differ between games and are recycled
+  (BUILDING.md).
+- **The TPF2 text format.** Unbounded, untyped, and hand-parsed on both
+  sides.
