@@ -41,10 +41,13 @@ jobs:
           key: release
       # What the release workflow packages, built as it builds it, so an
       # optimized or link-time problem shows before a release is tagged.
-      - run: cargo build --release --locked -p tpf3mp-agent -p tpf3mp-server -p tpf3mp-hook
+      - run: cargo build --release --locked -p tpf3mp-launcher -p tpf3mp-agent -p tpf3mp-server -p tpf3mp-hook
       - name: The binaries start
         shell: bash
         run: |
+          # The launcher is a windowed program: on Windows it prints nothing,
+          # but must still exit cleanly.
+          ./target/release/tpf3mp-launcher --version
           ./target/release/tpf3mp-agent --version
           ./target/release/tpf3mp-server --version
 

@@ -12,24 +12,37 @@ release: this page says so where it applies.
 - The TPF3-MP package for your system, from the project's releases:
   Windows x64, Linux x64 or macOS on Apple silicon. Players on different
   systems can share one room.
-- The address of a TPF3-MP server, such as `tpf3mp.example.org:29470`.
+- The address of a TPF3-MP server, such as `tpf3mp.example.org:29470`,
+  unless your package already offers one.
+
+You do not need to forward any port or open anything on your router: your
+launcher connects out to the server, and everything goes through it.
 
 ## Installing
 
-1. Unpack the package anywhere.
+1. Unpack the package anywhere you can write to, such as your Documents
+   folder: the launcher updates the files in it (see "Updates").
 2. **Into the game: on release.** How the package's game library is put
    next to Transport Fever 3 depends on the released game, and this step is
    described here once it is known.
 
 ## The launcher
 
-Start the launcher from the package: `Launch TPF3-MP.cmd` on Windows,
-`tpf3mp-launcher.sh` on Linux, `tpf3mp-launcher.command` on macOS. It opens
-a page in your browser. Keep its window open while you play: closing it
-ends your session.
+Start the launcher from the package:
 
-The page works only on your own machine, and only in the tab the launcher
-opened: other pages and other programs cannot use it.
+- **Windows:** `TPF3-MP.exe`. The first time, Windows may say it protected
+  your PC from an unknown app: choose **More info**, then **Run anyway**.
+- **macOS:** `TPF3-MP.app`. The first time, macOS may refuse to open an app
+  from an unidentified developer: right-click it, choose **Open**, then
+  **Open** again.
+- **Linux:** `tpf3mp-launcher`. It needs a desktop with Vulkan or OpenGL
+  drivers, as the game does.
+
+It opens the TPF3-MP window. Keep it open while you play: closing it ends
+your session, and during a game it asks first. On a system where the
+window cannot open, the launcher opens the same launcher as a page in your
+browser instead (`--browser` does so on purpose); that page works only on
+your own machine, in the tab the launcher opened.
 
 1. **Server.** Enter the server's address and the name others will see,
    then **Connect**; the launcher remembers both for next time. Got an
@@ -51,10 +64,23 @@ opened: other pages and other programs cannot use it.
 4. **Ready.** Everyone presses **Ready**. The room's owner then presses
    **Start game**. Everyone's game starts from the owner's world.
 
-The **Game** part of the page follows your game: downloading the room's
+The **Game** part of the window follows your game: downloading the room's
 world, loading it, and playing. **Chat** reaches everyone in the room.
 **Notices** tell you what happened, such as your world being replaced by
 the room's, or your connection coming back.
+
+## Updates
+
+The launcher checks for a new version when it starts and every few hours,
+and downloads it in the background. When it is ready, the window says so:
+**Restart and update** installs it and restarts the launcher. During a game
+it waits: the update installs the next time you start TPF3-MP.
+
+The launcher installs only what the TPF3-MP project signed: a download
+whose signature, version or contents do not check out is refused, and a
+failed install puts the old files back. Updates go into the package's
+folder, so unpack it where you can write, not into a protected folder such
+as Program Files.
 
 ## While you play
 
@@ -84,6 +110,13 @@ server.
 
 ## When something does not work
 
+The top of the window shows your **support ID** (**Copy** copies it). It
+names your connection in the server's log: send it to the server's operator
+with your report, and they find exactly what happened to you. **Open logs
+folder**, at the bottom, opens the launcher's own logs
+(`TPF3-MP/logs` in your user data folder, one file a day, a week kept);
+send the latest one too.
+
 - **"the server is out of reach over UDP (...) and through wss://..."**:
   your network blocks both routes, or the server is down. Some school,
   office and hotel networks block the UDP the game uses; the launcher then
@@ -96,7 +129,7 @@ server.
   cost a little more delay.
 - **A version mismatch**: your package and the server are different
   versions. The message says which side is older.
-- **"Your game differs from the room's"**: the page lists what to change:
+- **"Your game differs from the room's"**: the window lists what to change:
   the game build, the mods you lack, the mods the room does not run, and
   the mods you have in another version. Everyone needs the owner's build
   and mods in the same order. In the room, the **Game and mods** column

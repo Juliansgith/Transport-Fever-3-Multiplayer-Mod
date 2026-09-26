@@ -34,7 +34,7 @@ struct Page {
 
 impl Page {
     fn of(launcher: &Launcher) -> Self {
-        let url = launcher.url().strip_prefix("http://").unwrap();
+        let url = launcher.url().unwrap().strip_prefix("http://").unwrap();
         let (address, token) = url.split_once("/#").unwrap();
         Self {
             address: address.parse().unwrap(),
@@ -357,6 +357,86 @@ async fn two_players_play_a_room_from_their_launchers() {
     assert!(state["game"]["attached"].is_string(), "{state}");
 
     drop((ann, bob));
+    let _ = stop.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
+}
+
+/// The native window's path: the launcher in this process, driven through
+/// its handle rather than a page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_window_drives_the_launcher_in_process() {
+    use tpf3mp_agent::launcher::{Action, Connection, Phase};
+
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
+    config.rules = toy_rules_menu();
+    config.max_sessions_per_address = 100;
+    config.max_handshakes_per_address = 100;
+    let server = Server::bind(config).unwrap();
+    let server_address = server.local_addr().unwrap().to_string();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(server.run(async {
+        let _ = stopped.await;
+    }));
+
+    let config = launcher_config(
+        root.path(),
+        "dan",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    let launcher = Launcher::start_local(config);
+    assert_eq!(launcher.url(), None, "no page");
+    let handle = launcher.handle();
+    assert_eq!(handle.state().connection, Connection::Disconnected);
+
+    // A refusal comes back, and stays in the state until something works.
+    let refused = handle
+        .act(Action::Connect {
+            server: server_address.clone(),
+            name: String::new(),
+        })
+        .await;
+    assert!(refused.is_err());
+    assert!(handle.state().error.is_some());
+
+    handle
+        .act(Action::Connect {
+            server: server_address,
+            name: "Dan".into(),
+        })
+        .await
+        .unwrap();
+    let state = handle.state();
+    assert_eq!(state.connection, Connection::Connected);
+    assert_eq!(state.error, None, "cleared by the connection that worked");
+    assert!(
+        state
+            .support_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("s-")),
+        "{state:?}"
+    );
+    assert_eq!(state.rules[0].name, "toy");
+
+    handle
+        .act(Action::Create {
+            room: "window room".into(),
+            max_players: 2,
+            password: None,
+            rules: None,
+        })
+        .await
+        .unwrap();
+    let room = handle.state().room.unwrap();
+    assert_eq!(room.name, "window room");
+    assert_eq!(room.phase, Phase::Lobby);
+    assert!(room.you_own);
+    assert!(room.invite.is_some());
+
+    drop(launcher);
     let _ = stop.send(());
     let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
 }

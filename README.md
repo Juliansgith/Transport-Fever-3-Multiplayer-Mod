@@ -78,11 +78,15 @@ with [docs/PLAYING.md](docs/PLAYING.md); server operators with
   a 150 ms, 2%-loss link agree on every lane, and 400 bots in 50 rooms run
   without a divergence. Fake games join running rooms, get rebased after a
   drift and ride out a server restart, and end in the same world.
-- **Launcher.** `tpf3mp-agent launcher` opens a page in the player's
-  browser to connect, create or join a room, get ready, start, chat, and
-  follow the game: fetching the world, loading, playing. It works the same
-  on Windows, Linux and macOS, serves the loopback interface only, and
-  answers only the page that holds its secret token.
+- **Launcher.** A native window on Windows, Linux and macOS
+  (`tpf3mp-launcher`, drawn with egui) to connect, create or join a room,
+  get ready, start, chat, and follow the game: fetching the world, loading,
+  playing. It shows what to change when a player's mods differ, the support
+  ID the server's log knows the player by, and the logs folder. It updates
+  itself from the project's releases, installing only what the project
+  signed. `tpf3mp-agent launcher` serves the same launcher as a page in the
+  browser, on the loopback interface only, to the page that holds its
+  secret token.
 - **Operations.** Prometheus metrics with alerting rules, a hardened
   container image, a deployment runbook, and measured capacity: a busy room
   costs the server about a three-hundredth of a core. CI builds the release
@@ -103,6 +107,7 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-net` | QUIC endpoints, TLS configuration, identities, framed stream I/O. |
 | `crates/tpf3mp-server` | The dedicated server: rooms, sequencer, verdicts, metrics. |
 | `crates/tpf3mp-agent` | The client library and CLI that run next to the game. |
+| `crates/tpf3mp-launcher` | The launcher window, its logs and its updater. |
 | `crates/tpf3mp-snapshot` | Deduplicated storage and transfer of world saves. |
 | `crates/tpf3mp-hookcore` | Signatures, per-build profiles and the detour engine. |
 | `crates/tpf3mp-ipc` | The shared-memory link between the hook and the agent. |
@@ -138,11 +143,14 @@ In production, the server takes a real certificate (`--cert`, `--key`), and
 agents verify it against the public certificate authorities. See
 [docs/OPERATIONS.md](docs/OPERATIONS.md) for deployment.
 
-Or use the launcher, which opens a page in your browser:
+Or use the launcher window:
 
 ```sh
-cargo run -p tpf3mp-agent -- launcher --server 127.0.0.1:29470 --pin-cert runtime/dev-cert.der --name ann
+cargo run -p tpf3mp-launcher -- --server 127.0.0.1:29470 --pin-cert runtime/dev-cert.der --name ann
 ```
+
+(`tpf3mp-agent launcher` with the same options serves it as a page in the
+browser instead.)
 
 Try a room by hand with two agents:
 

@@ -1,10 +1,16 @@
 name: release
 
-# Builds the player's package for every platform: the agent (with its
-# launcher), the in-game hook library and the server. Runs by hand, which
+# Builds the player's package for every platform: the launcher window, the
+# agent, the in-game hook library and the server. Runs by hand, which
 # leaves the packages as workflow artifacts, or on a push to `main`, the
 # release branch (see AGENTS.md), which also attaches them to a draft
 # release of the workspace's version, to review before publishing.
+#
+# Repository settings it reads (Settings, Secrets and variables, Actions):
+# - variable TPF3MP_DEFAULT_SERVER: the server the launcher offers first;
+# - variable TPF3MP_UPDATE_PUBLIC_KEY and secret TPF3MP_UPDATE_SIGNING_KEY:
+#   the key pair updates are signed with (docs/OPERATIONS.md, "Releases").
+#   Without them the launcher never updates itself.
 on:
   workflow_dispatch:
   push:
@@ -44,62 +50,70 @@ jobs:
         include:
           - name: windows-x64
             os: windows-latest
+          # The oldest supported Ubuntu, so the binaries also run on
+          # distributions with an older C library.
           - name: linux-x64
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - name: macos-arm64
             os: macos-latest
     runs-on: ${{ matrix.os }}
+    env:
+      # Built into the launcher: the server it offers first, the key its
+      # updates must be signed with, and where it looks for them.
+      TPF3MP_DEFAULT_SERVER: ${{ vars.TPF3MP_DEFAULT_SERVER }}
+      TPF3MP_UPDATE_PUBLIC_KEY: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
+      TPF3MP_REPOSITORY: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+      - name: Check the settings built in
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A bracket expression: "]" first and "-" last are literal.
+          if [ -n "$TPF3MP_DEFAULT_SERVER" ] && ! [[ "$TPF3MP_DEFAULT_SERVER" =~ ^[]A-Za-z0-9.:[-]+$ ]]; then
+            echo "::error::TPF3MP_DEFAULT_SERVER must be host:port, nothing else"
+            exit 1
+          fi
+          if [ -n "$TPF3MP_UPDATE_PUBLIC_KEY" ] && ! [[ "$TPF3MP_UPDATE_PUBLIC_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+            echo "::error::TPF3MP_UPDATE_PUBLIC_KEY must be the base64 of a 32-byte Ed25519 public key"
+            exit 1
+          fi
       - name: Build
-        run: cargo build --release --locked -p tpf3mp-agent -p tpf3mp-server -p tpf3mp-hook
+        run: cargo build --release --locked -p tpf3mp-launcher -p tpf3mp-agent -p tpf3mp-server -p tpf3mp-hook
       - name: Package
         shell: bash
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          # The server the launcher offers first, as host:port. Set the
-          # repository variable TPF3MP_DEFAULT_SERVER to fill it in;
-          # players can still type another or pass --server.
-          DEFAULT_SERVER: ${{ vars.TPF3MP_DEFAULT_SERVER }}
         run: |
           set -euo pipefail
           dir="tpf3mp-${VERSION}-${{ matrix.name }}"
           mkdir -p "$dir"
           cp README.md LICENSE docs/PLAYING.md "$dir/"
-          server=""
-          if [ -n "$DEFAULT_SERVER" ]; then
-            # A bracket expression: "]" first and "-" last are literal.
-            if ! [[ "$DEFAULT_SERVER" =~ ^[]A-Za-z0-9.:[-]+$ ]]; then
-              echo "::error::TPF3MP_DEFAULT_SERVER must be host:port, nothing else"
-              exit 1
-            fi
-            server="--default-server $DEFAULT_SERVER "
-          fi
+          # Tells the launcher's updater this folder is an installed package.
+          printf '{"version":"%s","platform":"%s"}\n' "$VERSION" "${{ matrix.name }}" \
+            > "$dir/tpf3mp-package.json"
           case "${{ matrix.name }}" in
             windows-*)
+              cp target/release/tpf3mp-launcher.exe "$dir/TPF3-MP.exe"
               cp target/release/tpf3mp-agent.exe target/release/tpf3mp-server.exe \
                  target/release/tpf3mp_hook.dll "$dir/"
-              printf '@echo off\r\n"%%~dp0tpf3mp-agent.exe" launcher %s%%*\r\nif errorlevel 1 pause\r\n' \
-                "$server" > "$dir/Launch TPF3-MP.cmd"
               7z a "$dir.zip" "$dir" > /dev/null
               echo "archive=$dir.zip" >> "$GITHUB_ENV"
               ;;
             linux-*)
-              cp target/release/tpf3mp-agent target/release/tpf3mp-server \
-                 target/release/libtpf3mp_hook.so "$dir/"
-              printf '#!/bin/sh\nexec "$(dirname "$0")/tpf3mp-agent" launcher %s"$@"\n' "$server" \
-                > "$dir/tpf3mp-launcher.sh"
-              chmod +x "$dir/tpf3mp-launcher.sh"
+              cp target/release/tpf3mp-launcher target/release/tpf3mp-agent \
+                 target/release/tpf3mp-server target/release/libtpf3mp_hook.so "$dir/"
               tar czf "$dir.tar.gz" "$dir"
               echo "archive=$dir.tar.gz" >> "$GITHUB_ENV"
               ;;
             macos-*)
+              app="$dir/TPF3-MP.app/Contents"
+              mkdir -p "$app/MacOS"
+              cp target/release/tpf3mp-launcher "$app/MacOS/TPF3-MP"
+              sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Info.plist"
               cp target/release/tpf3mp-agent target/release/tpf3mp-server \
                  target/release/libtpf3mp_hook.dylib "$dir/"
-              printf '#!/bin/sh\nexec "$(dirname "$0")/tpf3mp-agent" launcher %s"$@"\n' "$server" \
-                > "$dir/tpf3mp-launcher.command"
-              chmod +x "$dir/tpf3mp-launcher.command"
               tar czf "$dir.tar.gz" "$dir"
               echo "archive=$dir.tar.gz" >> "$GITHUB_ENV"
               ;;
@@ -122,6 +136,58 @@ jobs:
         with:
           path: packages
           merge-multiple: true
+      - name: Sign the release for the updater
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          SIGNING_KEY: ${{ secrets.TPF3MP_UPDATE_SIGNING_KEY }}
+          PUBLIC_KEY: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SIGNING_KEY" ] && [ -z "$PUBLIC_KEY" ]; then
+            echo "::warning::no update key: this release is not offered to launchers' updaters"
+            exit 0
+          fi
+          if [ -z "$SIGNING_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
+            echo "::error::set both TPF3MP_UPDATE_SIGNING_KEY (secret) and TPF3MP_UPDATE_PUBLIC_KEY (variable), or neither"
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/update-key.pem"
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          # The launchers built with the variable must accept what this key signs.
+          derived=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)
+          if [ "$derived" != "$PUBLIC_KEY" ]; then
+            rm -f "$key"
+            echo "::error::TPF3MP_UPDATE_SIGNING_KEY is not the private half of TPF3MP_UPDATE_PUBLIC_KEY"
+            exit 1
+          fi
+          # The manifest: per platform, the package's name, size and SHA-256.
+          python3 - <<'EOF'
+          import hashlib, json, os
+          version = os.environ["VERSION"]
+          packages = {}
+          for name in sorted(os.listdir("packages")):
+              stem = name.removesuffix(".zip").removesuffix(".tar.gz")
+              platform = stem.removeprefix(f"tpf3mp-{version}-")
+              if platform == stem:
+                  continue
+              data = open(os.path.join("packages", name), "rb").read()
+              packages[platform] = {
+                  "name": name,
+                  "size": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+              }
+          manifest = {"version": version, "packages": packages}
+          open("packages/release.json", "w").write(json.dumps(manifest, indent=2) + chr(10))
+          EOF
+          openssl pkeyutl -sign -rawin -inkey "$key" -in packages/release.json -out packages/release.json.sig
+          rm -f "$key"
+          # Check the signature as the launcher will.
+          printf '%s' "$PUBLIC_KEY" | base64 -d > "$RUNNER_TEMP/raw.pub"
+          { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; cat "$RUNNER_TEMP/raw.pub"; } > "$RUNNER_TEMP/public.der"
+          openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/public.der" \
+            -in packages/release.json -sigfile packages/release.json.sig
+          cat packages/release.json
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}

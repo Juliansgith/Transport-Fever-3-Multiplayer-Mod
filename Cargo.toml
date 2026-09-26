@@ -46,6 +46,18 @@ tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+# The launcher's native window, and its UI tests.
+eframe = "0.36.2"
+egui_kittest = "0.36.2"
+# The launcher's log files.
+tracing-appender = "0.2.5"
+# The launcher's updater: HTTPS with the same rustls and ring as the rest,
+# the release archives, and version order.
+flate2 = "1.1.10"
+semver = "1.0.28"
+tar = "0.4.46"
+ureq = "3.4.2"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 webpki-roots = "1.0.9"
 
 # tpf3mp-canon
