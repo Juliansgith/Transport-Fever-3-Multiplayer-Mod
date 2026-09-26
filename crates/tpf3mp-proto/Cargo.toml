@@ -16,6 +16,7 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+mlua.workspace = true
 proptest.workspace = true
 
 [lints]

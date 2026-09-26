@@ -460,6 +460,30 @@ match. Change the version whenever an existing variant's encoding changes;
 the Lua mod's encoder writes the same bytes and is tested against this
 crate.
 
+**From Lua.** The mod (`mod/tpf3mp_1`) builds the action as a Lua table
+that mirrors the Rust types field for field: a struct is a table of its
+fields by their Rust names, an enum value its variant name
+(`"Ground"`) or a one-entry table (`{Bridge = "cement.lua"}`), vertex
+indices start at 0, and positions are integers in millimetres
+(`tpf3mp/fixed.lua` rounds metres to the nearest, halves away from zero).
+`tpf3mp/wire.lua` encodes it to the payload bytes above, checking every
+bound the Rust decoder checks, and raises rather than write what the
+decoder would refuse. The hook receives those bytes as a Lua string and
+sends them as the intent's payload unchanged; it needs no decoder of its
+own. So far only `BuildRoad` and `BuildTrack` have a Lua encoder.
+
+`tpf3mp/roads.lua` makes the road or track action from a captured
+proposal, ported from TpF2 Multiplayer's capture: split halves are dropped,
+a new node on an existing edge of either network becomes a `Split` of
+that edge, an existing node a `Node` of its network, split parents are not
+removals, and any node, tangent or removal it cannot place fails the whole
+capture, so the build runs natively instead of travelling wrong.
+`tpf3mp/engine.lua` reads the proposal and the world through TPF2's script
+API names, each marked for confirmation against TPF3's. The test
+`tpf3mp-proto/tests/lua_capture.rs` runs the capture on a road and a
+track (a level crossing, a bridge, a tunnel, a split, an upgrade) in Lua
+and decodes the bytes with the Rust schema.
+
 Not in version 1: companion spans (an unchanged bridge span the engine
 re-adds), construction street pieces (`ROADC`), paint and the asset brush,
 signals and waypoints as their own placements, vehicle orders beyond a line.

@@ -336,7 +336,9 @@ and calls the session from its detours:
   to continue from that point, because it is what other players load. The
   agent cuts it into its chunk store and deletes the file.
 - **When the player acts.** Capture the action before the game applies it
-  locally and call `command(payload)`. The action happens only when the
+  locally and call `command(payload)`. For a build the payload is the
+  bytes the Lua mod encoded (`tpf3mp/wire.lua`, "The action schema" in
+  [BUILDING.md](BUILDING.md)), passed through unchanged. The action happens only when the
   room's event comes back through `Game::apply`, on every replica alike.
 - **Notices.** `Game::notice` receives speed changes, refusals,
   divergences and the end of the session, for the game's UI.

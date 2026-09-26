@@ -4385,6 +4385,7 @@ name = "tpf3mp-proto"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "mlua",
  "postcard",
  "proptest",
  "ring",
