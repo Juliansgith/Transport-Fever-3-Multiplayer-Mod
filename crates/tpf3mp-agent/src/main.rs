@@ -66,6 +66,40 @@ enum Command {
         #[arg(long)]
         password: Option<String>,
     },
+    /// Put TPF3-MP's logs and the game's into one zip to send with a bug
+    /// report. Keys, certificates and tokens are never included.
+    CollectLogs(CollectLogsArgs),
+}
+
+#[derive(Debug, ClapArgs)]
+struct CollectLogsArgs {
+    /// Where to write the zip. Defaults to the Downloads folder, or the
+    /// per-user data directory when there is none.
+    #[arg(long)]
+    out: Option<PathBuf>,
+
+    /// Only files changed this recently, such as 2h or 3d; `all` for every
+    /// file.
+    #[arg(long, default_value = "7d")]
+    since: String,
+
+    /// The most file content to take, in MiB, newest files first.
+    #[arg(long, default_value_t = tpf3mp_agent::logs::DEFAULT_MAX_BYTES >> 20)]
+    max_mib: u64,
+
+    /// Also take this file or folder, such as a game log kept somewhere the
+    /// bundle does not look. May be given more than once.
+    #[arg(long)]
+    game_log: Vec<PathBuf>,
+
+    /// The support ID the launcher showed, to put in the manifest.
+    #[arg(long)]
+    support_id: Option<String>,
+
+    /// TPF3-MP's per-user data directory, where its logs are. Defaults to
+    /// the usual place.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -250,7 +284,37 @@ async fn run(command: Command) -> Result<()> {
             };
             play(client, events, &game, rejoin).await?;
         }
+        Command::CollectLogs(args) => collect_logs(args)?,
     }
+    Ok(())
+}
+
+/// Writes the log bundle and says where it is.
+fn collect_logs(args: CollectLogsArgs) -> Result<()> {
+    let data = match args.data_dir {
+        Some(dir) => dir,
+        None => launcher::setup::data_dir()?,
+    };
+    let mut collect = tpf3mp_agent::logs::Collect::new(&data);
+    collect.since = tpf3mp_agent::logs::parse_since(&args.since).map_err(anyhow::Error::msg)?;
+    collect.max_bytes = args.max_mib << 20;
+    collect.support_id = args.support_id;
+    collect.candidates.extend(
+        args.game_log
+            .iter()
+            .map(|path| tpf3mp_agent::logs::extra_candidate(path)),
+    );
+    let out = args
+        .out
+        .unwrap_or_else(|| tpf3mp_agent::logs::default_out_dir(&data));
+    let bundle = collect
+        .write(&out)
+        .with_context(|| format!("writing the logs into {}", out.display()))?;
+    println!(
+        "wrote {} ({} files); see manifest.txt in it for what it holds",
+        bundle.path.display(),
+        bundle.files.len()
+    );
     Ok(())
 }
 

@@ -131,8 +131,40 @@ The top of the window shows your **support ID** (**Copy** copies it). It
 names your connection in the server's log: send it to the server's operator
 with your report, and they find exactly what happened to you. **Open logs
 folder**, at the bottom, opens the launcher's own logs
-(`TPF3-MP/logs` in your user data folder, one file a day, a week kept);
-send the latest one too.
+(`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
+
+### Sending your logs
+
+**Collect logs**, at the bottom of the window (and of the browser page),
+puts everything a bug report needs into one zip,
+`tpf3mp-logs-<time>.zip` in your Downloads folder (in `TPF3-MP` when there
+is no Downloads folder), and shows it. Attach that zip to your report, with
+your support ID. Without the launcher, `tpf3mp-agent collect-logs` writes
+the same zip (`--out <folder>` for another place, `--since 2h` for a shorter
+window, `--game-log <file>` to add a log kept elsewhere).
+
+The zip holds:
+
+- `tpf3mp/logs/`: the launcher's logs, which record its crashes too;
+- `tpf3mp/hook.log`: the in-game hook's log;
+- `game/…`: the game's own log (`stdout.txt`) and crash dumps. Until
+  Transport Fever 3 is out, these are looked for where Transport Fever 2
+  keeps them, `<Steam>/userdata/<account>/1066780/local/` (`stdout.txt` and
+  `crash_dump/`); the manifest marks them "TPF2 location, confirm on TF3";
+- `manifest.txt`: the versions of TPF3-MP, its protocol and its link to the
+  game, your system, your support ID when connected, every file with its
+  size, and which places were not found.
+
+Only files changed in the last week are taken, newest first, up to 64 MB;
+a long text log that does not fit whole keeps its end. What was left out
+is listed in the manifest.
+
+The zip never holds your identity key, invite keys, certificates or
+tokens: only the logs folders above are read, and any file there whose name
+looks like a key, certificate or token is withheld all the same. Your saved
+worlds and remembered server are not included, and TPF3-MP's logs hold no
+IP addresses. The game's own logs are the game's: look through the zip
+before sharing it publicly if you want to be sure.
 
 - **"the server is out of reach over UDP (...) and through wss://..."**:
   your network blocks both routes, or the server is down. Some school,

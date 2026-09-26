@@ -69,6 +69,33 @@ pub fn open_folder(dir: &Path) -> bool {
     open_with_system(&dir.to_string_lossy())
 }
 
+/// Shows a file in the system's file manager, selected where the system
+/// allows. Returns whether one could be started.
+pub fn reveal_file(file: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Explorer wants the path quoted after the comma, which the
+        // standard argument quoting cannot produce.
+        std::process::Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", file.display()))
+            .spawn()
+            .is_ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(file)
+            .spawn()
+            .is_ok()
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        file.parent().is_some_and(open_folder)
+    }
+}
+
 fn open_with_system(target: &str) -> bool {
     // Explorer opens folders and addresses alike, without the console
     // window `cmd /C start` would flash from a windowed program.

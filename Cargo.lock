@@ -4265,6 +4265,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs",
+ "flate2",
  "getrandom 0.4.3",
  "proptest",
  "quinn",
@@ -4280,6 +4281,7 @@ dependencies = [
  "tpf3mp-snapshot",
  "tracing",
  "tracing-subscriber",
+ "zip",
 ]
 
 [[package]]
