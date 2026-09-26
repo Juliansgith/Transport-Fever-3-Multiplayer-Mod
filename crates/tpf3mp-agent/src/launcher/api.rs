@@ -18,6 +18,9 @@ pub(crate) struct View {
     /// The connection runs through a tunnel, not over UDP.
     pub(crate) tunneled: bool,
     pub(crate) server_version: Option<String>,
+    /// The server's name for the connection outside a room, which its log
+    /// uses.
+    pub(crate) session: Option<String>,
     /// The rules the server offers new rooms, the default first.
     pub(crate) rules: Vec<RulesOffer>,
     pub(crate) in_room: bool,
@@ -68,6 +71,9 @@ struct State<'a> {
     player: Option<String>,
     server: Option<&'a str>,
     server_version: Option<&'a str>,
+    /// What the player quotes to the server's operator: the connection's
+    /// name in the server's log.
+    support_id: Option<String>,
     rules: Vec<Rules<'a>>,
     connection: &'static str,
     tunneled: bool,
@@ -252,6 +258,11 @@ pub(crate) fn render(view: &View, status: &Status) -> String {
         player: you.map(|player| player.to_string()),
         server: view.server.as_deref(),
         server_version: view.server_version.as_deref(),
+        support_id: status
+            .session
+            .map(|session| session.to_string())
+            .or_else(|| view.session.clone())
+            .filter(|_| view.connected || view.in_room),
         rules: view
             .rules
             .iter()
@@ -414,5 +425,34 @@ mod tests {
         assert_eq!(json["name"], "Ann");
         assert!(json["room"].is_null());
         assert_eq!(json["game"]["world"], "none");
+    }
+
+    #[test]
+    fn the_support_id_names_the_current_connection() {
+        let mut view = View {
+            connected: true,
+            session: Some("s-11".into()),
+            ..View::default()
+        };
+        let support_id = |view: &View, status: &Status| {
+            let json: serde_json::Value = serde_json::from_str(&render(view, status)).unwrap();
+            json["support_id"].as_str().map(str::to_owned)
+        };
+        assert_eq!(
+            support_id(&view, &Status::default()).as_deref(),
+            Some("s-11")
+        );
+        // In a room, the room's connection, which a rejoin renews.
+        let status = Status {
+            session: Some(tpf3mp_proto::SessionId([0x22; 16])),
+            ..Status::default()
+        };
+        assert_eq!(
+            support_id(&view, &status).as_deref(),
+            Some("s-22222222222222222222222222222222")
+        );
+        // Disconnected, there is none to quote.
+        view.connected = false;
+        assert_eq!(support_id(&view, &Status::default()), None);
     }
 }

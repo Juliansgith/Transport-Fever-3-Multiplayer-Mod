@@ -90,3 +90,34 @@ jobs:
           curl -sf http://127.0.0.1:9470/metrics | grep tpf3mp_tunnels
           docker logs tpf3mp
           docker logs tpf3mp 2>&1 | grep "accepting tunnels"
+      - name: The compose setup runs, and collect-logs.sh gathers its logs
+        run: |
+          docker rm -f tpf3mp
+          cd deploy
+          # The deployment as it is, with a throwaway certificate in place
+          # of the real one and JSON logs.
+          cat > compose.ci.yaml <<'EOF'
+          services:
+            tpf3mp-server:
+              image: tpf3mp-server:ci
+              environment:
+                TPF3MP_LOG_FORMAT: json
+              command: ["--listen", "0.0.0.0:29470", "--dev-self-signed", "/data/dev.der",
+                        "--secret-file", "/data/invite.key", "--data-dir", "/data/rooms",
+                        "--admin-listen", "0.0.0.0:9470"]
+          EOF
+          export COMPOSE_FILE=compose.yaml:compose.ci.yaml
+          docker compose up -d --no-build
+          for attempt in $(seq 1 20); do
+            curl -sf http://127.0.0.1:9470/healthz && break
+            sleep 1
+          done
+          ./collect-logs.sh --since 10m
+          bundle=$(ls tpf3mp-logs-*.tar.gz)
+          tar -tzf "$bundle"
+          tar -xzf "$bundle"
+          grep '"message":"listening"' tpf3mp-logs-*/server.log
+          grep tpf3mp_sessions tpf3mp-logs-*/metrics.txt
+          grep 'status=running' tpf3mp-logs-*/state.txt
+          ./collect-logs.sh --since 10m --for no-such-session
+          docker compose down -v

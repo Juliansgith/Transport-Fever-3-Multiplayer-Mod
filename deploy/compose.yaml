@@ -20,6 +20,16 @@ services:
       - tpf3mp-data:/data
     environment:
       RUST_LOG: info
+      # "json" for a log collector; "text" reads best in `docker compose logs`.
+      TPF3MP_LOG_FORMAT: text
+    # Keep at most 10 files of 50 MB each, so the log never fills the disk.
+    # `deploy/collect-logs.sh` gathers them, with the server's state, for a
+    # bug report (see docs/OPERATIONS.md, "Logs").
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
