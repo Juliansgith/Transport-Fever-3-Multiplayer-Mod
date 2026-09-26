@@ -10,7 +10,8 @@ name: release
 # Actions, Variables):
 # - TPF3MP_DEFAULT_SERVER: the server the launcher offers first;
 # - TPF3MP_UPDATE_PUBLIC_KEY: the public keys updates must be signed with.
-#   Without one the launcher never updates itself.
+#   Without one the launcher never updates itself, so no release is
+#   drafted: manual runs still build packages to try.
 #
 # It signs nothing: publishing a release starts sign.yml, which signs it
 # for the updater in the protected `release` environment. Actions are
@@ -215,6 +216,22 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Fail closed: a published launcher built without the update key can
+      # never update itself, so its players would download every later
+      # version by hand. Only a draft can be published; make none.
+      - name: Check the release can update itself
+        env:
+          TPF3MP_UPDATE_PUBLIC_KEY: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
+          TPF3MP_DEFAULT_SERVER: ${{ vars.TPF3MP_DEFAULT_SERVER }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TPF3MP_UPDATE_PUBLIC_KEY" ]; then
+            echo "::error::no draft without the repository variable TPF3MP_UPDATE_PUBLIC_KEY: set up the update key (docs/OPERATIONS.md, \"Before the first release\"), then re-run this workflow"
+            exit 1
+          fi
+          if [ -z "$TPF3MP_DEFAULT_SERVER" ]; then
+            echo "::warning::no TPF3MP_DEFAULT_SERVER: players must type the server's address"
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: packages
