@@ -303,6 +303,43 @@ the others play on. Their saves are larger too: a 1.4 GB world must upload
 within the 90-minute limit, so at least about 260 KB/s from the player who
 uploads it.
 
+## Before the first release
+
+Once, in this order. The update key and the default server are built into
+the launcher, so both must be set before the build players download: a
+launcher built without the key never updates itself, and its players would
+download every later version by hand. So the release workflow drafts no
+release without the key.
+
+1. **Protect the branches:** run `tools/github/protect-branches.sh` as a
+   repository administrator (see "What GitHub enforces" in
+   [AGENTS.md](../AGENTS.md)).
+2. **Set up the update key:** the key, the `release` environment with its
+   secret `TPF3MP_UPDATE_SIGNING_KEY`, and the variable
+   `TPF3MP_UPDATE_PUBLIC_KEY`, as under "Updates" in
+   [Releases](#releases).
+3. **Deploy the server** ([First deployment](#first-deployment), and the
+   Caddy block under [Tunnels](#tunnels)), and check it from another
+   machine with `tpf3mp-agent connect <host>:29470`.
+4. **Set the variable `TPF3MP_DEFAULT_SERVER`** to its `host:port`.
+5. **Rebuild the draft:** re-run the latest `release` run of `main` (in
+   Actions), or promote a new commit to `main`. Its warnings must name
+   neither `TPF3MP_UPDATE_PUBLIC_KEY` nor `TPF3MP_DEFAULT_SERVER`; until
+   release day, one about `TPF3MP_PROXY_DLL` is expected.
+6. **Try the draft's packages:** on each platform, download the package
+   from the draft, start the launcher and connect; it offers the server by
+   itself.
+7. **Publish the draft,** then approve the `sign` run waiting in Actions:
+   the release gets its `release.json` and `release.json.sig`, which
+   launchers update from. Publishing also starts `image.yml`, which
+   publishes the server image; the first time, make the package public
+   (the repository's Packages, Package settings), or servers must
+   `docker login ghcr.io` to pull it.
+
+From then on, releasing again needs a version bump in `Cargo.toml`, on a
+feature branch like any change, and launchers of earlier versions update
+themselves once the new release is published and signed.
+
 ## Releases
 
 `.github/workflows/release.yml` builds the player's package for Windows x64,
@@ -317,6 +354,8 @@ runs on distributions with an older C library too.
   `Cargo.toml`. Review the draft on GitHub, then publish it; publishing
   creates the tag. Later pushes refresh the draft until it is published.
   After that, `main` needs a version bump before it can release again.
+  Without the variable `TPF3MP_UPDATE_PUBLIC_KEY` no draft is made (see
+  [Before the first release](#before-the-first-release)).
 - **The server players see first.** Set the repository variable
   `TPF3MP_DEFAULT_SERVER` (Settings, Secrets and variables, Actions,
   Variables) to the public server's `host:port`, and the packages' launcher
