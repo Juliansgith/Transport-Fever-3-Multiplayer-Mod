@@ -154,3 +154,16 @@ Rejected:
 - **Unsigned updates over HTTPS.** Anyone who could publish a release, or
   replace an asset, would run code on every player's machine.
 
+Update (2026-09-27), after a security review of the updater: signing
+moved out of the build into `sign.yml`, which signs only a published
+release, in a GitHub environment whose required reviewer approves each
+signing. As a repository secret, the key reached every workflow on every
+branch, so anyone who could push a branch could have signed an update and
+skipped every check. Launchers trust a list of keys, so the key can be
+changed. Installing is journalled and confirmed: an install that fails or
+is cut short is undone, the old files stay until the new version opens its
+window, a version that fails to three times is rolled back and not
+installed again, and only files a journal names are deleted. One process
+installs at a time. Releases are fetched from `releases/latest/download`,
+over HTTPS only, rather than GitHub's rate-limited API.
+

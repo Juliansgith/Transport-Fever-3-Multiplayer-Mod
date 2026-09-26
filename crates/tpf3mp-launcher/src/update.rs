@@ -1,24 +1,38 @@
 //! Keeps TPF3-MP up to date from the project's GitHub releases, installing
 //! only what the project signed.
 //!
-//! A release carries `release.json`, its version and, for each platform,
-//! the package's file name, size and SHA-256, and `release.json.sig`, an
-//! Ed25519 signature of that file made with the project's update key. The
-//! launcher is built with the key's public half (`TPF3MP_UPDATE_PUBLIC_KEY`
-//! at build time); a build without one never updates. A package is
+//! A published release carries `release.json`, its version and, for each
+//! platform, the package's file name, size and SHA-256, and
+//! `release.json.sig`, an Ed25519 signature of that file made with the
+//! project's update key when the release is published. The launcher is
+//! built with the public keys it trusts (`TPF3MP_UPDATE_PUBLIC_KEY` at build
+//! time, one or more); a build without one never updates. A package is
 //! installed only if:
 //!
-//! - the signature verifies, the release's tag names the signed version,
-//!   and that version is newer than the running one;
-//! - the package's size and SHA-256 match the signed manifest;
-//! - every path in it stays inside the package, and it holds only files and
-//!   folders.
+//! - the signature verifies with a trusted key, and the signed version is
+//!   newer than the running one and not one this copy rolled back from;
+//! - the package's size and SHA-256 match the signed manifest, checked
+//!   when it is downloaded and again before it is installed;
+//! - it is the archive format of this platform, and every path in it is
+//!   one plain name after another, inside the package, of files and
+//!   folders only.
 //!
-//! Packages are downloaded into `.tpf3mp-update/` in the install folder, so
-//! installing is a rename on the same disk, and checked again when they
-//! are installed. Installing moves each replaced file aside as `*.old` and
-//! puts them all back if any step fails; the next start deletes them. The
-//! player chooses when to install, because restarting ends a game; an
+//! The files come from `releases/latest/download/` and
+//! `releases/download/v<version>/`, never GitHub's rate-limited API, over
+//! HTTPS only.
+//!
+//! Installing is journalled in `.tpf3mp-update/` in the install folder,
+//! where downloads wait too (the same disk, so every step is a rename):
+//! before the first file moves, the journal names each one and where its
+//! old version goes (`<name>.tpf3mp-<old version>.old`). An install that
+//! fails or is cut short is undone from the journal, at once or at the
+//! next start. The old files stay until the new version has shown its
+//! window; a new version that fails to get that far three starts running
+//! is rolled back, and that version is not installed again. Only the files
+//! a journal names are ever deleted. One process at a time downloads or
+//! installs, holding `.tpf3mp-update/lock`.
+//!
+//! The player chooses when to install, since restarting ends a game; an
 //! update not installed then is installed at the next start.
 
 use std::{
@@ -27,7 +41,7 @@ use std::{
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::Engine;
@@ -36,7 +50,7 @@ use ring::{
     digest::{Context, SHA256},
     signature::{ED25519, UnparsedPublicKey},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -47,9 +61,10 @@ pub const REPOSITORY: &str = match option_env!("TPF3MP_REPOSITORY") {
     Some(repository) => repository,
     None => "Juliansgith/Transport-Fever-3-Multiplayer-Mod",
 };
-/// The public half of the key releases are signed with, as base64 of its
-/// 32 bytes. Without it, this build never updates.
-const PUBLIC_KEY: Option<&str> = option_env!("TPF3MP_UPDATE_PUBLIC_KEY");
+/// The public halves of the keys releases may be signed with, as base64 of
+/// their 32 bytes, separated by commas or spaces. More than one lets the
+/// project move to a new key. Without any, this build never updates.
+const PUBLIC_KEYS: Option<&str> = option_env!("TPF3MP_UPDATE_PUBLIC_KEY");
 /// The package this build comes in, as release file names name it.
 pub const PLATFORM: Option<&str> = if cfg!(all(windows, target_arch = "x86_64")) {
     Some("windows-x64")
@@ -63,22 +78,27 @@ pub const PLATFORM: Option<&str> = if cfg!(all(windows, target_arch = "x86_64"))
 
 /// The file a package has at its top, naming its version and platform.
 pub const PACKAGE_MARKER: &str = "tpf3mp-package.json";
-/// Where downloads wait in the install folder.
+/// Where downloads, the journal and the lock live in the install folder.
 const STAGING: &str = ".tpf3mp-update";
-/// Suffix of the files an install moved aside.
-const OLD: &str = ".old";
+const JOURNAL: &str = "journal.json";
+const LOCK: &str = "lock";
+/// Versions this copy rolled back from, which it does not install again.
+const SKIP: &str = "skip.json";
 const MANIFEST: &str = "release.json";
 const SIGNATURE: &str = "release.json.sig";
 /// Largest manifest read.
 const MAX_MANIFEST: u64 = 64 * 1024;
 /// Largest package downloaded.
 const MAX_PACKAGE: u64 = 1 << 30;
-/// Largest answer about the latest release.
-const MAX_RELEASE_INFO: u64 = 1 << 20;
 /// Pause before the first check, so starting stays quick.
 const FIRST_CHECK: Duration = Duration::from_secs(3);
 /// How often a running launcher checks again.
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// Starts a new version may take to show its window before it is rolled
+/// back.
+const MAX_UNCONFIRMED_STARTS: u32 = 3;
+/// How long a starting launcher waits for another one's install.
+const LOCK_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Error)]
 pub enum UpdateError {
@@ -96,6 +116,8 @@ pub enum UpdateError {
     Mismatch,
     #[error("the package has an unsafe entry: {0}")]
     UnsafeEntry(String),
+    #[error("another TPF3-MP is installing an update")]
+    Busy,
 }
 
 impl From<ureq::Error> for UpdateError {
@@ -144,11 +166,17 @@ pub struct Package {
 }
 
 impl Manifest {
-    /// The manifest in `json`, if `signature` is `key`'s signature of it.
-    pub fn verified(json: &[u8], signature: &[u8], key: &[u8]) -> Result<Self, UpdateError> {
-        UnparsedPublicKey::new(&ED25519, key)
-            .verify(json, signature)
-            .map_err(|_| UpdateError::BadSignature)?;
+    /// The manifest in `json`, if `signature` is one of `keys`' signature
+    /// of it.
+    pub fn verified(json: &[u8], signature: &[u8], keys: &[Vec<u8>]) -> Result<Self, UpdateError> {
+        let signed = keys.iter().any(|key| {
+            UnparsedPublicKey::new(&ED25519, key)
+                .verify(json, signature)
+                .is_ok()
+        });
+        if !signed {
+            return Err(UpdateError::BadSignature);
+        }
         let manifest: Self = serde_json::from_slice(json)
             .map_err(|error| UpdateError::Malformed(error.to_string()))?;
         semver::Version::parse(&manifest.version)
@@ -166,13 +194,41 @@ impl Manifest {
 
     /// Whether this release is newer than `current`.
     pub fn newer_than(&self, current: &str) -> bool {
-        match (
-            semver::Version::parse(&self.version),
-            semver::Version::parse(current),
-        ) {
-            (Ok(offered), Ok(current)) => offered > current,
-            _ => false,
+        newer(&self.version, current)
+    }
+
+    /// This platform's package, in this platform's archive format.
+    fn package(&self, platform: &str) -> Result<&Package, UpdateError> {
+        let package = self.packages.get(platform).ok_or(UpdateError::NoPackage)?;
+        if !package.name.ends_with(archive_suffix(platform)) {
+            return Err(UpdateError::Malformed(format!(
+                "{} is not a {} package",
+                package.name, platform
+            )));
         }
+        if package.size > MAX_PACKAGE {
+            return Err(UpdateError::Malformed("the package is too large".into()));
+        }
+        Ok(package)
+    }
+}
+
+fn newer(offered: &str, current: &str) -> bool {
+    match (
+        semver::Version::parse(offered),
+        semver::Version::parse(current),
+    ) {
+        (Ok(offered), Ok(current)) => offered > current,
+        _ => false,
+    }
+}
+
+/// The archive format a platform's package comes in.
+fn archive_suffix(platform: &str) -> &'static str {
+    if platform.starts_with("windows") {
+        ".zip"
+    } else {
+        ".tar.gz"
     }
 }
 
@@ -185,13 +241,56 @@ fn safe_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
-/// The key this build trusts, if it has one.
-fn public_key() -> Option<Vec<u8>> {
-    let encoded = PUBLIC_KEY?.trim();
-    let key = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .ok()?;
-    (key.len() == 32).then_some(key)
+/// The keys this build trusts. An entry that is not a key is left out.
+fn public_keys() -> Vec<Vec<u8>> {
+    parse_keys(PUBLIC_KEYS.unwrap_or_default())
+}
+
+fn parse_keys(text: &str) -> Vec<Vec<u8>> {
+    text.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let key = base64::engine::general_purpose::STANDARD
+                .decode(entry)
+                .ok()?;
+            (key.len() == 32).then_some(key)
+        })
+        .collect()
+}
+
+/// Where releases come from.
+#[derive(Debug, Clone)]
+pub struct Source {
+    base: String,
+    https_only: bool,
+}
+
+impl Source {
+    /// The project's releases on GitHub.
+    pub fn github() -> Self {
+        Self {
+            base: format!("https://github.com/{REPOSITORY}"),
+            https_only: true,
+        }
+    }
+
+    fn latest(&self, file: &str) -> String {
+        format!("{}/releases/latest/download/{file}", self.base)
+    }
+
+    fn of(&self, version: &str, file: &str) -> String {
+        format!("{}/releases/download/v{version}/{file}", self.base)
+    }
+
+    fn agent(&self, timeout: Duration) -> ureq::Agent {
+        ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .https_only(self.https_only)
+                .timeout_connect(Some(Duration::from_secs(30)))
+                .timeout_global(Some(timeout))
+                .build(),
+        )
+    }
 }
 
 /// Where this copy is installed, and whether the updater may change it.
@@ -236,7 +335,47 @@ impl Install {
     fn staging(&self) -> PathBuf {
         self.root.join(STAGING)
     }
+
+    /// Holds the updater's lock, waiting at most `wait` for another
+    /// process to let go of it.
+    fn lock(&self, wait: Duration) -> Result<Lock, UpdateError> {
+        fs::create_dir_all(self.staging())?;
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.staging().join(LOCK))?;
+        let until = Instant::now() + wait;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Lock(file)),
+                Err(fs::TryLockError::WouldBlock) if Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Err(fs::TryLockError::WouldBlock) => return Err(UpdateError::Busy),
+                Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn skipped(&self) -> Vec<String> {
+        fs::read(self.staging().join(SKIP))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn skip(&self, version: &str) -> io::Result<()> {
+        let mut skipped = self.skipped();
+        if !skipped.iter().any(|skipped| skipped == version) {
+            skipped.push(version.to_owned());
+        }
+        write_synced(&self.staging().join(SKIP), &serde_json::to_vec(&skipped)?)
+    }
 }
+
+/// The updater's lock, held until dropped.
+struct Lock(#[allow(dead_code)] File);
 
 /// The folder a package was unpacked into, from the launcher's own path:
 /// the executable's folder, or on macOS the folder holding the app bundle.
@@ -261,10 +400,11 @@ pub struct Updater {
 struct Inner {
     state: Mutex<UpdateState>,
     install: Option<Install>,
-    key: Option<Vec<u8>>,
+    keys: Vec<Vec<u8>>,
+    source: Source,
     runtime: tokio::runtime::Handle,
     repaint: Mutex<Option<egui::Context>>,
-    /// One check or download at a time.
+    /// One check or download at a time in this process.
     working: Mutex<()>,
 }
 
@@ -273,18 +413,19 @@ impl Updater {
     /// few hours, and downloads what it finds; installing waits for the
     /// player.
     pub fn start(runtime: tokio::runtime::Handle) -> Self {
-        let key = public_key();
+        let keys = public_keys();
         let install = Install::of_running();
-        let state = match (&key, &install) {
-            (None, _) => UpdateState::Off("this build has no update key".into()),
-            (Some(_), Err(reason)) => UpdateState::Off(reason.clone()),
-            (Some(_), Ok(_)) => UpdateState::Checking,
+        let state = match (keys.is_empty(), &install) {
+            (true, _) => UpdateState::Off("this build has no update key".into()),
+            (false, Err(reason)) => UpdateState::Off(reason.clone()),
+            (false, Ok(_)) => UpdateState::Checking,
         };
         let updater = Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(state.clone()),
                 install: install.ok(),
-                key,
+                keys,
+                source: Source::github(),
                 runtime,
                 repaint: Mutex::default(),
                 working: Mutex::default(),
@@ -340,10 +481,12 @@ impl Updater {
 
     /// Checks for a newer release now, and downloads it.
     pub fn check(&self) {
-        let (Some(install), Some(key)) = (self.inner.install.clone(), self.inner.key.clone())
-        else {
+        let Some(install) = self.inner.install.clone() else {
             return;
         };
+        if self.inner.keys.is_empty() {
+            return;
+        }
         let updater = self.clone();
         self.inner.runtime.spawn_blocking(move || {
             let Ok(_working) = updater.inner.working.try_lock() else {
@@ -354,19 +497,27 @@ impl Updater {
                 return;
             }
             updater.set(UpdateState::Checking);
-            let result = check_and_download(&install, &key, |version, bytes, total| {
-                updater.set(UpdateState::Downloading {
-                    version: version.to_owned(),
-                    bytes,
-                    total,
-                });
-            });
+            let result = check_and_download(
+                &install,
+                &updater.inner.keys,
+                &updater.inner.source,
+                |version, bytes, total| {
+                    updater.set(UpdateState::Downloading {
+                        version: version.to_owned(),
+                        bytes,
+                        total,
+                    });
+                },
+            );
             match result {
-                Ok(Some(version)) => {
+                Ok(Checked::Downloaded(version)) => {
                     info!(%version, "an update is ready to install");
                     updater.set(UpdateState::Ready { version });
                 }
-                Ok(None) => updater.set(UpdateState::UpToDate),
+                Ok(Checked::UpToDate) => updater.set(UpdateState::UpToDate),
+                Ok(Checked::Unsigned) => updater.set(UpdateState::Failed(
+                    "the latest release is not signed for updates yet".into(),
+                )),
                 Err(error) => {
                     warn!(%error, "the update check failed");
                     updater.set(UpdateState::Failed(error.to_string()));
@@ -378,7 +529,7 @@ impl Updater {
     /// Installs the downloaded update and restarts into it, closing this
     /// window. On failure everything stays as it was.
     pub fn install_and_restart(&self, ctx: &egui::Context) {
-        let (Some(install), Some(key)) = (&self.inner.install, &self.inner.key) else {
+        let Some(install) = &self.inner.install else {
             return;
         };
         let UpdateState::Ready { version } = self.state() else {
@@ -387,8 +538,13 @@ impl Updater {
         self.set(UpdateState::Installing {
             version: version.clone(),
         });
-        match install_staged(install, key).and_then(|installed| {
-            restart(install)?;
+        let installed = install
+            .lock(Duration::ZERO)
+            .and_then(|_lock| install_staged(install, &self.inner.keys));
+        match installed.and_then(|installed| {
+            if installed.is_some() {
+                restart(install)?;
+            }
             Ok(installed)
         }) {
             Ok(Some(installed)) => {
@@ -404,54 +560,258 @@ impl Updater {
     }
 }
 
-/// At start, before anything else: deletes what the last install moved
-/// aside, and installs an update downloaded earlier. Returns whether the
-/// launcher restarted into it, and should now exit.
+/// What a check found.
+#[derive(Debug, PartialEq, Eq)]
+enum Checked {
+    UpToDate,
+    /// The latest release has no signed manifest (yet).
+    Unsigned,
+    /// A newer version, downloaded and checked.
+    Downloaded(String),
+}
+
+/// What the journal records about an install.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Journal {
+    from: String,
+    to: String,
+    /// Each name the install puts in place, and where the file or folder
+    /// it replaces was moved, if there was one.
+    entries: Vec<Entry>,
+    state: Stage,
+    /// Starts of the new version that did not reach its window.
+    starts: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Entry {
+    name: String,
+    old: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum Stage {
+    /// Files are being moved: undo it if found at a start.
+    Swapping,
+    /// Every file is in place; the old ones wait for the new version to
+    /// show its window.
+    Swapped,
+}
+
+impl Journal {
+    fn path(install: &Install) -> PathBuf {
+        install.staging().join(JOURNAL)
+    }
+
+    fn read(install: &Install) -> Option<Self> {
+        let bytes = fs::read(Self::path(install)).ok()?;
+        match serde_json::from_slice(&bytes) {
+            Ok(journal) => Some(journal),
+            Err(error) => {
+                warn!(%error, "the update journal is unreadable; leaving it for a person to look at");
+                None
+            }
+        }
+    }
+
+    fn write(&self, install: &Install) -> io::Result<()> {
+        fs::create_dir_all(install.staging())?;
+        write_synced(&Self::path(install), &serde_json::to_vec_pretty(self)?)
+    }
+
+    fn remove(install: &Install) -> io::Result<()> {
+        match fs::remove_file(Self::path(install)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    }
+
+    /// Puts back what the install replaced, and takes away what it added.
+    /// Returns whether everything could be put back.
+    fn roll_back(&self, root: &Path) -> bool {
+        let mut complete = true;
+        for entry in self.entries.iter().rev() {
+            let target = root.join(&entry.name);
+            match &entry.old {
+                Some(old) => {
+                    let old = root.join(old);
+                    if !exists(&old) {
+                        // Never moved aside: the original is still in place.
+                        continue;
+                    }
+                    if exists(&target)
+                        && let Err(error) = remove(&target)
+                    {
+                        warn!(path = %target.display(), %error, "cannot remove a new file while rolling back");
+                        complete = false;
+                        continue;
+                    }
+                    if let Err(error) = fs::rename(&old, &target) {
+                        warn!(path = %target.display(), %error, "cannot put an old file back");
+                        complete = false;
+                    }
+                }
+                None => {
+                    if exists(&target)
+                        && let Err(error) = remove(&target)
+                    {
+                        warn!(path = %target.display(), %error, "cannot remove a new file while rolling back");
+                        complete = false;
+                    }
+                }
+            }
+        }
+        complete
+    }
+
+    /// Deletes the old files the install moved aside.
+    fn remove_old(&self, root: &Path) {
+        for old in self.entries.iter().filter_map(|entry| entry.old.as_ref()) {
+            let path = root.join(old);
+            if exists(&path)
+                && let Err(error) = remove(&path)
+            {
+                warn!(path = %path.display(), %error, "cannot delete a file an update replaced");
+            }
+        }
+    }
+}
+
+fn exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+fn remove(path: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(path)?.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let partial = path.with_extension("partial");
+    let mut file = File::create(&partial)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&partial, path)
+}
+
+/// At start, before anything else: finishes or undoes an install the last
+/// run left, and installs an update downloaded earlier. Returns whether
+/// the launcher restarted into another version and should exit now.
 pub fn at_start() -> bool {
     let Ok(install) = Install::of_running() else {
         return false;
     };
-    remove_old(&install.root);
-    let Some(key) = public_key() else {
-        return false;
-    };
-    match install_staged(&install, &key) {
-        Ok(Some(version)) => match restart(&install) {
-            Ok(()) => {
-                info!(%version, "installed the update downloaded earlier; restarting");
-                true
-            }
+    let keys = public_keys();
+    match start(&install, &keys, VERSION) {
+        Ok(Started::Restart) => match restart(&install) {
+            Ok(()) => true,
             Err(error) => {
-                warn!(%error, "installed the update but cannot restart");
+                warn!(%error, "cannot restart after the update");
                 false
             }
         },
-        Ok(None) => false,
+        Ok(Started::Continue) => false,
         Err(error) => {
-            warn!(%error, "cannot install the update downloaded earlier");
+            warn!(%error, "cannot finish the update");
             false
         }
     }
 }
 
-/// Deletes the files the last install moved aside. The old launcher could
-/// not delete itself while running.
-fn remove_old(root: &Path) {
-    let Ok(entries) = fs::read_dir(root) else {
+/// What a starting launcher does next.
+#[derive(Debug, PartialEq, Eq)]
+enum Started {
+    Continue,
+    /// Another version is now in place: run it.
+    Restart,
+}
+
+fn start(install: &Install, keys: &[Vec<u8>], running: &str) -> Result<Started, UpdateError> {
+    let _lock = install.lock(LOCK_WAIT)?;
+    clear_unpacked(install);
+    if let Some(mut journal) = Journal::read(install) {
+        match journal.state {
+            // Cut short while moving files: put everything back.
+            Stage::Swapping => {
+                info!(to = %journal.to, "undoing an update that did not finish");
+                if journal.roll_back(&install.root) {
+                    Journal::remove(install)?;
+                }
+                return Ok(if running == journal.from {
+                    Started::Continue
+                } else {
+                    Started::Restart
+                });
+            }
+            // The new version is starting: it has a few tries to show its
+            // window before the old one comes back.
+            Stage::Swapped if running == journal.to => {
+                journal.starts += 1;
+                if journal.starts > MAX_UNCONFIRMED_STARTS {
+                    warn!(version = %journal.to, "the new version never started; going back");
+                    if journal.roll_back(&install.root) {
+                        install.skip(&journal.to)?;
+                        Journal::remove(install)?;
+                        return Ok(Started::Restart);
+                    }
+                } else {
+                    journal.write(install)?;
+                }
+                return Ok(Started::Continue);
+            }
+            Stage::Swapped => return Ok(Started::Continue),
+        }
+    }
+    if keys.is_empty() {
+        return Ok(Started::Continue);
+    }
+    match install_staged(install, keys)? {
+        Some(version) => {
+            info!(%version, "installed the update downloaded earlier; restarting");
+            Ok(Started::Restart)
+        }
+        None => Ok(Started::Continue),
+    }
+}
+
+/// Tells the updater this version reached its window: the files the last
+/// install moved aside can go.
+pub fn started() {
+    let Ok(install) = Install::of_running() else {
+        return;
+    };
+    confirm(&install, VERSION);
+}
+
+fn confirm(install: &Install, running: &str) {
+    let Ok(_lock) = install.lock(Duration::from_secs(5)) else {
+        return;
+    };
+    if let Some(journal) = Journal::read(install)
+        && journal.state == Stage::Swapped
+        && journal.to == running
+    {
+        journal.remove_old(&install.root);
+        if let Err(error) = Journal::remove(install) {
+            warn!(%error, "cannot remove the update journal");
+        }
+        info!(version = %running, "the update is complete");
+    }
+}
+
+/// Deletes what earlier installs unpacked. Called holding the lock, so no
+/// other process is unpacking.
+fn clear_unpacked(install: &Install) {
+    let Ok(entries) = fs::read_dir(install.staging()) else {
         return;
     };
     for entry in entries.flatten() {
-        let name = entry.file_name();
-        if name.to_string_lossy().ends_with(OLD) {
-            let path = entry.path();
-            let removed = if path.is_dir() {
-                fs::remove_dir_all(&path)
-            } else {
-                fs::remove_file(&path)
-            };
-            if let Err(error) = removed {
-                warn!(path = %path.display(), %error, "cannot delete a file an update replaced");
-            }
+        if entry.file_name().to_string_lossy().contains(".unpacked") {
+            let _ = fs::remove_dir_all(entry.path());
         }
     }
 }
@@ -464,35 +824,10 @@ fn restart(install: &Install) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// What GitHub says about the latest release.
-#[derive(Debug, Deserialize)]
-struct Release {
-    tag_name: String,
-    assets: Vec<Asset>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Asset {
-    name: String,
-    browser_download_url: String,
-}
-
-fn agent() -> ureq::Agent {
-    ureq::Agent::new_with_config(
-        ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(900)))
-            .build(),
-    )
-}
-
 fn get(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>, UpdateError> {
     let mut response = agent
         .get(url)
         .header("User-Agent", format!("tpf3mp-launcher/{VERSION}"))
-        .header(
-            "Accept",
-            "application/vnd.github+json, application/octet-stream",
-        )
         .call()?;
     Ok(response
         .body_mut()
@@ -502,66 +837,47 @@ fn get(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>, UpdateErro
 }
 
 /// Checks the latest release and downloads its package if it is newer.
-/// Returns the version downloaded, or `None` when up to date.
 fn check_and_download(
     install: &Install,
-    key: &[u8],
+    keys: &[Vec<u8>],
+    source: &Source,
     mut progress: impl FnMut(&str, u64, u64),
-) -> Result<Option<String>, UpdateError> {
-    let agent = agent();
-    let info = get(
-        &agent,
-        &format!("https://api.github.com/repos/{REPOSITORY}/releases/latest"),
-        MAX_RELEASE_INFO,
-    )?;
-    let release: Release =
-        serde_json::from_slice(&info).map_err(|error| UpdateError::Malformed(error.to_string()))?;
-    let url = |name: &str| {
-        release
-            .assets
-            .iter()
-            .find(|asset| asset.name == name)
-            .map(|asset| asset.browser_download_url.clone())
+) -> Result<Checked, UpdateError> {
+    let agent = source.agent(Duration::from_secs(60));
+    let json = match get(&agent, &source.latest(MANIFEST), MAX_MANIFEST) {
+        Ok(json) => json,
+        // Published but not signed yet, or no release at all.
+        Err(UpdateError::Http(error)) if error.contains("404") => return Ok(Checked::Unsigned),
+        Err(error) => return Err(error),
     };
-    let (Some(manifest_url), Some(signature_url)) = (url(MANIFEST), url(SIGNATURE)) else {
-        // A release without a signed manifest is not for the updater.
-        return Ok(None);
-    };
-    let json = get(&agent, &manifest_url, MAX_MANIFEST)?;
-    let signature = get(&agent, &signature_url, 256)?;
-    let manifest = Manifest::verified(&json, &signature, key)?;
-    if release.tag_name != format!("v{}", manifest.version) {
-        return Err(UpdateError::Malformed(format!(
-            "the release {} signs version {}",
-            release.tag_name, manifest.version
-        )));
+    let signature = get(&agent, &source.latest(SIGNATURE), 256)?;
+    let manifest = Manifest::verified(&json, &signature, keys)?;
+    if !manifest.newer_than(VERSION) || install.skipped().contains(&manifest.version) {
+        return Ok(Checked::UpToDate);
     }
-    if !manifest.newer_than(VERSION) {
-        return Ok(None);
-    }
-    let package = manifest
-        .packages
-        .get(install.platform)
-        .ok_or(UpdateError::NoPackage)?;
-    if package.size > MAX_PACKAGE {
-        return Err(UpdateError::Malformed("the package is too large".into()));
-    }
-    let package_url = url(&package.name).ok_or(UpdateError::NoPackage)?;
+    let package = manifest.package(install.platform)?;
+    let _lock = install.lock(Duration::ZERO)?;
     let dir = install.staging().join(&manifest.version);
     fs::create_dir_all(&dir)?;
     let archive = dir.join(&package.name);
     if !matches(&archive, package)? {
         let partial = dir.join(format!("{}.part", package.name));
-        download(&agent, &package_url, &partial, package, |bytes| {
+        let big = source.agent(Duration::from_secs(3 * 60 * 60));
+        let url = source.of(&manifest.version, &package.name);
+        let downloaded = download(&big, &url, &partial, package, |bytes| {
             progress(&manifest.version, bytes, package.size);
-        })?;
+        });
+        if let Err(error) = downloaded {
+            let _ = fs::remove_file(&partial);
+            return Err(error);
+        }
         fs::rename(&partial, &archive)?;
     }
     // The manifest and signature go with the package, to check it again
     // when it is installed.
-    fs::write(dir.join(MANIFEST), &json)?;
-    fs::write(dir.join(SIGNATURE), &signature)?;
-    Ok(Some(manifest.version))
+    write_synced(&dir.join(MANIFEST), &json)?;
+    write_synced(&dir.join(SIGNATURE), &signature)?;
+    Ok(Checked::Downloaded(manifest.version))
 }
 
 /// Downloads `package` into `path`, checking its size and hash on the way.
@@ -575,7 +891,6 @@ fn download(
     let mut response = agent
         .get(url)
         .header("User-Agent", format!("tpf3mp-launcher/{VERSION}"))
-        .header("Accept", "application/octet-stream")
         .call()?;
     let mut reader = response
         .body_mut()
@@ -601,7 +916,6 @@ fn download(
     }
     file.sync_all()?;
     if total != package.size || hex(digest.finish().as_ref()) != package.sha256 {
-        let _ = fs::remove_file(path);
         return Err(UpdateError::Mismatch);
     }
     Ok(())
@@ -631,20 +945,23 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Installs the newest downloaded update that is newer than this version
-/// and still checks out. Returns its version, or `None` if there is none.
-/// Older downloads are deleted.
-fn install_staged(install: &Install, key: &[u8]) -> Result<Option<String>, UpdateError> {
-    let Some((manifest, archive)) = newest_staged(install, key)? else {
+/// Installs the newest downloaded update that is newer than this version,
+/// not skipped, and still checks out. Returns its version, or `None` if
+/// there is none. Older downloads are deleted. Call it holding the lock.
+fn install_staged(install: &Install, keys: &[Vec<u8>]) -> Result<Option<String>, UpdateError> {
+    let Some((manifest, archive)) = newest_staged(install, keys)? else {
         return Ok(None);
     };
-    let unpacked = install
-        .staging()
-        .join(format!("{}.unpacked", manifest.version));
+    let unpacked = install.staging().join(format!(
+        "{}.unpacked.{}",
+        manifest.version,
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&unpacked);
-    let package = unpack(&archive, &unpacked)?;
-    swap_in(&package, &install.root)?;
-    let _ = fs::remove_dir_all(install.staging());
+    let package = unpack(&archive, &unpacked, install.platform)?;
+    swap_in(install, &package, &manifest.version)?;
+    let _ = fs::remove_dir_all(&unpacked);
+    let _ = fs::remove_dir_all(install.staging().join(&manifest.version));
     Ok(Some(manifest.version))
 }
 
@@ -652,15 +969,16 @@ fn install_staged(install: &Install, key: &[u8]) -> Result<Option<String>, Updat
 /// package check out.
 fn newest_staged(
     install: &Install,
-    key: &[u8],
+    keys: &[Vec<u8>],
 ) -> Result<Option<(Manifest, PathBuf)>, UpdateError> {
     let Ok(entries) = fs::read_dir(install.staging()) else {
         return Ok(None);
     };
+    let skipped = install.skipped();
     let mut best: Option<(Manifest, PathBuf)> = None;
     for entry in entries.flatten() {
         let dir = entry.path();
-        if !dir.is_dir() || dir.extension().is_some_and(|ext| ext == "unpacked") {
+        if !dir.is_dir() || entry.file_name().to_string_lossy().contains(".unpacked") {
             continue;
         }
         let (Ok(json), Ok(signature)) =
@@ -668,16 +986,16 @@ fn newest_staged(
         else {
             continue;
         };
-        let Ok(manifest) = Manifest::verified(&json, &signature, key) else {
+        let Ok(manifest) = Manifest::verified(&json, &signature, keys) else {
             warn!(dir = %dir.display(), "a downloaded update does not verify; deleting it");
             let _ = fs::remove_dir_all(&dir);
             continue;
         };
-        if !manifest.newer_than(VERSION) {
+        if !manifest.newer_than(VERSION) || skipped.contains(&manifest.version) {
             let _ = fs::remove_dir_all(&dir);
             continue;
         }
-        let Some(package) = manifest.packages.get(install.platform) else {
+        let Ok(package) = manifest.package(install.platform) else {
             continue;
         };
         let archive = dir.join(&package.name);
@@ -694,18 +1012,22 @@ fn newest_staged(
     Ok(best)
 }
 
-/// Unpacks `archive` into `into` and returns the package folder in it:
-/// the single folder at the archive's top. Refuses any entry that would
-/// land outside `into`, and anything but files and folders.
-pub fn unpack(archive: &Path, into: &Path) -> Result<PathBuf, UpdateError> {
+/// Unpacks `archive`, a package of `platform`, into `into` and returns the
+/// package folder in it: the single folder at the archive's top. Refuses
+/// another platform's archive format, any entry that would land outside
+/// `into`, and anything but files and folders.
+pub fn unpack(archive: &Path, into: &Path, platform: &str) -> Result<PathBuf, UpdateError> {
     fs::create_dir_all(into)?;
     let name = archive.to_string_lossy();
+    if !name.ends_with(archive_suffix(platform)) {
+        return Err(UpdateError::Malformed(format!(
+            "{name} is not a {platform} package"
+        )));
+    }
     if name.ends_with(".zip") {
         unpack_zip(archive, into)?;
-    } else if name.ends_with(".tar.gz") {
-        unpack_tar_gz(archive, into)?;
     } else {
-        return Err(UpdateError::Malformed(format!("unknown archive {name}")));
+        unpack_tar_gz(archive, into)?;
     }
     let tops: Vec<PathBuf> = fs::read_dir(into)?
         .flatten()
@@ -719,24 +1041,31 @@ pub fn unpack(archive: &Path, into: &Path) -> Result<PathBuf, UpdateError> {
     }
 }
 
-/// `path` inside `into`, if it names a place there.
+/// `path` inside `into`, if every part of it is one plain name.
 fn contained(into: &Path, path: &Path) -> Result<PathBuf, UpdateError> {
+    let unsafe_entry = || UpdateError::UnsafeEntry(path.display().to_string());
     let mut out = into.to_owned();
     let mut any = false;
     for component in path.components() {
         match component {
             Component::Normal(part) => {
+                let part = part.to_str().ok_or_else(unsafe_entry)?;
+                // A drive (C:) or another separator would change where the
+                // rest lands on Windows.
+                if part.contains([':', '\\', '/']) {
+                    return Err(unsafe_entry());
+                }
                 out.push(part);
                 any = true;
             }
             Component::CurDir => {}
-            _ => return Err(UpdateError::UnsafeEntry(path.display().to_string())),
+            _ => return Err(unsafe_entry()),
         }
     }
-    if any {
+    if any && out.starts_with(into) && out != into {
         Ok(out)
     } else {
-        Err(UpdateError::UnsafeEntry(path.display().to_string()))
+        Err(unsafe_entry())
     }
 }
 
@@ -778,6 +1107,13 @@ fn unpack_tar_gz(archive: &Path, into: &Path) -> Result<(), UpdateError> {
         let mut entry = entry?;
         let kind = entry.header().entry_type();
         let name = entry.path()?.into_owned();
+        if matches!(
+            kind,
+            tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
+        ) {
+            // Metadata for the entries after it.
+            continue;
+        }
         let path = contained(into, &name)?;
         if kind.is_dir() {
             fs::create_dir_all(&path)?;
@@ -793,11 +1129,6 @@ fn unpack_tar_gz(archive: &Path, into: &Path) -> Result<(), UpdateError> {
                 let mode = entry.header().mode()?;
                 fs::set_permissions(&path, fs::Permissions::from_mode(mode & 0o755))?;
             }
-        } else if matches!(
-            kind,
-            tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
-        ) {
-            // Metadata for the entries after it.
         } else {
             return Err(UpdateError::UnsafeEntry(name.display().to_string()));
         }
@@ -806,67 +1137,73 @@ fn unpack_tar_gz(archive: &Path, into: &Path) -> Result<(), UpdateError> {
 }
 
 /// Puts everything at the top of `package` in place of the same names in
-/// `root`, moving what was there aside as `*.old`. If any step fails, puts
-/// everything back.
-pub fn swap_in(package: &Path, root: &Path) -> Result<(), UpdateError> {
-    let mut done: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
-    let result = (|| -> Result<(), UpdateError> {
-        for entry in fs::read_dir(package)? {
-            let entry = entry?;
-            let target = root.join(entry.file_name());
-            let mut old_name = entry.file_name();
-            old_name.push(OLD);
-            let old = root.join(old_name);
-            if old.exists() {
-                if old.is_dir() {
-                    fs::remove_dir_all(&old)?;
-                } else {
-                    fs::remove_file(&old)?;
+/// the install folder, recording each step in the journal first, and
+/// moving what was there aside for the new version to confirm. If a step
+/// fails, puts everything back.
+fn swap_in(install: &Install, package: &Path, to: &str) -> Result<(), UpdateError> {
+    let root = &install.root;
+    let mut names: Vec<String> = Vec::new();
+    for entry in fs::read_dir(package)? {
+        let name = entry?.file_name();
+        let name = name
+            .to_str()
+            .filter(|name| !name.is_empty() && !name.contains([':', '\\', '/']))
+            .ok_or_else(|| UpdateError::UnsafeEntry(name.to_string_lossy().into_owned()))?;
+        names.push(name.to_owned());
+    }
+    names.sort();
+    let suffix = format!(".tpf3mp-{VERSION}.old");
+    let mut journal = Journal {
+        from: VERSION.to_owned(),
+        to: to.to_owned(),
+        entries: names
+            .iter()
+            .map(|name| Entry {
+                name: name.clone(),
+                old: exists(&root.join(name)).then(|| format!("{name}{suffix}")),
+            })
+            .collect(),
+        state: Stage::Swapping,
+        starts: 0,
+    };
+    journal.write(install)?;
+    let moved = (|| -> Result<(), UpdateError> {
+        for entry in &journal.entries {
+            let target = root.join(&entry.name);
+            if let Some(old) = &entry.old {
+                let old = root.join(old);
+                if exists(&old) {
+                    remove(&old)?;
                 }
-            }
-            let moved = if target.exists() {
                 fs::rename(&target, &old)?;
-                Some(old)
-            } else {
-                None
-            };
-            if let Err(error) = fs::rename(entry.path(), &target) {
-                if let Some(old) = &moved {
-                    let _ = fs::rename(old, &target);
-                }
-                return Err(error.into());
             }
-            done.push((target, moved));
+            fs::rename(package.join(&entry.name), &target)?;
         }
         Ok(())
     })();
-    if result.is_err() {
-        roll_back(&done);
-    }
-    result
-}
-
-/// Undoes the replacements in `done`, newest first.
-fn roll_back(done: &[(PathBuf, Option<PathBuf>)]) {
-    for (target, old) in done.iter().rev() {
-        let removed = if target.is_dir() {
-            fs::remove_dir_all(target)
-        } else {
-            fs::remove_file(target)
-        };
-        if let Err(error) = removed {
-            warn!(path = %target.display(), %error, "cannot remove a new file while rolling back");
+    match moved {
+        Ok(()) => {
+            journal.state = Stage::Swapped;
+            journal.write(install)?;
+            Ok(())
         }
-        if let Some(old) = old
-            && let Err(error) = fs::rename(old, target)
-        {
-            warn!(path = %target.display(), %error, "cannot put an old file back");
+        Err(error) => {
+            if journal.roll_back(root) {
+                let _ = Journal::remove(install);
+            }
+            Err(error)
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::BufRead,
+        net::TcpListener,
+        sync::atomic::{AtomicBool, Ordering},
+    };
+
     use ring::{rand::SystemRandom, signature::Ed25519KeyPair, signature::KeyPair};
 
     use super::*;
@@ -883,6 +1220,10 @@ mod tests {
         Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap()
     }
 
+    fn keys(pair: &Ed25519KeyPair) -> Vec<Vec<u8>> {
+        vec![pair.public_key().as_ref().to_vec()]
+    }
+
     fn manifest_json(version: &str) -> Vec<u8> {
         format!(
             r#"{{"version":"{version}","packages":{{"windows-x64":{{"name":"tpf3mp-{version}-windows-x64.zip","size":3,"sha256":"{}"}}}}}}"#,
@@ -892,12 +1233,11 @@ mod tests {
     }
 
     #[test]
-    fn only_a_release_signed_with_the_key_verifies() {
-        let keys = key_pair();
+    fn only_a_release_signed_with_a_trusted_key_verifies() {
+        let pair = key_pair();
         let json = manifest_json("9.1.0");
-        let signature = keys.sign(&json);
-        let key = keys.public_key().as_ref();
-        let manifest = Manifest::verified(&json, signature.as_ref(), key).unwrap();
+        let signature = pair.sign(&json);
+        let manifest = Manifest::verified(&json, signature.as_ref(), &keys(&pair)).unwrap();
         assert_eq!(manifest.version, "9.1.0");
         assert!(manifest.newer_than("0.1.0"));
         assert!(!manifest.newer_than("9.1.0"));
@@ -907,14 +1247,31 @@ mod tests {
         let at = tampered.len() - 10;
         tampered[at] ^= 1;
         assert!(matches!(
-            Manifest::verified(&tampered, signature.as_ref(), key),
+            Manifest::verified(&tampered, signature.as_ref(), &keys(&pair)),
             Err(UpdateError::BadSignature)
         ));
         let other = key_pair();
         assert!(matches!(
-            Manifest::verified(&json, signature.as_ref(), other.public_key().as_ref()),
+            Manifest::verified(&json, signature.as_ref(), &keys(&other)),
             Err(UpdateError::BadSignature)
         ));
+        // A new key alongside the old: either signs.
+        let both = [keys(&other), keys(&pair)].concat();
+        assert!(Manifest::verified(&json, signature.as_ref(), &both).is_ok());
+        assert!(matches!(
+            Manifest::verified(&json, signature.as_ref(), &[]),
+            Err(UpdateError::BadSignature)
+        ));
+    }
+
+    #[test]
+    fn keys_are_read_from_a_list() {
+        let key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        let other = base64::engine::general_purpose::STANDARD.encode([8u8; 32]);
+        assert_eq!(parse_keys(&key).len(), 1);
+        assert_eq!(parse_keys(&format!("{key}, {other}")).len(), 2);
+        assert_eq!(parse_keys(&format!("{key} not-a-key")).len(), 1);
+        assert!(parse_keys("").is_empty());
     }
 
     /// A manifest signed as the release workflow signs one, with OpenSSL
@@ -948,19 +1305,42 @@ mod tests {
                 .unwrap()
             })
             .collect();
-        let manifest = Manifest::verified(json.as_bytes(), &signature, &key).unwrap();
+        let manifest = Manifest::verified(json.as_bytes(), &signature, &[key]).unwrap();
         assert_eq!(manifest.version, "9.1.0");
         assert_eq!(manifest.packages["windows-x64"].size, 3);
     }
 
     #[test]
     fn a_signed_manifest_still_names_only_plain_files() {
-        let keys = key_pair();
+        let pair = key_pair();
         let json = br#"{"version":"9.1.0","packages":{"windows-x64":{"name":"../evil.zip","size":3,"sha256":"00"}}}"#;
-        let signature = keys.sign(json);
+        let signature = pair.sign(json);
         assert!(matches!(
-            Manifest::verified(json, signature.as_ref(), keys.public_key().as_ref()),
+            Manifest::verified(json, signature.as_ref(), &keys(&pair)),
             Err(UpdateError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn a_package_must_be_its_platforms_archive() {
+        let pair = key_pair();
+        let json = format!(
+            r#"{{"version":"9.1.0","packages":{{"windows-x64":{{"name":"tpf3mp-9.1.0-windows-x64.tar.gz","size":3,"sha256":"{}"}}}}}}"#,
+            "ab".repeat(32)
+        );
+        let manifest = Manifest::verified(
+            json.as_bytes(),
+            pair.sign(json.as_bytes()).as_ref(),
+            &keys(&pair),
+        )
+        .unwrap();
+        assert!(matches!(
+            manifest.package("windows-x64"),
+            Err(UpdateError::Malformed(_))
+        ));
+        assert!(matches!(
+            manifest.package("linux-x64"),
+            Err(UpdateError::NoPackage)
         ));
     }
 
@@ -986,7 +1366,7 @@ mod tests {
                 ("tpf3mp-9.1.0-windows-x64/docs/PLAYING.md", b"how to play"),
             ],
         );
-        let package = unpack(&archive, &dir.join("out")).unwrap();
+        let package = unpack(&archive, &dir.join("out"), "windows-x64").unwrap();
         assert_eq!(
             fs::read(package.join("TPF3-MP.exe")).unwrap(),
             b"new launcher"
@@ -995,6 +1375,11 @@ mod tests {
             fs::read(package.join("docs").join("PLAYING.md")).unwrap(),
             b"how to play"
         );
+        // Another platform's archive format is refused.
+        assert!(matches!(
+            unpack(&archive, &dir.join("out-linux"), "linux-x64"),
+            Err(UpdateError::Malformed(_))
+        ));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1004,7 +1389,7 @@ mod tests {
         let archive = dir.join("evil.zip");
         zip_of(&archive, &[("tpf3mp/../../escaped.txt", b"x")]);
         assert!(matches!(
-            unpack(&archive, &dir.join("out")),
+            unpack(&archive, &dir.join("out"), "windows-x64"),
             Err(UpdateError::UnsafeEntry(_))
         ));
         assert!(!dir.join("escaped.txt").exists());
@@ -1022,64 +1407,37 @@ mod tests {
             .unwrap();
         builder.into_inner().unwrap().finish().unwrap();
         assert!(matches!(
-            unpack(&tarball, &dir.join("out-tar")),
+            unpack(&tarball, &dir.join("out-tar"), "linux-x64"),
             Err(UpdateError::UnsafeEntry(_))
         ));
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn installing_replaces_files_and_keeps_the_old_aside() {
-        let dir = temp("swap");
-        let root = dir.join("install");
-        let package = dir.join("package");
-        fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(package.join("docs")).unwrap();
-        fs::write(root.join("TPF3-MP.exe"), b"old").unwrap();
-        fs::write(root.join("mods.txt"), b"the player's own").unwrap();
-        fs::write(package.join("TPF3-MP.exe"), b"new").unwrap();
-        fs::write(package.join("docs").join("PLAYING.md"), b"docs").unwrap();
-        swap_in(&package, &root).unwrap();
-        assert_eq!(fs::read(root.join("TPF3-MP.exe")).unwrap(), b"new");
-        assert_eq!(fs::read(root.join("TPF3-MP.exe.old")).unwrap(), b"old");
+    fn a_path_with_a_drive_or_backslash_is_refused() {
+        let into = Path::new("install");
+        assert!(contained(into, Path::new("top/C:evil.exe")).is_err());
+        assert!(contained(into, Path::new("top/D:/x")).is_err());
+        // A backslash separates names on Windows, and is refused inside a
+        // name elsewhere, where Windows would read it as a separator.
+        let backslash = contained(into, Path::new("top/a\\b"));
+        if cfg!(windows) {
+            assert_eq!(backslash.unwrap(), into.join("top").join("a").join("b"));
+        } else {
+            assert!(backslash.is_err());
+        }
+        assert!(contained(into, Path::new("..")).is_err());
+        assert!(contained(into, Path::new(".")).is_err());
         assert_eq!(
-            fs::read(root.join("docs").join("PLAYING.md")).unwrap(),
-            b"docs"
+            contained(into, Path::new("top/TPF3-MP.exe")).unwrap(),
+            into.join("top").join("TPF3-MP.exe")
         );
-        // What the package does not have stays.
-        assert_eq!(
-            fs::read(root.join("mods.txt")).unwrap(),
-            b"the player's own"
-        );
-        remove_old(&root);
-        assert!(!root.join("TPF3-MP.exe.old").exists());
-        assert!(root.join("mods.txt").exists());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[test]
-    fn a_failed_install_puts_everything_back() {
-        let dir = temp("roll-back");
-        let root = dir.join("install");
-        fs::create_dir_all(&root).unwrap();
-        // As if a.txt had been replaced, and b.txt added, before a later
-        // step failed.
-        fs::write(root.join("a.txt.old"), b"old a").unwrap();
-        fs::write(root.join("a.txt"), b"new a").unwrap();
-        fs::write(root.join("b.txt"), b"new b").unwrap();
-        roll_back(&[
-            (root.join("a.txt"), Some(root.join("a.txt.old"))),
-            (root.join("b.txt"), None),
-        ]);
-        assert!(!root.join("b.txt").exists());
-        assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"old a");
-        assert!(!root.join("a.txt.old").exists());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_staged_update_is_checked_again_before_it_is_installed() {
-        let dir = temp("staged");
+    /// An install folder of `platform` with an old launcher, a file of the
+    /// player's own that ends in `.old`, and the package marker.
+    fn installed(name: &str) -> (PathBuf, Install) {
+        let dir = temp(name);
         let root = dir.join("install");
         fs::create_dir_all(&root).unwrap();
         fs::write(
@@ -1088,45 +1446,187 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("TPF3-MP.exe"), b"old").unwrap();
+        fs::write(root.join("saves.old"), b"the player's own").unwrap();
         let install = Install::at(root.clone(), root.join("TPF3-MP.exe"), "windows-x64").unwrap();
-        let keys = key_pair();
-        let archive_name = "tpf3mp-9.1.0-windows-x64.zip";
-        let staged = install.staging().join("9.1.0");
-        fs::create_dir_all(&staged).unwrap();
-        zip_of(
-            &staged.join(archive_name),
-            &[("tpf3mp-9.1.0-windows-x64/TPF3-MP.exe", b"new")],
-        );
-        let bytes = fs::read(staged.join(archive_name)).unwrap();
-        let json = format!(
-            r#"{{"version":"9.1.0","packages":{{"windows-x64":{{"name":"{archive_name}","size":{},"sha256":"{}"}}}}}}"#,
-            bytes.len(),
-            hex(ring::digest::digest(&SHA256, &bytes).as_ref())
-        );
-        fs::write(staged.join(MANIFEST), &json).unwrap();
-        fs::write(staged.join(SIGNATURE), keys.sign(json.as_bytes())).unwrap();
+        (dir, install)
+    }
 
+    /// Stages version `version` of a package holding `files` as downloaded,
+    /// signed by `pair`, and returns the archive's bytes.
+    fn stage(
+        install: &Install,
+        pair: &Ed25519KeyPair,
+        version: &str,
+        files: &[(&str, &[u8])],
+    ) -> Vec<u8> {
+        let name = format!("tpf3mp-{version}-windows-x64.zip");
+        let staged = install.staging().join(version);
+        fs::create_dir_all(&staged).unwrap();
+        let top = format!("tpf3mp-{version}-windows-x64");
+        let entries: Vec<(String, &[u8])> = files
+            .iter()
+            .map(|(path, data)| (format!("{top}/{path}"), *data))
+            .collect();
+        let borrowed: Vec<(&str, &[u8])> = entries
+            .iter()
+            .map(|(path, data)| (path.as_str(), *data))
+            .collect();
+        zip_of(&staged.join(&name), &borrowed);
+        let bytes = fs::read(staged.join(&name)).unwrap();
+        let json = manifest_for(version, &name, &bytes);
+        fs::write(staged.join(MANIFEST), &json).unwrap();
+        fs::write(staged.join(SIGNATURE), pair.sign(json.as_bytes())).unwrap();
+        bytes
+    }
+
+    fn manifest_for(version: &str, name: &str, bytes: &[u8]) -> String {
+        format!(
+            r#"{{"version":"{version}","packages":{{"windows-x64":{{"name":"{name}","size":{},"sha256":"{}"}}}}}}"#,
+            bytes.len(),
+            hex(ring::digest::digest(&SHA256, bytes).as_ref())
+        )
+    }
+
+    #[test]
+    fn a_staged_update_is_checked_again_before_it_is_installed() {
+        let (dir, install) = installed("staged");
+        let pair = key_pair();
+        let bytes = stage(&install, &pair, "9.1.0", &[("TPF3-MP.exe", b"new")]);
+        let archive = install
+            .staging()
+            .join("9.1.0")
+            .join("tpf3mp-9.1.0-windows-x64.zip");
         // Tampered with after the download: nothing is installed.
         let mut tampered = bytes.clone();
         let at = tampered.len() / 2;
         tampered[at] ^= 1;
-        fs::write(staged.join(archive_name), &tampered).unwrap();
+        fs::write(&archive, &tampered).unwrap();
+        assert_eq!(install_staged(&install, &keys(&pair)).unwrap(), None);
+        assert_eq!(fs::read(install.root.join("TPF3-MP.exe")).unwrap(), b"old");
+        // As downloaded: installed.
+        fs::write(&archive, &bytes).unwrap();
         assert_eq!(
-            install_staged(&install, keys.public_key().as_ref()).unwrap(),
-            None
-        );
-        assert_eq!(fs::read(root.join("TPF3-MP.exe")).unwrap(), b"old");
-
-        // As downloaded: installed, and the staging folder cleared.
-        fs::write(staged.join(archive_name), &bytes).unwrap();
-        assert_eq!(
-            install_staged(&install, keys.public_key().as_ref())
-                .unwrap()
-                .as_deref(),
+            install_staged(&install, &keys(&pair)).unwrap().as_deref(),
             Some("9.1.0")
         );
-        assert_eq!(fs::read(root.join("TPF3-MP.exe")).unwrap(), b"new");
-        assert!(!install.staging().exists());
+        assert_eq!(fs::read(install.root.join("TPF3-MP.exe")).unwrap(), b"new");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn old_files_wait_for_the_new_version_to_start_and_nothing_else_goes() {
+        let (dir, install) = installed("confirm");
+        let pair = key_pair();
+        stage(
+            &install,
+            &pair,
+            "9.1.0",
+            &[("TPF3-MP.exe", b"new"), ("docs.md", b"docs")],
+        );
+        install_staged(&install, &keys(&pair)).unwrap();
+        let old = format!("TPF3-MP.exe.tpf3mp-{VERSION}.old");
+        assert_eq!(fs::read(install.root.join(&old)).unwrap(), b"old");
+        let journal = Journal::read(&install).unwrap();
+        assert_eq!(journal.state, Stage::Swapped);
+        // The new version starts, and shows its window.
+        assert_eq!(
+            start(&install, &keys(&pair), "9.1.0").unwrap(),
+            Started::Continue
+        );
+        assert!(
+            install.root.join(&old).exists(),
+            "kept until the window shows"
+        );
+        confirm(&install, "9.1.0");
+        assert!(!install.root.join(&old).exists());
+        assert!(Journal::read(&install).is_none());
+        // Only what the journal named went.
+        assert_eq!(
+            fs::read(install.root.join("saves.old")).unwrap(),
+            b"the player's own"
+        );
+        assert_eq!(fs::read(install.root.join("docs.md")).unwrap(), b"docs");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_install_cut_short_is_undone_at_the_next_start() {
+        let (dir, install) = installed("cut-short");
+        // As if the process died after moving the old launcher aside and
+        // putting the new one in place, before the rest.
+        let old = format!("TPF3-MP.exe.tpf3mp-{VERSION}.old");
+        fs::rename(install.root.join("TPF3-MP.exe"), install.root.join(&old)).unwrap();
+        fs::write(install.root.join("TPF3-MP.exe"), b"new").unwrap();
+        fs::write(install.root.join("added.txt"), b"new file").unwrap();
+        Journal {
+            from: VERSION.into(),
+            to: "9.1.0".into(),
+            entries: vec![
+                Entry {
+                    name: "TPF3-MP.exe".into(),
+                    old: Some(old.clone()),
+                },
+                Entry {
+                    name: "added.txt".into(),
+                    old: None,
+                },
+                Entry {
+                    name: "zz-not-reached.txt".into(),
+                    old: Some("zz-not-reached.txt.old-never-made".into()),
+                },
+            ],
+            state: Stage::Swapping,
+            starts: 0,
+        }
+        .write(&install)
+        .unwrap();
+        let pair = key_pair();
+        assert_eq!(
+            start(&install, &keys(&pair), VERSION).unwrap(),
+            Started::Continue
+        );
+        assert_eq!(fs::read(install.root.join("TPF3-MP.exe")).unwrap(), b"old");
+        assert!(!install.root.join(&old).exists());
+        assert!(!install.root.join("added.txt").exists());
+        assert!(Journal::read(&install).is_none());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_version_that_never_starts_is_rolled_back_and_skipped() {
+        let (dir, install) = installed("never-starts");
+        let pair = key_pair();
+        stage(&install, &pair, "9.1.0", &[("TPF3-MP.exe", b"broken")]);
+        install_staged(&install, &keys(&pair)).unwrap();
+        for _ in 0..MAX_UNCONFIRMED_STARTS {
+            assert_eq!(
+                start(&install, &keys(&pair), "9.1.0").unwrap(),
+                Started::Continue
+            );
+        }
+        // One start too many without a window: back to the old version.
+        assert_eq!(
+            start(&install, &keys(&pair), "9.1.0").unwrap(),
+            Started::Restart
+        );
+        assert_eq!(fs::read(install.root.join("TPF3-MP.exe")).unwrap(), b"old");
+        assert!(install.skipped().contains(&"9.1.0".to_owned()));
+        // The same version is not installed again.
+        stage(&install, &pair, "9.1.0", &[("TPF3-MP.exe", b"broken")]);
+        assert_eq!(install_staged(&install, &keys(&pair)).unwrap(), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn one_process_at_a_time_installs() {
+        let (dir, install) = installed("lock");
+        let held = install.lock(Duration::ZERO).unwrap();
+        assert!(matches!(
+            install.lock(Duration::ZERO),
+            Err(UpdateError::Busy)
+        ));
+        drop(held);
+        assert!(install.lock(Duration::ZERO).is_ok());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1142,5 +1642,137 @@ mod tests {
         .unwrap();
         assert!(Install::at(dir.clone(), exe, "windows-x64").is_err());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A small web server that answers GitHub's release URLs from `files`
+    /// (path to body) with redirects as GitHub gives them, and 404 else.
+    fn serve(files: Vec<(String, Vec<u8>)>) -> (String, Arc<AtomicBool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stopping.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = io::BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let path = line.split(' ').nth(1).unwrap_or("/").to_owned();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                }
+                let answer = match files.iter().find(|(served, _)| *served == path) {
+                    Some((_, body)) => {
+                        let mut answer = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .into_bytes();
+                        answer.extend_from_slice(body);
+                        answer
+                    }
+                    None => {
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_vec()
+                    }
+                };
+                let _ = stream.write_all(&answer);
+            }
+        });
+        (base, stop)
+    }
+
+    #[test]
+    fn a_release_is_found_downloaded_and_installed_end_to_end() {
+        let (dir, install) = installed("end-to-end");
+        let pair = key_pair();
+        let top = "tpf3mp-9.1.0-windows-x64";
+        let name = format!("{top}.zip");
+        let archive = dir.join(&name);
+        zip_of(
+            &archive,
+            &[
+                (&format!("{top}/TPF3-MP.exe"), b"new launcher"),
+                (
+                    &format!("{top}/{PACKAGE_MARKER}"),
+                    br#"{"version":"9.1.0","platform":"windows-x64"}"#,
+                ),
+            ],
+        );
+        let bytes = fs::read(&archive).unwrap();
+        let json = manifest_for("9.1.0", &name, &bytes);
+        let signature = pair.sign(json.as_bytes()).as_ref().to_vec();
+        let (base, stop) = serve(vec![
+            (
+                "/releases/latest/download/release.json".into(),
+                json.clone().into_bytes(),
+            ),
+            (
+                "/releases/latest/download/release.json.sig".into(),
+                signature,
+            ),
+            (format!("/releases/download/v9.1.0/{name}"), bytes),
+        ]);
+        let source = Source {
+            base: base.clone(),
+            https_only: false,
+        };
+        let mut seen = 0;
+        let checked = check_and_download(&install, &keys(&pair), &source, |_, bytes, _| {
+            seen = bytes;
+        })
+        .unwrap();
+        assert_eq!(checked, Checked::Downloaded("9.1.0".into()));
+        assert!(seen > 0, "progress is reported");
+        // Installed at the next start, as if the player waited.
+        assert_eq!(
+            start(&install, &keys(&pair), VERSION).unwrap(),
+            Started::Restart
+        );
+        assert_eq!(
+            fs::read(install.root.join("TPF3-MP.exe")).unwrap(),
+            b"new launcher"
+        );
+        // A release signed by another key is not downloaded.
+        let other = key_pair();
+        let checked = check_and_download(&install, &keys(&other), &source, |_, _, _| {});
+        assert!(matches!(checked, Err(UpdateError::BadSignature)));
+        // No signed manifest: nothing to do, and said so.
+        let unsigned = Source {
+            base: format!("{base}/nothing"),
+            https_only: false,
+        };
+        assert_eq!(
+            check_and_download(&install, &keys(&pair), &unsigned, |_, _, _| {}).unwrap(),
+            Checked::Unsigned
+        );
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(base.trim_start_matches("http://"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_real_source_is_https_only() {
+        let source = Source::github();
+        assert!(source.https_only);
+        assert!(source.base.starts_with("https://github.com/"));
+        assert!(
+            source
+                .latest(MANIFEST)
+                .ends_with("/releases/latest/download/release.json")
+        );
+        assert!(
+            source
+                .of("9.1.0", "x.zip")
+                .ends_with("/releases/download/v9.1.0/x.zip")
+        );
     }
 }

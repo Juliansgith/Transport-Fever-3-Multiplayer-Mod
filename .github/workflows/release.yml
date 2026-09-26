@@ -6,11 +6,15 @@ name: release
 # release branch (see AGENTS.md), which also attaches them to a draft
 # release of the workspace's version, to review before publishing.
 #
-# Repository settings it reads (Settings, Secrets and variables, Actions):
-# - variable TPF3MP_DEFAULT_SERVER: the server the launcher offers first;
-# - variable TPF3MP_UPDATE_PUBLIC_KEY and secret TPF3MP_UPDATE_SIGNING_KEY:
-#   the key pair updates are signed with (docs/OPERATIONS.md, "Releases").
-#   Without them the launcher never updates itself.
+# Repository variables it builds in (Settings, Secrets and variables,
+# Actions, Variables):
+# - TPF3MP_DEFAULT_SERVER: the server the launcher offers first;
+# - TPF3MP_UPDATE_PUBLIC_KEY: the public keys updates must be signed with.
+#   Without one the launcher never updates itself.
+#
+# It signs nothing: publishing a release starts sign.yml, which signs it
+# for the updater in the protected `release` environment. Actions are
+# pinned to commits, since what this builds gets signed.
 on:
   workflow_dispatch:
   push:
@@ -29,7 +33,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: version
         shell: bash
         run: |
@@ -64,8 +68,8 @@ jobs:
       TPF3MP_UPDATE_PUBLIC_KEY: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
       TPF3MP_REPOSITORY: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check the settings built in
         shell: bash
         run: |
@@ -75,9 +79,13 @@ jobs:
             echo "::error::TPF3MP_DEFAULT_SERVER must be host:port, nothing else"
             exit 1
           fi
-          if [ -n "$TPF3MP_UPDATE_PUBLIC_KEY" ] && ! [[ "$TPF3MP_UPDATE_PUBLIC_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
-            echo "::error::TPF3MP_UPDATE_PUBLIC_KEY must be the base64 of a 32-byte Ed25519 public key"
+          # One key or several, separated by commas or spaces.
+          if [ -n "$TPF3MP_UPDATE_PUBLIC_KEY" ] && ! [[ "$TPF3MP_UPDATE_PUBLIC_KEY" =~ ^[A-Za-z0-9+/]{43}=([\ ,]+[A-Za-z0-9+/]{43}=)*$ ]]; then
+            echo "::error::TPF3MP_UPDATE_PUBLIC_KEY must be base64 32-byte Ed25519 public keys, separated by commas"
             exit 1
+          fi
+          if [ -z "$TPF3MP_UPDATE_PUBLIC_KEY" ]; then
+            echo "::warning::no TPF3MP_UPDATE_PUBLIC_KEY: these launchers will never update themselves"
           fi
       - name: Build
         run: |
@@ -122,7 +130,7 @@ jobs:
               echo "archive=$dir.tar.gz" >> "$GITHUB_ENV"
               ;;
           esac
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.name }}
           path: ${{ env.archive }}
@@ -136,62 +144,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: packages
           merge-multiple: true
-      - name: Sign the release for the updater
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          SIGNING_KEY: ${{ secrets.TPF3MP_UPDATE_SIGNING_KEY }}
-          PUBLIC_KEY: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "$SIGNING_KEY" ] && [ -z "$PUBLIC_KEY" ]; then
-            echo "::warning::no update key: this release is not offered to launchers' updaters"
-            exit 0
-          fi
-          if [ -z "$SIGNING_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
-            echo "::error::set both TPF3MP_UPDATE_SIGNING_KEY (secret) and TPF3MP_UPDATE_PUBLIC_KEY (variable), or neither"
-            exit 1
-          fi
-          umask 077
-          key="$RUNNER_TEMP/update-key.pem"
-          printf '%s\n' "$SIGNING_KEY" > "$key"
-          # The launchers built with the variable must accept what this key signs.
-          derived=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)
-          if [ "$derived" != "$PUBLIC_KEY" ]; then
-            rm -f "$key"
-            echo "::error::TPF3MP_UPDATE_SIGNING_KEY is not the private half of TPF3MP_UPDATE_PUBLIC_KEY"
-            exit 1
-          fi
-          # The manifest: per platform, the package's name, size and SHA-256.
-          python3 - <<'EOF'
-          import hashlib, json, os
-          version = os.environ["VERSION"]
-          packages = {}
-          for name in sorted(os.listdir("packages")):
-              stem = name.removesuffix(".zip").removesuffix(".tar.gz")
-              platform = stem.removeprefix(f"tpf3mp-{version}-")
-              if platform == stem:
-                  continue
-              data = open(os.path.join("packages", name), "rb").read()
-              packages[platform] = {
-                  "name": name,
-                  "size": len(data),
-                  "sha256": hashlib.sha256(data).hexdigest(),
-              }
-          manifest = {"version": version, "packages": packages}
-          open("packages/release.json", "w").write(json.dumps(manifest, indent=2) + chr(10))
-          EOF
-          openssl pkeyutl -sign -rawin -inkey "$key" -in packages/release.json -out packages/release.json.sig
-          rm -f "$key"
-          # Check the signature as the launcher will.
-          printf '%s' "$PUBLIC_KEY" | base64 -d > "$RUNNER_TEMP/raw.pub"
-          { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; cat "$RUNNER_TEMP/raw.pub"; } > "$RUNNER_TEMP/public.der"
-          openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/public.der" \
-            -in packages/release.json -sigfile packages/release.json.sig
-          cat packages/release.json
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}

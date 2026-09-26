@@ -92,6 +92,9 @@ fn run(args: Args, logs: Option<PathBuf>) -> Result<()> {
         "TPF3-MP",
         options,
         Box::new(move |creation| {
+            // The window and its renderer exist: this version works, so an
+            // update just installed is complete.
+            update::started();
             backend.repaint_with(creation.egui_ctx.clone());
             updater.repaint_with(creation.egui_ctx.clone());
             Ok(Box::new(LauncherApp::new(
