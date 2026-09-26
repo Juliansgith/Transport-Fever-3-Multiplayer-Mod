@@ -8,14 +8,32 @@ project adds multiplayer from outside the game. Until release, only the
 network side can be built and tested; everything that touches the game
 waits for the [release-day investigation](docs/DAY_ONE.md).
 
+## For players
+
+1. **Download** TPF3-MP for your system from the
+   [releases](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/releases):
+   Windows, Linux or macOS on Apple silicon.
+2. **Unpack and start** `TPF3-MP.exe`, `TPF3-MP.app` or `tpf3mp-launcher`.
+   There is no account to make and no port to forward, and it keeps itself
+   up to date.
+3. **Connect, create a room and send the invite** to your friends, or paste
+   the invite a friend sent you.
+
+[docs/PLAYING.md](docs/PLAYING.md) has the details, and what to do when
+something does not work.
+
+![The TPF3-MP launcher during a game](docs/images/launcher.png)
+
 ## How it works
 
-- **The server owns the truth.** A dedicated server orders every player
-  action and advances a deterministic canonical state machine: companies,
-  money, ownership, lines, vehicles, economy.
-- **Each player's game is a replica.** It applies the same ordered events at
-  the same simulation step and reports back. The server checks the reports
-  and rebases a replica that drifts.
+- **The server orders everything.** A dedicated server puts every player's
+  actions in one order, and every game applies them at the same simulation
+  step. The host of each room chooses its rules: the game's own economy, as
+  in single player, or canonical rules the server runs itself, with money
+  no player can forge.
+- **Each player's game is a replica.** It reports what it sees, and the
+  server compares the reports and sends a replica that drifted the world
+  the room agreed on.
 - **Mixed platforms work.** The design never depends on different game builds
   simulating identically.
 
