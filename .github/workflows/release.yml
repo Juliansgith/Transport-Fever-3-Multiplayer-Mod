@@ -15,8 +15,23 @@ name: release
 # It signs nothing: publishing a release starts sign.yml, which signs it
 # for the updater in the protected `release` environment. Actions are
 # pinned to commits, since what this builds gets signed.
+#
+# THE PROXY DLL (release day): variable TPF3MP_PROXY_DLL, or the input
+# proxy_dll of a run by hand, names the DLL the game loads from its own
+# folder that the Windows proxy stands in for, such as `alut.dll`. It is
+# the one setting this workflow needs from the release-day investigation
+# (docs/DAY_ONE.md). Unset, the Windows package carries no proxy, and
+# `tpf3mp-agent install-hook` then installs no hook on Windows: it fails
+# closed. The proxy's exports come from packaging/windows/proxy/<stem>.def
+# (written by tpf3mp-proxygen from the game's DLL) or, for a Windows
+# system DLL, from the runner's copy.
 on:
   workflow_dispatch:
+    inputs:
+      proxy_dll:
+        description: "The game DLL the Windows proxy stands in for, such as alut.dll; overrides the variable TPF3MP_PROXY_DLL"
+        required: false
+        default: ""
   push:
     branches: [main]
 
@@ -67,6 +82,8 @@ jobs:
       TPF3MP_DEFAULT_SERVER: ${{ vars.TPF3MP_DEFAULT_SERVER }}
       TPF3MP_UPDATE_PUBLIC_KEY: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
       TPF3MP_REPOSITORY: ${{ github.repository }}
+      # The DLL the Windows proxy stands in for; see the top of this file.
+      TPF3MP_PROXY_DLL: ${{ inputs.proxy_dll || vars.TPF3MP_PROXY_DLL }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -92,6 +109,42 @@ jobs:
           cargo build --release --locked -p tpf3mp-launcher -p tpf3mp-agent -p tpf3mp-server -p tpf3mp-hook
           # Stands in for the game in playtests until it is out.
           cargo build --release --locked -p tpf3mp-testkit --bin tpf3mp-fakegame
+      - name: Build the proxy DLL
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="$TPF3MP_PROXY_DLL"
+          if [ -z "$name" ]; then
+            echo "::warning::TPF3MP_PROXY_DLL is not set: the Windows package carries no proxy DLL, so its hook cannot be installed"
+            exit 0
+          fi
+          if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*\.[dD][lL][lL]$ ]]; then
+            echo "::error::TPF3MP_PROXY_DLL must be a DLL's file name, such as alut.dll"
+            exit 1
+          fi
+          stem="${name%.*}"
+          def="packaging/windows/proxy/$stem.def"
+          if [ -f "$def" ]; then
+            source="$def"
+          elif [ -f "/c/Windows/System32/$name" ]; then
+            source="/c/Windows/System32/$name"
+          else
+            echo "::error::no exports for $name: commit $def, written by tpf3mp-proxygen from the game's $name"
+            exit 1
+          fi
+          crate="$RUNNER_TEMP/proxy-crate"
+          # Outside the workspace, which the generated crate is not part of.
+          cargo run --release --locked -p tpf3mp-proxygen -- "$source" "$crate" "$stem" --load-hook tpf3mp_hook.dll
+          CARGO_TARGET_DIR="$RUNNER_TEMP/proxy-target" cargo build --release --offline --manifest-path "$crate/Cargo.toml"
+          built=("$RUNNER_TEMP"/proxy-target/release/*.dll)
+          if [ "${#built[@]}" -ne 1 ] || [ ! -f "${built[0]}" ]; then
+            echo "::error::the proxy build left no single DLL"
+            exit 1
+          fi
+          mkdir -p proxy-out
+          cp "${built[0]}" "proxy-out/$name"
+          echo "built the proxy for $name from $source"
       - name: Package
         shell: bash
         env:
@@ -101,6 +154,14 @@ jobs:
           dir="tpf3mp-${VERSION}-${{ matrix.name }}"
           mkdir -p "$dir"
           cp README.md LICENSE docs/PLAYING.md "$dir/"
+          # The Lua mod, once the repository has it; install-hook copies it
+          # into the game's mods folder.
+          if [ -d mod/tpf3mp_1 ]; then
+            mkdir -p "$dir/mod"
+            cp -R mod/tpf3mp_1 "$dir/mod/"
+          else
+            echo "::notice::no mod/tpf3mp_1 in the repository yet: the package carries no Lua mod"
+          fi
           # Tells the launcher's updater this folder is an installed package.
           printf '{"version":"%s","platform":"%s"}\n' "$VERSION" "${{ matrix.name }}" \
             > "$dir/tpf3mp-package.json"
@@ -109,6 +170,12 @@ jobs:
               cp target/release/tpf3mp-launcher.exe "$dir/TPF3-MP.exe"
               cp target/release/tpf3mp-agent.exe target/release/tpf3mp-server.exe \
                  target/release/tpf3mp-fakegame.exe target/release/tpf3mp_hook.dll "$dir/"
+              cp packaging/windows/install-into-game.bat "$dir/"
+              # proxy/<the DLL it stands in for>, when it was built.
+              if [ -d proxy-out ]; then
+                mkdir -p "$dir/proxy"
+                cp proxy-out/*.dll "$dir/proxy/"
+              fi
               7z a "$dir.zip" "$dir" > /dev/null
               echo "archive=$dir.zip" >> "$GITHUB_ENV"
               ;;

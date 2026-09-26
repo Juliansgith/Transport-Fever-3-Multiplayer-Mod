@@ -8,6 +8,14 @@
 //! (`name=foo_real.name`), the same mechanism the TPF2 `alut.dll` proxy used,
 //! so the proxy needs no code of its own beyond an optional load hook.
 //!
+//! The proxy can also load the hook: given a hook file name, its `DllMain`
+//! loads that library from the proxy's own folder as the game loads the
+//! proxy, before the game's entry point runs, as TPF2's `alut.dll` did.
+//!
+//! A proxy is generated from the DLL itself, or from the `.def` a previous
+//! run wrote ([`parse_def`]): the export names are all a proxy needs, so a
+//! release can be built from the `.def` without the game's DLL at hand.
+//!
 //! Parsing is pure byte reading over the file image (see [`parse_exports`]);
 //! generation is pure string building (see [`generate`]). Neither needs to run
 //! on Windows, so the whole crate builds and unit-tests on every platform; only
@@ -29,6 +37,8 @@ pub enum ProxyError {
     Truncated,
     #[error("the export table is implausibly large ({0} functions)")]
     TooManyExports(u32),
+    #[error("line {line} of the .def is not an export this generator writes: {text}")]
+    Def { line: usize, text: String },
 }
 
 /// One exported symbol.
@@ -145,6 +155,17 @@ pub struct ProxyFiles {
 
 /// Builds the proxy source for `proxy_stem.dll` forwarding to `real_stem.dll`.
 pub fn generate(exports: &Exports, proxy_stem: &str, real_stem: &str) -> ProxyFiles {
+    generate_with(exports, proxy_stem, real_stem, None)
+}
+
+/// Like [`generate`], and with `load_hook`, the proxy also loads that DLL
+/// from its own folder when the game loads the proxy.
+pub fn generate_with(
+    exports: &Exports,
+    proxy_stem: &str,
+    real_stem: &str,
+    load_hook: Option<&str>,
+) -> ProxyFiles {
     let lib_name = sanitize_ident(proxy_stem);
     let def_file_name = format!("{proxy_stem}.def");
 
@@ -188,19 +209,21 @@ pub fn generate(exports: &Exports, proxy_stem: &str, real_stem: &str) -> ProxyFi
     // proxy's `#pragma comment(linker, "/export:...")` does. This coexists with
     // the `.def` rustc generates for the cdylib, unlike passing a second `/DEF`.
     let directive_len = directives.len();
-    let lib_rs = format!(
+    let mut lib_rs = format!(
         "//! Generated proxy for `{proxy_stem}.dll`, forwarding every export to\n\
          //! `{real_stem}.dll`. Rename the stock `{proxy_stem}.dll` to\n\
          //! `{real_stem}.dll` and drop the built `{proxy_stem}.dll` beside it.\n\
          //!\n\
          //! The export forwarders are emitted as `/EXPORT` linker directives in\n\
-         //! the `.drectve` section (mirroring `{def_file_name}`). Add a `DllMain`\n\
-         //! here if the proxy also needs to bootstrap the hook.\n\
+         //! the `.drectve` section (mirroring `{def_file_name}`).\n\
          \n\
          #[used]\n\
          #[unsafe(link_section = \".drectve\")]\n\
          static EXPORT_DIRECTIVES: [u8; {directive_len}] = *b\"{directives}\";\n"
     );
+    if let Some(hook) = load_hook {
+        lib_rs.push_str(&hook_loader(hook));
+    }
 
     ProxyFiles {
         def,
@@ -210,6 +233,61 @@ pub fn generate(exports: &Exports, proxy_stem: &str, real_stem: &str) -> ProxyFi
     }
 }
 
+/// A `DllMain` that loads `hook` from the proxy's own folder. It runs under
+/// the loader lock, before the game's entry point, so the hook is in the
+/// process before any game thread could be inside a target. The hook's own
+/// `DllMain` only starts a thread, which is safe to do there.
+fn hook_loader(hook: &str) -> String {
+    let units: Vec<String> = hook.encode_utf16().map(|unit| unit.to_string()).collect();
+    format!(
+        r#"
+/// The hook this proxy loads from its own folder: `{hook}`.
+const HOOK: [u16; {len}] = [{units}];
+
+#[link(name = "kernel32")]
+unsafe extern "system" {{
+    fn DisableThreadLibraryCalls(module: *mut core::ffi::c_void) -> i32;
+    fn GetModuleFileNameW(module: *mut core::ffi::c_void, name: *mut u16, size: u32) -> u32;
+    fn LoadLibraryW(name: *const u16) -> *mut core::ffi::c_void;
+}}
+
+/// On attach, loads the hook from this proxy's folder. A missing hook never
+/// fails the proxy: the game then runs as it would without TPF3-MP.
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "system" fn DllMain(
+    module: *mut core::ffi::c_void,
+    reason: u32,
+    _reserved: *mut core::ffi::c_void,
+) -> i32 {{
+    const DLL_PROCESS_ATTACH: u32 = 1;
+    if reason == DLL_PROCESS_ATTACH {{
+        // SAFETY: the handle is the one the loader passed; the buffer is
+        // valid for its length, and the path passed on ends in a NUL.
+        unsafe {{
+            DisableThreadLibraryCalls(module);
+            let mut path = vec![0u16; 32768];
+            let len = GetModuleFileNameW(module, path.as_mut_ptr(), path.len() as u32) as usize;
+            if len > 0 && len < path.len() {{
+                let folder = path[..len]
+                    .iter()
+                    .rposition(|&unit| unit == u16::from(b'\\') || unit == u16::from(b'/'))
+                    .map_or(0, |separator| separator + 1);
+                path.truncate(folder);
+                path.extend_from_slice(&HOOK);
+                path.push(0);
+                LoadLibraryW(path.as_ptr());
+            }}
+        }}
+    }}
+    1
+}}
+"#,
+        len = units.len(),
+        units = units.join(", "),
+    )
+}
+
 /// Writes a generated proxy crate into `dir`, returning the crate root.
 pub fn write_proxy(
     dir: &Path,
@@ -217,12 +295,88 @@ pub fn write_proxy(
     proxy_stem: &str,
     real_stem: &str,
 ) -> io::Result<PathBuf> {
-    let files = generate(exports, proxy_stem, real_stem);
+    write_proxy_with(dir, exports, proxy_stem, real_stem, None)
+}
+
+/// Like [`write_proxy`], with the proxy loading `load_hook` (see
+/// [`generate_with`]).
+pub fn write_proxy_with(
+    dir: &Path,
+    exports: &Exports,
+    proxy_stem: &str,
+    real_stem: &str,
+    load_hook: Option<&str>,
+) -> io::Result<PathBuf> {
+    let files = generate_with(exports, proxy_stem, real_stem, load_hook);
     std::fs::create_dir_all(dir.join("src"))?;
     std::fs::write(dir.join("Cargo.toml"), files.cargo_toml)?;
     std::fs::write(dir.join("src").join("lib.rs"), files.lib_rs)?;
     std::fs::write(dir.join(&files.def_file_name), files.def)?;
     Ok(dir.to_path_buf())
+}
+
+/// Reads the exports back from a `.def` this generator wrote: named
+/// forwarders (`name=real.name`) and ordinal-only ones
+/// (`proxy_ordinal_7=real.#7 @7 NONAME`). Comments and blank lines are
+/// skipped; anything else is refused rather than guessed at.
+pub fn parse_def(text: &str) -> Result<Exports, ProxyError> {
+    let mut entries = Vec::new();
+    let mut in_exports = false;
+    for (index, raw) in text.lines().enumerate() {
+        let line = raw.split(';').next().unwrap_or_default().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let refuse = || ProxyError::Def {
+            line: index + 1,
+            text: raw.to_owned(),
+        };
+        if !in_exports {
+            if line == "EXPORTS" {
+                in_exports = true;
+                continue;
+            }
+            return Err(refuse());
+        }
+        let mut words = line.split_whitespace();
+        let forward = words.next().ok_or_else(refuse)?;
+        let (name, target) = forward.split_once('=').ok_or_else(refuse)?;
+        let (_, symbol) = target.rsplit_once('.').ok_or_else(refuse)?;
+        let rest: Vec<&str> = words.collect();
+        let export = match symbol.strip_prefix('#') {
+            Some(ordinal) => {
+                let ordinal: u16 = ordinal.parse().map_err(|_| refuse())?;
+                let tail = format!("@{ordinal}");
+                if rest != [tail.as_str(), "NONAME"] {
+                    return Err(refuse());
+                }
+                Export {
+                    name: None,
+                    ordinal,
+                    forwarder: false,
+                }
+            }
+            None => {
+                if name != symbol || name.is_empty() || !rest.is_empty() {
+                    return Err(refuse());
+                }
+                Export {
+                    name: Some(name.to_owned()),
+                    ordinal: 0,
+                    forwarder: false,
+                }
+            }
+        };
+        entries.push(export);
+    }
+    if entries.is_empty() {
+        return Err(ProxyError::NoExports);
+    }
+    Ok(Exports {
+        module_name: String::new(),
+        base: 1,
+        entries,
+    })
 }
 
 fn sanitize_ident(stem: &str) -> String {
@@ -402,6 +556,58 @@ mod tests {
         assert!(files.lib_rs.contains(".drectve"));
         assert!(files.lib_rs.contains("/EXPORT:alutInit=alut_real.alutInit"));
         assert!(files.lib_rs.contains("/EXPORT:alutExit=alut_real.alutExit"));
+    }
+
+    #[test]
+    fn a_proxy_can_load_the_hook() {
+        let image = export_pe("alut.dll", &["alutInit"]);
+        let exports = parse_exports(&image).unwrap();
+        let plain = generate(&exports, "alut", "alut_real");
+        assert!(!plain.lib_rs.contains("DllMain"), "no loader unless asked");
+        let loading = generate_with(&exports, "alut", "alut_real", Some("tpf3mp_hook.dll"));
+        assert!(loading.lib_rs.contains("fn DllMain"));
+        assert!(loading.lib_rs.contains("LoadLibraryW"));
+        let units: Vec<String> = "tpf3mp_hook.dll"
+            .encode_utf16()
+            .map(|unit| unit.to_string())
+            .collect();
+        assert!(loading.lib_rs.contains(&format!("[{}]", units.join(", "))));
+        assert_eq!(loading.def, plain.def, "the same forwarders");
+    }
+
+    #[test]
+    fn a_def_reads_back_the_exports_it_was_written_from() {
+        let mut exports = parse_exports(&export_pe("alut.dll", &["alutInit", "alutExit"])).unwrap();
+        exports.entries.push(Export {
+            name: None,
+            ordinal: 9,
+            forwarder: false,
+        });
+        let def = generate(&exports, "alut", "alut_real").def;
+        let read = parse_def(&def).unwrap();
+        assert_eq!(generate(&read, "alut", "alut_real").def, def);
+        assert_eq!(
+            read.named().map(|(name, _)| name).collect::<Vec<_>>(),
+            ["alutInit", "alutExit"]
+        );
+        assert!(
+            read.entries
+                .iter()
+                .any(|e| e.name.is_none() && e.ordinal == 9)
+        );
+    }
+
+    #[test]
+    fn a_def_with_anything_else_is_refused() {
+        assert!(matches!(
+            parse_def("; nothing\n"),
+            Err(ProxyError::NoExports)
+        ));
+        assert!(parse_def("LIBRARY alut\nEXPORTS\n a=b.a\n").is_err());
+        assert!(parse_def("EXPORTS\n a=b.c\n").is_err(), "a renamed export");
+        assert!(parse_def("EXPORTS\n a\n").is_err(), "not a forwarder");
+        assert!(parse_def("EXPORTS\n x=b.#3 @4 NONAME\n").is_err());
+        assert!(parse_def("EXPORTS\n a=b.a PRIVATE\n").is_err());
     }
 
     #[test]
