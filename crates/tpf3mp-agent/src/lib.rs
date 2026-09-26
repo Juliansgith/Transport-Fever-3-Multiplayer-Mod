@@ -6,6 +6,7 @@ pub mod bridge;
 pub mod content;
 mod follower;
 pub mod launcher;
+pub mod logs;
 mod playout;
 pub mod save_check;
 pub mod transfer;

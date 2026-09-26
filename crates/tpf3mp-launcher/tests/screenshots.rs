@@ -18,7 +18,7 @@ use tpf3mp_agent::launcher::{
     RulesChoice, State, World,
 };
 use tpf3mp_launcher::{
-    app::{Extras, LauncherApp},
+    app::{CollectLogs, Extras, LauncherApp},
     backend::Backend,
 };
 
@@ -41,6 +41,12 @@ fn render(name: &str, state: State) {
         Still(RefCell::new(state)),
         Extras {
             logs: Some(PathBuf::from("logs")),
+            collect: Some(CollectLogs {
+                data_dir: PathBuf::from("data"),
+                out_dir: PathBuf::from("out"),
+                reveal: false,
+                game: false,
+            }),
             updater: None,
         },
     );

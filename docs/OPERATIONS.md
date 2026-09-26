@@ -94,6 +94,12 @@ disk. The log never contains IP addresses or invite tokens.
   `--for <ID>` for one session, player or room), the container's state
   (restarts, out of memory), `/healthz`, `/metrics`, and the host's disk and
   memory. It holds no secrets and can be shared.
+- **From the player:** ask for the zip the launcher's **Collect logs**
+  writes (or `tpf3mp-agent collect-logs`), with their support ID. Its
+  `manifest.txt` names the player's versions, system and support ID, and
+  lists the launcher's, the hook's and the game's logs it holds (see
+  "Sending your logs" in [PLAYING.md](PLAYING.md)). Grep your log for the
+  support ID to put the two side by side.
 - **For a log collector** (Loki, Elasticsearch, …): set
   `TPF3MP_LOG_FORMAT: json` in `compose.yaml` (`--log-format json`), for
   one JSON object per line with the same fields.

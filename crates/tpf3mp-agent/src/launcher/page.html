@@ -146,6 +146,12 @@
     <h2>Notices</h2>
     <div id="notices"></div>
   </section>
+
+  <div class="row">
+    <button id="collect-button" class="secondary"
+      title="Put TPF3-MP's logs and the game's into one zip for a bug report. Keys and tokens are never included.">Collect logs</button>
+    <span id="collect-result" class="muted"></span>
+  </div>
 </main>
 <script>
 "use strict";
@@ -405,6 +411,20 @@ function sendChat() {
   act({ action: "chat", text: value });
 }
 $("chat-button").onclick = sendChat;
+$("collect-button").onclick = async () => {
+  $("collect-button").disabled = true;
+  text($("collect-result"), "collecting…");
+  try {
+    const response = await fetch("/api/collect-logs", {
+      method: "POST", headers: { "X-Launcher-Token": token },
+    });
+    const answer = await response.json();
+    text($("collect-result"), answer.error ? answer.error : "saved " + answer.path);
+  } catch (error) {
+    text($("collect-result"), "the launcher is not running");
+  }
+  $("collect-button").disabled = false;
+};
 $("chat-text").onkeydown = (event) => { if (event.key === "Enter") sendChat(); };
 
 refresh();

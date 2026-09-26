@@ -2,7 +2,11 @@
 //! connect, create or join a room, get ready, play, drawn from the
 //! launcher's [`State`] on every frame.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
 
 use eframe::egui::{
     self, Align, Color32, ComboBox, Frame, Id, Layout, Modal, ProgressBar, RichText, ScrollArea,
@@ -38,8 +42,34 @@ const NOTICES_SHOWN: usize = 8;
 pub struct Extras {
     /// Where the log files are, for "Open logs folder".
     pub logs: Option<PathBuf>,
+    /// Where "Collect logs" reads from and writes its zip; `None` hides
+    /// the button.
+    pub collect: Option<CollectLogs>,
     /// Checks for and installs new versions; `None` in tests.
     pub updater: Option<Updater>,
+}
+
+/// Where "Collect logs" works.
+#[derive(Debug, Clone)]
+pub struct CollectLogs {
+    /// TPF3-MP's per-user data directory.
+    pub data_dir: PathBuf,
+    /// Where the zip goes: the Downloads folder, normally.
+    pub out_dir: PathBuf,
+    /// Show the zip in the file manager once written.
+    pub reveal: bool,
+    /// Look for the game's logs and crash dumps too.
+    pub game: bool,
+}
+
+/// How the last "Collect logs" went.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Collecting {
+    #[default]
+    Idle,
+    Busy,
+    Done(PathBuf),
+    Failed(String),
 }
 
 /// A question the window asks before acting.
@@ -69,6 +99,8 @@ pub struct LauncherApp<B> {
     confirm: Option<Confirm>,
     /// The player confirmed quitting during a game.
     quitting: bool,
+    /// The log bundle being written, or the last one.
+    collecting: Arc<Mutex<Collecting>>,
 }
 
 impl<B: Backend> LauncherApp<B> {
@@ -88,7 +120,49 @@ impl<B: Backend> LauncherApp<B> {
             offered: false,
             confirm: None,
             quitting: false,
+            collecting: Arc::default(),
         }
+    }
+
+    /// How the last "Collect logs" went.
+    pub fn collecting(&self) -> Collecting {
+        self.collecting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Writes the log bundle on a thread of its own, since it reads up to
+    /// tens of megabytes.
+    fn collect_logs(&self, ctx: &egui::Context, support_id: Option<String>) {
+        let Some(collect) = self.extras.collect.clone() else {
+            return;
+        };
+        let status = Arc::clone(&self.collecting);
+        *status.lock().unwrap_or_else(PoisonError::into_inner) = Collecting::Busy;
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let mut bundle = tpf3mp_agent::logs::Collect::new(&collect.data_dir);
+            bundle.support_id = support_id;
+            if !collect.game {
+                bundle.candidates = tpf3mp_agent::logs::own_candidates(&collect.data_dir);
+            }
+            let outcome = match bundle.write(&collect.out_dir) {
+                Ok(bundle) => {
+                    tracing::info!(path = %bundle.path.display(), "collected the logs");
+                    if collect.reveal {
+                        tpf3mp_agent::launcher::setup::reveal_file(&bundle.path);
+                    }
+                    Collecting::Done(bundle.path)
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "cannot collect the logs");
+                    Collecting::Failed(error.to_string())
+                }
+            };
+            *status.lock().unwrap_or_else(PoisonError::into_inner) = outcome;
+            ctx.request_repaint();
+        });
     }
 
     pub fn backend(&self) -> &B {
@@ -106,7 +180,7 @@ impl<B: Backend> LauncherApp<B> {
         }
         self.guard_quit(ui.ctx(), &state);
         egui::Panel::top("header").show(ui, |ui| self.header(ui, &state));
-        egui::Panel::bottom("footer").show(ui, |ui| self.footer(ui));
+        egui::Panel::bottom("footer").show(ui, |ui| self.footer(ui, &state));
         egui::CentralPanel::default_margins().show(ui, |ui| {
             ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -158,7 +232,7 @@ impl<B: Backend> LauncherApp<B> {
         });
     }
 
-    fn footer(&mut self, ui: &mut Ui) {
+    fn footer(&mut self, ui: &mut Ui, state: &State) {
         ui.horizontal(|ui| {
             if let Some(logs) = &self.extras.logs
                 && ui
@@ -167,6 +241,37 @@ impl<B: Backend> LauncherApp<B> {
                     .clicked()
             {
                 tpf3mp_agent::launcher::setup::open_folder(logs);
+            }
+            if self.extras.collect.is_some() {
+                let collecting = self.collecting();
+                let busy = collecting == Collecting::Busy;
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Collect logs"))
+                    .on_hover_text(
+                        "Put TPF3-MP's logs and the game's into one zip for a bug report.                          Keys and tokens are never included.",
+                    )
+                    .clicked()
+                {
+                    self.collect_logs(ui.ctx(), state.support_id.clone());
+                }
+                match collecting {
+                    Collecting::Idle => {}
+                    Collecting::Busy => {
+                        ui.label(RichText::new("collecting…").weak());
+                    }
+                    Collecting::Done(path) => {
+                        let name = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        ui.label(RichText::new(format!("saved {name}")).weak())
+                            .on_hover_text(path.display().to_string());
+                    }
+                    Collecting::Failed(error) => {
+                        ui.label(RichText::new("cannot collect the logs").color(ui.visuals().error_fg_color))
+                            .on_hover_text(error);
+                    }
+                }
             }
             if let Some(updater) = &self.extras.updater {
                 update_line(ui, updater);

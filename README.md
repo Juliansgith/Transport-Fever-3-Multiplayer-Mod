@@ -82,7 +82,9 @@ with [docs/PLAYING.md](docs/PLAYING.md); server operators with
   (`tpf3mp-launcher`, drawn with egui) to connect, create or join a room,
   get ready, start, chat, and follow the game: fetching the world, loading,
   playing. It shows what to change when a player's mods differ, the support
-  ID the server's log knows the player by, and the logs folder. It updates
+  ID the server's log knows the player by, and the logs folder, and
+  collects the player's and the game's logs into one zip for a bug report
+  (never keys or tokens). It updates
   itself from the project's releases, installing only what the project
   signed. `tpf3mp-agent launcher` serves the same launcher as a page in the
   browser, on the loopback interface only, to the page that holds its
