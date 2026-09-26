@@ -37,8 +37,10 @@ launcher connects out to the server, and everything goes through it.
    Windows it also puts a small proxy DLL in place of one of the game's
    own, which loads the hook as the game starts; the game's own is kept
    as `<name>_real.dll`. On Linux it prints the Steam launch option that
-   loads the hook. It refuses a folder that is not the game's, or where
-   another mod already replaced that DLL, and changes nothing then.
+   loads the hook. It refuses a folder that is not the game's, where
+   another mod already replaced that DLL, or where the game's own
+   `<name>_real.dll` has gone missing, and changes nothing then; for the
+   last, have Steam verify the game's files and install again.
    `--uninstall` takes everything out again and puts the game's own DLL
    back.
 

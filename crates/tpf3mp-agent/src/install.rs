@@ -5,11 +5,14 @@
 //! Lua mod in the game's mods folder.
 //!
 //! It fails closed: a game folder without the DLL the proxy stands in for,
-//! or with a `<name>_real.dll` TPF3-MP did not put there (another mod's
-//! proxy, say), is refused before anything changes. What it installed is
-//! recorded in the game folder (`tpf3mp-install.json`), so a reinstall
-//! replaces only its own files, a game update that restored the original
-//! DLL is noticed, and `--uninstall` puts everything back.
+//! with a `<name>_real.dll` TPF3-MP did not put there (another mod's
+//! proxy, say), or whose original went missing from behind the proxy, is
+//! refused before anything changes. What it installed is recorded in the
+//! game folder (`tpf3mp-install.json`), so a reinstall replaces only its
+//! own files, a game update that restored the original DLL is noticed, and
+//! `--uninstall` puts everything back. A record that names anything but
+//! TPF3-MP's own files is refused, since the record says what to rename
+//! and delete.
 
 use std::{
     fs, io,
@@ -156,14 +159,11 @@ impl Install {
             );
         };
         let name = file_name(path)?;
-        let Some(stem) = name
-            .strip_suffix(".dll")
-            .or_else(|| name.strip_suffix(".DLL"))
-        else {
+        let Some(real) = real_name(&name) else {
             bail!("{} is not a DLL", path.display());
         };
         Ok(Some(PackageProxy {
-            real: format!("{stem}_real.dll"),
+            real,
             name,
             path: path.clone(),
         }))
@@ -215,13 +215,27 @@ fn check_proxy_target(
             game.display()
         );
     }
-    let ours = installed.is_some_and(|installed| installed.name == proxy.name);
-    if game.join(&proxy.real).exists() && !ours {
+    let ours = installed.filter(|installed| installed.name == proxy.name);
+    let real = game.join(&proxy.real);
+    if real.exists() && ours.is_none() {
         bail!(
             "{} already has a {} that TPF3-MP did not put there, perhaps another mod's; \
              remove that mod, or have the game verify its files, and install again",
             game.display(),
             proxy.real
+        );
+    }
+    // The proxy forwards to the game's own DLL: with that gone, the game
+    // cannot start, and a new proxy would not change that.
+    if let Some(ours) = ours
+        && !real.exists()
+        && sha256_of(&current)? == ours.sha256
+    {
+        bail!(
+            "the game's own {} is missing from {}: have Steam verify the game's files, \
+             and install again",
+            proxy.real,
+            game.display()
         );
     }
     Ok(())
@@ -271,10 +285,20 @@ fn install_proxy(
 fn restore_proxy(game: &Path, proxy: &InstalledProxy, done: &mut Vec<String>) -> Result<()> {
     let current = game.join(&proxy.name);
     let real = game.join(&proxy.real);
+    let still_ours = current.is_file() && sha256_of(&current)? == proxy.sha256;
     if !real.exists() {
+        if still_ours {
+            // Without the original the proxy only keeps the game from
+            // starting.
+            fs::remove_file(&current).with_context(|| format!("removing {}", current.display()))?;
+            done.push(format!(
+                "removed the proxy {}, but the game's own was missing: \
+                 have Steam verify the game's files",
+                proxy.name
+            ));
+        }
         return Ok(());
     }
-    let still_ours = current.is_file() && sha256_of(&current)? == proxy.sha256;
     if still_ours || !current.exists() {
         remove_file_if_any(&current)?;
         fs::rename(&real, &current)
@@ -293,15 +317,55 @@ fn read_record(game: &Path) -> Result<Record> {
 
 fn read_record_if_any(game: &Path) -> Result<Option<Record>> {
     let path = game.join(RECORD);
-    match fs::read(&path) {
-        Ok(bytes) => {
-            Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
-                format!("{} is damaged", path.display())
-            })?))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let record: Record =
+        serde_json::from_slice(&bytes).with_context(|| format!("{} is damaged", path.display()))?;
+    if !record.names_only_its_own() {
+        bail!(
+            "{} names files TPF3-MP does not install, so nothing was changed",
+            path.display()
+        );
     }
+    Ok(Some(record))
+}
+
+impl Record {
+    /// Whether it names only what TPF3-MP installs, never a path elsewhere:
+    /// its record says what to rename and delete.
+    fn names_only_its_own(&self) -> bool {
+        let hook = self
+            .hook
+            .as_deref()
+            .is_none_or(|hook| HOOK_FILES.contains(&hook));
+        let proxy = self
+            .proxy
+            .as_ref()
+            .is_none_or(|proxy| real_name(&proxy.name).is_some_and(|real| real == proxy.real));
+        let lua_mod = self
+            .lua_mod
+            .as_ref()
+            .is_none_or(|path| path.file_name().is_some_and(|name| name == MOD_NAME));
+        hook && proxy && lua_mod
+    }
+}
+
+/// The name the game's own DLL is kept under beside the proxy,
+/// `<stem>_real.dll`, if `name` is a plain DLL file name.
+fn real_name(name: &str) -> Option<String> {
+    if !name.is_ascii() || name.len() <= ".dll".len() {
+        return None;
+    }
+    let (stem, extension) = name.split_at(name.len() - ".dll".len());
+    let plain = extension.eq_ignore_ascii_case(".dll")
+        && !stem.starts_with('.')
+        && stem
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    plain.then(|| format!("{stem}_real.dll"))
 }
 
 fn write_record(game: &Path, record: &Record) -> Result<()> {
@@ -447,6 +511,61 @@ mod tests {
         fs::remove_file(game.join("alut.dll")).unwrap();
         assert!(install.run().is_err());
         assert!(!game.join(RECORD).exists());
+    }
+
+    #[test]
+    fn a_record_that_names_other_files_changes_nothing() {
+        let (_root, install) = setup();
+        let game = install.game_dir.clone();
+        install.run().unwrap();
+        let record = read(&game.join(RECORD));
+        for (from, to) in [
+            ("\"tpf3mp_hook.dll\"", "\"../elsewhere.dll\""),
+            ("\"alut_real.dll\"", "\"game.exe\""),
+            ("\"alut.dll\"", "\"../alut.dll\""),
+        ] {
+            assert!(record.contains(from), "{record}");
+            fs::write(game.join(RECORD), record.replace(from, to)).unwrap();
+            assert!(install.run().is_err(), "{to}");
+            assert!(uninstall(&game).is_err(), "{to}");
+            assert_eq!(read(&game.join("alut.dll")), "proxy 1");
+            assert_eq!(read(&game.join("alut_real.dll")), "original");
+            assert_eq!(read(&game.join("tpf3mp_hook.dll")), "hook");
+            assert_eq!(read(&game.join("game.exe")), "exe");
+        }
+    }
+
+    #[test]
+    fn a_proxy_whose_original_is_gone_is_taken_out_not_updated() {
+        let (_root, install) = setup();
+        let game = install.game_dir.clone();
+        install.run().unwrap();
+        fs::remove_file(game.join("alut_real.dll")).unwrap();
+        write(&install.package.join("proxy/alut.dll"), "proxy 2");
+        let error = install.run().unwrap_err();
+        assert!(format!("{error:#}").contains("verify"), "{error:#}");
+        assert_eq!(read(&game.join("alut.dll")), "proxy 1");
+
+        let done = uninstall(&game).unwrap();
+        assert!(done.iter().any(|line| line.contains("verify")), "{done:?}");
+        assert!(!game.join("alut.dll").exists());
+        assert!(!game.join(RECORD).exists());
+    }
+
+    #[test]
+    fn only_a_plain_dll_name_is_a_proxy_name() {
+        assert_eq!(real_name("alut.dll").as_deref(), Some("alut_real.dll"));
+        assert_eq!(real_name("D3D11.DLL").as_deref(), Some("D3D11_real.dll"));
+        for name in [
+            "alut.exe",
+            ".dll",
+            "..dll",
+            "../alut.dll",
+            "a\\b.dll",
+            "älut.dll",
+        ] {
+            assert_eq!(real_name(name), None, "{name}");
+        }
     }
 
     #[test]
