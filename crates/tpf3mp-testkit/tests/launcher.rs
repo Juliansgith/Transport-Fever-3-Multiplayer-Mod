@@ -212,6 +212,17 @@ async fn two_players_play_a_room_from_their_launchers() {
     )
     .await;
     assert_eq!(status, 401, "a wrong token");
+    // Another web page may not make the launcher write a zip of the logs.
+    let (status, _) = request(
+        ann_page.address,
+        &ann_page.address.to_string(),
+        "POST",
+        "/api/collect-logs",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 401, "collecting logs without the token");
     let (status, _) = request(
         ann_page.address,
         "evil.example:80",

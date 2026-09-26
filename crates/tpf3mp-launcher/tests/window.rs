@@ -11,7 +11,7 @@ use tpf3mp_agent::launcher::{
     Action, Connection, Differences, Member, MemberContent, Phase, Room, RulesChoice, State,
 };
 use tpf3mp_launcher::{
-    app::{Extras, LauncherApp},
+    app::{CollectLogs, Collecting, Extras, LauncherApp},
     backend::Backend,
 };
 
@@ -36,17 +36,22 @@ impl Backend for Recorder {
 }
 
 fn window(state: State) -> Harness<'static, LauncherApp<Recorder>> {
+    window_with(
+        state,
+        Extras {
+            logs: None,
+            collect: None,
+            updater: None,
+        },
+    )
+}
+
+fn window_with(state: State, extras: Extras) -> Harness<'static, LauncherApp<Recorder>> {
     let recorder = Recorder {
         state: RefCell::new(state),
         ..Recorder::default()
     };
-    let app = LauncherApp::new(
-        recorder,
-        Extras {
-            logs: None,
-            updater: None,
-        },
-    );
+    let app = LauncherApp::new(recorder, extras);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(900.0, 1000.0))
         .build_ui_state(|ui, app: &mut LauncherApp<Recorder>| app.show(ui), app);
@@ -263,4 +268,62 @@ fn chat_is_sent_to_the_room() {
             text: "good luck".into()
         }]
     );
+}
+
+#[test]
+fn collect_logs_writes_a_zip_with_the_support_id_and_no_key() {
+    let root = std::env::temp_dir().join(format!("tpf3mp-window-logs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (data, out) = (root.join("TPF3-MP"), root.join("Downloads"));
+    std::fs::create_dir_all(data.join("logs")).unwrap();
+    std::fs::write(
+        data.join("logs/launcher.2026-09-26.log"),
+        "the launcher starts
+",
+    )
+    .unwrap();
+    std::fs::write(data.join("identity.key"), "PRIVATE").unwrap();
+    let mut window = window_with(
+        State {
+            support_id: Some("s-3f2a".into()),
+            connection: Connection::Connected,
+            ..State::default()
+        },
+        Extras {
+            logs: Some(data.join("logs")),
+            collect: Some(CollectLogs {
+                data_dir: data.clone(),
+                out_dir: out.clone(),
+                reveal: false,
+                game: false,
+            }),
+            updater: None,
+        },
+    );
+    window.get_by_label("Collect logs").click();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let path = loop {
+        window.run_steps(1);
+        match window.state().collecting() {
+            Collecting::Done(path) => break path,
+            Collecting::Failed(error) => panic!("{error}"),
+            _ if std::time::Instant::now() > deadline => panic!("the logs took too long"),
+            _ => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    };
+    window.run_steps(2);
+    assert_eq!(path.parent(), Some(out.as_path()));
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+    let mut names: Vec<String> = zip.file_names().map(str::to_owned).collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["manifest.txt", "tpf3mp/logs/launcher.2026-09-26.log"]
+    );
+    let mut manifest = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("manifest.txt").unwrap(), &mut manifest)
+        .unwrap();
+    assert!(manifest.contains("support ID s-3f2a"), "{manifest}");
+    drop(zip);
+    std::fs::remove_dir_all(&root).unwrap();
 }

@@ -11,7 +11,7 @@ use clap::Parser;
 use eframe::egui;
 use tpf3mp_agent::launcher::{Launcher, LauncherConfig, setup};
 use tpf3mp_launcher::{
-    app::{Extras, LauncherApp},
+    app::{CollectLogs, Extras, LauncherApp},
     backend::Local,
     icon, logs, update,
 };
@@ -77,6 +77,12 @@ fn run(args: Args, logs: Option<PathBuf>) -> Result<()> {
         let _entered = runtime.enter();
         Launcher::start_local(config.clone())
     };
+    let collect = setup::data_dir().ok().map(|data_dir| CollectLogs {
+        out_dir: tpf3mp_agent::logs::default_out_dir(&data_dir),
+        data_dir,
+        reveal: true,
+        game: true,
+    });
     let mut backend = Local::new(launcher.handle(), runtime.handle().clone());
     let updater = update::Updater::start(runtime.handle().clone());
     let options = eframe::NativeOptions {
@@ -101,6 +107,7 @@ fn run(args: Args, logs: Option<PathBuf>) -> Result<()> {
                 backend,
                 Extras {
                     logs,
+                    collect,
                     updater: Some(updater),
                 },
             )))

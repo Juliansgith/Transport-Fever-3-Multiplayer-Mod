@@ -244,7 +244,35 @@ pub(crate) async fn respond(request: &Request, shared: &Shared, page: &Page) -> 
                 Err(_) => Response::error("503 Service Unavailable", "the launcher is stopping"),
             }
         }
+        ("POST", "/api/collect-logs") => {
+            if !authorized(request, page) {
+                return Response::error("401 Unauthorized", "missing or wrong token");
+            }
+            let support_id = api::snapshot(&shared.view(), &shared.status()).support_id;
+            collect_logs(support_id).await
+        }
         _ => Response::error("404 Not Found", "not found"),
+    }
+}
+
+/// Writes the log bundle into the Downloads folder and shows it, for the
+/// page's "Collect logs".
+async fn collect_logs(support_id: Option<String>) -> Response {
+    let collected = tokio::task::spawn_blocking(move || {
+        let data = super::setup::data_dir().map_err(|error| error.to_string())?;
+        let bundle = crate::logs::collect_for_launcher(&data, support_id)
+            .map_err(|error| format!("cannot collect the logs: {error}"))?;
+        super::setup::reveal_file(&bundle.path);
+        Ok::<_, String>(bundle.path)
+    })
+    .await;
+    match collected {
+        Ok(Ok(path)) => Response::json(
+            "200 OK",
+            serde_json::json!({ "path": path.display().to_string() }).to_string(),
+        ),
+        Ok(Err(error)) => Response::error("500 Internal Server Error", &error),
+        Err(_) => Response::error("500 Internal Server Error", "cannot collect the logs"),
     }
 }
 
