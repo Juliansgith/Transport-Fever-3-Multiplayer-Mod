@@ -239,7 +239,9 @@ whether the input delay is 60 or 500 ms.
 These travel on the control stream.
 
 - **`Intent`**: a player action, carrying a client sequence number and an
-  opaque, size-capped payload.
+  opaque, size-capped payload. The game's actions are encoded in it by the
+  action schema (`tpf3mp_proto::action`, described in "The action schema"
+  in [BUILDING.md](BUILDING.md)), which has a version of its own.
   - The server validates it: the room is running, the sender is a member,
     rate and size limits hold, and the ruleset accepts it.
   - Accepted: the intent enters the next turn as a `Command` event. The event

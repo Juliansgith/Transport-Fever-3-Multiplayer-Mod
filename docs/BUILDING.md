@@ -383,6 +383,87 @@ lossless from Lua. Rules:
 - Bridge and tunnel type ride on the segment record, not on a node, and a
   split half keeps them.
 
+## The action schema
+
+What an intent's payload carries: `tpf3mp_proto::action`, version
+`ACTION_SCHEMA_VERSION` (1). The Lua mod builds an action from a captured
+command, the payload travels opaque through the server, and every replica
+resolves it against its own world by the rules above. Everything a TPF2
+command carried as text travels here as typed, bounded fields.
+
+**References.** An action never names an engine entity id. It uses:
+
+- **positions**, in millimetres as `i32` on the game's own axes (±2,147 km,
+  far past the 65.5 km of the largest map), rounded from metres to the
+  nearest millimetre at capture. Tangents are in millimetres too, since their
+  length shapes the curve; unit directions and a construction's rotation
+  are in millionths. Integers keep the payload the same bytes on every
+  platform, and a millimetre is far below every matching tolerance above;
+- **resource file names** (`ResName`, up to 128 bytes): street, track,
+  bridge and tunnel types, construction files, vehicle and stop models;
+- **canonical ids** (`CompanyId`, `LineId`, `VehicleId`, `StationId`),
+  which the server assigns to what an action creates and each replica maps
+  to its own entity.
+
+The acting company is not in the action: the server knows whose command it
+is.
+
+**The actions.** Variants are identified by position; new ones are
+appended.
+
+| action | carries |
+|---|---|
+| `BuildRoad` | street type, bus lane, tram track (none, plain, electric), a polyline |
+| `BuildTrack` | track type, catenary, a polyline |
+| `Bulldoze` | edges of one network by their ends; or a construction by file and position; or a stop, signal or waypoint by its edge, position and model |
+| `BuildConstruction` | file, transform, every parameter (`seed` included), name, and the construction it replaces for a module edit |
+| `BuyVehicle` | the depot by file and position, the consist's model files front to back |
+| `SellVehicle` | vehicles |
+| `CreateLine` | name, colour, stops (station and optional terminal) |
+| `EditLine` | a line and one change: rename, recolour, the whole new stop list, or delete |
+| `AssignLine` | vehicles, the line or none, the first stop |
+| `PlaceStop` | the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, the model |
+| `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
+| `CompanyOp` | create, join, rename or delete a company |
+
+**Polylines.** A road or track build is a polyline, the capture's decisions
+included:
+
+- `vertices`: each a position and how the originator's engine resolved it:
+  `New` (a node attached to nothing), `Node(network)` (the existing node of
+  that network there; a track vertex on a street node is a level crossing),
+  or `Split(edge)` (a new node splitting that edge, named by network and
+  ends; the halves keep the split edge's own type and flags);
+- `links`: the new edges, each two vertex indices, both Hermite tangents and
+  the structure (`Ground`, `Bridge(type)`, `Tunnel(type)`). The split halves
+  the engine emitted are not links: the receiver regenerates them;
+- `removals`: edges of the build's own network replaced in place, an
+  upgrade's or a span the build passes under, by their ends. Split parents
+  are not removals; the split vertex names them.
+
+**Bounds.** Decoding refuses anything out of bounds before it allocates:
+at most 512 vertices and 512 links per build, 256 edges per removal list or
+bulldoze, 1,024 construction parameters, 64 models per consist, 256
+vehicles per sell or assignment, 256 stops per line, 8,192 terrain cells,
+and the 48 KiB payload over all of it. Text follows the protocol's rules (no
+control characters). A polyline must have a link, and every link must join
+two different vertices it has; a terrain grid must fill whole rows.
+Construction parameters are flattened to paths (`modules[3801].name`), each
+an integer, a fixed-point number in millionths, a boolean or text.
+
+**Versions.** The payload is the schema version, then the action, both
+postcard. A replica refuses a payload of another version rather than guess.
+The schema lives inside the protocol's opaque `Payload`, so changing it does
+not change `PROTOCOL_VERSION`: the server never decodes it in `native`
+rooms, and players in one room run the same mod because their content must
+match. Change the version whenever an existing variant's encoding changes;
+the Lua mod's encoder writes the same bytes and is tested against this
+crate.
+
+Not in version 1: companion spans (an unchanged bridge span the engine
+re-adds), construction street pieces (`ROADC`), paint and the asset brush,
+signals and waypoints as their own placements, vehicle orders beyond a line.
+
 ## Measure these first on a TPF3 build
 
 In the order they were expensive on TPF2:
