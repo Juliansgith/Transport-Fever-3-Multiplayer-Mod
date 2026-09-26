@@ -114,6 +114,7 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-hook` | The library injected into the game. |
 | `crates/tpf3mp-proxygen` | Generates proxy DLLs that load the hook. |
 | `crates/tpf3mp-testkit` | Toy game, bots, network emulator, load tester. |
+| `mod/tpf3mp_1` | The game-side Lua mod: captures builds as actions for the hook. |
 | `tools/` | Release-day reverse-engineering and determinism probes. |
 | `deploy/` | Container image and compose file. |
 | `docs/` | Architecture, protocol, decisions, operations, release-day plan. |
