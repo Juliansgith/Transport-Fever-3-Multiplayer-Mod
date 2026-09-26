@@ -136,6 +136,8 @@ outputs are in `investigation/tpf2-baseline/`. One-time setup:
 | `tools/re/binary_survey.py <bin> -o out.md` | identity, sections+entropy, imports (system vs game-folder, with proxy-loader ranking), exports, TLS callbacks, packer/anti-tamper, RTTI, Lua version, `__FUNCSIG__`/`__FILE__` counts, TPF2-era names, and macOS code-signing posture. Handles PE, ELF and Mach-O. | §1, §2, §5 |
 | `tools/re/name_functions.py <bin> -o dir [--validate spec]` | recovers a symbol map (RVA -> name, source file) from assert strings, build-independent: `.pdata` bounds on PE, LIEF function starts on ELF/Mach-O, x86-64 and arm64 reference resolution. Emits JSON+CSV and Ghidra/x64dbg/IDA scripts. | §2, §6 |
 | `tools/re/diff_builds.py OLD.symbols.json NEW.symbols.json` | which named functions moved, resized, appeared or disappeared between two builds -- run it after a day-two patch to re-verify hook signatures. | §1, §2 |
+| `tools/re/make_profile.py <bin> <symbols.json> NAME ... -o profile.toml` | writes the hook profile for named functions: the build identity, and per function a unique signature with every displacement wildcarded and the exact prologue the detour steals (docs/HOOKS.md, release-day procedure). Refuses what it cannot make safe. x86-64 only. | §2.4, the hook profile |
+| `tools/re/test_make_profile.py [--update]` | checks `make_profile.py` on a synthetic PE and keeps the fixture hookcore's test resolves current. | -- |
 | `tools/re/selftest.py` | validates the ELF / Mach-O / arm64 code paths on synthetic fixtures (no game binary needed). | -- |
 | `tools/probe/script_api_dump/` | game-script mod: dumps the Lua sandbox and `api.*`/`game.interface.*` from the engine and GUI states. | §3 |
 | `tools/probe/determinism_probe/` | game-script mod: hashes the §4 lanes every N steps to a per-instance log. | §4 |
@@ -147,9 +149,12 @@ Release-day order:
 1. **Archive + static (per platform):** run `binary_survey.py` on each build
    (§1 hashes/sizes, §2 loader/packer/Lua/RTTI), then `name_functions.py` on each
    to get the symbol maps and hook-target RVAs (§2.4). Validate known targets
-   with a `--validate` spec once they are located.
+   with a `--validate` spec once they are located, then write the build's hook
+   profile with `make_profile.py` from the binary, its symbol map and the target
+   names.
 2. **On a patch:** re-run `name_functions.py` and `diff_builds.py` the old and new
-   maps; re-verify any hook whose target is listed resized/appeared/disappeared.
+   maps; re-verify any hook whose target is listed resized/appeared/disappeared,
+   and run `make_profile.py` on the new build for its profile.
 3. **Script API (per platform):** `check_lua.py` first, then install the
    `script_api_dump` mod, launch, and collect the engine/GUI dumps (§3).
 4. **Determinism (the D2 calibration):** install `determinism_probe` on two
