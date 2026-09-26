@@ -148,11 +148,11 @@ jobs:
           cp README.md LICENSE docs/PLAYING.md "$dir/"
           # The Lua mod, once the repository has it; install-hook copies it
           # into the game's mods folder.
-          if [ -d mod/tpf3mp ]; then
+          if [ -d mod/tpf3mp_1 ]; then
             mkdir -p "$dir/mod"
-            cp -R mod/tpf3mp "$dir/mod/"
+            cp -R mod/tpf3mp_1 "$dir/mod/"
           else
-            echo "::notice::no mod/tpf3mp in the repository yet: the package carries no Lua mod"
+            echo "::notice::no mod/tpf3mp_1 in the repository yet: the package carries no Lua mod"
           fi
           # Tells the launcher's updater this folder is an installed package.
           printf '{"version":"%s","platform":"%s"}\n' "$VERSION" "${{ matrix.name }}" \

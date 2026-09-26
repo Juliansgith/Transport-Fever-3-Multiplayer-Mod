@@ -24,9 +24,10 @@ pub const RECORD: &str = "tpf3mp-install.json";
 /// The package's folder of the proxy DLL, which holds one file named as
 /// the DLL it stands in for.
 pub const PROXY_DIR: &str = "proxy";
-/// The package's Lua mod: `mod/tpf3mp`.
+/// The package's Lua mod: `mod/tpf3mp_1`. The game wants a mod's folder
+/// name to end in `_<version>`, as TPF2 did.
 pub const MOD_DIR: &str = "mod";
-pub const MOD_NAME: &str = "tpf3mp";
+pub const MOD_NAME: &str = "tpf3mp_1";
 /// The hook library's name on each system.
 const HOOK_FILES: [&str; 3] = [
     "tpf3mp_hook.dll",
@@ -374,8 +375,8 @@ mod tests {
         let package = root.path().join("package");
         write(&package.join("tpf3mp_hook.dll"), "hook");
         write(&package.join("proxy/alut.dll"), "proxy 1");
-        write(&package.join("mod/tpf3mp/mod.lua"), "-- mod");
-        write(&package.join("mod/tpf3mp/res/x.lua"), "-- x");
+        write(&package.join("mod/tpf3mp_1/mod.lua"), "-- mod");
+        write(&package.join("mod/tpf3mp_1/res/x.lua"), "-- x");
         let game = root.path().join("game");
         write(&game.join("game.exe"), "exe");
         write(&game.join("alut.dll"), "original");
@@ -395,7 +396,7 @@ mod tests {
         assert_eq!(read(&game.join("alut.dll")), "proxy 1");
         assert_eq!(read(&game.join("alut_real.dll")), "original");
         assert_eq!(read(&game.join("tpf3mp_hook.dll")), "hook");
-        assert_eq!(read(&game.join("mods/tpf3mp/res/x.lua")), "-- x");
+        assert_eq!(read(&game.join("mods/tpf3mp_1/res/x.lua")), "-- x");
 
         // Again, with a newer proxy: the original stays as it was.
         write(&install.package.join("proxy/alut.dll"), "proxy 2");
@@ -405,7 +406,7 @@ mod tests {
 
         uninstall(&game).unwrap();
         assert_eq!(read(&game.join("alut.dll")), "original");
-        for gone in ["alut_real.dll", "tpf3mp_hook.dll", "mods/tpf3mp", RECORD] {
+        for gone in ["alut_real.dll", "tpf3mp_hook.dll", "mods/tpf3mp_1", RECORD] {
             assert!(!game.join(gone).exists(), "{gone} is left");
         }
         assert!(uninstall(&game).is_err(), "nothing left to uninstall");
@@ -461,7 +462,7 @@ mod tests {
         );
         assert!(!install.game_dir.join("tpf3mp_hook.dll").exists());
         assert_eq!(read(&install.game_dir.join("alut.dll")), "original");
-        assert!(mods.join("tpf3mp/mod.lua").is_file());
+        assert!(mods.join("tpf3mp_1/mod.lua").is_file());
     }
 
     #[test]

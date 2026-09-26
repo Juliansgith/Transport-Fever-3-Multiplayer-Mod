@@ -32,7 +32,8 @@ launcher connects out to the server, and everything goes through it.
      package's folder.
 
    It puts the hook library next to the game's executable and the TPF3-MP
-   mod in the game's `mods` folder (`--mods-dir` names another). On
+   mod in the game's `mods` folder, as `tpf3mp_1` (`--mods-dir` names
+   another folder). On
    Windows it also puts a small proxy DLL in place of one of the game's
    own, which loads the hook as the game starts; the game's own is kept
    as `<name>_real.dll`. On Linux it prints the Steam launch option that
