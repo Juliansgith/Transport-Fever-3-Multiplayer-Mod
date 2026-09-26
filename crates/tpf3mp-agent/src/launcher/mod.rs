@@ -462,6 +462,7 @@ async fn connect_to(
     view.error = None;
     view.name = options.name.as_str().to_owned();
     view.server_version = Some(client.welcome().server_version.as_str().to_owned());
+    view.session = Some(client.welcome().session_id.to_string());
     view.rules = client.welcome().rules.clone();
     drop(view);
     if let Some(file) = &config.remember {

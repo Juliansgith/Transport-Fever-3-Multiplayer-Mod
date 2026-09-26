@@ -59,6 +59,7 @@
   <span id="connection" class="badge">disconnected</span>
   <span id="identity" class="muted"></span>
   <span class="grow"></span>
+  <span id="support-id" class="muted" title="Quote this to the server's operator when something goes wrong"></span>
   <span id="server-version" class="muted"></span>
 </header>
 <main>
@@ -256,6 +257,7 @@ function render(s) {
   text(badge, s.tunneled ? s.connection + " via tunnel" : s.connection);
   badge.className = "badge " + s.connection;
   text($("identity"), s.player ? s.name + " (" + s.player + ")" : s.name);
+  text($("support-id"), s.support_id ? "support ID " + s.support_id : "");
   text($("server-version"), s.server_version ? "server " + s.server_version : "");
   if (s.error) showError(s.error);
   if (!$("server").value && s.server) $("server").value = s.server;

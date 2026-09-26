@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tpf3mp_net::ServerIdentity;
 use tpf3mp_server::{
     AddressRange, Server, ServerConfig, SnapshotConfig, TunnelConfig, serve_admin,
@@ -15,10 +15,24 @@ use tpf3mp_server::{
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+/// How the server writes its log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum LogFormat {
+    /// One line of text per event, for people.
+    Text,
+    /// One JSON object per event, for log collectors.
+    Json,
+}
+
 /// The TPF3-MP dedicated server.
 #[derive(Debug, Parser)]
 #[command(version)]
 struct Args {
+    /// How the log is written to standard output. Either way it never
+    /// contains players' IP addresses or invite tokens.
+    #[arg(long, value_enum, default_value_t = LogFormat::Text, env = "TPF3MP_LOG_FORMAT")]
+    log_format: LogFormat,
+
     /// UDP address to listen on.
     #[arg(long, default_value = "0.0.0.0:29470")]
     listen: SocketAddr,
@@ -154,10 +168,16 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
     let args = Args::parse();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    match args.log_format {
+        LogFormat::Text => tracing_subscriber::fmt().with_env_filter(filter).init(),
+        LogFormat::Json => tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_env_filter(filter)
+            .init(),
+    }
 
     let identity = match (&args.cert, &args.key, &args.dev_self_signed) {
         (Some(cert), Some(key), None) => {
@@ -328,6 +348,22 @@ mod tests {
         let mut argv = vec!["tpf3mp-server", "--dev-self-signed", "dev.der"];
         argv.extend_from_slice(extra);
         Args::try_parse_from(argv).unwrap()
+    }
+
+    #[test]
+    fn the_log_is_text_unless_asked_for_json() {
+        assert_eq!(args(&[]).log_format, LogFormat::Text);
+        assert_eq!(args(&["--log-format", "json"]).log_format, LogFormat::Json);
+        assert!(
+            Args::try_parse_from([
+                "tpf3mp-server",
+                "--dev-self-signed",
+                "dev.der",
+                "--log-format",
+                "xml"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

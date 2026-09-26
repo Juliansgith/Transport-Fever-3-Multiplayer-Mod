@@ -76,9 +76,29 @@ certificate that agents pin with `--pin-cert <file>`.
   diverging, slow consumers, saves not arriving, handshake floods, protocol
   violations and refused tunnels.
 - **Health.** `/healthz` returns `ok`.
-- **Logs.** Logs go to stdout (`docker compose logs -f`) and never contain
-  IP addresses or invite tokens. `RUST_LOG=debug` adds per-connection
-  refusals; `RUST_LOG=tpf3mp_server=debug,quinn=warn` narrows it.
+
+## Logs
+
+The server logs to standard output, and Docker keeps the log: at most ten
+files of 50 MB each (`logging` in `compose.yaml`), so it never fills the
+disk. The log never contains IP addresses or invite tokens.
+
+- **Following it:** `docker compose logs -f`.
+- **One player's session.** Every session starts with a line naming its
+  support ID (`session=s-…`) and the player (`player=p-…`); the launcher
+  shows the player their support ID. `docker compose logs | grep s-3f2a…`
+  shows that session; the player ID shows all of that player's sessions,
+  and a room ID (`r-…`) the room's life.
+- **For a bug report:** `./collect-logs.sh` in `deploy/` writes one
+  archive: the log of the last 24 hours (`--since 2h` for another window,
+  `--for <ID>` for one session, player or room), the container's state
+  (restarts, out of memory), `/healthz`, `/metrics`, and the host's disk and
+  memory. It holds no secrets and can be shared.
+- **For a log collector** (Loki, Elasticsearch, …): set
+  `TPF3MP_LOG_FORMAT: json` in `compose.yaml` (`--log-format json`), for
+  one JSON object per line with the same fields.
+- **More detail:** `RUST_LOG=debug` adds per-connection refusals;
+  `RUST_LOG=tpf3mp_server=debug,quinn=warn` narrows it.
 
 A rise in `divergences_total` means replicas disagree with verdicts: look
 at the platforms involved. A rise in `slow_consumers_total` means clients

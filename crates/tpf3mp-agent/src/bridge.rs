@@ -25,8 +25,8 @@ use tpf3mp_bridge::{
 use tpf3mp_net::close;
 use tpf3mp_proto::{
     ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom, LaneDigest,
-    PlayerId, Request, RequestError, Resume, RoomView, SavedWorld, SnapshotId, Speed, Text,
-    WorldOffer,
+    PlayerId, Request, RequestError, Resume, RoomView, SavedWorld, SessionId, SnapshotId, Speed,
+    Text, WorldOffer,
 };
 use tpf3mp_snapshot::ManifestId;
 use tracing::{debug, info, warn};
@@ -150,6 +150,9 @@ pub struct Status {
     pub notices: VecDeque<String>,
     /// How this player's game differs from the room's, while it does.
     pub content_diff: Option<ContentDiff>,
+    /// The server's name for the current connection, which its log uses:
+    /// what a player quotes to the server's operator.
+    pub session: Option<SessionId>,
 }
 
 impl Default for Status {
@@ -163,6 +166,7 @@ impl Default for Status {
             chat: VecDeque::new(),
             notices: VecDeque::new(),
             content_diff: None,
+            session: None,
         }
     }
 }
@@ -1034,6 +1038,8 @@ pub async fn play<L: HookLink>(
     rejoin: &Rejoin,
 ) -> Result<BridgeEnd, BridgeFault> {
     loop {
+        let session = client.welcome().session_id;
+        bridge.status(|status| status.session = Some(session));
         let ended = match bridge.run(&client, &mut events).await {
             // A request can find the connection gone before its closing
             // reaches the events: then it is the same loss.
