@@ -8,6 +8,7 @@ mod follower;
 pub mod launcher;
 mod playout;
 pub mod save_check;
+pub mod steam;
 pub mod transfer;
 
 use std::{

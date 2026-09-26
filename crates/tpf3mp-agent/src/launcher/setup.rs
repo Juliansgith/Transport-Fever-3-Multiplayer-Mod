@@ -14,7 +14,18 @@ use tpf3mp_net::{CertificateDer, Identity, ServerTrust, tunnel::TunnelUrl};
 use tpf3mp_proto::RoomSettings;
 
 use super::{LauncherConfig, Remembered};
-use crate::{TunnelChoice, Worlds, content};
+use crate::{TunnelChoice, Worlds, content, steam};
+
+/// The game build a player declares: the one given, else Steam's build ID
+/// of the installed game as `steam-<ID>`, else `tpf3`, which players
+/// without the game (a playtest with the fake game) share.
+pub fn game_build(given: Option<&str>, installed: Option<&steam::Installed>) -> String {
+    match (given, installed) {
+        (Some(given), _) => given.to_owned(),
+        (None, Some(installed)) => format!("steam-{}", installed.build),
+        (None, None) => "tpf3".to_owned(),
+    }
+}
 
 /// Where the per-user files live: `TPF3-MP` in the user's local data
 /// directory.
@@ -161,8 +172,10 @@ pub struct LauncherArgs {
     pub game_link: String,
 
     /// The game's build. Every player in a room must run the same.
-    #[arg(long, default_value = "tpf3")]
-    pub game_build: String,
+    /// Without it, Steam's build ID of the installed game (see
+    /// [`game_build`]).
+    #[arg(long)]
+    pub game_build: Option<String>,
 
     /// A file listing the game's active mods in load order, one per line:
     /// the mod's name, then its version.
@@ -183,6 +196,7 @@ impl LauncherArgs {
     /// on first use), with the server and name remembered from last time
     /// where none are given, and the game's content and worlds.
     pub fn config(&self) -> Result<LauncherConfig> {
+        let installed = steam::find(steam::TRANSPORT_FEVER_3);
         let identity_file = identity_path(self.identity.as_deref())?;
         let identity = Arc::new(Identity::load_or_create(&identity_file)?);
         // Next to the identity: the same player's last server and name.
@@ -204,10 +218,34 @@ impl LauncherArgs {
                 .clone()
                 .or(remembered.name)
                 .unwrap_or_else(|| "player".to_owned()),
-            content: content::manifest(&self.game_build, self.mods.as_deref())?,
+            content: content::manifest(
+                &game_build(self.game_build.as_deref(), installed.as_ref()),
+                self.mods.as_deref(),
+            )?,
+            installed,
             link: self.game_link.clone(),
             worlds: open_worlds(self.worlds.as_deref(), self.worlds_gib, &self.game_link)?,
             room_settings: RoomSettings::DEFAULT,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn the_game_build_comes_from_the_player_then_steam() {
+        let installed = steam::Installed {
+            app: steam::TRANSPORT_FEVER_3,
+            name: "Transport Fever 3".into(),
+            dir: PathBuf::from("games/Transport Fever 3"),
+            build: "20412345".into(),
+        };
+        assert_eq!(game_build(Some("beta"), Some(&installed)), "beta");
+        assert_eq!(game_build(None, Some(&installed)), "steam-20412345");
+        assert_eq!(game_build(None, None), "tpf3");
     }
 }

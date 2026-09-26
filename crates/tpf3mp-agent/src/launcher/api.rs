@@ -27,6 +27,8 @@ pub(crate) struct View {
     pub(crate) in_room: bool,
     pub(crate) invite: Option<String>,
     pub(crate) error: Option<String>,
+    /// Transport Fever 3 as Steam installed it.
+    pub(crate) installed: Option<crate::steam::Installed>,
 }
 
 /// Something the player asks for.
@@ -89,6 +91,8 @@ pub struct State {
     /// How this player's game differs from the room's, while it does.
     pub content_diff: Option<Differences>,
     pub game: Game,
+    /// Transport Fever 3 on this machine, as Steam installed it.
+    pub installed: Option<InstalledGame>,
     pub chat: Vec<ChatLine>,
     /// What the player should know, oldest first.
     pub notices: Vec<String>,
@@ -237,6 +241,14 @@ pub enum World {
     Playing,
 }
 
+/// The game Steam installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstalledGame {
+    pub dir: String,
+    /// Steam's build ID.
+    pub build: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChatLine {
     pub from: String,
@@ -338,6 +350,10 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
             step: status.step,
             speed: status.speed.0,
         },
+        installed: view.installed.as_ref().map(|installed| InstalledGame {
+            dir: installed.dir.display().to_string(),
+            build: installed.build.clone(),
+        }),
         chat: status
             .chat
             .iter()

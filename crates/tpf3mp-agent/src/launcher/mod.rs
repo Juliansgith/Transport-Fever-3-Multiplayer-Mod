@@ -37,8 +37,8 @@ use tpf3mp_proto::{
 use tracing::{info, warn};
 
 pub use self::api::{
-    Action, ChatLine, Connection, Differences, Game, Member, MemberContent, Phase, Room,
-    RulesChoice, State, World,
+    Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent, Phase,
+    Room, RulesChoice, State, World,
 };
 use self::{api::View, http::Page};
 use crate::{
@@ -72,6 +72,8 @@ pub struct LauncherConfig {
     pub name: String,
     /// What this player's game runs, declared on every connection.
     pub content: ContentManifest,
+    /// Transport Fever 3 as Steam installed it, if it did.
+    pub installed: Option<crate::steam::Installed>,
     /// The shared-memory link the game's hook opens.
     pub link: String,
     pub worlds: Worlds,
@@ -197,6 +199,7 @@ impl Shared {
                 server: config.server.clone(),
                 name: config.name.clone(),
                 player: Some(config.identity.player()),
+                installed: config.installed.clone(),
                 ..View::default()
             }),
             status: SharedStatus::default(),

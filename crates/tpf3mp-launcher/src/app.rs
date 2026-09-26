@@ -713,6 +713,14 @@ fn differences(ui: &mut Ui, diff: &Differences) {
 /// Where the game stands.
 fn game(ui: &mut Ui, state: &State) {
     section(ui, "Game", |ui| {
+        let found = match &state.installed {
+            Some(installed) => format!(
+                "Transport Fever 3, Steam build {}, in {}",
+                installed.build, installed.dir
+            ),
+            None => "Transport Fever 3 was not found in Steam.".to_owned(),
+        };
+        ui.label(RichText::new(found).weak().small());
         let game = &state.game;
         let line = match (&game.attached, game.world) {
             (None, _) => {
