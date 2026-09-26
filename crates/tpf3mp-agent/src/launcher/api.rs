@@ -92,6 +92,8 @@ pub struct State {
     pub chat: Vec<ChatLine>,
     /// What the player should know, oldest first.
     pub notices: Vec<String>,
+    /// The server operator's latest notice, such as a restart coming.
+    pub announcement: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -348,6 +350,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
             })
             .collect(),
         notices: status.notices.iter().cloned().collect(),
+        announcement: status.announcement.clone(),
     }
 }
 

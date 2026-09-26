@@ -153,6 +153,8 @@ pub struct Status {
     /// The server's name for the current connection, which its log uses:
     /// what a player quotes to the server's operator.
     pub session: Option<SessionId>,
+    /// The operator's latest notice, such as a restart coming.
+    pub announcement: Option<String>,
 }
 
 impl Default for Status {
@@ -167,6 +169,7 @@ impl Default for Status {
             notices: VecDeque::new(),
             content_diff: None,
             session: None,
+            announcement: None,
         }
     }
 }
@@ -174,6 +177,13 @@ impl Default for Status {
 impl Status {
     pub fn notice(&mut self, notice: impl Into<String>) {
         push_bounded(&mut self.notices, notice.into());
+    }
+
+    /// Takes the operator's notice `text`: the latest shown on its own, and
+    /// every one among the notices.
+    pub fn announce(&mut self, text: &str) {
+        self.announcement = Some(text.to_owned());
+        self.notice(format!("from the server: {text}"));
     }
 }
 
@@ -684,6 +694,7 @@ impl<L: HookLink> Bridge<L> {
                 self.status(|status| push_bounded(&mut status.chat, (from, text)));
             }
             ClientEvent::RoomUpdate(room) => self.status(|status| status.room = Some(room)),
+            ClientEvent::Notice(text) => self.status(|status| status.announce(text.as_str())),
             ClientEvent::ContentDiff(diff) => self.status(|status| {
                 if let Some(diff) = &diff {
                     status.notice(format!("your game differs from the room's: {diff}"));

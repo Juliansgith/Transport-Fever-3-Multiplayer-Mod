@@ -267,6 +267,7 @@ async fn control(shared: Arc<Shared>, config: LauncherConfig, mut actions: Actio
                     view.connected = false;
                     view.error = Some(format!("disconnected: {reason}"));
                 }
+                Some(ClientEvent::Notice(text)) => shared.status().announce(text.as_str()),
                 // Outside a room there is nothing else to hear.
                 Some(_) => {}
                 None => {

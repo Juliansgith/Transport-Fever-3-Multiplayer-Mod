@@ -41,8 +41,9 @@ pub use turn::{Event, EventBody, Turn, TurnMessage, TurnStart};
 
 /// Protocol version. Client and server must match exactly. Version 2 lets
 /// hosts choose the rules a room is played by; version 3 declares a game's
-/// mods by name, so players learn which differ.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// mods by name, so players learn which differ; version 4 carries the
+/// operator's notices.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

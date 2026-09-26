@@ -115,6 +115,15 @@ players on another version which side to update. To upgrade:
 git pull && cd deploy && docker compose up -d --build
 ```
 
+Tell players first, from the host:
+
+```sh
+curl -X POST http://127.0.0.1:9470/announce -d "Restarting for an update in 5 minutes"
+```
+
+Every launcher shows the notice (up to 280 bytes) until the next one, in a
+room or not. The admin endpoint answers how many connections were told.
+
 What happens during the restart:
 
 1. The old container gets SIGTERM and closes every session with
