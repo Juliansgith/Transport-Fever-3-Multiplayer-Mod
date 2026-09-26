@@ -318,24 +318,40 @@ runs on distributions with an older C library too.
   each player's last server and name. It is built into the launcher, so a
   player only starts it. The packages also carry `PLAYING.md`.
 - **Updates.** The launcher installs a release only if it is signed with
-  the project's update key. Create the key once, on a trusted machine:
+  a key it trusts. Whoever holds that key can run code on every player's
+  machine, so it lives where no branch or workflow but one can read it,
+  and every signing needs your approval. Set it up once:
 
-  ```sh
-  openssl genpkey -algorithm ed25519 -out tpf3mp-update-key.pem
-  openssl pkey -in tpf3mp-update-key.pem -pubout -outform DER | tail -c 32 | base64
-  ```
+  1. Create the key on a trusted machine, and keep a copy of the `.pem`
+     offline:
 
-  Put the whole `.pem` file in the repository secret
-  `TPF3MP_UPDATE_SIGNING_KEY`, and the line the second command prints in
-  the variable `TPF3MP_UPDATE_PUBLIC_KEY`. Keep a copy of the `.pem`
-  offline. The release workflow then builds the public key into every
-  launcher, and signs each release's `release.json` (per platform: the
-  package's name, size and SHA-256) as `release.json.sig`. Launchers check
-  the latest published release, never a draft, and install it only if the
-  signature verifies, its version is newer than theirs and the package
-  matches. Without the key, releases are not offered to updaters, and
-  launchers built without it never update. Losing or changing the key
-  means players download the next version by hand once.
+     ```sh
+     openssl genpkey -algorithm ed25519 -out tpf3mp-update-key.pem
+     openssl pkey -in tpf3mp-update-key.pem -pubout -outform DER | tail -c 32 | base64
+     ```
+
+  2. In Settings, Environments, create the environment **`release`**. Add
+     yourself as **required reviewer**, and under deployment branches and
+     tags allow only the tag pattern **`v*`**. Add the whole `.pem` file as
+     its secret **`TPF3MP_UPDATE_SIGNING_KEY`**. Never make it a repository
+     secret: those reach every workflow on every branch.
+  3. In Settings, Secrets and variables, Actions, Variables, set
+     **`TPF3MP_UPDATE_PUBLIC_KEY`** to the line the second command
+     printed. Every launcher built from then on trusts it.
+
+  Publishing a release then starts `sign.yml`, which waits for your
+  approval in the Actions tab, writes `release.json` (per platform: the
+  package's name, size and SHA-256) and signs it as `release.json.sig`.
+  Drafts are never signed. Launchers fetch the latest published release's
+  `release.json` (never GitHub's rate-limited API) and install it only if a
+  trusted key signed it, its version is newer than theirs, and the package
+  matches. Until a release is signed, launchers do not offer it.
+
+  To move to a new key, add it to the variable, separated by a comma, and
+  release: launchers from that release trust both. Sign with the new key
+  once most players have that version, and remove the old one later.
+  Losing every trusted key means players download the next version by
+  hand once.
 - **Building without releasing.** Run the workflow by hand. The packages
   stay workflow artifacts, but the repository is public, so anyone can
   download them.

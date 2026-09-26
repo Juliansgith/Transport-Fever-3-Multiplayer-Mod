@@ -1,0 +1,96 @@
+name: sign release
+
+# Signs a published release for the launchers' updater: release.json, per
+# platform the package's name, size and SHA-256, and release.json.sig, its
+# Ed25519 signature (docs/OPERATIONS.md, "Updates").
+#
+# It runs only when a release is published, or by hand for a published tag,
+# and only in the `release` environment: the signing key is that
+# environment's secret, which no other workflow and no branch can read, and
+# the environment's required reviewer approves every signing. Drafts are
+# never signed. The job uses no third-party actions and checks nothing
+# out: it signs the packages the release carries.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The published release to sign, such as v0.2.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  sign:
+    name: sign the release
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Sign
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          SIGNING_KEY: ${{ secrets.TPF3MP_UPDATE_SIGNING_KEY }}
+          PUBLIC_KEYS: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::$TAG is not v<version>"
+            exit 1
+          fi
+          version="${TAG#v}"
+          draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          if [ "$draft" != "false" ]; then
+            echo "::error::$TAG is a draft: only published releases are signed"
+            exit 1
+          fi
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::the release environment has no TPF3MP_UPDATE_SIGNING_KEY secret"
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/update-key.pem"
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          # Launchers trust the keys in the variable: this one must be among them.
+          derived=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)
+          if ! printf '%s' "$PUBLIC_KEYS" | tr ', ' '\n\n' | grep -qxF "$derived"; then
+            rm -f "$key"
+            echo "::error::the signing key's public half is not in TPF3MP_UPDATE_PUBLIC_KEY"
+            exit 1
+          fi
+          mkdir packages
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir packages \
+            --pattern "tpf3mp-${version}-*.zip" --pattern "tpf3mp-${version}-*.tar.gz"
+          export VERSION="$version"
+          # The manifest: per platform, the package's name, size and SHA-256.
+          python3 - <<'EOF'
+          import hashlib, json, os
+          version = os.environ["VERSION"]
+          packages = {}
+          for name in sorted(os.listdir("packages")):
+              stem = name.removesuffix(".zip").removesuffix(".tar.gz")
+              platform = stem.removeprefix(f"tpf3mp-{version}-")
+              if platform == stem:
+                  continue
+              data = open(os.path.join("packages", name), "rb").read()
+              packages[platform] = {
+                  "name": name,
+                  "size": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+              }
+          if not packages:
+              raise SystemExit("the release has no packages")
+          manifest = {"version": version, "packages": packages}
+          open("release.json", "w").write(json.dumps(manifest, indent=2) + chr(10))
+          EOF
+          openssl pkeyutl -sign -rawin -inkey "$key" -in release.json -out release.json.sig
+          rm -f "$key"
+          # Check the signature as a launcher will.
+          printf '%s' "$derived" | base64 -d > "$RUNNER_TEMP/raw.pub"
+          { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; cat "$RUNNER_TEMP/raw.pub"; } > "$RUNNER_TEMP/public.der"
+          openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/public.der" \
+            -in release.json -sigfile release.json.sig
+          gh release upload "$TAG" release.json release.json.sig --repo "$GITHUB_REPOSITORY" --clobber
+          cat release.json

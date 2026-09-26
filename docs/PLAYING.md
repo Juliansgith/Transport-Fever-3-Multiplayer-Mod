@@ -81,10 +81,13 @@ and downloads it in the background. When it is ready, the window says so:
 it waits: the update installs the next time you start TPF3-MP.
 
 The launcher installs only what the TPF3-MP project signed: a download
-whose signature, version or contents do not check out is refused, and a
-failed install puts the old files back. Updates go into the package's
-folder, so unpack it where you can write, not into a protected folder such
-as Program Files.
+whose signature, version or contents do not check out is refused, and an
+install that fails or is cut short puts the old files back, at once or at
+the next start. The old version's files stay until the new version has
+opened its window; if it fails to three times running, the launcher goes
+back to the version before and does not install that one again. Updates
+go into the package's folder, so unpack it where you can write, not into a
+protected folder such as Program Files.
 
 ## While you play
 
