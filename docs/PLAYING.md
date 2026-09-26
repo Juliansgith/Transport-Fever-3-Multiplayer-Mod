@@ -115,6 +115,10 @@ across PCs and systems:
 Run one fake game next to each launcher. It stops when its room's game
 ends.
 
+Developers who want a whole room on one PC, several fake games each with
+its own agent, use the multiplayer rig instead (`tpf3mp-rig`, see
+"Development" in the [README](../README.md)).
+
 ## Your identity
 
 The launcher creates a key for you on first use, in your user data folder

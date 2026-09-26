@@ -15,8 +15,9 @@ use tpf3mp_testkit::fake_hook::{self, FakeHookConfig};
 #[command(version)]
 struct Args {
     /// The link name given to the launcher's or agent's `--game-link`;
-    /// their default without one.
-    #[arg(default_value = tpf3mp_bridge::DEFAULT_LINK)]
+    /// their default without one. Read from `TPF3MP_GAME_LINK` when not
+    /// given, as the game's hook does.
+    #[arg(env = "TPF3MP_GAME_LINK", default_value = tpf3mp_bridge::DEFAULT_LINK)]
     link: String,
     /// Seed of this player's choices.
     #[arg(long, default_value_t = 0)]

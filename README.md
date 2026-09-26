@@ -174,6 +174,31 @@ Both games print the same lane digests at the end. A server with
 `--data-dir` keeps world snapshots, so a third game can join the running
 room (`join ... --game-link cat`); its game loads the room's world first.
 
+Or let the multiplayer rig do all of that on one PC: it starts the games,
+each with its own agent, data folder (`p1`, `p2`, ... under `--data-root`,
+by default `tpf3mp-rig` in the temporary folder) and link name, has the
+first create a room and the others join its invite, and starts the game
+once everyone is ready. `--server local` runs a throwaway server in the
+rig; any other server is given as `host:port`:
+
+```sh
+cargo build -p tpf3mp-testkit --bins
+cargo run -p tpf3mp-testkit --bin tpf3mp-rig -- --players 3 --server local --steps 300
+cargo run -p tpf3mp-testkit --bin tpf3mp-rig -- --players 3 --server 127.0.0.1:29470 --pin-cert runtime/dev-cert.der
+```
+
+Each game's output is printed under its player's name. The rig runs until
+every game has exited, then checks that they all ended on the same lane
+digests (failing if not); Ctrl-C stops everything it started. `--game`
+takes the path of a game executable instead of the fake game, with
+`--game-arg` for its arguments: the rig tells each game its link and data
+folder through `TPF3MP_GAME_LINK` and `TPF3MP_DATA_DIR`, which the hook
+reads (see "Several games on one PC" in [docs/HOOKS.md](docs/HOOKS.md)),
+and copies the build profiles in the user's data folder into each game's.
+That path is untested until Transport Fever 3 is out. A server started
+with `tpf3mp-server` lets 8 sessions in from one address by default: pass
+`--max-sessions-per-address` for bigger rigs.
+
 Load-test a server with bots:
 
 ```sh
