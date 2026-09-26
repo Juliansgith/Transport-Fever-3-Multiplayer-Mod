@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+clap.workspace = true
 thiserror.workspace = true
 tpf3mp-hookcore.workspace = true
 

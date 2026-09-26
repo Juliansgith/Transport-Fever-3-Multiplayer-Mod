@@ -5,6 +5,7 @@
 pub mod bridge;
 pub mod content;
 mod follower;
+pub mod install;
 pub mod launcher;
 pub mod logs;
 mod playout;

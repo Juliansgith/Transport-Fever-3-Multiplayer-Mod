@@ -5,7 +5,7 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use tpf3mp_agent::{
     Client, ClientError, ClientEvent, ConnectOptions, Events, Worlds,
     bridge::{self, Bridge, BridgeOptions, Rejoin},
-    connect, content,
+    connect, content, install,
     launcher::{self, Launcher},
 };
 use tpf3mp_net::Identity;
@@ -56,6 +56,9 @@ enum Command {
     // add flags to a package's script.
     #[command(args_override_self = true)]
     Launcher(WebLauncherArgs),
+    /// Put the package's hook, the proxy DLL that loads it and the Lua mod
+    /// where the game loads them, or take them out again.
+    InstallHook(InstallHookArgs),
     /// Join a room with an invite and follow it until Ctrl-C.
     Join {
         #[command(flatten)]
@@ -100,6 +103,50 @@ struct CollectLogsArgs {
     /// the usual place.
     #[arg(long)]
     data_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, ClapArgs)]
+struct InstallHookArgs {
+    /// The folder that holds the game's executable.
+    #[arg(long)]
+    game_dir: PathBuf,
+    /// The game's mods folder; `mods` in the game folder by default.
+    #[arg(long)]
+    mods_dir: Option<PathBuf>,
+    /// The unpacked TPF3-MP package; the folder of this program by default.
+    #[arg(long)]
+    package: Option<PathBuf>,
+    /// Take out what an earlier install put in, and put the game's own
+    /// files back.
+    #[arg(long, conflicts_with_all = ["mods_dir", "package"])]
+    uninstall: bool,
+}
+
+impl InstallHookArgs {
+    fn run(self) -> Result<()> {
+        let done = if self.uninstall {
+            install::uninstall(&self.game_dir)?
+        } else {
+            let package = match self.package {
+                Some(package) => package,
+                None => std::env::current_exe()
+                    .context("finding this program")?
+                    .parent()
+                    .context("finding the package's folder")?
+                    .to_owned(),
+            };
+            install::Install {
+                package,
+                game_dir: self.game_dir,
+                mods_dir: self.mods_dir,
+            }
+            .run()?
+        };
+        for line in done {
+            println!("{line}");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, ClapArgs)]
@@ -242,6 +289,7 @@ async fn run(command: Command) -> Result<()> {
             play(client, events, &game, rejoin).await?;
         }
         Command::Launcher(args) => launch(args).await?,
+        Command::InstallHook(args) => args.run()?,
         Command::Join {
             server,
             game,

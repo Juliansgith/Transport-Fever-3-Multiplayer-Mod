@@ -87,3 +87,80 @@ fn generates_and_builds_a_forwarding_proxy() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+/// A proxy built with `--load-hook` loads the hook from its own folder when
+/// it is loaded, and still forwards to the renamed original.
+#[test]
+#[allow(unsafe_code)]
+fn a_proxy_loads_the_hook_beside_it() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LoadLibraryExW(name: *const u16, file: *mut core::ffi::c_void, flags: u32) -> isize;
+        fn GetModuleHandleW(name: *const u16) -> isize;
+    }
+    const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x8;
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let system = PathBuf::from(r"C:\Windows\System32");
+    let (original, stand_in) = (system.join("version.dll"), system.join("msimg32.dll"));
+    if !original.exists() || !stand_in.exists() {
+        eprintln!("skipping: system DLLs not present");
+        return;
+    }
+    let root = scratch("load");
+    let crate_dir = root.join("proxy");
+    let exports = parse_exports(&fs::read(&original).unwrap()).unwrap();
+    // Unusual names, so nothing already loaded in this process answers.
+    tpf3mp_proxygen::write_proxy_with(
+        &crate_dir,
+        &exports,
+        "tpf3mpver",
+        "tpf3mpver_real",
+        Some("tpf3mp_marker_hook.dll"),
+    )
+    .unwrap();
+    let target_dir = root.join("target");
+    let build = Command::new(env!("CARGO"))
+        .arg("build")
+        .arg("--offline")
+        .arg("--manifest-path")
+        .arg(crate_dir.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .status();
+    match build {
+        Ok(status) if status.success() => {}
+        Ok(status) => panic!("proxy build failed with {status}"),
+        Err(error) => {
+            eprintln!("skipping (could not run cargo: {error})");
+            return;
+        }
+    }
+
+    // A game folder: the proxy, the renamed original, and a stand-in hook.
+    let game = root.join("game");
+    fs::create_dir_all(&game).unwrap();
+    let proxy = game.join("tpf3mpver.dll");
+    fs::copy(target_dir.join("debug").join("tpf3mpver.dll"), &proxy).unwrap();
+    fs::copy(&original, game.join("tpf3mpver_real.dll")).unwrap();
+    fs::copy(&stand_in, game.join("tpf3mp_marker_hook.dll")).unwrap();
+
+    let marker = wide("tpf3mp_marker_hook.dll");
+    // SAFETY: NUL-terminated wide strings; the loaded modules stay loaded.
+    unsafe {
+        assert_eq!(GetModuleHandleW(marker.as_ptr()), 0, "not loaded yet");
+        let path = wide(&proxy.to_string_lossy());
+        let module = LoadLibraryExW(
+            path.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_WITH_ALTERED_SEARCH_PATH,
+        );
+        assert_ne!(module, 0, "the proxy loads, its forwarders resolved");
+        assert_ne!(
+            GetModuleHandleW(marker.as_ptr()),
+            0,
+            "the proxy loaded the hook from its folder"
+        );
+    }
+}
