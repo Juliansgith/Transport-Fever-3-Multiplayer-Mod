@@ -19,7 +19,7 @@
 # is renamed or added.
 set -euo pipefail
 
-repo="${1:-Juliansgith/TPF3-MP}"
+repo="${1:-Juliansgith/Transport-Fever-3-Multiplayer-Mod}"
 # GitHub Actions, so only checks from this repository's workflows count.
 actions_app=15368
 
