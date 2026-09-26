@@ -22,9 +22,29 @@ launcher connects out to the server, and everything goes through it.
 
 1. Unpack the package anywhere you can write to, such as your Documents
    folder: the launcher updates the files in it (see "Updates").
-2. **Into the game: on release.** How the package's game library is put
-   next to Transport Fever 3 depends on the released game, and this step is
-   described here once it is known.
+2. **Into the game.** The package's in-game pieces go into Transport
+   Fever 3's folder, the one that holds its executable (in Steam: right-click
+   the game, **Manage**, **Browse local files**):
+   - **Windows:** drop that folder onto `install-into-game.bat` in the
+     package.
+   - **Linux and macOS:** run
+     `./tpf3mp-agent install-hook --game-dir "<the game's folder>"` from the
+     package's folder.
+
+   It puts the hook library next to the game's executable and the TPF3-MP
+   mod in the game's `mods` folder (`--mods-dir` names another). On
+   Windows it also puts a small proxy DLL in place of one of the game's
+   own, which loads the hook as the game starts; the game's own is kept
+   as `<name>_real.dll`. On Linux it prints the Steam launch option that
+   loads the hook. It refuses a folder that is not the game's, or where
+   another mod already replaced that DLL, and changes nothing then.
+   `--uninstall` takes everything out again and puts the game's own DLL
+   back.
+
+   Until the game is out, packages carry no proxy DLL or mod, and the
+   install says so: the name of the DLL, and so how the hook loads, is
+   only known once the game is released. Run the install again after an
+   update of TPF3-MP or of the game.
 
 ## The launcher
 

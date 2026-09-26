@@ -1,3 +1,5 @@
 # Text files are stored with LF endings whatever the platform, so a file
 # saved on Windows does not rewrite every line of it.
 * text=auto eol=lf
+# Windows batch files need CRLF, or cmd misreads some of their lines.
+*.bat text eol=crlf

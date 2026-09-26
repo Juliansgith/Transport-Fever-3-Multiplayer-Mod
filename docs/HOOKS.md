@@ -17,7 +17,7 @@ Crates:
 | `tpf3mp-hookcore` | pattern scanning, per-build profiles + resolution, the x86-64 inline detour engine, a small read-only PE reader |
 | `tpf3mp-ipc` | the shared-memory link (this document's ABI) |
 | `tpf3mp-hook` | the `cdylib` the game loads: platform entry points, profile loading, agent connection |
-| `tpf3mp-proxygen` | generates a Windows proxy DLL that forwards every export to the renamed original |
+| `tpf3mp-proxygen` | generates a Windows proxy DLL that forwards every export to the renamed original and, with `--load-hook`, loads the hook from its own folder |
 
 ## Design and the fail-closed rules
 
