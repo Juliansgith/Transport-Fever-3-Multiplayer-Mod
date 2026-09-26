@@ -116,6 +116,10 @@ jobs:
               mkdir -p "$app/MacOS"
               cp target/release/tpf3mp-launcher "$app/MacOS/TPF3-MP"
               sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Info.plist"
+              # An ad-hoc signature seals the bundle: without one, macOS calls
+              # a downloaded app "damaged" instead of offering to open it.
+              codesign --force --deep --sign - "$dir/TPF3-MP.app"
+              codesign --verify --deep --strict --verbose=2 "$dir/TPF3-MP.app"
               cp target/release/tpf3mp-agent target/release/tpf3mp-server \
                  target/release/tpf3mp-fakegame target/release/libtpf3mp_hook.dylib "$dir/"
               tar czf "$dir.tar.gz" "$dir"

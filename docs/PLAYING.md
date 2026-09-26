@@ -32,8 +32,10 @@ Start the launcher from the package:
 
 - **Windows:** `TPF3-MP.exe`. The first time, Windows may say it protected
   your PC from an unknown app: choose **More info**, then **Run anyway**.
-- **macOS:** `TPF3-MP.app`. The first time, macOS may refuse to open an app
-  from an unidentified developer: right-click it, choose **Open**, then
+- **macOS:** `TPF3-MP.app`. The first time, macOS refuses to open an app
+  from an unidentified developer. On macOS 15 and later: try to open it
+  once, then in **System Settings**, **Privacy & Security**, choose **Open
+  Anyway**. On earlier versions: right-click it, choose **Open**, then
   **Open** again.
 - **Linux:** `tpf3mp-launcher`. It needs a desktop with Vulkan or OpenGL
   drivers, as the game does.
