@@ -98,6 +98,23 @@ as Program Files.
 - **Saving.** The room saves everyone's game together from time to time,
   which you notice as a short pause, like an autosave.
 
+## Playtesting before the game is out
+
+Until Transport Fever 3 is released, `tpf3mp-fakegame` in the package
+stands in for it: a small toy game behind the same step gate, which builds
+track, saves and loads worlds. Everything but TPF3 itself can be tried,
+across PCs and systems:
+
+1. Start TPF3-MP as above.
+2. Start `tpf3mp-fakegame` from the same folder (from a terminal on Linux
+   and macOS). The window's **Game** part says the game is connected.
+3. Connect, create or join a room, get ready and start, as in a real game.
+   The fake game plays by itself: watch the **Game** part count steps, and
+   try chatting, leaving and rejoining, and joining a game already running.
+
+Run one fake game next to each launcher. It stops when its room's game
+ends.
+
 ## Your identity
 
 The launcher creates a key for you on first use, in your user data folder

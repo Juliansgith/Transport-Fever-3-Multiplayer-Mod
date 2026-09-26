@@ -1,6 +1,7 @@
 //! A fake game for trying the whole stack by hand, as separate processes:
-//! the toy game behind the step gate, on the link an agent created with
-//! `--game-link`.
+//! the toy game behind the step gate, on the link a launcher or an agent
+//! created (`--game-link`). Until Transport Fever 3 is out, it stands in
+//! for the game in playtests: start the launcher, then this.
 
 use std::time::Duration;
 
@@ -13,7 +14,9 @@ use tpf3mp_testkit::fake_hook::{self, FakeHookConfig};
 #[derive(Debug, Parser)]
 #[command(version)]
 struct Args {
-    /// The link name given to the agent's `--game-link`.
+    /// The link name given to the launcher's or agent's `--game-link`;
+    /// their default without one.
+    #[arg(default_value = tpf3mp_bridge::DEFAULT_LINK)]
     link: String,
     /// Seed of this player's choices.
     #[arg(long, default_value_t = 0)]

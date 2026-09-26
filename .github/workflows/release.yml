@@ -80,7 +80,10 @@ jobs:
             exit 1
           fi
       - name: Build
-        run: cargo build --release --locked -p tpf3mp-launcher -p tpf3mp-agent -p tpf3mp-server -p tpf3mp-hook
+        run: |
+          cargo build --release --locked -p tpf3mp-launcher -p tpf3mp-agent -p tpf3mp-server -p tpf3mp-hook
+          # Stands in for the game in playtests until it is out.
+          cargo build --release --locked -p tpf3mp-testkit --bin tpf3mp-fakegame
       - name: Package
         shell: bash
         env:
@@ -97,13 +100,14 @@ jobs:
             windows-*)
               cp target/release/tpf3mp-launcher.exe "$dir/TPF3-MP.exe"
               cp target/release/tpf3mp-agent.exe target/release/tpf3mp-server.exe \
-                 target/release/tpf3mp_hook.dll "$dir/"
+                 target/release/tpf3mp-fakegame.exe target/release/tpf3mp_hook.dll "$dir/"
               7z a "$dir.zip" "$dir" > /dev/null
               echo "archive=$dir.zip" >> "$GITHUB_ENV"
               ;;
             linux-*)
               cp target/release/tpf3mp-launcher target/release/tpf3mp-agent \
-                 target/release/tpf3mp-server target/release/libtpf3mp_hook.so "$dir/"
+                 target/release/tpf3mp-server target/release/tpf3mp-fakegame \
+                 target/release/libtpf3mp_hook.so "$dir/"
               tar czf "$dir.tar.gz" "$dir"
               echo "archive=$dir.tar.gz" >> "$GITHUB_ENV"
               ;;
@@ -113,7 +117,7 @@ jobs:
               cp target/release/tpf3mp-launcher "$app/MacOS/TPF3-MP"
               sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Info.plist"
               cp target/release/tpf3mp-agent target/release/tpf3mp-server \
-                 target/release/libtpf3mp_hook.dylib "$dir/"
+                 target/release/tpf3mp-fakegame target/release/libtpf3mp_hook.dylib "$dir/"
               tar czf "$dir.tar.gz" "$dir"
               echo "archive=$dir.tar.gz" >> "$GITHUB_ENV"
               ;;
