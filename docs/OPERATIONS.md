@@ -109,11 +109,21 @@ reach the server: late joiners then wait.
 ## Upgrades
 
 Every player must run the server's protocol version. The handshake tells
-players on another version which side to update. To upgrade:
+players on another version which side to update, and their launchers
+update themselves. Upgrade the server when a release is published, which
+also publishes its image, `ghcr.io/juliansgith/tpf3mp-server:<version>`
+and `:latest` (`.github/workflows/image.yml`):
 
 ```sh
-git pull && cd deploy && docker compose up -d --build
+cd deploy && git pull && docker compose pull && docker compose up -d
 ```
+
+To pin a version, and roll back by changing it, put
+`TPF3MP_VERSION=0.2.0` in `deploy/.env`. The first time, the image may be
+private to the repository's owner: make the package public on GitHub
+(the repository's Packages, Package settings), or `docker login ghcr.io`
+on the server. To run what is checked out instead of a published image,
+build it: `docker compose up -d --build`.
 
 What happens during the restart:
 
