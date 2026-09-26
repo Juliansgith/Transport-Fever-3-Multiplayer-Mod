@@ -513,12 +513,16 @@ async fn connect_to(
             Ok(()) => Ok((client, events)),
             Err(error) => Err(error.to_string()),
         },
-        Err(error) => Err(error.to_string()),
+        Err(error) => {
+            shared.view().outdated = error.client_is_older();
+            Err(error.to_string())
+        }
     };
     let mut view = shared.view();
     view.connecting = false;
     let (client, events) = result?;
     view.connected = true;
+    view.outdated = false;
     view.tunneled = client.tunneled();
     view.error = None;
     view.name = options.name.as_str().to_owned();

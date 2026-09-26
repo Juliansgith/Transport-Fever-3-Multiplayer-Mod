@@ -29,6 +29,8 @@ pub(crate) struct View {
     pub(crate) error: Option<String>,
     /// Transport Fever 3 as Steam installed it.
     pub(crate) installed: Option<crate::steam::Installed>,
+    /// The last server connected to speaks a newer protocol.
+    pub(crate) outdated: bool,
 }
 
 /// Something the player asks for.
@@ -87,6 +89,9 @@ pub struct State {
     pub tunneled: bool,
     /// What went wrong last, until something succeeds.
     pub error: Option<String>,
+    /// The server speaks a newer protocol than this TPF3-MP: it must be
+    /// updated to play there.
+    pub outdated: bool,
     pub room: Option<Room>,
     /// How this player's game differs from the room's, while it does.
     pub content_diff: Option<Differences>,
@@ -340,6 +345,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         connection,
         tunneled: view.connected && view.tunneled,
         error: view.error.clone(),
+        outdated: view.outdated || status.outdated,
         room,
         content_diff: status.content_diff.as_ref().map(Differences::of),
         game: Game {
