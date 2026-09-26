@@ -82,7 +82,10 @@ update the script's lists and run it again.
     `target/launcher-screenshots/` for a look at the layout;
   - a server upgrade that keeps running games (see "Upgrades" in
     [docs/OPERATIONS.md](docs/OPERATIONS.md)), when the log format, the
-    protocol or persistence changed;
+    protocol or persistence changed.
+    `tools/acceptance/upgrade-check.sh <old bin dir> <new bin dir>` plays
+    it through with the fake game, from `main`'s binaries to the
+    candidate's;
   - once the game is out: a real game on each platform
     ([docs/DAY_ONE.md](docs/DAY_ONE.md)).
 - **`release`** (`.github/workflows/release.yml`) runs on pushes to `main`.
