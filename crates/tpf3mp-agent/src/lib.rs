@@ -8,6 +8,7 @@ mod follower;
 pub mod launcher;
 mod playout;
 pub mod save_check;
+pub mod steam;
 pub mod transfer;
 
 use std::{
@@ -187,6 +188,18 @@ pub enum ConnectError {
     UnexpectedMessage,
     #[error("the server did not complete the handshake in time")]
     Timeout,
+}
+
+impl ConnectError {
+    /// Whether the server speaks a newer protocol than this client: only an
+    /// update lets this client play there, and trying again will not.
+    pub fn client_is_older(&self) -> bool {
+        match self {
+            Self::VersionMismatch { client, server } => server > client,
+            Self::NoRoute { udp, tunnel, .. } => udp.client_is_older() || tunnel.client_is_older(),
+            _ => false,
+        }
+    }
 }
 
 fn version_mismatch(client: &u32, server: &u32) -> String {
@@ -874,5 +887,31 @@ async fn read_turn_stream(
             Err(error) if error.is_disconnect() => return Ok(()),
             Err(_) => return Err(TurnStreamError::Violation),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_newer_server_calls_for_an_update() {
+        let newer = ConnectError::VersionMismatch {
+            client: 3,
+            server: 4,
+        };
+        let older = ConnectError::VersionMismatch {
+            client: 4,
+            server: 3,
+        };
+        assert!(newer.client_is_older());
+        assert!(!older.client_is_older());
+        assert!(!ConnectError::Timeout.client_is_older());
+        let routes = ConnectError::NoRoute {
+            url: "wss://example.org/tpf3mp".into(),
+            udp: Box::new(ConnectError::Timeout),
+            tunnel: Box::new(newer),
+        };
+        assert!(routes.client_is_older());
     }
 }

@@ -14,7 +14,7 @@ use tpf3mp_agent::launcher::{
 
 use crate::{
     backend::Backend,
-    update::{UpdateState, Updater},
+    update::{self, UpdateState, Updater},
 };
 
 /// How often the window rereads the launcher's state when nothing else
@@ -69,6 +69,8 @@ pub struct LauncherApp<B> {
     confirm: Option<Confirm>,
     /// The player confirmed quitting during a game.
     quitting: bool,
+    /// An update check was started because the server is newer.
+    looked_for_update: bool,
 }
 
 impl<B: Backend> LauncherApp<B> {
@@ -88,6 +90,7 @@ impl<B: Backend> LauncherApp<B> {
             offered: false,
             confirm: None,
             quitting: false,
+            looked_for_update: false,
         }
     }
 
@@ -181,6 +184,9 @@ impl<B: Backend> LauncherApp<B> {
         if let Some(updater) = &self.extras.updater {
             update_banner(ui, updater, state);
         }
+        if state.outdated {
+            self.outdated(ui);
+        }
         if let Some(error) = &state.error {
             notice_frame(ui, ui.visuals().error_fg_color, |ui| {
                 ui.label(RichText::new(error).color(ui.visuals().error_fg_color));
@@ -207,6 +213,43 @@ impl<B: Backend> LauncherApp<B> {
                 }
             });
         }
+    }
+
+    /// The server was updated past this TPF3-MP: says so, and looks for
+    /// the update now rather than at the next regular check.
+    fn outdated(&mut self, ui: &mut Ui) {
+        if !self.looked_for_update {
+            self.looked_for_update = true;
+            if let Some(updater) = &self.extras.updater {
+                updater.check();
+            }
+        }
+        let warn = ui.visuals().warn_fg_color;
+        let update = self.extras.updater.as_ref().map(Updater::state);
+        notice_frame(ui, warn, |ui| {
+            ui.label(
+                RichText::new("This TPF3-MP is older than the server's")
+                    .strong()
+                    .color(warn),
+            );
+            match update {
+                Some(UpdateState::Ready { .. }) => {
+                    ui.label("The new version is ready: restart and update to play.");
+                }
+                Some(UpdateState::Checking | UpdateState::Downloading { .. }) => {
+                    ui.label("Downloading the new version…");
+                }
+                _ => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Download the new version from");
+                        ui.hyperlink_to(
+                            "the TPF3-MP releases",
+                            format!("https://github.com/{}/releases/latest", update::REPOSITORY),
+                        );
+                    });
+                }
+            }
+        });
     }
 
     fn connect(&mut self, ui: &mut Ui, state: &State) {
@@ -713,6 +756,14 @@ fn differences(ui: &mut Ui, diff: &Differences) {
 /// Where the game stands.
 fn game(ui: &mut Ui, state: &State) {
     section(ui, "Game", |ui| {
+        let found = match &state.installed {
+            Some(installed) => format!(
+                "Transport Fever 3, Steam build {}, in {}",
+                installed.build, installed.dir
+            ),
+            None => "Transport Fever 3 was not found in Steam.".to_owned(),
+        };
+        ui.label(RichText::new(found).weak().small());
         let game = &state.game;
         let line = match (&game.attached, game.world) {
             (None, _) => {

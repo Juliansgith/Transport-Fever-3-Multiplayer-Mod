@@ -77,8 +77,9 @@ struct Game {
     game_link: Option<String>,
 
     /// The game's build. Every player in a room must run the same.
-    #[arg(long, default_value = "tpf3")]
-    game_build: String,
+    /// Without it, Steam's build ID of the installed game, or `tpf3`.
+    #[arg(long)]
+    game_build: Option<String>,
 
     /// A file listing the game's active mods in load order, one per line:
     /// the mod's name, then its version. Every player in a room must run
@@ -100,7 +101,9 @@ struct Game {
 impl Game {
     /// What this player's game runs.
     fn manifest(&self) -> Result<ContentManifest> {
-        Ok(content::manifest(&self.game_build, self.mods.as_deref())?)
+        let installed = tpf3mp_agent::steam::find(tpf3mp_agent::steam::TRANSPORT_FEVER_3);
+        let build = launcher::setup::game_build(self.game_build.as_deref(), installed.as_ref());
+        Ok(content::manifest(&build, self.mods.as_deref())?)
     }
 
     fn open_worlds(&self, link: &str) -> Result<Worlds> {

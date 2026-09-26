@@ -225,6 +225,18 @@ fn a_player_whose_mods_differ_sees_what_to_change() {
 }
 
 #[test]
+fn a_launcher_older_than_the_server_says_where_to_get_the_new_one() {
+    let window = window(State {
+        name: "Ann".into(),
+        outdated: true,
+        error: Some("this client speaks protocol 3 but the server speaks 4: update TPF3-MP".into()),
+        ..State::default()
+    });
+    window.get_by_label("This TPF3-MP is older than the server's");
+    window.get_by_label("the TPF3-MP releases");
+}
+
+#[test]
 fn chat_is_sent_to_the_room() {
     let mut window = window(in_room(vec![member("Ann", true, true, false)], true));
     let chat = window.get_by_role_and_label(Role::TextInput, "Message");

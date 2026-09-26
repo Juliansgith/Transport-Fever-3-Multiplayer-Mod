@@ -153,6 +153,9 @@ pub struct Status {
     /// The server's name for the current connection, which its log uses:
     /// what a player quotes to the server's operator.
     pub session: Option<SessionId>,
+    /// The server speaks a newer protocol: this client must update to
+    /// play there.
+    pub outdated: bool,
 }
 
 impl Default for Status {
@@ -167,6 +170,7 @@ impl Default for Status {
             notices: VecDeque::new(),
             content_diff: None,
             session: None,
+            outdated: false,
         }
     }
 }
@@ -1118,14 +1122,18 @@ async fn rejoin_room<L: HookLink>(
     let mut resume = bridge.resume_point();
     loop {
         let attempt = async {
-            let (client, events) = connect(options.clone())
-                .await
-                .map_err(|error| (error.to_string(), false))?;
+            let (client, events) = connect(options.clone()).await.map_err(|error| {
+                if error.client_is_older() {
+                    Failed::Outdated(error.to_string())
+                } else {
+                    Failed::Retry(error.to_string())
+                }
+            })?;
             if let Some(content) = &rejoin.content {
                 client
                     .declare_content(content.clone())
                     .await
-                    .map_err(|error| (error.to_string(), false))?;
+                    .map_err(|error| Failed::Retry(error.to_string()))?;
             }
             client
                 .join_room(JoinRoom {
@@ -1135,28 +1143,51 @@ async fn rejoin_room<L: HookLink>(
                 })
                 .await
                 .map_err(|error| {
-                    let gone = error == ClientError::Refused(RequestError::ResumeUnavailable);
-                    (error.to_string(), gone)
+                    if error == ClientError::Refused(RequestError::ResumeUnavailable) {
+                        Failed::ResumeGone(error.to_string())
+                    } else {
+                        Failed::Retry(error.to_string())
+                    }
                 })?;
-            Ok::<_, (String, bool)>((client, events))
+            Ok::<_, Failed>((client, events))
         };
         let outcome = keeping_alive(bridge, attempt).await;
         match outcome {
             Ok(rejoined) => return Ok(rejoined),
+            // The server was updated past this client: no attempt can
+            // succeed until the player updates too.
+            Err(Failed::Outdated(error)) => {
+                bridge.status(|status| status.outdated = true);
+                return Err(error);
+            }
             // The room no longer has these turns: join without them, for a
             // world to load. Joining without them cannot be refused so.
-            Err((error, true)) if resume.is_some() => {
+            Err(Failed::ResumeGone(error)) if resume.is_some() => {
                 debug!(%error, "the room cannot resume here; joining afresh");
                 resume = None;
             }
-            Err((error, _)) if Instant::now() + backoff >= deadline => return Err(error),
-            Err((error, _)) => {
+            Err(Failed::ResumeGone(error) | Failed::Retry(error))
+                if Instant::now() + backoff >= deadline =>
+            {
+                return Err(error);
+            }
+            Err(Failed::ResumeGone(error) | Failed::Retry(error)) => {
                 debug!(%error, "rejoining failed; trying again");
                 keeping_alive(bridge, tokio::time::sleep(backoff)).await;
                 backoff = (backoff * 2).min(Duration::from_secs(5));
             }
         }
     }
+}
+
+/// Why one attempt to rejoin failed.
+enum Failed {
+    /// Worth trying again.
+    Retry(String),
+    /// The room no longer has the turns asked for.
+    ResumeGone(String),
+    /// The server speaks a newer protocol.
+    Outdated(String),
 }
 
 /// The next request of a front end, or never without one.
