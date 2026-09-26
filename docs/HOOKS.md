@@ -380,6 +380,31 @@ by hand (see the README). On release day, what remains for TPF3 is:
    far one, on an instruction boundary).
 4. **Add a `[[target]]`** to the build's profile with `name`, `signature`,
    `offset`, `prologue` and `required`.
+
+   `tools/re/make_profile.py` does steps 3 and 4 for x86-64 builds, from the
+   binary and the symbol map `name_functions.py` wrote:
+
+   ```
+   python tools/re/make_profile.py TransportFever3.exe out/TransportFever3.symbols.json \
+       GameSim::Step CGame::Step -o profile.toml
+   ```
+
+   It writes the `[build]` identity (SHA-256, size, and the PE timestamp on a
+   PE) and one target per function, with `offset = 0`. Displacements it
+   wildcards: branch and call targets (rel8 and rel32), RIP-relative operands,
+   and immediates or absolute displacements that point into the image. The
+   signature starts as the prologue's instructions and grows one instruction at
+   a time until it matches once in the function's on-disk section, never past
+   the function's end or `--max-length` (128) bytes. The prologue covers
+   `--steal` bytes, 14 by default: a far jump, since how far the detour lands is
+   only known at install. Like the engine, it refuses a prologue holding a
+   branch, call, return or interrupt, and keeps RIP-relative data operands,
+   which the engine relocates. Every refusal names the target and the reason: a
+   name shared by several functions (pick one with `NAME@0xRVA`), a function
+   byte-identical to another (never unique), a branch too early to steal around.
+   `tools/re/test_make_profile.py` checks the tool on a synthetic PE and keeps
+   `tpf3mp-hookcore/tests/data/make_profile_fixture.{pe,toml}` current, which
+   `tests/make_profile_fixture.rs` resolves with hookcore itself.
 5. **Verify.** Resolve the profile against the **in-memory module image** of the
    running build and confirm the target resolves uniquely to the expected
    address and that the prologue matches. Keep a static check against an
