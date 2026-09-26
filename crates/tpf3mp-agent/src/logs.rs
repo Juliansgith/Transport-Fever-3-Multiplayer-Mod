@@ -9,9 +9,10 @@
 //!   per-user data directory), which hold its panics too;
 //! - `tpf3mp/hook.log`: the in-game hook's log;
 //! - `game/…`: the game's own log and crash dumps, from the candidate
-//!   places in [`game_candidates`]. Transport Fever 3's are not known until
-//!   it is released, so these are where Transport Fever 2 keeps its own,
-//!   marked as such in the manifest;
+//!   places in [`game_candidates`]: in Transport Fever 3's Steam folder,
+//!   where Transport Fever 2 kept its own in its folder. Where Transport
+//!   Fever 3 writes them is not known until it is released, so the manifest
+//!   marks these places as a guess;
 //! - `manifest.txt`: versions, the system, the support ID when known, every
 //!   file with its size, and the places that were missing.
 //!
@@ -48,12 +49,10 @@ const MAX_DEPTH: usize = 4;
 /// cannot stall the collection.
 const MAX_FILES_PER_PLACE: usize = 1000;
 
-/// The game's Steam app IDs whose folders are looked in. Transport Fever
-/// 3's is not known before release day: until it is added, only
-/// Transport Fever 2's folder (1066780) is, as the documented starting
-/// guess.
-// TODO(TF3 release): add Transport Fever 3's app ID and confirm the paths.
-pub const GAME_STEAM_APPS: &[&str] = &["1066780"];
+/// The game's Steam app IDs whose folders are looked in: Transport Fever
+/// 3's ([`crate::steam::TRANSPORT_FEVER_3`]).
+// TODO(TF3 release): confirm the paths in its folder.
+pub const GAME_STEAM_APPS: &[&str] = &["3493540"];
 
 /// Marks a place taken from Transport Fever 2, until it is confirmed on
 /// Transport Fever 3.
@@ -93,28 +92,8 @@ pub fn own_candidates(data_dir: &Path) -> Vec<Candidate> {
 
 /// Where the game keeps its log and crash dumps, on this computer.
 pub fn game_candidates() -> Vec<Candidate> {
-    game_candidates_in(&steam_roots())
-}
-
-/// The Steam installations looked in, where Steam puts itself by default.
-fn steam_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if cfg!(windows) {
-        for key in ["ProgramFiles(x86)", "ProgramFiles"] {
-            if let Some(base) = std::env::var_os(key) {
-                roots.push(PathBuf::from(base).join("Steam"));
-            }
-        }
-    } else if let Some(home) = dirs::home_dir() {
-        if cfg!(target_os = "macos") {
-            roots.push(home.join("Library/Application Support/Steam"));
-        } else {
-            roots.push(home.join(".local/share/Steam"));
-            roots.push(home.join(".steam/steam"));
-            roots.push(home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"));
-        }
-    }
-    roots
+    // Where Steam is, the folder the registry names on Windows included.
+    game_candidates_in(&crate::steam::steam_roots())
 }
 
 /// The game's places under these Steam installations: per Steam account,
@@ -713,7 +692,7 @@ mod tests {
         write(&data.join("logs/server.pem"), b"CERTIFICATE");
         write(&data.join("logs/session-token.txt"), b"TOKEN");
         // The game's stdout, under one Steam account; no crash dumps.
-        let local = steam.join("userdata/12345678/1066780/local");
+        let local = steam.join("userdata/12345678/3493540/local");
         write(&local.join("stdout.txt"), b"game output\n");
 
         let bundle = collect(&data, &steam, now).write(&out).unwrap();
@@ -726,7 +705,7 @@ mod tests {
         );
         assert!(names.contains(&"tpf3mp/hook.log"), "{names:?}");
         assert!(
-            names.contains(&"game/steam-1066780/stdout.txt"),
+            names.contains(&"game/steam-3493540/stdout.txt"),
             "{names:?}"
         );
         assert!(names.contains(&"manifest.txt"), "{names:?}");
@@ -766,7 +745,7 @@ mod tests {
         );
         assert!(manifest.contains("withheld, looked like keys, certificates or tokens: 3 files"));
         assert!(manifest.contains("the game's crash dumps (TPF2 location, confirm on TF3)"));
-        assert!(manifest.contains("<Steam>/userdata/<account>/1066780/local/crash_dump/"));
+        assert!(manifest.contains("<Steam>/userdata/<account>/3493540/local/crash_dump/"));
         // No account ID or local path in the manifest.
         assert!(!manifest.contains("12345678"), "{manifest}");
         assert!(!manifest.contains(&*root.to_string_lossy()), "{manifest}");
@@ -902,5 +881,11 @@ mod tests {
             Stamp::of(UNIX_EPOCH + Duration::from_secs(951_782_400)).iso(),
             "2000-02-29T00:00:00Z"
         );
+    }
+
+    #[test]
+    fn the_game_looked_for_is_transport_fever_3() {
+        let tpf3 = crate::steam::TRANSPORT_FEVER_3.to_string();
+        assert_eq!(GAME_STEAM_APPS.to_vec(), vec![tpf3.as_str()]);
     }
 }

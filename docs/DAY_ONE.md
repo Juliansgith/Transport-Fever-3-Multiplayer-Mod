@@ -162,8 +162,8 @@ Release-day order:
    run the pairs in the §4 table, then `compare_runs.py` the logs.
 5. Fill `investigation/TPF3_RECON_TEMPLATE.md` as results arrive.
 6. **Player log bundle:** find where Transport Fever 3 writes its log
-   (`stdout.txt` for TPF2) and crash dumps on each platform, and its Steam
-   app ID. Add them to `GAME_STEAM_APPS` and `game_candidates_in` in
-   `crates/tpf3mp-agent/src/logs.rs`, drop the "TPF2 location, confirm on
-   TF3" mark from the confirmed ones, and update "Sending your logs" in
-   `docs/PLAYING.md`.
+   (`stdout.txt` for TPF2) and crash dumps on each platform. The bundle
+   already looks in its Steam folder (app 3493540) where TPF2 kept them:
+   correct `game_candidates_in` in `crates/tpf3mp-agent/src/logs.rs` where
+   that is wrong, drop the "TPF2 location, confirm on TF3" mark from the
+   confirmed ones, and update "Sending your logs" in `docs/PLAYING.md`.
