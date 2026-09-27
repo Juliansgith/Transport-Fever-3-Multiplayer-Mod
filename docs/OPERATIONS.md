@@ -94,6 +94,25 @@ disk. The log never contains IP addresses or invite tokens.
   `--for <ID>` for one session, player or room), the container's state
   (restarts, out of memory), `/healthz`, `/metrics`, and the host's disk and
   memory. It holds no secrets and can be shared.
+- **The player's side, without asking:** players' launchers send the
+  lines of their logs, redacted, to the server they play on (unless the
+  player switched that off). With the support ID a player quotes:
+
+  ```sh
+  curl http://127.0.0.1:9470/diagnostics/s-3f2a…   # that session's lines
+  curl http://127.0.0.1:9470/diagnostics           # the sessions with some
+  ```
+
+  One JSON object a line: when the server received it, the player's time,
+  the player, level, where it was logged, and the line. Paths, addresses,
+  invites and keys are taken out on the player's machine and again here.
+  They are kept in `diagnostics` inside the data volume, 8 MiB a session
+  at most, for 30 days (`--diagnostics-days`, 0 for none) and within 1 GiB
+  in all (`--diagnostics-mib`), the oldest going first; without
+  `--data-dir`, none are kept. They are personal data of your players,
+  pseudonymous but theirs: keep the retention short, and delete a
+  player's on request (`rm` the session's file). The metrics
+  `diagnostics_kept_total` and `diagnostics_dropped_total` count lines.
 - **From the player:** ask for the zip the launcher's **Collect logs**
   writes (or `tpf3mp-agent collect-logs`), with their support ID. Its
   `manifest.txt` names the player's versions, system and support ID, and

@@ -177,6 +177,23 @@ with your report, and they find exactly what happened to you. **Open logs
 folder**, at the bottom, opens the launcher's own logs
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
 
+### Diagnostics
+
+While you are connected, the launcher sends the lines of its log to the
+server you play on, so its operator can see what went wrong for you from
+your support ID, without asking you for files. Before a line leaves your
+machine, paths are cut to their last part (so your user name and your
+Steam account are not in them), and IP addresses, invites, keys and
+passwords, e-mail addresses and Steam IDs are taken out; the server does
+the same again. Your game's own log and crash dumps are not sent. The
+server keeps the lines for a limited time, 30 days unless its operator
+chose otherwise.
+
+Untick **Send diagnostics** at the bottom of the window (or of the browser
+page) to stop: the
+launcher then sends nothing more, forgets the lines it had not sent yet,
+and remembers your choice.
+
 ### Sending your logs
 
 **Collect logs**, at the bottom of the window (and of the browser page),

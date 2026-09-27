@@ -52,6 +52,10 @@ const REQUEST_BURST: u32 = 20;
 /// Of those, attempts to join a room.
 const JOINS_PER_SECOND: u32 = 1;
 const JOIN_BURST: u32 = 5;
+/// Diagnostics requests, on a budget of their own so that they never make
+/// a player's other requests wait or fail.
+const DIAGNOSTICS_PER_SECOND: u32 = 1;
+const DIAGNOSTICS_BURST: u32 = 8;
 /// Game messages one connection may send per second, and the burst on top,
 /// each kind on its own so a flood of one never starves another: dropping
 /// a member's progress reports would make its room wait for it.
@@ -117,7 +121,7 @@ pub(crate) async fn serve(incoming: quinn::Incoming, ticket: Handshake, shared: 
         "session started"
     );
     metrics::increment(&shared.metrics.sessions_opened);
-    Client::new(connection.clone(), shared, hello)
+    Client::new(connection.clone(), shared, hello, session_id)
         .run(send, recv)
         .await;
     // The client may end its control stream and keep the connection; the
@@ -259,6 +263,8 @@ struct Client {
     origin: Origin,
     player: PlayerId,
     hello: Hello,
+    /// This connection's session: the support ID its player sees.
+    session: SessionId,
     link: MemberLink,
     /// What this player's game runs, once declared.
     content: Option<Arc<Declared>>,
@@ -271,10 +277,18 @@ struct Client {
     joins: TokenBucket,
     progress: TokenBucket,
     intents: TokenBucket,
+    diagnostics: TokenBucket,
+    /// Bytes of diagnostics this session has had kept.
+    diagnostics_kept: u64,
 }
 
 impl Client {
-    fn new(connection: quinn::Connection, shared: Arc<Shared>, hello: Hello) -> Self {
+    fn new(
+        connection: quinn::Connection,
+        shared: Arc<Shared>,
+        hello: Hello,
+        session: SessionId,
+    ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE);
         let (turns_tx, turns_rx) = mpsc::channel(TURN_QUEUE);
         let link = MemberLink {
@@ -289,6 +303,7 @@ impl Client {
             shared,
             player: hello.identity,
             hello,
+            session,
             link,
             content: None,
             room: None,
@@ -299,6 +314,8 @@ impl Client {
             joins: TokenBucket::new(JOINS_PER_SECOND, JOIN_BURST),
             progress: TokenBucket::new(PROGRESS_PER_SECOND, PROGRESS_BURST),
             intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
+            diagnostics: TokenBucket::new(DIAGNOSTICS_PER_SECOND, DIAGNOSTICS_BURST),
+            diagnostics_kept: 0,
         }
     }
 
@@ -377,12 +394,17 @@ impl Client {
                 ClientMessage::Hello(_) => return Err(Violation::SecondHello),
                 ClientMessage::Request { id, request } => {
                     let joining = matches!(request, Request::JoinRoom(_));
-                    let result =
-                        if !self.requests.take(now, 1) || (joining && !self.joins.take(now, 1)) {
-                            Err(RequestError::RateLimited)
+                    let result = if let Request::Diagnostics(batch) = &request {
+                        if self.diagnostics.take(now, 1) {
+                            self.keep_diagnostics(batch)
                         } else {
-                            self.request(request).await
-                        };
+                            Err(RequestError::RateLimited)
+                        }
+                    } else if !self.requests.take(now, 1) || (joining && !self.joins.take(now, 1)) {
+                        Err(RequestError::RateLimited)
+                    } else {
+                        self.request(request).await
+                    };
                     let response = ServerMessage::Response { id, result };
                     if self.link.control.send(response).await.is_err() {
                         return Ok(());
@@ -523,6 +545,29 @@ impl Client {
                 })
                 .await
             }
+            Request::Diagnostics(batch) => self.keep_diagnostics(&batch),
+        }
+    }
+
+    /// Hands a batch of this session's diagnostics to the writer, without
+    /// waiting on it.
+    fn keep_diagnostics(
+        &mut self,
+        batch: &tpf3mp_proto::DiagnosticBatch,
+    ) -> Result<Response, RequestError> {
+        let diagnostics = self
+            .shared
+            .diagnostics
+            .as_ref()
+            .ok_or(RequestError::DiagnosticsNotKept)?;
+        match diagnostics.submit(self.session, self.player, self.diagnostics_kept, batch) {
+            Ok(bytes) => {
+                self.diagnostics_kept += bytes;
+                Ok(Response::Done)
+            }
+            Err(crate::diagnostics::NotKept::Quota) => Err(RequestError::DiagnosticsNotKept),
+            // The client keeps them and tries again later.
+            Err(crate::diagnostics::NotKept::Busy) => Err(RequestError::RateLimited),
         }
     }
 

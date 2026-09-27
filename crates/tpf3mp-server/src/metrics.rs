@@ -31,6 +31,8 @@ pub(crate) struct Metrics {
     pub(crate) logs_compacted: AtomicU64,
     pub(crate) tunnels_opened: AtomicU64,
     pub(crate) tunnels_refused: AtomicU64,
+    pub(crate) diagnostics_kept: AtomicU64,
+    pub(crate) diagnostics_dropped: AtomicU64,
 }
 
 /// Values measured at scrape time rather than counted.
@@ -50,7 +52,7 @@ pub(crate) fn add(counter: &AtomicU64, amount: u64) {
 
 impl Metrics {
     pub(crate) fn render(&self, gauges: &Gauges) -> String {
-        let counters: [(&str, &str, &AtomicU64); 24] = [
+        let counters: [(&str, &str, &AtomicU64); 26] = [
             (
                 "sessions_opened",
                 "Sessions that completed the handshake.",
@@ -158,6 +160,16 @@ impl Metrics {
                 "tunnels_refused",
                 "Tunnel connections refused by the server-wide or per-address limit.",
                 &self.tunnels_refused,
+            ),
+            (
+                "diagnostics_kept",
+                "Lines of players' diagnostics kept.",
+                &self.diagnostics_kept,
+            ),
+            (
+                "diagnostics_dropped",
+                "Lines of players' diagnostics dropped: over a session's quota, or the writer behind.",
+                &self.diagnostics_dropped,
             ),
         ];
         let mut out = String::new();

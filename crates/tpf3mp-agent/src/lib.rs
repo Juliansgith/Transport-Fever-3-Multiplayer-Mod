@@ -4,6 +4,7 @@
 
 pub mod bridge;
 pub mod content;
+pub mod diagnostics;
 mod follower;
 pub mod launcher;
 pub mod logs;
@@ -48,6 +49,8 @@ pub use transfer::{BulkOpener, Worlds};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a request may wait for its response.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long closing waits for the last lines of the player's log to go.
+const LAST_DIAGNOSTICS: Duration = Duration::from_secs(2);
 /// Messages queued for the server before senders wait.
 const OUTGOING_QUEUE: usize = 256;
 /// Events queued for the application before the client stops reading. The
@@ -121,6 +124,9 @@ pub struct ConnectOptions {
     pub route: Route,
     /// How long UDP has alone before a fallback tunnel joins the race.
     pub fallback_after: Duration,
+    /// Where the lines of this player's log wait to go to the server
+    /// ("Diagnostics" in PROTOCOL.md). `None` sends none.
+    pub diagnostics: Option<diagnostics::Recorder>,
 }
 
 impl ConnectOptions {
@@ -155,6 +161,7 @@ impl ConnectOptions {
             protocol_version: PROTOCOL_VERSION,
             route: Route::Udp,
             fallback_after: FALLBACK_AFTER,
+            diagnostics: None,
         }
     }
 }
@@ -304,6 +311,8 @@ pub struct Client {
     player: PlayerId,
     requests: Requests,
     tunneled: bool,
+    /// The lines of this player's log this connection sends, if any.
+    diagnostics: Option<diagnostics::Recorder>,
 }
 
 /// Sends requests on a client's control stream and matches the responses.
@@ -497,19 +506,31 @@ async fn connect_within(
         }
     });
 
+    let requests = Requests {
+        outgoing,
+        pending,
+        reader_done,
+        next_request: Arc::new(AtomicU32::new(1)),
+    };
+    if let Some(recorder) = options.diagnostics.clone() {
+        let connection = connection.clone();
+        tokio::spawn(diagnostics::upload(
+            recorder,
+            requests.clone(),
+            async move {
+                connection.closed().await;
+            },
+        ));
+    }
     Ok((
         Client {
             endpoint,
             connection,
             welcome,
             player: options.identity.player(),
-            requests: Requests {
-                outgoing,
-                pending,
-                reader_done,
-                next_request: Arc::new(AtomicU32::new(1)),
-            },
+            requests,
             tunneled,
+            diagnostics: options.diagnostics,
         },
         Events {
             receiver: events_rx,
@@ -696,8 +717,16 @@ impl Client {
             .map_err(|_| ClientError::Disconnected)
     }
 
-    /// Ends the session and waits until the server has been told.
+    /// Ends the session and waits until the server has been told. The last
+    /// lines of this player's log go first, when it sends them.
     pub async fn close(self) {
+        if let Some(recorder) = &self.diagnostics {
+            let _ = tokio::time::timeout(
+                LAST_DIAGNOSTICS,
+                diagnostics::send(recorder, &self.requests),
+            )
+            .await;
+        }
         self.connection.close(close::NORMAL, b"client leaving");
         self.endpoint.wait_idle().await;
     }

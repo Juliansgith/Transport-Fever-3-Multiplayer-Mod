@@ -149,6 +149,9 @@ pub enum Request {
     Kick(PlayerId),
     /// Says something to everyone in the room.
     Chat(ChatText),
+    /// Lines of this client's log, redacted, for the server's operator to
+    /// read by this session's ID (see "Diagnostics" in PROTOCOL.md).
+    Diagnostics(crate::DiagnosticBatch),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,6 +222,9 @@ pub enum RequestError {
     UnknownRules,
     /// The declared content exceeds a manifest's limits.
     InvalidContent,
+    /// The server keeps no more diagnostics from this session: it keeps
+    /// none, or this session sent all it may.
+    DiagnosticsNotKept,
 }
 
 impl fmt::Display for RequestError {
@@ -241,6 +247,7 @@ impl fmt::Display for RequestError {
             Self::CannotKickSelf => "the owner cannot kick themselves; leave the room instead",
             Self::UnknownRules => "this server does not offer those rules",
             Self::InvalidContent => "the game's list of mods is too long to declare",
+            Self::DiagnosticsNotKept => "the server keeps no more diagnostics from this session",
         })
     }
 }

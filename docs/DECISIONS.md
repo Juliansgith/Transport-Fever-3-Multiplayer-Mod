@@ -220,3 +220,33 @@ Rejected:
 - **A compiled installer** (the agent's `install-hook`, an MSI or a setup
   program): opaque to players, and flagged by SmartScreen and antivirus
   like any unsigned program.
+
+## D10 (2026-09-27): players' diagnostics go to the server by themselves
+
+The launcher sends the lines of its log, redacted, to the server the player
+plays on, which keeps them by session: the operator reads what went wrong
+for a player from the support ID alone, as TPF2MP's relay let its operator
+do. Asking players for files, which Collect logs still makes, comes late
+and often not at all.
+
+- **Over the game's connection.** A request on the control stream, from a
+  client that has proven its identity, filed under its session: no second
+  service, port or credential.
+- **What TPF2MP's missed, fixed.** Its redaction missed paths outside
+  `C:\Users`, Steam's `userdata\<account>` among them, and paths escaped
+  in JSON; `tpf3mp_proto::redact` cuts every absolute path to its last
+  part, on both sides. Its uploader lost the last lines before a session
+  ended; closing now sends them, and lines left when a connection drops go
+  with the next. Its only opt-out was giving up the relay; here a switch
+  in the launcher stops them, and is remembered.
+- **Never in a game's way.** Their own rate budget, a writer that does not
+  make connections wait, a quota per session, and a total the oldest make
+  room in.
+
+Rejected:
+
+- **Whole log files, or crash dumps.** Too large, and too much in them to
+  redact reliably; Collect logs remains for those, on the player's say.
+- **An HTTP upload to the server.** A second way in, needing its own
+  authentication, rate limits and TLS, for what the game's connection
+  already carries.

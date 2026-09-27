@@ -4,6 +4,7 @@
 mod admin;
 mod admission;
 mod connection;
+mod diagnostics;
 mod directory;
 mod limit;
 mod metrics;
@@ -32,12 +33,14 @@ const ANNOUNCEMENTS: usize = 16;
 
 pub use crate::{
     admin::serve_admin,
+    diagnostics::{DiagnosticsConfig, Entry as DiagnosticsEntry, SESSION_QUOTA},
     ruleset::{AcceptAll, NATIVE, RulesChoice, RulesMenu, Ruleset, RulesetFactory},
     snapshots::SnapshotConfig,
     tunnel::{AddressRange, TunnelConfig},
 };
 use crate::{
     admission::{Admission, Decision, Origin},
+    diagnostics::Diagnostics,
     directory::{Directory, DirectoryConfig},
     metrics::{Gauges, Metrics},
     room::{RoomEnv, Timeouts},
@@ -109,6 +112,9 @@ pub struct ServerConfig {
     /// Where the server also accepts QUIC over WebSocket, for players
     /// whose networks block UDP. `None` accepts UDP only.
     pub tunnel: Option<TunnelConfig>,
+    /// Where players' diagnostics are kept, and for how long. `None` keeps
+    /// none: clients are told so, and stop sending them.
+    pub diagnostics: Option<DiagnosticsConfig>,
 }
 
 impl ServerConfig {
@@ -143,6 +149,7 @@ impl ServerConfig {
             snapshots: None,
             compact_log_at: 64 << 20,
             tunnel: None,
+            diagnostics: None,
         }
     }
 }
@@ -183,6 +190,8 @@ pub enum ServerError {
     Snapshots(#[from] tpf3mp_snapshot::StoreError),
     #[error("cannot open the tunnel listener: {0}")]
     Tunnel(io::Error),
+    #[error("cannot open the diagnostics folder: {0}")]
+    Diagnostics(io::Error),
 }
 
 /// State shared by every connection.
@@ -197,6 +206,8 @@ pub(crate) struct Shared {
     pub(crate) metrics: Arc<Metrics>,
     pub(crate) snapshots: Option<Arc<Snapshots>>,
     pub(crate) tunnels: Option<Arc<Tunnels>>,
+    /// Where players' diagnostics go, when the server keeps them.
+    pub(crate) diagnostics: Option<Diagnostics>,
     /// The operator's notices, which every connection passes to its client.
     pub(crate) announcements: tokio::sync::broadcast::Sender<ChatText>,
 }
@@ -268,6 +279,13 @@ impl Server {
                 compact_log_at: config.compact_log_at,
             },
         }));
+        let diagnostics = match config.diagnostics {
+            Some(diagnostics) => Some(
+                Diagnostics::start(diagnostics, Arc::clone(&metrics))
+                    .map_err(ServerError::Diagnostics)?,
+            ),
+            None => None,
+        };
         let restored = directory.recover();
         if restored > 0 {
             tracing::info!(rooms = restored, "restored running rooms");
@@ -294,6 +312,7 @@ impl Server {
             metrics,
             snapshots,
             tunnels,
+            diagnostics,
             announcements: tokio::sync::broadcast::channel(ANNOUNCEMENTS).0,
         });
         let capacity = config.max_sessions.saturating_add(config.max_handshakes);
@@ -437,6 +456,21 @@ impl ServerStats {
     pub fn announce(&self, text: ChatText) -> usize {
         tracing::info!(%text, "announcing to everyone connected");
         self.shared.announcements.send(text).unwrap_or(0)
+    }
+
+    /// The sessions whose diagnostics the server keeps, the latest first;
+    /// `None` when it keeps none.
+    pub fn diagnostics(&self) -> Option<io::Result<Vec<DiagnosticsEntry>>> {
+        self.shared.diagnostics.as_ref().map(Diagnostics::list)
+    }
+
+    /// One session's diagnostics, one JSON object a line; `None` when the
+    /// server keeps none or has none for it.
+    pub fn session_diagnostics(&self, session: &str) -> io::Result<Option<Vec<u8>>> {
+        match &self.shared.diagnostics {
+            Some(diagnostics) => diagnostics.read(session),
+            None => Ok(None),
+        }
     }
 
     /// Every counter and gauge in the Prometheus text format.

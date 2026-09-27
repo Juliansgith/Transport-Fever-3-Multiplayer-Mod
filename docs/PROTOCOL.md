@@ -403,6 +403,41 @@ snapshot and where it stands. A restored room keeps offering that snapshot
 if the store still holds it and the recovered log reaches it. At start, the
 server releases snapshots no restored room refers to.
 
+## Diagnostics
+
+A client may send lines of its own log to the server, so the server's
+operator can see what went wrong for a player from the support ID alone
+(the session ID). TPF2MP's relay kept its players' diagnostics the same
+way.
+
+- **What.** `Request::Diagnostics` carries up to 32 `DiagnosticEvent`s: the
+  client's time in milliseconds, a level (`Info`, `Warn`, `Error`), where
+  it was logged (up to 48 bytes) and the line (up to 1024 bytes). The
+  largest request fits a control frame.
+- **Redacted on both sides.** The client passes every line through
+  `tpf3mp_proto::redact`, and the server does again before keeping it.
+  Absolute paths keep only their last part (and not that, when it is
+  digits alone, such as a Steam account's folder); IP addresses, invites,
+  secrets after keys such as `token=` or `password:`, e-mail addresses and
+  Steam IDs are replaced.
+- **Kept per session.** The server appends the lines, with the player's
+  ID, to a file named by the session ID, up to 8 MiB a session, and
+  answers `Done`. It answers `DiagnosticsNotKept` when it keeps none, or
+  this session has sent all it may: the client then stops sending them on
+  this connection.
+- **Their own budget.** Diagnostics requests take no share of a
+  connection's requests: one a second, with a burst of eight, on their
+  own. Beyond it, `RateLimited`, and the client sends the lines later.
+- **Never in a game's way.** The server hands the lines to a writer of its
+  own and does not wait for it; when the writer is behind, it answers
+  `RateLimited` and the lines are sent again.
+- **The client.** The launcher records its log's lines from `info` up (and
+  other libraries' warnings and errors), sends up to four batches every
+  five seconds on each connection, and what is left as the connection
+  closes; lines waiting when a connection drops go with the next. At most
+  2000 lines wait; past that, the oldest go. The player can switch
+  diagnostics off, which also forgets the lines waiting.
+
 ## Slow and misbehaving clients
 
 - **Bounded buffers.** Outbound queues are bounded per client. A client that

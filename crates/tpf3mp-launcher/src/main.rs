@@ -9,7 +9,10 @@ use std::{path::PathBuf, process::ExitCode, time::Duration};
 use anyhow::{Context, Result};
 use clap::Parser;
 use eframe::egui;
-use tpf3mp_agent::launcher::{Launcher, LauncherConfig, setup};
+use tpf3mp_agent::{
+    diagnostics::Recorder,
+    launcher::{Launcher, LauncherConfig, Remembered, setup},
+};
 use tpf3mp_launcher::{
     app::{CollectLogs, Extras, LauncherApp},
     backend::Local,
@@ -42,7 +45,11 @@ fn main() -> ExitCode {
         args.launcher.default_server = DEFAULT_SERVER.map(str::to_owned);
     }
     let logs = logs::dir().ok();
-    let _logging = logs.as_deref().and_then(|dir| logs::start(dir).ok());
+    // The log's lines also wait here to go to the server, redacted.
+    let diagnostics = Recorder::new();
+    let _logging = logs
+        .as_deref()
+        .and_then(|dir| logs::start(dir, Some(diagnostics.clone())).ok());
     info!(
         version = update::VERSION,
         os = std::env::consts::OS,
@@ -53,7 +60,7 @@ fn main() -> ExitCode {
     if update::at_start() {
         return ExitCode::SUCCESS;
     }
-    match run(args, logs) {
+    match run(args, logs, diagnostics) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             error!("{error:#}");
@@ -63,13 +70,18 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: Args, logs: Option<PathBuf>) -> Result<()> {
+fn run(args: Args, logs: Option<PathBuf>, diagnostics: Recorder) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("tpf3mp")
         .build()
         .context("starting the launcher")?;
-    let config = args.launcher.config()?;
+    let mut config = args.launcher.config()?;
+    // On unless the player switched them off.
+    if let Some(file) = &config.remember {
+        diagnostics.set_on(Remembered::load(file).diagnostics.unwrap_or(true));
+    }
+    config.diagnostics = Some(diagnostics);
     if args.browser {
         return in_browser(&runtime, config);
     }

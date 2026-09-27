@@ -151,6 +151,9 @@
     <button id="collect-button" class="secondary"
       title="Put TPF3-MP's logs and the game's into one zip for a bug report. Keys and tokens are never included.">Collect logs</button>
     <span id="collect-result" class="muted"></span>
+    <label id="diagnostics-label" class="muted hidden"
+      title="Lines of this launcher's log go to the server you play on, with paths, addresses and keys taken out, so its operator can see what went wrong by your support ID. The server keeps them for a limited time, 30 days unless its operator chose otherwise.">
+      <input type="checkbox" id="diagnostics"> Send diagnostics</label>
   </div>
 </main>
 <script>
@@ -270,6 +273,11 @@ function render(s) {
   if (!$("name").value && s.name) $("name").value = s.name;
 
   renderContentDiff(s.content_diff);
+
+  // Only a launcher that sends diagnostics offers to stop them.
+  const diagnostics = typeof s.diagnostics === "boolean";
+  show("diagnostics-label", diagnostics);
+  if (diagnostics) $("diagnostics").checked = s.diagnostics;
 
   const connected = s.connection === "connected";
   show("connect", !connected && !s.room);
@@ -426,6 +434,7 @@ $("collect-button").onclick = async () => {
   $("collect-button").disabled = false;
 };
 $("chat-text").onkeydown = (event) => { if (event.key === "Enter") sendChat(); };
+$("diagnostics").onchange = () => act({ action: "diagnostics", on: $("diagnostics").checked });
 
 refresh();
 setInterval(refresh, 500);

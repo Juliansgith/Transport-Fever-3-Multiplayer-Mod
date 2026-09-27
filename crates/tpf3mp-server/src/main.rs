@@ -10,7 +10,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use tpf3mp_net::ServerIdentity;
 use tpf3mp_server::{
-    AddressRange, Server, ServerConfig, SnapshotConfig, TunnelConfig, serve_admin,
+    AddressRange, DiagnosticsConfig, Server, ServerConfig, SnapshotConfig, TunnelConfig,
+    serve_admin,
 };
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -143,6 +144,17 @@ struct Args {
     #[arg(long, default_value_t = 64)]
     compact_log_mib: u64,
 
+    /// Days players' diagnostics are kept: lines of their launchers' logs,
+    /// redacted, which they send so the operator can read what went wrong
+    /// by their support ID. Kept in `diagnostics` inside --data-dir, and
+    /// without one, not at all; 0 keeps none either.
+    #[arg(long, default_value_t = 30)]
+    diagnostics_days: u64,
+
+    /// Disk players' diagnostics may take, in MiB; past it, the oldest go.
+    #[arg(long, default_value_t = 1024)]
+    diagnostics_mib: u64,
+
     /// TCP address that also takes players through a WebSocket tunnel, for
     /// networks that block UDP. Serves TLS with --cert unless
     /// --tunnel-behind-proxy. Players look for wss://<host>/tpf3mp on 443.
@@ -241,6 +253,14 @@ async fn main() -> Result<()> {
     if config.snapshots.is_none() {
         warn!("no snapshots: players cannot join games that have started");
     }
+    config.diagnostics = match &args.data_dir {
+        Some(data) if args.diagnostics_days > 0 => Some(DiagnosticsConfig {
+            dir: data.join("diagnostics"),
+            keep_for: Duration::from_secs(args.diagnostics_days.saturating_mul(86_400)),
+            max_total: args.diagnostics_mib.saturating_mul(1 << 20),
+        }),
+        _ => None,
+    };
     match &args.secret_file {
         Some(path) => config.secret = load_or_create_secret(path)?,
         None => warn!("no --secret-file: invites will not survive a restart"),

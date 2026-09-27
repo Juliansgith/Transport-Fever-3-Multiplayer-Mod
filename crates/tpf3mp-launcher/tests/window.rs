@@ -327,3 +327,19 @@ fn collect_logs_writes_a_zip_with_the_support_id_and_no_key() {
     drop(zip);
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn diagnostics_can_be_switched_off() {
+    let window = window(State {
+        diagnostics: Some(true),
+        ..State::default()
+    });
+    window.get_by_label("Send diagnostics").click();
+    let mut window = window;
+    window.run_steps(2);
+    assert_eq!(actions(&window), [Action::Diagnostics { on: false }]);
+
+    // A launcher that sends none shows no switch.
+    let window = self::window(State::default());
+    assert!(window.query_by_label("Send diagnostics").is_none());
+}

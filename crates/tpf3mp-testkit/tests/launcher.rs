@@ -128,6 +128,7 @@ fn launcher_config(
     identity: Arc<Identity>,
 ) -> LauncherConfig {
     LauncherConfig {
+        diagnostics: None,
         listen: "127.0.0.1:0".parse().unwrap(),
         server: None,
         tunnel: TunnelChoice::Off,

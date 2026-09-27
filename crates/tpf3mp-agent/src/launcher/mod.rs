@@ -79,6 +79,9 @@ pub struct LauncherConfig {
     pub worlds: Worlds,
     /// The settings of rooms this player creates.
     pub room_settings: RoomSettings,
+    /// Where lines of the player's log wait to go to the server, when the
+    /// launcher sends them; `LauncherHandle` switches it.
+    pub diagnostics: Option<crate::diagnostics::Recorder>,
 }
 
 /// A running launcher.
@@ -200,6 +203,7 @@ impl Shared {
                 name: config.name.clone(),
                 player: Some(config.identity.player()),
                 installed: config.installed.clone(),
+                diagnostics: config.diagnostics.as_ref().map(|recorder| recorder.is_on()),
                 ..View::default()
             }),
             status: SharedStatus::default(),
@@ -392,6 +396,23 @@ async fn act(
             forward(session, Control::Chat(text)).await
         }
         Action::Leave => forward(session, Control::Leave).await,
+        Action::Diagnostics { on } => {
+            let recorder = config
+                .diagnostics
+                .as_ref()
+                .ok_or("this launcher sends no diagnostics")?;
+            recorder.set_on(on);
+            shared.view().diagnostics = Some(on);
+            if let Some(file) = &config.remember {
+                let mut remembered = Remembered::load(file);
+                remembered.diagnostics = Some(on);
+                if let Err(error) = remembered.save(file) {
+                    warn!(%error, "cannot remember the diagnostics choice for next time");
+                }
+            }
+            info!(on, "diagnostics switched");
+            Ok(())
+        }
     }
 }
 
@@ -532,10 +553,9 @@ async fn connect_to(
     view.rules = client.welcome().rules.clone();
     drop(view);
     if let Some(file) = &config.remember {
-        let remembered = Remembered {
-            server: Some(server.to_owned()),
-            name: Some(options.name.as_str().to_owned()),
-        };
+        let mut remembered = Remembered::load(file);
+        remembered.server = Some(server.to_owned());
+        remembered.name = Some(options.name.as_str().to_owned());
         if let Err(error) = remembered.save(file) {
             warn!(%error, "cannot remember the server and name for next time");
         }
@@ -554,6 +574,10 @@ async fn connect_to(
 pub struct Remembered {
     pub server: Option<String>,
     pub name: Option<String>,
+    /// Whether the player's diagnostics go to the server; on unless they
+    /// switched them off.
+    #[serde(default)]
+    pub diagnostics: Option<bool>,
 }
 
 impl Remembered {
@@ -694,6 +718,8 @@ async fn connect_options(
         .tunnel
         .route(host)
         .map_err(|error| error.to_string())?;
+    // Every connection sends the recorder's lines, the rejoins' too.
+    options.diagnostics.clone_from(&config.diagnostics);
     Ok(options)
 }
 
@@ -761,9 +787,23 @@ mod tests {
         let remembered = Remembered {
             server: Some("tpf3mp.example.org:29470".into()),
             name: Some("Ann".into()),
+            diagnostics: Some(false),
         };
         remembered.save(&file).unwrap();
         assert_eq!(Remembered::load(&file), remembered);
+        // A file from before diagnostics were remembered still loads.
+        fs::write(
+            &file,
+            br#"{"server":"tpf3mp.example.org:29470","name":"Ann"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            Remembered::load(&file),
+            Remembered {
+                diagnostics: None,
+                ..remembered
+            }
+        );
         fs::write(&file, b"not json").unwrap();
         assert_eq!(Remembered::load(&file), Remembered::default());
         fs::remove_dir_all(&dir).unwrap();
