@@ -384,3 +384,36 @@ Rejected:
   guessing, and every character more is one more to read out.
 - **Codes of letters alone**: an ordinary word in a message would pass
   for one.
+
+## D14 (2026-09-28): release-day reverse engineering through one Rust indexer
+
+The Windows executable is decoded with `tools/tpfre`: one parallel pass
+into one SQLite file (functions, direct calls, references, strings,
+`__FUNCSIG__`/`__FILE__` names, RTTI), then small queries that answer in
+milliseconds with one fact per line. It is the tool coding agents use to
+find the hook targets on release day.
+
+- **Time.** TPF2's route was a full Ghidra auto-analysis ("expect hours",
+  48 GB of RAM), then Python queries over its CSV dumps. The index takes
+  about 4 seconds on TPF2's 72 MB executable, so a patch costs nothing to
+  re-index, and an agent can ask hundreds of cheap questions instead of a
+  few expensive ones.
+- **The validated naming, kept.** It ports `tools/re/name_functions.py`'s
+  rules and agrees with it name for name on TPF2 build 35924; signatures
+  follow `make_profile.py` and match its output byte for byte.
+- **Fail closed.** Queries refuse a binary whose SHA-256 is not the one
+  indexed, and a database of another schema; names carry their source and
+  confidence, and uncertain ones are marked.
+- **Rust (D1)**, in its own Cargo workspace under `tools/`, so the
+  project's workspace, lockfile and release builds are untouched. CI runs
+  its format, lint and tests on Linux only.
+
+The Python tools stay for what tpfre does not do: the survey report,
+ELF and Mach-O (arm64) naming, and the Ghidra, x64dbg and IDA scripts.
+
+Rejected:
+
+- **Ghidra auto-analysis as the first step**: hours per build, and one
+  project locked to one process, so questions queue.
+- **Growing the Python tools**: a full disassembly of every function in
+  Python takes minutes, and each query would reload the binary.

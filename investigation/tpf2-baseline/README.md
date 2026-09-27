@@ -44,6 +44,10 @@ by running the mods inside two live game instances.
 - **Proxy-loader candidate:** `alut.dll` -- statically imported from the game
   folder, only 20 exports (the same role the TPF2 mods use).
 - **RTTI:** present (~4,100 MSVC type descriptors) -> a third naming axis.
+  That is `binary_survey.py`'s regex count of `.?AV`/`.?AU...@@` byte runs,
+  which misses names containing `<` (lambdas, templates); `tools/tpfre`
+  parses the structures and finds 12,146 class type descriptors and 7,250
+  vtables.
 - **Lua:** 5.2.2 with sol2.
 - **Naming:** ~18,900 `__FUNCSIG__` strings and 729 `__FILE__` paths yield
   ~24,200 functions named and ~54,000 attributed to 725 source files; all 8

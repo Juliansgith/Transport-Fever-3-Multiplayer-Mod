@@ -1,0 +1,4 @@
+# Build output and databases made while trying the tool.
+/target/
+*.tpfdb
+*.tpfdb.partial

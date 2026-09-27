@@ -26,7 +26,7 @@ actions_app=15368
 ci=(
   "test (windows-latest)" "test (ubuntu-latest)" "test (macos-latest)"
   "release build (windows-latest)" "release build (ubuntu-latest)"
-  "release build (macos-latest)" "server image" "launcher page"
+  "release build (macos-latest)" "server image" "launcher page" "tpfre"
 )
 acceptance=(
   "load (windows-latest)" "load (ubuntu-latest)" "load (macos-latest)"

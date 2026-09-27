@@ -62,6 +62,23 @@ jobs:
           ./target/release/tpf3mp-agent --version
           ./target/release/tpf3mp-server --version
 
+  tpfre:
+    name: tpfre
+    # The release-day binary-analysis kit (tools/tpfre) is its own Cargo
+    # workspace and runs on developers' machines only: Linux is enough.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/tpfre
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/tpfre
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
   page:
     name: launcher page
     runs-on: ubuntu-latest
