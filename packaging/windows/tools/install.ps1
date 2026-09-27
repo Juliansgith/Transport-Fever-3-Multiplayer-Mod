@@ -1,11 +1,11 @@
 <#
-Installs TPF3-MP into Transport Fever 3, or takes it out again. This file is
-the whole installer: INSTALL_TPF3MP.cmd and UNINSTALL_TPF3MP.cmd only start
-it. It needs no administrator rights.
+Installs the TPF3-MP mod for Transport Fever 3, or takes it out again. This
+file is the whole installer: INSTALL_TPF3MP.cmd and UNINSTALL_TPF3MP.cmd
+only start it. It needs no administrator rights.
 
-    INSTALL_TPF3MP.cmd                   finds the game through Steam
-    INSTALL_TPF3MP.cmd "<game folder>"   or drop the game's folder onto it
-    UNINSTALL_TPF3MP.cmd                 takes everything out again
+    INSTALL_TPF3MP.cmd                   finds your mods folder through Steam
+    INSTALL_TPF3MP.cmd "<mods folder>"   or drop the mods folder onto it
+    UNINSTALL_TPF3MP.cmd                 takes the mod out again
 
 What it changes, and nothing else:
 
@@ -13,29 +13,22 @@ What it changes, and nothing else:
   for your Transport Fever 3 mods, <Steam>\userdata\<account>\3493540\local\mods,
   or the folder -ModsDir names. A tpf3mp_1 already there is moved to
   %LOCALAPPDATA%\TPF3-MP\backups first.
-- When this package has a proxy DLL, `proxy\<name>.dll`, it goes into the
-  game's folder in place of the game's own <name>.dll, which is kept
-  beside it as <name>_real.dll: the proxy passes every call on to it, and
-  loads the hook. The hook, tpf3mp_hook.dll, goes next to it.
-- tpf3mp-install.json in the game's folder records what was installed, so
-  a reinstall replaces only TPF3-MP's own files and the uninstall puts the
-  game's own DLL back.
+- %LOCALAPPDATA%\TPF3-MP\installed.json records the version and where the
+  mod went, which the launcher shows and the uninstall takes out.
 
-It changes nothing when anything looks wrong: the game is running, the
-folder is not the game's, another mod already replaced that DLL, the
-game's own DLL has gone missing, or the record names anything but
-TPF3-MP's own files. When a step fails, the steps before it are undone.
-Nothing is deleted: what it replaces or takes out goes to
-%LOCALAPPDATA%\TPF3-MP\backups.
+It puts nothing in the game's folder. The game runs TPF3-MP only when the
+TPF3-MP launcher starts it, for a multiplayer session; started from Steam,
+it is the plain game, and the mod does nothing unless a game enables it.
+
+It changes nothing while the game is running, or when its record names
+anything but the mod. When a step fails, the steps before it are undone.
+Nothing is deleted: what it replaces or takes out goes to the backups.
 #>
 [CmdletBinding()]
 param(
-    # The folder that holds the game's executable. Without it, the game is
-    # found through Steam.
-    [Parameter(Position = 0)]
-    [string]$GameDir,
     # Where the mod goes. Without it, Steam's folder for your Transport
     # Fever 3 mods.
+    [Parameter(Position = 0)]
     [string]$ModsDir,
     # Where Steam is, when it is not where the registry says.
     [string]$SteamRoot,
@@ -48,10 +41,6 @@ Set-StrictMode -Version 2.0
 
 $SteamApp = '3493540'
 $ModName = 'tpf3mp_1'
-$HookName = 'tpf3mp_hook.dll'
-$RecordName = 'tpf3mp-install.json'
-# A DLL the proxy may stand in for: a plain file name, never a path.
-$DllPattern = '^([A-Za-z0-9_][A-Za-z0-9_.-]*)\.[dD][lL][lL]$'
 $Package = Split-Path -Parent $PSScriptRoot
 $Steps = New-Object System.Collections.Generic.List[hashtable]
 
@@ -62,16 +51,6 @@ function Get-Field($Object, [string]$Name) {
     $property = $Object.PSObject.Properties[$Name]
     if ($null -eq $property) { return $null }
     return $property.Value
-}
-
-function Get-Sha256([string]$Path) {
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-
-# The name the game's own DLL is kept under beside the proxy.
-function Get-RealName([string]$Name) {
-    if ($Name.Length -le 64 -and $Name -match $DllPattern) { return $Matches[1] + '_real.dll' }
-    return $null
 }
 
 # Moves a file or folder to $Target, across drives too. It removes the
@@ -129,7 +108,7 @@ function Get-SteamRoots {
 }
 
 # The game's folder, from Steam's list of libraries and the game's manifest
-# in one of them.
+# in one of them: only to see whether the game is running.
 function Find-Game {
     foreach ($root in @(Get-SteamRoots)) {
         $libraries = @($root)
@@ -171,13 +150,15 @@ function Find-ModsDir {
     if ($locals.Count -eq 0) { return $null }
     $latest = @($locals | Sort-Object LastWriteTimeUtc -Descending)
     if ($latest.Count -gt 1) {
-        Say "More than one Steam account has played Transport Fever 3 here; using the one that played last. -ModsDir names another folder."
+        Say "More than one Steam account has played Transport Fever 3 here; using the one that played last. Give the mods folder to choose."
     }
     return (Join-Path $latest[0].FullName 'mods')
 }
 
-function Assert-GameClosed([string]$Game) {
-    $prefix = $Game.TrimEnd('\') + '\'
+function Assert-GameClosed {
+    $game = Find-Game
+    if (-not $game) { return }
+    $prefix = $game.TrimEnd('\') + '\'
     foreach ($process in @(Get-Process)) {
         $path = $null
         try { $path = $process.Path } catch { }
@@ -187,143 +168,26 @@ function Assert-GameClosed([string]$Game) {
     }
 }
 
-# What an earlier install recorded, refused unless it names only TPF3-MP's
-# own files: the record says what to rename and move.
-function Read-Record([string]$Game) {
-    $path = Join-Path $Game $RecordName
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-    try { $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
-    catch { throw "$path is damaged." }
-    $hook = Get-Field $record 'hook'
-    if ($null -ne $hook -and $hook -cne $HookName) { throw "$path names files TPF3-MP does not install." }
-    $proxy = Get-Field $record 'proxy'
-    if ($null -ne $proxy) {
-        $name = [string](Get-Field $proxy 'name')
-        $real = [string](Get-Field $proxy 'real')
-        $sha = [string](Get-Field $proxy 'sha256')
-        if (-not (Get-RealName $name) -or $real -cne (Get-RealName $name) -or $sha -notmatch '^[0-9a-f]{64}$') {
-            throw "$path names files TPF3-MP does not install."
-        }
-    }
-    $mod = Get-Field $record 'mod'
-    if ($null -ne $mod -and (-not [IO.Path]::IsPathRooted([string]$mod) -or (Split-Path -Leaf ([string]$mod)) -cne $ModName)) {
-        throw "$path names files TPF3-MP does not install."
+# What an earlier install recorded, refused unless it names the mod's own
+# folder: the uninstall moves out what it names.
+function Read-Record([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try { $record = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
+    catch { throw "$Path is damaged." }
+    $mod = [string](Get-Field $record 'mod')
+    if (-not [IO.Path]::IsPathRooted($mod) -or (Split-Path -Leaf $mod) -cne $ModName -or $mod -match '(^|[\\/])\.\.([\\/]|$)') {
+        throw "$Path names something other than the TPF3-MP mod."
     }
     return $record
 }
 
-function Write-Record([string]$Game, [string]$Version, $Proxy, $Hook, $Mod) {
-    $record = [ordered]@{ version = $Version; proxy = $Proxy; hook = $Hook; mod = $Mod }
-    $path = Join-Path $Game $RecordName
+function Write-Record([string]$Path, [string]$Version, [string]$Mod) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
     $old = $null
-    if (Test-Path -LiteralPath $path) { $old = Get-Content -LiteralPath $path -Raw }
-    [IO.File]::WriteAllText($path, ($record | ConvertTo-Json -Depth 4))
-    On-Failure 'Rewrite' $path $old
-}
-
-# The package's proxy DLL, if it has one: one file in proxy\, named as the
-# DLL it stands in for.
-function Get-PackageProxy {
-    $dir = Join-Path $Package 'proxy'
-    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return $null }
-    $files = @(Get-ChildItem -LiteralPath $dir -File)
-    if ($files.Count -ne 1) { throw "$dir must hold exactly one DLL, named as the game's DLL it stands in for." }
-    $real = Get-RealName $files[0].Name
-    if (-not $real) { throw "$($files[0].FullName) is not a DLL." }
-    return @{ Name = $files[0].Name; Real = $real; Path = $files[0].FullName }
-}
-
-# Refuses a game folder the proxy cannot go into safely, before anything
-# changes.
-function Assert-ProxyFits([string]$Game, $Proxy, $Recorded) {
-    $current = Join-Path $Game $Proxy.Name
-    $real = Join-Path $Game $Proxy.Real
-    if (-not (Test-Path -LiteralPath $current -PathType Leaf)) {
-        throw "There is no $($Proxy.Name) in $Game. Give the folder that holds the game's executable."
-    }
-    $ours = $null -ne $Recorded -and (Get-Field $Recorded 'name') -ceq $Proxy.Name
-    if ((Test-Path -LiteralPath $real) -and -not $ours) {
-        throw "$Game already has a $($Proxy.Real) that TPF3-MP did not put there, perhaps another mod's. Remove that mod, or have Steam verify the game's files, and install again."
-    }
-    # The proxy passes every call on to the game's own DLL: without it the
-    # game cannot start, and a new proxy would not change that.
-    if ($ours -and -not (Test-Path -LiteralPath $real) -and (Get-Sha256 $current) -ceq (Get-Field $Recorded 'sha256')) {
-        throw "The game's own $($Proxy.Real) is missing from $Game. Have Steam verify the game's files, and install again."
-    }
-}
-
-# Puts the proxy in place of the game's own DLL, which becomes <name>_real.dll.
-function Install-Proxy([string]$Game, $Proxy, $Recorded, [string]$Backups) {
-    $current = Join-Path $Game $Proxy.Name
-    $real = Join-Path $Game $Proxy.Real
-    $ours = $null -ne $Recorded -and (Get-Field $Recorded 'name') -ceq $Proxy.Name -and
-        (Get-Sha256 $current) -ceq (Get-Field $Recorded 'sha256')
-    if ($ours) {
-        # An older proxy of ours: replace it; the game's own stays as it is.
-        $kept = Move-Into $current $Backups
-        On-Failure 'MoveBack' $kept $current
-        Copy-Item -LiteralPath $Proxy.Path -Destination $current
-        On-Failure 'Remove' $current
-        Say "Updated the proxy $($Proxy.Name)."
-    }
-    else {
-        # The game's own DLL: a first install, or a game update put it back
-        # over the proxy. It becomes the one the proxy passes calls on to.
-        if (Test-Path -LiteralPath $real) {
-            $stale = Move-Into $real $Backups
-            On-Failure 'MoveBack' $stale $real
-        }
-        Move-Item -LiteralPath $current -Destination $real
-        On-Failure 'MoveBack' $real $current
-        Copy-Item -LiteralPath $Proxy.Path -Destination $current
-        On-Failure 'Remove' $current
-        Say "Installed the proxy $($Proxy.Name); the game's own is now $($Proxy.Real)."
-    }
-    return [ordered]@{ name = $Proxy.Name; real = $Proxy.Real; sha256 = (Get-Sha256 $current) }
-}
-
-# Puts the game's own DLL back in place of an installed proxy.
-function Restore-Proxy([string]$Game, $Recorded, [string]$Backups) {
-    $name = Get-Field $Recorded 'name'
-    $current = Join-Path $Game $name
-    $real = Join-Path $Game (Get-Field $Recorded 'real')
-    $stillOurs = (Test-Path -LiteralPath $current -PathType Leaf) -and
-        (Get-Sha256 $current) -ceq (Get-Field $Recorded 'sha256')
-    if (-not (Test-Path -LiteralPath $real)) {
-        if ($stillOurs) {
-            # Without the original the proxy only keeps the game from starting.
-            $kept = Move-Into $current $Backups
-            On-Failure 'MoveBack' $kept $current
-            Say "Took the proxy $name out, but the game's own was missing: have Steam verify the game's files."
-        }
-        return
-    }
-    if ($stillOurs -or -not (Test-Path -LiteralPath $current)) {
-        if (Test-Path -LiteralPath $current) {
-            $kept = Move-Into $current $Backups
-            On-Failure 'MoveBack' $kept $current
-        }
-        Move-Item -LiteralPath $real -Destination $current
-        On-Failure 'MoveBack' $current $real
-        Say "Put the game's own $name back."
-    }
-    else {
-        # A game update already put its own DLL back; the kept one is older.
-        $stale = Move-Into $real $Backups
-        On-Failure 'MoveBack' $stale $real
-        Say "The game's own $name was already back, from a game update; moved the older copy out."
-    }
-}
-
-function Install-Hook([string]$Game, [string]$Backups) {
-    $target = Join-Path $Game $HookName
-    if (Test-Path -LiteralPath $target) {
-        $kept = Move-Into $target $Backups
-        On-Failure 'MoveBack' $kept $target
-    }
-    Copy-Item -LiteralPath (Join-Path $Package $HookName) -Destination $target
-    On-Failure 'Remove' $target
-    Say "Installed $HookName."
+    if (Test-Path -LiteralPath $Path) { $old = Get-Content -LiteralPath $Path -Raw }
+    $record = [ordered]@{ version = $Version; mod = $Mod }
+    [IO.File]::WriteAllText($Path, ($record | ConvertTo-Json))
+    On-Failure 'Rewrite' $Path $old
 }
 
 # Copies the mod beside its place first, so the swap is a rename.
@@ -343,96 +207,53 @@ function Install-Mod([string]$Mods, [string]$Backups) {
     finally {
         if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
     }
-    Say "Installed the mod in $target."
     return $target
 }
 
-function Install([string]$Game, $Record, [string]$Backups) {
+function Install([string]$RecordPath, [string]$Backups) {
     $version = 'unknown'
     $marker = Join-Path $Package 'tpf3mp-package.json'
     if (Test-Path -LiteralPath $marker) { $version = [string](Get-Field (Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json) 'version') }
-    $proxy = Get-PackageProxy
-    $hasHook = Test-Path -LiteralPath (Join-Path $Package $HookName) -PathType Leaf
-    $hasMod = Test-Path -LiteralPath (Join-Path $Package "mod\$ModName") -PathType Container
-    $recordedProxy = Get-Field $Record 'proxy'
-
-    # Every check before the first change.
-    if ($proxy) { Assert-ProxyFits $Game $proxy $recordedProxy }
-    $mods = $null
-    if ($hasMod) {
-        $mods = $ModsDir
-        if (-not $mods) { $mods = Find-ModsDir }
-        if (-not $mods) {
-            throw "Steam has no folder for your Transport Fever 3 mods yet: start the game once, then install again. -ModsDir names the mods folder instead."
-        }
-        Say "Mods folder: $mods"
+    if (-not (Test-Path -LiteralPath (Join-Path $Package "mod\$ModName") -PathType Container)) {
+        Say "This package has no TPF3-MP mod yet: there is nothing to install."
+        return
     }
-
-    $installedProxy = $recordedProxy
-    if ($proxy) {
-        if ($recordedProxy -and (Get-Field $recordedProxy 'name') -cne $proxy.Name) {
-            Restore-Proxy $Game $recordedProxy $Backups
-            $recordedProxy = $null
-        }
-        $installedProxy = Install-Proxy $Game $proxy $recordedProxy $Backups
+    $null = Read-Record $RecordPath
+    $mods = $ModsDir
+    if (-not $mods) { $mods = Find-ModsDir }
+    if (-not $mods) {
+        throw "Steam has no folder for your Transport Fever 3 mods yet: start the game once, then install again. Or drop the mods folder onto INSTALL_TPF3MP.cmd."
     }
-    $hook = Get-Field $Record 'hook'
-    if ($hasHook -and $proxy) {
-        Install-Hook $Game $Backups
-        $hook = $HookName
-    }
-    elseif ($hasHook) {
-        # Without the proxy that loads it, the hook would never run.
-        Say "This package has no proxy DLL to load the hook yet, so the hook was not installed: the release names the DLL once the game is out."
-    }
-    $mod = Get-Field $Record 'mod'
-    if ($hasMod) { $mod = Install-Mod $mods $Backups } else { Say "This package has no TPF3-MP mod yet." }
-    Write-Record $Game $version $installedProxy $hook $mod
+    Say "Mods folder: $mods"
+    $mod = Install-Mod $mods $Backups
+    Write-Record $RecordPath $version $mod
+    Say "Installed the TPF3-MP mod in $mod."
     Say ''
-    Say "TPF3-MP $version is installed into Transport Fever 3. Start TPF3-MP.exe to play."
+    Say "TPF3-MP $version is installed. Play by starting TPF3-MP.exe: the game runs TPF3-MP only when the launcher starts it."
 }
 
-function Remove-Install([string]$Game, $Record, [string]$Backups) {
-    if ($null -eq $Record) { throw "TPF3-MP is not installed in $Game." }
-    $proxy = Get-Field $Record 'proxy'
-    if ($proxy) { Restore-Proxy $Game $proxy $Backups }
-    $hook = Get-Field $Record 'hook'
-    if ($hook -and (Test-Path -LiteralPath (Join-Path $Game $hook))) {
-        $path = Join-Path $Game $hook
-        $kept = Move-Into $path $Backups
-        On-Failure 'MoveBack' $kept $path
-        Say "Took $hook out."
-    }
-    $mod = [string](Get-Field $Record 'mod')
-    if ($mod -and (Test-Path -LiteralPath $mod -PathType Container)) {
+function Remove-Install([string]$RecordPath, [string]$Backups) {
+    $record = Read-Record $RecordPath
+    if ($null -eq $record) { throw "The TPF3-MP mod is not installed." }
+    $mod = [string](Get-Field $record 'mod')
+    if (Test-Path -LiteralPath $mod -PathType Container) {
         $kept = Move-Into $mod $Backups
         On-Failure 'MoveBack' $kept $mod
         Say "Took the mod out of $(Split-Path -Parent $mod)."
     }
-    $path = Join-Path $Game $RecordName
-    $kept = Move-Into $path $Backups
-    On-Failure 'MoveBack' $kept $path
+    $kept = Move-Into $RecordPath $Backups
+    On-Failure 'MoveBack' $kept $RecordPath
     Say ''
-    Say "TPF3-MP is taken out of Transport Fever 3."
+    Say "The TPF3-MP mod is taken out."
 }
 
 try {
-    if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is not set, so there is nowhere for backups.' }
-    $backups = Join-Path $env:LOCALAPPDATA ('TPF3-MP\backups\' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
-    if ($GameDir) {
-        if (-not (Test-Path -LiteralPath $GameDir -PathType Container)) { throw "$GameDir is not a folder." }
-        $game = (Resolve-Path -LiteralPath $GameDir).ProviderPath.TrimEnd('\')
-    }
-    else {
-        $game = Find-Game
-        if (-not $game) {
-            throw "Transport Fever 3 was not found in Steam. Drop the game's folder onto INSTALL_TPF3MP.cmd: in Steam, right-click the game, Manage, Browse local files."
-        }
-    }
-    Say "Transport Fever 3: $game"
-    Assert-GameClosed $game
-    $record = Read-Record $game
-    if ($Uninstall) { Remove-Install $game $record $backups } else { Install $game $record $backups }
+    if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is not set, so there is nowhere for the record and backups.' }
+    $data = Join-Path $env:LOCALAPPDATA 'TPF3-MP'
+    $recordPath = Join-Path $data 'installed.json'
+    $backups = Join-Path $data ('backups\' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+    Assert-GameClosed
+    if ($Uninstall) { Remove-Install $recordPath $backups } else { Install $recordPath $backups }
     if (Test-Path -LiteralPath $backups) { Say "What was replaced or taken out is in $backups." }
     exit 0
 }
@@ -461,7 +282,7 @@ catch {
     }
     else {
         Write-Host "It failed, and not everything could be put back (see above): $failure" -ForegroundColor Red
-        Write-Host "Have Steam verify the game's files; backups are in $backups." -ForegroundColor Red
+        Write-Host "The backups are in $backups." -ForegroundColor Red
     }
     exit 1
 }

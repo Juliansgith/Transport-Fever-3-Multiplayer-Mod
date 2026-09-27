@@ -16,8 +16,51 @@ Crates:
 |---|---|
 | `tpf3mp-hookcore` | pattern scanning, per-build profiles + resolution, the x86-64 inline detour engine, a small read-only PE reader |
 | `tpf3mp-ipc` | the shared-memory link (this document's ABI) |
-| `tpf3mp-hook` | the `cdylib` the game loads: platform entry points, profile loading, agent connection |
-| `tpf3mp-proxygen` | generates a Windows proxy DLL that forwards every export to the renamed original and, with `--load-hook`, loads the hook from its own folder |
+| `tpf3mp-hook` | the `cdylib` loaded into the game: platform entry points, profile loading, agent connection |
+| `tpf3mp-launch` | starts the game with the hook in that one process, and nowhere else |
+
+## How the hook gets into the game
+
+Only the TPF3-MP launcher puts the hook into the game, into the game it
+starts for a room, and for as long as that game runs (D11 in
+[DECISIONS.md](DECISIONS.md)). Nothing is installed into the game's folder
+and no launch option is set: the game started from Steam is the plain game.
+
+- **Windows.** `tpf3mp-launch` starts the game suspended, writes the hook's
+  path into it, and runs `LoadLibraryW` on a thread it creates in the game.
+  It checks the thread's result and the game's module list, and only then
+  lets the game run. If the hook is not there, it ends the game rather than
+  let it run without it. This is how TPF2MP's injector started Transport
+  Fever 2 (`--launch`).
+- **Linux.** The game starts with `LD_PRELOAD` naming the hook, in its own
+  environment only, ahead of anything already preloaded (Steam's overlay).
+- **macOS.** Not yet. The game's hardened runtime refuses libraries it did
+  not load itself; how to get the hook in is a release-day question
+  ([DAY_ONE.md](DAY_ONE.md)).
+
+Before starting the game, the launcher checks four things, and refuses if
+any fails:
+
+- the player is in a room;
+- the game and the hook are where they should be;
+- Steam is running;
+- no game it started is still running.
+
+It gives the game `SteamAppId` and `SteamGameId` (3493540), so that the
+game does not restart itself through Steam, which would start it without
+the hook.
+
+The hook runs only when the launcher started the game. The launcher names
+two things in the game's environment:
+
+- its link, `TPF3MP_GAME_LINK`;
+- its own process, `TPF3MP_LAUNCHER_PID`.
+
+Without the link the hook returns at once: it writes, hashes and opens
+nothing. On Linux and macOS it also returns when its process's parent is
+not that launcher. Programs the game starts, a browser opened from the
+game for example, inherit `LD_PRELOAD` and the variables; the hook stays
+out of them. On Windows nothing the game starts loads the hook.
 
 ## Design and the fail-closed rules
 
@@ -154,9 +197,11 @@ the function; calling the trampoline therefore runs the original.
 Installing overwrites up to fourteen live code bytes with a non-atomic copy. The
 caller must guarantee the target cannot execute during install or uninstall:
 **install before the target's first run**, or **park every thread that could
-reach it first**. Both loaders satisfy the first condition - the Windows proxy
-DLL and the Linux `LD_PRELOAD` library are in the process before its entry
-point runs. The engine does not stop threads itself. Detours are removed by
+reach it first**. The launcher loads the hook before the game's entry point
+runs (into the suspended game on Windows, by `LD_PRELOAD` on Linux). The hook
+installs from its bootstrap thread while the game starts, as TPF2MP's injector
+let its worker do: the targets run only once a world is loaded, long after.
+The engine does not stop threads itself. Detours are removed by
 dropping the handle (or `detach`), under the same quiescence rule. The engine's
 own tests only ever hook functions inside the test binary, never another
 process.
@@ -256,21 +301,21 @@ the payload may wrap around the end of the buffer.
 
 ### Several games on one PC
 
-By default the hook opens the link `tpf3mp.default`, the agent's and
-launcher's default `--game-link`, and keeps its log (`hook.log`) and build
-profiles (`profiles/*.toml`) in the per-user `TPF3-MP` data folder. Two
-variables in the game's environment change both, so several games on one
-PC each reach their own agent:
+The hook opens the link its launcher names, and keeps its log (`hook.log`)
+and build profiles (`profiles/*.toml`) in the per-user `TPF3-MP` data
+folder. The game's environment says which, so several games on one PC each
+reach their own agent:
 
 | variable | effect |
 |---|---|
-| `TPF3MP_GAME_LINK` | the link name to open, matching that agent's `--game-link` |
-| `TPF3MP_DATA_DIR` | the folder for the hook's log and profiles |
+| `TPF3MP_GAME_LINK` | the link name to open, the launcher's `--game-link` (`tpf3mp.default` unless given); without it the hook does nothing |
+| `TPF3MP_LAUNCHER_PID` | the process that started the game; on Linux and macOS, the hook does nothing in a process whose parent is another |
+| `TPF3MP_DATA_DIR` | the folder for the hook's log and profiles; unset or empty, the per-user one |
 
-An unset or empty variable keeps the default. `tpf3mp-fakegame` reads
-`TPF3MP_GAME_LINK` too, when no link is given on its command line. The
-multiplayer rig (`tpf3mp-rig`, in the README's "Development") sets both for
-every game it starts.
+`tpf3mp-fakegame` reads `TPF3MP_GAME_LINK` too, when no link is given on its
+command line. The multiplayer rig (`tpf3mp-rig`, in the README's
+"Development") sets all three for every game it starts, and starts a real
+game with the hook in it as the launcher does.
 
 ## The bridge: what travels over the link
 

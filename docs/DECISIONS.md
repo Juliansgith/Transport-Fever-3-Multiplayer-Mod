@@ -221,6 +221,14 @@ Rejected:
   program): opaque to players, and flagged by SmartScreen and antivirus
   like any unsigned program.
 
+Update (2026-09-27), with D11: the installers put in the mod alone. The
+hook stays in the package, next to the launcher, and nothing goes into the
+game's folder: no proxy, no hook, no record. The record is kept in
+TPF3-MP's own data folder (`installed.json` on Windows, `installed.txt` on
+Linux and macOS). The rest of this entry stands: the installers are still
+readable scripts, fail closed, undo a failed step, delete nothing, and are
+tested on all three platforms.
+
 ## D10 (2026-09-27): players' diagnostics go to the server by themselves
 
 The launcher sends the lines of its log, redacted, to the server the player
@@ -250,3 +258,45 @@ Rejected:
 - **An HTTP upload to the server.** A second way in, needing its own
   authentication, rate limits and TLS, for what the game's connection
   already carries.
+
+## D11 (2026-09-27): the hook runs only in a game the launcher starts
+
+TPF3-MP's code runs in Transport Fever 3 only when a player starts the game
+from the TPF3-MP launcher, for a room they are in; that game runs it until
+it closes. Started from Steam, the game is the plain game, with nothing of
+TPF3-MP in it. TPF2MP worked this way, and its players expected it.
+
+- **How it starts.** `tpf3mp-launch` starts the game with the hook in that
+  one process. On Windows it starts the game suspended, has the game load
+  the hook with `LoadLibraryW` on a thread the launcher creates in it,
+  checks that the hook is there, and only then lets the game run; when any
+  of that fails, the game is ended, not left running. This is how TPF2MP's
+  injector started Transport Fever 2 (`--launch`). On Linux, the game gets
+  `LD_PRELOAD` naming the hook, in its own environment only. macOS waits
+  for the game: its hardened runtime refuses libraries it did not load
+  itself.
+- **The game is told which launcher started it.** The launcher passes the
+  name of its link to the game (`TPF3MP_GAME_LINK`); a hook without it does
+  nothing at all, so the hook is inert even if something else loads it.
+  The game also gets `SteamAppId`, so that it does not restart through
+  Steam without the hook. As TPF2MP's launcher did, it starts the game only
+  while Steam runs, and one game at a time.
+- **Nothing to undo.** Closing the game ends TPF3-MP's part in it. There is
+  no file in the game's folder for Steam's file check to report, another
+  mod to collide with, or a game update to break, and nothing to uninstall
+  but the mod.
+- **Fail closed, as before.** The hook still checks the game's build
+  against its profiles and installs nothing when none matches (see
+  [HOOKS.md](HOOKS.md)).
+
+Rejected:
+
+- **A proxy DLL in the game's folder** (TPF2's `alut.dll` trick,
+  `tpf3mp-proxygen`): it loads the hook into every start of the game, from
+  Steam too, until it is taken out; Steam's file check and game updates
+  undo it, and it collides with other mods that proxy the same DLL. The
+  generator is removed.
+- **A Steam launch option with `LD_PRELOAD`** on Linux: the same, set by
+  hand, and easy to forget when uninstalling.
+- **Starting the game through Steam** (`steam://run`): the game would then
+  start without the hook, since nothing of the launcher's reaches it.

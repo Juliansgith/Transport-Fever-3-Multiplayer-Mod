@@ -82,6 +82,11 @@ pub struct LauncherConfig {
     /// Where lines of the player's log wait to go to the server, when the
     /// launcher sends them; `LauncherHandle` switches it.
     pub diagnostics: Option<crate::diagnostics::Recorder>,
+    /// The hook library the game is started with: in the package, next to
+    /// the launcher. `None` when the package has none.
+    pub hook: Option<PathBuf>,
+    /// The game's executable, when it is not where Steam's folder says.
+    pub game_exe: Option<PathBuf>,
 }
 
 /// A running launcher.
@@ -239,13 +244,15 @@ struct Session {
 async fn control(shared: Arc<Shared>, config: LauncherConfig, mut actions: Actions) {
     let mut connected: Option<Connected> = None;
     let mut session: Option<Session> = None;
+    // The game last started from here, while it may still be running.
+    let mut game: Option<tpf3mp_launch::Started> = None;
     loop {
         tokio::select! {
             action = actions.recv() => {
                 let Some((action, reply)) = action else {
                     return;
                 };
-                let result = act(&shared, &config, action, &mut connected, &mut session).await;
+                let result = act(&shared, &config, action, &mut connected, &mut session, &mut game).await;
                 shared.view().error = result.as_ref().err().cloned();
                 let _ = reply.send(result);
             }
@@ -293,6 +300,7 @@ async fn act(
     action: Action,
     connected: &mut Option<Connected>,
     session: &mut Option<Session>,
+    game: &mut Option<tpf3mp_launch::Started>,
 ) -> Result<(), String> {
     match action {
         Action::Connect { server, name } => {
@@ -396,6 +404,7 @@ async fn act(
             forward(session, Control::Chat(text)).await
         }
         Action::Leave => forward(session, Control::Leave).await,
+        Action::LaunchGame => launch_game(shared, config, session, game),
         Action::Diagnostics { on } => {
             let recorder = config
                 .diagnostics
@@ -414,6 +423,77 @@ async fn act(
             Ok(())
         }
     }
+}
+
+/// Starts Transport Fever 3 with the hook in it, told the room session's
+/// link: the only way the hook runs (D11). A game started from Steam is
+/// the plain game.
+/// Starts the game with the hook in it, for the room this is in: the only
+/// way a game runs TPF3-MP (D11).
+fn launch_game(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    session: &Option<Session>,
+    game: &mut Option<tpf3mp_launch::Started>,
+) -> Result<(), String> {
+    if session.is_none() {
+        return Err("create or join a room first: the game connects to it".into());
+    }
+    if !tpf3mp_launch::SUPPORTED {
+        return Err(tpf3mp_launch::LaunchError::Unsupported.to_string());
+    }
+    // One game at a time: a second click while the first loads starts none.
+    if game
+        .as_mut()
+        .is_some_and(tpf3mp_launch::Started::is_running)
+    {
+        return Err(
+            "Transport Fever 3 is already running from here; it joins once it has loaded".into(),
+        );
+    }
+    // The game needs Steam to start; without it, it would quit or start
+    // again through Steam, without the hook. TPF2MP's launcher asked the same.
+    if tpf3mp_launch::steam_running() == Some(false) {
+        return Err(tpf3mp_launch::LaunchError::NoSteam.to_string());
+    }
+    let exe = match &config.game_exe {
+        Some(exe) => exe.clone(),
+        None => {
+            let installed = config
+                .installed
+                .as_ref()
+                .ok_or("Transport Fever 3 was not found in Steam")?;
+            tpf3mp_launch::find_executable(&installed.dir).ok_or_else(|| {
+                format!(
+                    "cannot tell which program in {} is the game; start the launcher with --game-exe",
+                    installed.dir.display()
+                )
+            })?
+        }
+    };
+    let hook = config
+        .hook
+        .clone()
+        .ok_or("this TPF3-MP has no hook library for the game")?;
+    let started = tpf3mp_launch::start(&tpf3mp_launch::Launch {
+        exe,
+        args: Vec::new(),
+        hook,
+        env: vec![
+            (tpf3mp_ipc::LINK_ENV.to_owned(), config.link.clone()),
+            (
+                tpf3mp_ipc::LAUNCHER_PID_ENV.to_owned(),
+                std::process::id().to_string(),
+            ),
+        ],
+    })
+    .map_err(|error| error.to_string())?;
+    info!(pid = started.pid, "started the game with the hook");
+    *game = Some(started);
+    shared
+        .status()
+        .notice("started Transport Fever 3 with TPF3-MP; it connects once it has loaded");
+    Ok(())
 }
 
 /// Hands the connection to a bridge, which runs the room from its lobby to

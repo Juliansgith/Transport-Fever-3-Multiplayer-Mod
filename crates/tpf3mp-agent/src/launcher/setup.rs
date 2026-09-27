@@ -204,6 +204,11 @@ pub struct LauncherArgs {
     #[arg(long)]
     pub game_build: Option<String>,
 
+    /// The game's program, when it is not found in the folder Steam
+    /// installed the game in.
+    #[arg(long)]
+    pub game_exe: Option<PathBuf>,
+
     /// A file listing the game's active mods in load order, one per line:
     /// the mod's name, then its version.
     #[arg(long)]
@@ -216,6 +221,15 @@ pub struct LauncherArgs {
     /// Space worlds may take, in GiB.
     #[arg(long, default_value_t = 8)]
     pub worlds_gib: u64,
+}
+
+/// The hook library in the package: next to this program.
+pub fn package_hook() -> Option<PathBuf> {
+    let hook = std::env::current_exe()
+        .ok()?
+        .parent()?
+        .join(tpf3mp_launch::HOOK_FILE);
+    hook.is_file().then_some(hook)
 }
 
 impl LauncherArgs {
@@ -232,6 +246,8 @@ impl LauncherArgs {
         Ok(LauncherConfig {
             // The launcher window sets it: it records the player's log.
             diagnostics: None,
+            hook: package_hook(),
+            game_exe: self.game_exe.clone(),
             listen: self.listen,
             server: self
                 .server

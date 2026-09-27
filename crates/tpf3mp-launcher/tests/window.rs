@@ -343,3 +343,19 @@ fn diagnostics_can_be_switched_off() {
     let window = self::window(State::default());
     assert!(window.query_by_label("Send diagnostics").is_none());
 }
+
+#[test]
+fn the_game_is_started_from_a_room() {
+    let window = window(in_room(vec![member("Ann", true, true, false)], true));
+    window.get_by_label("Start Transport Fever 3").click();
+    let mut window = window;
+    window.run_steps(2);
+    assert_eq!(actions(&window), [Action::LaunchGame]);
+
+    // Outside a room there is nothing for the game to connect to.
+    let window = self::window(State {
+        connection: Connection::Connected,
+        ..State::default()
+    });
+    assert!(window.query_by_label("Start Transport Fever 3").is_none());
+}

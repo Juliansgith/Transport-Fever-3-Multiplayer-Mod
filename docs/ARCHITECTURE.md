@@ -121,6 +121,7 @@ tpf3mp-server ─ identity, rooms, lobby, sequencer and turn seals, canonical
 | `tpf3mp-agent` | The client daemon next to the game. |
 | `tpf3mp-launcher` | The players' window over the agent's launcher backend, with its log files and signed self-updates. |
 | `tpf3mp-hook` | In-game native library per platform. **[needs game]** |
+| `tpf3mp-launch` | Starts the game with the hook in that one process: the only way the hook gets into a game (DECISIONS.md, D11). |
 | `tpf3mp-testkit` | Toy deterministic game, bots and network emulator for integration and load tests (milestone M1). |
 
 Everything is Rust. The hook and agent talk through a small shared-memory ABI,
@@ -134,8 +135,15 @@ interface (`tpf3mp-agent launcher`, also the window's fallback where no
 window can open). Both show one `State` and send one set of `Action`s:
 connecting, rooms, readiness, chat and the game's progress. An in-game
 interface can use the same actions through the hook's Lua bindings once
-they exist. The window logs to daily files and updates the package it came
-in from signed GitHub releases (DECISIONS.md, D7).
+they exist. The window logs to daily files, sends those lines redacted to
+the server (DECISIONS.md, D10), and updates the package it came in from
+signed GitHub releases (D7).
+
+The game runs TPF3-MP only when the launcher starts it: "Start Transport
+Fever 3" in a room starts the game with the hook in it, told the launcher's
+link. Started from Steam, it is the plain game, and the TPF3-MP mod, which
+the installer scripts put in the mods folder (D9), does nothing unless a
+game enables it (D11).
 
 ## Authority and data flow
 
@@ -310,11 +318,14 @@ persistent worlds all use that one path: a world, then the turns since.
 
 ## Platforms and the native hook [needs game]
 
-| OS | loader | notes |
+The launcher loads the hook into the game it starts, and into no other
+(DECISIONS.md, D11; [HOOKS.md](HOOKS.md#how-the-hook-gets-into-the-game)).
+
+| OS | how the launcher loads the hook | notes |
 |---|---|---|
-| Windows x64 | proxy DLL next to the executable, chosen from its import table | as in both TPF2 mods |
-| Linux x64 | `LD_PRELOAD` through the Steam launch options | straightforward |
-| macOS arm64 | proxy of a bundled dylib, or re-signed insertion | code signing and W^X make patching harder; feasibility is a release-day question |
+| Windows x64 | starts the game suspended and has it `LoadLibraryW` the hook, then lets it run | as TPF2MP's injector did |
+| Linux x64 | `LD_PRELOAD` in the game's own environment | straightforward; whether the game needs Steam's runtime is a release-day question |
+| macOS arm64 | not yet | the hardened runtime refuses libraries the game did not load; code signing and W^X make patching harder; feasibility is a release-day question |
 
 Hooks find their targets by byte signature, with one profile per game build.
 On an unknown build they switch multiplayer off instead of patching blindly.
@@ -329,7 +340,7 @@ gating steps, controlling speed and save/load, and the fast IPC path.
 
 | from | what |
 |---|---|
-| `tf2mod` (TPF2MP) | Authority model, fail-closed rules, canonical identities, station rendezvous, economy model and parity vectors, content fingerprinting, recovery discipline, installer/updater. |
+| `tf2mod` (TPF2MP) | Authority model, fail-closed rules, canonical identities, station rendezvous, economy model and parity vectors, content fingerprinting, recovery discipline, installer/updater, the hook only in a game its launcher starts. |
 | `tf2mp-relay` | Credential design, digest-bound lobby state machine, redacted diagnostics and support IDs, hardened container deployment. |
 | `tpf2-bigmap` | The world's layout and its size ceilings, what a load recomputes and where its time and memory go, the fixed-address terrain pager and the bit-identical fast paths, the density and placement model ([BIGMAPS.md](BIGMAPS.md)). |
 | `tpf2-multiplayer` | Step-exact application, pacing and catch-up lessons, lane hashing with adaptive cadence, resync flow, companies as engine players, position-based command encoding, the build intents and their resolution rules ([BUILDING.md](BUILDING.md)), deterministic wrapper for third-party scripts, the `__FUNCSIG__`/RTTI/Ghidra RE pipeline. |

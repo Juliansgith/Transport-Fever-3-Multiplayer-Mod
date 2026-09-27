@@ -23,8 +23,6 @@ each finding carries one label:
 
 ## 2. Static recon (Windows executable first)
 
-- **Loader:** find a proxy candidate (a small DLL the executable imports
-  statically from its own folder, like TPF2's `alut.dll`).
 - **Anti-tamper:** packer or protection sections, section entropy, TLS
   callbacks. Anti-tamper changes the native plan and must be known first.
 - **Symbols:**
@@ -82,10 +80,34 @@ do not change D2.
 
 ## 5. Hook feasibility, per platform
 
-- **Windows:** proxy DLL loads before the title menu.
-- **Linux:** `LD_PRELOAD` from Steam launch options.
-- **macOS:** proxy of a bundled dylib, or re-signed insertion. Test whether
-  code pages can be patched under the process's code-signing flags.
+The launcher starts the game with the hook in it, and nothing else does
+(D11 in [DECISIONS.md](DECISIONS.md); `crates/tpf3mp-launch`). Check, on
+each platform, that a game started that way plays as one Steam starts:
+
+- **The executable.** `find_executable` in `crates/tpf3mp-launch` looks for
+  `TransportFever3(.exe)` or `Transport Fever 3(.exe)`, or on Windows the
+  only other program in the folder. Correct the names, and drop the
+  `TODO(TF3 release)`. Where the game is started through a script (a
+  `.sh` that sets up libraries and runs the binary), start what the
+  script starts, with its environment.
+- **Steam.** Started directly with `SteamAppId` and `SteamGameId` 3493540,
+  and Steam running, the game must start signed in, with achievements and
+  the Workshop, and must not restart itself through Steam (which would
+  lose the hook). If it does restart, find out why: a `steam_appid.txt`
+  would be a file in the game's folder, against D11.
+- **Windows:** the hook loads into the suspended game before its title menu,
+  `hook.log` names the build, and the game runs on as usual. If the game's
+  protection hides its modules or refuses a thread made before its own,
+  let the loader run first as TPF2MP's injector does (`--launch`): resume
+  the game until its main thread is inside its executable, suspend it,
+  then load the hook.
+- **Linux:** the same with `LD_PRELOAD`. Find out whether Steam starts the
+  game inside its Linux runtime (pressure-vessel): if the game needs it,
+  start it the same way, with the hook preloaded inside.
+- **macOS:** how to get a library into the game at all: the binary's
+  hardened runtime, library validation and `DYLD_INSERT_LIBRARIES` (§2).
+  Test whether code pages can be patched under the process's code-signing
+  flags.
 
 ## 6. Command pipeline and time
 
@@ -169,8 +191,12 @@ Release-day order:
    confirmed ones, and update "Sending your logs" in `docs/PLAYING.md`.
 7. **Installer:** confirm on each platform that the game loads mods from
    `<Steam>/userdata/<account>/3493540/local/mods`, where TPF2 kept a
-   player's own, and that the game's folder is the one holding its
-   executable. Where not, correct `Find-ModsDir` and `Find-Game` in
-   `packaging/windows/tools/install.ps1` and `find_mods_dir` and
-   `find_game` in `packaging/unix/install.sh`, with their tests in
-   `packaging/*/test-install.*`.
+   player's own, and how a game enables the TPF3-MP mod. Where not,
+   correct `Find-ModsDir` in `packaging/windows/tools/install.ps1` and
+   `find_mods_dir` in `packaging/unix/install.sh`, with their tests in
+   `packaging/*/test-install.*`. Their `Find-Game` and `find_game` find
+   the game's folder only to see whether the game is running.
+8. **Starting the game:** work through §5 and start a real game from the
+   launcher in a room, on each platform: **Start Transport Fever 3**
+   starts it, the Game part shows it connected, and the same game started
+   from Steam shows nothing of TPF3-MP (no `hook.log` lines).

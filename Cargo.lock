@@ -4277,6 +4277,7 @@ dependencies = [
  "tokio",
  "tpf3mp-bridge",
  "tpf3mp-ipc",
+ "tpf3mp-launch",
  "tpf3mp-net",
  "tpf3mp-proto",
  "tpf3mp-snapshot",
@@ -4333,6 +4334,15 @@ name = "tpf3mp-ipc"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tpf3mp-launch"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
  "thiserror 2.0.20",
  "windows-sys 0.61.2",
 ]
@@ -4398,15 +4408,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tpf3mp-proxygen"
-version = "0.1.0"
-dependencies = [
- "clap",
- "thiserror 2.0.20",
- "tpf3mp-hookcore",
-]
-
-[[package]]
 name = "tpf3mp-server"
 version = "0.1.0"
 dependencies = [
@@ -4463,6 +4464,7 @@ dependencies = [
  "tpf3mp-agent",
  "tpf3mp-bridge",
  "tpf3mp-ipc",
+ "tpf3mp-launch",
  "tpf3mp-net",
  "tpf3mp-proto",
  "tpf3mp-server",

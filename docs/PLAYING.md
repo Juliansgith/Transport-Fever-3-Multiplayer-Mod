@@ -1,8 +1,8 @@
 # Playing
 
 How to play Transport Fever 3 together with TPF3-MP. The network side is
-ready. Installing the part that runs inside the game waits for the game's
-release: this page says so where it applies.
+ready. The part that runs inside the game waits for the game's release:
+this page says so where it applies.
 
 ## What you need
 
@@ -22,37 +22,33 @@ launcher connects out to the server, and everything goes through it.
 
 1. Unpack the package anywhere you can write to, such as your Documents
    folder: the launcher updates the files in it (see "Updates").
-2. **Into the game.** Start Transport Fever 3 once, so Steam makes its
-   folder for your mods, and close it again. Then:
+2. **The mod.** Start Transport Fever 3 once, so Steam makes its folder for
+   your mods, and close it again. Then:
    - **Windows:** double-click `INSTALL_TPF3MP.cmd` in the package.
    - **Linux and macOS:** run `./install.sh` from the package's folder.
 
    The installer is a script, not a program: open `tools\install.ps1`
    (Windows) or `install.sh` (Linux and macOS) to read exactly what it
-   changes. It finds the game through Steam. When it does not, give it the
-   game's folder, the one that holds its executable (in Steam: right-click
-   the game, **Manage**, **Browse local files**): drop that folder onto
-   `INSTALL_TPF3MP.cmd`, or run `./install.sh "<the game's folder>"`.
+   changes. It puts the TPF3-MP mod, `tpf3mp_1`, in Steam's folder for
+   your Transport Fever 3 mods, `<Steam>/userdata/<account>/3493540/local/mods`,
+   and notes its version in TPF3-MP's data folder, which the launcher
+   shows. To put it in another mods folder, drop that folder onto
+   `INSTALL_TPF3MP.cmd`, or run `./install.sh "<the mods folder>"`.
 
-   It puts the TPF3-MP mod, `tpf3mp_1`, in Steam's folder for your
-   Transport Fever 3 mods (`-ModsDir` or `--mods-dir` names another). On
-   Windows it also puts a small proxy DLL in place of one of the game's
-   own, which loads the hook as the game starts; the game's own is kept as
-   `<name>_real.dll`, and the hook goes next to it. On Linux it puts the
-   hook in the game's folder and prints the Steam launch option that loads
-   it. It refuses, and changes nothing, while the game is running, in a
-   folder that is not the game's, where another mod already replaced that
-   DLL, or where the game's own `<name>_real.dll` has gone missing (then
-   have Steam verify the game's files, and install again). A step that
-   fails undoes the ones before it. Nothing is deleted: what it replaces or
-   takes out goes to the `backups` folder in TPF3-MP's data folder.
-   `UNINSTALL_TPF3MP.cmd` or `./uninstall.sh` takes everything out again
-   and puts the game's own DLL back.
+   Nothing goes into the game's own folder, and no launch option is set.
+   The installer refuses, and changes nothing, while the game is running.
+   A step that fails undoes the ones before it. Nothing is deleted: a
+   TPF3-MP mod it replaces or takes out goes to the `backups` folder in
+   TPF3-MP's data folder. `UNINSTALL_TPF3MP.cmd` or `./uninstall.sh` takes
+   the mod out again.
 
-   Until the game is out, packages carry no proxy DLL or mod, and the
-   installer says so: the name of the DLL, and so how the hook loads, is
-   only known once the game is released. Run the installer again after an
-   update of TPF3-MP or of the game.
+   Run the installer again after an update of TPF3-MP. Until the game is
+   out, packages carry no mod yet, and the installer says so.
+
+The part of TPF3-MP that runs inside the game is not installed at all: the
+launcher loads it into the game it starts for your room, into that game
+alone, for as long as it runs (see "The launcher"). Started from Steam,
+Transport Fever 3 is the plain game, as if TPF3-MP were not there.
 
 ## The launcher
 
@@ -91,15 +87,23 @@ your own machine, in the tab the launcher opened.
    put the address your friends use in its place. Anyone with the invite
    (and the password, if you set one) can join; keep it within your
    group.
-4. **Ready.** Everyone presses **Ready**. The room's owner then presses
+4. **Start the game.** In your room, press **Start Transport Fever 3** in
+   the Game part, with Steam running. The launcher starts the game with
+   TPF3-MP in it, for this room; once the game has loaded, the Game part
+   says it is connected. Only a game started here joins the room: started
+   from Steam, it is the plain game. Press it once; the launcher refuses to
+   start a second game while the first still runs.
+5. **Ready.** Everyone presses **Ready**. The room's owner then presses
    **Start game**. Everyone's game starts from the owner's world.
 
 The **Checklist** at the top ticks these steps off as you go: connect to
-a server, create or join a room, everyone ready, the game starts.
+a server, create or join a room, start the game from here, everyone ready,
+play together.
 
 The **Game** part of the window says whether Steam has Transport Fever 3,
-whether TPF3-MP is installed into it (see "Installing"), and follows your
-game: downloading the room's world, loading it, and playing. **Chat**
+whether the TPF3-MP mod is installed (see "Installing"), and follows your
+game: started from here, downloading the room's world, loading it, and
+playing. **Chat**
 reaches everyone in the room. A message **From the server** is its
 operator's, such as a restart coming: when the server comes back, the
 launcher rejoins by itself. The **Session log** tells you what happened,
