@@ -53,7 +53,7 @@ fn window_with(state: State, extras: Extras) -> Harness<'static, LauncherApp<Rec
     };
     let app = LauncherApp::new(recorder, extras);
     let mut harness = Harness::builder()
-        .with_size(egui::vec2(900.0, 1000.0))
+        .with_size(egui::vec2(1100.0, 1000.0))
         .build_ui_state(|ui, app: &mut LauncherApp<Recorder>| app.show(ui), app);
     harness.run_steps(4);
     harness
@@ -358,4 +358,32 @@ fn the_game_is_started_from_a_room() {
         ..State::default()
     });
     assert!(window.query_by_label("Start Transport Fever 3").is_none());
+}
+
+/// A narrow window puts everything in one column: the same controls, and
+/// they still work.
+#[test]
+fn a_narrow_window_offers_the_same() {
+    let recorder = Recorder {
+        state: RefCell::new(in_room(vec![member("Ann", true, true, false)], true)),
+        ..Recorder::default()
+    };
+    let app = LauncherApp::new(
+        recorder,
+        Extras {
+            logs: None,
+            collect: None,
+            updater: None,
+        },
+    );
+    let mut window = Harness::builder()
+        .with_size(egui::vec2(640.0, 2000.0))
+        .build_ui_state(|ui, app: &mut LauncherApp<Recorder>| app.show(ui), app);
+    window.run_steps(4);
+    for label in ["Leave room", "Copy invite", "Send"] {
+        window.get_by_label(label);
+    }
+    window.get_by_label("Start Transport Fever 3").click();
+    window.run_steps(2);
+    assert_eq!(actions(&window), [Action::LaunchGame]);
 }

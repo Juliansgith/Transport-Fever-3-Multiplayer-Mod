@@ -101,8 +101,10 @@ fn run(args: Args, logs: Option<PathBuf>, diagnostics: Recorder) -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("TPF3-MP")
             .with_app_id("tpf3mp-launcher")
-            .with_inner_size([780.0, 680.0])
-            .with_min_inner_size([560.0, 440.0])
+            // Two columns, as the TPF2 launcher has, and still within a
+            // 1366x768 screen.
+            .with_inner_size([1100.0, 690.0])
+            .with_min_inner_size([600.0, 460.0])
             .with_icon(icon::icon()),
         ..Default::default()
     };
