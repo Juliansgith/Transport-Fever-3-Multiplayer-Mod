@@ -72,7 +72,13 @@ fn three_fake_games_play_one_room_and_agree() {
     let root = tempfile::tempdir().unwrap();
     let output = rig(root.path(), &["--players", "3", "--steps", "100"]);
 
-    assert!(output.contains("rig: invite: 127.0.0.1:"), "{output}");
+    // The rig's launchers have a server of their own: the invite is the
+    // room's code alone.
+    let invite = output
+        .lines()
+        .find_map(|line| line.strip_prefix("rig: invite: "))
+        .unwrap_or_else(|| panic!("no invite: {output}"));
+    assert!(invite.parse::<tpf3mp_proto::Invite>().is_ok(), "{invite}");
     assert!(
         output.contains("rig: all 3 games ended on the same lane digests"),
         "{output}"
