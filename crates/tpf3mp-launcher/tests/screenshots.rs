@@ -20,6 +20,7 @@ use tpf3mp_agent::launcher::{
 use tpf3mp_launcher::{
     app::{Extras, LauncherApp},
     backend::Backend,
+    probe::{Probe, Reach},
 };
 
 struct Still(RefCell<State>);
@@ -42,7 +43,13 @@ fn render(name: &str, state: State) {
 }
 
 fn render_at(name: &str, state: State, size: egui::Vec2) {
-    let app = LauncherApp::new(Still(RefCell::new(state)), Extras { updater: None });
+    let app = LauncherApp::new(
+        Still(RefCell::new(state)),
+        Extras {
+            updater: None,
+            probe: Some(Probe::showing(Reach::Online)),
+        },
+    );
     let mut harness = Harness::builder()
         .with_size(size)
         .wgpu()
@@ -78,7 +85,10 @@ fn screens() {
         "1-connect",
         State {
             name: "Ann".into(),
+            // As a release plays: on its own server, by its name.
             server: Some("tpf3mp.example.org:29470".into()),
+            server_fixed: true,
+            server_name: Some("EU".into()),
             ..State::default()
         },
     );

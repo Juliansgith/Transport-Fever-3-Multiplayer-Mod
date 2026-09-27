@@ -146,6 +146,10 @@ pub struct LauncherArgs {
     #[arg(long)]
     pub default_server: Option<String>,
 
+    /// What players see of the server, such as EU, in place of its address.
+    #[arg(long)]
+    pub server_name: Option<String>,
+
     /// Trust exactly this DER certificate instead of public certificate
     /// authorities (for development servers).
     #[arg(long)]
@@ -229,6 +233,12 @@ impl LauncherArgs {
             listen: self.listen,
             server: self.fixed_server().or(remembered.server),
             server_fixed: self.fixed_server().is_some(),
+            server_name: self
+                .server_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
             tunnel: self.tunnel.choice()?,
             remember: Some(remember),
             trust: trust(self.pin_cert.as_deref())?,

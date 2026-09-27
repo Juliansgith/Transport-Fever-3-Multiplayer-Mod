@@ -16,7 +16,9 @@ use tpf3mp_agent::{
 use tpf3mp_launcher::{
     app::{Extras, LauncherApp},
     backend::Local,
-    icon, logs, update,
+    icon, logs,
+    probe::Probe,
+    update,
 };
 use tracing::{error, info, warn};
 
@@ -36,13 +38,18 @@ struct Args {
     browser: bool,
 }
 
-/// The server a package offers first, set when it is built.
+/// The server a package plays on, set when it is built.
 const DEFAULT_SERVER: Option<&str> = option_env!("TPF3MP_DEFAULT_SERVER");
+/// What players see of that server, such as EU, set when it is built.
+const SERVER_NAME: Option<&str> = option_env!("TPF3MP_SERVER_NAME");
 
 fn main() -> ExitCode {
     let mut args = Args::parse();
     if args.launcher.default_server.is_none() {
         args.launcher.default_server = DEFAULT_SERVER.map(str::to_owned);
+    }
+    if args.launcher.server_name.is_none() {
+        args.launcher.server_name = SERVER_NAME.map(str::to_owned);
     }
     let logs = logs::dir().ok();
     // The log's lines also wait here to go to the server, redacted.
@@ -89,6 +96,12 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         let _entered = runtime.enter();
         Launcher::start_local(config.clone())
     };
+    // Whether the package's own server is up, shown before connecting.
+    let probe = config
+        .server
+        .as_deref()
+        .filter(|_| config.server_fixed)
+        .and_then(Probe::start);
     let mut backend = Local::new(launcher.handle(), runtime.handle().clone());
     let updater = update::Updater::start(runtime.handle().clone());
     let options = eframe::NativeOptions {
@@ -115,6 +128,7 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
                 backend,
                 Extras {
                     updater: Some(updater),
+                    probe,
                 },
             )))
         }),

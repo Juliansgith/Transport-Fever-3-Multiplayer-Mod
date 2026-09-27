@@ -70,8 +70,9 @@ your own machine, in the tab the launcher opened.
 
 1. **Connect.** Enter the name others will see, then **Connect**; the
    launcher remembers it for next time. There is no server to type:
-   TPF3-MP plays on the project's server, which the Server panel names,
-   and on no other. Got an invite? Paste it into **Invite** as well: you
+   TPF3-MP plays on the project's server, which the Server panel names
+   (**EU**, in Germany), and on no other. Its dot is green while the
+   server is online. Got an invite? Paste it into **Invite** as well: you
    are connected and in the room in one step. An invite that names
    another server is refused.
 2. **Rooms.** Either create a room, with an optional password, or paste an

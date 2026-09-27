@@ -22,6 +22,7 @@ use tpf3mp_agent::launcher::{
 
 use crate::{
     backend::Backend,
+    probe::{Probe, Reach},
     theme::{self, Kind, Step},
     update::{self, UpdateState, Updater},
 };
@@ -31,15 +32,6 @@ use crate::{
 const REFRESH: Duration = Duration::from_millis(250);
 /// Player counts a room can be created for.
 const ROOM_SIZES: [u8; 7] = [2, 3, 4, 6, 8, 12, 16];
-/// Speeds the owner can set, in percent.
-const SPEEDS: [(u16, &str); 6] = [
-    (0, "Paused"),
-    (100, "1×"),
-    (200, "2×"),
-    (400, "4×"),
-    (800, "8×"),
-    (1600, "16×"),
-];
 /// Notices kept in the session log, newest last.
 const NOTICES_SHOWN: usize = 50;
 /// How often the game's folder is looked at for what the installer put
@@ -58,6 +50,9 @@ const FIELD_HEIGHT: f32 = 32.0;
 pub struct Extras {
     /// Checks for and installs new versions; `None` in tests.
     pub updater: Option<Updater>,
+    /// Whether the launcher's own server is up; `None` in tests and
+    /// without a server of its own.
+    pub probe: Option<Probe>,
 }
 
 /// A question the window asks before acting.
@@ -197,7 +192,7 @@ impl<B: Backend> LauncherApp<B> {
                     }
                     Connection::Connected => ("connected", theme::SUCCESS),
                     Connection::Connecting => ("connecting", theme::WARNING),
-                    Connection::Disconnected => ("offline", theme::MUTED),
+                    Connection::Disconnected => ("not connected", theme::MUTED),
                 };
                 theme::pill(ui, text, color);
                 if !narrow {
@@ -391,7 +386,7 @@ impl<B: Backend> LauncherApp<B> {
     fn step_panels(&mut self, ui: &mut Ui, state: &State) {
         let connected = state.connection == Connection::Connected;
         match &state.room {
-            Some(room) => self.room(ui, state, room),
+            Some(room) => self.room(ui, room),
             None if connected => self.lobby(ui, state),
             None => self.connect(ui, state),
         }
@@ -479,7 +474,12 @@ impl<B: Backend> LauncherApp<B> {
         let fixed = state.server.as_deref().filter(|_| state.server_fixed);
         theme::glass(ui, "Server", |ui| {
             if let Some(server) = fixed {
-                theme::rows(ui, "own-server", &[("Server", server)]);
+                let reach = self
+                    .extras
+                    .probe
+                    .as_ref()
+                    .map_or(Reach::Unknown, Probe::reach);
+                server_line(ui, state, server, reach);
                 ui.add_space(4.0);
             }
             let mut submit = false;
@@ -671,7 +671,7 @@ impl<B: Backend> LauncherApp<B> {
         }
     }
 
-    fn room(&mut self, ui: &mut Ui, state: &State, room: &Room) {
+    fn room(&mut self, ui: &mut Ui, room: &Room) {
         let busy = self.backend.busy();
         theme::glass(ui, "", |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -734,22 +734,6 @@ impl<B: Backend> LauncherApp<B> {
                                 self.backend.act(Action::Start);
                             }
                         }
-                    }
-                    Phase::Running if room.you_own => {
-                        let current = state.game.speed;
-                        let label = SPEEDS
-                            .iter()
-                            .find(|(percent, _)| *percent == current)
-                            .map_or("speed", |(_, label)| *label);
-                        ComboBox::from_id_salt("speed")
-                            .selected_text(label)
-                            .show_ui(ui, |ui| {
-                                for (percent, label) in SPEEDS {
-                                    if ui.selectable_label(percent == current, label).clicked() {
-                                        self.backend.act(Action::Speed { percent });
-                                    }
-                                }
-                            });
                     }
                     Phase::Running => {}
                 }
@@ -1115,6 +1099,32 @@ fn server_details(ui: &mut Ui, state: &State) {
     if let Some(version) = &state.server_version {
         ui.label(RichText::new(format!("server {version}")).weak());
     }
+}
+
+/// The launcher's own server by its name, such as EU, with a dot: green
+/// while it answers or this launcher is connected to it, red while it does
+/// not answer, grey until it was asked. Its address shows on hover.
+fn server_line(ui: &mut Ui, state: &State, server: &str, reach: Reach) {
+    let (color, words) = if state.connection == Connection::Connected || reach == Reach::Online {
+        (theme::SUCCESS, "online")
+    } else if reach == Reach::Offline {
+        (theme::DANGER, "not answering")
+    } else {
+        (theme::FAINT, "checking")
+    };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Server").color(theme::LABEL));
+        ui.add_space(10.0);
+        let (dot, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+        ui.painter().circle_filled(dot.center(), 5.0, color);
+        let name = state.server_name.as_deref().unwrap_or(server);
+        ui.label(
+            RichText::new(name)
+                .font(theme::heading_font(16.0))
+                .color(theme::TEXT),
+        )
+        .on_hover_text(format!("{server}: {words}"));
+    });
 }
 
 /// The line under the game's name.

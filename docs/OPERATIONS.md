@@ -448,7 +448,11 @@ runs on distributions with an older C library too.
   Variables) to the public server's `host:port`. It is built into the
   packages' launcher, which plays on it and on no other: players do not
   type a server, and an invite that names another is refused (D12 in
-  [DECISIONS.md](DECISIONS.md)). No draft is made without it. For
+  [DECISIONS.md](DECISIONS.md)). `TPF3MP_SERVER_NAME`, such as `EU`, is
+  what the launcher shows of it instead of its address, with a dot that
+  is green while the server answers `https://<host>/tpf3mp/health`, the
+  one path of its admin endpoint the host's nginx passes on
+  (`deploy/nginx.conf.example`). No draft is made without it. For
   development and playtests, `--server <host:port>` on the launcher's
   command line plays on another server instead; a launcher built without
   either, as a developer's own, asks for the server. The packages also

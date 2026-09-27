@@ -121,6 +121,9 @@ each platform, that a game started that way plays as one Steam starts:
   through `api.cmd.make.*` rather than inferring from player clicks.
 - Locate the simulation step, the step size in game time, speed and pause
   control, and the injection point just before a step runs.
+- Catch the game's own speed and pause buttons and send them as the room's
+  speed (`Control::Speed`), as TPF2MP's mod does; every game then follows
+  the server's pace. The launcher offers no speed control of its own.
 
 ## 7. Saves
 

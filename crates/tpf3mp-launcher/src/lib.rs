@@ -10,5 +10,6 @@ pub mod app;
 pub mod backend;
 pub mod icon;
 pub mod logs;
+pub mod probe;
 pub mod theme;
 pub mod update;

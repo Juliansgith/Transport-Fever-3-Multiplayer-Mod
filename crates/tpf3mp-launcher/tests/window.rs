@@ -36,7 +36,13 @@ impl Backend for Recorder {
 }
 
 fn window(state: State) -> Harness<'static, LauncherApp<Recorder>> {
-    window_with(state, Extras { updater: None })
+    window_with(
+        state,
+        Extras {
+            updater: None,
+            probe: None,
+        },
+    )
 }
 
 fn window_with(state: State, extras: Extras) -> Harness<'static, LauncherApp<Recorder>> {
@@ -303,7 +309,13 @@ fn a_narrow_window_offers_the_same() {
         state: RefCell::new(in_room(vec![member("Ann", true, true, false)], true)),
         ..Recorder::default()
     };
-    let app = LauncherApp::new(recorder, Extras { updater: None });
+    let app = LauncherApp::new(
+        recorder,
+        Extras {
+            updater: None,
+            probe: None,
+        },
+    );
     let mut window = Harness::builder()
         .with_size(egui::vec2(640.0, 2000.0))
         .build_ui_state(|ui, app: &mut LauncherApp<Recorder>| app.show(ui), app);
@@ -334,6 +346,13 @@ fn a_package_with_its_own_server_offers_no_other() {
         "no server to type"
     );
     window.get_by_label("tpf3mp.example.org:29470");
+    // A package that names its server shows the name, not the address.
+    let named = self::window(State {
+        server_name: Some("EU".into()),
+        ..own.clone()
+    });
+    named.get_by_label("EU");
+    assert!(named.query_by_label("tpf3mp.example.org:29470").is_none());
     window.get_by_label("Connect").click();
     window.run_steps(2);
     assert_eq!(
