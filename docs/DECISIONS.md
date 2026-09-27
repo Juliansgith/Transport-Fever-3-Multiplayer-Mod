@@ -191,3 +191,32 @@ Rejected:
   (BUILDING.md).
 - **The TPF2 text format.** Unbounded, untyped, and hand-parsed on both
   sides.
+
+## D9 (2026-09-27): the installer is scripts players can read
+
+What puts TPF3-MP into the game (the mod, the hook, and on Windows the
+proxy DLL in place of one of the game's own) ships in the package as
+scripts: `INSTALL_TPF3MP.cmd`, which runs `tools\install.ps1`, on Windows,
+and `install.sh` on Linux and macOS. They replace `tpf3mp-agent
+install-hook`.
+
+- **Players trust what they can read.** The installer changes the game's
+  folder. TPF2MP's players did not trust a program doing that; its
+  PowerShell installer, which anyone can open, is what they accepted. A
+  script shows exactly what it changes, with nothing compiled in between.
+- **The same rules as the code.** The scripts fail closed as the Rust
+  installer did. They refuse while the game runs, in a folder that is not
+  the game's, over another mod's proxy, when the game's own DLL is gone,
+  and when their record names anything but TPF3-MP's files. A step that
+  fails undoes the ones before it, and nothing is deleted: what is
+  replaced goes to a backups folder. CI tests them on all three platforms,
+  in the shells players have: Windows PowerShell 5.1, and the bash 3.2
+  macOS ships.
+- **An exception to D1, for this alone.** The launcher, the agent and the
+  hook stay Rust.
+
+Rejected:
+
+- **A compiled installer** (the agent's `install-hook`, an MSI or a setup
+  program): opaque to players, and flagged by SmartScreen and antivirus
+  like any unsigned program.

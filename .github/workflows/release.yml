@@ -22,8 +22,7 @@ name: release
 # folder that the Windows proxy stands in for, such as `alut.dll`. It is
 # the one setting this workflow needs from the release-day investigation
 # (docs/DAY_ONE.md). Unset, the Windows package carries no proxy, and
-# `tpf3mp-agent install-hook` then installs no hook on Windows: it fails
-# closed. The proxy's exports come from packaging/windows/proxy/<stem>.def
+# INSTALL_TPF3MP.cmd then installs no hook on Windows: it fails closed. The proxy's exports come from packaging/windows/proxy/<stem>.def
 # (written by tpf3mp-proxygen from the game's DLL) or, for a Windows
 # system DLL, from the runner's copy.
 on:
@@ -155,8 +154,8 @@ jobs:
           dir="tpf3mp-${VERSION}-${{ matrix.name }}"
           mkdir -p "$dir"
           cp README.md LICENSE docs/PLAYING.md "$dir/"
-          # The Lua mod, once the repository has it; install-hook copies it
-          # into the game's mods folder.
+          # The Lua mod, once the repository has it; the install script
+          # copies it into the player's mods folder.
           if [ -d mod/tpf3mp_1 ]; then
             mkdir -p "$dir/mod"
             cp -R mod/tpf3mp_1 "$dir/mod/"
@@ -171,7 +170,11 @@ jobs:
               cp target/release/tpf3mp-launcher.exe "$dir/TPF3-MP.exe"
               cp target/release/tpf3mp-agent.exe target/release/tpf3mp-server.exe \
                  target/release/tpf3mp-fakegame.exe target/release/tpf3mp_hook.dll "$dir/"
-              cp packaging/windows/install-into-game.bat "$dir/"
+              # The installer: readable scripts, not a program, so players
+              # can see what it changes (docs/DECISIONS.md, D9).
+              cp packaging/windows/INSTALL_TPF3MP.cmd packaging/windows/UNINSTALL_TPF3MP.cmd "$dir/"
+              mkdir -p "$dir/tools"
+              cp packaging/windows/tools/install.ps1 "$dir/tools/"
               # proxy/<the DLL it stands in for>, when it was built.
               if [ -d proxy-out ]; then
                 mkdir -p "$dir/proxy"
@@ -183,7 +186,9 @@ jobs:
             linux-*)
               cp target/release/tpf3mp-launcher target/release/tpf3mp-agent \
                  target/release/tpf3mp-server target/release/tpf3mp-fakegame \
-                 target/release/libtpf3mp_hook.so "$dir/"
+                 target/release/libtpf3mp_hook.so \
+                 packaging/unix/install.sh packaging/unix/uninstall.sh "$dir/"
+              chmod +x "$dir/install.sh" "$dir/uninstall.sh"
               tar czf "$dir.tar.gz" "$dir"
               echo "archive=$dir.tar.gz" >> "$GITHUB_ENV"
               ;;
@@ -197,7 +202,9 @@ jobs:
               codesign --force --deep --sign - "$dir/TPF3-MP.app"
               codesign --verify --deep --strict --verbose=2 "$dir/TPF3-MP.app"
               cp target/release/tpf3mp-agent target/release/tpf3mp-server \
-                 target/release/tpf3mp-fakegame target/release/libtpf3mp_hook.dylib "$dir/"
+                 target/release/tpf3mp-fakegame target/release/libtpf3mp_hook.dylib \
+                 packaging/unix/install.sh packaging/unix/uninstall.sh "$dir/"
+              chmod +x "$dir/install.sh" "$dir/uninstall.sh"
               tar czf "$dir.tar.gz" "$dir"
               echo "archive=$dir.tar.gz" >> "$GITHUB_ENV"
               ;;
