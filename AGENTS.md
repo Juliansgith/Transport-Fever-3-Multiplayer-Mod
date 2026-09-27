@@ -37,8 +37,11 @@ Rules:
   acceptance goes in on a feature branch, then through `dev` again.
 - **A red check stops promotion.** Fix it on a feature branch; never
   promote around it or disable the check.
-- Old milestone branches (`m0-foundations`, `m1-core`) are history. New
-  work starts from `dev`.
+- New work starts from `dev`. Only `dev`, `acceptance`, `main` and
+  branches in progress exist; delete a feature branch once `main` has it.
+  The old milestone branches are kept as the tags
+  `archive/m0-foundations` and `archive/m1-core`, and review
+  proof-of-concept tests never merged as `archive/review-snapshots`.
 - **Pull requests into `main` or `acceptance` are not the way in.**
   Merging one creates a commit that no check has seen and skips the stage
   before. Open pull requests into `dev` if you want a review; promote with
