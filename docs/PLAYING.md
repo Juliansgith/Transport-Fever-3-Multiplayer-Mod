@@ -22,31 +22,36 @@ launcher connects out to the server, and everything goes through it.
 
 1. Unpack the package anywhere you can write to, such as your Documents
    folder: the launcher updates the files in it (see "Updates").
-2. **Into the game.** The package's in-game pieces go into Transport
-   Fever 3's folder, the one that holds its executable (in Steam: right-click
-   the game, **Manage**, **Browse local files**):
-   - **Windows:** drop that folder onto `install-into-game.bat` in the
-     package.
-   - **Linux and macOS:** run
-     `./tpf3mp-agent install-hook --game-dir "<the game's folder>"` from the
-     package's folder.
+2. **Into the game.** Start Transport Fever 3 once, so Steam makes its
+   folder for your mods, and close it again. Then:
+   - **Windows:** double-click `INSTALL_TPF3MP.cmd` in the package.
+   - **Linux and macOS:** run `./install.sh` from the package's folder.
 
-   It puts the hook library next to the game's executable and the TPF3-MP
-   mod in the game's `mods` folder, as `tpf3mp_1` (`--mods-dir` names
-   another folder). On
+   The installer is a script, not a program: open `tools\install.ps1`
+   (Windows) or `install.sh` (Linux and macOS) to read exactly what it
+   changes. It finds the game through Steam. When it does not, give it the
+   game's folder, the one that holds its executable (in Steam: right-click
+   the game, **Manage**, **Browse local files**): drop that folder onto
+   `INSTALL_TPF3MP.cmd`, or run `./install.sh "<the game's folder>"`.
+
+   It puts the TPF3-MP mod, `tpf3mp_1`, in Steam's folder for your
+   Transport Fever 3 mods (`-ModsDir` or `--mods-dir` names another). On
    Windows it also puts a small proxy DLL in place of one of the game's
-   own, which loads the hook as the game starts; the game's own is kept
-   as `<name>_real.dll`. On Linux it prints the Steam launch option that
-   loads the hook. It refuses a folder that is not the game's, where
-   another mod already replaced that DLL, or where the game's own
-   `<name>_real.dll` has gone missing, and changes nothing then; for the
-   last, have Steam verify the game's files and install again.
-   `--uninstall` takes everything out again and puts the game's own DLL
-   back.
+   own, which loads the hook as the game starts; the game's own is kept as
+   `<name>_real.dll`, and the hook goes next to it. On Linux it puts the
+   hook in the game's folder and prints the Steam launch option that loads
+   it. It refuses, and changes nothing, while the game is running, in a
+   folder that is not the game's, where another mod already replaced that
+   DLL, or where the game's own `<name>_real.dll` has gone missing (then
+   have Steam verify the game's files, and install again). A step that
+   fails undoes the ones before it. Nothing is deleted: what it replaces or
+   takes out goes to the `backups` folder in TPF3-MP's data folder.
+   `UNINSTALL_TPF3MP.cmd` or `./uninstall.sh` takes everything out again
+   and puts the game's own DLL back.
 
    Until the game is out, packages carry no proxy DLL or mod, and the
-   install says so: the name of the DLL, and so how the hook loads, is
-   only known once the game is released. Run the install again after an
+   installer says so: the name of the DLL, and so how the hook loads, is
+   only known once the game is released. Run the installer again after an
    update of TPF3-MP or of the game.
 
 ## The launcher

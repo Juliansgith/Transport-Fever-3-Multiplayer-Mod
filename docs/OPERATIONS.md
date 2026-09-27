@@ -413,8 +413,10 @@ runs on distributions with an older C library too.
   write it on release day with `tpf3mp-proxygen <game folder>/<name>
   <out dir>`, and commit only the `.def`, never the game's DLL. A Windows
   system DLL needs no `.def`: the build reads the runner's copy. Players
-  install with `tpf3mp-agent install-hook` (`install-into-game.bat` on
-  Windows; see "Installing" in [PLAYING.md](PLAYING.md)).
+  install them with the readable scripts in the package:
+  `INSTALL_TPF3MP.cmd` (which runs `tools\install.ps1`) on Windows,
+  `install.sh` on Linux and macOS (see "Installing" in
+  [PLAYING.md](PLAYING.md), and D9 in [DECISIONS.md](DECISIONS.md)).
 - **Until the game is out** the hook finds no build profile and installs
   nothing, so the package is for trying the launcher and the netcode with
   the fake game.

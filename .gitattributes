@@ -5,3 +5,5 @@
 *.pe binary
 # Windows batch files need CRLF, or cmd misreads some of their lines.
 *.bat text eol=crlf
+# Windows command scripts need CRLF too.
+*.cmd text eol=crlf

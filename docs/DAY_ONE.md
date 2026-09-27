@@ -167,3 +167,10 @@ Release-day order:
    correct `game_candidates_in` in `crates/tpf3mp-agent/src/logs.rs` where
    that is wrong, drop the "TPF2 location, confirm on TF3" mark from the
    confirmed ones, and update "Sending your logs" in `docs/PLAYING.md`.
+7. **Installer:** confirm on each platform that the game loads mods from
+   `<Steam>/userdata/<account>/3493540/local/mods`, where TPF2 kept a
+   player's own, and that the game's folder is the one holding its
+   executable. Where not, correct `Find-ModsDir` and `Find-Game` in
+   `packaging/windows/tools/install.ps1` and `find_mods_dir` and
+   `find_game` in `packaging/unix/install.sh`, with their tests in
+   `packaging/*/test-install.*`.
