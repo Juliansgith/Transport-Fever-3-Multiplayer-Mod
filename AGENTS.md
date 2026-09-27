@@ -70,7 +70,9 @@ update the script's lists and run it again.
   - the whole test suite;
   - release builds of the binaries players and servers run;
   - the server container image;
-  - that the launcher page's script parses.
+  - that the launcher page's script parses;
+  - on Linux, format, lint and tests of the binary-analysis kit
+    `tools/tpfre` (D14), its own Cargo workspace.
 - **`acceptance`** (`.github/workflows/acceptance.yml`) runs on pushes to
   `acceptance`. It runs optimized load tests on all three platforms, each
   failing on any failed bot or diverged replica:

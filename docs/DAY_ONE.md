@@ -180,10 +180,12 @@ The tools that turn this plan into findings live under `tools/`. They are
 read-only (no game is launched or modified) and their output is deterministic.
 They were built and validated against Transport Fever 2 build 35924; the baseline
 outputs are in `investigation/tpf2-baseline/`. One-time setup:
-`python -m venv .venv && .venv/Scripts/pip install -r tools/requirements.txt`.
+`python -m venv .venv && .venv/Scripts/pip install -r tools/requirements.txt`,
+and `cargo build --release` in `tools/tpfre`.
 
 | tool | what it does | feeds |
 |---|---|---|
+| `tools/tpfre`: `tpfre index <bin> -o <db>`, then `tpfre q <db> ...` | the fast path for decoding the executable (Rust; [README](../tools/tpfre/README.md)). One parallel pass (about 4 s on TPF2) into one SQLite file: functions (`.pdata` and leaves), direct calls, tail jumps, imports, RIP-relative references, data pointers, strings, `__FUNCSIG__`/`__FILE__` names (the `name_functions.py` rules, agreeing name for name on TPF2), RTTI classes and vtable slots, and SteamStub/packing warnings. Queries answer in milliseconds: `func`, `dis`, `callers`, `callees`, `path`, `xrefs`, `str`, `fnstr`, `names`, `class`, `vtable`, `file`, `whois`, `sig` (make_profile's signatures), `bytes`, `validate`; `tpfre diff` compares two builds. Its "For agents" section is the cheat sheet to give a coding agent. PE x86-64 only. | §2, §6, §7, the hook profile |
 | `tools/re/binary_survey.py <bin> -o out.md` | identity, sections+entropy, imports (system vs game-folder, with proxy-loader ranking), exports, TLS callbacks, packer/anti-tamper, RTTI, Lua version, `__FUNCSIG__`/`__FILE__` counts, TPF2-era names, and macOS code-signing posture. Handles PE, ELF and Mach-O. | §1, §2, §5 |
 | `tools/re/name_functions.py <bin> -o dir [--validate spec]` | recovers a symbol map (RVA -> name, source file) from assert strings, build-independent: `.pdata` bounds on PE, LIEF function starts on ELF/Mach-O, x86-64 and arm64 reference resolution. Emits JSON+CSV and Ghidra/x64dbg/IDA scripts. | §2, §6 |
 | `tools/re/diff_builds.py OLD.symbols.json NEW.symbols.json` | which named functions moved, resized, appeared or disappeared between two builds -- run it after a day-two patch to re-verify hook signatures. | §1, §2 |
@@ -195,16 +197,36 @@ outputs are in `investigation/tpf2-baseline/`. One-time setup:
 | `tools/probe/compare_runs.py A.log B.log` | first per-lane divergence between two determinism logs. | §4 |
 | `tools/probe/check_lua.py` | syntax-checks the probe Lua with a real Lua 5.2. | §3, §4 |
 
+Which to use for what:
+
+- **The Windows executable's code** (finding, naming and confirming hook
+  targets, their callers and strings, and their signatures): `tpfre`. Index
+  once (seconds), then ask: each question answers in milliseconds, so an
+  agent can ask many small ones.
+- **The survey report** of every platform's binary (imports with the
+  proxy-loader ranking, TLS callbacks, Lua version, code signing):
+  `binary_survey.py`.
+- **Linux and macOS binaries** (ELF, Mach-O arm64), and Ghidra, x64dbg or IDA
+  scripts that apply the names: `name_functions.py`.
+- **A whole hook profile file** with its `[build]` identity: `make_profile.py`.
+  `tpfre q <db> sig NAME --toml` prints the same `[[target]]` block for one
+  function, to try a target before writing the profile.
+
 Release-day order:
 
 1. **Archive + static (per platform):** run `binary_survey.py` on each build
-   (§1 hashes/sizes, §2 loader/packer/Lua/RTTI), then `name_functions.py` on each
-   to get the symbol maps and hook-target RVAs (§2.4). Validate known targets
-   with a `--validate` spec once they are located, then write the build's hook
-   profile with `make_profile.py` from the binary, its symbol map and the target
-   names.
-2. **On a patch:** re-run `name_functions.py` and `diff_builds.py` the old and new
-   maps; re-verify any hook whose target is listed resized/appeared/disappeared,
+   (§1 hashes/sizes, §2 loader/packer/Lua/RTTI). `tpfre index` the Windows
+   executable; if it warns that `.text` is encrypted, dump the running game's
+   image by hand with a debugger and index the dump with `--image-base`. Find the hook targets with
+   `tpfre q` (§2, §6, §7): `str`, `names` and `file` to locate a subsystem,
+   `func`, `callers`, `xrefs` and `dis` to confirm, `validate` with a spec of
+   the known targets once they are located. Run `name_functions.py` on the
+   Linux and macOS builds, and on Windows for its symbol map and scripts. Then
+   write the build's hook profile with `make_profile.py` from the binary, its
+   symbol map and the target names.
+2. **On a patch:** `tpfre index` the new build and `tpfre diff` the old and new
+   databases (or `name_functions.py` and `diff_builds.py` on the maps);
+   re-verify any hook whose target is listed resized/appeared/disappeared,
    and run `make_profile.py` on the new build for its profile.
 3. **Script API (per platform):** `check_lua.py` first, then install the
    `script_api_dump` mod, launch, and collect the engine/GUI dumps (§3).

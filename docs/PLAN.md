@@ -69,7 +69,7 @@ Then:
 
 - [ ] `binary_survey.py`: the Lua version, whether RTTI and `__FUNCSIG__`
   strings are present. (*Changed:* no proxy DLL to find, D11.)
-- [ ] `name_functions.py` (or `tools/tpfre`, when merged): TF3's
+- [ ] `tools/tpfre` (D14; `name_functions.py` to cross-check): TF3's
   equivalents of TPF2's `GameSim::Step`, `CGame::Step`,
   `CommandList::Add`, save and load, into the recon log. TF3's names may
   differ from TPF2's.

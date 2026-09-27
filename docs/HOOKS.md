@@ -437,7 +437,9 @@ by hand (see the README). On release day, what remains for TPF3 is:
    timestamp (`BuildIdentity::of_file`), plus the Steam build/manifest ids. Keep
    a private copy (see [DAY_ONE.md](DAY_ONE.md)).
 2. **Find the function** with the RE pipeline, and note its RVA and the bytes at
-   its start.
+   its start. `tools/tpfre` indexes the executable in seconds and answers
+   `func`, `callers`, `xrefs`, `str`, `dis` and `whois` queries on it
+   ([its README](../tools/tpfre/README.md)).
 3. **Write a signature.** Take the opening bytes; replace every relative or
    absolute displacement with `??`; extend only until the pattern is unique
    across the scanned section. Record the exact, wildcard-free `prologue` (at
@@ -467,6 +469,9 @@ by hand (see the README). On release day, what remains for TPF3 is:
    which the engine relocates. Every refusal names the target and the reason: a
    name shared by several functions (pick one with `NAME@0xRVA`), a function
    byte-identical to another (never unique), a branch too early to steal around.
+   `tpfre q <db> sig NAME --toml` applies the same rules to one function and
+   prints its `[[target]]` block (identical to make_profile's on TPF2's
+   targets), to try a target before writing the profile.
    `tools/re/test_make_profile.py` checks the tool on a synthetic PE and keeps
    `tpf3mp-hookcore/tests/data/make_profile_fixture.{pe,toml}` current, which
    `tests/make_profile_fixture.rs` resolves with hookcore itself.
