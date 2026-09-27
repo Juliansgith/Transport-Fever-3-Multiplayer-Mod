@@ -106,13 +106,14 @@ with [docs/PLAYING.md](docs/PLAYING.md); server operators with
 - **Launcher.** A native window on Windows, Linux and macOS
   (`tpf3mp-launcher`, drawn with egui) to connect, create or join a room,
   get ready, start, chat, and follow the game: fetching the world, loading,
-  playing. It shows what to change when a player's mods differ, the support
-  ID the server's log knows the player by, and the logs folder, and
-  collects the player's and the game's logs into one zip for a bug report
-  (never keys or tokens). Its log lines also go to the server by
-  themselves, redacted, so an operator can help from the support ID alone;
-  a switch turns that off. It updates itself from the project's releases,
-  installing only what the project signed. `tpf3mp-agent launcher` serves
+  playing. It shows what to change when a player's mods differ, and the
+  support ID the server's log knows the player by. Its log lines go to the
+  server by themselves, redacted, so an operator can help from the support
+  ID alone, with nothing for the player to send; a switch turns that off.
+  `tpf3mp-agent collect-logs` zips the game's own logs and crash dumps
+  when an operator needs them (never keys or tokens). It updates itself
+  from the project's releases, installing only what the project signed.
+  `tpf3mp-agent launcher` serves
   the same launcher as a page in the browser, on the loopback interface
   only, to the page that holds its secret token.
 - **Installer.** Scripts players can read (`INSTALL_TPF3MP.cmd` with

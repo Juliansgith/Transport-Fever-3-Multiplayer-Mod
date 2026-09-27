@@ -1,9 +1,9 @@
 //! The launcher's log: daily files in the per-user `TPF3-MP/logs` folder,
-//! a week of them, which "Open logs folder" shows. A player who reports a
-//! problem sends them, with the support ID the window shows: "Collect
-//! logs" zips them with the hook's and the game's (`tpf3mp_agent::logs`).
-//! Its lines also go, redacted, to the server the player plays on, unless
-//! they switch that off (`tpf3mp_agent::diagnostics`).
+//! a week of them. Its lines also go, redacted, to the server the player
+//! plays on, unless they switch that off (`tpf3mp_agent::diagnostics`,
+//! D10): the operator reads them by the support ID the window shows.
+//! `tpf3mp-agent collect-logs` zips the files with the hook's and the
+//! game's, for the rare report that needs those (`tpf3mp_agent::logs`).
 
 use std::{fmt, io, path::PathBuf};
 

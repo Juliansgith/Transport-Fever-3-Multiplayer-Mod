@@ -152,9 +152,6 @@
   </section>
 
   <div class="row">
-    <button id="collect-button" class="secondary"
-      title="Put TPF3-MP's logs and the game's into one zip for a bug report. Keys and tokens are never included.">Collect logs</button>
-    <span id="collect-result" class="muted"></span>
     <label id="diagnostics-label" class="muted hidden"
       title="Lines of this launcher's log go to the server you play on, with paths, addresses and keys taken out, so its operator can see what went wrong by your support ID. The server keeps them for a limited time, 30 days unless its operator chose otherwise.">
       <input type="checkbox" id="diagnostics"> Send diagnostics</label>
@@ -434,20 +431,6 @@ function sendChat() {
   act({ action: "chat", text: value });
 }
 $("chat-button").onclick = sendChat;
-$("collect-button").onclick = async () => {
-  $("collect-button").disabled = true;
-  text($("collect-result"), "collecting…");
-  try {
-    const response = await fetch("/api/collect-logs", {
-      method: "POST", headers: { "X-Launcher-Token": token },
-    });
-    const answer = await response.json();
-    text($("collect-result"), answer.error ? answer.error : "saved " + answer.path);
-  } catch (error) {
-    text($("collect-result"), "the launcher is not running");
-  }
-  $("collect-button").disabled = false;
-};
 $("chat-text").onkeydown = (event) => { if (event.key === "Enter") sendChat(); };
 $("diagnostics").onchange = () => act({ action: "diagnostics", on: $("diagnostics").checked });
 $("launch-button").onclick = () => act({ action: "launch_game" });

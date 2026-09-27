@@ -18,7 +18,7 @@ use tpf3mp_agent::launcher::{
     Room, RulesChoice, State, World,
 };
 use tpf3mp_launcher::{
-    app::{CollectLogs, Extras, LauncherApp},
+    app::{Extras, LauncherApp},
     backend::Backend,
 };
 
@@ -42,19 +42,7 @@ fn render(name: &str, state: State) {
 }
 
 fn render_at(name: &str, state: State, size: egui::Vec2) {
-    let app = LauncherApp::new(
-        Still(RefCell::new(state)),
-        Extras {
-            logs: Some(PathBuf::from("logs")),
-            collect: Some(CollectLogs {
-                data_dir: PathBuf::from("data"),
-                out_dir: PathBuf::from("out"),
-                reveal: false,
-                game: false,
-            }),
-            updater: None,
-        },
-    );
+    let app = LauncherApp::new(Still(RefCell::new(state)), Extras { updater: None });
     let mut harness = Harness::builder()
         .with_size(size)
         .wgpu()

@@ -4,7 +4,7 @@
 // keep the console, for running from a terminal.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use std::{path::PathBuf, process::ExitCode, time::Duration};
+use std::{process::ExitCode, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -14,7 +14,7 @@ use tpf3mp_agent::{
     launcher::{Launcher, LauncherConfig, Remembered, setup},
 };
 use tpf3mp_launcher::{
-    app::{CollectLogs, Extras, LauncherApp},
+    app::{Extras, LauncherApp},
     backend::Local,
     icon, logs, update,
 };
@@ -60,7 +60,7 @@ fn main() -> ExitCode {
     if update::at_start() {
         return ExitCode::SUCCESS;
     }
-    match run(args, logs, diagnostics) {
+    match run(args, diagnostics) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             error!("{error:#}");
@@ -70,7 +70,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: Args, logs: Option<PathBuf>, diagnostics: Recorder) -> Result<()> {
+fn run(args: Args, diagnostics: Recorder) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("tpf3mp")
@@ -89,12 +89,6 @@ fn run(args: Args, logs: Option<PathBuf>, diagnostics: Recorder) -> Result<()> {
         let _entered = runtime.enter();
         Launcher::start_local(config.clone())
     };
-    let collect = setup::data_dir().ok().map(|data_dir| CollectLogs {
-        out_dir: tpf3mp_agent::logs::default_out_dir(&data_dir),
-        data_dir,
-        reveal: true,
-        game: true,
-    });
     let mut backend = Local::new(launcher.handle(), runtime.handle().clone());
     let updater = update::Updater::start(runtime.handle().clone());
     let options = eframe::NativeOptions {
@@ -120,8 +114,6 @@ fn run(args: Args, logs: Option<PathBuf>, diagnostics: Recorder) -> Result<()> {
             Ok(Box::new(LauncherApp::new(
                 backend,
                 Extras {
-                    logs,
-                    collect,
                     updater: Some(updater),
                 },
             )))
