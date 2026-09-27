@@ -109,6 +109,8 @@ pub struct LauncherApp<B> {
     create_password: String,
     rules: Option<String>,
     invite: String,
+    /// An invite given when connecting to the launcher's own server.
+    connect_invite: String,
     join_password: String,
     chat: String,
     /// Whether the server and name fields took the launcher's first offer.
@@ -139,6 +141,7 @@ impl<B: Backend> LauncherApp<B> {
             create_password: String::new(),
             rules: None,
             invite: String::new(),
+            connect_invite: String::new(),
             join_password: String::new(),
             chat: String::new(),
             offered: false,
@@ -585,21 +588,31 @@ impl<B: Backend> LauncherApp<B> {
         });
     }
 
+    /// Connecting: to the launcher's own server, the only one it plays on
+    /// when it has one (D12), or, in a build for development, to the one
+    /// typed. An invite given here also joins its room.
     fn connect(&mut self, ui: &mut Ui, state: &State) {
+        let fixed = state.server.as_deref().filter(|_| state.server_fixed);
         theme::glass(ui, "Server", |ui| {
+            if let Some(server) = fixed {
+                theme::rows(ui, "own-server", &[("Server", server)]);
+                ui.add_space(4.0);
+            }
             let mut submit = false;
             egui::Grid::new("connect")
                 .num_columns(2)
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
-                    submit |= field(
-                        ui,
-                        "Server",
-                        TextEdit::singleline(&mut self.server)
-                            .hint_text("server:29470, or a whole invite")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.end_row();
+                    if fixed.is_none() {
+                        submit |= field(
+                            ui,
+                            "Server",
+                            TextEdit::singleline(&mut self.server)
+                                .hint_text("server:29470, or a whole invite")
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+                    }
                     submit |= field(
                         ui,
                         "Your name",
@@ -608,13 +621,29 @@ impl<B: Backend> LauncherApp<B> {
                             .desired_width(f32::INFINITY),
                     );
                     ui.end_row();
+                    if fixed.is_some() {
+                        submit |= field(
+                            ui,
+                            "Invite",
+                            TextEdit::singleline(&mut self.connect_invite)
+                                .hint_text("optional: one you were sent")
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+                    }
                 });
             ui.add_space(8.0);
             let connecting = state.connection == Connection::Connecting || self.backend.busy();
             let clicked = theme::big_button(ui, !connecting, "Connect").clicked();
             if (clicked || submit) && !connecting {
+                // With its own server, only an invite goes with the name.
+                let server = if fixed.is_some() {
+                    self.connect_invite.trim().to_owned()
+                } else {
+                    self.server.clone()
+                };
                 self.backend.act(Action::Connect {
-                    server: self.server.clone(),
+                    server,
                     name: self.name.clone(),
                 });
             }
@@ -622,13 +651,12 @@ impl<B: Backend> LauncherApp<B> {
                 if connecting {
                     ui.spinner();
                 }
-                ui.label(
-                    RichText::new(
-                        "Got an invite? Paste all of it as the server: you connect and join in one step.",
-                    )
-                    .weak()
-                    .small(),
-                );
+                let hint = if fixed.is_some() {
+                    "Got an invite? Paste it too: you connect and join in one step."
+                } else {
+                    "Got an invite? Paste all of it as the server: you connect and join in one step."
+                };
+                ui.label(RichText::new(hint).weak().small());
             });
         });
     }

@@ -387,3 +387,47 @@ fn a_narrow_window_offers_the_same() {
     window.run_steps(2);
     assert_eq!(actions(&window), [Action::LaunchGame]);
 }
+
+/// A package built for its own server offers no other (D12): the server
+/// is shown, not asked for, and an invite may go with the name.
+#[test]
+fn a_package_with_its_own_server_offers_no_other() {
+    let own = State {
+        name: "Ann".into(),
+        server: Some("tpf3mp.example.org:29470".into()),
+        server_fixed: true,
+        ..State::default()
+    };
+    let mut window = window(own.clone());
+    assert!(
+        window
+            .query_by_role_and_label(Role::TextInput, "Server")
+            .is_none(),
+        "no server to type"
+    );
+    window.get_by_label("tpf3mp.example.org:29470");
+    window.get_by_label("Connect").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [Action::Connect {
+            server: String::new(),
+            name: "Ann".into(),
+        }]
+    );
+
+    let mut window = self::window(own);
+    let invite = window.get_by_role_and_label(Role::TextInput, "Invite");
+    invite.focus();
+    invite.type_text("tpf3mp.example.org:29470 TPF3MP1.abc");
+    window.run_steps(4);
+    window.get_by_label("Connect").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [Action::Connect {
+            server: "tpf3mp.example.org:29470 TPF3MP1.abc".into(),
+            name: "Ann".into(),
+        }]
+    );
+}

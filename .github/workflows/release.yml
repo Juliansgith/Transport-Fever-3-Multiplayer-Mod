@@ -8,7 +8,9 @@ name: release
 #
 # Repository variables it builds in (Settings, Secrets and variables,
 # Actions, Variables):
-# - TPF3MP_DEFAULT_SERVER: the server the launcher offers first;
+# - TPF3MP_DEFAULT_SERVER: the server the launcher plays on, and the only
+#   one (docs/DECISIONS.md, D12). Without it, players would type a server,
+#   so no release is drafted without it either;
 # - TPF3MP_UPDATE_PUBLIC_KEY: the public keys updates must be signed with.
 #   Without one the launcher never updates itself, so no release is
 #   drafted: manual runs still build packages to try.
@@ -67,7 +69,7 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     env:
-      # Built into the launcher: the server it offers first, the key its
+      # Built into the launcher: the server it plays on, the key its
       # updates must be signed with, and where it looks for them.
       TPF3MP_DEFAULT_SERVER: ${{ vars.TPF3MP_DEFAULT_SERVER }}
       TPF3MP_UPDATE_PUBLIC_KEY: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
@@ -185,7 +187,8 @@ jobs:
             exit 1
           fi
           if [ -z "$TPF3MP_DEFAULT_SERVER" ]; then
-            echo "::warning::no TPF3MP_DEFAULT_SERVER: players must type the server's address"
+            echo "::error::no draft without the repository variable TPF3MP_DEFAULT_SERVER: the launcher plays on that server alone (docs/DECISIONS.md, D12). Set it (docs/OPERATIONS.md, \"Before the first release\"), then re-run this workflow"
+            exit 1
           fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:

@@ -69,11 +69,12 @@
     <h3>Your game differs from the room's</h3>
     <div id="content-diff-body"></div>
     <p class="muted">Everyone needs the room's game build and the same mods, in the same
-      order. Change yours to match, then start the game and the launcher again.</p>
+      order. Change yours to match, then start the game from the launcher again.</p>
   </div>
 
   <section id="connect">
     <h2>Server</h2>
+    <p id="server-fixed" class="muted hidden"></p>
     <div class="row">
       <input id="server" class="grow" placeholder="server:29470, or a whole invite" autocomplete="off">
       <input id="name" class="grow" placeholder="your name" maxlength="32" autocomplete="off">
@@ -272,7 +273,14 @@ function render(s) {
   text($("support-id"), s.support_id ? "support ID " + s.support_id : "");
   text($("server-version"), s.server_version ? "server " + s.server_version : "");
   if (s.error) showError(s.error);
-  if (!$("server").value && s.server) $("server").value = s.server;
+  // A launcher with its own server offers no other (D12): the field takes
+  // an invite, to join in one step, or nothing.
+  show("server-fixed", s.server_fixed);
+  text($("server-fixed"), s.server_fixed ? "TPF3-MP plays on " + s.server + "." : "");
+  $("server").placeholder = s.server_fixed
+    ? "an invite you were sent (optional)"
+    : "server:29470, or a whole invite";
+  if (!s.server_fixed && !$("server").value && s.server) $("server").value = s.server;
   if (!$("name").value && s.name) $("name").value = s.name;
 
   renderContentDiff(s.content_diff);
