@@ -96,14 +96,16 @@ your own machine, in the tab the launcher opened.
 5. **Ready.** Everyone presses **Ready**. The room's owner then presses
    **Start game**. Everyone's game starts from the owner's world.
 
-The **Checklist** at the top ticks these steps off as you go: connect to
-a server, create or join a room, start the game from here, everyone ready,
-play together.
+The window is laid out as the TPF2 multiplayer launcher is. On the left,
+under the game's name, a checklist ticks these steps off as you go:
+connect to a server, create or join a room, start the game from here,
+everyone ready, play together. The step at hand is on the right. A narrow
+window puts everything in one column.
 
-The **Game** part of the window says whether Steam has Transport Fever 3,
-whether the TPF3-MP mod is installed (see "Installing"), and follows your
-game: started from here, downloading the room's world, loading it, and
-playing. **Chat**
+The **Game** panel follows your game: started from here, downloading the
+room's world, loading it, and playing. The bar along the bottom, **Your
+game**, says where Steam has Transport Fever 3 and whether the TPF3-MP mod
+is installed (see "Installing"). **Chat**
 reaches everyone in the room. A message **From the server** is its
 operator's, such as a restart coming: when the server comes back, the
 launcher rejoins by itself. The **Session log** tells you what happened,
@@ -178,7 +180,7 @@ server.
 The top of the window shows your **support ID** (**Copy** copies it). It
 names your connection in the server's log: send it to the server's operator
 with your report, and they find exactly what happened to you. **Open logs
-folder**, at the bottom, opens the launcher's own logs
+folder**, in the bar at the bottom, opens the launcher's own logs
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
 
 ### Diagnostics
@@ -193,14 +195,15 @@ the same again. Your game's own log and crash dumps are not sent. The
 server keeps the lines for a limited time, 30 days unless its operator
 chose otherwise.
 
-Untick **Send diagnostics** at the bottom of the window (or of the browser
-page) to stop: the
+Untick **Send diagnostics**, under the bar at the bottom of the window (or
+at the bottom of the browser page), to stop: the
 launcher then sends nothing more, forgets the lines it had not sent yet,
 and remembers your choice.
 
 ### Sending your logs
 
-**Collect logs**, at the bottom of the window (and of the browser page),
+**Collect logs**, in the bar at the bottom of the window (and at the bottom
+of the browser page),
 puts everything a bug report needs into one zip,
 `tpf3mp-logs-<time>.zip` in your Downloads folder (in `TPF3-MP` when there
 is no Downloads folder), and shows it. Attach that zip to your report, with

@@ -14,8 +14,8 @@ use std::{cell::RefCell, path::PathBuf};
 use eframe::egui;
 use egui_kittest::Harness;
 use tpf3mp_agent::launcher::{
-    Action, ChatLine, Connection, Differences, Game, Member, MemberContent, Phase, Room,
-    RulesChoice, State, World,
+    Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent, Phase,
+    Room, RulesChoice, State, World,
 };
 use tpf3mp_launcher::{
     app::{CollectLogs, Extras, LauncherApp},
@@ -36,7 +36,12 @@ impl Backend for Still {
     }
 }
 
+/// The window at its first size, as players see it first.
 fn render(name: &str, state: State) {
+    render_at(name, state, egui::vec2(1100.0, 690.0));
+}
+
+fn render_at(name: &str, state: State, size: egui::Vec2) {
     let app = LauncherApp::new(
         Still(RefCell::new(state)),
         Extras {
@@ -51,7 +56,7 @@ fn render(name: &str, state: State) {
         },
     );
     let mut harness = Harness::builder()
-        .with_size(egui::vec2(780.0, 680.0))
+        .with_size(size)
         .wgpu()
         .build_ui_state(|ui, app: &mut LauncherApp<Still>| app.show(ui), app);
     harness.run_steps(4);
@@ -93,6 +98,8 @@ fn screens() {
         "2-lobby",
         State {
             name: "Ann".into(),
+            installed: Some(steam_game()),
+            diagnostics: Some(true),
             player: Some("p-3f2a91c0d4e5b6a7".into()),
             connection: Connection::Connected,
             server_version: Some("0.1.0".into()),
@@ -131,6 +138,7 @@ fn screens() {
         "3-room-with-differences",
         State {
             name: "Bob".into(),
+            installed: Some(steam_game()),
             player: Some("p-9b8c7d6e5f4a3b2c".into()),
             connection: Connection::Connected,
             server_version: Some("0.1.0".into()),
@@ -151,45 +159,54 @@ fn screens() {
             ..State::default()
         },
     );
-    render(
-        "4-game-running",
-        State {
-            name: "Ann".into(),
-            player: Some("p-3f2a91c0d4e5b6a7".into()),
-            connection: Connection::Connected,
-            server_version: Some("0.1.0".into()),
-            support_id: Some("s-8c21f0a9d3e4b5c6d7e8f90a1b2c3d4e".into()),
-            room: Some(Room {
-                phase: Phase::Running,
-                you_own: true,
-                members: vec![
-                    member("Ann", true, true, MemberContent::Same),
-                    member("Bob", false, false, MemberContent::Same),
-                    member("Cat", false, false, MemberContent::Same),
-                ],
-                ..room
-            }),
-            game: Game {
-                attached: Some("tpf3".into()),
-                world: World::Playing,
-                step: Some(18_240),
-                speed: 200,
-                ..Game::default()
-            },
-            chat: vec![
-                ChatLine {
-                    from: "Bob".into(),
-                    text: "Station at the harbour is done".into(),
-                    you: false,
-                },
-                ChatLine {
-                    from: "Ann".into(),
-                    text: "Nice, connecting the coal mine now".into(),
-                    you: true,
-                },
+    let running = State {
+        name: "Ann".into(),
+        installed: Some(steam_game()),
+        player: Some("p-3f2a91c0d4e5b6a7".into()),
+        connection: Connection::Connected,
+        server_version: Some("0.1.0".into()),
+        support_id: Some("s-8c21f0a9d3e4b5c6d7e8f90a1b2c3d4e".into()),
+        room: Some(Room {
+            phase: Phase::Running,
+            you_own: true,
+            members: vec![
+                member("Ann", true, true, MemberContent::Same),
+                member("Bob", false, false, MemberContent::Same),
+                member("Cat", false, false, MemberContent::Same),
             ],
-            notices: vec!["rejoined the room".into()],
-            ..State::default()
+            ..room
+        }),
+        game: Game {
+            attached: Some("tpf3".into()),
+            world: World::Playing,
+            step: Some(18_240),
+            speed: 200,
+            ..Game::default()
         },
-    );
+        chat: vec![
+            ChatLine {
+                from: "Bob".into(),
+                text: "Station at the harbour is done".into(),
+                you: false,
+            },
+            ChatLine {
+                from: "Ann".into(),
+                text: "Nice, connecting the coal mine now".into(),
+                you: true,
+            },
+        ],
+        notices: vec!["rejoined the room".into()],
+        ..State::default()
+    };
+    render("4-game-running", running.clone());
+    // A narrow window: everything in one column.
+    render_at("5-narrow", running, egui::vec2(640.0, 1100.0));
+}
+
+/// The game as Steam has it.
+fn steam_game() -> InstalledGame {
+    InstalledGame {
+        dir: r"C:\Program Files (x86)\Steam\steamapps\common\Transport Fever 3".into(),
+        build: "20364158".into(),
+    }
 }

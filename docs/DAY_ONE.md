@@ -103,7 +103,12 @@ each platform, that a game started that way plays as one Steam starts:
   then load the hook.
 - **Linux:** the same with `LD_PRELOAD`. Find out whether Steam starts the
   game inside its Linux runtime (pressure-vessel): if the game needs it,
-  start it the same way, with the hook preloaded inside.
+  start it the same way, with the hook preloaded inside. TPF2's Linux build
+  starts through a `run.sh` next to it; tearded's TPF2 multiplayer
+  launcher puts its preload into that script. If TPF3's starts the same
+  way, start the script with `LD_PRELOAD` in its environment. The script
+  must `exec` the game: otherwise the game's parent is the script, not
+  the launcher, and the hook stays out (`TPF3MP_LAUNCHER_PID`, HOOKS.md).
 - **macOS:** how to get a library into the game at all: the binary's
   hardened runtime, library validation and `DYLD_INSERT_LIBRARIES` (§2).
   Test whether code pages can be patched under the process's code-signing
