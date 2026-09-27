@@ -45,15 +45,44 @@ hardened container profile.
    ```
    This prints the server version, a session ID and the round trip.
 
+### Beside tf2mp-relay
+
+The project's own server runs TPF3-MP next to tf2mp-relay and other
+sites, behind the host's nginx, whose certificates certbot keeps. TPF3-MP
+shares nginx and certbot and nothing else: its own folder, its own
+Compose project (`name: tpf3mp`, so it never mixes with the relay's
+`deploy` project), its own hostname and ports.
+
+1. **The code:** `git clone
+   https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod.git
+   /opt/tpf3mp`, at the commit `main` holds.
+2. **The certificate:** `certbot certonly --nginx -d <host>`. Certbot's
+   nginx plugin answers the challenge; no site changes.
+3. **The tunnel's virtual host:** `deploy/nginx.conf.example`, with the
+   hostname put in, as `/etc/nginx/sites-available/tpf3mp.conf`, linked
+   from `sites-enabled`. Then `nginx -t`, and only if it passes,
+   `systemctl reload nginx`, which leaves every site's connections
+   standing.
+4. **The certificate for the server,** now and after every renewal:
+   `deploy/certbot-deploy-hook.sh`, with its `HOST` and `DEPLOY` set, as
+   `/etc/letsencrypt/renewal-hooks/deploy/tpf3mp.sh`. Run it once by hand,
+   with `RENEWED_LINEAGE=/etc/letsencrypt/live/<host>`.
+5. **The port:** `ufw allow 29470/udp`.
+6. **Start:** `cd /opt/tpf3mp/deploy && docker compose up -d --build`.
+7. **Check** from another machine, as above, and through the tunnel with
+   `tpf3mp-agent connect <host>:29470 --tunnel-only`. The relay's own
+   checks must still pass.
+
 ## Certificates
 
 The server reads its certificate at start. After a renewal, restart it:
 `docker compose restart`. Two options:
 
 - **certbot.** Use `certbot certonly --standalone -d <host>` while port 80
-  is free, or `--webroot` behind the existing reverse proxy. Add a deploy
-  hook that copies the renewed files into `deploy/certs/`, fixes their owner
-  and restarts the container.
+  is free, `--nginx` or `--webroot` behind the existing reverse proxy.
+  `deploy/certbot-deploy-hook.sh` is the deploy hook: it copies the
+  renewed files into `deploy/certs/`, fixes their owner and restarts the
+  container (see "Beside tf2mp-relay").
 - **Reuse the existing Caddy.** Add the hostname to the Caddyfile so Caddy
   obtains the certificate, then copy it from Caddy's storage
   (`certificates/acme-v02.api.letsencrypt.org-directory/<host>/`) with a

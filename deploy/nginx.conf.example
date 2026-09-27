@@ -1,0 +1,56 @@
+# TPF3-MP's WebSocket tunnel behind a host's nginx, as on a host that
+# already serves tf2mp-relay the same way. Included from nginx's http
+# context, as /etc/nginx/sites-available/tpf3mp.conf linked from
+# sites-enabled. Replace tpf3mp.example.org everywhere, get its certificate
+# first (`certbot certonly --nginx -d tpf3mp.example.org`), then
+# `nginx -t && systemctl reload nginx`. See docs/OPERATIONS.md, "Beside
+# tf2mp-relay".
+#
+# Only the tunnel is proxied. Players' games reach the server over UDP
+# 29470 directly, and its admin endpoint (metrics, health, diagnostics)
+# stays on the host's loopback, never here.
+
+map $http_upgrade $tpf3mp_connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    server_name tpf3mp.example.org;
+    server_tokens off;
+
+    location = /tpf3mp {
+        proxy_pass http://127.0.0.1:29471;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $tpf3mp_connection_upgrade;
+        # Overwrite, never pass on, the client's own forwarding chain: the
+        # server takes the player's address from this.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        # QUIC's packets are encrypted: compressing them only costs.
+        proxy_set_header Sec-WebSocket-Extensions "";
+        proxy_connect_timeout 5s;
+        # A tunnel lives as long as the game it carries.
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        proxy_buffering off;
+    }
+
+    location / {
+        return 404;
+    }
+
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    ssl_certificate /etc/letsencrypt/live/tpf3mp.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tpf3mp.example.org/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name tpf3mp.example.org;
+    return 404;
+}

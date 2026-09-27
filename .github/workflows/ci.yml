@@ -121,6 +121,9 @@ jobs:
                         "--admin-listen", "0.0.0.0:9470"]
           EOF
           export COMPOSE_FILE=compose.yaml:compose.ci.yaml
+          # Its own project, whatever the folder: never the `deploy` project
+          # of another service on the host (docs/OPERATIONS.md).
+          test "$(docker compose config --format json | jq -r .name)" = tpf3mp
           docker compose up -d --no-build
           for attempt in $(seq 1 20); do
             curl -sf http://127.0.0.1:9470/healthz && break
@@ -135,3 +138,24 @@ jobs:
           grep 'status=running' tpf3mp-logs-*/state.txt
           ./collect-logs.sh --since 10m --for no-such-session
           docker compose down -v
+      - name: The certbot hook hands over TPF3-MP's certificate alone
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          mkdir -p "$work/live/tpf3mp.test" "$work/live/other.test" "$work/deploy"
+          for lineage in tpf3mp.test other.test; do
+            for file in fullchain.pem privkey.pem; do
+              echo "$lineage $file" > "$work/live/$lineage/$file"
+            done
+          done
+          sed -e "s|^HOST=.*|HOST=tpf3mp.test|" -e "s|^DEPLOY=.*|DEPLOY=$work/deploy|" \
+            deploy/certbot-deploy-hook.sh > "$work/hook.sh"
+          # Another site's renewal: nothing happens.
+          sudo RENEWED_LINEAGE="$work/live/other.test" sh "$work/hook.sh"
+          test ! -e "$work/deploy/certs/fullchain.pem"
+          # TPF3-MP's: copied, readable by the image's user alone.
+          sudo RENEWED_LINEAGE="$work/live/tpf3mp.test" sh "$work/hook.sh"
+          for file in fullchain.pem privkey.pem; do
+            test "$(sudo stat -c '%u:%g %a' "$work/deploy/certs/$file")" = "65532:65532 440"
+            sudo grep -qx "tpf3mp.test $file" "$work/deploy/certs/$file"
+          done

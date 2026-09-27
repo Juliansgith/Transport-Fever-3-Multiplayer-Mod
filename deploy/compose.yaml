@@ -1,3 +1,9 @@
+# The project's own name, whatever its folder is called. Another service's
+# `deploy` folder on the same host (tf2mp-relay's is one) would otherwise
+# make the same project, and a `docker compose down` in either could stop
+# the other.
+name: tpf3mp
+
 services:
   tpf3mp-server:
     # The published image (`docker compose pull`), pinned with
