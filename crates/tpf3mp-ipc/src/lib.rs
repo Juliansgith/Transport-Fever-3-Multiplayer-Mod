@@ -38,6 +38,17 @@ pub use shm::ShmError;
 use header::Layout;
 use shm::SharedRegion;
 
+/// The variable naming the link in the environment of a game TPF3-MP's
+/// launcher starts. The hook opens that link, and without the variable does
+/// nothing at all: only a game the launcher started runs it (D11).
+pub const LINK_ENV: &str = "TPF3MP_GAME_LINK";
+
+/// The variable holding the process ID of the launcher that started the
+/// game. On Linux and macOS, programs the game starts inherit `LD_PRELOAD`,
+/// and with it the hook and [`LINK_ENV`]: the hook runs only in the process
+/// this one started, the game, and in none of those (D11).
+pub const LAUNCHER_PID_ENV: &str = "TPF3MP_LAUNCHER_PID";
+
 /// Default size of each ring's data area (1 MiB).
 pub const DEFAULT_RING_CAPACITY: u32 = 1 << 20;
 /// Default maximum payload per message (60 KiB), leaving headroom in the ring.

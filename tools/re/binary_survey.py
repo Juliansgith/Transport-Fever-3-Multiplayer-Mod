@@ -283,13 +283,13 @@ def build_report(img: tpfbin.Image) -> str:
         w("")
         best = ranked[0][0] if ranked else None
         if best and "(delay)" not in best.name and ranked[0][1] >= 0:
-            w("Best proxy-loader candidate: **`%s`** -- statically imported from the "
-              "game folder with the fewest exports (%d). This is the `alut.dll` role "
-              "in the TPF2 mods." % (best.name, ranked[0][1]))
+            w("Fewest exports among the game-folder imports: **`%s`** (%d), the "
+              "`alut.dll` role TPF2's mods used as a proxy loader. TPF3-MP loads its "
+              "hook from its launcher instead (docs/DECISIONS.md, D11)." % (best.name, ranked[0][1]))
             w("")
     else:
-        w("_None found._ Without a game-folder DLL to proxy, the Windows loader "
-          "plan (proxy DLL) needs another injection route; see docs/DAY_ONE.md section 5.")
+        w("_None found._ TPF3-MP does not need one: its launcher loads the hook "
+          "into the game it starts (docs/DECISIONS.md, D11; docs/DAY_ONE.md section 5).")
         w("")
     w("### System libraries (%d)" % len(sys_libs))
     w("")
@@ -320,7 +320,7 @@ def build_report(img: tpfbin.Image) -> str:
     w("## 5. %s" % img.tls_label)
     w("")
     if img.tls_callbacks:
-        w("Code that runs before the entry point (a proxy DLL must expect it):")
+        w("Code that runs before the entry point (a hook loaded into the suspended game must expect it):")
         w("")
         for cb in img.tls_callbacks:
             w("- RVA 0x%X (VA 0x%X)" % (cb, img.image_base + cb))
@@ -362,7 +362,7 @@ def build_report(img: tpfbin.Image) -> str:
           "A static tool sees only the stub, so signature scanning of the game's "
           "own functions must run against the in-memory image (or a Steamless-style "
           "dumped image), not the on-disk file. This is the TPF2 situation and does "
-          "not by itself block a proxy-DLL hook, which loads into the unpacked process.")
+          "not by itself block the launcher's hook, which runs in the unpacked process.")
         w("")
     if not (hits or string_hits or ss):
         w("No packer/anti-tamper section names or string markers found. The "

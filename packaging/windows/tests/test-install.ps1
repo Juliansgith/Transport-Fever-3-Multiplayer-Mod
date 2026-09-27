@@ -1,6 +1,6 @@
-# Tests tools\install.ps1 against made-up packages and game folders, the
-# way players run it: in its own Windows PowerShell, through its exit code
-# and the files it leaves. CI runs it on Windows; so can anyone:
+# Tests tools\install.ps1 against made-up packages, Steam folders and games,
+# the way players run it: in its own Windows PowerShell, through its exit
+# code and the files it leaves. CI runs it on Windows; so can anyone:
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\tests\test-install.ps1
 
@@ -22,26 +22,33 @@ function Check([bool]$Condition, [string]$What) {
     if (-not $Condition) { throw "expected: $What" }
 }
 
-# A package with a proxy for alut.dll, the hook and the mod, and a game
-# folder with its own alut.dll. Backups go to a folder of the test's own.
+# A package with the mod, a Steam folder with a game in a library and an
+# account that has played it, and a folder of the test's own for what the
+# installer keeps (%LOCALAPPDATA%).
 function New-Setup([string]$Name) {
     $dir = Join-Path $Root $Name
     $package = Join-Path $dir 'package'
     New-Item -ItemType Directory -Force -Path (Join-Path $package 'tools') | Out-Null
     Copy-Item -LiteralPath $Installer -Destination (Join-Path $package 'tools\install.ps1')
     Write-File (Join-Path $package 'tpf3mp-package.json') '{"version":"9.8.7","platform":"windows-x64"}'
-    Write-File (Join-Path $package 'tpf3mp_hook.dll') 'hook'
-    Write-File (Join-Path $package 'proxy\alut.dll') 'proxy 1'
     Write-File (Join-Path $package 'mod\tpf3mp_1\mod.lua') '-- mod'
     Write-File (Join-Path $package 'mod\tpf3mp_1\res\x.lua') '-- x'
-    $game = Join-Path $dir 'game'
-    Write-File (Join-Path $game 'game.exe') 'exe'
-    Write-File (Join-Path $game 'alut.dll') 'original'
+    $steam = Join-Path $dir 'Steam'
+    $library = Join-Path $dir 'Library'
+    $game = Join-Path $library 'steamapps\common\Transport Fever 3'
+    Write-File (Join-Path $game 'TransportFever3.exe') 'exe'
+    $escaped = $library.Replace('\', '\\')
+    Write-File (Join-Path $steam 'steamapps\libraryfolders.vdf') "`"libraryfolders`"`n{`n`t`"0`"`n`t{`n`t`t`"path`"`t`t`"$escaped`"`n`t}`n}`n"
+    Write-File (Join-Path $library 'steamapps\appmanifest_3493540.acf') "`"AppState`"`n{`n`t`"appid`"`t`t`"3493540`"`n`t`"installdir`"`t`t`"Transport Fever 3`"`n}`n"
+    $mods = Join-Path $steam 'userdata\12345\3493540\local\mods'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $mods) | Out-Null
     return @{
         Package = $package
+        Steam = $steam
         Game = $game
-        Mods = (Join-Path $dir 'mods')
+        Mods = $mods
         Data = (Join-Path $dir 'localappdata')
+        Record = (Join-Path $dir 'localappdata\TPF3-MP\installed.json')
     }
 }
 
@@ -52,7 +59,8 @@ function Invoke-Installer($Setup, [string[]]$Arguments) {
     $env:LOCALAPPDATA = $Setup.Data
     try {
         $script = Join-Path $Setup.Package 'tools\install.ps1'
-        $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script @Arguments 2>&1 | Out-String
+        $all = @('-SteamRoot', $Setup.Steam) + $Arguments
+        $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script @all 2>&1 | Out-String
         return @{ Code = $LASTEXITCODE; Output = $output }
     }
     finally {
@@ -60,12 +68,14 @@ function Invoke-Installer($Setup, [string[]]$Arguments) {
     }
 }
 
-function Install($Setup, [string[]]$More = @()) {
-    Invoke-Installer $Setup (@('-GameDir', $Setup.Game, '-ModsDir', $Setup.Mods) + $More)
-}
-
 function Assert-Code($Result, [int]$Code) {
     Check ($Result.Code -eq $Code) "exit code $Code, got $($Result.Code): $($Result.Output)"
+}
+
+# Nothing in the game's folder but the game.
+function Assert-GameUntouched($Setup) {
+    $files = @(Get-ChildItem -LiteralPath $Setup.Game -Recurse -Force | ForEach-Object { $_.Name })
+    Check (($files -join ',') -eq 'TransportFever3.exe') "the game's folder untouched, found $($files -join ',')"
 }
 
 function Test([string]$Name, [scriptblock]$Body) {
@@ -79,149 +89,80 @@ function Test([string]$Name, [scriptblock]$Body) {
     }
 }
 
-Test 'installs the proxy, the hook and the mod, and takes them out again' {
+Test "installs the mod in Steam's mods folder, and nothing in the game's" {
     $s = New-Setup 'install'
-    Assert-Code (Install $s) 0
-    Check ((Read-File "$($s.Game)\alut.dll") -eq 'proxy 1') 'the proxy in place'
-    Check ((Read-File "$($s.Game)\alut_real.dll") -eq 'original') "the game's own DLL kept"
-    Check ((Read-File "$($s.Game)\tpf3mp_hook.dll") -eq 'hook') 'the hook installed'
+    Assert-Code (Invoke-Installer $s @()) 0
     Check ((Read-File "$($s.Mods)\tpf3mp_1\res\x.lua") -eq '-- x') 'the mod installed'
-    $record = Read-File "$($s.Game)\tpf3mp-install.json" | ConvertFrom-Json
+    $record = Read-File $s.Record | ConvertFrom-Json
     Check ($record.version -eq '9.8.7') 'the version recorded'
-    Check ($record.proxy.real -eq 'alut_real.dll') 'the proxy recorded'
+    # Compared by what is there: runners' temp folders may be spelled short.
+    Check ((Split-Path -Leaf $record.mod) -eq 'tpf3mp_1' -and (Read-File "$($record.mod)\res\x.lua") -eq '-- x') 'where the mod went recorded'
+    Assert-GameUntouched $s
 
-    # Again, with a newer proxy and mod: the game's own DLL stays as it was.
-    Write-File "$($s.Package)\proxy\alut.dll" 'proxy 2'
+    # Again, with a newer mod: the old one goes to the backups.
     Write-File "$($s.Package)\mod\tpf3mp_1\res\x.lua" '-- x 2'
-    Assert-Code (Install $s) 0
-    Check ((Read-File "$($s.Game)\alut.dll") -eq 'proxy 2') 'the newer proxy'
-    Check ((Read-File "$($s.Game)\alut_real.dll") -eq 'original') "the game's own DLL untouched"
+    Assert-Code (Invoke-Installer $s @()) 0
     Check ((Read-File "$($s.Mods)\tpf3mp_1\res\x.lua") -eq '-- x 2') 'the newer mod'
     Check (@(Get-ChildItem $s.Mods -Force).Count -eq 1) 'no staging folder left in the mods folder'
 
-    $result = Invoke-Installer $s @('-GameDir', $s.Game, '-Uninstall')
-    Assert-Code $result 0
-    Check ((Read-File "$($s.Game)\alut.dll") -eq 'original') "the game's own DLL back"
-    foreach ($gone in @('alut_real.dll', 'tpf3mp_hook.dll', 'tpf3mp-install.json')) {
-        Check (-not (Test-Path "$($s.Game)\$gone")) "$gone gone"
-    }
+    Assert-Code (Invoke-Installer $s @('-Uninstall')) 0
     Check (-not (Test-Path "$($s.Mods)\tpf3mp_1")) 'the mod gone'
-    # Nothing is deleted: what was taken out is in the backups.
+    Check (-not (Test-Path $s.Record)) 'the record gone'
     Check (@(Get-ChildItem -Recurse -Filter 'x.lua' "$($s.Data)\TPF3-MP\backups").Count -ge 2) 'the mods kept in the backups'
-    Assert-Code (Invoke-Installer $s @('-GameDir', $s.Game, '-Uninstall')) 1
+    Assert-GameUntouched $s
+    Assert-Code (Invoke-Installer $s @('-Uninstall')) 1
 }
 
-Test 'notices a game update that put the original back' {
-    $s = New-Setup 'update'
-    Assert-Code (Install $s) 0
-    Write-File "$($s.Game)\alut.dll" 'original 2'
-    Assert-Code (Install $s) 0
-    Check ((Read-File "$($s.Game)\alut.dll") -eq 'proxy 1') 'the proxy back in place'
-    Check ((Read-File "$($s.Game)\alut_real.dll") -eq 'original 2') 'the newer original kept'
-
-    # Updated again, then uninstalled: the newest original stays.
-    Write-File "$($s.Game)\alut.dll" 'original 3'
-    Assert-Code (Invoke-Installer $s @('-GameDir', $s.Game, '-Uninstall')) 0
-    Check ((Read-File "$($s.Game)\alut.dll") -eq 'original 3') 'the newest original'
-    Check (-not (Test-Path "$($s.Game)\alut_real.dll")) 'the older original moved out'
+Test 'installs into a mods folder given' {
+    $s = New-Setup 'given'
+    $elsewhere = Join-Path (Split-Path -Parent $s.Game) 'elsewhere'
+    Assert-Code (Invoke-Installer $s @($elsewhere)) 0
+    Check (Test-Path "$elsewhere\tpf3mp_1\mod.lua") 'the mod where it was told'
 }
 
-Test "leaves alone a folder it cannot install into" {
-    $s = New-Setup 'refuse'
-    # Another mod's proxy.
-    Write-File "$($s.Game)\alut_real.dll" "someone's"
-    Assert-Code (Install $s) 1
-    Check ((Read-File "$($s.Game)\alut.dll") -eq 'original') 'alut.dll untouched'
-    Check ((Read-File "$($s.Game)\alut_real.dll") -eq "someone's") "the other mod's DLL untouched"
-    Check (-not (Test-Path "$($s.Game)\tpf3mp_hook.dll")) 'no hook'
-    Check (-not (Test-Path $s.Mods)) 'no mod'
-    # Not the game's folder.
-    Remove-Item "$($s.Game)\alut_real.dll", "$($s.Game)\alut.dll"
-    Assert-Code (Install $s) 1
-    Check (-not (Test-Path "$($s.Game)\tpf3mp-install.json")) 'no record'
-}
-
-Test 'refuses a record that names other files' {
+Test 'refuses a record that names anything but the mod' {
     $s = New-Setup 'record'
-    Assert-Code (Install $s) 0
-    $record = Read-File "$($s.Game)\tpf3mp-install.json"
-    foreach ($swap in @(@('"tpf3mp_hook.dll"', '"..\\elsewhere.dll"'), @('"alut_real.dll"', '"game.exe"'), @('"alut.dll"', '"..\\alut.dll"'))) {
-        Check ($record.Contains($swap[0])) "the record holds $($swap[0])"
-        Write-File "$($s.Game)\tpf3mp-install.json" $record.Replace($swap[0], $swap[1])
-        Assert-Code (Install $s) 1
-        Assert-Code (Invoke-Installer $s @('-GameDir', $s.Game, '-Uninstall')) 1
-        Check ((Read-File "$($s.Game)\alut.dll") -eq 'proxy 1') 'the proxy untouched'
-        Check ((Read-File "$($s.Game)\alut_real.dll") -eq 'original') "the game's own DLL untouched"
-        Check ((Read-File "$($s.Game)\game.exe") -eq 'exe') 'the game untouched'
-        Check ((Read-File "$($s.Game)\tpf3mp_hook.dll") -eq 'hook') 'the hook untouched'
+    Assert-Code (Invoke-Installer $s @()) 0
+    foreach ($bad in @('C:\\Windows', "$($s.Mods.Replace('\', '\\'))\\..\\tpf3mp_1", 'tpf3mp_1')) {
+        Write-File $s.Record "{`"version`":`"1`",`"mod`":`"$bad`"}"
+        Assert-Code (Invoke-Installer $s @('-Uninstall')) 1
+        Assert-Code (Invoke-Installer $s @()) 1
+        Check ((Read-File "$($s.Mods)\tpf3mp_1\mod.lua") -eq '-- mod') "the mod untouched with $bad"
     }
 }
 
-Test "takes out, but does not update, a proxy whose original is gone" {
-    $s = New-Setup 'gone'
-    Assert-Code (Install $s) 0
-    Remove-Item "$($s.Game)\alut_real.dll"
-    Write-File "$($s.Package)\proxy\alut.dll" 'proxy 2'
-    $result = Install $s
+Test 'says when Steam has no mods folder for the game yet' {
+    $s = New-Setup 'fresh'
+    Remove-Item -Recurse "$($s.Steam)\userdata"
+    $result = Invoke-Installer $s @()
     Assert-Code $result 1
-    Check ($result.Output -match 'verify') "asks for Steam to verify: $($result.Output)"
-    Check ((Read-File "$($s.Game)\alut.dll") -eq 'proxy 1') 'the proxy left as it was'
-
-    $result = Invoke-Installer $s @('-GameDir', $s.Game, '-Uninstall')
-    Assert-Code $result 0
-    Check ($result.Output -match 'verify') "asks for Steam to verify: $($result.Output)"
-    Check (-not (Test-Path "$($s.Game)\alut.dll")) 'the proxy taken out'
-    Check (-not (Test-Path "$($s.Game)\tpf3mp-install.json")) 'the record gone'
-}
-
-Test 'installs no hook without a proxy to load it' {
-    $s = New-Setup 'noproxy'
-    Remove-Item -Recurse "$($s.Package)\proxy"
-    $result = Install $s
-    Assert-Code $result 0
-    Check ($result.Output -match 'no proxy DLL') "says why: $($result.Output)"
-    Check (-not (Test-Path "$($s.Game)\tpf3mp_hook.dll")) 'no hook'
-    Check ((Read-File "$($s.Game)\alut.dll") -eq 'original') 'alut.dll untouched'
-    Check (Test-Path "$($s.Mods)\tpf3mp_1\mod.lua") 'the mod installed'
+    Check ($result.Output -match 'start the game once') "says to start the game once: $($result.Output)"
+    Check (-not (Test-Path $s.Record)) 'no record'
 }
 
 Test 'puts everything back when a step fails' {
     $s = New-Setup 'rollback'
-    # The mods folder cannot be made: a file stands in its way.
-    Write-File $s.Mods 'not a folder'
-    Assert-Code (Install $s) 1
-    Check ((Read-File "$($s.Game)\alut.dll") -eq 'original') 'alut.dll back'
-    Check (-not (Test-Path "$($s.Game)\alut_real.dll")) 'no alut_real.dll'
-    Check (-not (Test-Path "$($s.Game)\tpf3mp_hook.dll")) 'no hook'
-    Check (-not (Test-Path "$($s.Game)\tpf3mp-install.json")) 'no record'
-}
-
-Test 'finds the game and the mods folder through Steam' {
-    $s = New-Setup 'steam'
-    $steam = Join-Path (Split-Path -Parent $s.Game) 'Steam'
-    $library = Join-Path (Split-Path -Parent $s.Game) 'Library'
-    $game = Join-Path $library 'steamapps\common\Transport Fever 3'
-    Copy-Item -Recurse $s.Game $game
-    $escaped = $library.Replace('\', '\\')
-    Write-File "$steam\steamapps\libraryfolders.vdf" "`"libraryfolders`"`n{`n`t`"0`"`n`t{`n`t`t`"path`"`t`t`"$escaped`"`n`t}`n}`n"
-    Write-File "$library\steamapps\appmanifest_3493540.acf" "`"AppState`"`n{`n`t`"appid`"`t`t`"3493540`"`n`t`"installdir`"`t`t`"Transport Fever 3`"`n}`n"
-    New-Item -ItemType Directory -Force -Path "$steam\userdata\12345\3493540\local" | Out-Null
-    Assert-Code (Invoke-Installer $s @('-SteamRoot', $steam)) 0
-    Check ((Read-File "$game\alut.dll") -eq 'proxy 1') 'installed into the game Steam names'
-    Check (Test-Path "$steam\userdata\12345\3493540\local\mods\tpf3mp_1\mod.lua") "the mod in Steam's mods folder"
+    Assert-Code (Invoke-Installer $s @()) 0
+    # The record cannot be rewritten: a folder stands in its way.
+    Remove-Item $s.Record
+    New-Item -ItemType Directory -Path $s.Record | Out-Null
+    Write-File "$($s.Package)\mod\tpf3mp_1\mod.lua" '-- new'
+    Assert-Code (Invoke-Installer $s @()) 1
+    Check ((Read-File "$($s.Mods)\tpf3mp_1\mod.lua") -eq '-- mod') 'the installed mod put back'
+    Check (@(Get-ChildItem $s.Mods -Force).Count -eq 1) 'nothing left over'
 }
 
 Test 'refuses while the game runs' {
     $s = New-Setup 'running'
-    $exe = Join-Path $s.Game 'TransportFever3.exe'
+    $exe = Join-Path $s.Game 'Running.exe'
     Copy-Item "$env:SystemRoot\System32\PING.EXE" $exe
     $game = Start-Process -FilePath $exe -ArgumentList '-n', '30', '127.0.0.1' -WindowStyle Hidden -PassThru
     try {
         Start-Sleep -Milliseconds 500
-        $result = Install $s
+        $result = Invoke-Installer $s @()
         Assert-Code $result 1
         Check ($result.Output -match 'Close Transport Fever 3') "says to close the game: $($result.Output)"
-        Check ((Read-File "$($s.Game)\alut.dll") -eq 'original') 'alut.dll untouched'
+        Check (-not (Test-Path "$($s.Mods)\tpf3mp_1")) 'no mod'
     }
     finally {
         Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue

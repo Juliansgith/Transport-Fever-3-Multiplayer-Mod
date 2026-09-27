@@ -75,6 +75,8 @@ pub enum Action {
     Diagnostics {
         on: bool,
     },
+    /// Starts Transport Fever 3 with TPF3-MP's hook in it, for this room.
+    LaunchGame,
 }
 
 /// Everything a launcher front end shows: the web page reads it as JSON,

@@ -2,9 +2,11 @@
 //! own agent (a headless launcher in this process), its own data folder
 //! and its own link name, and puts them all in one room. The first player
 //! hosts and the others join its invite. Until Transport Fever 3 is out,
-//! the games are fake ones (`tpf3mp-fakegame`); a real game is started
-//! the same way, told its link and data folder through the environment
-//! its hook reads (`TPF3MP_GAME_LINK`, `TPF3MP_DATA_DIR`).
+//! the games are fake ones (`tpf3mp-fakegame`); a real game is started as
+//! the launcher starts it, with the hook loaded into it (`tpf3mp-launch`),
+//! and told its link, data folder and starter through the environment its
+//! hook reads (`TPF3MP_GAME_LINK`, `TPF3MP_DATA_DIR`,
+//! `TPF3MP_LAUNCHER_PID`).
 //!
 //! It runs until every game has exited, or Ctrl-C, which stops everything
 //! it started. When the games print their lane digests, as the fake game
@@ -43,10 +45,10 @@ use tpf3mp_server::{Server, ServerConfig, SnapshotConfig};
 const SETUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often the rig looks at its launchers' states.
 const POLL: Duration = Duration::from_millis(100);
-/// The environment the game's hook reads its link name and data folder
-/// from: `tpf3mp_hook::LINK_ENV` and `DATA_DIR_ENV`. Not taken from the
-/// crate itself, whose load-time entry points would run in this process.
-const LINK_ENV: &str = "TPF3MP_GAME_LINK";
+/// The environment the game's hook reads its link name, starter and data
+/// folder from. `DATA_DIR_ENV` is `tpf3mp_hook::DATA_DIR_ENV`, not taken
+/// from that crate, whose load-time entry points would run in this process.
+use tpf3mp_ipc::{LAUNCHER_PID_ENV, LINK_ENV};
 const DATA_DIR_ENV: &str = "TPF3MP_DATA_DIR";
 /// Space each player's worlds may take.
 const WORLDS_BYTES: u64 = 8 << 30;
@@ -77,6 +79,11 @@ struct Args {
     /// An argument for each game; repeat for several.
     #[arg(long = "game-arg", allow_hyphen_values = true)]
     game_args: Vec<OsString>,
+
+    /// With a real game: the hook library to load into it; without, the
+    /// one next to this program.
+    #[arg(long)]
+    hook: Option<PathBuf>,
 
     /// Where each player's folder goes (`p1`, `p2`, ...: identity, worlds,
     /// and the game hook's log and profiles). Kept between runs, so the
@@ -198,6 +205,8 @@ async fn run(args: Args) -> Result<ExitCode> {
             // The rig's players run the fake game, not one Steam installed.
             installed: None,
             diagnostics: None,
+            hook: None,
+            game_exe: None,
             link: link.clone(),
             worlds,
             room_settings,
@@ -439,11 +448,24 @@ fn lane_line(line: &str) -> Option<&str> {
 /// How each player's game is started.
 struct GameCommand {
     program: PathBuf,
-    fake: bool,
     steps: Option<u64>,
     args: Vec<OsString>,
     /// Profiles copied into each player's folder for a real game's hook.
     profiles: Option<PathBuf>,
+    /// The hook loaded into a real game; `None` for the fake game.
+    hook: Option<PathBuf>,
+}
+
+/// A real game started with the hook, ended when dropped: the rig stops
+/// what it started.
+struct RealGame(tpf3mp_launch::Started);
+
+impl Drop for RealGame {
+    fn drop(&mut self) {
+        if self.0.is_running() {
+            self.0.kill();
+        }
+    }
 }
 
 impl GameCommand {
@@ -473,12 +495,30 @@ impl GameCommand {
             .then(|| setup::data_dir().ok().map(|dir| dir.join("profiles")))
             .flatten()
             .filter(|dir| dir.is_dir());
+        // A real game runs TPF3-MP only with the hook loaded into it (D11).
+        let hook = if fake {
+            None
+        } else if !tpf3mp_launch::SUPPORTED {
+            bail!("{}", tpf3mp_launch::LaunchError::Unsupported);
+        } else {
+            let hook = args
+                .hook
+                .clone()
+                .or_else(setup::package_hook)
+                .with_context(|| {
+                    format!(
+                        "no {} next to this program: build it with `cargo build -p tpf3mp-hook`, or give --hook",
+                        tpf3mp_launch::HOOK_FILE
+                    )
+                })?;
+            Some(hook)
+        };
         Ok(Self {
             program,
-            fake,
             steps: args.steps,
             args: args.game_args.clone(),
             profiles,
+            hook,
         })
     }
 
@@ -488,18 +528,17 @@ impl GameCommand {
         if let Some(profiles) = &self.profiles {
             copy_profiles(profiles, &player.dir.join("profiles"))?;
         }
+        if let Some(hook) = &self.hook {
+            return self.launch(player, hook);
+        }
+        // The fake game, told its link, seed and steps on its command line.
         let mut command = Command::new(&self.program);
-        if self.fake {
-            command
-                .arg(&player.link)
-                .arg("--seed")
-                .arg(index.to_string());
-            if let Some(steps) = self.steps {
-                command.arg("--steps").arg(steps.to_string());
-            }
-        } else if let Some(folder) = self.program.parent() {
-            // Games expect to start in their own folder.
-            command.current_dir(folder);
+        command
+            .arg(&player.link)
+            .arg("--seed")
+            .arg(index.to_string());
+        if let Some(steps) = self.steps {
+            command.arg("--steps").arg(steps.to_string());
         }
         command
             .args(&self.args)
@@ -532,6 +571,55 @@ impl GameCommand {
                 success: status.success(),
                 status: status.to_string(),
                 lanes: lanes_rx.await.unwrap_or_default(),
+            })
+        }))
+    }
+
+    /// Starts a real game as the launcher does, with the hook in it; the
+    /// task ends with the game, and ends the game when dropped.
+    fn launch(&self, player: &Player, hook: &Path) -> Result<JoinHandle<Result<GameEnd>>> {
+        let dir = player
+            .dir
+            .to_str()
+            .context("the player's folder is not valid Unicode")?;
+        let started = tpf3mp_launch::start(&tpf3mp_launch::Launch {
+            exe: self.program.clone(),
+            args: self
+                .args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+            hook: hook.to_owned(),
+            env: vec![
+                (LINK_ENV.to_owned(), player.link.clone()),
+                (DATA_DIR_ENV.to_owned(), dir.to_owned()),
+                (LAUNCHER_PID_ENV.to_owned(), std::process::id().to_string()),
+            ],
+        })
+        .with_context(|| format!("starting {}", self.program.display()))?;
+        println!(
+            "rig: {} plays on link {} with its files in {} (game pid {})",
+            player.name,
+            player.link,
+            player.dir.display(),
+            started.pid
+        );
+        let name = player.name.clone();
+        let mut game = RealGame(started);
+        Ok(tokio::spawn(async move {
+            // Its output is its own (the launcher does not read a game's), so
+            // a real game reports no lanes here.
+            let code = loop {
+                if let Some(code) = game.0.exit_code() {
+                    break code;
+                }
+                tokio::time::sleep(POLL).await;
+            };
+            Ok(GameEnd {
+                name,
+                success: code == 0,
+                status: format!("exit code {code}"),
+                lanes: Vec::new(),
             })
         }))
     }

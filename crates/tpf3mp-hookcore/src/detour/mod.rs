@@ -23,9 +23,10 @@
 //!
 //! Patching overwrites up to fourteen live code bytes with a non-atomic copy.
 //! The caller must guarantee the target cannot execute during install or
-//! uninstall: either install before the target's first run (the proxy-DLL and
-//! `LD_PRELOAD` loaders both run before the game's entry point), or park every
-//! thread that could reach it first. The engine does not itself stop threads.
+//! uninstall: either install before the target's first run (the launcher
+//! loads the hook before the game's entry point runs: into the suspended game
+//! on Windows, by `LD_PRELOAD` on Linux), or park every thread that could
+//! reach it first. The engine does not itself stop threads.
 
 use thiserror::Error;
 

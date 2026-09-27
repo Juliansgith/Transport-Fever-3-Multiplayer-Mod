@@ -131,6 +131,9 @@
     <h2>Game</h2>
     <div id="game-state" class="muted"></div>
     <div id="fetch" class="bar hidden" style="margin-top: 8px"><div id="fetch-fill"></div></div>
+    <div class="row hidden" id="launch-row" style="margin-top: 8px">
+      <button id="launch-button">Start Transport Fever 3</button>
+    </div>
   </section>
 
   <section id="chat" class="hidden">
@@ -332,8 +335,12 @@ function render(s) {
 
   const game = s.game;
   let line;
+  // Only a game TPF3-MP starts runs its hook and joins the room (D11).
+  show("launch-row", !!s.room && !game.attached);
   if (!game.attached) {
-    line = "Waiting for the game: start Transport Fever 3 with the TPF3-MP mod.";
+    line = s.room
+      ? "Start Transport Fever 3 from here: only a game TPF3-MP starts joins the room. Started from Steam, it is the plain game."
+      : "Create or join a room, then start the game from here.";
   } else if (game.world === "fetching") {
     line = "Receiving the room's world…";
   } else if (game.world === "loading") {
@@ -435,6 +442,7 @@ $("collect-button").onclick = async () => {
 };
 $("chat-text").onkeydown = (event) => { if (event.key === "Enter") sendChat(); };
 $("diagnostics").onchange = () => act({ action: "diagnostics", on: $("diagnostics").checked });
+$("launch-button").onclick = () => act({ action: "launch_game" });
 
 refresh();
 setInterval(refresh, 500);

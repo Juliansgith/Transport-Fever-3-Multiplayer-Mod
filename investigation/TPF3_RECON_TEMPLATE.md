@@ -39,13 +39,16 @@ Steam client gives build & manifest IDs):
 
 Attach the per-platform `binary_survey.py` reports. Summary:
 
-### 2.1 Loader / proxy candidate  (per platform)
+### 2.1 Loader  (per platform)
 
-| platform | mechanism | candidate | why | label |
+The launcher loads the hook into the game it starts, and nothing is put in
+the game's folder (DECISIONS.md, D11; DAY_ONE section 5).
+
+| platform | mechanism | executable started | notes | label |
 |---|---|---|---|---|
-| Windows | proxy DLL next to the exe | ____ (survey "proxy score") | statically imported, game-folder, few exports | |
-| Linux | `LD_PRELOAD` | n/a (preload) | | |
-| macOS | proxied bundled dylib / re-sign | ____ | | |
+| Windows | started suspended, `LoadLibraryW` on a remote thread, then resumed | ____ | TLS callbacks, anti-tamper (2.2) | |
+| Linux | `LD_PRELOAD` in the game's own environment | ____ | wrapper script? Steam runtime (pressure-vessel)? | |
+| macOS | ____ | ____ | hardened runtime, library validation | |
 
 ### 2.2 Anti-tamper / packer
 
@@ -133,9 +136,9 @@ where two runs first differ (blank = identical for the whole run):
 
 | platform | loads before title menu? | can patch code pages? | verdict |
 |---|---|---|---|
-| Windows (proxy DLL) | | | GO / NO-GO |
-| Linux (`LD_PRELOAD`) | | | GO / NO-GO |
-| macOS (dylib proxy / re-sign) | | `DYLD_INSERT_LIBRARIES` allowed? hardened runtime? library validation? | GO / NO-GO |
+| Windows (launcher, suspended + `LoadLibraryW`) | | | GO / NO-GO |
+| Linux (launcher, `LD_PRELOAD`) | | | GO / NO-GO |
+| macOS (launcher, route to find) | | `DYLD_INSERT_LIBRARIES` allowed? hardened runtime? library validation? | GO / NO-GO |
 
 - macOS code-signing detail (`binary_survey.py` section 11 + the `codesign` command
   it prints): CS flags ____, hardened runtime ____, entitlements ____.  label: ______

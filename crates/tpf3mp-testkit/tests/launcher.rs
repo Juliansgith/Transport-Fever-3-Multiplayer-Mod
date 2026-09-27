@@ -129,6 +129,8 @@ fn launcher_config(
 ) -> LauncherConfig {
     LauncherConfig {
         diagnostics: None,
+        hook: None,
+        game_exe: None,
         listen: "127.0.0.1:0".parse().unwrap(),
         server: None,
         tunnel: TunnelChoice::Off,
@@ -414,6 +416,10 @@ async fn a_window_drives_the_launcher_in_process() {
         .await;
     assert!(refused.is_err());
     assert!(handle.state().error.is_some());
+
+    // The game starts from a room only: it connects to the room's session.
+    let refused = handle.act(Action::LaunchGame).await.unwrap_err();
+    assert!(refused.contains("room"), "{refused}");
 
     handle
         .act(Action::Connect {

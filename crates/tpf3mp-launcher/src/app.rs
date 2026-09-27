@@ -365,7 +365,9 @@ impl<B: Backend> LauncherApp<B> {
             None => self.connect(ui, state),
         }
         let installed_mod = self.installed_mod(state);
-        game(ui, state, installed_mod.as_deref());
+        if game(ui, state, installed_mod.as_deref()) {
+            self.backend.act(Action::LaunchGame);
+        }
         if state.room.is_some() {
             self.chat(ui, state);
         }
@@ -382,16 +384,19 @@ impl<B: Backend> LauncherApp<B> {
         }
     }
 
-    /// The TPF3-MP version the installer recorded in the game's folder,
-    /// looked at every few seconds, so running the installer shows here.
-    fn installed_mod(&mut self, state: &State) -> Option<String> {
-        let dir = &state.installed.as_ref()?.dir;
+    /// The TPF3-MP version whose mod the installer put in the game's mods
+    /// folder, looked at every few seconds, so running the installer shows
+    /// here.
+    fn installed_mod(&mut self, _state: &State) -> Option<String> {
         let stale = self
             .installed_mod
             .as_ref()
             .is_none_or(|(when, _)| when.elapsed() >= INSTALL_CHECK);
         if stale {
-            self.installed_mod = Some((Instant::now(), installed_into_game(Path::new(dir))));
+            let installed = tpf3mp_agent::launcher::setup::data_dir()
+                .ok()
+                .and_then(|dir| installed_mod(&dir));
+            self.installed_mod = Some((Instant::now(), installed));
         }
         self.installed_mod.as_ref()?.1.clone()
     }
@@ -908,8 +913,10 @@ fn differences(ui: &mut Ui, diff: &Differences) {
     });
 }
 
-/// Where the game stands: found, installed into, connected.
-fn game(ui: &mut Ui, state: &State, installed_mod: Option<&str>) {
+/// Where the game stands: found, its mod installed, connected. Returns
+/// whether the player asked to start it: only a game started here runs
+/// TPF3-MP (D11).
+fn game(ui: &mut Ui, state: &State, installed_mod: Option<&str>) -> bool {
     theme::card(ui, "Game", |ui| {
         let game = &state.game;
         ui.horizontal_wrapped(|ui| {
@@ -945,8 +952,8 @@ fn game(ui: &mut Ui, state: &State, installed_mod: Option<&str>) {
             if installed_mod.is_none() {
                 ui.label(
                     RichText::new(
-                        "Close the game, then run INSTALL_TPF3MP.cmd (Windows) or ./install.sh \
-                         from the TPF3-MP folder to put TPF3-MP into it.",
+                        "Run INSTALL_TPF3MP.cmd (Windows) or ./install.sh from the TPF3-MP \
+                         folder once, to put the TPF3-MP mod in the game's mods folder.",
                     )
                     .weak()
                     .small(),
@@ -960,9 +967,12 @@ fn game(ui: &mut Ui, state: &State, installed_mod: Option<&str>) {
             );
         }
         let line = match (&game.attached, game.world) {
-            (None, _) => {
-                "Waiting for the game: start Transport Fever 3 with the TPF3-MP mod.".to_owned()
+            (None, _) if state.room.is_some() => {
+                "Start Transport Fever 3 from here: only a game TPF3-MP starts joins the room. \
+                 Started from Steam, it is the plain game."
+                    .to_owned()
             }
+            (None, _) => "Create or join a room, then start the game from here.".to_owned(),
             (Some(_), World::Fetching) => "Receiving the room's world…".to_owned(),
             (Some(_), World::Loading) => "The game is loading the world.".to_owned(),
             (Some(_), World::Playing) => {
@@ -987,7 +997,10 @@ fn game(ui: &mut Ui, state: &State, installed_mod: Option<&str>) {
             let done = game.bytes as f32 / game.total as f32;
             ui.add(ProgressBar::new(done.clamp(0.0, 1.0)).show_percentage());
         }
-    });
+        state.room.is_some()
+            && game.attached.is_none()
+            && theme::button(ui, true, "Start Transport Fever 3", Kind::Primary).clicked()
+    })
 }
 
 /// The updater's state, one line in the footer.
@@ -1040,6 +1053,7 @@ fn checklist(ui: &mut Ui, state: &State) {
     let done = [
         state.connection == Connection::Connected,
         room.is_some(),
+        state.game.attached.is_some(),
         running
             || room.is_some_and(|room| {
                 !room.members.is_empty() && room.members.iter().all(|member| member.ready)
@@ -1047,11 +1061,12 @@ fn checklist(ui: &mut Ui, state: &State) {
         running,
     ];
     let labels = [
-        // Not "Connect": that is the button's name.
+        // Not "Connect", nor "Start Transport Fever 3": those are buttons.
         "Connect to a server",
         "Create or join a room",
+        "Start the game from here",
         "Everyone ready",
-        "The game starts",
+        "Play together",
     ];
     theme::card(ui, "Checklist", |ui| {
         let steps: Vec<(&str, Step)> = labels.into_iter().zip(Step::of(&done)).collect();
@@ -1059,19 +1074,31 @@ fn checklist(ui: &mut Ui, state: &State) {
     });
 }
 
-/// The TPF3-MP version the install scripts recorded in the game's folder:
-/// `tpf3mp-install.json` from Windows's, `tpf3mp-install.txt` from Linux's
-/// and macOS's.
-pub fn installed_into_game(dir: &Path) -> Option<String> {
-    if let Ok(text) = std::fs::read_to_string(dir.join("tpf3mp-install.json")) {
+/// The TPF3-MP version whose mod the install scripts put in place, from
+/// their record in TPF3-MP's data folder `dir` (`installed.json` from
+/// Windows's, `installed.txt` from Linux's and macOS's), while the mod is
+/// still where the record says.
+pub fn installed_mod(dir: &Path) -> Option<String> {
+    let (version, folder) = if let Ok(text) = std::fs::read_to_string(dir.join("installed.json")) {
         let record: serde_json::Value =
             serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
-        return record.get("version")?.as_str().map(str::to_owned);
-    }
-    let text = std::fs::read_to_string(dir.join("tpf3mp-install.txt")).ok()?;
-    text.lines()
-        .find_map(|line| line.strip_prefix("version="))
-        .map(str::to_owned)
+        (
+            record.get("version")?.as_str()?.to_owned(),
+            record.get("mod")?.as_str()?.to_owned(),
+        )
+    } else {
+        let text = std::fs::read_to_string(dir.join("installed.txt")).ok()?;
+        let field = |name: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(name))
+                .map(str::to_owned)
+        };
+        (field("version=")?, field("mod=")?)
+    };
+    Path::new(&folder)
+        .join("mod.lua")
+        .is_file()
+        .then_some(version)
 }
 
 fn non_empty(text: &str) -> Option<String> {
@@ -1081,33 +1108,36 @@ fn non_empty(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::installed_into_game;
+    use super::installed_mod;
 
     #[test]
     fn the_version_the_install_scripts_recorded_is_read() {
         let dir = std::env::temp_dir().join(format!("tpf3mp-installed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(installed_into_game(&dir), None, "nothing installed");
+        let mods = dir.join("mods").join("tpf3mp_1");
+        std::fs::create_dir_all(&mods).unwrap();
+        std::fs::write(mods.join("mod.lua"), "-- mod").unwrap();
+        assert_eq!(installed_mod(&dir), None, "nothing installed");
 
         // install.sh's record.
         std::fs::write(
-            dir.join("tpf3mp-install.txt"),
-            "version=0.1.0\nhook=libtpf3mp_hook.so\nmod=\n",
+            dir.join("installed.txt"),
+            format!("version=0.1.0\nmod={}\n", mods.display()),
         )
         .unwrap();
-        assert_eq!(installed_into_game(&dir).as_deref(), Some("0.1.0"));
+        assert_eq!(installed_mod(&dir).as_deref(), Some("0.1.0"));
 
         // install.ps1's, which Windows tools may start with a byte order mark.
-        std::fs::write(
-            dir.join("tpf3mp-install.json"),
-            "\u{feff}{\"version\": \"0.2.0\", \"proxy\": null, \"hook\": null, \"mod\": null}",
-        )
-        .unwrap();
-        assert_eq!(installed_into_game(&dir).as_deref(), Some("0.2.0"));
+        let json = serde_json::json!({ "version": "0.2.0", "mod": mods });
+        std::fs::write(dir.join("installed.json"), format!("\u{feff}{json}")).unwrap();
+        assert_eq!(installed_mod(&dir).as_deref(), Some("0.2.0"));
 
-        std::fs::write(dir.join("tpf3mp-install.json"), "damaged").unwrap();
-        assert_eq!(installed_into_game(&dir), None, "a damaged record");
+        // The mod taken away since.
+        std::fs::remove_file(mods.join("mod.lua")).unwrap();
+        assert_eq!(installed_mod(&dir), None, "the mod is gone");
+
+        std::fs::write(dir.join("installed.json"), "damaged").unwrap();
+        assert_eq!(installed_mod(&dir), None, "a damaged record");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

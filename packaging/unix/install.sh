@@ -1,49 +1,49 @@
 #!/usr/bin/env bash
-# Installs TPF3-MP into Transport Fever 3, or takes it out again. This file
-# is the whole installer; uninstall.sh only starts it with --uninstall. It
-# needs no administrator rights.
+# Installs the TPF3-MP mod for Transport Fever 3, or takes it out again.
+# This file is the whole installer; uninstall.sh only starts it with
+# --uninstall. It needs no administrator rights.
 #
-#   ./install.sh                     finds the game through Steam
-#   ./install.sh "<game folder>"     the folder that holds the game
-#   ./install.sh --mods-dir <dir>    where the mod goes
+#   ./install.sh                     finds your mods folder through Steam
+#   ./install.sh "<mods folder>"     or puts the mod in the folder given
 #   ./install.sh --steam-root <dir>  where Steam is, if not in its usual place
-#   ./uninstall.sh                   takes everything out again
+#   ./uninstall.sh                   takes the mod out again
 #
 # What it changes, and nothing else:
 #
 # - The TPF3-MP mod, mod/tpf3mp_1 in this package, goes into Steam's folder
 #   for your Transport Fever 3 mods, <Steam>/userdata/<account>/3493540/local/mods,
-#   or the folder --mods-dir names. A tpf3mp_1 already there is moved to
-#   TPF3-MP's backups folder first (Linux: ~/.local/share/TPF3-MP/backups,
-#   macOS: ~/Library/Application Support/TPF3-MP/backups).
-# - The hook library goes into the game's folder. On Linux the script then
-#   prints the Steam launch option that loads it.
-# - tpf3mp-install.txt in the game's folder records what was installed, so
-#   a reinstall replaces only TPF3-MP's own files.
+#   or the folder given. A tpf3mp_1 already there is moved to TPF3-MP's
+#   backups folder first.
+# - installed.txt in TPF3-MP's data folder records the version and where
+#   the mod went, which the launcher shows and the uninstall takes out.
+#   The data folder is ~/.local/share/TPF3-MP on Linux (or
+#   $XDG_DATA_HOME/TPF3-MP) and ~/Library/Application Support/TPF3-MP on
+#   macOS.
 #
-# It changes nothing when anything looks wrong: the game is running, or the
-# record names anything but TPF3-MP's own files. When a step fails, the
-# steps before it are undone. Nothing is deleted: what it replaces or takes
-# out goes to the backups folder.
+# It puts nothing in the game's folder and sets no launch option. The game
+# runs TPF3-MP only when the TPF3-MP launcher starts it, for a multiplayer
+# session; started from Steam, it is the plain game, and the mod does
+# nothing unless a game enables it.
+#
+# It changes nothing while the game is running, or when its record names
+# anything but the mod. When a step fails, the steps before it are undone.
+# Nothing is deleted: what it replaces or takes out goes to the backups.
 set -euo pipefail
 
 STEAM_APP=3493540
 MOD_NAME=tpf3mp_1
-RECORD_NAME=tpf3mp-install.txt
 PACKAGE=$(cd "$(dirname "$0")" && pwd -P)
 case "$(uname -s)" in
-  Darwin)
-    HOOK_NAME=libtpf3mp_hook.dylib
-    DATA_DIR="$HOME/Library/Application Support/TPF3-MP"
-    ;;
+  Darwin) DATA_DIR="$HOME/Library/Application Support/TPF3-MP" ;;
   *)
-    HOOK_NAME=libtpf3mp_hook.so
-    DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/TPF3-MP"
+    DATA_DIR="$HOME/.local/share/TPF3-MP"
+    # As the launcher reads it: XDG_DATA_HOME only when it is a full path.
+    case "${XDG_DATA_HOME:-}" in /*) DATA_DIR="$XDG_DATA_HOME/TPF3-MP" ;; esac
     ;;
 esac
+RECORD="$DATA_DIR/installed.txt"
 BACKUPS="$DATA_DIR/backups/$(date +%Y%m%d-%H%M%S)-$$"
 
-game_dir=""
 mods_dir=""
 steam_root=""
 uninstall=0
@@ -66,7 +66,7 @@ while [ $# -gt 0 ]; do
       echo "unknown option: $1 (--help lists them)" >&2
       exit 2
       ;;
-    *) game_dir=$1 ;;
+    *) mods_dir=$1 ;;
   esac
   shift
 done
@@ -97,7 +97,7 @@ finish() {
       remove) rm -rf -- "${undo_path[$i]}" ;;
       rewrite)
         if [ -n "${undo_back[$i]}" ]; then
-          printf '%s' "${undo_back[$i]}" >"${undo_path[$i]}"
+          printf '%s\n' "${undo_back[$i]}" >"${undo_path[$i]}"
         else
           rm -f -- "${undo_path[$i]}"
         fi
@@ -112,7 +112,7 @@ finish() {
     say "Nothing was changed: ${reason:-it stopped part way}"
   else
     say "It failed, and not everything could be put back (see above): ${reason:-it stopped part way}"
-    say "Have Steam verify the game's files; backups are in $BACKUPS."
+    say "The backups are in $BACKUPS."
   fi
 }
 trap finish EXIT
@@ -156,7 +156,7 @@ steam_roots() {
 }
 
 # The game's folder, from Steam's list of libraries and the game's manifest
-# in one of them.
+# in one of them: only to see whether the game is running.
 find_game() {
   local root library installdir
   while IFS= read -r root; do
@@ -183,73 +183,64 @@ find_game() {
 # that played it last. The game makes <account>/3493540/local when it
 # first runs.
 find_mods_dir() {
-  local root local_dir found=""
+  local root local_dir found="" count=0
   while IFS= read -r root; do
     for local_dir in "$root"/userdata/[0-9]*/"$STEAM_APP"/local; do
       [ -d "$local_dir" ] || continue
+      count=$((count + 1))
       if [ -z "$found" ] || [ "$local_dir" -nt "$found" ]; then found=$local_dir; fi
     done
   done < <(steam_roots)
-  [ -n "$found" ] && printf '%s\n' "$found/mods"
+  [ -n "$found" ] || return 0
+  if [ "$count" -gt 1 ]; then
+    say "More than one Steam account has played Transport Fever 3 here; using the one that played last. Give the mods folder to choose." >&2
+  fi
+  printf '%s\n' "$found/mods"
 }
 
-assert_game_closed() { # GAME
-  local processes line
+# Looks for the game's folder at the start of every running command, both
+# as Steam names it and as it is on disk (~/.steam/steam is often a link).
+assert_game_closed() {
+  local game physical processes line
+  game=$(find_game || true)
+  [ -n "$game" ] || return 0
+  physical=$(cd "$game" && pwd -P)
   processes=$(ps -A -o args= 2>/dev/null || true)
   while IFS= read -r line; do
     case "$line" in
-      "$1"/*) fail "Close Transport Fever 3 first: ${line%% *} is running from its folder." ;;
+      "$game"/* | "$physical"/*) fail "Close Transport Fever 3 first: ${line%% *} is running from its folder." ;;
     esac
   done <<<"$processes"
 }
 
-# What an earlier install recorded, refused unless it names only TPF3-MP's
-# own files: the record says what to move out.
+# What an earlier install recorded, refused unless it names the mod's own
+# folder: the uninstall moves out what it names.
 rec_version=""
-rec_hook=""
 rec_mod=""
 have_record=0
-read_record() { # GAME
-  local file="$1/$RECORD_NAME" line
-  [ -f "$file" ] || return 0
+read_record() {
+  local line
+  [ -f "$RECORD" ] || return 0
   have_record=1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       version=*) rec_version=${line#version=} ;;
-      hook=*) rec_hook=${line#hook=} ;;
       mod=*) rec_mod=${line#mod=} ;;
       "") ;;
-      *) fail "$file names things TPF3-MP does not install." ;;
+      *) fail "$RECORD names things TPF3-MP does not install." ;;
     esac
-  done <"$file"
-  case "$rec_hook" in "" | libtpf3mp_hook.so | libtpf3mp_hook.dylib) ;; *)
-    fail "$file names files TPF3-MP does not install."
-    ;;
-  esac
-  case "$rec_mod" in "" | /*/"$MOD_NAME") ;; *)
-    fail "$file names files TPF3-MP does not install."
-    ;;
-  esac
-  case "$rec_mod" in */../* | */./*) fail "$file names files TPF3-MP does not install." ;; esac
+  done <"$RECORD"
+  case "$rec_mod" in /*/"$MOD_NAME") ;; *) fail "$RECORD names something other than the TPF3-MP mod." ;; esac
+  case "$rec_mod" in */../* | */./*) fail "$RECORD names something other than the TPF3-MP mod." ;; esac
   return 0
 }
 
-write_record() { # GAME VERSION HOOK MOD
-  local file="$1/$RECORD_NAME" old=""
-  [ ! -f "$file" ] || old=$(cat "$file")
-  printf 'version=%s\nhook=%s\nmod=%s\n' "$2" "$3" "$4" >"$file"
-  on_failure rewrite "$file" "$old"
-}
-
-install_hook() { # GAME
-  local target="$1/$HOOK_NAME" kept
-  if [ -e "$target" ]; then
-    kept=$(move_into "$target")
-    on_failure moveback "$kept" "$target"
-  fi
-  cp -- "$PACKAGE/$HOOK_NAME" "$target"
-  on_failure remove "$target"
-  say "Installed $HOOK_NAME."
+write_record() { # VERSION MOD
+  local old=""
+  mkdir -p -- "$DATA_DIR"
+  [ ! -f "$RECORD" ] || old=$(cat "$RECORD")
+  printf 'version=%s\nmod=%s\n' "$1" "$2" >"$RECORD"
+  on_failure rewrite "$RECORD" "$old"
 }
 
 # Copies the mod beside its place first, so the swap is a rename.
@@ -264,77 +255,50 @@ install_mod() { # MODS
   fi
   mv -- "$staging" "$target"
   on_failure remove "$target"
-  say "Installed the mod in $target."
 }
 
-do_install() { # GAME
-  local game=$1 version=unknown hook="$rec_hook" mod="$rec_mod" mods="$mods_dir"
+do_install() {
+  local version=unknown mods="$mods_dir" mod
   if [ -f "$PACKAGE/tpf3mp-package.json" ]; then
     version=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
       "$PACKAGE/tpf3mp-package.json" | head -1)
   fi
-  # Every check before the first change.
-  if [ -d "$PACKAGE/mod/$MOD_NAME" ]; then
-    [ -n "$mods" ] || mods=$(find_mods_dir || true)
-    [ -n "$mods" ] || fail "Steam has no folder for your Transport Fever 3 mods yet: start the game once, then install again. --mods-dir names the mods folder instead."
-    say "Mods folder: $mods"
+  if [ ! -d "$PACKAGE/mod/$MOD_NAME" ]; then
+    say "This package has no TPF3-MP mod yet: there is nothing to install."
+    return 0
   fi
-
-  if [ -f "$PACKAGE/$HOOK_NAME" ]; then
-    install_hook "$game"
-    hook=$HOOK_NAME
-  else
-    say "This package has no hook library."
-  fi
-  if [ -d "$PACKAGE/mod/$MOD_NAME" ]; then
-    install_mod "$mods"
-    mod="$mods/$MOD_NAME"
-  else
-    say "This package has no TPF3-MP mod yet."
-  fi
-  write_record "$game" "$version" "$hook" "$mod"
+  [ -n "$mods" ] || mods=$(find_mods_dir)
+  [ -n "$mods" ] || fail "Steam has no folder for your Transport Fever 3 mods yet: start the game once, then install again. Or give the mods folder: ./install.sh \"<mods folder>\"."
+  mkdir -p -- "$mods"
+  mods=$(cd "$mods" && pwd -P)
+  say "Mods folder: $mods"
+  install_mod "$mods"
+  mod="$mods/$MOD_NAME"
+  write_record "$version" "$mod"
+  say "Installed the TPF3-MP mod in $mod."
   say ""
-  say "TPF3-MP $version is installed into Transport Fever 3."
-  if [ "$hook" = libtpf3mp_hook.so ]; then
-    say "In Steam, set the game's launch options (right-click the game, Properties) to:"
-    say "  LD_PRELOAD=\"$game/$HOOK_NAME\" %command%"
-  elif [ -n "$hook" ]; then
-    say "How the game loads the hook on macOS is known only once the game is out."
-  fi
+  say "TPF3-MP $version is installed. Play by starting the TPF3-MP launcher: the game runs TPF3-MP only when the launcher starts it."
 }
 
-do_uninstall() { # GAME
-  local game=$1 kept
-  [ "$have_record" = 1 ] || fail "TPF3-MP is not installed in $game."
-  if [ -n "$rec_hook" ] && [ -e "$game/$rec_hook" ]; then
-    kept=$(move_into "$game/$rec_hook")
-    on_failure moveback "$kept" "$game/$rec_hook"
-    say "Took $rec_hook out."
-  fi
-  if [ -n "$rec_mod" ] && [ -d "$rec_mod" ]; then
+do_uninstall() {
+  local kept
+  [ "$have_record" = 1 ] || fail "The TPF3-MP mod is not installed."
+  if [ -d "$rec_mod" ]; then
     kept=$(move_into "$rec_mod")
     on_failure moveback "$kept" "$rec_mod"
     say "Took the mod out of $(dirname "$rec_mod")."
   fi
-  kept=$(move_into "$game/$RECORD_NAME")
-  on_failure moveback "$kept" "$game/$RECORD_NAME"
+  kept=$(move_into "$RECORD")
+  on_failure moveback "$kept" "$RECORD"
   say ""
-  say "TPF3-MP is taken out of Transport Fever 3."
-  if [ "$rec_hook" = libtpf3mp_hook.so ]; then
-    say "Clear the LD_PRELOAD launch option in Steam too."
-  fi
+  say "The TPF3-MP mod is taken out."
 }
 
-if [ -n "$game_dir" ]; then
-  [ -d "$game_dir" ] || fail "$game_dir is not a folder."
-  game=$(cd "$game_dir" && pwd -P)
-else
-  game=$(find_game || true)
-  [ -n "$game" ] || fail "Transport Fever 3 was not found in Steam. Give the game's folder: in Steam, right-click the game, Manage, Browse local files."
+if [ -n "$mods_dir" ] && [ -e "$mods_dir" ] && [ ! -d "$mods_dir" ]; then
+  fail "$mods_dir is not a folder."
 fi
-say "Transport Fever 3: $game"
-assert_game_closed "$game"
-read_record "$game"
-if [ "$uninstall" = 1 ]; then do_uninstall "$game"; else do_install "$game"; fi
+assert_game_closed
+read_record
+if [ "$uninstall" = 1 ]; then do_uninstall; else do_install; fi
 [ ! -d "$BACKUPS" ] || say "What was replaced or taken out is in $BACKUPS."
 finished=1

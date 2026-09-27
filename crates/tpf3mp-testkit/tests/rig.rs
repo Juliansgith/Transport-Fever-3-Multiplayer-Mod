@@ -7,7 +7,7 @@
 use std::{
     io::Read,
     path::Path,
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
 
@@ -15,21 +15,32 @@ const LIMIT: Duration = Duration::from_secs(180);
 
 /// Runs the rig with `args` and returns its output, failing if it fails.
 fn rig(data_root: &Path, args: &[&str]) -> String {
+    let (status, output) = run_rig(data_root, args);
+    assert!(status.success(), "the rig failed ({status}):\n{output}");
+    output
+}
+
+/// Runs the rig with `args`; returns how it ended and its output, what it
+/// printed and then its errors.
+fn run_rig(data_root: &Path, args: &[&str]) -> (ExitStatus, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_tpf3mp-rig"))
         .args(["--server", "local", "--step-rate", "50", "--data-root"])
         .arg(data_root)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut output = String::new();
-        stdout.read_to_string(&mut output).unwrap();
-        output
-    });
+    let read_all = |mut stream: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            stream.read_to_string(&mut text).unwrap();
+            text
+        })
+    };
+    let stdout = read_all(Box::new(child.stdout.take().unwrap()));
+    let stderr = read_all(Box::new(child.stderr.take().unwrap()));
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -42,9 +53,8 @@ fn rig(data_root: &Path, args: &[&str]) -> String {
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    let output = reader.join().unwrap();
-    assert!(status.success(), "the rig failed ({status}):\n{output}");
-    output
+    let output = stdout.join().unwrap() + &stderr.join().unwrap();
+    (status, output)
 }
 
 /// The lane digest lines `player`'s game printed.
@@ -91,28 +101,77 @@ fn three_fake_games_play_one_room_and_agree() {
     assert_ne!(keys[1], keys[2]);
 }
 
-/// A game given by path, as the real one will be, learns its link from the
-/// environment the hook reads; here the fake game stands in for it.
+/// A library every system has, to load in the hook's place: `cargo test`
+/// does not build the hook as a library of its own. The hook's rules have
+/// their own tests; this one is about how the rig starts a game.
+fn stand_in_hook() -> Option<String> {
+    let candidates: Vec<std::path::PathBuf> = if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        vec![Path::new(&root).join("System32").join("version.dll")]
+    } else {
+        [
+            "/lib/x86_64-linux-gnu/libc.so.6",
+            "/usr/lib/x86_64-linux-gnu/libc.so.6",
+            "/lib64/libc.so.6",
+            "/usr/lib64/libc.so.6",
+            "/usr/lib/libc.so.6",
+        ]
+        .map(std::path::PathBuf::from)
+        .to_vec()
+    };
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .map(|path| path.display().to_string())
+}
+
+/// A game given by path, as the real one will be, is started as the
+/// launcher starts it: with a library loaded into it, and told its link in
+/// the environment. The fake game stands in for the game; it finds its
+/// link where the hook does, and each one joins its player's room.
 #[test]
-fn a_game_by_path_finds_its_link_in_the_environment() {
+fn a_game_by_path_starts_with_the_hook_and_finds_its_link() {
     let root = tempfile::tempdir().unwrap();
     let fakegame = env!("CARGO_BIN_EXE_tpf3mp-fakegame");
-    let output = rig(
-        root.path(),
-        &[
-            "--players",
-            "2",
-            "--game",
-            fakegame,
-            "--game-arg",
-            "--steps",
-            "--game-arg",
-            "60",
-        ],
-    );
+    let hook = stand_in_hook();
+    let mut args = vec![
+        "--players",
+        "2",
+        "--game",
+        fakegame,
+        "--game-arg",
+        "--steps",
+        "--game-arg",
+        "60",
+    ];
+    if let Some(hook) = &hook {
+        args.extend(["--hook", hook]);
+    }
+    if cfg!(target_os = "macos") {
+        // No game gets the hook on macOS yet; the rig says so and stops.
+        let (status, output) = run_rig(root.path(), &args);
+        assert!(!status.success(), "{output}");
+        assert!(
+            output.contains("not possible on this system yet"),
+            "{output}"
+        );
+        return;
+    }
+    let output = rig(root.path(), &args);
+    for player in ["p1", "p2"] {
+        assert!(
+            output
+                .lines()
+                .any(|line| line.starts_with(&format!("[{player}] game "))
+                    && line.contains("attached")),
+            "{player}'s game never reached its agent:\n{output}"
+        );
+    }
     assert!(
-        output.contains("rig: all 2 games ended on the same lane digests"),
+        output.contains("rig: game started with 2 players"),
         "{output}"
     );
-    assert!(output.contains("[p2] ran 60 steps"), "{output}");
+    // Both games ran to their last step and exited cleanly: a game that
+    // fails fails the rig.
+    assert!(!output.contains("game failed"), "{output}");
 }

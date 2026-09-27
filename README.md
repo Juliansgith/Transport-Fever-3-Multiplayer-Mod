@@ -13,11 +13,16 @@ waits for the [release-day investigation](docs/DAY_ONE.md).
 1. **Download** TPF3-MP for your system from the
    [releases](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/releases):
    Windows, Linux or macOS on Apple silicon.
-2. **Unpack and start** `TPF3-MP.exe`, `TPF3-MP.app` or `tpf3mp-launcher`.
-   There is no account to make and no port to forward, and it keeps itself
-   up to date.
-3. **Connect, create a room and send the invite** to your friends, or paste
+2. **Unpack it and install the mod** with `INSTALL_TPF3MP.cmd` (Windows) or
+   `./install.sh` (Linux and macOS): a script you can open and read, which
+   puts the TPF3-MP mod in your mods folder and nothing in the game's.
+3. **Start** `TPF3-MP.exe`, `TPF3-MP.app` or `tpf3mp-launcher`. There is no
+   account to make and no port to forward, and it keeps itself up to date.
+4. **Connect, create a room and send the invite** to your friends, or paste
    the invite a friend sent you.
+5. **Start Transport Fever 3 from the launcher.** Only a game the launcher
+   starts runs TPF3-MP, for as long as it runs; started from Steam, it is
+   the plain game.
 
 [docs/PLAYING.md](docs/PLAYING.md) has the details, and what to do when
 something does not work.
@@ -88,8 +93,10 @@ with [docs/PLAYING.md](docs/PLAYING.md); server operators with
   jitter-buffered schedule, saves and loads on the room's word, and a rejoin
   after a lost server that the game sees only as a pause.
 - **Hook engine.** Signature resolution with per-build profiles, an x86-64
-  detour engine, a shared-memory link to the agent, and a proxy-DLL
-  generator. All five known TPF2 targets resolve uniquely.
+  detour engine and a shared-memory link to the agent. All five known TPF2
+  targets resolve uniquely. The launcher loads the hook into the game it
+  starts, as TPF2MP's did, and into no other: nothing is installed into
+  the game, and a hook the launcher did not start does nothing.
 - **Test kit.** A toy game whose canonical rules run on the server, bots
   that play it through the real client, a fake hook that plays it through
   the real bridge, a lossy-network emulator and a load tester. 8 bots over
@@ -102,11 +109,17 @@ with [docs/PLAYING.md](docs/PLAYING.md); server operators with
   playing. It shows what to change when a player's mods differ, the support
   ID the server's log knows the player by, and the logs folder, and
   collects the player's and the game's logs into one zip for a bug report
-  (never keys or tokens). It updates
-  itself from the project's releases, installing only what the project
-  signed. `tpf3mp-agent launcher` serves the same launcher as a page in the
-  browser, on the loopback interface only, to the page that holds its
-  secret token.
+  (never keys or tokens). Its log lines also go to the server by
+  themselves, redacted, so an operator can help from the support ID alone;
+  a switch turns that off. It updates itself from the project's releases,
+  installing only what the project signed. `tpf3mp-agent launcher` serves
+  the same launcher as a page in the browser, on the loopback interface
+  only, to the page that holds its secret token.
+- **Installer.** Scripts players can read (`INSTALL_TPF3MP.cmd` with
+  `tools\install.ps1`, `install.sh`) put the mod in the mods folder and
+  take it out again. They refuse while the game runs, undo a failed step
+  and delete nothing; CI tests them in Windows PowerShell 5.1 and in
+  macOS's bash 3.2.
 - **Operations.** Prometheus metrics with alerting rules, a hardened
   container image, a deployment runbook, and measured capacity: a busy room
   costs the server about a three-hundredth of a core. CI builds the release
@@ -131,10 +144,12 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-snapshot` | Deduplicated storage and transfer of world saves. |
 | `crates/tpf3mp-hookcore` | Signatures, per-build profiles and the detour engine. |
 | `crates/tpf3mp-ipc` | The shared-memory link between the hook and the agent. |
-| `crates/tpf3mp-hook` | The library injected into the game. |
-| `crates/tpf3mp-proxygen` | Generates proxy DLLs that load the hook. |
+| `crates/tpf3mp-bridge` | The messages and step gate between the agent and the hook. |
+| `crates/tpf3mp-hook` | The library the launcher loads into the game it starts. |
+| `crates/tpf3mp-launch` | Starts the game with the hook in that one process. |
 | `crates/tpf3mp-testkit` | Toy game, bots, network emulator, load tester. |
 | `mod/tpf3mp_1` | The game-side Lua mod: captures builds as actions for the hook. |
+| `packaging/` | The install scripts and their tests, and the macOS bundle's files. |
 | `tools/` | Release-day reverse-engineering and determinism probes. |
 | `deploy/` | Container image and compose file. |
 | `docs/` | Architecture, protocol, decisions, operations, release-day plan. |
@@ -212,10 +227,12 @@ Each game's output is printed under its player's name. The rig runs until
 every game has exited, then checks that they all ended on the same lane
 digests (failing if not); Ctrl-C stops everything it started. `--game`
 takes the path of a game executable instead of the fake game, with
-`--game-arg` for its arguments: the rig tells each game its link and data
-folder through `TPF3MP_GAME_LINK` and `TPF3MP_DATA_DIR`, which the hook
-reads (see "Several games on one PC" in [docs/HOOKS.md](docs/HOOKS.md)),
-and copies the build profiles in the user's data folder into each game's.
+`--game-arg` for its arguments. The rig starts each game with the hook in
+it, as the launcher does (the hook built next to the rig, or `--hook`).
+It tells each game its link, data folder and starter through
+`TPF3MP_GAME_LINK`, `TPF3MP_DATA_DIR` and `TPF3MP_LAUNCHER_PID`, which the
+hook reads (see "Several games on one PC" in [docs/HOOKS.md](docs/HOOKS.md)).
+It copies the build profiles in the user's data folder into each game's.
 That path is untested until Transport Fever 3 is out. A server started
 with `tpf3mp-server` lets 8 sessions in from one address by default: pass
 `--max-sessions-per-address` for bigger rigs.

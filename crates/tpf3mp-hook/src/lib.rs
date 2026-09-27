@@ -1,9 +1,13 @@
 //! The in-game native hook.
 //!
-//! This is the library the game process loads (a proxy DLL on Windows,
-//! `LD_PRELOAD` on Linux, a bundled dylib on macOS). Its job at milestone M0 is
-//! only the skeleton around the real work:
+//! This is the library the TPF3-MP launcher loads into the game it starts,
+//! and into no other (D11 in `docs/DECISIONS.md`): on Windows by
+//! `LoadLibraryW` in the game while it is suspended, on Linux by
+//! `LD_PRELOAD` in the game's own environment (`tpf3mp-launch`). Its job at
+//! milestone M0 is only the skeleton around the real work:
 //!
+//! - do nothing at all unless the launcher named its link in the game's
+//!   environment ([`LINK_ENV`]);
 //! - run early, off the loader lock (a thread from `DllMain` on Windows, a
 //!   [`ctor`](https://docs.rs/ctor) constructor on Unix);
 //! - identify the running executable and find a matching build [`profile`];
@@ -28,13 +32,10 @@ use tpf3mp_ipc::{Link, Role};
 
 mod platform;
 
-/// The shared-memory link name the agent publishes by default. Both ends
-/// must agree.
-pub const AGENT_IPC_NAME: &str = "tpf3mp.default";
-
-/// Names the link this game opens instead of [`AGENT_IPC_NAME`], for
-/// several games on one PC, each with its own agent (`--game-link`).
-pub const LINK_ENV: &str = "TPF3MP_GAME_LINK";
+/// Names the link to the launcher that started this game, and that
+/// launcher's process. The launcher always sets both; without them, the hook
+/// does nothing (D11).
+pub use tpf3mp_ipc::{LAUNCHER_PID_ENV, LINK_ENV};
 
 /// Puts the hook's data directory (its log and profiles) here instead of
 /// the per-user one, for several games on one PC.
@@ -47,6 +48,12 @@ const APP_DIR: &str = "TPF3-MP";
 /// holding the loader lock. Never panics across the FFI boundary: every step
 /// logs its outcome and returns.
 pub fn bootstrap() {
+    // Only a game TPF3-MP's launcher started runs the hook: the launcher
+    // names its link in the game's environment. Loaded any other way, the
+    // hook writes, hashes and opens nothing (D11).
+    let Some(link_name) = launched_link() else {
+        return;
+    };
     let data_dir = data_dir();
     if let Some(dir) = &data_dir {
         let _ = fs::create_dir_all(dir);
@@ -65,7 +72,6 @@ pub fn bootstrap() {
         }
     }
 
-    let link_name = link_name();
     match Link::open(&link_name, Role::Hook) {
         Ok(link) => {
             link.heartbeat();
@@ -183,16 +189,35 @@ pub fn select_profile<'a>(
         .find(|profile| profile.verify_identity(identity).is_ok())
 }
 
-/// The name of the link to the agent: [`LINK_ENV`] when set, otherwise
-/// [`AGENT_IPC_NAME`].
-pub fn link_name() -> String {
-    link_name_from(|key| std::env::var(key).ok())
+/// The link to the launcher that started this game: [`LINK_ENV`]. `None`
+/// when no launcher started it, and the hook then does nothing.
+pub fn launched_link() -> Option<String> {
+    launched_link_from(|key| std::env::var(key).ok(), parent_process())
 }
 
-fn link_name_from(get: impl Fn(&str) -> Option<String>) -> String {
-    get(LINK_ENV)
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| AGENT_IPC_NAME.to_owned())
+/// On Linux and macOS, also `None` in a program the game started, which
+/// inherits the variables and, through `LD_PRELOAD`, the hook: there the
+/// parent is the game, not the launcher [`LAUNCHER_PID_ENV`] names. On
+/// Windows, nothing the game starts loads the hook (`parent` is `None`).
+fn launched_link_from(get: impl Fn(&str) -> Option<String>, parent: Option<u32>) -> Option<String> {
+    let link = get(LINK_ENV).filter(|name| !name.is_empty())?;
+    if let Some(parent) = parent {
+        let launcher: u32 = get(LAUNCHER_PID_ENV)?.parse().ok()?;
+        if launcher != parent {
+            return None;
+        }
+    }
+    Some(link)
+}
+
+#[cfg(unix)]
+fn parent_process() -> Option<u32> {
+    Some(std::os::unix::process::parent_id())
+}
+
+#[cfg(not(unix))]
+fn parent_process() -> Option<u32> {
+    None
 }
 
 /// The data directory for logs and profiles: [`DATA_DIR_ENV`] when set,
@@ -330,14 +355,45 @@ prologue = "40 53"
         ]);
         let get = |key: &str| env.get(key).cloned();
         assert_eq!(data_dir_from(get), Some(PathBuf::from("/rig/p2")));
-        assert_eq!(link_name_from(get), "rig-p2");
+        assert_eq!(launched_link_from(get, None).as_deref(), Some("rig-p2"));
 
-        // Unset or empty, the defaults hold.
+        // Unset or empty: no launcher started this game, and the hook stays
+        // out of it.
         let empty = HashMap::from([(DATA_DIR_ENV, String::new()), (LINK_ENV, String::new())]);
         let get = |key: &str| empty.get(key).cloned();
-        assert_eq!(link_name_from(get), AGENT_IPC_NAME);
-        assert_eq!(link_name_from(|_| None), AGENT_IPC_NAME);
+        assert_eq!(launched_link_from(get, None), None);
+        assert_eq!(launched_link_from(|_| None, None), None);
         assert!(data_dir_from(get).is_none());
+    }
+
+    #[test]
+    fn only_the_process_the_launcher_started_runs_the_hook() {
+        let env = HashMap::from([
+            (LINK_ENV, "tpf3mp.default".to_string()),
+            (LAUNCHER_PID_ENV, "4242".to_string()),
+        ]);
+        let get = |key: &str| env.get(key).cloned();
+        // The game, whose parent is the launcher.
+        assert_eq!(
+            launched_link_from(get, Some(4242)).as_deref(),
+            Some("tpf3mp.default")
+        );
+        // A program the game started: it inherited the variables.
+        assert_eq!(launched_link_from(get, Some(5151)), None);
+        // Without the launcher's process, nothing on Linux and macOS.
+        let no_pid = HashMap::from([(LINK_ENV, "tpf3mp.default".to_string())]);
+        assert_eq!(
+            launched_link_from(|key| no_pid.get(key).cloned(), Some(4242)),
+            None
+        );
+        let garbled = HashMap::from([
+            (LINK_ENV, "tpf3mp.default".to_string()),
+            (LAUNCHER_PID_ENV, "42x".to_string()),
+        ]);
+        assert_eq!(
+            launched_link_from(|key| garbled.get(key).cloned(), Some(42)),
+            None
+        );
     }
 
     #[test]

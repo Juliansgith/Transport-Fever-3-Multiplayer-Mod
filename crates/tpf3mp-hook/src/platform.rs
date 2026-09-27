@@ -56,10 +56,10 @@ mod windows {
 
 #[cfg(unix)]
 mod unix {
-    /// A load-time constructor: on Linux via `LD_PRELOAD`, on macOS via the
-    /// bundled dylib. It hands off to a thread so the game's own startup is
-    /// never blocked by our work. `ctor` runs this before `main`, which is
-    /// inherently unsafe, hence `#[ctor(unsafe)]`.
+    /// A load-time constructor: on Linux, as `LD_PRELOAD` loads the hook
+    /// into the game the launcher starts. It hands off to a thread so the
+    /// game's own startup is never blocked by our work. `ctor` runs this
+    /// before `main`, which is inherently unsafe, hence `#[ctor(unsafe)]`.
     #[ctor::ctor(unsafe)]
     fn tpf3mp_hook_init() {
         std::thread::spawn(crate::bootstrap);
