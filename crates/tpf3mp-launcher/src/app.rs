@@ -3,14 +3,14 @@
 //! launcher's [`State`] on every frame.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use eframe::egui::{
-    self, Align, Color32, ComboBox, Frame, Id, Layout, Modal, ProgressBar, RichText, ScrollArea,
-    Stroke, TextEdit, Ui,
+    self, Align, ComboBox, Frame, Id, Layout, Margin, Modal, ProgressBar, RichText, ScrollArea,
+    TextEdit, Ui,
 };
 use tpf3mp_agent::launcher::{
     Action, Connection, Differences, MemberContent, Phase, Room, State, World,
@@ -18,6 +18,7 @@ use tpf3mp_agent::launcher::{
 
 use crate::{
     backend::Backend,
+    theme::{self, Kind, Step},
     update::{self, UpdateState, Updater},
 };
 
@@ -35,8 +36,11 @@ const SPEEDS: [(u16, &str); 6] = [
     (800, "8×"),
     (1600, "16×"),
 ];
-/// Notices shown, newest last.
-const NOTICES_SHOWN: usize = 8;
+/// Notices kept in the session log, newest last.
+const NOTICES_SHOWN: usize = 50;
+/// How often the game's folder is looked at for what the installer put
+/// there.
+const INSTALL_CHECK: Duration = Duration::from_secs(5);
 
 /// What the window needs besides the launcher.
 pub struct Extras {
@@ -103,6 +107,11 @@ pub struct LauncherApp<B> {
     looked_for_update: bool,
     /// The log bundle being written, or the last one.
     collecting: Arc<Mutex<Collecting>>,
+    /// The look is set on the first frame.
+    styled: bool,
+    /// When the game's folder was last looked at, and the TPF3-MP version
+    /// the installer recorded there.
+    installed_mod: Option<(Instant, Option<String>)>,
 }
 
 impl<B: Backend> LauncherApp<B> {
@@ -124,6 +133,8 @@ impl<B: Backend> LauncherApp<B> {
             quitting: false,
             looked_for_update: false,
             collecting: Arc::default(),
+            styled: false,
+            installed_mod: None,
         }
     }
 
@@ -174,6 +185,10 @@ impl<B: Backend> LauncherApp<B> {
 
     /// Draws the window once.
     pub fn show(&mut self, ui: &mut Ui) {
+        if !self.styled {
+            theme::apply(ui.ctx());
+            self.styled = true;
+        }
         let state = self.backend.state();
         if !self.offered {
             // The server and name remembered from last time, or given.
@@ -182,33 +197,51 @@ impl<B: Backend> LauncherApp<B> {
             self.offered = true;
         }
         self.guard_quit(ui.ctx(), &state);
-        egui::Panel::top("header").show(ui, |ui| self.header(ui, &state));
-        egui::Panel::bottom("footer").show(ui, |ui| self.footer(ui, &state));
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| self.body(ui, &state));
-        });
+        let edge = Frame::new()
+            .fill(theme::BG)
+            .inner_margin(Margin::symmetric(theme::GUTTER, 10));
+        egui::Panel::top("header")
+            .frame(edge)
+            .show(ui, |ui| self.header(ui, &state));
+        egui::Panel::bottom("footer")
+            .frame(edge)
+            .show(ui, |ui| self.footer(ui, &state));
+        let body = Frame::new()
+            .fill(theme::BG)
+            .inner_margin(Margin::symmetric(theme::GUTTER, 14));
+        egui::CentralPanel::default_margins()
+            .frame(body)
+            .show(ui, |ui| {
+                ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.body(ui, &state));
+            });
         self.dialogs(ui.ctx(), &state);
         ui.ctx().request_repaint_after(REFRESH);
     }
 
     fn header(&mut self, ui: &mut Ui, state: &State) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("TPF3-MP")
+                    .size(22.0)
+                    .strong()
+                    .color(theme::TEXT),
+            );
+            ui.label(RichText::new("Multiplayer for Transport Fever 3").color(theme::MUTED));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (text, color) = match state.connection {
+                    Connection::Connected if state.tunneled => {
+                        ("connected via tunnel", theme::INFO)
+                    }
+                    Connection::Connected => ("connected", theme::SUCCESS),
+                    Connection::Connecting => ("connecting", theme::WARNING),
+                    Connection::Disconnected => ("offline", theme::MUTED),
+                };
+                theme::pill(ui, text, color);
+            });
+        });
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("TPF3-MP").strong().size(18.0));
-            let (text, color) = match state.connection {
-                Connection::Connected if state.tunneled => {
-                    ("connected via tunnel", ui.visuals().warn_fg_color)
-                }
-                Connection::Connected => ("connected", Color32::from_rgb(63, 185, 80)),
-                Connection::Connecting => ("connecting…", ui.visuals().warn_fg_color),
-                Connection::Disconnected => ("disconnected", ui.visuals().weak_text_color()),
-            };
-            Frame::new()
-                .stroke(Stroke::new(1.0, color))
-                .corner_radius(8)
-                .inner_margin(egui::Margin::symmetric(8, 2))
-                .show(ui, |ui| ui.label(RichText::new(text).color(color).small()));
             let who = match &state.player {
                 Some(player) => format!("{} ({player})", state.name),
                 None => state.name.clone(),
@@ -219,8 +252,7 @@ impl<B: Backend> LauncherApp<B> {
                     ui.label(RichText::new(format!("server {version}")).weak());
                 }
                 if let Some(support) = &state.support_id {
-                    if ui
-                        .small_button("Copy")
+                    if theme::small_button(ui, true, "Copy", Kind::Ghost)
                         .on_hover_text("Copy the support ID")
                         .clicked()
                     {
@@ -238,8 +270,7 @@ impl<B: Backend> LauncherApp<B> {
     fn footer(&mut self, ui: &mut Ui, state: &State) {
         ui.horizontal(|ui| {
             if let Some(logs) = &self.extras.logs
-                && ui
-                    .button("Open logs folder")
+                && theme::button(ui, true, "Open logs folder", Kind::Ghost)
                     .on_hover_text(logs.display().to_string())
                     .clicked()
             {
@@ -248,8 +279,7 @@ impl<B: Backend> LauncherApp<B> {
             if self.extras.collect.is_some() {
                 let collecting = self.collecting();
                 let busy = collecting == Collecting::Busy;
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Collect logs"))
+                if theme::button(ui, !busy, "Collect logs", Kind::Ghost)
                     .on_hover_text(
                         "Put TPF3-MP's logs and the game's into one zip for a bug report.                          Keys and tokens are never included.",
                     )
@@ -293,40 +323,62 @@ impl<B: Backend> LauncherApp<B> {
             self.outdated(ui);
         }
         if let Some(text) = &state.announcement {
-            let accent = ui.visuals().hyperlink_color;
-            notice_frame(ui, accent, |ui| {
+            theme::banner(ui, theme::INFO, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("From the server:").strong().color(accent));
+                    ui.label(
+                        RichText::new("From the server:")
+                            .strong()
+                            .color(theme::INFO),
+                    );
                     ui.label(text);
                 });
             });
         }
         if let Some(error) = &state.error {
-            notice_frame(ui, ui.visuals().error_fg_color, |ui| {
-                ui.label(RichText::new(error).color(ui.visuals().error_fg_color));
+            theme::banner(ui, theme::DANGER, |ui| {
+                ui.label(RichText::new(error).color(theme::DANGER));
             });
         }
         if let Some(diff) = &state.content_diff {
             differences(ui, diff);
         }
+        checklist(ui, state);
         let connected = state.connection == Connection::Connected;
         match &state.room {
             Some(room) => self.room(ui, state, room),
             None if connected => self.lobby(ui, state),
             None => self.connect(ui, state),
         }
+        let installed_mod = self.installed_mod(state);
+        game(ui, state, installed_mod.as_deref());
         if state.room.is_some() {
-            game(ui, state);
             self.chat(ui, state);
         }
         if !state.notices.is_empty() {
-            section(ui, "Notices", |ui| {
+            theme::card(ui, "Session log", |ui| {
                 let start = state.notices.len().saturating_sub(NOTICES_SHOWN);
-                for notice in &state.notices[start..] {
-                    ui.label(RichText::new(notice).weak());
-                }
+                theme::log_box(
+                    ui,
+                    "session-log",
+                    state.notices[start..].iter().map(String::as_str),
+                    140.0,
+                );
             });
         }
+    }
+
+    /// The TPF3-MP version the installer recorded in the game's folder,
+    /// looked at every few seconds, so running the installer shows here.
+    fn installed_mod(&mut self, state: &State) -> Option<String> {
+        let dir = &state.installed.as_ref()?.dir;
+        let stale = self
+            .installed_mod
+            .as_ref()
+            .is_none_or(|(when, _)| when.elapsed() >= INSTALL_CHECK);
+        if stale {
+            self.installed_mod = Some((Instant::now(), installed_into_game(Path::new(dir))));
+        }
+        self.installed_mod.as_ref()?.1.clone()
     }
 
     /// The server was updated past this TPF3-MP: says so, and looks for
@@ -338,13 +390,12 @@ impl<B: Backend> LauncherApp<B> {
                 updater.check();
             }
         }
-        let warn = ui.visuals().warn_fg_color;
         let update = self.extras.updater.as_ref().map(Updater::state);
-        notice_frame(ui, warn, |ui| {
+        theme::banner(ui, theme::WARNING, |ui| {
             ui.label(
                 RichText::new("This TPF3-MP is older than the server's")
                     .strong()
-                    .color(warn),
+                    .color(theme::WARNING),
             );
             match update {
                 Some(UpdateState::Ready { .. }) => {
@@ -367,7 +418,7 @@ impl<B: Backend> LauncherApp<B> {
     }
 
     fn connect(&mut self, ui: &mut Ui, state: &State) {
-        section(ui, "Server", |ui| {
+        theme::card(ui, "Server", |ui| {
             let mut submit = false;
             egui::Grid::new("connect")
                 .num_columns(2)
@@ -392,9 +443,7 @@ impl<B: Backend> LauncherApp<B> {
                 });
             let connecting = state.connection == Connection::Connecting || self.backend.busy();
             ui.horizontal(|ui| {
-                let clicked = ui
-                    .add_enabled(!connecting, egui::Button::new("Connect"))
-                    .clicked();
+                let clicked = theme::button(ui, !connecting, "Connect", Kind::Primary).clicked();
                 if connecting {
                     ui.spinner();
                 }
@@ -417,7 +466,7 @@ impl<B: Backend> LauncherApp<B> {
 
     fn lobby(&mut self, ui: &mut Ui, state: &State) {
         let busy = self.backend.busy();
-        section(ui, "Create a room", |ui| {
+        theme::card(ui, "Create a room", |ui| {
             egui::Grid::new("create")
                 .num_columns(2)
                 .spacing([8.0, 6.0])
@@ -479,10 +528,7 @@ impl<B: Backend> LauncherApp<B> {
                         }
                     }
                 });
-            if ui
-                .add_enabled(!busy, egui::Button::new("Create room"))
-                .clicked()
-            {
+            if theme::button(ui, !busy, "Create room", Kind::Primary).clicked() {
                 let room = self.room_name.trim();
                 self.backend.act(Action::Create {
                     room: if room.is_empty() {
@@ -496,7 +542,7 @@ impl<B: Backend> LauncherApp<B> {
                 });
             }
         });
-        section(ui, "Join a room", |ui| {
+        theme::card(ui, "Join a room", |ui| {
             let mut submit = false;
             egui::Grid::new("join")
                 .num_columns(2)
@@ -521,9 +567,7 @@ impl<B: Backend> LauncherApp<B> {
                     );
                     ui.end_row();
                 });
-            let clicked = ui
-                .add_enabled(!busy, egui::Button::new("Join room"))
-                .clicked();
+            let clicked = theme::button(ui, !busy, "Join room", Kind::Primary).clicked();
             if (clicked || submit) && !busy {
                 self.backend.act(Action::Join {
                     invite: self.invite.clone(),
@@ -531,23 +575,28 @@ impl<B: Backend> LauncherApp<B> {
                 });
             }
         });
-        ui.add_space(4.0);
-        if ui
-            .add_enabled(!busy, egui::Button::new("Disconnect"))
-            .clicked()
-        {
+        if theme::button(ui, !busy, "Disconnect", Kind::Ghost).clicked() {
             self.backend.act(Action::Disconnect);
         }
     }
 
     fn room(&mut self, ui: &mut Ui, state: &State, room: &Room) {
-        let phase = match room.phase {
-            Phase::Lobby => "lobby",
-            Phase::Running => "game running",
-        };
-        let title = format!("{} · {} rules · {phase}", room.name, room.rules);
         let busy = self.backend.busy();
-        section(ui, &title, |ui| {
+        theme::card(ui, "Room", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(&room.name)
+                        .size(18.0)
+                        .strong()
+                        .color(theme::TEXT),
+                );
+                theme::pill(ui, &format!("{} rules", room.rules), theme::INFO);
+                match room.phase {
+                    Phase::Lobby => theme::pill(ui, "lobby", theme::MUTED),
+                    Phase::Running => theme::pill(ui, "game running", theme::SUCCESS),
+                };
+            });
+            ui.add_space(4.0);
             if let Some(invite) = &room.invite {
                 ui.horizontal(|ui| {
                     let mut shown = invite.clone();
@@ -557,7 +606,7 @@ impl<B: Backend> LauncherApp<B> {
                             .interactive(false),
                     )
                     .on_hover_text("Send this to your friends");
-                    if ui.button("Copy invite").clicked() {
+                    if theme::button(ui, true, "Copy invite", Kind::Secondary).clicked() {
                         ui.ctx().copy_text(invite.clone());
                     }
                 });
@@ -590,21 +639,21 @@ impl<B: Backend> LauncherApp<B> {
                         } else {
                             match member.content {
                                 MemberContent::Same => ui.label("same as the owner's"),
-                                MemberContent::Differs => ui.label(
-                                    RichText::new("differ").color(ui.visuals().warn_fg_color),
-                                ),
+                                MemberContent::Differs => {
+                                    ui.label(RichText::new("differ").color(theme::WARNING))
+                                }
                                 MemberContent::Unknown => ui.label("–"),
                             };
                         }
                         match (room.phase, member.ready) {
-                            (Phase::Lobby, true) => ui.label(
-                                RichText::new("ready").color(Color32::from_rgb(63, 185, 80)),
-                            ),
+                            (Phase::Lobby, true) => {
+                                ui.label(RichText::new("ready").strong().color(theme::SUCCESS))
+                            }
                             (Phase::Lobby, false) => ui.label("–"),
                             (Phase::Running, _) => ui.label(""),
                         };
                         if room.you_own && !member.you {
-                            if ui.small_button("Remove").clicked() {
+                            if theme::small_button(ui, true, "Remove", Kind::Danger).clicked() {
                                 self.confirm = Some(Confirm::Kick {
                                     id: member.id.clone(),
                                     name: member.name.clone(),
@@ -621,14 +670,17 @@ impl<B: Backend> LauncherApp<B> {
                 let you_ready = room.members.iter().any(|member| member.you && member.ready);
                 match room.phase {
                     Phase::Lobby => {
-                        let label = if you_ready { "Not ready" } else { "Ready" };
-                        if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+                        let (label, kind) = if you_ready {
+                            ("Not ready", Kind::Secondary)
+                        } else {
+                            ("Ready", Kind::Primary)
+                        };
+                        if theme::button(ui, !busy, label, kind).clicked() {
                             self.backend.act(Action::Ready { ready: !you_ready });
                         }
                         if room.you_own {
                             let everyone = room.members.iter().all(|member| member.ready);
-                            if ui
-                                .add_enabled(everyone && !busy, egui::Button::new("Start game"))
+                            if theme::button(ui, everyone && !busy, "Start game", Kind::Primary)
                                 .on_disabled_hover_text("Everyone must be ready")
                                 .clicked()
                             {
@@ -655,15 +707,7 @@ impl<B: Backend> LauncherApp<B> {
                     Phase::Running => {}
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add_enabled(
-                            !busy,
-                            egui::Button::new(
-                                RichText::new("Leave room").color(ui.visuals().error_fg_color),
-                            ),
-                        )
-                        .clicked()
-                    {
+                    if theme::button(ui, !busy, "Leave room", Kind::Danger).clicked() {
                         self.confirm = Some(Confirm::Leave);
                     }
                 });
@@ -672,7 +716,7 @@ impl<B: Backend> LauncherApp<B> {
     }
 
     fn chat(&mut self, ui: &mut Ui, state: &State) {
-        section(ui, "Chat", |ui| {
+        theme::card(ui, "Chat", |ui| {
             ScrollArea::vertical()
                 .id_salt("chat-log")
                 .max_height(160.0)
@@ -681,7 +725,12 @@ impl<B: Backend> LauncherApp<B> {
                 .show(ui, |ui| {
                     for line in &state.chat {
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new(format!("{}:", line.from)).strong());
+                            let color = if line.you { theme::ACCENT } else { theme::TEXT };
+                            ui.label(
+                                RichText::new(format!("{}:", line.from))
+                                    .strong()
+                                    .color(color),
+                            );
                             ui.label(&line.text);
                         });
                     }
@@ -698,7 +747,8 @@ impl<B: Backend> LauncherApp<B> {
                     .labelled_by(label.id);
                 let entered =
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                if (ui.button("Send").clicked() || entered) && !self.chat.trim().is_empty() {
+                let send = theme::button(ui, true, "Send", Kind::Secondary).clicked();
+                if (send || entered) && !self.chat.trim().is_empty() {
                     self.backend.act(Action::Chat {
                         text: std::mem::take(&mut self.chat),
                     });
@@ -736,10 +786,10 @@ impl<B: Backend> LauncherApp<B> {
             ui.label(detail);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(yes).clicked() {
+                if theme::button(ui, true, yes, Kind::Danger).clicked() {
                     answer = Some(true);
                 }
-                if ui.button("Cancel").clicked() {
+                if theme::button(ui, true, "Cancel", Kind::Secondary).clicked() {
                     answer = Some(false);
                 }
             });
@@ -781,17 +831,6 @@ impl<B: Backend> eframe::App for LauncherApp<B> {
     }
 }
 
-/// A titled group.
-fn section(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
-    Frame::group(ui.style()).inner_margin(12).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.label(RichText::new(title).strong().size(15.0));
-        ui.add_space(6.0);
-        add(ui);
-    });
-    ui.add_space(8.0);
-}
-
 /// A labelled text field; returns whether Enter was pressed in it.
 fn field(ui: &mut Ui, label: &str, edit: TextEdit<'_>) -> bool {
     let label = ui.label(label);
@@ -799,26 +838,13 @@ fn field(ui: &mut Ui, label: &str, edit: TextEdit<'_>) -> bool {
     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
 }
 
-fn notice_frame(ui: &mut Ui, color: Color32, add: impl FnOnce(&mut Ui)) {
-    Frame::new()
-        .stroke(Stroke::new(1.0, color))
-        .corner_radius(6)
-        .inner_margin(10)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui);
-        });
-    ui.add_space(8.0);
-}
-
 /// What to change for this player's game to match the room's.
 fn differences(ui: &mut Ui, diff: &Differences) {
-    let warn = ui.visuals().warn_fg_color;
-    notice_frame(ui, warn, |ui| {
+    theme::banner(ui, theme::WARNING, |ui| {
         ui.label(
             RichText::new("Your game differs from the room's")
                 .strong()
-                .color(warn),
+                .color(theme::WARNING),
         );
         if let Some((room, yours)) = &diff.game {
             ui.label(format!(
@@ -867,18 +893,57 @@ fn differences(ui: &mut Ui, diff: &Differences) {
     });
 }
 
-/// Where the game stands.
-fn game(ui: &mut Ui, state: &State) {
-    section(ui, "Game", |ui| {
-        let found = match &state.installed {
-            Some(installed) => format!(
-                "Transport Fever 3, Steam build {}, in {}",
-                installed.build, installed.dir
-            ),
-            None => "Transport Fever 3 was not found in Steam.".to_owned(),
-        };
-        ui.label(RichText::new(found).weak().small());
+/// Where the game stands: found, installed into, connected.
+fn game(ui: &mut Ui, state: &State, installed_mod: Option<&str>) {
+    theme::card(ui, "Game", |ui| {
         let game = &state.game;
+        ui.horizontal_wrapped(|ui| {
+            match &state.installed {
+                Some(_) => theme::pill(ui, "found in Steam", theme::SUCCESS),
+                None => theme::pill(ui, "not found in Steam", theme::WARNING),
+            };
+            // No empty placeholder: an empty label breaks the wrapped row,
+            // and the next pill lands on this one.
+            if let Some(version) = installed_mod {
+                theme::pill(ui, &format!("TPF3-MP {version} installed"), theme::SUCCESS);
+            } else if state.installed.is_some() {
+                theme::pill(ui, "TPF3-MP not installed", theme::WARNING);
+            }
+            match (&game.attached, game.world) {
+                (None, _) => theme::pill(ui, "waiting for the game", theme::MUTED),
+                (Some(_), World::Playing) => theme::pill(ui, "playing", theme::SUCCESS),
+                (Some(_), World::Fetching | World::Loading) => {
+                    theme::pill(ui, "loading the world", theme::INFO)
+                }
+                (Some(_), World::None) => theme::pill(ui, "game connected", theme::SUCCESS),
+            };
+        });
+        if let Some(installed) = &state.installed {
+            ui.label(
+                RichText::new(format!(
+                    "Transport Fever 3, Steam build {}, in {}",
+                    installed.build, installed.dir
+                ))
+                .weak()
+                .small(),
+            );
+            if installed_mod.is_none() {
+                ui.label(
+                    RichText::new(
+                        "Close the game, then run INSTALL_TPF3MP.cmd (Windows) or ./install.sh \
+                         from the TPF3-MP folder to put TPF3-MP into it.",
+                    )
+                    .weak()
+                    .small(),
+                );
+            }
+        } else {
+            ui.label(
+                RichText::new("Transport Fever 3 was not found in Steam.")
+                    .weak()
+                    .small(),
+            );
+        }
         let line = match (&game.attached, game.world) {
             (None, _) => {
                 "Waiting for the game: start Transport Fever 3 with the TPF3-MP mod.".to_owned()
@@ -925,7 +990,7 @@ fn update_line(ui: &mut Ui, updater: &Updater) {
     if matches!(
         updater.state(),
         UpdateState::UpToDate | UpdateState::Failed(_)
-    ) && ui.small_button("Check for updates").clicked()
+    ) && theme::small_button(ui, true, "Check for updates", Kind::Ghost).clicked()
     {
         updater.check();
     }
@@ -937,24 +1002,97 @@ fn update_banner(ui: &mut Ui, updater: &Updater, state: &State) {
     let UpdateState::Ready { version } = updater.state() else {
         return;
     };
-    let accent = ui.visuals().hyperlink_color;
-    notice_frame(ui, accent, |ui| {
+    theme::banner(ui, theme::ACCENT, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 RichText::new(format!("TPF3-MP {version} is ready to install."))
                     .strong()
-                    .color(accent),
+                    .color(theme::ACCENT),
             );
             if state.room.is_some() {
                 ui.label("It installs when you leave the room, or the next time you start.");
-            } else if ui.button("Restart and update").clicked() {
+            } else if theme::button(ui, true, "Restart and update", Kind::Primary).clicked() {
                 updater.install_and_restart(ui.ctx());
             }
         });
     });
 }
 
+/// The steps to a game, as TPF2MP's launcher shows them.
+fn checklist(ui: &mut Ui, state: &State) {
+    let room = state.room.as_ref();
+    let running = room.is_some_and(|room| room.phase == Phase::Running);
+    let done = [
+        state.connection == Connection::Connected,
+        room.is_some(),
+        running
+            || room.is_some_and(|room| {
+                !room.members.is_empty() && room.members.iter().all(|member| member.ready)
+            }),
+        running,
+    ];
+    let labels = [
+        // Not "Connect": that is the button's name.
+        "Connect to a server",
+        "Create or join a room",
+        "Everyone ready",
+        "The game starts",
+    ];
+    theme::card(ui, "Checklist", |ui| {
+        let steps: Vec<(&str, Step)> = labels.into_iter().zip(Step::of(&done)).collect();
+        theme::checklist(ui, &steps);
+    });
+}
+
+/// The TPF3-MP version the install scripts recorded in the game's folder:
+/// `tpf3mp-install.json` from Windows's, `tpf3mp-install.txt` from Linux's
+/// and macOS's.
+pub fn installed_into_game(dir: &Path) -> Option<String> {
+    if let Ok(text) = std::fs::read_to_string(dir.join("tpf3mp-install.json")) {
+        let record: serde_json::Value =
+            serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+        return record.get("version")?.as_str().map(str::to_owned);
+    }
+    let text = std::fs::read_to_string(dir.join("tpf3mp-install.txt")).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("version="))
+        .map(str::to_owned)
+}
+
 fn non_empty(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::installed_into_game;
+
+    #[test]
+    fn the_version_the_install_scripts_recorded_is_read() {
+        let dir = std::env::temp_dir().join(format!("tpf3mp-installed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(installed_into_game(&dir), None, "nothing installed");
+
+        // install.sh's record.
+        std::fs::write(
+            dir.join("tpf3mp-install.txt"),
+            "version=0.1.0\nhook=libtpf3mp_hook.so\nmod=\n",
+        )
+        .unwrap();
+        assert_eq!(installed_into_game(&dir).as_deref(), Some("0.1.0"));
+
+        // install.ps1's, which Windows tools may start with a byte order mark.
+        std::fs::write(
+            dir.join("tpf3mp-install.json"),
+            "\u{feff}{\"version\": \"0.2.0\", \"proxy\": null, \"hook\": null, \"mod\": null}",
+        )
+        .unwrap();
+        assert_eq!(installed_into_game(&dir).as_deref(), Some("0.2.0"));
+
+        std::fs::write(dir.join("tpf3mp-install.json"), "damaged").unwrap();
+        assert_eq!(installed_into_game(&dir), None, "a damaged record");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
