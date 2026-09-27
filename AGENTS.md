@@ -2,7 +2,10 @@
 
 How changes are made and released, for people and coding agents alike. Read
 this before changing anything. [README.md](README.md) says what the project
-is; `docs/` says how it works.
+is; `docs/` says how it works. Check every task against
+[docs/PLAN.md](docs/PLAN.md) and [docs/DECISIONS.md](docs/DECISIONS.md)
+first, and flag a conflict instead of working around it ("Before starting
+a task" below).
 
 ## Branches
 
@@ -117,6 +120,29 @@ git merge --ff-only acceptance && git push origin main
 Check a branch's runs with `gh run list --branch <branch>`. Promote only
 the exact commit those runs tested: if the branch moved since, wait for the
 new runs.
+
+## Before starting a task
+
+The team's plan is [docs/PLAN.md](docs/PLAN.md): what comes next, who
+takes it, and a table of asks that conflict with a decision. Before
+starting any task, check it against that page and
+[docs/DECISIONS.md](docs/DECISIONS.md). Coding agents in particular:
+
+- **Flag conflicts; do not settle them.** When a task asks for something
+  a decision rules out (for example Steam networking or a player as host
+  against D2 and D4, joining without the launcher against D11, choosing
+  a server against D12, a proxy DLL against D9 and D11), stop and tell
+  the person who asked: name the decision and what it says, and ask how
+  to go on. Do not quietly build it, and do not quietly build something
+  else instead.
+- **Mention what changed.** When a task is based on an older version of
+  the plan, say which of its items the plan has since changed, as marked
+  there with *Changed:* or *Added:*.
+- **Fail closed in the plan too.** An action whose channel is not checked
+  yet is refused in a multiplayer game, never sent unchecked (PLAN.md,
+  Part 3).
+- **Keep the plan current.** Tick an item in the change that finishes it.
+  A new decision goes into DECISIONS.md first, then the plan follows.
 
 ## Rules for every change
 

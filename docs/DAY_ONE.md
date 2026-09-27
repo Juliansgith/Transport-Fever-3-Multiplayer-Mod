@@ -11,6 +11,22 @@ each finding carries one label:
 - **MEASURED**: observed in the running game.
 - **INFERRED**: placed by elimination only.
 
+## 0. Go or no-go first
+
+Two findings can end the plan as it stands, so they come before
+everything else ([PLAN.md](PLAN.md), Part 1):
+
+- **The launcher's start** (§5): a game the launcher started, suspended
+  with the hook loaded, runs signed in to Steam with the Workshop, and does
+  not restart itself through Steam. If it restarts, the hook is lost and
+  D11 needs another way in.
+- **Anti-tamper** (§2): TPF2 had SteamStub only. Denuvo or a VM protector
+  changes the native plan.
+
+Then name one person on **patch duty**: on every game patch they rerun the
+naming, the build diff and the profile (release-day order 1 and 2 below)
+and hold releases until the hook matches the new build.
+
 ## 1. Archive every build
 
 - Record for every build:
@@ -124,6 +140,11 @@ each platform, that a game started that way plays as one Steam starts:
 - Catch the game's own speed and pause buttons and send them as the room's
   speed (`Control::Speed`), as TPF2MP's mod does; every game then follows
   the server's pace. The launcher offers no speed control of its own.
+- Join a third game mid-game and rejoin one after killing it, then compare
+  lanes: late join, rejoin and repair all load a save and apply turns, so
+  a loaded game must walk its lists in the same order as a running one
+  (TPF2's hot-join desync). This is part of the first playable room's
+  test (PLAN.md, Test A), not left for later.
 
 ## 7. Saves
 

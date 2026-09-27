@@ -43,7 +43,8 @@ something does not work.
   simulating identically.
 
 The full design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the
-reasoning behind it in [docs/DECISIONS.md](docs/DECISIONS.md), and what a
+reasoning behind it in [docs/DECISIONS.md](docs/DECISIONS.md), the team's
+plan from release day on in [docs/PLAN.md](docs/PLAN.md), and what a
 build has to carry to replay on another machine in
 [docs/BUILDING.md](docs/BUILDING.md); what a large world costs to load,
 hold and save is in [docs/BIGMAPS.md](docs/BIGMAPS.md). Players start
@@ -153,7 +154,7 @@ TPF3's commands, and the release-day measurements in
 | `packaging/` | The install scripts and their tests, and the macOS bundle's files. |
 | `tools/` | Release-day reverse-engineering and determinism probes. |
 | `deploy/` | Container image and compose file. |
-| `docs/` | Architecture, protocol, decisions, operations, release-day plan. |
+| `docs/` | Architecture, protocol, decisions, the team's plan, operations, release-day investigation. |
 
 ## Development
 
