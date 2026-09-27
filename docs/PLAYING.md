@@ -94,12 +94,17 @@ your own machine, in the tab the launcher opened.
 4. **Ready.** Everyone presses **Ready**. The room's owner then presses
    **Start game**. Everyone's game starts from the owner's world.
 
-The **Game** part of the window follows your game: downloading the room's
-world, loading it, and playing. **Chat** reaches everyone in the room.
-A message **From the server** is its operator's, such as a restart coming:
-when the server comes back, the launcher rejoins by itself.
-**Notices** tell you what happened, such as your world being replaced by
-the room's, or your connection coming back.
+The **Checklist** at the top ticks these steps off as you go: connect to
+a server, create or join a room, everyone ready, the game starts.
+
+The **Game** part of the window says whether Steam has Transport Fever 3,
+whether TPF3-MP is installed into it (see "Installing"), and follows your
+game: downloading the room's world, loading it, and playing. **Chat**
+reaches everyone in the room. A message **From the server** is its
+operator's, such as a restart coming: when the server comes back, the
+launcher rejoins by itself. The **Session log** tells you what happened,
+such as your world being replaced by the room's, or your connection coming
+back.
 
 ## Updates
 
