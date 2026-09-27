@@ -342,3 +342,45 @@ Rejected:
   name any server, and a typo ends in a lonely room.
 - **Following an invite to its server** (as until now): the fail-closed
   reason above.
+
+## D13 (2026-09-27): invites and support codes are six letters and digits
+
+A room's invite is a code such as `K7QM2X`, and so is a player's support
+code, the ID of their connection. Both are six characters from 31 letters
+and digits: upper case, typed in either case, without the look-alikes 0,
+1, I, L and O, and with at least one letter and one digit (about 740
+million codes). They look alike but are separate: a support code finds a
+session's diagnostics and lets nobody into a room, so it can be posted
+in a public support channel.
+
+- **Short enough to read out.** With one server (D12) an invite needs no
+  address, and players pass it by voice or in a chat line, not a
+  72-character token. The support code is quoted the same way.
+- **The server finds the room by the code.** It keeps an HMAC of the code
+  under its key (`invite.key`), not the code, in the room's log and its
+  index, so a leaked log gives no invite away. Open rooms never share a
+  code, and no two sessions share a support code while their diagnostics
+  are kept.
+- **Guessing is held off by the server, not by length.** A 256-bit token
+  could not be guessed; a code can, given enough tries. An address may
+  try 20 wrong invites (or passwords) in 10 minutes, and is then refused
+  every join until the window ends: about 2,900 tries a day against 740
+  million codes. A room's password still guards it on top, and its owner
+  can kick anyone who gets in.
+- **Logs name invites by key.** A six-character code cannot be spotted in
+  a log line as `TPF3MP1.…` could. Code that logs one writes
+  `invite=<code>`, which redaction hides, and `Invite`'s `Debug` never
+  shows it.
+
+This changes the protocol (version 6) and the room log (version 7):
+rooms logged by earlier versions are set aside, not restored. No game
+had been played on the project's server when it changed.
+
+Rejected:
+
+- **One code for both** a room and its players' support: posting it for
+  support would let anyone into the room.
+- **Longer codes, or the old token**: the server's limit is what stops
+  guessing, and every character more is one more to read out.
+- **Codes of letters alone**: an ordinary word in a message would pass
+  for one.

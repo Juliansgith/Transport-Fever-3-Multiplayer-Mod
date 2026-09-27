@@ -51,6 +51,7 @@
   #content-diff p { margin: 4px 0; }
   .differs { color: var(--warn); }
   .hidden { display: none !important; }
+  input.code { font: 600 20px ui-monospace, monospace; letter-spacing: 3px; }
 </style>
 </head>
 <body>
@@ -96,7 +97,7 @@
     </div>
     <p id="rules-description" class="muted" style="margin: 0 0 10px"></p>
     <div class="row">
-      <input id="invite" class="grow" placeholder="paste an invite" autocomplete="off">
+      <input id="invite" class="grow" placeholder="the code you were sent, such as K7QM2X" autocomplete="off">
       <input id="join-password" class="grow" placeholder="password (if any)" maxlength="64">
       <button id="join-button">Join room</button>
     </div>
@@ -108,7 +109,8 @@
   <section id="room" class="hidden">
     <h2 id="room-title">Room</h2>
     <div class="row" style="margin-bottom: 10px">
-      <input id="room-invite" class="grow" readonly title="send this to your friends">
+      <span class="muted">Invite code</span>
+      <input id="room-invite" class="grow code" readonly title="send this to your friends: they join with it">
       <button id="copy-button" class="secondary">Copy invite</button>
     </div>
     <table>
@@ -148,7 +150,7 @@
 
   <div class="row">
     <label id="diagnostics-label" class="muted hidden"
-      title="Lines of this launcher's log go to the server you play on, with paths, addresses and keys taken out, so its operator can see what went wrong by your support ID. The server keeps them for a limited time, 30 days unless its operator chose otherwise.">
+      title="Lines of this launcher's log go to the server you play on, with paths, addresses and keys taken out, so its operator can see what went wrong by your support code. The server keeps them for a limited time, 30 days unless its operator chose otherwise.">
       <input type="checkbox" id="diagnostics"> Send diagnostics</label>
   </div>
 </main>
@@ -262,7 +264,7 @@ function render(s) {
   text(badge, s.tunneled ? s.connection + " via tunnel" : s.connection);
   badge.className = "badge " + s.connection;
   text($("identity"), s.player ? s.name + " (" + s.player + ")" : s.name);
-  text($("support-id"), s.support_id ? "support ID " + s.support_id : "");
+  text($("support-id"), s.support_id ? "support code " + s.support_id : "");
   text($("server-version"), s.server_version ? "server " + s.server_version : "");
   if (s.error) showError(s.error);
   // A launcher with its own server offers no other (D12): the field takes
@@ -270,7 +272,7 @@ function render(s) {
   show("server-fixed", s.server_fixed);
   text($("server-fixed"), s.server_fixed ? "TPF3-MP plays on " + (s.server_name || s.server) + "." : "");
   $("server").placeholder = s.server_fixed
-    ? "an invite you were sent (optional)"
+    ? "an invite code you were sent (optional)"
     : "server:29470, or a whole invite";
   if (!s.server_fixed && !$("server").value && s.server) $("server").value = s.server;
   if (!$("name").value && s.name) $("name").value = s.name;

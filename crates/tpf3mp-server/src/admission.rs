@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr},
     sync::{Arc, Mutex, PoisonError},
+    time::{Duration, Instant},
 };
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -68,10 +69,34 @@ pub(crate) enum Decision {
     Refuse,
 }
 
+/// Wrong invites one address may try in [`WRONG_INVITE_WINDOW`]; past
+/// that, every join from it is refused until the window ends. An invite is
+/// six characters, so this is what keeps anyone from finding rooms by
+/// trying codes: some 2,900 tries a day from one address, against some 740
+/// million codes. A player who mistypes a few times is not held up.
+const WRONG_INVITES: u32 = 20;
+const WRONG_INVITE_WINDOW: Duration = Duration::from_secs(600);
+/// Addresses whose wrong invites are counted at once. While that many are
+/// within their windows, joins from any other address are refused.
+const WRONG_INVITE_ADDRESSES: usize = 65_536;
+
+/// Wrong invites from one address in its current window.
+struct WrongInvites {
+    since: Instant,
+    count: u32,
+}
+
+impl WrongInvites {
+    fn ended(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.since) >= WRONG_INVITE_WINDOW
+    }
+}
+
 pub(crate) struct Admission {
     limits: Limits,
     handshakes: Arc<Semaphore>,
     held: Mutex<HashMap<Origin, Held>>,
+    wrong_invites: Mutex<HashMap<Origin, WrongInvites>>,
 }
 
 impl Admission {
@@ -80,7 +105,56 @@ impl Admission {
             limits,
             handshakes: Arc::new(Semaphore::new(limits.handshakes)),
             held: Mutex::default(),
+            wrong_invites: Mutex::default(),
         })
+    }
+
+    /// Whether `origin` may try to join a room now: not when it tried too
+    /// many wrong invites lately.
+    pub(crate) fn may_join(&self, origin: Origin, now: Instant) -> bool {
+        let mut wrong = self.lock_wrong_invites();
+        match wrong.get(&origin) {
+            Some(entry) if entry.ended(now) => {
+                wrong.remove(&origin);
+                true
+            }
+            Some(entry) => entry.count < WRONG_INVITES,
+            None => Self::has_room_for_one_more(&mut wrong, now),
+        }
+    }
+
+    /// Counts a wrong invite, or a wrong password, from `origin`.
+    pub(crate) fn wrong_invite(&self, origin: Origin, now: Instant) {
+        let mut wrong = self.lock_wrong_invites();
+        if !wrong.contains_key(&origin) && !Self::has_room_for_one_more(&mut wrong, now) {
+            return;
+        }
+        let entry = wrong.entry(origin).or_insert(WrongInvites {
+            since: now,
+            count: 0,
+        });
+        if entry.ended(now) {
+            *entry = WrongInvites {
+                since: now,
+                count: 0,
+            };
+        }
+        entry.count = entry.count.saturating_add(1);
+    }
+
+    /// Whether another address can be counted, forgetting those whose
+    /// windows ended when the table is full.
+    fn has_room_for_one_more(wrong: &mut HashMap<Origin, WrongInvites>, now: Instant) -> bool {
+        if wrong.len() >= WRONG_INVITE_ADDRESSES {
+            wrong.retain(|_, entry| !entry.ended(now));
+        }
+        wrong.len() < WRONG_INVITE_ADDRESSES
+    }
+
+    fn lock_wrong_invites(&self) -> std::sync::MutexGuard<'_, HashMap<Origin, WrongInvites>> {
+        self.wrong_invites
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Decides on a connection attempt from `origin`. Once half the
@@ -293,6 +367,44 @@ mod tests {
             Decision::Retry => panic!("asked for a retry"),
             Decision::Refuse => panic!("refused"),
         }
+    }
+
+    #[test]
+    fn an_address_trying_wrong_invites_is_stopped_for_a_while() {
+        let admission = Admission::new(limits());
+        let start = Instant::now();
+        for _ in 0..WRONG_INVITES {
+            assert!(admission.may_join(HOME, start));
+            admission.wrong_invite(HOME, start);
+        }
+        assert!(!admission.may_join(HOME, start));
+        assert!(
+            !admission.may_join(HOME, start + WRONG_INVITE_WINDOW / 2),
+            "the right invite too"
+        );
+        assert!(admission.may_join(AWAY, start), "other addresses go on");
+        assert!(admission.may_join(HOME, start + WRONG_INVITE_WINDOW));
+        admission.wrong_invite(HOME, start + WRONG_INVITE_WINDOW);
+        assert!(
+            admission.may_join(HOME, start + WRONG_INVITE_WINDOW),
+            "a new window counts from none"
+        );
+    }
+
+    #[test]
+    fn a_full_table_of_wrong_invites_refuses_the_uncounted() {
+        let admission = Admission::new(limits());
+        let start = Instant::now();
+        for n in 0..WRONG_INVITE_ADDRESSES {
+            admission.wrong_invite(Origin::V6(n as u64), start);
+        }
+        assert!(!admission.may_join(HOME, start));
+        assert!(
+            admission.may_join(Origin::V6(0), start),
+            "the counted go on"
+        );
+        // Once their windows end, they make room.
+        assert!(admission.may_join(HOME, start + WRONG_INVITE_WINDOW));
     }
 
     const HOME: Origin = Origin::V4(Ipv4Addr::new(192, 0, 2, 1));

@@ -106,11 +106,16 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   one whose game froze. The player receives `Kicked` and leaves as if they
   had chosen to; in a running game every replica sees `PlayerLeft` at one
   step. A kicked player cannot join that room again.
-- **Invites.** The server answers with an **invite**,
-  `TPF3MP1.<base64url(room id ‖ 256-bit token)>`. The server stores only an
-  HMAC of the token under a server-side pepper and checks it in constant time.
-  Invalid invites, unknown rooms and wrong passwords all fail the same way, so
-  invites cannot be used to probe which rooms exist.
+- **Invites.** The server answers with an **invite**, a code of six
+  letters and digits such as `K7QM2X` (`tpf3mp_proto::Code`, D13 in
+  DECISIONS.md): upper case from `23456789ABCDEFGHJKMNPQRSTUVWXYZ`, with
+  at least one letter and one digit, typed in either case, and checked
+  when decoded. The server finds the room by an HMAC of the code under a
+  server-side pepper, stores only that, and gives no two open rooms the
+  same code. Invalid invites, unknown rooms and wrong passwords all fail
+  the same way (`BadInvite`), so invites cannot be used to probe which
+  rooms exist. An address that sends 20 of those in 10 minutes gets
+  `RateLimited` for every join until the 10 minutes are up.
 - **Updates.** Members receive the full room view (`RoomUpdate`) whenever it
   changes. Updates and responses are independent messages: a `RoomUpdate`
   caused by a request can arrive before that request's `Response`.
@@ -406,9 +411,10 @@ server releases snapshots no restored room refers to.
 ## Diagnostics
 
 A client may send lines of its own log to the server, so the server's
-operator can see what went wrong for a player from the support ID alone
-(the session ID). TPF2MP's relay kept its players' diagnostics the same
-way.
+operator can see what went wrong for a player from the support code
+alone (the session ID, a code like an invite's that the server gives no
+two sessions while their diagnostics are kept). TPF2MP's relay kept its
+players' diagnostics the same way.
 
 - **What.** `Request::Diagnostics` carries up to 32 `DiagnosticEvent`s: the
   client's time in milliseconds, a level (`Info`, `Warn`, `Error`), where
@@ -417,9 +423,10 @@ way.
 - **Redacted on both sides.** The client passes every line through
   `tpf3mp_proto::redact`, and the server does again before keeping it.
   Absolute paths keep only their last part (and not that, when it is
-  digits alone, such as a Steam account's folder); IP addresses, invites,
-  secrets after keys such as `token=` or `password:`, e-mail addresses and
-  Steam IDs are replaced.
+  digits alone, such as a Steam account's folder); IP addresses, secrets
+  after keys such as `token=`, `password:` or `invite=`, e-mail addresses
+  and Steam IDs are replaced. An invite's code looks like any word, so
+  clients never log one but after such a key.
 - **Kept per session.** The server appends the lines, with the player's
   ID, to a file named by the session ID, up to 8 MiB a session, and
   answers `Done`. It answers `DiagnosticsNotKept` when it keeps none, or

@@ -334,7 +334,7 @@ async fn a_room_password_cannot_be_guessed_at_line_rate() {
         let request = ClientMessage::Request {
             id: pin,
             request: Request::JoinRoom(JoinRoom {
-                invite: invite.clone(),
+                invite,
                 password: Some(Text::new(format!("{pin:04}")).unwrap()),
                 resume: None,
             }),
@@ -641,7 +641,7 @@ async fn turns_lost_in_a_crash_are_not_replaced_under_a_client_that_saw_them() {
     let refused = bob
         .client()
         .join_room(JoinRoom {
-            invite: invite.clone(),
+            invite,
             password: None,
             resume: Some(bob_old.follower.as_ref().unwrap().resume_point()),
         })

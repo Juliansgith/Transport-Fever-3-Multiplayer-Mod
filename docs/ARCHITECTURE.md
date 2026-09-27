@@ -281,8 +281,8 @@ persistent worlds all use that one path: a world, then the turns since.
 - **Identity:**
   - one Ed25519 key per install, so no accounts;
   - session resumption tickets;
-  - room invites as 256-bit tokens stored as peppered HMAC (the
-    `tf2mp-relay` design);
+  - room invites as six-character codes, stored as peppered HMAC (the
+    `tf2mp-relay` design), with wrong guesses limited per address (D13);
   - an optional room password.
 - **Authorisation:**
   - the server binds each connection to one player, one role and at most
@@ -314,7 +314,7 @@ persistent worlds all use that one path: a world, then the turns since.
   - nodes announce their capacity;
   - rooms stay on one node.
 - **Observability:** Prometheus metrics, structured logs with redaction,
-  non-secret support IDs.
+  non-secret support codes.
 
 ## Platforms and the native hook [needs game]
 

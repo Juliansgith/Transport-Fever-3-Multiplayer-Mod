@@ -58,7 +58,8 @@ with [docs/PLAYING.md](docs/PLAYING.md); server operators with
   against the TLS session, and a version preamble frozen for good. Where a
   network blocks UDP, the same QUIC connection runs through a WebSocket on
   port 443; clients fall back to it on their own.
-- **Rooms.** HMAC-tagged invites and optional passwords, a lobby with
+- **Rooms.** Six-character invite codes, HMAC-tagged, and optional
+  passwords, a lobby with
   readiness and content fingerprints, owner hand-over.
 - **Sequencer.** Hard lockstep turns. A server-owned clock holds for players
   who are loading or slow, and stops waiting for one that stalls. Pause,
@@ -107,9 +108,10 @@ with [docs/PLAYING.md](docs/PLAYING.md); server operators with
   (`tpf3mp-launcher`, drawn with egui) to connect, create or join a room,
   get ready, start, chat, and follow the game: fetching the world, loading,
   playing. It shows what to change when a player's mods differ, and the
-  support ID the server's log knows the player by. Its log lines go to the
-  server by themselves, redacted, so an operator can help from the support
-  ID alone, with nothing for the player to send; a switch turns that off.
+  support code the server's log knows the player by. Its log lines go to
+  the server by themselves, redacted, so an operator can help from the
+  support code alone, with nothing for the player to send; a switch turns
+  that off.
   `tpf3mp-agent collect-logs` zips the game's own logs and crash dumps
   when an operator needs them (never keys or tokens). It updates itself
   from the project's releases, installing only what the project signed.

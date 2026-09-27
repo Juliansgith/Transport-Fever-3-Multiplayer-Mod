@@ -9,9 +9,19 @@ use std::sync::Arc;
 use common::{FAST, RunningServer, content, join, modded, room};
 use tpf3mp_agent::{ClientError, ClientEvent};
 use tpf3mp_proto::{
-    CreateRoom, FixedBytes, Invite, JoinRoom, RequestError, RoomId, RoomPhase, RoomSettings, Text,
+    Code, CreateRoom, Invite, JoinRoom, RequestError, RoomPhase, RoomSettings, Text,
 };
 use tpf3mp_server::{AcceptAll, RulesChoice, RulesMenu};
+
+/// An invite other than `invite`.
+fn other_than(invite: &Invite) -> Invite {
+    loop {
+        let other = Invite(Code::random());
+        if other != *invite {
+            return other;
+        }
+    }
+}
 
 #[tokio::test]
 async fn a_room_is_joined_with_its_invite() {
@@ -22,13 +32,46 @@ async fn a_room_is_joined_with_its_invite() {
     assert_eq!(created.owner, ann.client.player());
     assert_eq!(created.phase, RoomPhase::Lobby);
     // The invite survives a round trip through its text form, as players
-    // paste it into chat.
-    let invite: Invite = invite.to_string().parse().unwrap();
+    // paste it into chat, and it is six letters and digits, typed in either
+    // case.
+    let text = invite.to_string();
+    assert_eq!(text.len(), 6, "{text}");
+    let invite: Invite = text.to_lowercase().parse().unwrap();
     let joined = bob.client.join_room(join(&invite)).await.unwrap();
     assert_eq!(joined.members.len(), 2);
     // Both see the full table.
     ann.room_where(|room| room.members.len() == 2).await;
     bob.room_where(|room| room.members.len() == 2).await;
+    server.shut_down().await;
+}
+
+/// Wrong invites one address may try before it is stopped a while, as
+/// the server counts them.
+const WRONG_INVITES: usize = 20;
+
+#[tokio::test]
+async fn an_address_trying_codes_is_stopped_before_it_finds_a_room() {
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    let (invite, _) = ann.client.create_room(room("table", FAST)).await.unwrap();
+    // One connection may try five joins at once; a guesser opens more.
+    let mut tried = 0;
+    while tried < WRONG_INVITES {
+        let guesser = server.client("guesser").await;
+        for _ in 0..5.min(WRONG_INVITES - tried) {
+            let error = guesser
+                .client
+                .join_room(join(&other_than(&invite)))
+                .await
+                .unwrap_err();
+            assert_eq!(error, ClientError::Refused(RequestError::BadInvite));
+            tried += 1;
+        }
+    }
+    // Now even the right code is refused from that address, and says so.
+    let guesser = server.client("guesser").await;
+    let error = guesser.client.join_room(join(&invite)).await.unwrap_err();
+    assert_eq!(error, ClientError::Refused(RequestError::RateLimited));
     server.shut_down().await;
 }
 
@@ -42,19 +85,12 @@ async fn every_bad_invite_fails_the_same_way() {
     let (invite, created) = ann.client.create_room(create).await.unwrap();
     assert!(created.has_password);
 
-    let wrong_token = Invite {
-        room: invite.room,
-        token: FixedBytes([0; 32]),
-    };
-    let unknown_room = Invite {
-        room: RoomId(FixedBytes([9; 16])),
-        token: invite.token,
-    };
     let attempts = [
-        (wrong_token, Some("hunter2")),
-        (unknown_room, Some("hunter2")),
-        (invite.clone(), Some("hunter3")),
-        (invite.clone(), None),
+        // Codes no room has, with the password and without.
+        (other_than(&invite), Some("hunter2")),
+        (other_than(&invite), None),
+        (invite, Some("hunter3")),
+        (invite, None),
     ];
     for (invite, password) in attempts {
         let error = bob

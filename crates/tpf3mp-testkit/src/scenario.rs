@@ -138,7 +138,7 @@ async fn seat_and_start(
     for client in others {
         client
             .join_room(JoinRoom {
-                invite: invite.clone(),
+                invite,
                 password: None,
                 resume: None,
             })
@@ -237,7 +237,7 @@ pub async fn play_bridged_room(plan: BridgedPlan) -> Result<Vec<HookReport>> {
         client.declare_content(toy_content()).await?;
         client
             .join_room(JoinRoom {
-                invite: invite.clone(),
+                invite,
                 password: None,
                 resume: None,
             })
@@ -282,7 +282,7 @@ fn play_through_hook(
 ) -> Result<(Hook, BridgeTask)> {
     let rejoin = Rejoin {
         options,
-        invite: invite.clone(),
+        invite: *invite,
         password: None,
         content: Some(toy_content()),
         give_up_after: plan.deadline,

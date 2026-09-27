@@ -83,7 +83,7 @@ fn in_room(members: Vec<Member>, you_own: bool) -> State {
             name: "Friday trains".into(),
             rules: "native".into(),
             phase: Phase::Lobby,
-            invite: Some("tpf3mp.example.org:29470 TPF3MP1.abc".into()),
+            invite: Some("K7QM2X".into()),
             you_own,
             max_players: 4,
             has_password: false,
@@ -116,7 +116,7 @@ fn an_invite_pasted_as_the_server_connects_and_joins() {
     let mut window = window(State::default());
     let server = window.get_by_role_and_label(Role::TextInput, "Server");
     server.focus();
-    server.type_text("tpf3mp.example.org:29470 TPF3MP1.abc");
+    server.type_text("tpf3mp.example.org:29470 K7QM2X");
     let name = window.get_by_role_and_label(Role::TextInput, "Your name");
     name.focus();
     name.type_text("Bob");
@@ -126,7 +126,7 @@ fn an_invite_pasted_as_the_server_connects_and_joins() {
     assert_eq!(
         actions(&window),
         [Action::Connect {
-            server: "tpf3mp.example.org:29470 TPF3MP1.abc".into(),
+            server: "tpf3mp.example.org:29470 K7QM2X".into(),
             name: "Bob".into(),
         }]
     );
@@ -320,7 +320,7 @@ fn a_narrow_window_offers_the_same() {
         .with_size(egui::vec2(640.0, 2000.0))
         .build_ui_state(|ui, app: &mut LauncherApp<Recorder>| app.show(ui), app);
     window.run_steps(4);
-    for label in ["Leave room", "Copy invite", "Send"] {
+    for label in ["Leave room", "Invite code", "K7QM2X", "Copy invite", "Send"] {
         window.get_by_label(label);
     }
     window.get_by_label("Start Transport Fever 3").click();
@@ -366,14 +366,14 @@ fn a_package_with_its_own_server_offers_no_other() {
     let mut window = self::window(own);
     let invite = window.get_by_role_and_label(Role::TextInput, "Invite");
     invite.focus();
-    invite.type_text("tpf3mp.example.org:29470 TPF3MP1.abc");
+    invite.type_text("K7QM2X");
     window.run_steps(4);
     window.get_by_label("Connect").click();
     window.run_steps(2);
     assert_eq!(
         actions(&window),
         [Action::Connect {
-            server: "tpf3mp.example.org:29470 TPF3MP1.abc".into(),
+            server: "K7QM2X".into(),
             name: "Ann".into(),
         }]
     );

@@ -92,7 +92,7 @@ async fn resume(server: &RunningServer, players: Vec<Player>, invite: &Invite) -
         player
             .client()
             .join_room(JoinRoom {
-                invite: invite.clone(),
+                invite: *invite,
                 password: None,
                 resume,
             })

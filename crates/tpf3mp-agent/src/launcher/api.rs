@@ -446,12 +446,11 @@ mod tests {
     #[test]
     fn actions_parse_from_the_pages_json() {
         let action: Action =
-            serde_json::from_str(r#"{"action":"join","invite":"TPF3MP1.x","password":null}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"action":"join","invite":"K7QM2X","password":null}"#).unwrap();
         assert_eq!(
             action,
             Action::Join {
-                invite: "TPF3MP1.x".into(),
+                invite: "K7QM2X".into(),
                 password: None
             }
         );
@@ -548,13 +547,10 @@ mod tests {
         );
         // In a room, the room's connection, which a rejoin renews.
         let status = Status {
-            session: Some(tpf3mp_proto::SessionId([0x22; 16])),
+            session: Some(tpf3mp_proto::SessionId("AB2CD3".parse().unwrap())),
             ..Status::default()
         };
-        assert_eq!(
-            support_id(&view, &status).as_deref(),
-            Some("s-22222222222222222222222222222222")
-        );
+        assert_eq!(support_id(&view, &status).as_deref(), Some("AB2CD3"));
         // Disconnected, there is none to quote.
         view.connected = false;
         assert_eq!(support_id(&view, &Status::default()), None);

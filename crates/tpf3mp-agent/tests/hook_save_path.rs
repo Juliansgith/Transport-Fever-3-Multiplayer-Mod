@@ -86,7 +86,7 @@ async fn a_save_outside_the_saves_directory_is_refused() {
         let _hello: ClientMessage = read_message(&mut recv, CONTROL_MAX_FRAME).await.unwrap();
         let welcome = ServerMessage::Welcome(Welcome {
             server_version: Text::new("test").unwrap(),
-            session_id: SessionId([0; 16]),
+            session_id: SessionId("AB2CD3".parse().unwrap()),
             rules: Vec::new(),
         });
         write_message(&mut send, &welcome, CONTROL_MAX_FRAME)

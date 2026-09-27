@@ -40,6 +40,7 @@ pub use crate::{
 };
 use crate::{
     admission::{Admission, Decision, Origin},
+    connection::SessionIds,
     diagnostics::Diagnostics,
     directory::{Directory, DirectoryConfig},
     metrics::{Gauges, Metrics},
@@ -198,6 +199,8 @@ pub enum ServerError {
 pub(crate) struct Shared {
     pub(crate) sessions: Arc<Semaphore>,
     pub(crate) max_sessions: usize,
+    /// The open sessions' IDs, so none is given twice.
+    pub(crate) session_ids: Arc<SessionIds>,
     pub(crate) admission: Arc<Admission>,
     pub(crate) handshake_timeout: Duration,
     pub(crate) roomless_timeout: Duration,
@@ -293,6 +296,7 @@ impl Server {
         let shared = Arc::new(Shared {
             sessions: Arc::new(Semaphore::new(config.max_sessions)),
             max_sessions: config.max_sessions,
+            session_ids: Arc::default(),
             admission: Admission::new(admission::Limits {
                 handshakes: config.max_handshakes.max(1),
                 handshakes_per_address: config.max_handshakes_per_address.max(1),

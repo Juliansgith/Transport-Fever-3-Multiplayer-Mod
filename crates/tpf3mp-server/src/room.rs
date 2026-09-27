@@ -18,11 +18,11 @@ use tokio::{
 };
 use tpf3mp_net::{bulk, close};
 use tpf3mp_proto::{
-    ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN, FixedBytes,
-    IntentRejection, LaneDigest, MemberView, Payload, Platform, PlayerId, RequestError, Resume,
-    RoomId, RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, ServerMessage, SnapshotId,
-    Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, WorldOffer, decode_frame,
-    encode_frame,
+    ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN,
+    IntentRejection, Invite, LaneDigest, MemberView, Payload, Platform, PlayerId, RequestError,
+    Resume, RoomId, RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, ServerMessage,
+    SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, WorldOffer,
+    decode_frame, encode_frame,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -145,7 +145,7 @@ pub(crate) type Reply<T = ()> = oneshot::Sender<Result<T, RequestError>>;
 pub(crate) enum RoomCommand {
     Join {
         member: NewMember,
-        token: FixedBytes<32>,
+        invite: Invite,
         password: Option<Text<64>>,
         resume: Option<Resume>,
         reply: Reply<RoomView>,
@@ -300,8 +300,10 @@ pub(crate) struct RoomSecrets {
 }
 
 impl RoomSecrets {
-    pub(crate) fn invite_input(room: &RoomId, token: &FixedBytes<32>) -> Vec<u8> {
-        [b"invite".as_slice(), &room.0.0, &token.0].concat()
+    /// What an invite's tag signs: its code alone, since the server finds
+    /// the room by the tag (`Directory::find`).
+    pub(crate) fn invite_input(invite: &Invite) -> Vec<u8> {
+        [b"invite code".as_slice(), invite.0.as_str().as_bytes()].concat()
     }
 
     pub(crate) fn password_input(room: &RoomId, password: &Text<64>) -> Vec<u8> {
@@ -313,18 +315,13 @@ impl RoomSecrets {
         .concat()
     }
 
-    /// Checks the invite token and password in constant time. Both are always
+    /// Checks the invite and password in constant time. Both are always
     /// checked; which one failed stays inside the server, and the client
     /// learns only `BadInvite`.
-    fn check(
-        &self,
-        room: &RoomId,
-        token: &FixedBytes<32>,
-        password: Option<&Text<64>>,
-    ) -> Admittance {
+    fn check(&self, room: &RoomId, invite: &Invite, password: Option<&Text<64>>) -> Admittance {
         let invite_ok = hmac::verify(
             &self.key,
-            &Self::invite_input(room, token),
+            &Self::invite_input(invite),
             self.invite_tag.as_ref(),
         )
         .is_ok();
@@ -923,6 +920,11 @@ impl Room {
         self.id
     }
 
+    /// The tag of the room's invite, which the directory finds it by.
+    pub(crate) fn invite_tag(&self) -> Vec<u8> {
+        self.secrets.invite_tag.clone()
+    }
+
     /// The snapshots this room holds in the server's store.
     pub(crate) fn held_snapshots(&self) -> Vec<ManifestId> {
         match &self.phase {
@@ -985,12 +987,12 @@ impl Room {
         match command {
             RoomCommand::Join {
                 member,
-                token,
+                invite,
                 password,
                 resume,
                 reply,
             } => {
-                let result = self.join(member, &token, password.as_ref(), resume);
+                let result = self.join(member, &invite, password.as_ref(), resume);
                 let joined = result.is_ok();
                 let _ = reply.send(result);
                 if joined {
@@ -1134,7 +1136,7 @@ impl Room {
     fn join(
         &mut self,
         new: NewMember,
-        token: &FixedBytes<32>,
+        invite: &Invite,
         password: Option<&Text<64>>,
         resume: Option<Resume>,
     ) -> Result<RoomView, RequestError> {
@@ -1144,7 +1146,7 @@ impl Room {
             return Err(RequestError::BadInvite);
         }
         let seated = self.members.iter().any(|m| m.player == new.player);
-        match self.secrets.check(&self.id, token, password) {
+        match self.secrets.check(&self.id, invite, password) {
             Admittance::Admitted if seated || self.password_guard.open(now) => {}
             Admittance::WrongPassword if !seated => {
                 self.password_guard.failed(now);
@@ -3016,6 +3018,7 @@ impl Game {
 mod tests {
     use super::*;
     use crate::ruleset::{NATIVE, RulesChoice};
+    use tpf3mp_proto::FixedBytes;
 
     fn native() -> RulesName {
         RulesName::new(NATIVE).unwrap()

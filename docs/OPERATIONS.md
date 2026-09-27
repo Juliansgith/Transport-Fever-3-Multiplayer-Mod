@@ -43,7 +43,8 @@ hardened container profile.
    ```sh
    tpf3mp-agent connect tpf3mp.example.org:29470
    ```
-   This prints the server version, a session ID and the round trip.
+   This prints the server version, a session's support code and the
+   round trip.
 
 ### Beside tf2mp-relay
 
@@ -86,7 +87,7 @@ sudo rule. It checks every argument and runs no shell:
 ```sh
 ssh <you>@<server> status                 # the container, health, deployed commit
 ssh <you>@<server> logs --since 2h        # --tail 200, --follow
-ssh <you>@<server> diagnostics s-3f2a...  # a player's diagnostics, or all
+ssh <you>@<server> diagnostics K7QM2X     # a player's diagnostics, or all
 ssh <you>@<server> metrics
 ssh <you>@<server> deploy                 # build and run main
 ssh <you>@<server> deploy 3ad6364         # an earlier commit of main
@@ -144,13 +145,13 @@ certificate that agents pin with `--pin-cert <file>`.
 
 The server logs to standard output, and Docker keeps the log: at most ten
 files of 50 MB each (`logging` in `compose.yaml`), so it never fills the
-disk. The log never contains IP addresses or invite tokens.
+disk. The log never contains IP addresses or invites.
 
 - **Following it:** `docker compose logs -f`.
 - **One player's session.** Every session starts with a line naming its
-  support ID (`session=s-…`) and the player (`player=p-…`); the launcher
-  shows the player their support ID. `docker compose logs | grep s-3f2a…`
-  shows that session; the player ID shows all of that player's sessions,
+  support code (`session=K7QM2X`) and the player (`player=p-…`); the
+  launcher shows the player their support code. `docker compose logs |
+  grep session=K7QM2X` shows that session; the player ID shows all of that player's sessions,
   and a room ID (`r-…`) the room's life.
 - **For a bug report:** `./collect-logs.sh` in `deploy/` writes one
   archive: the log of the last 24 hours (`--since 2h` for another window,
@@ -159,10 +160,10 @@ disk. The log never contains IP addresses or invite tokens.
   memory. It holds no secrets and can be shared.
 - **The player's side, without asking:** players' launchers send the
   lines of their logs, redacted, to the server they play on (unless the
-  player switched that off). With the support ID a player quotes:
+  player switched that off). With the support code a player quotes:
 
   ```sh
-  curl http://127.0.0.1:9470/diagnostics/s-3f2a…   # that session's lines
+  curl http://127.0.0.1:9470/diagnostics/K7QM2X    # that session's lines
   curl http://127.0.0.1:9470/diagnostics           # the sessions with some
   ```
 
@@ -176,13 +177,13 @@ disk. The log never contains IP addresses or invite tokens.
   pseudonymous but theirs: keep the retention short, and delete a
   player's on request (`rm` the session's file). The metrics
   `diagnostics_kept_total` and `diagnostics_dropped_total` count lines.
-- **From the player:** their support ID is enough for the launcher's
+- **From the player:** their support code is enough for the launcher's
   side: its log is already here, under Diagnostics. For the game's own
   log or crash dumps, which are never sent, ask for the zip
   `tpf3mp-agent collect-logs` writes. Its `manifest.txt` names the
-  player's versions, system and support ID, and lists the launcher's, the
+  player's versions, system and support code, and lists the launcher's, the
   hook's and the game's logs it holds (see "The game's own logs" in
-  [PLAYING.md](PLAYING.md)). Grep your log for the support ID to put the
+  [PLAYING.md](PLAYING.md)). Grep your log for the support code to put the
   two side by side.
 - **For a log collector** (Loki, Elasticsearch, …): set
   `TPF3MP_LOG_FORMAT: json` in `compose.yaml` (`--log-format json`), for
@@ -581,5 +582,10 @@ tunnel instead, through the reverse proxy.
   counts until it closes, and a running game with nobody connected closes
   after 10 minutes (`rooms_abandoned`). Throwaway identities therefore
   cannot fill the server's rooms.
+- An address that sends 20 wrong invites or room passwords within 10
+  minutes is refused every join until the 10 minutes are up: invites are
+  six characters (D13), and this is what keeps anyone from finding rooms
+  by trying codes. A LAN party mistyping codes behind one address may
+  meet it; it clears by itself.
 - Rotate the invite key only deliberately: every existing invite stops
   working.

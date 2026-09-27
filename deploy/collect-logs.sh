@@ -5,12 +5,12 @@
 #
 #   ./collect-logs.sh                 # the last 24 hours
 #   ./collect-logs.sh --since 2h      # a shorter window
-#   ./collect-logs.sh --for s-3f2a... # only lines about one player's session
+#   ./collect-logs.sh --for K7QM2X    # only lines about one player's session
 #
-# --for takes anything that appears in the log lines to keep: a support ID
+# --for takes anything that appears in the log lines to keep: a support code
 # (session) from a player's launcher, a player ID or a room ID.
 #
-# The log never contains IP addresses or invite tokens, and nothing here
+# The log never contains IP addresses or invites, and nothing here
 # reads the data volume, so the archive holds no secrets. It is written to
 # the current directory as tpf3mp-logs-<time>.tar.gz.
 set -euo pipefail

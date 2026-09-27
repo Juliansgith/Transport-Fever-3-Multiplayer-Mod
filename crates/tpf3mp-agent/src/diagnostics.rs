@@ -1,6 +1,6 @@
 //! Diagnostics ("Diagnostics" in PROTOCOL.md): the lines of this player's
 //! log that go to the server they play on, so its operator can see what
-//! went wrong from the support ID alone. A [`Recorder`] keeps the lines not
+//! went wrong from the support code alone. A [`Recorder`] keeps the lines not
 //! yet sent; a connection made with one sends them every few seconds, and
 //! as it closes, and what is left when a connection drops goes with the
 //! next. Lines are redacted as they are recorded, and again by the server.
