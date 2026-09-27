@@ -68,10 +68,44 @@ Compose project (`name: tpf3mp`, so it never mixes with the relay's
    `/etc/letsencrypt/renewal-hooks/deploy/tpf3mp.sh`. Run it once by hand,
    with `RENEWED_LINEAGE=/etc/letsencrypt/live/<host>`.
 5. **The port:** `ufw allow 29470/udp`.
-6. **Start:** `cd /opt/tpf3mp/deploy && docker compose up -d --build`.
+6. **Start:** `cd /opt/tpf3mp/deploy && docker compose up -d --build`;
+   later, `tpf3mp-ctl deploy` (see "Developer access").
 7. **Check** from another machine, as above, and through the tunnel with
    `tpf3mp-agent connect <host>:29470 --tunnel-only`. The relay's own
    checks must still pass.
+
+### Developer access
+
+TPF3-MP's developers get an SSH account each on the project's server
+that can reach TPF3-MP and nothing else there: not the host's other
+sites, files, processes or ports, and not Docker, whose group would make
+them root. Their logins run `deploy/host/tpf3mp-dev-shell`, which hands
+the words they type to `deploy/host/tpf3mp-ctl`, run as root through one
+sudo rule. It checks every argument and runs no shell:
+
+```sh
+ssh <you>@<server> status                 # the container, health, deployed commit
+ssh <you>@<server> logs --since 2h        # --tail 200, --follow
+ssh <you>@<server> diagnostics s-3f2a...  # a player's diagnostics, or all
+ssh <you>@<server> metrics
+ssh <you>@<server> deploy                 # build and run main
+ssh <you>@<server> deploy 3ad6364         # an earlier commit of main
+```
+
+`deploy` fetches `main` from the project's repository and builds only
+commits on it, which passed every check; one deploy runs at a time. SSH
+refuses those accounts a shell, a terminal, file transfer and any
+forwarding, and each use is logged to syslog as `tpf3mp-ctl`, with the
+developer's name (`journalctl -t tpf3mp-ctl`).
+
+- **Setting it up,** once, and after any of its files change:
+  `sh deploy/host/install.sh` as root. It checks the sudo rule with
+  `visudo` and the SSH rules with `sshd -t`, and keeps the SSH rules only
+  if root's effective settings did not change.
+- **Adding a developer:** `tpf3mp-add-dev <name> <file with their SSH
+  public key>` as root. The account has no password, and its home, which
+  holds only the key, belongs to root.
+- **Taking one out:** `userdel <name>` and `rm -r /home/<name>`.
 
 ## Certificates
 

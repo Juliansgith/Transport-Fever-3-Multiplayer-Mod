@@ -138,6 +138,32 @@ jobs:
           grep 'status=running' tpf3mp-logs-*/state.txt
           ./collect-logs.sh --since 10m --for no-such-session
           docker compose down -v
+      - name: The developers' controller refuses all it does not offer
+        run: |
+          set -u
+          ctl=deploy/host/tpf3mp-ctl
+          refused() { # WHAT... : the controller must say no, and run nothing
+            if output=$(sh "$ctl" "$@" 2>&1); then
+              echo "accepted: $*"; exit 1
+            fi
+            echo "refused: $* -> $output"
+          }
+          refused ls /
+          refused cat /etc/passwd
+          refused 'status;' id
+          refused status now
+          refused logs --since '$(id)'
+          refused logs --since 5x
+          refused logs --tail -1
+          refused logs --until 2h
+          refused diagnostics ../../etc/passwd
+          refused diagnostics s-3f2a extra
+          refused metrics now
+          refused deploy main
+          refused deploy 'HEAD~1'
+          refused deploy 0123456 extra
+          sh "$ctl" help | grep -q deploy
+          sh -n deploy/host/tpf3mp-dev-shell deploy/host/tpf3mp-add-dev deploy/host/install.sh
       - name: The certbot hook hands over TPF3-MP's certificate alone
         run: |
           set -eu

@@ -1,0 +1,15 @@
+#!/bin/sh
+# The only thing a TPF3-MP developer's SSH login runs: sshd's ForceCommand
+# for the group tpf3mp-devs (sshd.tpf3mp-devs.conf). It hands the words the
+# developer typed to tpf3mp-ctl, which runs them if they are one of its
+# commands. No shell, no files, no forwarding.
+#
+#   ssh <you>@<server> status
+#   ssh <you>@<server> logs --since 2h
+set -eu
+
+# The words typed, split on spaces and never expanded or run by a shell.
+set -f
+# shellcheck disable=SC2086
+set -- ${SSH_ORIGINAL_COMMAND:-help}
+exec sudo -n /usr/local/sbin/tpf3mp-ctl "$@"
