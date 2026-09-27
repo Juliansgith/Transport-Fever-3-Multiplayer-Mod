@@ -1,0 +1,128 @@
+#!/bin/sh
+# Everything TPF3-MP's developers may do on the project's server, and all of
+# it: run as root through one sudo rule (sudoers.tpf3mp-devs) by their SSH
+# accounts, which run nothing else (tpf3mp-dev-shell). See
+# docs/OPERATIONS.md, "Developer access".
+#
+#   status                        the server's container, health and version
+#   logs [--since 2h] [--tail 200] [--follow]
+#                                 the server's log
+#   diagnostics [<support ID>]    players' diagnostics, all or one session's
+#   metrics                       the server's Prometheus metrics
+#   deploy [<commit>]             build and run main, or an earlier commit
+#                                 of main, from the project's repository
+#
+# Every argument is checked here; nothing given is ever run by a shell.
+# Each use is logged to syslog as tpf3mp-ctl, with the developer's name.
+set -eu
+
+REPO=/opt/tpf3mp
+DEPLOY="$REPO/deploy"
+ORIGIN=https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod.git
+ADMIN=http://127.0.0.1:9470
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+die() {
+  echo "tpf3mp-ctl: $*" >&2
+  exit 2
+}
+
+compose() {
+  docker compose -p tpf3mp -f "$DEPLOY/compose.yaml" "$@"
+}
+
+usage() {
+  sed -n '7,13p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+command=${1:-help}
+[ $# -gt 0 ] && shift
+logger -t tpf3mp-ctl -- "${SUDO_USER:-root}: $command $*" || true
+
+case "$command" in
+  status)
+    [ $# -eq 0 ] || die "status takes nothing more"
+    compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'
+    printf 'health: %s\n' "$(curl -fsS --max-time 5 "$ADMIN/healthz" 2>/dev/null || echo 'not answering')"
+    printf 'deployed: %s\n' "$(git -C "$REPO" log -1 --format='%h %s (%cs)')"
+    ;;
+  logs)
+    set -- "$@" --end
+    args=""
+    while [ "$1" != --end ]; do
+      case "$1" in
+        --since)
+          [ "${2:-}" != --end ] || die "--since needs a time, such as 2h"
+          printf '%s' "$2" | grep -Eqx '[0-9]{1,5}[smhd]' || die "--since takes a time such as 30m, 2h or 1d"
+          args="$args --since $2"
+          shift 2
+          ;;
+        --tail)
+          [ "${2:-}" != --end ] || die "--tail needs a number of lines"
+          printf '%s' "$2" | grep -Eqx '[0-9]{1,6}' || die "--tail takes a number of lines"
+          args="$args --tail $2"
+          shift 2
+          ;;
+        --follow | -f)
+          args="$args --follow"
+          shift
+          ;;
+        *) die "logs takes --since, --tail and --follow" ;;
+      esac
+    done
+    # $args holds only the options checked above: split, never globbed.
+    set -f
+    # shellcheck disable=SC2086
+    compose logs --no-color --timestamps $args tpf3mp-server
+    ;;
+  diagnostics)
+    case $# in
+      0) curl -fsS --max-time 20 "$ADMIN/diagnostics" ;;
+      1)
+        printf '%s' "$1" | grep -Eqx 's-[0-9a-f]{8,64}' || die "a support ID looks like s-3f2a..."
+        curl -fsS --max-time 20 "$ADMIN/diagnostics/$1"
+        ;;
+      *) die "diagnostics takes one support ID at most" ;;
+    esac
+    ;;
+  metrics)
+    [ $# -eq 0 ] || die "metrics takes nothing more"
+    curl -fsS --max-time 10 "$ADMIN/metrics"
+    ;;
+  deploy)
+    [ $# -le 1 ] || die "deploy takes one commit at most"
+    if [ $# -eq 1 ]; then
+      printf '%s' "$1" | grep -Eqx '[0-9a-f]{7,40}' || die "deploy takes a commit's hash"
+    fi
+    # One deploy at a time.
+    exec 9>/run/tpf3mp-deploy.lock
+    flock -n 9 || die "another deploy is running"
+    git -C "$REPO" fetch --quiet "$ORIGIN" main
+    main=$(git -C "$REPO" rev-parse FETCH_HEAD)
+    if [ $# -eq 1 ]; then
+      target=$(git -C "$REPO" rev-parse --verify --quiet "$1^{commit}") || die "no such commit: $1"
+      # Only what reached main, which only takes what passed every check.
+      git -C "$REPO" merge-base --is-ancestor "$target" "$main" || die "$1 is not on main"
+    else
+      target=$main
+    fi
+    git -C "$REPO" -c advice.detachedHead=false checkout --quiet --detach "$target"
+    echo "building $(git -C "$REPO" log -1 --format='%h %s')"
+    compose build
+    compose up -d
+    for _ in $(seq 1 60); do
+      if curl -fsS --max-time 2 "$ADMIN/healthz" >/dev/null 2>&1; then
+        echo "deployed $(git -C "$REPO" log -1 --format='%h %s'): healthy"
+        exit 0
+      fi
+      sleep 1
+    done
+    die "the server does not answer after the deploy: see 'logs --tail 100'"
+    ;;
+  help | --help | -h) usage ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

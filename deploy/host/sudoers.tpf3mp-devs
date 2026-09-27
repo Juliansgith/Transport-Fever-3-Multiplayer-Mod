@@ -1,0 +1,4 @@
+# TPF3-MP's developers run the TPF3-MP controller as root, and nothing else
+# (docs/OPERATIONS.md, "Developer access"). install.sh puts it in place as
+# /etc/sudoers.d/tpf3mp-devs, mode 0440, once `visudo -cf` passes.
+%tpf3mp-devs ALL=(root) NOPASSWD: /usr/local/sbin/tpf3mp-ctl

@@ -45,15 +45,78 @@ hardened container profile.
    ```
    This prints the server version, a session ID and the round trip.
 
+### Beside tf2mp-relay
+
+The project's own server runs TPF3-MP next to tf2mp-relay and other
+sites, behind the host's nginx, whose certificates certbot keeps. TPF3-MP
+shares nginx and certbot and nothing else: its own folder, its own
+Compose project (`name: tpf3mp`, so it never mixes with the relay's
+`deploy` project), its own hostname and ports.
+
+1. **The code:** `git clone
+   https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod.git
+   /opt/tpf3mp`, at the commit `main` holds.
+2. **The certificate:** `certbot certonly --nginx -d <host>`. Certbot's
+   nginx plugin answers the challenge; no site changes.
+3. **The tunnel's virtual host:** `deploy/nginx.conf.example`, with the
+   hostname put in, as `/etc/nginx/sites-available/tpf3mp.conf`, linked
+   from `sites-enabled`. Then `nginx -t`, and only if it passes,
+   `systemctl reload nginx`, which leaves every site's connections
+   standing.
+4. **The certificate for the server,** now and after every renewal:
+   `deploy/certbot-deploy-hook.sh`, with its `HOST` and `DEPLOY` set, as
+   `/etc/letsencrypt/renewal-hooks/deploy/tpf3mp.sh`. Run it once by hand,
+   with `RENEWED_LINEAGE=/etc/letsencrypt/live/<host>`.
+5. **The port:** `ufw allow 29470/udp`.
+6. **Start:** `cd /opt/tpf3mp/deploy && docker compose up -d --build`;
+   later, `tpf3mp-ctl deploy` (see "Developer access").
+7. **Check** from another machine, as above, and through the tunnel with
+   `tpf3mp-agent connect <host>:29470 --tunnel-only`. The relay's own
+   checks must still pass.
+
+### Developer access
+
+TPF3-MP's developers get an SSH account each on the project's server
+that can reach TPF3-MP and nothing else there: not the host's other
+sites, files, processes or ports, and not Docker, whose group would make
+them root. Their logins run `deploy/host/tpf3mp-dev-shell`, which hands
+the words they type to `deploy/host/tpf3mp-ctl`, run as root through one
+sudo rule. It checks every argument and runs no shell:
+
+```sh
+ssh <you>@<server> status                 # the container, health, deployed commit
+ssh <you>@<server> logs --since 2h        # --tail 200, --follow
+ssh <you>@<server> diagnostics s-3f2a...  # a player's diagnostics, or all
+ssh <you>@<server> metrics
+ssh <you>@<server> deploy                 # build and run main
+ssh <you>@<server> deploy 3ad6364         # an earlier commit of main
+```
+
+`deploy` fetches `main` from the project's repository and builds only
+commits on it, which passed every check; one deploy runs at a time. SSH
+refuses those accounts a shell, a terminal, file transfer and any
+forwarding, and each use is logged to syslog as `tpf3mp-ctl`, with the
+developer's name (`journalctl -t tpf3mp-ctl`).
+
+- **Setting it up,** once, and after any of its files change:
+  `sh deploy/host/install.sh` as root. It checks the sudo rule with
+  `visudo` and the SSH rules with `sshd -t`, and keeps the SSH rules only
+  if root's effective settings did not change.
+- **Adding a developer:** `tpf3mp-add-dev <name> <file with their SSH
+  public key>` as root. The account has no password, and its home, which
+  holds only the key, belongs to root.
+- **Taking one out:** `userdel <name>` and `rm -r /home/<name>`.
+
 ## Certificates
 
 The server reads its certificate at start. After a renewal, restart it:
 `docker compose restart`. Two options:
 
 - **certbot.** Use `certbot certonly --standalone -d <host>` while port 80
-  is free, or `--webroot` behind the existing reverse proxy. Add a deploy
-  hook that copies the renewed files into `deploy/certs/`, fixes their owner
-  and restarts the container.
+  is free, `--nginx` or `--webroot` behind the existing reverse proxy.
+  `deploy/certbot-deploy-hook.sh` is the deploy hook: it copies the
+  renewed files into `deploy/certs/`, fixes their owner and restarts the
+  container (see "Beside tf2mp-relay").
 - **Reuse the existing Caddy.** Add the hostname to the Caddyfile so Caddy
   obtains the certificate, then copy it from Caddy's storage
   (`certificates/acme-v02.api.letsencrypt.org-directory/<host>/`) with a

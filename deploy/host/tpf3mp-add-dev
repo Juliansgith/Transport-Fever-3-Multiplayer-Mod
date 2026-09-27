@@ -1,0 +1,32 @@
+#!/bin/sh
+# Adds a TPF3-MP developer: an account in the group tpf3mp-devs that logs
+# in with the public key given and can only run tpf3mp-ctl's commands
+# (docs/OPERATIONS.md, "Developer access"). Run as root:
+#
+#   tpf3mp-add-dev <name> <file holding their SSH public key>
+#
+# The account has no password. Its home holds only its key, and belongs to
+# root, so the developer can change nothing of it. `userdel <name>` and
+# removing /home/<name> take a developer out again.
+set -eu
+
+die() {
+  echo "tpf3mp-add-dev: $*" >&2
+  exit 2
+}
+
+[ $# -eq 2 ] || die "usage: tpf3mp-add-dev <name> <public key file>"
+name=$1
+key=$2
+printf '%s' "$name" | grep -Eqx '[a-z][a-z0-9-]{1,30}' || die "a name is lower-case letters, digits and -"
+getent group tpf3mp-devs >/dev/null || die "no group tpf3mp-devs: run install.sh first"
+if id "$name" >/dev/null 2>&1; then die "$name exists"; fi
+[ "$(grep -c . "$key")" -eq 1 ] || die "$key must hold one public key"
+ssh-keygen -l -f "$key" >/dev/null 2>&1 || die "$key is not an SSH public key"
+
+home=/home/$name
+useradd --no-create-home --home-dir "$home" --shell /bin/sh --user-group --groups tpf3mp-devs "$name"
+passwd --lock "$name" >/dev/null
+install -d -o root -g root -m 0755 "$home" "$home/.ssh"
+install -o root -g root -m 0644 "$key" "$home/.ssh/authorized_keys"
+echo "added $name: ssh $name@$(hostname -f) status"
