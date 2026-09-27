@@ -300,3 +300,37 @@ Rejected:
   hand, and easy to forget when uninstalling.
 - **Starting the game through Steam** (`steam://run`): the game would then
   start without the hook, since nothing of the launcher's reaches it.
+
+## D12 (2026-09-27): the launcher plays on the project's server alone
+
+A package's launcher plays on the one server it was built for, the
+project's own (D4), set when the release is built
+(`TPF3MP_DEFAULT_SERVER`). Players do not type a server and cannot choose
+another, and an invite naming another server is refused, not followed.
+TPF2MP's launcher offered its relay in a box players could change; this
+one does not.
+
+- **One place to meet.** Every player, and every invite, is on the same
+  server: nobody mistypes an address or ends up alone on another.
+- **Fail closed.** Clients trust the server they play on (D4): it sends
+  the room's turns and worlds. Following any invite's server would let an
+  invite send players to a server nobody vouches for.
+- **Enforced in the launcher's backend**, so the window and the page
+  behave alike. The server is shown, not asked for; Connect takes the
+  player's name and, if they have one, an invite, to join in one step.
+- **Development stays open.** `--server` on the command line fixes
+  another server, for playtests against a local one; a build without a
+  server, as a developer's own, offers the typed field as before. No
+  release is drafted without `TPF3MP_DEFAULT_SERVER`.
+
+This narrows D4 in the launcher: operated servers were the plan, and
+now the players' launcher knows no other. More servers, such as regional
+ones, come later through the launcher itself, never through what an
+invite says.
+
+Rejected:
+
+- **A server field players can change** (as until now): an invite could
+  name any server, and a typo ends in a lonely room.
+- **Following an invite to its server** (as until now): the fail-closed
+  reason above.

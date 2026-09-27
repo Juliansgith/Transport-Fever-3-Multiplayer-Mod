@@ -324,11 +324,12 @@ uploads it.
 
 ## Before the first release
 
-Once, in this order. The update key and the default server are built into
-the launcher, so both must be set before the build players download: a
+Once, in this order. The update key and the server are built into the
+launcher, so both must be set before the build players download: a
 launcher built without the key never updates itself, and its players would
-download every later version by hand. So the release workflow drafts no
-release without the key.
+download every later version by hand; one built without the server would
+have them type one. So the release workflow drafts no release without
+either.
 
 1. **Protect the branches:** run `tools/github/protect-branches.sh` as a
    repository administrator (see "What GitHub enforces" in
@@ -340,13 +341,16 @@ release without the key.
 3. **Deploy the server** ([First deployment](#first-deployment), and the
    Caddy block under [Tunnels](#tunnels)), and check it from another
    machine with `tpf3mp-agent connect <host>:29470`.
-4. **Set the variable `TPF3MP_DEFAULT_SERVER`** to its `host:port`.
+4. **Set the variable `TPF3MP_DEFAULT_SERVER`** to its `host:port`: the
+   server every player plays on, and the only one (D12 in
+   [DECISIONS.md](DECISIONS.md)).
 5. **Rebuild the draft:** re-run the latest `release` run of `main` (in
-   Actions), or promote a new commit to `main`. Its warnings must name
-   neither `TPF3MP_UPDATE_PUBLIC_KEY` nor `TPF3MP_DEFAULT_SERVER`.
+   Actions), or promote a new commit to `main`. It stops, and makes no
+   draft, while `TPF3MP_UPDATE_PUBLIC_KEY` or `TPF3MP_DEFAULT_SERVER` is
+   missing.
 6. **Try the draft's packages:** on each platform, download the package
-   from the draft, start the launcher and connect; it offers the server by
-   itself.
+   from the draft, start the launcher and connect; it names the server by
+   itself, and offers no other.
 7. **Publish the draft,** then approve the `sign` run waiting in Actions:
    the release gets its `release.json` and `release.json.sig`, which
    launchers update from. Publishing also starts `image.yml`, which
@@ -374,12 +378,16 @@ runs on distributions with an older C library too.
   After that, `main` needs a version bump before it can release again.
   Without the variable `TPF3MP_UPDATE_PUBLIC_KEY` no draft is made (see
   [Before the first release](#before-the-first-release)).
-- **The server players see first.** Set the repository variable
+- **The server players play on.** Set the repository variable
   `TPF3MP_DEFAULT_SERVER` (Settings, Secrets and variables, Actions,
-  Variables) to the public server's `host:port`, and the packages' launcher
-  offers it until a player has connected elsewhere; the launcher remembers
-  each player's last server and name. It is built into the launcher, so a
-  player only starts it. The packages also carry `PLAYING.md`.
+  Variables) to the public server's `host:port`. It is built into the
+  packages' launcher, which plays on it and on no other: players do not
+  type a server, and an invite that names another is refused (D12 in
+  [DECISIONS.md](DECISIONS.md)). No draft is made without it. For
+  development and playtests, `--server <host:port>` on the launcher's
+  command line plays on another server instead; a launcher built without
+  either, as a developer's own, asks for the server. The packages also
+  carry `PLAYING.md`.
 - **Updates.** The launcher installs a release only if it is signed with
   a key it trusts. Whoever holds that key can run code on every player's
   machine, so it lives where no branch or workflow but one can read it,

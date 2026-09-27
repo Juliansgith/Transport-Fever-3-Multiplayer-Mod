@@ -65,6 +65,11 @@ pub struct LauncherConfig {
     pub remember: Option<PathBuf>,
     /// The server the page offers first, as `host:port`.
     pub server: Option<String>,
+    /// Whether [`Self::server`] is the only server this launcher plays on
+    /// (D12): the one its package was built for, or the one it was told
+    /// on its command line. Then neither the player nor an invite can
+    /// choose another.
+    pub server_fixed: bool,
     /// How to trust servers.
     pub trust: ServerTrust,
     pub identity: Arc<Identity>,
@@ -205,6 +210,7 @@ impl Shared {
         let shared = Arc::new(Self {
             view: Mutex::new(View {
                 server: config.server.clone(),
+                server_fixed: config.server_fixed,
                 name: config.name.clone(),
                 player: Some(config.identity.player()),
                 installed: config.installed.clone(),
@@ -304,6 +310,10 @@ async fn act(
 ) -> Result<(), String> {
     match action {
         Action::Connect { server, name } => {
+            // A whole invite, as "Copy invite" gives it, connects and joins;
+            // one to another server is refused, in a room or not.
+            let passed = passed_invite(&server);
+            let server = server_for(fixed_server(config), &server, passed.as_ref())?;
             if session.is_some() {
                 return Err("leave the room first".into());
             }
@@ -311,18 +321,6 @@ async fn act(
             if name.as_str().is_empty() {
                 return Err("choose a name".into());
             }
-            // A whole invite, as "Copy invite" gives it, connects and joins.
-            let passed = passed_invite(&server);
-            let server = match &passed {
-                Some(Passed {
-                    server: Some(server),
-                    ..
-                }) => server.clone(),
-                Some(Passed { server: None, .. }) => {
-                    return Err("that is an invite: put the server's address before it".into());
-                }
-                None => server.trim().to_owned(),
-            };
             connect_to(shared, config, connected, &server, name).await?;
             match passed {
                 Some(passed) => join(shared, config, connected, session, passed.invite, None).await,
@@ -371,13 +369,20 @@ async fn act(
             begin_session(shared, config, connected, session, invite, create.password)
         }
         Action::Join { invite, password } => {
-            let current = connected.as_ref().ok_or("connect to a server first")?;
             let passed = passed_invite(&invite).ok_or("that is not an invite")?;
+            // An invite to another server is refused, connected or not.
+            if let (Some(fixed), Some(other)) = (fixed_server(config), &passed.server)
+                && !same_server(fixed, other)
+            {
+                return Err(elsewhere(fixed, other));
+            }
+            let current = connected.as_ref().ok_or("connect to a server first")?;
             let password = password_text(password)?;
-            // An invite to another server takes the player there first.
+            // Without a fixed server, an invite to another server takes the
+            // player there first.
             let here = shared.view().server.clone();
             if let Some(server) = passed.server
-                && !here.is_some_and(|here| here.eq_ignore_ascii_case(&server))
+                && !here.is_some_and(|here| same_server(&here, &server))
             {
                 let name = current.options.name.clone();
                 connect_to(shared, config, connected, &server, name).await?;
@@ -731,6 +736,51 @@ async fn content_diff(events: &mut Events) -> Option<ContentDiff> {
     .flatten()
 }
 
+/// The server this launcher plays on alone, when it has one (D12).
+fn fixed_server(config: &LauncherConfig) -> Option<&str> {
+    config.server.as_deref().filter(|_| config.server_fixed)
+}
+
+/// The server to connect to for what the player gave to Connect: `typed`,
+/// and the invite in it if any. With a `fixed` server, that one, and an
+/// invite only to it; otherwise what was typed, or the invite's server.
+fn server_for(fixed: Option<&str>, typed: &str, passed: Option<&Passed>) -> Result<String, String> {
+    match (fixed, passed) {
+        (
+            Some(fixed),
+            Some(Passed {
+                server: Some(other),
+                ..
+            }),
+        ) if !same_server(fixed, other) => Err(elsewhere(fixed, other)),
+        (Some(fixed), None) if !typed.trim().is_empty() && !same_server(fixed, typed) => {
+            Err("that is not an invite".into())
+        }
+        (Some(fixed), _) => Ok(fixed.to_owned()),
+        (
+            None,
+            Some(Passed {
+                server: Some(server),
+                ..
+            }),
+        ) => Ok(server.clone()),
+        (None, Some(Passed { server: None, .. })) => {
+            Err("that is an invite: put the server's address before it".into())
+        }
+        (None, None) => Ok(typed.trim().to_owned()),
+    }
+}
+
+/// Whether two `host:port`s name the same server, as players type them.
+fn same_server(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim())
+}
+
+/// Why an invite to `other` is refused by a launcher fixed to `fixed`.
+fn elsewhere(fixed: &str, other: &str) -> String {
+    format!("that invite is for another server, {other}: TPF3-MP plays on {fixed} alone")
+}
+
 /// An invite as players pass it on: the room's invite, perhaps with the
 /// server's address before it, as "Copy invite" gives it, inside whatever
 /// message it came in.
@@ -932,5 +982,41 @@ mod tests {
         assert_eq!(passed("tpf3mp.example.org:29470".into()), None);
         // A cut-off invite is none.
         assert_eq!(passed(code[..code.len() - 4].to_owned()), None);
+    }
+
+    #[test]
+    fn a_launcher_with_its_own_server_goes_nowhere_else() {
+        let code = invite().to_string();
+        let own = "tpf3mp.example.org:29470";
+        let connect = |fixed: Option<&str>, typed: String| {
+            server_for(fixed, &typed, passed_invite(&typed).as_ref())
+        };
+        // Its own server, whatever the invite says of it, and for nothing.
+        assert_eq!(connect(Some(own), String::new()), Ok(own.to_owned()));
+        assert_eq!(connect(Some(own), own.to_uppercase()), Ok(own.to_owned()));
+        assert_eq!(connect(Some(own), code.clone()), Ok(own.to_owned()));
+        assert_eq!(
+            connect(Some(own), format!("{own} {code}")),
+            Ok(own.to_owned())
+        );
+        // Another server, alone or with an invite, is refused.
+        let refused = connect(Some(own), format!("evil.example:29470 {code}")).unwrap_err();
+        assert!(refused.contains("another server"), "{refused}");
+        assert!(refused.contains(own), "{refused}");
+        assert_eq!(
+            connect(Some(own), "evil.example:29470".into()),
+            Err("that is not an invite".into())
+        );
+
+        // Without one, as a build for development: what the player typed.
+        assert_eq!(
+            connect(None, " play.example.net:29470 ".into()),
+            Ok("play.example.net:29470".into())
+        );
+        assert_eq!(
+            connect(None, format!("play.example.net:29470 {code}")),
+            Ok("play.example.net:29470".into())
+        );
+        assert!(connect(None, code).is_err(), "an invite needs its server");
     }
 }

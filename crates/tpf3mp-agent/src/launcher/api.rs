@@ -12,6 +12,8 @@ use crate::bridge::{Status, WorldStatus};
 #[derive(Debug, Default)]
 pub(crate) struct View {
     pub(crate) server: Option<String>,
+    /// The server is the only one this launcher plays on (D12).
+    pub(crate) server_fixed: bool,
     pub(crate) name: String,
     pub(crate) player: Option<PlayerId>,
     pub(crate) connecting: bool,
@@ -87,6 +89,9 @@ pub struct State {
     /// This player's short ID, as others see it.
     pub player: Option<String>,
     pub server: Option<String>,
+    /// Whether `server` is the only server this launcher plays on (D12):
+    /// the front ends then offer no other, and invites join on it.
+    pub server_fixed: bool,
     pub server_version: Option<String>,
     /// What the player quotes to the server's operator: the connection's
     /// name in the server's log.
@@ -342,6 +347,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         name: view.name.clone(),
         player: you.map(|player| player.to_string()),
         server: view.server.clone(),
+        server_fixed: view.server_fixed,
         server_version: view.server_version.clone(),
         support_id: status
             .session

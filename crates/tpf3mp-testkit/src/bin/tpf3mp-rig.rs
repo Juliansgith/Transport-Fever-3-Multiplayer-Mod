@@ -198,6 +198,8 @@ async fn run(args: Args) -> Result<ExitCode> {
             tunnel: tunnel.clone(),
             remember: None,
             server: Some(server.clone()),
+            // Every player on the rig's server, as a package's on its own.
+            server_fixed: true,
             trust: trust.clone(),
             identity,
             name: name.clone(),

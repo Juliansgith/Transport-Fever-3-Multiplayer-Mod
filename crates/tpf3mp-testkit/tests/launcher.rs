@@ -133,6 +133,7 @@ fn launcher_config(
         game_exe: None,
         listen: "127.0.0.1:0".parse().unwrap(),
         server: None,
+        server_fixed: false,
         tunnel: TunnelChoice::Off,
         remember: None,
         trust: trust.clone(),
@@ -454,6 +455,99 @@ async fn a_window_drives_the_launcher_in_process() {
     assert_eq!(room.phase, Phase::Lobby);
     assert!(room.you_own);
     assert!(room.invite.is_some());
+
+    drop(launcher);
+    let _ = stop.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
+}
+
+/// A launcher built for a server plays on it alone (D12): Connect takes
+/// no server, and an invite to another is refused, not followed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launcher_with_its_own_server_plays_there_alone() {
+    use tpf3mp_agent::launcher::{Action, Connection};
+
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
+    config.rules = toy_rules_menu();
+    config.max_sessions_per_address = 100;
+    config.max_handshakes_per_address = 100;
+    let server = Server::bind(config).unwrap();
+    let server_address = server.local_addr().unwrap().to_string();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(server.run(async {
+        let _ = stopped.await;
+    }));
+
+    let mut config = launcher_config(
+        root.path(),
+        "eve",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    config.server = Some(server_address.clone());
+    config.server_fixed = true;
+    let launcher = Launcher::start_local(config);
+    let handle = launcher.handle();
+    let state = handle.state();
+    assert!(state.server_fixed);
+    assert_eq!(state.server.as_deref(), Some(server_address.as_str()));
+
+    // Words that are no invite are not taken for a server.
+    let refused = handle
+        .act(Action::Connect {
+            server: "elsewhere.example:29470".into(),
+            name: "Eve".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(refused.contains("not an invite"), "{refused}");
+    assert_eq!(handle.state().connection, Connection::Disconnected);
+
+    // Nothing typed: the launcher's own server.
+    handle
+        .act(Action::Connect {
+            server: String::new(),
+            name: "Eve".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(handle.state().connection, Connection::Connected);
+
+    handle
+        .act(Action::Create {
+            room: "own server".into(),
+            max_players: 2,
+            password: None,
+            rules: None,
+        })
+        .await
+        .unwrap();
+    let invite = handle.state().room.unwrap().invite.unwrap();
+    assert!(invite.starts_with(&server_address), "{invite}");
+    handle.act(Action::Leave).await.unwrap();
+
+    // The same room's invite, sent from another server, is not followed.
+    let code = invite.split_whitespace().last().unwrap();
+    let foreign = format!("elsewhere.example:29470 {code}");
+    let refused = handle
+        .act(Action::Join {
+            invite: foreign.clone(),
+            password: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(refused.contains("another server"), "{refused}");
+    let refused = handle
+        .act(Action::Connect {
+            server: foreign,
+            name: "Eve".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(refused.contains("another server"), "{refused}");
 
     drop(launcher);
     let _ = stop.send(());

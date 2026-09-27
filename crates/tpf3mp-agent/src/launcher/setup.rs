@@ -168,13 +168,14 @@ pub struct LauncherArgs {
     #[arg(long, default_value = "127.0.0.1:47470")]
     pub listen: SocketAddr,
 
-    /// The server offered first, as host:port. Without it, the server last
-    /// connected to, then --default-server.
+    /// The server to play on, as host:port, and the only one (D12): for
+    /// development and playtests. Without it, the package's own.
     #[arg(long)]
     pub server: Option<String>,
 
-    /// The server offered when there is neither --server nor one from last
-    /// time, as a package sets it.
+    /// The server a package is built for: the only one its launcher plays
+    /// on. Without it and --server, as in a build for development, the
+    /// player types the server, and the last one is offered.
     #[arg(long)]
     pub default_server: Option<String>,
 
@@ -233,6 +234,16 @@ pub fn package_hook() -> Option<PathBuf> {
 }
 
 impl LauncherArgs {
+    /// The server this launcher plays on alone (D12): the one given, or the
+    /// package's.
+    fn fixed_server(&self) -> Option<String> {
+        self.server
+            .clone()
+            .or_else(|| self.default_server.clone())
+            .map(|server| server.trim().to_owned())
+            .filter(|server| !server.is_empty())
+    }
+
     /// The launcher these options describe: the player's identity (created
     /// on first use), with the server and name remembered from last time
     /// where none are given, and the game's content and worlds.
@@ -249,11 +260,8 @@ impl LauncherArgs {
             hook: package_hook(),
             game_exe: self.game_exe.clone(),
             listen: self.listen,
-            server: self
-                .server
-                .clone()
-                .or(remembered.server)
-                .or_else(|| self.default_server.clone()),
+            server: self.fixed_server().or(remembered.server),
+            server_fixed: self.fixed_server().is_some(),
             tunnel: self.tunnel.choice()?,
             remember: Some(remember),
             trust: trust(self.pin_cert.as_deref())?,

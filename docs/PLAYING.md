@@ -12,8 +12,6 @@ this page says so where it applies.
 - The TPF3-MP package for your system, from the project's releases:
   Windows x64, Linux x64 or macOS on Apple silicon. Players on different
   systems can share one room.
-- The address of a TPF3-MP server, such as `tpf3mp.example.org:29470`,
-  unless your package already offers one.
 
 You do not need to forward any port or open anything on your router: your
 launcher connects out to the server, and everything goes through it.
@@ -70,10 +68,12 @@ window cannot open, the launcher opens the same launcher as a page in your
 browser instead (`--browser` does so on purpose); that page works only on
 your own machine, in the tab the launcher opened.
 
-1. **Server.** Enter the server's address and the name others will see,
-   then **Connect**; the launcher remembers both for next time. Got an
-   invite? Paste the whole of it here instead, with your name: you are
-   connected and in the room in one step.
+1. **Connect.** Enter the name others will see, then **Connect**; the
+   launcher remembers it for next time. There is no server to type:
+   TPF3-MP plays on the project's server, which the Server panel names,
+   and on no other. Got an invite? Paste it into **Invite** as well: you
+   are connected and in the room in one step. An invite that names
+   another server is refused.
 2. **Rooms.** Either create a room, with an optional password, or paste an
    invite someone sent you and **Join room**. When the server offers more
    than one set of rules, the host picks one when creating the room:
@@ -82,11 +82,9 @@ your own machine, in the tab the launcher opened.
    actions. The room's title shows its rules, and they cannot change once
    the room exists.
 3. **Invite.** In your room, **Copy invite** and send it to your friends,
-   for example on Discord. It holds the server's address, as you typed it,
-   and the room's code; if you typed `localhost` or a home network address,
-   put the address your friends use in its place. Anyone with the invite
-   (and the password, if you set one) can join; keep it within your
-   group.
+   for example on Discord. It holds the server's address and the room's
+   code. Anyone with the invite (and the password, if you set one) can
+   join; keep it within your group.
 4. **Start the game.** In your room, press **Start Transport Fever 3** in
    the Game part, with Steam running. The launcher starts the game with
    TPF3-MP in it, for this room; once the game has loaded, the Game part
