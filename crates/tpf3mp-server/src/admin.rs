@@ -1,8 +1,9 @@
 //! The admin endpoint: Prometheus metrics at `/metrics`, a health check at
-//! `/healthz`, and `POST /announce`, which tells everyone connected the
-//! request's body (up to 280 bytes of UTF-8), over plain HTTP. It has no
-//! authentication, so it must only listen on a private address: loopback,
-//! or a VPN interface.
+//! `/healthz`, `POST /announce`, which tells everyone connected the
+//! request's body (up to 280 bytes of UTF-8), and players' diagnostics:
+//! `/diagnostics` lists the sessions with some, `/diagnostics/<session>`
+//! gives one session's, over plain HTTP. It has no authentication, so it
+//! must only listen on a private address: loopback, or a VPN interface.
 
 use std::{sync::Arc, time::Duration};
 
@@ -95,6 +96,7 @@ async fn answer(mut stream: TcpStream, stats: &ServerStats) -> std::io::Result<(
         b"GET /healthz HTTP/1.1" | b"GET /healthz HTTP/1.0" => {
             ("200 OK", "text/plain", "ok\n".to_owned())
         }
+        line if line.starts_with(b"GET /diagnostics") => diagnostics(line, stats),
         _ => ("404 Not Found", "text/plain", "not found\n".to_owned()),
     };
     let response = format!(
@@ -103,6 +105,51 @@ async fn answer(mut stream: TcpStream, stats: &ServerStats) -> std::io::Result<(
     );
     stream.write_all(response.as_bytes()).await?;
     stream.shutdown().await
+}
+
+/// `/diagnostics`, the sessions with diagnostics, the latest first; or
+/// `/diagnostics/<session>`, one session's, one JSON object a line.
+fn diagnostics(request_line: &[u8], stats: &ServerStats) -> (&'static str, &'static str, String) {
+    let not_found = || ("404 Not Found", "text/plain", "not found\n".to_owned());
+    let failed = |error: std::io::Error| {
+        warn!(%error, "cannot read the players' diagnostics");
+        (
+            "500 Internal Server Error",
+            "text/plain",
+            "cannot read the diagnostics\n".to_owned(),
+        )
+    };
+    let line = String::from_utf8_lossy(request_line);
+    let Some(path) = line
+        .strip_suffix(" HTTP/1.1")
+        .or_else(|| line.strip_suffix(" HTTP/1.0"))
+        .and_then(|line| line.strip_prefix("GET /diagnostics"))
+    else {
+        return not_found();
+    };
+    match path {
+        "" | "/" => match stats.diagnostics() {
+            None => (
+                "404 Not Found",
+                "text/plain",
+                "this server keeps no diagnostics: see --diagnostics-days\n".to_owned(),
+            ),
+            Some(Err(error)) => failed(error),
+            Some(Ok(entries)) => match serde_json::to_string_pretty(&entries) {
+                Ok(json) => ("200 OK", "application/json", json + "\n"),
+                Err(error) => failed(std::io::Error::other(error)),
+            },
+        },
+        session => match stats.session_diagnostics(session.trim_start_matches('/')) {
+            Ok(Some(lines)) => (
+                "200 OK",
+                "application/x-ndjson",
+                String::from_utf8_lossy(&lines).into_owned(),
+            ),
+            Ok(None) => not_found(),
+            Err(error) => failed(error),
+        },
+    }
 }
 
 /// The request's body as UTF-8, read to its `Content-Length`, of at most a

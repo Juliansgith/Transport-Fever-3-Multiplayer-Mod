@@ -306,6 +306,21 @@ impl<B: Backend> LauncherApp<B> {
                     }
                 }
             }
+            if let Some(on) = state.diagnostics {
+                let mut sending = on;
+                if ui
+                    .checkbox(&mut sending, "Send diagnostics")
+                    .on_hover_text(
+                        "Lines of this launcher's log go to the server you play on, with \
+                         paths, addresses and keys taken out, so its operator can see what \
+                         went wrong by your support ID. The server keeps them for a limited \
+                         time, 30 days unless its operator chose otherwise.",
+                    )
+                    .changed()
+                {
+                    self.backend.act(Action::Diagnostics { on: sending });
+                }
+            }
             if let Some(updater) = &self.extras.updater {
                 update_line(ui, updater);
             }

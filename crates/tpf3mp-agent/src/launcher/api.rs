@@ -31,6 +31,9 @@ pub(crate) struct View {
     pub(crate) installed: Option<crate::steam::Installed>,
     /// The last server connected to speaks a newer protocol.
     pub(crate) outdated: bool,
+    /// Whether the player's log goes to the server; `None` when this
+    /// launcher has no diagnostics to send.
+    pub(crate) diagnostics: Option<bool>,
 }
 
 /// Something the player asks for.
@@ -68,6 +71,10 @@ pub enum Action {
         text: String,
     },
     Leave,
+    /// Sends this player's diagnostics to the server, or stops.
+    Diagnostics {
+        on: bool,
+    },
 }
 
 /// Everything a launcher front end shows: the web page reads it as JSON,
@@ -103,6 +110,9 @@ pub struct State {
     pub notices: Vec<String>,
     /// The server operator's latest notice, such as a restart coming.
     pub announcement: Option<String>,
+    /// Whether lines of this launcher's log, redacted, go to the server
+    /// ("Diagnostics" in PROTOCOL.md); `None` when it sends none at all.
+    pub diagnostics: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -373,6 +383,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
             .collect(),
         notices: status.notices.iter().cloned().collect(),
         announcement: status.announcement.clone(),
+        diagnostics: view.diagnostics,
     }
 }
 

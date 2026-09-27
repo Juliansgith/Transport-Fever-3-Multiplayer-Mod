@@ -17,6 +17,7 @@ mod bounded;
 mod bytes;
 mod content;
 mod control;
+mod diagnostics;
 mod ids;
 mod snapshot;
 mod text;
@@ -37,6 +38,10 @@ pub use control::{
     MAX_ROOM_MEMBERS, MemberView, Reject, RejectReason, Request, RequestError, Response, Resume,
     RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, ServerMessage, Speed, Welcome,
 };
+pub use diagnostics::{
+    DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText,
+    MAX_DIAGNOSTIC_EVENTS, redact,
+};
 pub use ids::{Invite, InviteError, PlayerId, RoomId, SessionId, Signature};
 pub use snapshot::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkRequest, BulkResponse,
@@ -48,8 +53,8 @@ pub use turn::{Event, EventBody, Turn, TurnMessage, TurnStart};
 /// Protocol version. Client and server must match exactly. Version 2 lets
 /// hosts choose the rules a room is played by; version 3 declares a game's
 /// mods by name, so players learn which differ; version 4 carries the
-/// operator's notices.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// operator's notices; version 5 lets clients send their diagnostics.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

@@ -230,6 +230,8 @@ impl LauncherArgs {
         let remember = identity_file.with_file_name("launcher.json");
         let remembered = Remembered::load(&remember);
         Ok(LauncherConfig {
+            // The launcher window sets it: it records the player's log.
+            diagnostics: None,
             listen: self.listen,
             server: self
                 .server
