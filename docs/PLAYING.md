@@ -189,7 +189,8 @@ the same again. Your game's own log and crash dumps are not sent. The
 server keeps the lines for a limited time, 30 days unless its operator
 chose otherwise.
 
-Untick **Send diagnostics** at the bottom of the window to stop: the
+Untick **Send diagnostics** at the bottom of the window (or of the browser
+page) to stop: the
 launcher then sends nothing more, forgets the lines it had not sent yet,
 and remembers your choice.
 
