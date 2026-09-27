@@ -498,6 +498,8 @@ impl GameCommand {
         // A real game runs TPF3-MP only with the hook loaded into it (D11).
         let hook = if fake {
             None
+        } else if !tpf3mp_launch::SUPPORTED {
+            bail!("{}", tpf3mp_launch::LaunchError::Unsupported);
         } else {
             let hook = args
                 .hook

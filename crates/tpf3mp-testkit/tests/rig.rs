@@ -101,16 +101,40 @@ fn three_fake_games_play_one_room_and_agree() {
     assert_ne!(keys[1], keys[2]);
 }
 
+/// A library every system has, to load in the hook's place: `cargo test`
+/// does not build the hook as a library of its own. The hook's rules have
+/// their own tests; this one is about how the rig starts a game.
+fn stand_in_hook() -> Option<String> {
+    let candidates: Vec<std::path::PathBuf> = if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        vec![Path::new(&root).join("System32").join("version.dll")]
+    } else {
+        [
+            "/lib/x86_64-linux-gnu/libc.so.6",
+            "/usr/lib/x86_64-linux-gnu/libc.so.6",
+            "/lib64/libc.so.6",
+            "/usr/lib64/libc.so.6",
+            "/usr/lib/libc.so.6",
+        ]
+        .map(std::path::PathBuf::from)
+        .to_vec()
+    };
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .map(|path| path.display().to_string())
+}
+
 /// A game given by path, as the real one will be, is started as the
-/// launcher starts it: with the hook loaded into it (the one built next to
-/// the rig), and told its link in the environment. The fake game stands in
-/// for the game; it finds its link where the hook does, and each one joins
-/// its player's room.
+/// launcher starts it: with a library loaded into it, and told its link in
+/// the environment. The fake game stands in for the game; it finds its
+/// link where the hook does, and each one joins its player's room.
 #[test]
 fn a_game_by_path_starts_with_the_hook_and_finds_its_link() {
     let root = tempfile::tempdir().unwrap();
     let fakegame = env!("CARGO_BIN_EXE_tpf3mp-fakegame");
-    let args = [
+    let hook = stand_in_hook();
+    let mut args = vec![
         "--players",
         "2",
         "--game",
@@ -120,6 +144,9 @@ fn a_game_by_path_starts_with_the_hook_and_finds_its_link() {
         "--game-arg",
         "60",
     ];
+    if let Some(hook) = &hook {
+        args.extend(["--hook", hook]);
+    }
     if cfg!(target_os = "macos") {
         // No game gets the hook on macOS yet; the rig says so and stops.
         let (status, output) = run_rig(root.path(), &args);
