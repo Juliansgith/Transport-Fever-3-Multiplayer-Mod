@@ -8,8 +8,7 @@
 //! bottom. Narrow, the same one under the other.
 
 use std::{
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -57,36 +56,8 @@ const FIELD_HEIGHT: f32 = 32.0;
 
 /// What the window needs besides the launcher.
 pub struct Extras {
-    /// Where the log files are, for "Open logs folder".
-    pub logs: Option<PathBuf>,
-    /// Where "Collect logs" reads from and writes its zip; `None` hides
-    /// the button.
-    pub collect: Option<CollectLogs>,
     /// Checks for and installs new versions; `None` in tests.
     pub updater: Option<Updater>,
-}
-
-/// Where "Collect logs" works.
-#[derive(Debug, Clone)]
-pub struct CollectLogs {
-    /// TPF3-MP's per-user data directory.
-    pub data_dir: PathBuf,
-    /// Where the zip goes: the Downloads folder, normally.
-    pub out_dir: PathBuf,
-    /// Show the zip in the file manager once written.
-    pub reveal: bool,
-    /// Look for the game's logs and crash dumps too.
-    pub game: bool,
-}
-
-/// How the last "Collect logs" went.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Collecting {
-    #[default]
-    Idle,
-    Busy,
-    Done(PathBuf),
-    Failed(String),
 }
 
 /// A question the window asks before acting.
@@ -120,8 +91,6 @@ pub struct LauncherApp<B> {
     quitting: bool,
     /// An update check was started because the server is newer.
     looked_for_update: bool,
-    /// The log bundle being written, or the last one.
-    collecting: Arc<Mutex<Collecting>>,
     /// The look is set on the first frame.
     styled: bool,
     /// When the game's folder was last looked at, and the TPF3-MP version
@@ -148,51 +117,9 @@ impl<B: Backend> LauncherApp<B> {
             confirm: None,
             quitting: false,
             looked_for_update: false,
-            collecting: Arc::default(),
             styled: false,
             installed_mod: None,
         }
-    }
-
-    /// How the last "Collect logs" went.
-    pub fn collecting(&self) -> Collecting {
-        self.collecting
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    /// Writes the log bundle on a thread of its own, since it reads up to
-    /// tens of megabytes.
-    fn collect_logs(&self, ctx: &egui::Context, support_id: Option<String>) {
-        let Some(collect) = self.extras.collect.clone() else {
-            return;
-        };
-        let status = Arc::clone(&self.collecting);
-        *status.lock().unwrap_or_else(PoisonError::into_inner) = Collecting::Busy;
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let mut bundle = tpf3mp_agent::logs::Collect::new(&collect.data_dir);
-            bundle.support_id = support_id;
-            if !collect.game {
-                bundle.candidates = tpf3mp_agent::logs::own_candidates(&collect.data_dir);
-            }
-            let outcome = match bundle.write(&collect.out_dir) {
-                Ok(bundle) => {
-                    tracing::info!(path = %bundle.path.display(), "collected the logs");
-                    if collect.reveal {
-                        tpf3mp_agent::launcher::setup::reveal_file(&bundle.path);
-                    }
-                    Collecting::Done(bundle.path)
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "cannot collect the logs");
-                    Collecting::Failed(error.to_string())
-                }
-            };
-            *status.lock().unwrap_or_else(PoisonError::into_inner) = outcome;
-            ctx.request_repaint();
-        });
     }
 
     pub fn backend(&self) -> &B {
@@ -297,8 +224,8 @@ impl<B: Backend> LauncherApp<B> {
     }
 
     /// Your game along the bottom, as the TPF2 launcher shows it: where it
-    /// is, whether the mod is in, and the logs; under it, this launcher's
-    /// version and updates.
+    /// is, whether the mod is in, and whether the launcher's log goes to
+    /// the server; under it, this launcher's version and updates.
     fn footer(&mut self, ui: &mut Ui, state: &State) {
         let installed_mod = self.installed_mod(state);
         theme::bar(ui, |ui| {
@@ -339,9 +266,26 @@ impl<B: Backend> LauncherApp<B> {
                 } else if state.installed.is_some() {
                     theme::pill(ui, "TPF3-MP not installed", theme::WARNING);
                 }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    self.logs_buttons(ui, state);
-                });
+                // The launcher's log goes to the server by itself (D10):
+                // the switch that stops it is all there is of logs here.
+                if let Some(on) = state.diagnostics {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let mut sending = on;
+                        if ui
+                            .checkbox(&mut sending, "Send diagnostics")
+                            .on_hover_text(
+                                "Lines of this launcher's log go to the server you play on, \
+                                 with paths, addresses and keys taken out, so its operator can \
+                                 see what went wrong by your support ID. The server keeps them \
+                                 for a limited time, 30 days unless its operator chose \
+                                 otherwise.",
+                            )
+                            .changed()
+                        {
+                            self.backend.act(Action::Diagnostics { on: sending });
+                        }
+                    });
+                }
             });
         });
         ui.add_space(4.0);
@@ -351,21 +295,6 @@ impl<B: Backend> LauncherApp<B> {
                     .small()
                     .color(theme::FAINT),
             );
-            if let Some(on) = state.diagnostics {
-                let mut sending = on;
-                if ui
-                    .checkbox(&mut sending, "Send diagnostics")
-                    .on_hover_text(
-                        "Lines of this launcher's log go to the server you play on, with \
-                         paths, addresses and keys taken out, so its operator can see what \
-                         went wrong by your support ID. The server keeps them for a limited \
-                         time, 30 days unless its operator chose otherwise.",
-                    )
-                    .changed()
-                {
-                    self.backend.act(Action::Diagnostics { on: sending });
-                }
-            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
                     RichText::new(format!("TPF3-MP {}", env!("CARGO_PKG_VERSION")))
@@ -377,51 +306,6 @@ impl<B: Backend> LauncherApp<B> {
                 }
             });
         });
-    }
-
-    /// "Open logs folder" and "Collect logs", right to left, and how the
-    /// last collecting went.
-    fn logs_buttons(&mut self, ui: &mut Ui, state: &State) {
-        if self.extras.collect.is_some() {
-            let collecting = self.collecting();
-            let busy = collecting == Collecting::Busy;
-            match &collecting {
-                Collecting::Idle => {}
-                Collecting::Busy => {
-                    ui.label(RichText::new("collecting…").weak());
-                }
-                Collecting::Done(path) => {
-                    let name = path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    ui.label(RichText::new(format!("saved {name}")).weak())
-                        .on_hover_text(path.display().to_string());
-                }
-                Collecting::Failed(error) => {
-                    ui.label(
-                        RichText::new("cannot collect the logs").color(ui.visuals().error_fg_color),
-                    )
-                    .on_hover_text(error);
-                }
-            }
-            if theme::button(ui, !busy, "Collect logs", Kind::Secondary)
-                .on_hover_text(
-                    "Put TPF3-MP's logs and the game's into one zip for a bug report. \
-                     Keys and tokens are never included.",
-                )
-                .clicked()
-            {
-                self.collect_logs(ui.ctx(), state.support_id.clone());
-            }
-        }
-        if let Some(logs) = &self.extras.logs
-            && theme::button(ui, true, "Open logs folder", Kind::Secondary)
-                .on_hover_text(logs.display().to_string())
-                .clicked()
-        {
-            tpf3mp_agent::launcher::setup::open_folder(logs);
-        }
     }
 
     /// Two columns: the game's name, the steps and the room's talk on the

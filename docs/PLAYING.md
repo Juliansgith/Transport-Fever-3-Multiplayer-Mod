@@ -176,9 +176,11 @@ server.
 ## When something does not work
 
 The top of the window shows your **support ID** (**Copy** copies it). It
-names your connection in the server's log: send it to the server's operator
-with your report, and they find exactly what happened to you. **Open logs
-folder**, in the bar at the bottom, opens the launcher's own logs
+names your connection in the server's log: quote it to the server's
+operator with your report. There is nothing to send: while you are
+connected, the launcher sends its log to the server by itself (see
+"Diagnostics"), so the operator finds what happened to you from your
+support ID alone. The launcher also keeps its log on your machine
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
 
 ### Diagnostics
@@ -193,21 +195,20 @@ the same again. Your game's own log and crash dumps are not sent. The
 server keeps the lines for a limited time, 30 days unless its operator
 chose otherwise.
 
-Untick **Send diagnostics**, under the bar at the bottom of the window (or
-at the bottom of the browser page), to stop: the
+Untick **Send diagnostics**, in the bar at the bottom of the window (or at
+the bottom of the browser page), to stop: the
 launcher then sends nothing more, forgets the lines it had not sent yet,
 and remembers your choice.
 
-### Sending your logs
+### The game's own logs
 
-**Collect logs**, in the bar at the bottom of the window (and at the bottom
-of the browser page),
-puts everything a bug report needs into one zip,
-`tpf3mp-logs-<time>.zip` in your Downloads folder (in `TPF3-MP` when there
-is no Downloads folder), and shows it. Attach that zip to your report, with
-your support ID. Without the launcher, `tpf3mp-agent collect-logs` writes
-the same zip (`--out <folder>` for another place, `--since 2h` for a shorter
-window, `--game-log <file>` to add a log kept elsewhere).
+The game's own log and crash dumps are not sent. When the operator needs
+them, `tpf3mp-agent collect-logs`, run from the TPF3-MP folder, puts them
+into one zip with TPF3-MP's logs: `tpf3mp-logs-<time>.zip` in your
+Downloads folder (in `TPF3-MP` when there is no Downloads folder).
+`--out <folder>` puts it elsewhere, `--since 2h` takes a shorter window,
+and `--game-log <file>` adds a log kept elsewhere. Attach the zip to your
+report, with your support ID.
 
 The zip holds:
 
@@ -248,10 +249,12 @@ before sharing it publicly if you want to be sure.
 - **"Your game differs from the room's"**: the window lists what to change:
   the game build, the mods you lack, the mods the room does not run, and
   the mods you have in another version. Everyone needs the owner's build
-  and mods in the same order. In the room, the **Game and mods** column
-  shows whose game differs from the owner's; each player sees their own
-  list.
+  and mods in the same order. In the room, a **differ** pill next to a
+  player shows whose game differs from the owner's; each player sees their
+  own list.
 - **"too many players are connected from this network"**: the server
   limits connections per network. Close another game, or ask the operator.
-- **"the invite or password is not valid"**: the invite is from another
-  server, the room closed, or the password is wrong.
+- **"that invite is for another server"**: TPF3-MP plays on its own
+  server alone. Ask for an invite to a room there.
+- **"the invite or password is not valid"**: the room closed, or the
+  password is wrong.

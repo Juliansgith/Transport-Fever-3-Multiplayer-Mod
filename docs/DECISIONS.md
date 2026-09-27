@@ -259,6 +259,14 @@ Rejected:
   authentication, rate limits and TLS, for what the game's connection
   already carries.
 
+Update (2026-09-27): the launcher's window and page no longer offer
+**Collect logs** or **Open logs folder**. With the log going to the server
+by itself, players have nothing to send but their support ID. The game's
+own log and crash dumps, which are never sent, come from `tpf3mp-agent
+collect-logs` when an operator asks for them. The page's
+`/api/collect-logs`, a way for the page to make the launcher write files,
+is gone with the button.
+
 ## D11 (2026-09-27): the hook runs only in a game the launcher starts
 
 TPF3-MP's code runs in Transport Fever 3 only when a player starts the game

@@ -472,20 +472,6 @@ pub fn default_out_dir(data_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| data_dir.to_owned())
 }
 
-/// Collects the logs in `data_dir` and the game's into the default place,
-/// as the launcher's "Collect logs" does.
-pub fn collect_for_launcher(data_dir: &Path, support_id: Option<String>) -> io::Result<Bundle> {
-    let mut collect = Collect::new(data_dir);
-    collect.support_id = support_id;
-    let bundle = collect.write(&default_out_dir(data_dir))?;
-    tracing::info!(
-        path = %bundle.path.display(),
-        files = bundle.files.len(),
-        "collected the logs"
-    );
-    Ok(bundle)
-}
-
 #[derive(Debug, Default)]
 struct Found {
     files: Vec<FoundFile>,
