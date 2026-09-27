@@ -72,20 +72,20 @@ your own machine, in the tab the launcher opened.
    launcher remembers it for next time. There is no server to type:
    TPF3-MP plays on the project's server, which the Server panel names
    (**EU**, in Germany), and on no other. Its dot is green while the
-   server is online. Got an invite? Paste it into **Invite** as well: you
-   are connected and in the room in one step. An invite that names
-   another server is refused.
-2. **Rooms.** Either create a room, with an optional password, or paste an
-   invite someone sent you and **Join room**. When the server offers more
+   server is online. Got an invite code? Type it into **Invite** as well:
+   you are connected and in the room in one step.
+2. **Rooms.** Either create a room, with an optional password, or type
+   the invite code someone sent you, such as `K7QM2X`, and **Join
+   room**. Upper or lower case, both work. When the server offers more
    than one set of rules, the host picks one when creating the room:
    `native` is the game's own rules and economy, as in single player;
    others are run by the server, which checks everyone's money and
    actions. The room's title shows its rules, and they cannot change once
    the room exists.
-3. **Invite.** In your room, **Copy invite** and send it to your friends,
-   for example on Discord. It holds the server's address and the room's
-   code. Anyone with the invite (and the password, if you set one) can
-   join; keep it within your group.
+3. **Invite.** Your room shows its **invite code**, six letters and
+   digits. Send it to your friends, for example on Discord (**Copy
+   invite** copies it), or read it out. Anyone with the code (and the
+   password, if you set one) can join; keep it within your group.
 4. **Start the game.** In your room, press **Start Transport Fever 3** in
    the Game part, with Steam running. The launcher starts the game with
    TPF3-MP in it, for this room; once the game has loaded, the Game part
@@ -176,19 +176,20 @@ server.
 
 ## When something does not work
 
-The top of the window shows your **support ID** (**Copy** copies it). It
-names your connection in the server's log: quote it to the server's
-operator with your report. There is nothing to send: while you are
-connected, the launcher sends its log to the server by itself (see
-"Diagnostics"), so the operator finds what happened to you from your
-support ID alone. The launcher also keeps its log on your machine
+The top of the window shows your **support code**, six letters and
+digits like an invite's (**Copy** copies it). It names your connection in
+the server's log: quote it to the server's operator with your report. It
+lets nobody into your room, so it is safe to post. There is nothing to
+send: while you are connected, the launcher sends its log to the server
+by itself (see "Diagnostics"), so the operator finds what happened to you
+from your support code alone. The launcher also keeps its log on your machine
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
 
 ### Diagnostics
 
 While you are connected, the launcher sends the lines of its log to the
 server you play on, so its operator can see what went wrong for you from
-your support ID, without asking you for files. Before a line leaves your
+your support code, without asking you for files. Before a line leaves your
 machine, paths are cut to their last part (so your user name and your
 Steam account are not in them), and IP addresses, invites, keys and
 passwords, e-mail addresses and Steam IDs are taken out; the server does
@@ -209,7 +210,7 @@ into one zip with TPF3-MP's logs: `tpf3mp-logs-<time>.zip` in your
 Downloads folder (in `TPF3-MP` when there is no Downloads folder).
 `--out <folder>` puts it elsewhere, `--since 2h` takes a shorter window,
 and `--game-log <file>` adds a log kept elsewhere. Attach the zip to your
-report, with your support ID.
+report, with your support code.
 
 The zip holds:
 
@@ -221,7 +222,7 @@ The zip holds:
   `<Steam>/userdata/<account>/3493540/local/` (`stdout.txt` and
   `crash_dump/`); the manifest marks them "TPF2 location, confirm on TF3";
 - `manifest.txt`: the versions of TPF3-MP, its protocol and its link to the
-  game, your system, your support ID when connected, every file with its
+  game, your system, your support code when connected, every file with its
   size, and which places were not found.
 
 Only files changed in the last week are taken, newest first, up to 64 MB;
@@ -257,5 +258,8 @@ before sharing it publicly if you want to be sure.
   limits connections per network. Close another game, or ask the operator.
 - **"that invite is for another server"**: TPF3-MP plays on its own
   server alone. Ask for an invite to a room there.
-- **"the invite or password is not valid"**: the room closed, or the
-  password is wrong.
+- **"the invite or password is not valid"**: the room closed, the code
+  is mistyped, or the password is wrong.
+- **"too many requests; try again in a moment"** when joining: too many
+  wrong codes or passwords came from your network in the last 10
+  minutes. Wait, then check the code.

@@ -11,7 +11,8 @@ use std::{
 use ring::hmac;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tpf3mp_proto::{
-    CreateRoom, FixedBytes, Invite, MAX_ROOM_MEMBERS, RequestError, RoomId, RoomView, RulesOffer,
+    Code, CreateRoom, FixedBytes, Invite, MAX_ROOM_MEMBERS, RequestError, RoomId, RoomView,
+    RulesOffer,
 };
 use tracing::{info, warn};
 
@@ -26,17 +27,33 @@ use crate::{
 const ROOM_SHUTDOWN: Duration = Duration::from_secs(5);
 
 pub(crate) struct Directory {
-    rooms: Mutex<HashMap<RoomId, Registered>>,
+    rooms: Mutex<Rooms>,
     max_rooms: usize,
     key: hmac::Key,
     rules: RulesMenu,
     env: RoomEnv,
 }
 
-/// A room the directory knows: the way to reach it, and its task.
+/// The rooms, by their IDs and by their invites' tags.
+#[derive(Default)]
+struct Rooms {
+    by_id: HashMap<RoomId, Registered>,
+    by_invite: HashMap<Vec<u8>, RoomId>,
+}
+
+impl Rooms {
+    fn insert(&mut self, id: RoomId, registered: Registered) {
+        self.by_invite.insert(registered.invite_tag.clone(), id);
+        self.by_id.insert(id, registered);
+    }
+}
+
+/// A room the directory knows: the way to reach it, its task, and the tag
+/// of its invite.
 struct Registered {
     handle: RoomHandle,
     task: JoinHandle<()>,
+    invite_tag: Vec<u8>,
 }
 
 pub(crate) struct DirectoryConfig {
@@ -141,21 +158,26 @@ impl Directory {
             .find(request.rules.as_ref().map(|name| name.as_str()))
             .ok_or(RequestError::UnknownRules)?;
         let mut rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
-        if rooms.len() >= self.max_rooms {
+        if rooms.by_id.len() >= self.max_rooms {
             return Err(RequestError::TooManyRooms);
         }
         let id = loop {
             let id = RoomId(FixedBytes(random()));
-            if !rooms.contains_key(&id) {
+            if !rooms.by_id.contains_key(&id) {
                 break id;
             }
         };
-        let token = FixedBytes(random());
+        // No two open rooms share an invite.
+        let (invite, invite_tag) = loop {
+            let invite = Invite(Code::random());
+            let tag = self.invite_tag(&invite);
+            if !rooms.by_invite.contains_key(&tag) {
+                break (invite, tag);
+            }
+        };
         let secrets = RoomSecrets {
             key: self.key.clone(),
-            invite_tag: hmac::sign(&self.key, &RoomSecrets::invite_input(&id, &token))
-                .as_ref()
-                .to_vec(),
+            invite_tag: invite_tag.clone(),
             password_tag: request.password.as_ref().map(|password| {
                 hmac::sign(&self.key, &RoomSecrets::password_input(&id, password))
                     .as_ref()
@@ -185,16 +207,18 @@ impl Directory {
             Registered {
                 handle: handle.clone(),
                 task,
+                invite_tag,
             },
         );
         drop(rooms);
         metrics::increment(&self.env.metrics.rooms_created);
-        Ok((handle, Invite { room: id, token }, view))
+        Ok((handle, invite, view))
     }
 
     fn register(self: &Arc<Self>, room: Room) {
         let (commands, receiver) = mpsc::channel(ROOM_QUEUE);
         let id = room.id();
+        let invite_tag = room.invite_tag();
         let task = tokio::spawn(room.run(receiver, Arc::clone(self)));
         self.rooms
             .lock()
@@ -204,14 +228,26 @@ impl Directory {
                 Registered {
                     handle: RoomHandle::new(commands),
                     task,
+                    invite_tag,
                 },
             );
     }
 
-    pub(crate) fn get(&self, id: &RoomId) -> Option<RoomHandle> {
-        self.rooms
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    /// The tag an invite's room is found by: an HMAC under the server's
+    /// key, so a room's log does not give its invite away.
+    fn invite_tag(&self, invite: &Invite) -> Vec<u8> {
+        hmac::sign(&self.key, &RoomSecrets::invite_input(invite))
+            .as_ref()
+            .to_vec()
+    }
+
+    /// The room `invite` is for, if it is open.
+    pub(crate) fn find(&self, invite: &Invite) -> Option<RoomHandle> {
+        let tag = self.invite_tag(invite);
+        let rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
+        let id = rooms.by_invite.get(&tag)?;
+        rooms
+            .by_id
             .get(id)
             .map(|registered| registered.handle.clone())
     }
@@ -220,14 +256,16 @@ impl Directory {
     /// directory's handles, a room's queue closes and its task ends, closing
     /// its log and letting go of the snapshot store. Waits for each a while.
     pub(crate) async fn shut_down(&self) {
-        let registered: Vec<Registered> = self
-            .rooms
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .drain()
-            .map(|(_, registered)| registered)
-            .collect();
-        for Registered { handle, task } in registered {
+        let registered: Vec<Registered> = {
+            let mut rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
+            rooms.by_invite.clear();
+            rooms
+                .by_id
+                .drain()
+                .map(|(_, registered)| registered)
+                .collect()
+        };
+        for Registered { handle, task, .. } in registered {
             drop(handle);
             if tokio::time::timeout(ROOM_SHUTDOWN, task).await.is_err() {
                 warn!("a room did not stop in time");
@@ -236,16 +274,17 @@ impl Directory {
     }
 
     pub(crate) fn remove(&self, id: &RoomId) {
-        self.rooms
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id);
+        let mut rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(registered) = rooms.by_id.remove(id) {
+            rooms.by_invite.remove(&registered.invite_tag);
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
         self.rooms
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .by_id
             .len()
     }
 }

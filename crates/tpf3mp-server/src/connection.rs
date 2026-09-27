@@ -2,8 +2,9 @@
 //! until the connection ends.
 
 use std::{
+    collections::HashSet,
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -22,9 +23,9 @@ use tpf3mp_net::{
 };
 use tpf3mp_proto::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkResponse, CONTROL_MAX_FRAME,
-    ChatText, ClientMessage, GameMessage, Hello, IntentRejection, MAX_CHECKPOINT_LANES,
-    PROTOCOL_VERSION, PlayerId, Reject, RejectReason, Request, RequestError, Response,
-    ServerMessage, SessionId, TURN_MAX_FRAME, TurnMessage, TurnStart, Welcome,
+    ChatText, ClientMessage, Code, GameMessage, Hello, IntentRejection, JoinRoom,
+    MAX_CHECKPOINT_LANES, PROTOCOL_VERSION, PlayerId, Reject, RejectReason, Request, RequestError,
+    Response, RoomView, ServerMessage, SessionId, TURN_MAX_FRAME, TurnMessage, TurnStart, Welcome,
 };
 use tracing::{debug, info};
 
@@ -107,6 +108,7 @@ pub(crate) async fn serve(incoming: quinn::Incoming, ticket: Handshake, shared: 
     let Admitted {
         hello,
         session_id,
+        issued,
         slot,
         address_share,
         send,
@@ -131,11 +133,14 @@ pub(crate) async fn serve(incoming: quinn::Incoming, ticket: Handshake, shared: 
     info!(session = %session_id, %reason, "session ended");
     drop(address_share);
     drop(slot);
+    drop(issued);
 }
 
 struct Admitted {
     hello: Hello,
     session_id: SessionId,
+    /// Keeps `session_id` from being given to anyone else meanwhile.
+    issued: IssuedSessionId,
     slot: OwnedSemaphorePermit,
     address_share: admission::Session,
     send: SendStream,
@@ -205,7 +210,13 @@ async fn handshake(
         reject(&mut send, RejectReason::TooManyConnections).await?;
         return Err(Refusal::TooManyConnections);
     };
-    let session_id = SessionId(random());
+    let issued = shared.session_ids.issue(|id| {
+        shared
+            .diagnostics
+            .as_ref()
+            .is_some_and(|diagnostics| diagnostics.has(id))
+    });
+    let session_id = issued.id;
     let welcome = ServerMessage::Welcome(Welcome {
         server_version: shared.server_version.clone(),
         session_id,
@@ -215,6 +226,7 @@ async fn handshake(
     Ok(Admitted {
         hello,
         session_id,
+        issued,
         slot,
         address_share,
         send,
@@ -239,10 +251,44 @@ async fn linger(send: &mut SendStream) {
     }
 }
 
-fn random<const N: usize>() -> [u8; N] {
-    let mut bytes = [0; N];
-    getrandom::fill(&mut bytes).expect("the operating system's random source is available");
-    bytes
+/// The session IDs of the sessions open now.
+#[derive(Default)]
+pub(crate) struct SessionIds(Mutex<HashSet<SessionId>>);
+
+impl SessionIds {
+    /// A session ID no open session has, nor one for which `kept` holds:
+    /// one whose diagnostics are still kept. A support code then names one
+    /// session alone.
+    pub(crate) fn issue(self: &Arc<Self>, kept: impl Fn(&SessionId) -> bool) -> IssuedSessionId {
+        let mut open = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let id = loop {
+            let id = SessionId(Code::random());
+            if !open.contains(&id) && !kept(&id) {
+                break id;
+            }
+        };
+        open.insert(id);
+        IssuedSessionId {
+            ids: Arc::clone(self),
+            id,
+        }
+    }
+}
+
+/// A session ID in use; it is free again when dropped.
+pub(crate) struct IssuedSessionId {
+    ids: Arc<SessionIds>,
+    pub(crate) id: SessionId,
+}
+
+impl Drop for IssuedSessionId {
+    fn drop(&mut self) {
+        self.ids
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
+    }
 }
 
 /// Why the server stopped serving a client after the handshake.
@@ -263,7 +309,7 @@ struct Client {
     origin: Origin,
     player: PlayerId,
     hello: Hello,
-    /// This connection's session: the support ID its player sees.
+    /// This connection's session: the support code its player sees.
     session: SessionId,
     link: MemberLink,
     /// What this player's game runs, once declared.
@@ -438,6 +484,27 @@ impl Client {
         }
     }
 
+    /// Joins the room of `join`'s invite.
+    async fn join(&mut self, join: JoinRoom) -> Result<RoomView, RequestError> {
+        let handle = self
+            .shared
+            .directory
+            .find(&join.invite)
+            .ok_or(RequestError::BadInvite)?;
+        let member = self.new_member();
+        let view = handle
+            .request(|reply| RoomCommand::Join {
+                member,
+                invite: join.invite,
+                password: join.password,
+                resume: join.resume,
+                reply,
+            })
+            .await?;
+        self.set_room(Some(handle));
+        Ok(view)
+    }
+
     async fn request(&mut self, request: Request) -> Result<Response, RequestError> {
         match request {
             Request::CreateRoom(create) => {
@@ -460,23 +527,15 @@ impl Client {
                 if self.still_in_room().await {
                     return Err(RequestError::AlreadyInRoom);
                 }
-                let handle = self
-                    .shared
-                    .directory
-                    .get(&join.invite.room)
-                    .ok_or(RequestError::BadInvite)?;
-                let member = self.new_member();
-                let view = handle
-                    .request(|reply| RoomCommand::Join {
-                        member,
-                        token: join.invite.token,
-                        password: join.password,
-                        resume: join.resume,
-                        reply,
-                    })
-                    .await?;
-                self.set_room(Some(handle));
-                Ok(Response::RoomJoined(view))
+                let admission = Arc::clone(&self.shared.admission);
+                if !admission.may_join(self.origin, std::time::Instant::now()) {
+                    return Err(RequestError::RateLimited);
+                }
+                let joined = self.join(join).await;
+                if joined == Err(RequestError::BadInvite) {
+                    admission.wrong_invite(self.origin, std::time::Instant::now());
+                }
+                joined.map(Response::RoomJoined)
             }
             Request::LeaveRoom => {
                 let handle = self.set_room(None).ok_or(RequestError::NotInRoom)?;

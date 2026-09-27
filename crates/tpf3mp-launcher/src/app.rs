@@ -271,7 +271,7 @@ impl<B: Backend> LauncherApp<B> {
                             .on_hover_text(
                                 "Lines of this launcher's log go to the server you play on, \
                                  with paths, addresses and keys taken out, so its operator can \
-                                 see what went wrong by your support ID. The server keeps them \
+                                 see what went wrong by your support code. The server keeps them \
                                  for a limited time, 30 days unless its operator chose \
                                  otherwise.",
                             )
@@ -510,7 +510,7 @@ impl<B: Backend> LauncherApp<B> {
                             ui,
                             "Invite",
                             TextEdit::singleline(&mut self.connect_invite)
-                                .hint_text("optional: one you were sent")
+                                .hint_text("optional: a code you were sent")
                                 .desired_width(f32::INFINITY),
                         );
                         ui.end_row();
@@ -536,7 +536,7 @@ impl<B: Backend> LauncherApp<B> {
                     ui.spinner();
                 }
                 let hint = if fixed.is_some() {
-                    "Got an invite? Paste it too: you connect and join in one step."
+                    "Got an invite code? Type it too: you connect and join in one step."
                 } else {
                     "Got an invite? Paste all of it as the server: you connect and join in one step."
                 };
@@ -642,7 +642,7 @@ impl<B: Backend> LauncherApp<B> {
                         ui,
                         "Invite",
                         TextEdit::singleline(&mut self.invite)
-                            .hint_text("paste the invite you were sent")
+                            .hint_text("the code you were sent, such as K7QM2X")
                             .desired_width(f32::INFINITY),
                     );
                     ui.end_row();
@@ -689,23 +689,24 @@ impl<B: Backend> LauncherApp<B> {
             ui.add_space(6.0);
             if let Some(invite) = &room.invite {
                 ui.horizontal(|ui| {
-                    let copy = ui
-                        .with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let copy = theme::button(ui, true, "Copy invite", Kind::Secondary);
-                            let mut shown = invite.clone();
-                            ui.add(
-                                TextEdit::singleline(&mut shown)
-                                    .desired_width(f32::INFINITY)
-                                    .font(egui::TextStyle::Monospace)
-                                    .interactive(false),
-                            )
-                            .on_hover_text("Send this to your friends");
-                            copy
-                        })
-                        .inner;
-                    if copy.clicked() {
-                        ui.ctx().copy_text(invite.clone());
-                    }
+                    ui.label(RichText::new("Invite code").color(theme::LABEL));
+                    ui.add_space(10.0);
+                    // A build without a server of its own gives the server
+                    // with the code.
+                    let shown = if invite.contains(char::is_whitespace) {
+                        RichText::new(invite).monospace()
+                    } else {
+                        RichText::new(invite)
+                            .font(theme::heading_font(22.0))
+                            .extra_letter_spacing(3.0)
+                    };
+                    ui.label(shown.color(theme::TEXT))
+                        .on_hover_text("Send this to your friends: they join with it");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if theme::button(ui, true, "Copy invite", Kind::Secondary).clicked() {
+                            ui.ctx().copy_text(invite.clone());
+                        }
+                    });
                 });
                 ui.add_space(8.0);
             }
@@ -1083,17 +1084,17 @@ fn folder(ui: &mut Ui) {
     );
 }
 
-/// The server's version and the player's support ID, right to left, with
-/// a button to copy the ID.
+/// The server's version and the player's support code, right to left,
+/// with a button to copy the code.
 fn server_details(ui: &mut Ui, state: &State) {
     if let Some(support) = &state.support_id {
         if theme::small_button(ui, true, "Copy", Kind::Ghost)
-            .on_hover_text("Copy the support ID")
+            .on_hover_text("Copy the support code")
             .clicked()
         {
             ui.ctx().copy_text(support.clone());
         }
-        ui.label(RichText::new(format!("support ID {support}")).weak())
+        ui.label(RichText::new(format!("support code {support}")).weak())
             .on_hover_text("Quote this to the server's operator when something goes wrong");
     }
     if let Some(version) = &state.server_version {

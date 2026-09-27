@@ -4400,7 +4400,7 @@ dependencies = [
 name = "tpf3mp-proto"
 version = "0.1.0"
 dependencies = [
- "base64",
+ "getrandom 0.4.3",
  "mlua",
  "postcard",
  "proptest",

@@ -157,7 +157,12 @@ jobs:
           refused logs --tail -1
           refused logs --until 2h
           refused diagnostics ../../etc/passwd
-          refused diagnostics s-3f2a extra
+          refused diagnostics K7QM2X extra
+          refused diagnostics K7QM2
+          refused diagnostics K7QM2XA
+          refused diagnostics 'K7QM2X/../../metrics'
+          refused diagnostics "$(printf 'x\nK7QM2X')"
+          refused diagnostics K7QM0X
           refused metrics now
           refused deploy main
           refused deploy 'HEAD~1'

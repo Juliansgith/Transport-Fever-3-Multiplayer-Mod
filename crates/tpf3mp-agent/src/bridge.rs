@@ -1148,7 +1148,7 @@ async fn rejoin_room<L: HookLink>(
             }
             client
                 .join_room(JoinRoom {
-                    invite: rejoin.invite.clone(),
+                    invite: rejoin.invite,
                     password: rejoin.password.clone(),
                     resume,
                 })

@@ -92,7 +92,7 @@ struct CollectLogsArgs {
     #[arg(long)]
     game_log: Vec<PathBuf>,
 
-    /// The support ID the launcher showed, to put in the manifest.
+    /// The support code the launcher showed, to put in the manifest.
     #[arg(long)]
     support_id: Option<String>,
 
@@ -259,7 +259,7 @@ async fn run(command: Command) -> Result<()> {
             client.declare_content(content.clone()).await?;
             let joined = client
                 .join_room(JoinRoom {
-                    invite: invite.clone(),
+                    invite,
                     password: password.clone(),
                     resume: None,
                 })

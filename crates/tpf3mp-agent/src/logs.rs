@@ -13,7 +13,7 @@
 //!   where Transport Fever 2 kept its own in its folder. Where Transport
 //!   Fever 3 writes them is not known until it is released, so the manifest
 //!   marks these places as a guess;
-//! - `manifest.txt`: versions, the system, the support ID when known, every
+//! - `manifest.txt`: versions, the system, the support code when known, every
 //!   file with its size, and the places that were missing.
 //!
 //! Nothing else in the data directory is read: the identity key, the
@@ -216,7 +216,7 @@ pub struct Collect {
     pub since: Option<Duration>,
     /// The most file content taken, before compression.
     pub max_bytes: u64,
-    /// The launcher's support ID, when connected.
+    /// The launcher's support code, when connected.
     pub support_id: Option<String>,
     /// The time the bundle is made at.
     pub now: SystemTime,
@@ -387,8 +387,8 @@ impl Collect {
             std::env::consts::ARCH
         ));
         line(match &self.support_id {
-            Some(support) => format!("support ID {support}"),
-            None => "support ID not known (not connected when collected)".into(),
+            Some(support) => format!("support code {support}"),
+            None => "support code not known (not connected when collected)".into(),
         });
         line(match self.since {
             Some(since) => format!("files changed in the last {}", human_duration(since)),
@@ -652,7 +652,7 @@ mod tests {
             candidates,
             since: Some(DEFAULT_SINCE),
             max_bytes: DEFAULT_MAX_BYTES,
-            support_id: Some("s-3f2a".into()),
+            support_id: Some("K7QM2X".into()),
             now,
         }
     }
@@ -724,7 +724,7 @@ mod tests {
         assert!(manifest.contains(&format!("protocol {}", tpf3mp_proto::PROTOCOL_VERSION)));
         assert!(manifest.contains(&format!("bridge {}", tpf3mp_bridge::BRIDGE_VERSION)));
         assert!(manifest.contains(std::env::consts::OS));
-        assert!(manifest.contains("support ID s-3f2a"));
+        assert!(manifest.contains("support code K7QM2X"));
         assert!(
             manifest.contains("20  tpf3mp/logs/launcher.2026-09-26.log"),
             "{manifest}"
@@ -815,7 +815,7 @@ mod tests {
             manifest.contains("older than the window: 1 files"),
             "{manifest}"
         );
-        assert!(manifest.contains("support ID not known"), "{manifest}");
+        assert!(manifest.contains("support code not known"), "{manifest}");
         assert!(
             manifest.contains("the in-game hook's log: TPF3-MP/hook.log"),
             "{manifest}"

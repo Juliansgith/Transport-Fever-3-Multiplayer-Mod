@@ -536,7 +536,7 @@ fn begin_session(
     };
     let rejoin = Rejoin {
         options: options.clone(),
-        invite: invite.clone(),
+        invite,
         password,
         content: Some(config.content.clone()),
         give_up_after: REJOIN_PATIENCE,
@@ -547,10 +547,11 @@ fn begin_session(
     });
     {
         let mut view = shared.view();
-        // Friends need the server too: "Copy invite" gives both.
+        // With a server of its own, the code is all friends need; otherwise
+        // they need the server too, and "Copy invite" gives both.
         view.invite = Some(match &view.server {
-            Some(server) => format!("{server} {invite}"),
-            None => invite.to_string(),
+            Some(server) if fixed_server(config).is_none() => format!("{server} {invite}"),
+            _ => invite.to_string(),
         });
         view.in_room = true;
         view.error = None;
@@ -695,7 +696,7 @@ async fn join(
     let joined = current
         .client
         .join_room(JoinRoom {
-            invite: invite.clone(),
+            invite,
             password: password.clone(),
             resume: None,
         })
@@ -895,15 +896,10 @@ fn random_token() -> String {
 
 #[cfg(test)]
 mod tests {
-    use tpf3mp_proto::{FixedBytes, RoomId};
-
     use super::*;
 
     fn invite() -> Invite {
-        Invite {
-            room: RoomId(FixedBytes([5; 16])),
-            token: FixedBytes([6; 32]),
-        }
+        Invite("K7QM2X".parse().unwrap())
     }
 
     #[test]
@@ -975,11 +971,21 @@ mod tests {
                 invite: invite(),
             })
         );
-        // The bare invite, and no invite at all.
+        // The bare invite, typed in lower case, and no invite at all.
         assert_eq!(passed(code.clone()).map(|p| p.server), Some(None));
+        assert_eq!(
+            passed(code.to_lowercase()).map(|p| p.invite),
+            Some(invite())
+        );
         assert_eq!(passed("tpf3mp.example.org:29470".into()), None);
+        // Six-letter words are not taken for it.
+        assert_eq!(
+            passed(format!("thanks! STREET party: {code}")).map(|p| p.invite),
+            Some(invite())
+        );
+        assert_eq!(passed("thanks for STREET".into()), None);
         // A cut-off invite is none.
-        assert_eq!(passed(code[..code.len() - 4].to_owned()), None);
+        assert_eq!(passed(code[..code.len() - 1].to_owned()), None);
     }
 
     #[test]

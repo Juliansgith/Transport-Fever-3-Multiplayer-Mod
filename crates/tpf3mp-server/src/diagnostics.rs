@@ -1,6 +1,6 @@
 //! Players' diagnostics ("Diagnostics" in PROTOCOL.md): the lines their
 //! clients send, kept per session, so the operator reads what went wrong
-//! for a player by the support ID the launcher shows. A thread of their own
+//! for a player by the support code the launcher shows. A thread of their own
 //! writes them, away from the connections: when it falls behind, lines are
 //! dropped, and no game waits. They are kept for a number of days, within a
 //! total size, the oldest going first.
@@ -18,7 +18,7 @@ use std::{
 };
 
 use serde::Serialize;
-use tpf3mp_proto::{DiagnosticEvent, PlayerId, SessionId, redact};
+use tpf3mp_proto::{CODE_LEN, Code, DiagnosticEvent, PlayerId, SessionId, redact};
 use tracing::warn;
 
 use crate::metrics::{self, Metrics};
@@ -154,6 +154,11 @@ impl Diagnostics {
         Ok(entries)
     }
 
+    /// Whether lines of `session` are kept, so its ID is not given again.
+    pub(crate) fn has(&self, session: &SessionId) -> bool {
+        self.dir.join(format!("{session}.ndjson")).exists()
+    }
+
     /// One session's lines, if it has any. `session` must be a session ID.
     pub(crate) fn read(&self, session: &str) -> io::Result<Option<Vec<u8>>> {
         if !is_session_id(session) {
@@ -260,14 +265,19 @@ fn prune(config: &DiagnosticsConfig) {
     }
 }
 
-/// `s-` and 32 hexadecimal digits, as `SessionId` shows itself.
+/// A session ID as it shows itself, such as `K7QM2X`; or `s-` and 32
+/// hexadecimal digits, as it did before, whose files still go when their
+/// time is up.
 fn is_session_id(text: &str) -> bool {
-    text.strip_prefix("s-").is_some_and(|hex| {
+    let current =
+        text.len() == CODE_LEN && text.parse::<Code>().is_ok_and(|code| code.as_str() == text);
+    let earlier = text.strip_prefix("s-").is_some_and(|hex| {
         hex.len() == 32
             && hex
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
+    });
+    current || earlier
 }
 
 fn millis_since_epoch(time: SystemTime) -> u64 {
@@ -315,7 +325,7 @@ mod tests {
             Arc::default(),
         )
         .unwrap();
-        let session = SessionId([7; 16]);
+        let session = SessionId("K7QM2X".parse().unwrap());
         let player = PlayerId(FixedBytes([9; 32]));
         let bytes = diagnostics
             .submit(
@@ -328,6 +338,8 @@ mod tests {
         let name = format!("{session}.ndjson");
         let written = keeps_until(dir.path(), |bytes| !bytes.is_empty(), &name);
         assert_eq!(written.len() as u64, bytes);
+        assert!(diagnostics.has(&session));
+        assert!(!diagnostics.has(&SessionId("AB2CD3".parse().unwrap())));
         let text = String::from_utf8(written).unwrap();
         assert!(
             text.contains(r#""text":"cannot open <path>/x.key""#),
@@ -342,6 +354,11 @@ mod tests {
         );
         assert_eq!(diagnostics.read("../secret").unwrap(), None);
         assert_eq!(
+            diagnostics.read("k7qm2x").unwrap(),
+            None,
+            "as it shows itself"
+        );
+        assert_eq!(
             diagnostics.submit(session, player, SESSION_QUOTA, &[event("more")]),
             Err(NotKept::Quota)
         );
@@ -350,10 +367,12 @@ mod tests {
     #[test]
     fn old_files_and_the_oldest_past_the_total_go() {
         let dir = tempfile::tempdir().unwrap();
-        let old = SessionId([1; 16]);
-        let newer = SessionId([2; 16]);
-        let newest = SessionId([3; 16]);
-        for (session, age_secs) in [(old, 7200), (newer, 60), (newest, 0)] {
+        // The old one's ID is of the form session IDs had before.
+        let old = "s-11111111111111111111111111111111";
+        let older = "AB2CD3";
+        let newer = "EF4GH5";
+        let newest = "JK6MN7";
+        for (session, age_secs) in [(old, 7300), (older, 7200), (newer, 60), (newest, 0)] {
             let path = dir.path().join(format!("{session}.ndjson"));
             fs::write(&path, vec![b'x'; 100]).unwrap();
             let modified = SystemTime::now() - Duration::from_secs(age_secs);
@@ -375,7 +394,7 @@ mod tests {
             .into_iter()
             .map(|file| file.session)
             .collect();
-        assert_eq!(left, [newest.to_string()]);
+        assert_eq!(left, [newest]);
         assert!(dir.path().join("not-ours.txt").exists());
     }
 }

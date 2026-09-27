@@ -314,7 +314,7 @@ async fn set_up_room(args: &Args, server: &str, players: &[Player]) -> Result<()
         .context("the room has no invite")?;
     println!("rig: invite: {invite}");
     for guest in guests {
-        // The whole invite where the server goes connects and joins.
+        // The invite's code where the server goes connects and joins.
         act(
             guest,
             Action::Connect {

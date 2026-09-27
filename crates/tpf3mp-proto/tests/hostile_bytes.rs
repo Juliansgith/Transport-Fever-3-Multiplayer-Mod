@@ -82,10 +82,7 @@ fn room_view() -> RoomView {
 }
 
 fn invite() -> Invite {
-    Invite {
-        room: RoomId(FixedBytes([3; 16])),
-        token: FixedBytes([4; 32]),
-    }
+    Invite("K7QM2X".parse().unwrap())
 }
 
 fn lanes() -> Vec<LaneDigest> {
@@ -178,7 +175,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
     let server = [
         ServerMessage::Welcome(Welcome {
             server_version: Text::new("0.1.0").unwrap(),
-            session_id: SessionId([6; 16]),
+            session_id: SessionId("AB2CD3".parse().unwrap()),
             rules: vec![
                 RulesOffer {
                     name: Text::new("native").unwrap(),

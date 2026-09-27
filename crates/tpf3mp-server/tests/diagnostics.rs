@@ -1,5 +1,5 @@
 //! Players' diagnostics: the lines a client's recorder holds reach the
-//! server, redacted, under the session its player sees as the support ID;
+//! server, redacted, under the session its player sees as the support code;
 //! the admin endpoint lists and gives them; a server that keeps none says
 //! so, and the client stops sending.
 
@@ -73,7 +73,7 @@ async fn a_players_lines_reach_the_server_under_their_session() {
     assert!(lines.contains("the launcher closes"), "{lines}");
     assert!(recorder.is_empty(), "sent lines are not kept");
 
-    // The operator reads them by the support ID.
+    // The operator reads them by the support code.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let admin = listener.local_addr().unwrap();
     tokio::spawn(serve_admin(listener, server.stats.clone()));
@@ -84,12 +84,12 @@ async fn a_players_lines_reach_the_server_under_their_session() {
     assert_eq!(status, 200);
     assert_eq!(body, lines);
     assert_eq!(get(admin, "/diagnostics/../../etc/passwd").await.0, 404);
-    assert_eq!(
-        get(admin, "/diagnostics/s-00000000000000000000000000000000")
-            .await
-            .0,
-        404
-    );
+    let other = if session == "AB2CD3" {
+        "EF4GH5"
+    } else {
+        "AB2CD3"
+    };
+    assert_eq!(get(admin, &format!("/diagnostics/{other}")).await.0, 404);
     server.shut_down().await;
 }
 

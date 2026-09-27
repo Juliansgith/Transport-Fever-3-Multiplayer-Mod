@@ -1,6 +1,6 @@
 //! Diagnostics: a client's own log lines, which it sends to the server it
 //! plays on, so the server's operator can see what went wrong for a player
-//! from the support ID alone, without asking for files ("Diagnostics" in
+//! from the support code alone, without asking for files ("Diagnostics" in
 //! PROTOCOL.md). Both sides pass every line through [`redact`] first.
 //!
 //! TPF2MP's relay kept its players' diagnostics the same way; its
@@ -59,9 +59,10 @@ impl DiagnosticLevel {
 ///   user name or a Steam account in them is gone; a last part of digits
 ///   alone, such as an account's folder, goes too;
 /// - IPv4 and IPv6 addresses become `<ip>`;
-/// - invites become `<invite>`;
-/// - the value after a key naming a secret (`token=`, `password:`, a
-///   bearer token, …) becomes `<redacted>`;
+/// - the value after a key naming a secret (`token=`, `password:`,
+///   `invite:`, a bearer token, …) becomes `<redacted>`: an invite's code
+///   is six letters and digits, which nothing tells from a word, so code
+///   that logs one names it;
 /// - e-mail addresses become `<email>`, and 64-bit Steam IDs `<steam id>`.
 ///
 /// Control characters count as spaces. Words are split on spaces; a path
@@ -188,8 +189,9 @@ fn split_trailing(path: &str) -> (&str, &str) {
 /// Where the value starts in `key=value`, `key:` or `"key":"value"`, when
 /// the key names a secret.
 fn secret_value(word: &str) -> Option<usize> {
-    const SECRETS: [&str; 8] = [
+    const SECRETS: [&str; 9] = [
         "token",
+        "invite",
         "password",
         "passwd",
         "secret",
@@ -214,18 +216,8 @@ fn secret_value(word: &str) -> Option<usize> {
     Some(split + 1 + value.len() - value.trim_start_matches(['"', '\'']).len())
 }
 
-/// Redacts addresses, invites, e-mail addresses and Steam IDs in one word.
+/// Redacts addresses, e-mail addresses and Steam IDs in one word.
 fn redact_word(word: &str) -> String {
-    if let Some(start) = word.find("TPF3MP1.") {
-        let end = word[start..]
-            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '~')))
-            .map_or(word.len(), |end| start + end);
-        return format!(
-            "{}<invite>{}",
-            redact_word(&word[..start]),
-            redact_word(&word[end..])
-        );
-    }
     if let Some(email) = email_span(word) {
         return format!(
             "{}<email>{}",
@@ -382,10 +374,8 @@ mod tests {
         assert_eq!(redact("peer [2001:db8::1]:29470"), "peer [<ip>]:29470");
         assert_eq!(redact("at fe80::1ff:fe23:4567:890a"), "at <ip>");
         assert_eq!(redact("addr=10.0.0.2"), "addr=<ip>");
-        hides(
-            "join tpf3mp.example.org:29470 TPF3MP1.zIi0KG_HnPRrqMW78mpwL5c",
-            "zIi0KG",
-        );
+        assert_eq!(redact("joining invite=K7QM2X"), "joining invite=<redacted>");
+        assert_eq!(redact("the invite: K7QM2X"), "the invite: <redacted>");
         assert_eq!(redact("token=abc123 ok"), "token=<redacted> ok");
         assert_eq!(redact("password: hunter2"), "password: <redacted>");
         assert_eq!(redact(r#""api_key":"sk-123","#), r#""api_key":"<redacted>"#);
@@ -404,7 +394,7 @@ mod tests {
     fn ordinary_lines_stay_as_they_are() {
         for line in [
             "the room saves its world event=34 step=127",
-            "connected in 42 ms at 10:30:15, session s-8c21f0a9d3e4b5c6d7e8f90a1b2c3d4e",
+            "connected in 42 ms at 10:30:15, session K7QM2X, session=AB2CD3",
             "downloaded 1.5 MB of 12.0 MB (12%) and/or waited",
             "player p-3f2a91c0d4e5b6a7 left: the game session ended",
             "keyboard key pressed, monkey=5",

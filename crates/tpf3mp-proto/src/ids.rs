@@ -1,19 +1,108 @@
 use std::{fmt, str::FromStr};
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::bytes::{FixedBytes, write_hex};
 
-/// Non-secret identifier of one connection, safe to quote in bug reports.
+/// The letters of a [`Code`]: digits and upper-case letters, without the
+/// look-alikes 0, 1, I, L and O.
+const CODE_ALPHABET: &[u8; 31] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+/// Characters in a [`Code`].
+pub const CODE_LEN: usize = 6;
+
+/// Six letters and digits, such as `K7QM2X`, that players read out, type
+/// and paste: a room's invite, and a connection's support code. Upper case
+/// from [`CODE_ALPHABET`], with at least one letter and one digit, so an
+/// ordinary word in a message is never taken for one. There are some 740
+/// million. Decoding enforces all of this.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "FixedBytes<CODE_LEN>", into = "FixedBytes<CODE_LEN>")]
+pub struct Code([u8; CODE_LEN]);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("a code is six letters and digits, such as K7QM2X")]
+pub struct CodeError;
+
+impl Code {
+    /// A code from the operating system's random source, each one equally
+    /// likely.
+    pub fn random() -> Self {
+        loop {
+            let mut bytes = [0; CODE_LEN];
+            for slot in &mut bytes {
+                *slot = loop {
+                    let mut byte = [0];
+                    getrandom::fill(&mut byte)
+                        .expect("the operating system's random source is available");
+                    // 248 is the largest multiple of 31 up to 256: taking
+                    // only bytes below it keeps every letter equally likely.
+                    if byte[0] < 248 {
+                        break CODE_ALPHABET[usize::from(byte[0] % 31)];
+                    }
+                };
+            }
+            if let Ok(code) = Self::try_from(FixedBytes(bytes)) {
+                return code;
+            }
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        // Only ASCII from the alphabet gets in.
+        std::str::from_utf8(&self.0).unwrap_or_default()
+    }
+}
+
+impl TryFrom<FixedBytes<CODE_LEN>> for Code {
+    type Error = CodeError;
+
+    fn try_from(bytes: FixedBytes<CODE_LEN>) -> Result<Self, Self::Error> {
+        let bytes = bytes.0;
+        let valid = bytes.iter().all(|byte| CODE_ALPHABET.contains(byte))
+            && bytes.iter().any(u8::is_ascii_digit)
+            && bytes.iter().any(u8::is_ascii_uppercase);
+        valid.then_some(Self(bytes)).ok_or(CodeError)
+    }
+}
+
+impl From<Code> for FixedBytes<CODE_LEN> {
+    fn from(code: Code) -> Self {
+        FixedBytes(code.0)
+    }
+}
+
+impl FromStr for Code {
+    type Err = CodeError;
+
+    /// Takes a code as players type it: in either case, with spaces around.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let bytes: [u8; CODE_LEN] = text.trim().as_bytes().try_into().map_err(|_| CodeError)?;
+        Self::try_from(FixedBytes(bytes.map(|byte| byte.to_ascii_uppercase())))
+    }
+}
+
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Debug for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+/// Non-secret identifier of one connection, shown to the player as their
+/// support code and safe to quote in bug reports. The server gives each
+/// connection one no other has had within its diagnostics' keeping time.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SessionId(pub [u8; 16]);
+pub struct SessionId(pub Code);
 
 impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("s-")?;
-        write_hex(f, &self.0)
+        fmt::Display::fmt(&self.0, f)
     }
 }
 
@@ -74,42 +163,25 @@ impl fmt::Debug for RoomId {
     }
 }
 
-/// Everything needed to join a room: its ID and a secret 256-bit token.
-///
-/// The text form is `TPF3MP1.` followed by base64url of the 16-byte room ID
-/// and the 32-byte token. `Debug` never shows the token, so invites cannot
-/// leak into logs through formatting.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Invite {
-    pub room: RoomId,
-    pub token: FixedBytes<32>,
-}
-
-const INVITE_PREFIX: &str = "TPF3MP1.";
-const INVITE_BYTES: usize = 16 + 32;
+/// A room's invite: its code, which the server looks the room up by. Only
+/// the server knows which room a code belongs to. `Debug` never shows the
+/// code, so invites cannot leak into logs through formatting.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Invite(pub Code);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum InviteError {
-    #[error("this is not a TPF3-MP invite")]
-    Prefix,
-    #[error("the invite is damaged; copy it again")]
-    Malformed,
-}
+#[error("an invite is six letters and digits, such as K7QM2X")]
+pub struct InviteError;
 
 impl fmt::Display for Invite {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut bytes = [0; INVITE_BYTES];
-        bytes[..16].copy_from_slice(&self.room.0.0);
-        bytes[16..].copy_from_slice(&self.token.0);
-        write!(f, "{INVITE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
+        fmt::Display::fmt(&self.0, f)
     }
 }
 
 impl fmt::Debug for Invite {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Invite")
-            .field("room", &self.room)
-            .finish_non_exhaustive()
+        f.write_str("Invite(..)")
     }
 }
 
@@ -117,22 +189,7 @@ impl FromStr for Invite {
     type Err = InviteError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let encoded = text
-            .trim()
-            .strip_prefix(INVITE_PREFIX)
-            .ok_or(InviteError::Prefix)?;
-        let decoded = URL_SAFE_NO_PAD
-            .decode(encoded)
-            .map_err(|_| InviteError::Malformed)?;
-        let bytes: [u8; INVITE_BYTES] = decoded.try_into().map_err(|_| InviteError::Malformed)?;
-        let mut room = [0; 16];
-        let mut token = [0; 32];
-        room.copy_from_slice(&bytes[..16]);
-        token.copy_from_slice(&bytes[16..]);
-        Ok(Self {
-            room: RoomId(FixedBytes(room)),
-            token: FixedBytes(token),
-        })
+        text.parse().map(Self).map_err(|_| InviteError)
     }
 }
 
@@ -140,42 +197,57 @@ impl FromStr for Invite {
 mod tests {
     use super::*;
 
-    fn invite() -> Invite {
-        Invite {
-            room: RoomId(FixedBytes([0xab; 16])),
-            token: FixedBytes([0x5c; 32]),
+    fn code(text: &str) -> Code {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn a_code_is_six_letters_and_digits_as_players_type_them() {
+        assert_eq!(code("K7QM2X").to_string(), "K7QM2X");
+        // Pasting often adds whitespace; typing, lower case.
+        assert_eq!(code(" k7qm2x\n"), code("K7QM2X"));
+        for bad in [
+            "", "K7QM2", "K7QM2XA", "K7QM 2X", "K7QM0X", "K7QM1X", "K7QMIX", "K7QMLX", "K7QMOX",
+            "K7QM2!", "K7QMÄX", // An ordinary word, or only digits, is no code.
+            "THANKS", "234567",
+        ] {
+            assert_eq!(bad.parse::<Code>(), Err(CodeError), "{bad:?}");
         }
     }
 
     #[test]
-    fn invite_text_round_trips() {
-        let text = invite().to_string();
-        assert!(text.starts_with("TPF3MP1."));
-        assert_eq!(text.len(), 8 + 64);
-        assert_eq!(text.parse::<Invite>().unwrap(), invite());
-        // Pasting often adds whitespace.
-        assert_eq!(format!("  {text}\n").parse::<Invite>().unwrap(), invite());
+    fn random_codes_are_codes_and_differ() {
+        let codes: std::collections::HashSet<Code> = (0..1000).map(|_| Code::random()).collect();
+        // Two alike among a thousand of 740 million happens once in some
+        // 1,500 runs; five, never.
+        assert!(codes.len() >= 995, "{}", codes.len());
+        for code in codes {
+            assert_eq!(code.to_string().parse::<Code>(), Ok(code));
+        }
     }
 
     #[test]
-    fn invite_rejects_foreign_and_damaged_text() {
-        assert_eq!("TPF2MP1.abc".parse::<Invite>(), Err(InviteError::Prefix));
-        let text = invite().to_string();
-        assert_eq!(
-            text[..text.len() - 1].parse::<Invite>(),
-            Err(InviteError::Malformed)
-        );
-        assert_eq!(
-            "TPF3MP1.!!!!".parse::<Invite>(),
-            Err(InviteError::Malformed)
-        );
+    fn a_code_off_the_wire_is_checked() {
+        let good = postcard::to_stdvec(&code("K7QM2X")).unwrap();
+        assert_eq!(good, b"K7QM2X");
+        assert_eq!(postcard::from_bytes::<Code>(&good), Ok(code("K7QM2X")));
+        for bad in [
+            b"k7qm2x",
+            b"K7QM0X",
+            b"THANKS",
+            b"K7QM\x1b[",
+            b"\xff\xff\xff\xff\xff\xff",
+        ] {
+            assert!(postcard::from_bytes::<Code>(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
-    fn invite_debug_hides_the_token() {
-        let debug = format!("{:?}", invite());
-        assert!(debug.contains("r-abab"), "{debug}");
-        assert!(!debug.to_lowercase().contains("5c5c"), "{debug}");
+    fn invite_debug_hides_the_code() {
+        let invite = Invite(code("K7QM2X"));
+        assert_eq!(invite.to_string(), "K7QM2X");
+        assert_eq!("k7qm2x".parse::<Invite>(), Ok(invite));
+        assert!(!format!("{invite:?}").contains("K7QM2X"));
     }
 
     #[test]

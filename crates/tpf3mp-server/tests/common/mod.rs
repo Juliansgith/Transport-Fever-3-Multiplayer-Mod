@@ -160,7 +160,7 @@ pub fn room(name: &str, settings: RoomSettings) -> CreateRoom {
 
 pub fn join(invite: &Invite) -> JoinRoom {
     JoinRoom {
-        invite: invite.clone(),
+        invite: *invite,
         password: None,
         resume: None,
     }

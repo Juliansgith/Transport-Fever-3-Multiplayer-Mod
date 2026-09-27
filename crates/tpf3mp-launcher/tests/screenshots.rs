@@ -101,7 +101,7 @@ fn screens() {
             player: Some("p-3f2a91c0d4e5b6a7".into()),
             connection: Connection::Connected,
             server_version: Some("0.1.0".into()),
-            support_id: Some("s-8c21f0a9d3e4b5c6d7e8f90a1b2c3d4e".into()),
+            support_id: Some("H4W9TQ".into()),
             rules: vec![
                 RulesChoice {
                     name: "native".into(),
@@ -119,10 +119,7 @@ fn screens() {
         name: "Friday trains".into(),
         rules: "native".into(),
         phase: Phase::Lobby,
-        invite: Some(
-            "tpf3mp.example.org:29470 TPF3MP1.ox--2JVdnoyTKISNZaIeyqvx0Plu5-vbOaI0q3h219a2qr94Qc2rUcc2kcOiA_cg"
-                .into(),
-        ),
+        invite: Some("K7QM2X".into()),
         you_own: false,
         max_players: 4,
         has_password: false,
@@ -140,7 +137,7 @@ fn screens() {
             player: Some("p-9b8c7d6e5f4a3b2c".into()),
             connection: Connection::Connected,
             server_version: Some("0.1.0".into()),
-            support_id: Some("s-8c21f0a9d3e4b5c6d7e8f90a1b2c3d4e".into()),
+            support_id: Some("H4W9TQ".into()),
             room: Some(room.clone()),
             content_diff: Some(Differences {
                 summary: String::new(),
@@ -163,7 +160,7 @@ fn screens() {
         player: Some("p-3f2a91c0d4e5b6a7".into()),
         connection: Connection::Connected,
         server_version: Some("0.1.0".into()),
-        support_id: Some("s-8c21f0a9d3e4b5c6d7e8f90a1b2c3d4e".into()),
+        support_id: Some("H4W9TQ".into()),
         room: Some(Room {
             phase: Phase::Running,
             you_own: true,

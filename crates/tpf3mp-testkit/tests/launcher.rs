@@ -16,7 +16,7 @@ use tpf3mp_agent::{
     launcher::{Launcher, LauncherConfig},
 };
 use tpf3mp_net::{Identity, ServerIdentity, ServerTrust};
-use tpf3mp_proto::{ContentManifest, ModRef, RoomSettings, Text};
+use tpf3mp_proto::{ContentManifest, Invite, ModRef, RoomSettings, Text};
 use tpf3mp_server::{Server, ServerConfig, SnapshotConfig};
 use tpf3mp_testkit::{
     fake_hook::{self, FakeHookConfig},
@@ -260,10 +260,14 @@ async fn two_players_play_a_room_from_their_launchers() {
         .collect();
     assert_eq!(offered, ["toy", "native"]);
     assert_eq!(state["room"]["rules"], "toy");
-    assert!(
-        invite.starts_with(&format!("{server_address} TPF3MP1.")),
+    // A launcher without a server of its own names the server with the
+    // room's code.
+    let (named, code) = invite.split_once(' ').unwrap();
+    assert_eq!(
+        named, server_address,
         "the invite names its server: {invite}"
     );
+    assert!(code.parse::<Invite>().is_ok(), "{invite}");
 
     // Cat's game runs a mod the room does not: Cat's page says which, and
     // Ann's page shows that Cat's game differs. Cat leaves again.
@@ -426,7 +430,7 @@ async fn a_window_drives_the_launcher_in_process() {
         state
             .support_id
             .as_deref()
-            .is_some_and(|id| id.starts_with("s-")),
+            .is_some_and(|id| id.parse::<tpf3mp_proto::Code>().is_ok()),
         "{state:?}"
     );
     assert_eq!(state.rules[0].name, "toy");
@@ -515,12 +519,13 @@ async fn a_launcher_with_its_own_server_plays_there_alone() {
         })
         .await
         .unwrap();
+    // With a server of its own, the invite is the room's code alone.
     let invite = handle.state().room.unwrap().invite.unwrap();
-    assert!(invite.starts_with(&server_address), "{invite}");
+    assert!(invite.parse::<Invite>().is_ok(), "{invite}");
     handle.act(Action::Leave).await.unwrap();
 
     // The same room's invite, sent from another server, is not followed.
-    let code = invite.split_whitespace().last().unwrap();
+    let code = &invite;
     let foreign = format!("elsewhere.example:29470 {code}");
     let refused = handle
         .act(Action::Join {

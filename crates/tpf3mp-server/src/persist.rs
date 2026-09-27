@@ -39,8 +39,9 @@ use tpf3mp_proto::{
 /// name the player's platform, departures say whether it was a kick, and
 /// saves appear in the log. Version 4 lets the start record carry a
 /// [`Base`], for compacted logs. Version 5 records the rules the room is
-/// played by, and version 6 the game's content manifest.
-pub(crate) const FORMAT_VERSION: u16 = 6;
+/// played by, and version 6 the game's content manifest. Version 7's
+/// invite tag is of the room's six-character code alone.
+pub(crate) const FORMAT_VERSION: u16 = 7;
 /// Largest start record: one whose base holds the rules' state.
 const MAX_START_RECORD: usize = 16 << 20;
 /// Largest record after the start record: a turn frame at its cap. Kept

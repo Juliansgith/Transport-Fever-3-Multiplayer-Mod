@@ -42,7 +42,9 @@ pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText,
     MAX_DIAGNOSTIC_EVENTS, redact,
 };
-pub use ids::{Invite, InviteError, PlayerId, RoomId, SessionId, Signature};
+pub use ids::{
+    CODE_LEN, Code, CodeError, Invite, InviteError, PlayerId, RoomId, SessionId, Signature,
+};
 pub use snapshot::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkRequest, BulkResponse,
     ChunkHash, MAX_CHUNKS_PER_REQUEST, SavedWorld, SnapshotId, WorldOffer,
@@ -53,8 +55,9 @@ pub use turn::{Event, EventBody, Turn, TurnMessage, TurnStart};
 /// Protocol version. Client and server must match exactly. Version 2 lets
 /// hosts choose the rules a room is played by; version 3 declares a game's
 /// mods by name, so players learn which differ; version 4 carries the
-/// operator's notices; version 5 lets clients send their diagnostics.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// operator's notices; version 5 lets clients send their diagnostics;
+/// version 6 makes invites and session IDs six-character codes.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
@@ -359,14 +362,9 @@ mod tests {
     }
 
     #[test]
-    fn session_id_displays_as_hex() {
-        let mut bytes = [0; 16];
-        bytes[0] = 0xab;
-        bytes[15] = 0x01;
-        assert_eq!(
-            SessionId(bytes).to_string(),
-            "s-ab000000000000000000000000000001"
-        );
+    fn session_id_displays_as_its_code() {
+        let code: Code = "K7QM2X".parse().unwrap();
+        assert_eq!(SessionId(code).to_string(), "K7QM2X");
     }
 
     #[test]

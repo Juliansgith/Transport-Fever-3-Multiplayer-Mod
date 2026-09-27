@@ -146,7 +146,7 @@ struct Args {
 
     /// Days players' diagnostics are kept: lines of their launchers' logs,
     /// redacted, which they send so the operator can read what went wrong
-    /// by their support ID. Kept in `diagnostics` inside --data-dir, and
+    /// by their support code. Kept in `diagnostics` inside --data-dir, and
     /// without one, not at all; 0 keeps none either.
     #[arg(long, default_value_t = 30)]
     diagnostics_days: u64,
