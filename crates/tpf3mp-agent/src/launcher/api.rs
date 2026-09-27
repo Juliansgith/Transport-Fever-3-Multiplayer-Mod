@@ -14,6 +14,7 @@ pub(crate) struct View {
     pub(crate) server: Option<String>,
     /// The server is the only one this launcher plays on (D12).
     pub(crate) server_fixed: bool,
+    pub(crate) server_name: Option<String>,
     pub(crate) name: String,
     pub(crate) player: Option<PlayerId>,
     pub(crate) connecting: bool,
@@ -63,9 +64,6 @@ pub enum Action {
         ready: bool,
     },
     Start,
-    Speed {
-        percent: u16,
-    },
     Kick {
         player: String,
     },
@@ -92,6 +90,9 @@ pub struct State {
     /// Whether `server` is the only server this launcher plays on (D12):
     /// the front ends then offer no other, and invites join on it.
     pub server_fixed: bool,
+    /// What players see of the server, such as `EU`, in place of its
+    /// address; `None` shows the address.
+    pub server_name: Option<String>,
     pub server_version: Option<String>,
     /// What the player quotes to the server's operator: the connection's
     /// name in the server's log.
@@ -348,6 +349,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         player: you.map(|player| player.to_string()),
         server: view.server.clone(),
         server_fixed: view.server_fixed,
+        server_name: view.server_name.clone(),
         server_version: view.server_version.clone(),
         support_id: status
             .session

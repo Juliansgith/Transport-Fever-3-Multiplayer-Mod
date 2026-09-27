@@ -11,6 +11,8 @@ name: release
 # - TPF3MP_DEFAULT_SERVER: the server the launcher plays on, and the only
 #   one (docs/DECISIONS.md, D12). Without it, players would type a server,
 #   so no release is drafted without it either;
+# - TPF3MP_SERVER_NAME: what players see of that server, such as EU, in
+#   place of its address;
 # - TPF3MP_UPDATE_PUBLIC_KEY: the public keys updates must be signed with.
 #   Without one the launcher never updates itself, so no release is
 #   drafted: manual runs still build packages to try.
@@ -72,6 +74,7 @@ jobs:
       # Built into the launcher: the server it plays on, the key its
       # updates must be signed with, and where it looks for them.
       TPF3MP_DEFAULT_SERVER: ${{ vars.TPF3MP_DEFAULT_SERVER }}
+      TPF3MP_SERVER_NAME: ${{ vars.TPF3MP_SERVER_NAME }}
       TPF3MP_UPDATE_PUBLIC_KEY: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
       TPF3MP_REPOSITORY: ${{ github.repository }}
     steps:
@@ -84,6 +87,10 @@ jobs:
           # A bracket expression: "]" first and "-" last are literal.
           if [ -n "$TPF3MP_DEFAULT_SERVER" ] && ! [[ "$TPF3MP_DEFAULT_SERVER" =~ ^[]A-Za-z0-9.:[-]+$ ]]; then
             echo "::error::TPF3MP_DEFAULT_SERVER must be host:port, nothing else"
+            exit 1
+          fi
+          if [ -n "$TPF3MP_SERVER_NAME" ] && ! [[ "$TPF3MP_SERVER_NAME" =~ ^[A-Za-z0-9\ ._-]{1,24}$ ]]; then
+            echo "::error::TPF3MP_SERVER_NAME must be a short name such as EU: letters, digits, spaces, dots and dashes"
             exit 1
           fi
           # One key or several, separated by commas or spaces.

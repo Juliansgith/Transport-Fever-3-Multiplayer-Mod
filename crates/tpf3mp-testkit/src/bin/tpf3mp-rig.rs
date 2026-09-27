@@ -200,6 +200,7 @@ async fn run(args: Args) -> Result<ExitCode> {
             server: Some(server.clone()),
             // Every player on the rig's server, as a package's on its own.
             server_fixed: true,
+            server_name: None,
             trust: trust.clone(),
             identity,
             name: name.clone(),

@@ -118,11 +118,6 @@
     <div class="row" style="margin-top: 12px">
       <button id="ready-button">Ready</button>
       <button id="start-button" class="hidden">Start game</button>
-      <select id="speed" class="hidden" title="speed">
-        <option value="0">Paused</option><option value="100">1×</option>
-        <option value="200">2×</option><option value="400">4×</option>
-        <option value="800">8×</option><option value="1600">16×</option>
-      </select>
       <span class="grow"></span>
       <button id="leave-button" class="danger">Leave room</button>
     </div>
@@ -273,7 +268,7 @@ function render(s) {
   // A launcher with its own server offers no other (D12): the field takes
   // an invite, to join in one step, or nothing.
   show("server-fixed", s.server_fixed);
-  text($("server-fixed"), s.server_fixed ? "TPF3-MP plays on " + s.server + "." : "");
+  text($("server-fixed"), s.server_fixed ? "TPF3-MP plays on " + (s.server_name || s.server) + "." : "");
   $("server").placeholder = s.server_fixed
     ? "an invite you were sent (optional)"
     : "server:29470, or a whole invite";
@@ -334,8 +329,6 @@ function render(s) {
     $("ready-button").dataset.ready = youReady ? "1" : "";
     show("start-button", lobby && room.you_own);
     $("start-button").disabled = !room.members.every((m) => m.ready);
-    show("speed", !lobby && room.you_own);
-    if (document.activeElement !== $("speed")) $("speed").value = String(s.game.speed);
   }
 
   const game = s.game;
@@ -417,7 +410,6 @@ $("join-button").onclick = () =>
 $("ready-button").onclick = () =>
   act({ action: "ready", ready: !$("ready-button").dataset.ready });
 $("start-button").onclick = () => act({ action: "start" });
-$("speed").onchange = () => act({ action: "speed", percent: Number($("speed").value) });
 $("leave-button").onclick = () => act({ action: "leave" });
 $("copy-button").onclick = () => {
   const invite = $("room-invite").value;

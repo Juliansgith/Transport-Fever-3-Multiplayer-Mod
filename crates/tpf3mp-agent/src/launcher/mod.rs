@@ -70,6 +70,9 @@ pub struct LauncherConfig {
     /// on its command line. Then neither the player nor an invite can
     /// choose another.
     pub server_fixed: bool,
+    /// What players see of that server, such as `EU`, in place of its
+    /// address.
+    pub server_name: Option<String>,
     /// How to trust servers.
     pub trust: ServerTrust,
     pub identity: Arc<Identity>,
@@ -211,6 +214,7 @@ impl Shared {
             view: Mutex::new(View {
                 server: config.server.clone(),
                 server_fixed: config.server_fixed,
+                server_name: config.server_name.clone(),
                 name: config.name.clone(),
                 player: Some(config.identity.player()),
                 installed: config.installed.clone(),
@@ -391,12 +395,6 @@ async fn act(
         }
         Action::Ready { ready } => forward(session, Control::Ready(ready)).await,
         Action::Start => forward(session, Control::Start).await,
-        Action::Speed { percent } => {
-            if percent > tpf3mp_proto::Speed::MAX.0 {
-                return Err("that speed is too fast".into());
-            }
-            forward(session, Control::Speed(tpf3mp_proto::Speed(percent))).await
-        }
         Action::Kick { player } => {
             let player = api::parse_player(&player).ok_or("that is not a player")?;
             forward(session, Control::Kick(player)).await

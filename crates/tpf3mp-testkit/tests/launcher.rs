@@ -134,6 +134,7 @@ fn launcher_config(
         listen: "127.0.0.1:0".parse().unwrap(),
         server: None,
         server_fixed: false,
+        server_name: None,
         tunnel: TunnelChoice::Off,
         remember: None,
         trust: trust.clone(),
