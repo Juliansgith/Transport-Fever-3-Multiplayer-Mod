@@ -422,7 +422,8 @@ pub struct PlaceStop {
     pub model: ResName,
 }
 
-/// One terrain cell: the height it is set to and the height it had.
+/// One terrain cell: the height it is set to and the height it had, in
+/// millimetres.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerrainCell {
     pub target: i32,

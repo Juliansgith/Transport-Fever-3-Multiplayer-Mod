@@ -65,6 +65,24 @@ before the rest ([DAY_ONE.md](DAY_ONE.md) §0).
   naming, the build diff and the profile, and holds the release until the
   hook matches. Expect a day-one patch.
 
+*Added* (2026-09-27, from third-party mods made for build 40391,
+[investigation/TF3_MODS_2026-09-27.md](../investigation/TF3_MODS_2026-09-27.md)):
+our mod and both probes are TPF2 mods and will not load in TF3 as they
+are.
+
+- [x] Before release day: `mod/tpf3mp_1` in TF3's layout (`mod.json`,
+  `_content.json`, `_metadata/modinfo.json`, `content/`), loaded by a
+  game bar plugin, with the Lua side of the link to the hook
+  (`tpf3mp/bridge.lua`, HOOKS.md "The Lua side"). How the rest of TpF2
+  Multiplayer's mod comes over: [PORTING_TPF2MP.md](PORTING_TPF2MP.md).
+- [ ] Before release day: `script_api_dump` and `determinism_probe` in
+  the same layout. Run them from a GUI `onStep` plugin, since game
+  scripts are not known to exist, and log through `debugPrint` where `io`
+  is missing.
+- [ ] Read the game's `.tl` sources and `.d.tl` API declarations before
+  running the probes; list every `api.cmd.make*Cmd` and the tool that
+  sends it.
+
 Then:
 
 - [ ] `binary_survey.py`: the Lua version, whether RTTI and `__FUNCSIG__`
@@ -104,7 +122,13 @@ Dev A where it can):
   `loaded(next_step)`.
 - [ ] Speed and pause follow the room: the game's own buttons go through
   `Session::command` (`Control::Speed`). The launcher has no speed
-  control.
+  control. *Added:* the speed row is a script recipe a mod can replace,
+  so this may need no native code; the pause-or-cycle key must be caught
+  too.
+- [ ] *Added:* whether the stock tools send their commands through
+  `api.cmd.sendCommand`. If they do, the caller-RVA filter cannot tell a
+  click from our replay (HOOKS.md), and the hook needs another way to
+  tell them apart.
 
 Dev B (the game's side of the bridge):
 
@@ -196,6 +220,10 @@ Dev B:
   edge a line runs on.
 - [ ] The room's required mods from Mod Hub IDs; a missing mod is
   installed from Mod Hub, never received from another player.
+- [ ] *Added, open for the team:* a rule for mods that send commands from
+  the GUI (GW Big City and Startup Fortune do, once per save). Every
+  player's game sends them: forwarded, the room gets one city per player;
+  dropped, the worlds differ.
 
 Dev C:
 

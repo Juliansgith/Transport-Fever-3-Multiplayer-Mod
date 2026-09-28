@@ -1,0 +1,11 @@
+{
+    "archives": null,
+    "files": [
+        "gui/tpf3mp/tpf3mp.res.lua",
+        "gui/tpf3mp/tpf3mp.script.lua",
+        "scripts/tpf3mp/bridge.lua",
+        "scripts/tpf3mp/engine.lua",
+        "scripts/tpf3mp/geom.lua",
+        "scripts/tpf3mp/roads.lua"
+    ]
+}

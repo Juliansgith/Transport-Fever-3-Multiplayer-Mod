@@ -15,6 +15,7 @@ use tpf3mp_proto::{
         Polyline, Pos, Pos2, Resolve, Rgb, RoadBuild, StationId, Structure, Tangent, Terraform,
         TerrainCell, TrackBuild, Tram, Transform, UnitDir, VehicleId, Vertex,
     },
+    lua,
 };
 
 fn text<const N: usize>(value: &str) -> Text<N> {
@@ -303,6 +304,33 @@ fn every_variant_round_trips() {
         let back: Payload = postcard::from_bytes(&wire).unwrap();
         assert_eq!(Action::from_payload(&back).unwrap(), action);
     }
+}
+
+#[test]
+fn every_variant_round_trips_through_the_mod_s_tables() {
+    for action in samples() {
+        let table = lua::action_to_lua(&action).unwrap();
+        assert_eq!(lua::action_from_lua(&table).unwrap(), action, "{table:?}");
+    }
+}
+
+#[test]
+fn the_mod_s_tables_are_in_the_game_s_units() {
+    let stop = samples()
+        .into_iter()
+        .find(|action| matches!(action, Action::PlaceStop(_)))
+        .unwrap();
+    let table = lua::action_to_lua(&stop).unwrap();
+    let stop = table.get("PlaceStop").unwrap();
+    // The sample's stop stands at x = 45 000 mm, facing +x in millionths.
+    assert_eq!(
+        stop.get("at").unwrap().get("x"),
+        Some(&lua::LuaValue::Number(45.0))
+    );
+    assert_eq!(
+        stop.get("direction").unwrap().get("x"),
+        Some(&lua::LuaValue::Number(1.0))
+    );
 }
 
 #[test]

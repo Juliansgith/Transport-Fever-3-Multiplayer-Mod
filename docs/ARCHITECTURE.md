@@ -357,8 +357,12 @@ Not carried over:
 ## Open questions
 
 - [needs game] Is TPF3 the same engine lineage as TPF2, with the same command
-  pipeline, RTTI and assert strings?
-- [needs game] What Lua version and sandbox do game and GUI scripts get?
+  pipeline, RTTI and assert strings? Its script API is: mods for build 40391
+  use TPF2's `api.cmd`, `api.engine` and `api.type` names
+  ([investigation/TF3_MODS_2026-09-27.md](../investigation/TF3_MODS_2026-09-27.md)).
+- [needs game] What Lua version and sandbox do game and GUI scripts get? The
+  game's scripts are Teal, loaded with `ug_require`; its GUI is a react-style
+  framework in script that mods extend and replace.
 - [needs game] Is there any anti-tamper?
 - [needs game] How deterministic is the native simulation per platform pair?
 - [needs game] Is the macOS hook feasible, and are saves really cross-platform?

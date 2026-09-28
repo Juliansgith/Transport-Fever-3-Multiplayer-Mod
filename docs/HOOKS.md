@@ -400,8 +400,9 @@ and calls the session from its detours:
   agent cuts it into its chunk store and deletes the file.
 - **When the player acts.** Capture the action before the game applies it
   locally and call `command(payload)`. For a build the payload is the
-  bytes the Lua mod encoded (`tpf3mp/wire.lua`, "The action schema" in
-  [BUILDING.md](BUILDING.md)), passed through unchanged. The action happens only when the
+  action the Lua mod handed over as a table, converted by
+  `tpf3mp_proto::lua` and encoded with `Action::to_payload` ("The action
+  schema" in [BUILDING.md](BUILDING.md)). The action happens only when the
   room's event comes back through `Game::apply`, on every replica alike.
 - **Notices.** `Game::notice` receives speed changes, refusals,
   divergences and the end of the session, for the game's UI.
@@ -430,6 +431,34 @@ by hand (see the README). On release day, what remains for TPF3 is:
   applies the canonical economy, with `save` and `restore` so its rooms'
   logs compact (`crates/tpf3mp-server/src/ruleset.rs`). It is added to
   the server's `RulesMenu` next to `native`, which stays offered.
+
+### The Lua side
+
+The Lua mod runs in the game's GUI state, started by a game bar plugin on
+the first frame of a game (`mod/tpf3mp_1/content/gui/tpf3mp/`). The hook
+and the mod meet through one global table, which the hook registers in
+that state before the mod starts. Its contract is in
+`mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`:
+
+- `tpf3mp_native.version`: 2. The mod refuses any other.
+- `tpf3mp_native.command(action)`: an action table, in the game's units.
+  The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
+  `MAX_DEPTH` and `MAX_NODES`, converts it with `action_from_lua`, and
+  passes `Action::to_payload` to `Session::command`. It returns `true`, or
+  `false` and the conversion's error. `false` or an error means refused,
+  and the mod then does not apply the action locally either.
+- `tpf3mp_native.register(handlers)`: the mod's handlers, which the hook
+  keeps with the Lua state they came from.
+  - `handlers.apply(action)`, with the table `action_to_lua` makes of the
+    event's action, returns `(ok, reason)`; it is
+    `Game::apply`. This version refuses every event, so a hook that
+    receives one stops following the room.
+  - `handlers.notice(kind, text)` is `Game::notice`.
+  - Neither raises: an error becomes a refusal.
+- `tpf3mp_native.log(line)`: a line for `hook.log`.
+
+Without the table, the mod logs "no hook in this game" and does nothing.
+That is every game Steam started (D11).
 
 ## Release-day procedure: adding a target for a new build
 
@@ -552,7 +581,10 @@ hooks both, and the reason is worth carrying into a TPF3 profile:
   `api.cmd.*` path), so the **return address of the factory call** is the only
   thing that tells a player's command from the mod's replay of one. That
   caller-RVA filter is load-bearing, not tidiness: without it every replay is
-  captured again.
+  captured again. On TF3 it may not hold: the GUI is script, and if the
+  stock tools build their commands through `api.cmd` as our replays do,
+  both arrive from the same caller. Check this before porting the filter
+  ([investigation/TF3_MODS_2026-09-27.md](../investigation/TF3_MODS_2026-09-27.md)).
 
 | factory | RVA | steal | |
 |---|---|---|---|
