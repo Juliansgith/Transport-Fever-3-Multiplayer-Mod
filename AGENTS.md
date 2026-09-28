@@ -2,7 +2,8 @@
 
 How changes are made and released, for people and coding agents alike. Read
 this before changing anything. [README.md](README.md) says what the project
-is; `docs/` says how it works. Check every task against
+is, for players; [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) where it stands
+and how to build it; `docs/` says how it works. Check every task against
 [docs/PLAN.md](docs/PLAN.md) and [docs/DECISIONS.md](docs/DECISIONS.md)
 first, and flag a conflict instead of working around it ("Before starting
 a task" below).

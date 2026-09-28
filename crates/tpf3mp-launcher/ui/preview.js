@@ -134,7 +134,8 @@ export function previewBackend() {
   let track = "stable";
   let held = null;
 
-  // A picker at the top of the page, in tearded's preview style.
+  // A picker at the top of the page, in tearded's preview style; left out
+  // with ?shot, for screenshots of a state.
   const picker = document.createElement("select");
   picker.className = "preview-label";
   picker.setAttribute("aria-label", "Preview state");
@@ -145,7 +146,9 @@ export function previewBackend() {
     location.hash = encodeURIComponent(name);
     state = scene(name);
   });
-  document.querySelector(".header-actions").prepend(picker);
+  if (!new URLSearchParams(location.search).has("shot")) {
+    document.querySelector(".header-actions").prepend(picker);
+  }
 
   const go = (next) => {
     name = next;

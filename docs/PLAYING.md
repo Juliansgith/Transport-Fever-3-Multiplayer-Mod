@@ -186,7 +186,7 @@ ends.
 
 Developers who want a whole room on one PC, several fake games each with
 its own agent, use the multiplayer rig instead (`tpf3mp-rig`, see
-"Development" in the [README](../README.md)).
+[DEVELOPMENT.md](DEVELOPMENT.md)).
 
 ## Your identity
 
