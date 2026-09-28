@@ -24,7 +24,7 @@ use tracing_subscriber::{
 const DAYS_KEPT: usize = 7;
 /// What is logged unless `RUST_LOG` says otherwise: TPF3-MP's own events,
 /// and only warnings from the libraries under it.
-const DEFAULT_FILTER: &str = "info,tauri=warn,wry=warn,tao=warn,quinn=warn,rustls=warn";
+const DEFAULT_FILTER: &str = "info,wgpu=warn,wgpu_core=warn,wgpu_hal=error,naga=warn,eframe=warn,egui=warn,winit=warn,quinn=warn,rustls=warn";
 
 /// The per-user logs folder.
 pub fn dir() -> anyhow::Result<PathBuf> {

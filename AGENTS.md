@@ -21,7 +21,7 @@ feature branch ──> dev ──> acceptance ──> main
 | branch | holds | may receive | gate to the next |
 |---|---|---|---|
 | feature (`feat/…`, `fix/…`, `docs/…`) | one change in progress | your commits | `ci` green on the branch |
-| `dev` | the integration and testing line; every push is published at once as a dev build (D19) | merges of feature branches whose `ci` is green | `ci` green on `dev` |
+| `dev` | the integration and testing line | pull requests from feature branches whose `ci` is green; a change to `docs/DECISIONS.md` or `docs/PLAN.md` also needs the owner's approval | `ci` green on `dev` |
 | `acceptance` | the release candidate | fast-forwards from `dev` | `ci` **and** `acceptance` green on `acceptance`, plus the manual checks below |
 | `main` | what is released | fast-forwards from `acceptance` | the `release` workflow drafts the release |
 
@@ -71,8 +71,7 @@ update the script's lists and run it again.
   - the whole test suite;
   - release builds of the binaries players and servers run;
   - the server container image;
-  - that the launcher pages' scripts parse, and the tests of what the
-    launcher's page shows (`node --test crates/tpf3mp-launcher/tests/ui/*.test.mjs`);
+  - that the launcher page's script parses;
   - on Linux, format, lint and tests of the binary-analysis kit
     `tools/tpfre` (D14), its own Cargo workspace.
 - **`acceptance`** (`.github/workflows/acceptance.yml`) runs on pushes to
@@ -90,9 +89,10 @@ update the script's lists and run it again.
     (see [docs/PLAYING.md](docs/PLAYING.md)). Until the game is out,
     `--game-exe` names `tpf3mp-fakegame` as the game: "Start Transport
     Fever 3" then starts it with the hook loaded into it, and it must
-    join the room. For a look at the layout without a launcher, serve
-    `crates/tpf3mp-launcher/ui/` (`python -m http.server` in it) and open
-    it in a browser: it shows sample states, picked at the top;
+    join the room. `cargo test -p tpf3mp-launcher --test screenshots --
+    --ignored` renders its screens to `target/launcher-screenshots/`, one
+    for each sample state of the page it copies, for a look at the layout
+    (D20);
   - a server upgrade that keeps running games (see "Upgrades" in
     [docs/OPERATIONS.md](docs/OPERATIONS.md)), when the log format, the
     protocol or persistence changed.
@@ -111,9 +111,9 @@ update the script's lists and run it again.
 ## Promoting
 
 ```bash
-# a feature into dev, once its ci run is green
-git switch dev && git pull --ff-only
-git merge --no-ff feat/my-change && git push origin dev
+# a feature into dev: a pull request, merged once its ci run is green
+# (and, when it changes the decisions or the plan, the owner approved it)
+gh pr create --base dev --head feat/my-change
 
 # dev into acceptance, once ci on dev is green
 git switch acceptance && git pull --ff-only
@@ -150,6 +150,12 @@ starting any task, check it against that page and
   Part 3).
 - **Keep the plan current.** Tick an item in the change that finishes it.
   A new decision goes into DECISIONS.md first, then the plan follows.
+- **Decisions are the owner's.** Only the owner (Juliansgith) makes or
+  changes a decision, or settles a question the plan leaves open for
+  them. Propose one in a pull request into `dev`: GitHub asks the owner
+  to approve any change to `docs/DECISIONS.md` or `docs/PLAN.md`
+  (`.github/CODEOWNERS`). Never write a decision, or mark an open
+  question decided, on your own or another person's say.
 
 ## Rules for every change
 

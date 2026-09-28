@@ -26,6 +26,9 @@ Flag each of these when a task asks for it:
 | A speed control in the launcher | Part 2, Dev A: the game's own speed buttons, synced by the server | |
 | Long invites or support IDs, or one code for both | D13 | Six-character codes, separate for a room and a session |
 | Engine entity IDs on the wire | D8: positions in millimetres, resource names, canonical IDs | |
+| A web view for the launcher (Tauri, WebView2, WebKitGTK), or another launcher | D20: a native egui window, in the look of tearded's launcher | Change the look in `theme.rs` and `app.rs` |
+| A Dev track, choosing or going back to versions, the room moved into the game | Held until after launch by the owner (D20; D17, D18, D19) | Ask the owner first |
+| Writing or changing a decision, or settling a question left open for the owner | The owner decides (AGENTS.md) | A pull request the owner approves |
 | Logging an invite code bare | D13: codes cannot be spotted in a log line | `invite=<code>`, which redaction hides |
 
 ## Before release (done)
@@ -159,10 +162,11 @@ Dev C (building):
   becomes a crossing (both were TPF2 bugs).
 - [ ] Bulldoze: find the edge by its endpoints plus a 14 m search along
   the centreline.
-- [ ] *Changed* (D17): an in-game Multiplayer panel for a game the
-  launcher started; for release it shows the room, and after release it
-  takes over connecting, rooms and chat from the launcher. Not a way to
-  join without the launcher, and no Steam networking (D2, D11).
+- [ ] *Changed:* an in-game Multiplayer panel for a game the launcher
+  started: the room, its players, chat and whether the worlds match. Not
+  a way to join without the launcher, and no Steam networking (D2, D11).
+  Moving the lobby itself into the game (D17) is held until after launch
+  (D20).
 
 **Test A** (the gate to Part 3):
 
@@ -253,15 +257,16 @@ Dev C:
 - [x] The auto-updater (D7; needs the owner's update key, OPERATIONS.md
   "Before the first release").
 - [x] The server: deployed beside tf2mp-relay (OPERATIONS.md).
-- [x] Building into the TF2 launcher: *decided* (D16): the launcher is
-  tearded's, ported to TF3 in a web view, with the version choice and
-  release notes of his (D18).
+- [x] Building into the TF2 launcher: *decided by the owner* (D20): our
+  own native window, drawn in the exact look of tearded's launcher as
+  ported to TF3, with its release notes. No web view.
 - [ ] *Added:* the minimap ([MINIMAP.md](MINIMAP.md)): TPF2 Big Maps'
   minimap for TF3, as a game bar plugin in the mod. First script only
   (towns, industries, network, stations, camera, click to move, companies
   and industry types); then the terrain picture rendered by the hook; in a
   room, other players' cameras and builds.
-- [ ] *Added* (D17): the room in the game. Connecting, rooms, the lobby
-  and chat move to an in-game panel once TF3's GUI is known; the link
-  carries the launcher's state and actions; the launcher keeps them until
-  the panel is proven.
+- [ ] *Held* (D17, D20): the room in the game. Connecting, rooms, the
+  lobby and chat in an in-game panel. The owner decides after launch.
+- [ ] *Held* (D18, D19, D20): choosing versions and tracks, and a Dev
+  track of untested builds. The owner decides after launch, once `dev`
+  takes reviewed pull requests only.

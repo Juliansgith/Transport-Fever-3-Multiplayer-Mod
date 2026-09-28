@@ -1,0 +1,432 @@
+//! The launcher window, clicked through as a player would, over a stand-in
+//! launcher that records what the window asks for.
+
+#![allow(clippy::unwrap_used)]
+
+use std::cell::RefCell;
+
+use eframe::egui::{self, accesskit::Role};
+use egui_kittest::{Harness, kittest::Queryable};
+use tpf3mp_agent::launcher::{
+    Action, Connection, Differences, Game, InstalledGame, Member, MemberContent, Phase, Room,
+    RulesChoice, State,
+};
+use tpf3mp_launcher::{
+    app::{Extras, LauncherApp, Shown},
+    backend::Backend,
+};
+
+#[derive(Default)]
+struct Recorder {
+    state: RefCell<State>,
+    actions: RefCell<Vec<Action>>,
+}
+
+impl Backend for Recorder {
+    fn state(&self) -> State {
+        self.state.borrow().clone()
+    }
+
+    fn act(&self, action: Action) {
+        self.actions.borrow_mut().push(action);
+    }
+
+    fn busy(&self) -> bool {
+        false
+    }
+}
+
+fn window(state: State) -> Harness<'static, LauncherApp<Recorder>> {
+    window_sized(state, 690.0)
+}
+
+/// A window this tall: tall enough, the room's players and chat are in
+/// view without scrolling.
+fn window_sized(state: State, height: f32) -> Harness<'static, LauncherApp<Recorder>> {
+    let recorder = Recorder {
+        state: RefCell::new(state),
+        ..Recorder::default()
+    };
+    let app = LauncherApp::new(
+        recorder,
+        Extras {
+            updater: None,
+            probe: None,
+            notes: None,
+            shown: Shown {
+                update: None,
+                installed_mod: Some(None),
+            },
+        },
+    );
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1100.0, height))
+        .build_ui_state(|ui, app: &mut LauncherApp<Recorder>| app.show(ui), app);
+    harness.run_steps(4);
+    harness
+}
+
+fn actions(harness: &Harness<'static, LauncherApp<Recorder>>) -> Vec<Action> {
+    harness.state().backend().actions.borrow().clone()
+}
+
+fn member(name: &str, owner: bool, you: bool, ready: bool) -> Member {
+    Member {
+        id: format!("{name}-key"),
+        name: name.to_owned(),
+        platform: "Windows x86-64".to_owned(),
+        ready,
+        connected: true,
+        owner,
+        you,
+        content: MemberContent::Same,
+    }
+}
+
+fn installed() -> Option<InstalledGame> {
+    Some(InstalledGame {
+        dir: r"C:\Games\Transport Fever 3".into(),
+        build: "20364158".into(),
+    })
+}
+
+fn in_room(members: Vec<Member>, you_own: bool) -> State {
+    State {
+        name: "Ann".into(),
+        connection: Connection::Connected,
+        installed: installed(),
+        room: Some(Room {
+            name: "Friday trains".into(),
+            rules: "native".into(),
+            phase: Phase::Lobby,
+            invite: Some("K7QM2X".into()),
+            you_own,
+            max_players: 4,
+            has_password: false,
+            members,
+        }),
+        ..State::default()
+    }
+}
+
+fn typed(window: &mut Harness<'static, LauncherApp<Recorder>>, field: &str, text: &str) {
+    let input = window.get_by_role_and_label(Role::TextInput, field);
+    input.focus();
+    input.type_text(text);
+    window.run_steps(4);
+}
+
+#[test]
+fn connecting_uses_the_server_and_name_offered() {
+    let mut window = window(State {
+        name: "Ann".into(),
+        server: Some("tpf3mp.example.org:29470".into()),
+        ..State::default()
+    });
+    window.get_by_label("Connect").click();
+    window.run_steps(4);
+    assert_eq!(
+        actions(&window),
+        [Action::Connect {
+            server: "tpf3mp.example.org:29470".into(),
+            name: "Ann".into(),
+        }]
+    );
+}
+
+/// A build without a server of its own: the invite goes with the server
+/// typed, and the launcher connects and joins in one step.
+#[test]
+fn an_invite_given_with_the_server_connects_and_joins() {
+    let mut window = window(State::default());
+    typed(&mut window, "SERVER", "tpf3mp.example.org:29470");
+    typed(&mut window, "YOUR NAME", "Bob");
+    typed(&mut window, "INVITE", "k7qm2x");
+    window.get_by_label("Connect").click();
+    window.run_steps(4);
+    assert_eq!(
+        actions(&window),
+        [Action::Connect {
+            server: "tpf3mp.example.org:29470 K7QM2X".into(),
+            name: "Bob".into(),
+        }]
+    );
+}
+
+#[test]
+fn a_room_is_created_with_the_rules_the_host_picks() {
+    let mut window = window(State {
+        name: "Ann".into(),
+        connection: Connection::Connected,
+        rules: vec![
+            RulesChoice {
+                name: "native".into(),
+                description: "The game's own rules and economy".into(),
+            },
+            RulesChoice {
+                name: "strict".into(),
+                description: "Checked by the server".into(),
+            },
+        ],
+        ..State::default()
+    });
+    typed(&mut window, "ROOM NAME", "Friday trains");
+    window.get_by_label("Create room").click();
+    window.run_steps(4);
+    assert_eq!(
+        actions(&window),
+        [Action::Create {
+            room: "Friday trains".into(),
+            max_players: 4,
+            password: None,
+            rules: Some("native".into()),
+        }]
+    );
+}
+
+#[test]
+fn a_room_is_joined_with_its_code() {
+    let mut window = window(State {
+        name: "Ann".into(),
+        connection: Connection::Connected,
+        ..State::default()
+    });
+    window.get_by_label("Join with an invite").click();
+    window.run_steps(4);
+    window.get_by_label("Back to creating a room");
+    typed(&mut window, "INVITE", "k7qm2x");
+    window.get_by_label("Join room").click();
+    window.run_steps(4);
+    assert_eq!(
+        actions(&window),
+        [Action::Join {
+            invite: "K7QM2X".into(),
+            password: None,
+        }]
+    );
+}
+
+#[test]
+fn the_owner_starts_once_everyone_is_ready() {
+    let mut state = in_room(
+        vec![
+            member("Ann", true, true, true),
+            member("Bob", false, false, true),
+        ],
+        true,
+    );
+    state.game = Game {
+        attached: Some("40391".into()),
+        ..Game::default()
+    };
+    let mut window = window(state);
+    window.get_by_label("Start the game").click();
+    window.run_steps(4);
+    assert_eq!(actions(&window), [Action::Start]);
+}
+
+#[test]
+fn removing_a_player_asks_first() {
+    let mut window = window_sized(
+        in_room(
+            vec![
+                member("Ann", true, true, false),
+                member("Bob", false, false, false),
+            ],
+            true,
+        ),
+        1200.0,
+    );
+    window.get_by_label("Remove").click();
+    window.run_steps(4);
+    assert!(actions(&window).is_empty(), "nothing before the answer");
+    window.get_by_label("Remove them").click();
+    window.run_steps(4);
+    assert_eq!(
+        actions(&window),
+        [Action::Kick {
+            player: "Bob-key".into()
+        }]
+    );
+}
+
+#[test]
+fn leaving_asks_first() {
+    let mut window = window(in_room(vec![member("Ann", true, true, false)], true));
+    window.get_by_label("Leave room").click();
+    window.run_steps(4);
+    window.get_by_label("Leave the room?");
+    assert!(actions(&window).is_empty(), "nothing before the answer");
+    window.get_by_label("Leave").click();
+    window.run_steps(4);
+    assert_eq!(actions(&window), [Action::Leave]);
+}
+
+#[test]
+fn a_player_whose_mods_differ_sees_what_to_change() {
+    let mut state = in_room(
+        vec![
+            member("Ann", true, false, false),
+            Member {
+                content: MemberContent::Differs,
+                ..member("Bob", false, true, false)
+            },
+        ],
+        false,
+    );
+    state.content_diff = Some(Differences {
+        summary: "you lack stations 3".into(),
+        missing: vec!["stations 3".into()],
+        changed: vec![("trains".into(), "1.2".into(), "1.1".into())],
+        ..Differences::default()
+    });
+    let window = window(state);
+    window.get_by_label("you lack stations 3");
+    window.get_by_label("Mods you lack: stations 3.");
+    window.get_by_label("Other versions: trains (room 1.2, you 1.1).");
+    window.get_by_label("Other mods");
+}
+
+#[test]
+fn a_launcher_older_than_the_server_says_so() {
+    let window = window(State {
+        name: "Ann".into(),
+        outdated: true,
+        error: Some("this client speaks protocol 5 but the server speaks 6: update TPF3-MP".into()),
+        ..State::default()
+    });
+    window.get_by_label("Update needed");
+    window.get_by_label("Update TPF3-MP to play here");
+    window.get_by_label("this client speaks protocol 5 but the server speaks 6: update TPF3-MP");
+}
+
+#[test]
+fn the_operators_notice_stands_out() {
+    let window = window(State {
+        name: "Ann".into(),
+        connection: Connection::Connected,
+        announcement: Some("Restarting for an update in 5 minutes".into()),
+        ..State::default()
+    });
+    window.get_by_label("From the server: Restarting for an update in 5 minutes");
+}
+
+#[test]
+fn chat_is_sent_to_the_room() {
+    let mut window = window_sized(
+        in_room(vec![member("Ann", true, true, false)], true),
+        1200.0,
+    );
+    let chat = window.get_by_role(Role::TextInput);
+    chat.focus();
+    chat.type_text("good luck");
+    window.run_steps(4);
+    window.get_by_label("Send").click();
+    window.run_steps(4);
+    assert_eq!(
+        actions(&window),
+        [Action::Chat {
+            text: "good luck".into()
+        }]
+    );
+}
+
+#[test]
+fn diagnostics_can_be_switched_off_in_settings() {
+    let mut window = window(State {
+        diagnostics: Some(true),
+        ..State::default()
+    });
+    window.get_by_label("Settings").click();
+    window.run_steps(4);
+    window.get_by_label("Send diagnostics");
+    // The pointer comes to the drop-down before it is pressed, as a
+    // player's does.
+    window.get_by_role(Role::ComboBox).hover();
+    window.run_steps(2);
+    window.get_by_role(Role::ComboBox).click();
+    window.run_steps(4);
+    window.get_by_label("Off").click();
+    window.run_steps(4);
+    assert_eq!(actions(&window), [Action::Diagnostics { on: false }]);
+    window.get_by_label("Done").click();
+    window.run_steps(4);
+    assert!(window.query_by_label("Send diagnostics").is_none());
+
+    // A launcher that sends none offers no switch.
+    let mut window = self::window(State::default());
+    window.get_by_label("Settings").click();
+    window.run_steps(4);
+    assert!(window.query_by_label("Send diagnostics").is_none());
+}
+
+#[test]
+fn the_game_is_started_from_a_room() {
+    let mut window = window(in_room(vec![member("Ann", true, true, false)], true));
+    window.get_by_label("Start Transport Fever 3").click();
+    window.run_steps(2);
+    assert_eq!(actions(&window), [Action::LaunchGame]);
+
+    // Without the game installed, it cannot start.
+    let mut state = in_room(vec![member("Ann", true, true, false)], true);
+    state.installed = None;
+    let mut window = self::window(state);
+    window.get_by_label("Start Transport Fever 3").click();
+    window.run_steps(2);
+    assert!(actions(&window).is_empty());
+
+    // Outside a room there is nothing for the game to connect to.
+    let window = self::window(State {
+        connection: Connection::Connected,
+        ..State::default()
+    });
+    assert!(window.query_by_label("Start Transport Fever 3").is_none());
+}
+
+/// A package built for its own server offers no other (D12): the server
+/// is shown, not asked for, and an invite may go with the name.
+#[test]
+fn a_package_with_its_own_server_offers_no_other() {
+    let own = State {
+        name: "Ann".into(),
+        server: Some("tpf3mp.example.org:29470".into()),
+        server_fixed: true,
+        ..State::default()
+    };
+    let mut window = window(own.clone());
+    assert!(
+        window
+            .query_by_role_and_label(Role::TextInput, "SERVER")
+            .is_none(),
+        "no server to type"
+    );
+    window.get_by_label("tpf3mp.example.org:29470");
+    // A package that names its server shows the name, not the address.
+    let named = self::window(State {
+        server_name: Some("EU".into()),
+        ..own.clone()
+    });
+    named.get_by_label("EU");
+    assert!(named.query_by_label("tpf3mp.example.org:29470").is_none());
+    window.get_by_label("Connect").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [Action::Connect {
+            server: String::new(),
+            name: "Ann".into(),
+        }]
+    );
+
+    let mut window = self::window(own);
+    typed(&mut window, "INVITE", "K7QM2X");
+    window.get_by_label("Connect").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [Action::Connect {
+            server: "K7QM2X".into(),
+            name: "Ann".into(),
+        }]
+    );
+}

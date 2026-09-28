@@ -3,6 +3,10 @@
 # administrators included:
 #
 # - dev, acceptance and main can be neither force-pushed nor deleted;
+# - dev takes pull requests only, once their ci checks passed, and one
+#   that changes the decisions or the plan only with the owner's approval
+#   (.github/CODEOWNERS). The owner, an administrator, may still push to
+#   it, as promotions and fixes need;
 # - acceptance takes only commits whose ci checks passed;
 # - main takes only commits whose ci and acceptance checks passed.
 #
@@ -33,6 +37,22 @@ acceptance=(
   "soak (ubuntu-latest)"
 )
 
+# dev's protection body: pull requests only, their ci checks passed, a code
+# owner's approval for the files .github/CODEOWNERS names; administrators
+# not bound, so the owner can promote and fix.
+dev_rules() {
+  local checks="" name
+  for name in "${ci[@]}"; do
+    checks+="${checks:+,}{\"context\":\"$name\",\"app_id\":$actions_app}"
+  done
+  printf '{"required_status_checks":{"strict":false,"checks":[%s]},' "$checks"
+  printf '"enforce_admins":false,'
+  printf '"required_pull_request_reviews":{"dismiss_stale_reviews":true,'
+  printf '"require_code_owner_reviews":true,"required_approving_review_count":0},'
+  printf '"restrictions":null,"allow_force_pushes":false,"allow_deletions":false,'
+  printf '"required_linear_history":false}'
+}
+
 # The protection body for a branch that requires the checks named after it.
 rules() {
   local checks="" name
@@ -56,6 +76,7 @@ protect() {
     --jq '"'"$branch"': \(.required_status_checks.checks // [] | length) required checks, force-push \(.allow_force_pushes.enabled), deletion \(.allow_deletions.enabled), admins bound \(.enforce_admins.enabled)"'
 }
 
-protect dev
+dev_rules | gh api -X PUT "repos/$repo/branches/dev/protection" --input - \
+  --jq '"dev: pull requests only, \(.required_status_checks.checks | length) required checks, code owners \(.required_pull_request_reviews.require_code_owner_reviews), admins bound \(.enforce_admins.enabled)"'
 protect acceptance "${ci[@]}"
 protect main "${ci[@]}" "${acceptance[@]}"

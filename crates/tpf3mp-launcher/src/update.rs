@@ -34,20 +34,6 @@
 //!
 //! The player chooses when to install, since restarting ends a game; an
 //! update not installed then is installed at the next start.
-//!
-//! The player may also choose (D18): the Experimental track, which offers
-//! pre-releases too (found through `releases.rs`), the Dev track (D19),
-//! which offers every build of `dev` as well, and any signed release,
-//! older ones included, which is then installed as an update is and held:
-//! while a chosen version is held, nothing is updated on its own until the
-//! player resumes updates. Both are kept in `.tpf3mp-update/choice.json`.
-//!
-//! Dev builds (`<version>-dev.<n>`) are signed as soon as they are built,
-//! with a key of their own that needs nobody's approval
-//! (`TPF3MP_UPDATE_DEV_PUBLIC_KEY` at build time). A launcher trusts that
-//! key only while the player is on the Dev track, and only for a dev
-//! build: it can never sign a release, and players on the other tracks
-//! never take anything it signed.
 
 use std::{
     ffi::OsString,
@@ -59,6 +45,7 @@ use std::{
 };
 
 use base64::Engine;
+use eframe::egui;
 use ring::{
     digest::{Context, SHA256},
     signature::{ED25519, UnparsedPublicKey},
@@ -67,12 +54,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{info, warn};
 
-/// This build's version: the workspace's, or a dev build's own
-/// (`TPF3MP_VERSION` at build time).
-pub const VERSION: &str = match option_env!("TPF3MP_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
-};
+/// This build's version.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The repository releases come from.
 pub const REPOSITORY: &str = match option_env!("TPF3MP_REPOSITORY") {
     Some(repository) => repository,
@@ -82,9 +65,6 @@ pub const REPOSITORY: &str = match option_env!("TPF3MP_REPOSITORY") {
 /// their 32 bytes, separated by commas or spaces. More than one lets the
 /// project move to a new key. Without any, this build never updates.
 const PUBLIC_KEYS: Option<&str> = option_env!("TPF3MP_UPDATE_PUBLIC_KEY");
-/// The public halves of the keys dev builds are signed with, in the same
-/// form. They are trusted only on the Dev track, and only for dev builds.
-const DEV_PUBLIC_KEYS: Option<&str> = option_env!("TPF3MP_UPDATE_DEV_PUBLIC_KEY");
 /// The package this build comes in, as release file names name it.
 pub const PLATFORM: Option<&str> = if cfg!(all(windows, target_arch = "x86_64")) {
     Some("windows-x64")
@@ -104,8 +84,6 @@ const JOURNAL: &str = "journal.json";
 const LOCK: &str = "lock";
 /// Versions this copy rolled back from, which it does not install again.
 const SKIP: &str = "skip.json";
-/// The player's track and the version they chose to hold.
-const CHOICE: &str = "choice.json";
 const MANIFEST: &str = "release.json";
 const SIGNATURE: &str = "release.json.sig";
 /// Largest manifest read.
@@ -169,29 +147,6 @@ pub enum UpdateState {
     Installing {
         version: String,
     },
-    /// The player chose this version; nothing updates on its own.
-    Held {
-        version: String,
-    },
-}
-
-/// What the player chose: the track, and a version to stay on.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Choice {
-    #[serde(default)]
-    pub track: crate::releases::Track,
-    /// A version the player chose to install and stay on.
-    #[serde(default)]
-    pub hold: Option<String>,
-}
-
-/// Which release to fetch.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Which {
-    /// The latest published release, from `releases/latest`.
-    Latest,
-    /// This version, which the player chose or the track offers.
-    Version(String),
 }
 
 /// The signed description of a release.
@@ -210,75 +165,22 @@ pub struct Package {
     pub sha256: String,
 }
 
-/// The keys a check trusts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Keys {
-    /// The project's release keys, which may sign any version.
-    pub release: Vec<Vec<u8>>,
-    /// Dev build keys, which may sign only dev builds.
-    pub dev: Vec<Vec<u8>>,
-}
-
-impl Keys {
-    /// The keys this build was made with. An entry that is not a key is
-    /// left out.
-    fn built_in() -> Self {
-        Self {
-            release: parse_keys(PUBLIC_KEYS.unwrap_or_default()),
-            dev: parse_keys(DEV_PUBLIC_KEYS.unwrap_or_default()),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.release.is_empty() && self.dev.is_empty()
-    }
-
-    /// What a copy on `track` trusts: the dev keys only on the Dev track.
-    fn on(&self, track: crate::releases::Track) -> Self {
-        Self {
-            release: self.release.clone(),
-            dev: if track == crate::releases::Track::Dev {
-                self.dev.clone()
-            } else {
-                Vec::new()
-            },
-        }
-    }
-}
-
-/// Whether this build can take dev builds at all: it trusts a dev key.
-pub fn dev_builds_trusted() -> bool {
-    !Keys::built_in().dev.is_empty()
-}
-
-/// Whether `version` is a dev build: `<version>-dev.<n>`.
-pub fn is_dev_build(version: &str) -> bool {
-    semver::Version::parse(version).is_ok_and(|version| version.pre.as_str().starts_with("dev."))
-}
-
 impl Manifest {
-    /// The manifest in `json`, if `signature` is a release key's signature
-    /// of it, or a dev key's and it is a dev build.
-    pub fn verified(json: &[u8], signature: &[u8], keys: &Keys) -> Result<Self, UpdateError> {
-        let signed_by = |set: &[Vec<u8>]| {
-            set.iter().any(|key| {
-                UnparsedPublicKey::new(&ED25519, key)
-                    .verify(json, signature)
-                    .is_ok()
-            })
-        };
-        let release = signed_by(&keys.release);
-        if !release && !signed_by(&keys.dev) {
+    /// The manifest in `json`, if `signature` is one of `keys`' signature
+    /// of it.
+    pub fn verified(json: &[u8], signature: &[u8], keys: &[Vec<u8>]) -> Result<Self, UpdateError> {
+        let signed = keys.iter().any(|key| {
+            UnparsedPublicKey::new(&ED25519, key)
+                .verify(json, signature)
+                .is_ok()
+        });
+        if !signed {
             return Err(UpdateError::BadSignature);
         }
         let manifest: Self = serde_json::from_slice(json)
             .map_err(|error| UpdateError::Malformed(error.to_string()))?;
         semver::Version::parse(&manifest.version)
             .map_err(|error| UpdateError::Malformed(format!("version: {error}")))?;
-        // A dev key signs dev builds and nothing else.
-        if !release && !is_dev_build(&manifest.version) {
-            return Err(UpdateError::BadSignature);
-        }
         for package in manifest.packages.values() {
             if !safe_name(&package.name) || package.sha256.len() != 64 {
                 return Err(UpdateError::Malformed(format!(
@@ -339,6 +241,11 @@ fn safe_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
+/// The keys this build trusts. An entry that is not a key is left out.
+fn public_keys() -> Vec<Vec<u8>> {
+    parse_keys(PUBLIC_KEYS.unwrap_or_default())
+}
+
 fn parse_keys(text: &str) -> Vec<Vec<u8>> {
     text.split(|c: char| c == ',' || c.is_whitespace())
         .filter(|entry| !entry.is_empty())
@@ -355,8 +262,6 @@ fn parse_keys(text: &str) -> Vec<Vec<u8>> {
 #[derive(Debug, Clone)]
 pub struct Source {
     base: String,
-    /// GitHub's API for the same repository, for the release list.
-    api: String,
     https_only: bool,
 }
 
@@ -365,14 +270,8 @@ impl Source {
     pub fn github() -> Self {
         Self {
             base: format!("https://github.com/{REPOSITORY}"),
-            api: format!("https://api.github.com/repos/{REPOSITORY}"),
             https_only: true,
         }
-    }
-
-    /// The API address the release list comes from.
-    pub fn api(&self) -> &str {
-        &self.api
     }
 
     fn latest(&self, file: &str) -> String {
@@ -466,19 +365,6 @@ impl Install {
             .unwrap_or_default()
     }
 
-    /// The player's choice, or the default: Stable, holding nothing.
-    pub fn choice(&self) -> Choice {
-        fs::read(self.staging().join(CHOICE))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
-    fn choose(&self, choice: &Choice) -> io::Result<()> {
-        fs::create_dir_all(self.staging())?;
-        write_synced(&self.staging().join(CHOICE), &serde_json::to_vec(choice)?)
-    }
-
     fn skip(&self, version: &str) -> io::Result<()> {
         let mut skipped = self.skipped();
         if !skipped.iter().any(|skipped| skipped == version) {
@@ -514,10 +400,10 @@ pub struct Updater {
 struct Inner {
     state: Mutex<UpdateState>,
     install: Option<Install>,
-    /// Every key this build trusts; each check takes those of the track.
-    keys: Keys,
+    keys: Vec<Vec<u8>>,
     source: Source,
     runtime: tokio::runtime::Handle,
+    repaint: Mutex<Option<egui::Context>>,
     /// One check or download at a time in this process.
     working: Mutex<()>,
 }
@@ -527,7 +413,7 @@ impl Updater {
     /// few hours, and downloads what it finds; installing waits for the
     /// player.
     pub fn start(runtime: tokio::runtime::Handle) -> Self {
-        let keys = Keys::built_in();
+        let keys = public_keys();
         let install = Install::of_running();
         let state = match (keys.is_empty(), &install) {
             (true, _) => UpdateState::Off("this build has no update key".into()),
@@ -541,6 +427,7 @@ impl Updater {
                 keys,
                 source: Source::github(),
                 runtime,
+                repaint: Mutex::default(),
                 working: Mutex::default(),
             }),
         };
@@ -559,6 +446,15 @@ impl Updater {
         updater
     }
 
+    /// Repaints the window when the state changes.
+    pub fn repaint_with(&self, ctx: egui::Context) {
+        *self
+            .inner
+            .repaint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(ctx);
+    }
+
     pub fn state(&self) -> UpdateState {
         self.inner
             .state
@@ -567,13 +463,20 @@ impl Updater {
             .clone()
     }
 
-    /// The window reads the state when it next looks.
     fn set(&self, state: UpdateState) {
         *self
             .inner
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = state;
+        if let Some(ctx) = &*self
+            .inner
+            .repaint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            ctx.request_repaint();
+        }
     }
 
     /// Checks for a newer release now, and downloads it.
@@ -593,33 +496,19 @@ impl Updater {
             if matches!(updater.state(), UpdateState::Ready { .. }) {
                 return;
             }
-            let choice = install.choice();
-            // The player chose a version: it stays until they resume.
-            if let Some(version) = choice.hold {
-                updater.set(UpdateState::Held { version });
-                return;
-            }
             updater.set(UpdateState::Checking);
-            let keys = updater.inner.keys.on(choice.track);
-            let which = match choice.track {
-                crate::releases::Track::Stable => Ok(Which::Latest),
-                track => updater.newest_on(track),
-            };
-            let result = which.and_then(|which| {
-                check_and_download(
-                    &install,
-                    &keys,
-                    &updater.inner.source,
-                    &which,
-                    |version, bytes, total| {
-                        updater.set(UpdateState::Downloading {
-                            version: version.to_owned(),
-                            bytes,
-                            total,
-                        });
-                    },
-                )
-            });
+            let result = check_and_download(
+                &install,
+                &updater.inner.keys,
+                &updater.inner.source,
+                |version, bytes, total| {
+                    updater.set(UpdateState::Downloading {
+                        version: version.to_owned(),
+                        bytes,
+                        total,
+                    });
+                },
+            );
             match result {
                 Ok(Checked::Downloaded(version)) => {
                     info!(%version, "an update is ready to install");
@@ -637,143 +526,21 @@ impl Updater {
         });
     }
 
-    /// The newest release on `track`, if it is newer than this one; else
-    /// the latest published release, as on Stable.
-    fn newest_on(&self, track: crate::releases::Track) -> Result<Which, UpdateError> {
-        let (releases, _) = crate::releases::fetch(self.inner.source.api(), 1)?;
-        Ok(match crate::releases::latest(&releases, track) {
-            Some(release) if newer(&release.version, VERSION) => {
-                Which::Version(release.version.clone())
-            }
-            _ => Which::Latest,
-        })
-    }
-
-    /// The player's choice, if this copy updates at all.
-    pub fn choice(&self) -> Option<Choice> {
-        self.inner.install.as_ref().map(Install::choice)
-    }
-
-    /// Changes the track, and checks on it now.
-    pub fn set_track(&self, track: crate::releases::Track) -> Result<(), String> {
-        let install = self
-            .inner
-            .install
-            .as_ref()
-            .ok_or("this copy does not update itself")?;
-        let mut choice = install.choice();
-        choice.track = track;
-        install.choose(&choice).map_err(|error| error.to_string())?;
-        // What was downloaded for the other track waits no more.
-        if matches!(self.state(), UpdateState::Ready { .. }) {
-            self.set(UpdateState::Checking);
-        }
-        self.check();
-        Ok(())
-    }
-
-    /// Lets updates come again after the player held a version.
-    pub fn resume(&self) -> Result<(), String> {
-        let install = self
-            .inner
-            .install
-            .as_ref()
-            .ok_or("this copy does not update itself")?;
-        let mut choice = install.choice();
-        choice.hold = None;
-        install.choose(&choice).map_err(|error| error.to_string())?;
-        self.set(UpdateState::Checking);
-        self.check();
-        Ok(())
-    }
-
-    /// Installs `version`, the player's choice, older or newer, and holds
-    /// it. Blocks while it downloads. Returns whether the launcher must
-    /// close now for it to start; with `version` already running, it is
-    /// only held.
-    pub fn install_version(&self, version: &str) -> Result<bool, String> {
-        let install = self
-            .inner
-            .install
-            .as_ref()
-            .ok_or("this copy does not update itself")?;
-        if self.inner.keys.is_empty() {
-            return Err("this build has no update key".into());
-        }
-        semver::Version::parse(version).map_err(|_| format!("{version} is not a version"))?;
-        let _working = self
-            .inner
-            .working
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let before = install.choice();
-        let keys = self.inner.keys.on(before.track);
-        let held = Choice {
-            hold: Some(version.to_owned()),
-            ..before.clone()
-        };
-        install.choose(&held).map_err(|error| error.to_string())?;
-        if version == VERSION {
-            self.set(UpdateState::Held {
-                version: version.to_owned(),
-            });
-            return Ok(false);
-        }
-        let result = check_and_download(
-            install,
-            &keys,
-            &self.inner.source,
-            &Which::Version(version.to_owned()),
-            |version, bytes, total| {
-                self.set(UpdateState::Downloading {
-                    version: version.to_owned(),
-                    bytes,
-                    total,
-                });
-            },
-        );
-        let failed = |why: String| {
-            // Nothing changed: the choice goes back to what it was.
-            let _ = install.choose(&before);
-            self.set(UpdateState::Failed(why.clone()));
-            Err(why)
-        };
-        match result {
-            Ok(Checked::Downloaded(downloaded)) => {
-                info!(version = %downloaded, "the chosen version is ready to install");
-                self.set(UpdateState::Ready {
-                    version: downloaded,
-                });
-            }
-            Ok(Checked::Unsigned) => {
-                return failed(format!("release {version} is not signed for installing"));
-            }
-            Ok(Checked::UpToDate) => return Ok(false),
-            Err(error) => return failed(error.to_string()),
-        }
-        drop(_working);
-        Ok(self.install_and_restart())
-    }
-
-    /// Installs the downloaded update and starts it. Returns whether it
-    /// did, and so this launcher must close now. On failure everything
-    /// stays as it was, and the state says why.
-    pub fn install_and_restart(&self) -> bool {
+    /// Installs the downloaded update and restarts into it, closing this
+    /// window. On failure everything stays as it was.
+    pub fn install_and_restart(&self, ctx: &egui::Context) {
         let Some(install) = &self.inner.install else {
-            return false;
+            return;
         };
         let UpdateState::Ready { version } = self.state() else {
-            return false;
+            return;
         };
         self.set(UpdateState::Installing {
             version: version.clone(),
         });
-        let installed = install.lock(Duration::ZERO).and_then(|_lock| {
-            let choice = install.choice();
-            let chosen = choice.hold.filter(|held| held != VERSION);
-            let keys = self.inner.keys.on(choice.track);
-            install_staged(install, &keys, chosen.as_deref())
-        });
+        let installed = install
+            .lock(Duration::ZERO)
+            .and_then(|_lock| install_staged(install, &self.inner.keys));
         match installed.and_then(|installed| {
             if installed.is_some() {
                 restart(install)?;
@@ -782,16 +549,12 @@ impl Updater {
         }) {
             Ok(Some(installed)) => {
                 info!(version = %installed, "installed the update; restarting");
-                true
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            Ok(None) => {
-                self.set(UpdateState::UpToDate);
-                false
-            }
+            Ok(None) => self.set(UpdateState::UpToDate),
             Err(error) => {
                 warn!(%error, "cannot install the update");
                 self.set(UpdateState::Failed(format!("cannot install: {error}")));
-                false
             }
         }
     }
@@ -942,7 +705,7 @@ pub fn at_start() -> bool {
     let Ok(install) = Install::of_running() else {
         return false;
     };
-    let keys = Keys::built_in().on(install.choice().track);
+    let keys = public_keys();
     match start(&install, &keys, VERSION) {
         Ok(Started::Restart) => match restart(&install) {
             Ok(()) => true,
@@ -967,7 +730,7 @@ enum Started {
     Restart,
 }
 
-fn start(install: &Install, keys: &Keys, running: &str) -> Result<Started, UpdateError> {
+fn start(install: &Install, keys: &[Vec<u8>], running: &str) -> Result<Started, UpdateError> {
     let _lock = install.lock(LOCK_WAIT)?;
     clear_unpacked(install);
     if let Some(mut journal) = Journal::read(install) {
@@ -1006,13 +769,7 @@ fn start(install: &Install, keys: &Keys, running: &str) -> Result<Started, Updat
     if keys.is_empty() {
         return Ok(Started::Continue);
     }
-    // A held version installs only as the player's choice, and once it
-    // runs nothing else installs on its own.
-    let chosen = install.choice().hold;
-    if chosen.as_deref() == Some(running) {
-        return Ok(Started::Continue);
-    }
-    match install_staged(install, keys, chosen.as_deref())? {
+    match install_staged(install, keys)? {
         Some(version) => {
             info!(%version, "installed the update downloaded earlier; restarting");
             Ok(Started::Restart)
@@ -1079,47 +836,24 @@ fn get(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>, UpdateErro
         .read_to_vec()?)
 }
 
-/// Fetches `which` release and downloads its package: the latest only if
-/// it is newer and not rolled back from, a chosen version whatever it is.
+/// Checks the latest release and downloads its package if it is newer.
 fn check_and_download(
     install: &Install,
-    keys: &Keys,
+    keys: &[Vec<u8>],
     source: &Source,
-    which: &Which,
     mut progress: impl FnMut(&str, u64, u64),
 ) -> Result<Checked, UpdateError> {
     let agent = source.agent(Duration::from_secs(60));
-    let url = |file: &str| match which {
-        Which::Latest => source.latest(file),
-        Which::Version(version) => source.of(version, file),
-    };
-    let json = match get(&agent, &url(MANIFEST), MAX_MANIFEST) {
+    let json = match get(&agent, &source.latest(MANIFEST), MAX_MANIFEST) {
         Ok(json) => json,
         // Published but not signed yet, or no release at all.
         Err(UpdateError::Http(error)) if error.contains("404") => return Ok(Checked::Unsigned),
         Err(error) => return Err(error),
     };
-    let signature = get(&agent, &url(SIGNATURE), 256)?;
+    let signature = get(&agent, &source.latest(SIGNATURE), 256)?;
     let manifest = Manifest::verified(&json, &signature, keys)?;
-    match which {
-        Which::Latest => {
-            if !manifest.newer_than(VERSION) || install.skipped().contains(&manifest.version) {
-                return Ok(Checked::UpToDate);
-            }
-        }
-        // The signed manifest must be the version asked for, not another
-        // one served in its place.
-        Which::Version(version) => {
-            if manifest.version != *version {
-                return Err(UpdateError::Malformed(format!(
-                    "release {version} is signed as {}",
-                    manifest.version
-                )));
-            }
-            if manifest.version == VERSION {
-                return Ok(Checked::UpToDate);
-            }
-        }
+    if !manifest.newer_than(VERSION) || install.skipped().contains(&manifest.version) {
+        return Ok(Checked::UpToDate);
     }
     let package = manifest.package(install.platform)?;
     let _lock = install.lock(Duration::ZERO)?;
@@ -1211,16 +945,11 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Installs a downloaded release that still checks out: the version the
-/// player chose, `chosen`, whatever it is, or else the newest one newer
-/// than this version and not skipped. Returns its version, or `None` if
-/// there is none. Call it holding the lock.
-fn install_staged(
-    install: &Install,
-    keys: &Keys,
-    chosen: Option<&str>,
-) -> Result<Option<String>, UpdateError> {
-    let Some((manifest, archive)) = newest_staged(install, keys, chosen)? else {
+/// Installs the newest downloaded update that is newer than this version,
+/// not skipped, and still checks out. Returns its version, or `None` if
+/// there is none. Older downloads are deleted. Call it holding the lock.
+fn install_staged(install: &Install, keys: &[Vec<u8>]) -> Result<Option<String>, UpdateError> {
+    let Some((manifest, archive)) = newest_staged(install, keys)? else {
         return Ok(None);
     };
     let unpacked = install.staging().join(format!(
@@ -1236,13 +965,11 @@ fn install_staged(
     Ok(Some(manifest.version))
 }
 
-/// The staged release to install, whose signature and package check out:
-/// `chosen` if given, or else the newest newer than this version. Staged
-/// releases that are neither are deleted.
+/// The newest staged release newer than this version whose signature and
+/// package check out.
 fn newest_staged(
     install: &Install,
-    keys: &Keys,
-    chosen: Option<&str>,
+    keys: &[Vec<u8>],
 ) -> Result<Option<(Manifest, PathBuf)>, UpdateError> {
     let Ok(entries) = fs::read_dir(install.staging()) else {
         return Ok(None);
@@ -1264,11 +991,7 @@ fn newest_staged(
             let _ = fs::remove_dir_all(&dir);
             continue;
         };
-        let wanted = match chosen {
-            Some(chosen) => manifest.version == chosen,
-            None => manifest.newer_than(VERSION) && !skipped.contains(&manifest.version),
-        };
-        if !wanted {
+        if !manifest.newer_than(VERSION) || skipped.contains(&manifest.version) {
             let _ = fs::remove_dir_all(&dir);
             continue;
         }
@@ -1497,18 +1220,8 @@ mod tests {
         Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap()
     }
 
-    fn keys(pair: &Ed25519KeyPair) -> Keys {
-        Keys {
-            release: vec![pair.public_key().as_ref().to_vec()],
-            dev: Vec::new(),
-        }
-    }
-
-    fn dev_keys(pair: &Ed25519KeyPair) -> Keys {
-        Keys {
-            release: Vec::new(),
-            dev: vec![pair.public_key().as_ref().to_vec()],
-        }
+    fn keys(pair: &Ed25519KeyPair) -> Vec<Vec<u8>> {
+        vec![pair.public_key().as_ref().to_vec()]
     }
 
     fn manifest_json(version: &str) -> Vec<u8> {
@@ -1543,67 +1256,12 @@ mod tests {
             Err(UpdateError::BadSignature)
         ));
         // A new key alongside the old: either signs.
-        let both = Keys {
-            release: [keys(&other).release, keys(&pair).release].concat(),
-            dev: Vec::new(),
-        };
+        let both = [keys(&other), keys(&pair)].concat();
         assert!(Manifest::verified(&json, signature.as_ref(), &both).is_ok());
         assert!(matches!(
-            Manifest::verified(&json, signature.as_ref(), &Keys::default()),
+            Manifest::verified(&json, signature.as_ref(), &[]),
             Err(UpdateError::BadSignature)
         ));
-    }
-
-    #[test]
-    fn a_dev_key_signs_dev_builds_and_nothing_else() {
-        let dev = key_pair();
-        let build = manifest_json("0.1.1-dev.7");
-        let manifest =
-            Manifest::verified(&build, dev.sign(&build).as_ref(), &dev_keys(&dev)).unwrap();
-        assert_eq!(manifest.version, "0.1.1-dev.7");
-        assert!(
-            manifest.newer_than("0.1.0"),
-            "a dev build follows the release before it"
-        );
-        assert!(
-            !manifest.newer_than("0.1.1"),
-            "and the release it leads to follows it"
-        );
-        // A release, or any other pre-release, signed with the dev key.
-        for version in ["9.1.0", "9.1.0-beta.1", "9.1.0-devel.1"] {
-            let json = manifest_json(version);
-            assert!(
-                matches!(
-                    Manifest::verified(&json, dev.sign(&json).as_ref(), &dev_keys(&dev)),
-                    Err(UpdateError::BadSignature)
-                ),
-                "{version}"
-            );
-        }
-        // A release key may sign a dev build too.
-        let release = key_pair();
-        assert!(Manifest::verified(&build, release.sign(&build).as_ref(), &keys(&release)).is_ok());
-    }
-
-    #[test]
-    fn only_the_dev_track_trusts_the_dev_keys() {
-        let all = Keys {
-            release: vec![vec![1; 32]],
-            dev: vec![vec![2; 32]],
-        };
-        assert_eq!(all.on(crate::releases::Track::Dev), all);
-        for track in [
-            crate::releases::Track::Stable,
-            crate::releases::Track::Experimental,
-        ] {
-            let keys = all.on(track);
-            assert_eq!(keys.release, all.release);
-            assert!(keys.dev.is_empty(), "{track:?}");
-        }
-        assert!(is_dev_build("0.1.1-dev.3"));
-        assert!(!is_dev_build("0.1.1"));
-        assert!(!is_dev_build("0.1.1-beta.1"));
-        assert!(!is_dev_build("not a version"));
     }
 
     #[test]
@@ -1647,11 +1305,7 @@ mod tests {
                 .unwrap()
             })
             .collect();
-        let keys = Keys {
-            release: vec![key],
-            dev: Vec::new(),
-        };
-        let manifest = Manifest::verified(json.as_bytes(), &signature, &keys).unwrap();
+        let manifest = Manifest::verified(json.as_bytes(), &signature, &[key]).unwrap();
         assert_eq!(manifest.version, "9.1.0");
         assert_eq!(manifest.packages["windows-x64"].size, 3);
     }
@@ -1847,14 +1501,12 @@ mod tests {
         let at = tampered.len() / 2;
         tampered[at] ^= 1;
         fs::write(&archive, &tampered).unwrap();
-        assert_eq!(install_staged(&install, &keys(&pair), None).unwrap(), None);
+        assert_eq!(install_staged(&install, &keys(&pair)).unwrap(), None);
         assert_eq!(fs::read(install.root.join("TPF3-MP.exe")).unwrap(), b"old");
         // As downloaded: installed.
         fs::write(&archive, &bytes).unwrap();
         assert_eq!(
-            install_staged(&install, &keys(&pair), None)
-                .unwrap()
-                .as_deref(),
+            install_staged(&install, &keys(&pair)).unwrap().as_deref(),
             Some("9.1.0")
         );
         assert_eq!(fs::read(install.root.join("TPF3-MP.exe")).unwrap(), b"new");
@@ -1871,7 +1523,7 @@ mod tests {
             "9.1.0",
             &[("TPF3-MP.exe", b"new"), ("docs.md", b"docs")],
         );
-        install_staged(&install, &keys(&pair), None).unwrap();
+        install_staged(&install, &keys(&pair)).unwrap();
         let old = format!("TPF3-MP.exe.tpf3mp-{VERSION}.old");
         assert_eq!(fs::read(install.root.join(&old)).unwrap(), b"old");
         let journal = Journal::read(&install).unwrap();
@@ -1945,7 +1597,7 @@ mod tests {
         let (dir, install) = installed("never-starts");
         let pair = key_pair();
         stage(&install, &pair, "9.1.0", &[("TPF3-MP.exe", b"broken")]);
-        install_staged(&install, &keys(&pair), None).unwrap();
+        install_staged(&install, &keys(&pair)).unwrap();
         for _ in 0..MAX_UNCONFIRMED_STARTS {
             assert_eq!(
                 start(&install, &keys(&pair), "9.1.0").unwrap(),
@@ -1961,7 +1613,7 @@ mod tests {
         assert!(install.skipped().contains(&"9.1.0".to_owned()));
         // The same version is not installed again.
         stage(&install, &pair, "9.1.0", &[("TPF3-MP.exe", b"broken")]);
-        assert_eq!(install_staged(&install, &keys(&pair), None).unwrap(), None);
+        assert_eq!(install_staged(&install, &keys(&pair)).unwrap(), None);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2071,19 +1723,12 @@ mod tests {
         ]);
         let source = Source {
             base: base.clone(),
-            api: format!("{base}/api"),
             https_only: false,
         };
         let mut seen = 0;
-        let checked = check_and_download(
-            &install,
-            &keys(&pair),
-            &source,
-            &Which::Latest,
-            |_, bytes, _| {
-                seen = bytes;
-            },
-        )
+        let checked = check_and_download(&install, &keys(&pair), &source, |_, bytes, _| {
+            seen = bytes;
+        })
         .unwrap();
         assert_eq!(checked, Checked::Downloaded("9.1.0".into()));
         assert!(seen > 0, "progress is reported");
@@ -2098,29 +1743,15 @@ mod tests {
         );
         // A release signed by another key is not downloaded.
         let other = key_pair();
-        let checked = check_and_download(
-            &install,
-            &keys(&other),
-            &source,
-            &Which::Latest,
-            |_, _, _| {},
-        );
+        let checked = check_and_download(&install, &keys(&other), &source, |_, _, _| {});
         assert!(matches!(checked, Err(UpdateError::BadSignature)));
         // No signed manifest: nothing to do, and said so.
         let unsigned = Source {
             base: format!("{base}/nothing"),
-            api: format!("{base}/nothing/api"),
             https_only: false,
         };
         assert_eq!(
-            check_and_download(
-                &install,
-                &keys(&pair),
-                &unsigned,
-                &Which::Latest,
-                |_, _, _| {}
-            )
-            .unwrap(),
+            check_and_download(&install, &keys(&pair), &unsigned, |_, _, _| {}).unwrap(),
             Checked::Unsigned
         );
         stop.store(true, Ordering::SeqCst);
@@ -2143,136 +1774,5 @@ mod tests {
                 .of("9.1.0", "x.zip")
                 .ends_with("/releases/download/v9.1.0/x.zip")
         );
-    }
-
-    #[test]
-    fn a_chosen_version_installs_though_it_is_older() {
-        let (dir, install) = installed("chosen");
-        let pair = key_pair();
-        stage(&install, &pair, "0.0.9", &[("TPF3-MP.exe", b"older")]);
-        // Not chosen: an older release is never installed on its own.
-        assert_eq!(install_staged(&install, &keys(&pair), None).unwrap(), None);
-        assert!(
-            !install.staging().join("0.0.9").exists(),
-            "and it is cleared away"
-        );
-        stage(&install, &pair, "0.0.9", &[("TPF3-MP.exe", b"older")]);
-        stage(&install, &pair, "9.1.0", &[("TPF3-MP.exe", b"newer")]);
-        // Chosen: exactly that one, though a newer one waits too.
-        assert_eq!(
-            install_staged(&install, &keys(&pair), Some("0.0.9"))
-                .unwrap()
-                .as_deref(),
-            Some("0.0.9")
-        );
-        assert_eq!(
-            fs::read(install.root.join("TPF3-MP.exe")).unwrap(),
-            b"older"
-        );
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_held_version_stays_until_the_player_resumes() {
-        let (dir, install) = installed("held");
-        let pair = key_pair();
-        assert_eq!(install.choice(), Choice::default());
-        install
-            .choose(&Choice {
-                track: crate::releases::Track::Experimental,
-                hold: Some(VERSION.to_owned()),
-            })
-            .unwrap();
-        assert_eq!(install.choice().hold.as_deref(), Some(VERSION));
-        assert_eq!(install.choice().track, crate::releases::Track::Experimental);
-        // A newer release waits, downloaded: the held version runs on.
-        stage(&install, &pair, "9.1.0", &[("TPF3-MP.exe", b"newer")]);
-        assert_eq!(
-            start(&install, &keys(&pair), VERSION).unwrap(),
-            Started::Continue
-        );
-        assert_eq!(fs::read(install.root.join("TPF3-MP.exe")).unwrap(), b"old");
-        // Held on another version, not yet running: that one goes in.
-        stage(&install, &pair, "0.0.9", &[("TPF3-MP.exe", b"older")]);
-        install
-            .choose(&Choice {
-                hold: Some("0.0.9".into()),
-                ..Choice::default()
-            })
-            .unwrap();
-        assert_eq!(
-            start(&install, &keys(&pair), VERSION).unwrap(),
-            Started::Restart
-        );
-        assert_eq!(
-            fs::read(install.root.join("TPF3-MP.exe")).unwrap(),
-            b"older"
-        );
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_chosen_version_must_be_signed_as_that_version() {
-        let (dir, install) = installed("chosen-signed");
-        let pair = key_pair();
-        let top = "tpf3mp-0.0.9-windows-x64";
-        let name = format!("{top}.zip");
-        let archive = dir.join(&name);
-        zip_of(&archive, &[(&format!("{top}/TPF3-MP.exe"), b"older")]);
-        let bytes = fs::read(&archive).unwrap();
-        let json = manifest_for("0.0.9", &name, &bytes);
-        let signature = pair.sign(json.as_bytes()).as_ref().to_vec();
-        let (base, stop) = serve(vec![
-            (
-                "/releases/download/v0.0.9/release.json".into(),
-                json.clone().into_bytes(),
-            ),
-            (
-                "/releases/download/v0.0.9/release.json.sig".into(),
-                signature.clone(),
-            ),
-            (format!("/releases/download/v0.0.9/{name}"), bytes),
-            // Another version's manifest, served as 0.0.8's.
-            (
-                "/releases/download/v0.0.8/release.json".into(),
-                json.into_bytes(),
-            ),
-            (
-                "/releases/download/v0.0.8/release.json.sig".into(),
-                signature,
-            ),
-        ]);
-        let source = Source {
-            base: base.clone(),
-            api: format!("{base}/api"),
-            https_only: false,
-        };
-        let fetched = check_and_download(
-            &install,
-            &keys(&pair),
-            &source,
-            &Which::Version("0.0.9".into()),
-            |_, _, _| {},
-        )
-        .unwrap();
-        assert_eq!(
-            fetched,
-            Checked::Downloaded("0.0.9".into()),
-            "older, but chosen"
-        );
-        let swapped = check_and_download(
-            &install,
-            &keys(&pair),
-            &source,
-            &Which::Version("0.0.8".into()),
-            |_, _, _| {},
-        );
-        assert!(
-            matches!(swapped, Err(UpdateError::Malformed(_))),
-            "{swapped:?}"
-        );
-        stop.store(true, Ordering::SeqCst);
-        let _ = std::net::TcpStream::connect(base.trim_start_matches("http://"));
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

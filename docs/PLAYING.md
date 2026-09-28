@@ -61,12 +61,8 @@ Start the launcher from the package:
   once, then in **System Settings**, **Privacy & Security**, choose **Open
   Anyway**. On earlier versions: right-click it, choose **Open**, then
   **Open** again.
-- **Linux:** `tpf3mp-launcher`. Its window needs WebKitGTK 4.1, which
-  most desktops have (`libwebkit2gtk-4.1-0` on Debian and Ubuntu,
-  `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch).
-
-On Windows the window needs Microsoft's WebView2, which Windows 11 has and
-most Windows 10 installs have too.
+- **Linux:** `tpf3mp-launcher`. It needs a desktop with Vulkan or OpenGL
+  drivers, as the game does.
 
 It opens the TPF3-MP window. Keep it open while you play: closing it ends
 your session, and during a game it asks first. On a system where the
@@ -124,26 +120,6 @@ and downloads it in the background. When it is ready, the badge at the top
 says so: **Settings**, then **Restart and update**, installs it and
 restarts the launcher. During a game it waits: the update installs the
 next time you start TPF3-MP.
-
-### Choosing a version
-
-As in the TPF2 launcher:
-
-- **Stable or Experimental**, in **Settings**: Experimental also offers
-  pre-releases, which may be less reliable. Launchers built for testing
-  also offer **Dev builds**: every change the team makes, published as
-  soon as it is built and before any test has run. They can break, and
-  may need a server of their own; they are for the team and testers.
-- **Release history**, on the left under the release notes: every
-  release, with its notes, and **Install** for the one you want, older
-  ones included. After a confirmation the launcher installs it and
-  restarts into it, and then holds it: nothing updates on its own until
-  you press **Resume automatic updates** in **Settings**.
-
-A server plays only with its own version: an older TPF3-MP cannot join
-the project's server once it has moved on, and a pre-release needs a
-server that runs it. Choose a version while not in a room; installing
-restarts the launcher.
 
 The launcher installs only what the TPF3-MP project signed: a download
 whose signature, version or contents do not check out is refused, and an
