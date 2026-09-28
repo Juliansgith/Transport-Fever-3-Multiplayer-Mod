@@ -81,8 +81,8 @@ with [docs/PLAYING.md](PLAYING.md); server operators with
   a 150 ms, 2%-loss link agree on every lane, and 400 bots in 50 rooms run
   without a divergence. Fake games join running rooms, get rebased after a
   drift and ride out a server restart, and end in the same world.
-- **Launcher.** tearded's TPF2 Multiplayer Launcher, ported to Transport
-  Fever 3 (`tpf3mp-launcher`: its page in a Tauri web view, D16), on
+- **Launcher.** tearded's TPF2 Multiplayer Launcher's look, as ported to
+  Transport Fever 3, drawn natively with egui (`tpf3mp-launcher`, D20), on
   Windows, Linux and macOS, to connect, create or join a room,
   get ready, start, chat, and follow the game: fetching the world, loading,
   playing. It shows what to change when a player's mods differ, and the
@@ -121,7 +121,7 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-net` | QUIC endpoints, TLS configuration, identities, framed stream I/O. |
 | `crates/tpf3mp-server` | The dedicated server: rooms, sequencer, verdicts, metrics. |
 | `crates/tpf3mp-agent` | The client library and CLI that run next to the game. |
-| `crates/tpf3mp-launcher` | The launcher: tearded's page ported (`ui/`), its window, its logs, its updater and the version choice. |
+| `crates/tpf3mp-launcher` | The launcher: its window (egui, in the page's look), what it shows (`view.rs`), its logs, its updater. |
 | `crates/tpf3mp-snapshot` | Deduplicated storage and transfer of world saves. |
 | `crates/tpf3mp-hookcore` | Signatures, per-build profiles and the detour engine. |
 | `crates/tpf3mp-ipc` | The shared-memory link between the hook and the agent. |

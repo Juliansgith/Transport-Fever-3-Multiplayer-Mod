@@ -1,7 +1,7 @@
 //! The launcher: where the player connects, creates or joins a room, gets
 //! ready, chats and plays, with this agent doing the work. It is the
 //! launcher backend of `docs/ARCHITECTURE.md`. Front ends read its
-//! [`State`] and send it [`Action`]s: the window of the
+//! [`State`] and send it [`Action`]s: the native window of the
 //! `tpf3mp-launcher` crate through a [`LauncherHandle`], or a page in the
 //! player's browser (`Launcher::start`); an in-game interface can drive the
 //! same actions later.

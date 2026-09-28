@@ -493,32 +493,6 @@ runs on distributions with an older C library too.
   once most players have that version, and remove the old one later.
   Losing every trusted key means players download the next version by
   hand once.
-- **Dev builds** (D19 in [DECISIONS.md](DECISIONS.md)). Every push to
-  `dev` is built and published by `dev-build.yml` as a pre-release such as
-  `v0.1.1-dev.14`, never GitHub's latest, signed with a dev key that
-  needs no approval, as soon as its packages are built; the newest ten
-  are kept. Launchers trust the dev key only on their Dev track, and only
-  for dev builds. Set it up once, like the release key but separate from
-  it:
-
-  1. Create the key, and keep a copy of the `.pem` offline:
-
-     ```sh
-     openssl genpkey -algorithm ed25519 -out tpf3mp-dev-key.pem
-     openssl pkey -in tpf3mp-dev-key.pem -pubout -outform DER | tail -c 32 | base64
-     ```
-
-  2. In Settings, Environments, create the environment **`dev-builds`**,
-     with no reviewer, and under deployment branches and tags allow only
-     the branch **`dev`**. Add the whole `.pem` file as its secret
-     **`TPF3MP_DEV_SIGNING_KEY`**.
-  3. Set the repository variable **`TPF3MP_UPDATE_DEV_PUBLIC_KEY`** to the
-     line the second command printed. Launchers built from then on offer
-     the Dev track; earlier ones do not.
-
-  Without them `dev-build.yml` fails its publishing step and publishes
-  nothing. Never use the release key for dev builds: the dev key may
-  sign only what is named `-dev.<n>`.
 - **Building without releasing.** Run the workflow by hand. The packages
   stay workflow artifacts, but the repository is public, so anyone can
   download them.

@@ -455,6 +455,8 @@ Rejected:
 
 ## D16 (2026-09-27): the launcher is tearded's TPF2 launcher, ported, in a web view
 
+*Superseded by D20 (the owner, 2026-09-28): the look stays, the web view goes.*
+
 The launcher's window is a port of tearded's TPF2 Multiplayer Launcher
 (MIT, `github.com/tearded/tpf-multiplayer-launcher`): its page, layout,
 styles and look, in a Tauri web view, over the same launcher backend as
@@ -491,6 +493,8 @@ for the look, and the look is now tearded's own.
 
 ## D17 (2026-09-27): the room moves into the game after release
 
+*Held by the owner until after launch (D20).*
+
 Connecting, rooms, the lobby and chat move from the launcher into an
 in-game panel (a game bar plugin, as the TF3 mods have), after release.
 The launcher then keeps: starting the game with the hook, the mod's state,
@@ -511,6 +515,8 @@ takes the player's choices; the launcher carries the connection.
 This replaces PLAN.md's in-game panel that "hands a code to the launcher".
 
 ## D18 (2026-09-27): players choose their version and track
+
+*Held by the owner until after launch (D20).*
 
 As in tearded's launcher, the player may choose which TPF3-MP to run:
 
@@ -539,6 +545,8 @@ Consequences, accepted:
   Experimental track's checks. Stable's checks still avoid the API.
 
 ## D19 (2026-09-28): a Dev track of untested builds, signed with a key of its own
+
+*Held by the owner until after launch (D20); `dev-build.yml` is removed.*
 
 Every push to `dev` is built and published as a **dev build**
 (`dev-build.yml`), as soon as its packages are built: it runs no tests and
@@ -574,3 +582,41 @@ Consequences, accepted:
 - A player who leaves the Dev track stays on their dev build until a
   release newer than it comes out, or until they install one from the
   history.
+
+## D20 (2026-09-28): the launcher is a native window in the page's exact look
+
+The owner's call, before launch. The launcher stays a native egui window
+(D7), now drawn to look exactly as the page silver2127 ported from
+tearded's TPF2 Multiplayer Launcher (D16) does: its city image, wordmark
+and logo (`crates/tpf3mp-launcher/images`), its fonts (Segoe UI and
+Consolas where the system has them), its colours, sizes and spacing,
+taken from the page's computed styles, and its icons, drawn from the
+page's own SVG. Its panels are frosted as the page's are: the city is
+drawn again from a blurred copy under each. What it shows in each state
+is the page's `view.js`, ported to `view.rs` and tested. Its screens are
+rendered in the page's sample states for comparison
+(`tests/screenshots.rs`).
+
+- **Nothing to install.** A web view needs WebView2 on Windows, which
+  stripped and LTSC installs lack, and WebKitGTK 4.1 on Linux, without
+  which the launcher does not start at all: the system refuses to load
+  it before any fallback could run. The egui window is one file that runs
+  wherever the game does.
+- **One language, tested as it is.** The window is Rust, and its tests
+  click the real window (egui_kittest); the page's logic in JavaScript
+  and its Node tests go.
+- **The look was the point.** Everything a player sees of D16 stays.
+
+Held until after launch, by the owner, so the release is built from what
+was tested: moving the lobby into the game (D17), choosing versions and
+tracks (D18), and the Dev track (D19), which let whoever can push to
+`dev` run untested code on testers' machines. They come back only as the
+owner decides; `dev` now takes pull requests, and a change to this file
+or to PLAN.md needs the owner's approval (`.github/CODEOWNERS`).
+
+Rejected:
+
+- **Keeping the web view** (D16): the costs above, for a look egui draws
+  as well.
+- **egui's own look** (as before D16): the players' launcher looks as
+  the team agreed it should.

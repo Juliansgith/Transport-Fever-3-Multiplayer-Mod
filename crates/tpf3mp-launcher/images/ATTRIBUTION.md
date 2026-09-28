@@ -1,9 +1,9 @@
 # The launcher's images
 
-## transport-fever-2.png
+## transport-fever-2.jpg
 
 The city behind the page: tearded's TPF2 Multiplayer Launcher's background,
-a Transport Fever 2 screenshot, unmodified.
+a Transport Fever 2 screenshot, re-encoded as JPEG to keep the launcher small.
 
 Copyright © Urban Games. Not covered by this repository's licence. Used, as
 tearded's launcher uses it, for a non-commercial, unofficial fan launcher

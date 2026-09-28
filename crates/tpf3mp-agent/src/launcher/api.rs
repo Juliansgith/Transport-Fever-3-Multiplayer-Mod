@@ -1,6 +1,5 @@
 //! What a launcher front end shows ([`State`]) and what it asks for
-//! ([`Action`]), as JSON: the web page over HTTP, the launcher's window
-//! through its Tauri commands (`tpf3mp-launcher`, D16).
+//! ([`Action`]): the web page as JSON, the native window as Rust values.
 
 use serde::{Deserialize, Serialize};
 use tpf3mp_proto::{
@@ -80,8 +79,8 @@ pub enum Action {
     LaunchGame,
 }
 
-/// Everything a launcher front end shows, as JSON: the web page and the
-/// launcher's window read the same.
+/// Everything a launcher front end shows: the web page reads it as JSON,
+/// the native window as it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct State {
     pub name: String,
