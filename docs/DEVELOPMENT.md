@@ -128,7 +128,7 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-bridge` | The messages and step gate between the agent and the hook. |
 | `crates/tpf3mp-hook` | The library the launcher loads into the game it starts. |
 | `crates/tpf3mp-launch` | Starts the game with the hook in that one process. |
-| `crates/tpf3mp-testkit` | Toy game, bots, network emulator, load tester. |
+| `crates/tpf3mp-testkit` | Toy game, bots, network emulator, load tester, regression harness. |
 | `mod/tpf3mp_1` | The game-side Lua mod, in Transport Fever 3's layout: captures builds as actions for the hook, linked to it by `tpf3mp/bridge.lua`. |
 | `packaging/` | The install scripts and their tests, and the macOS bundle's files. |
 | `tools/` | Release-day reverse-engineering and determinism probes. |
@@ -222,5 +222,13 @@ Load-test a server with bots:
 
 ```sh
 cargo run --release -p tpf3mp-testkit --bin tpf3mp-loadtest -- --rooms 50 --bots 8
+```
+
+Play the regression scenarios: actors build, buy vehicles, make lines and
+assign them, two or more games to a room, checked as they go (see
+[docs/REGRESSION.md](REGRESSION.md)):
+
+```sh
+cargo run --release -p tpf3mp-testkit --bin tpf3mp-regress
 ```
 

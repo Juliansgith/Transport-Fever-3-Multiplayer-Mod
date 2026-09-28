@@ -19,7 +19,9 @@ use tpf3mp_agent::{
 };
 use tpf3mp_ipc::{Config as LinkConfig, Link, Role};
 use tpf3mp_net::{Identity, ServerTrust, tunnel::TunnelUrl};
-use tpf3mp_proto::{ContentManifest, CreateRoom, Invite, JoinRoom, RoomSettings, Speed, Text};
+use tpf3mp_proto::{
+    ContentManifest, CreateRoom, Invite, JoinRoom, RoomSettings, RulesName, Speed, Text,
+};
 
 use crate::{
     bot::{Bot, BotConfig, BotReport},
@@ -53,7 +55,7 @@ pub async fn play_room(plan: RoomPlan) -> Result<Vec<BotReport>> {
     let names: Vec<&str> = plan.bots.iter().map(|bot| bot.name.as_str()).collect();
     let clients = connect_all(&plan, &names).await?;
     let seated: Vec<&Client> = clients.iter().map(|(client, _)| client).collect();
-    seat_and_start(&seated, seated.len(), plan.settings).await?;
+    seat_and_start(&seated, seated.len(), plan.settings, None).await?;
     if plan.speed != Speed::NORMAL {
         clients[0].0.set_speed(plan.speed).await?;
     }
@@ -98,7 +100,7 @@ async fn connect_all(plan: &RoomPlan, names: &[&str]) -> Result<Vec<(Client, Eve
 }
 
 /// How a player with a fresh identity connects.
-fn player_options(
+pub(crate) fn player_options(
     server: SocketAddr,
     server_name: &str,
     trust: &ServerTrust,
@@ -114,11 +116,13 @@ fn player_options(
 }
 
 /// Seats every client in one room of `max_players` seats, the first as its
-/// owner, and starts the game. Returns the room's invite.
-async fn seat_and_start(
+/// owner, played by `rules` or the server's default, and starts the game.
+/// Returns the room's invite.
+pub(crate) async fn seat_and_start(
     clients: &[&Client],
     max_players: usize,
     settings: RoomSettings,
+    rules: Option<RulesName>,
 ) -> Result<Invite> {
     let Some((owner, others)) = clients.split_first() else {
         bail!("a room needs at least one player");
@@ -132,7 +136,7 @@ async fn seat_and_start(
             max_players: u8::try_from(max_players).context("too many players")?,
             password: None,
             settings,
-            rules: None,
+            rules,
         })
         .await?;
     for client in others {
@@ -192,6 +196,15 @@ impl BridgedPlayer {
 
 static NEXT_LINK: AtomicU64 = AtomicU64::new(0);
 
+/// A shared-memory link name no other game of this process uses.
+pub(crate) fn link_name(kind: &str) -> String {
+    format!(
+        "tpf3mp-{kind}-{}-{}",
+        std::process::id(),
+        NEXT_LINK.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// Plays one room through the whole stack a game uses: each player is a
 /// fake hook (the toy game behind the step gate) on a shared-memory link to
 /// its agent's bridge. An agent that loses the server rejoins the room and
@@ -207,7 +220,7 @@ pub async fn play_bridged_room(plan: BridgedPlan) -> Result<Vec<HookReport>> {
         starting.push((options, client, events));
     }
     let seated: Vec<&Client> = starting.iter().map(|(_, client, _)| client).collect();
-    let invite = seat_and_start(&seated, plan.players.len(), plan.settings).await?;
+    let invite = seat_and_start(&seated, plan.players.len(), plan.settings, None).await?;
     let started = tokio::time::Instant::now();
 
     let mut games: Vec<Option<(Hook, BridgeTask)>> = plan.players.iter().map(|_| None).collect();
@@ -293,11 +306,7 @@ fn play_through_hook(
         ),
         None => None,
     };
-    let link_name = format!(
-        "tpf3mp-bridged-{}-{}",
-        std::process::id(),
-        NEXT_LINK.fetch_add(1, Ordering::Relaxed)
-    );
+    let link_name = link_name("bridged");
     let link = Link::create(&LinkConfig::new(&link_name), Role::Agent)?;
     let hook = fake_hook::spawn(FakeHookConfig {
         link_name,

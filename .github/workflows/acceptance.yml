@@ -2,8 +2,8 @@ name: acceptance
 
 # The checks a change passes on `acceptance` before it may reach `main`
 # (see AGENTS.md). The ci workflow runs on every push too; these add load,
-# bad networks, tunnels, persistence under load and a soak, with optimized
-# builds as players and servers run them.
+# bad networks, tunnels, persistence under load, the regression scenarios
+# and a soak, with optimized builds as players and servers run them.
 on:
   push:
     branches: [acceptance]
@@ -29,7 +29,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: acceptance
-      - run: cargo build --release --locked -p tpf3mp-testkit --bin tpf3mp-loadtest
+      - run: cargo build --release --locked -p tpf3mp-testkit --bin tpf3mp-loadtest --bin tpf3mp-regress
       # Each run fails if any bot fails or any replica diverges.
       - name: Rooms of bots at the room's pace
         shell: bash
@@ -50,6 +50,10 @@ jobs:
             --data-dir "$RUNNER_TEMP/tpf3mp-rooms" --compact-log-kib 8 | tee load.txt
           # The run must actually have compacted logs to test compaction.
           ! grep -q "server: 0 logs compacted" load.txt
+      # Fails if any scenario's check fails or its games' worlds differ.
+      - name: The regression scenarios
+        shell: bash
+        run: ./target/release/tpf3mp-regress --repeat 5 --replicas 3
 
   soak:
     name: soak (ubuntu-latest)
