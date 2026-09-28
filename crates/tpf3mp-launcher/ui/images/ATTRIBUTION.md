@@ -14,9 +14,9 @@ one, and reassess the permission before any other use.
 
 ## wordmark.png
 
-Transport Fever 3's logo, lifted white from the game's title screen with
-the scene behind it removed, and a "MULTIPLAYER" band beneath, as
-tearded's launcher did with Transport Fever 2's. Made by `art/make_wordmark.py`. The logo is Urban
+Transport Fever 3's logo, as the game's Steam library logo has it (white,
+on transparency), with a "MULTIPLAYER" band beneath, as tearded's
+launcher did with Transport Fever 2's. Made by `art/make_wordmark.py`. The logo is Urban
 Games' trademark, used under the same fan-content terms; it does not imply
 endorsement.
 
