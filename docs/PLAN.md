@@ -19,13 +19,12 @@ Flag each of these when a task asks for it:
 | an ask like | conflicts with | instead |
 |---|---|---|
 | Steam networking, peer-to-peer, a player hosting, a player's game as the truth | D2, D4: the server orders every turn; no player is the host | Rooms on the project's server |
-| Joining a room from the game without the launcher, a Multiplayer entry that works in a game Steam started | D11: the hook runs only in a game the launcher started | An in-game panel for a game the launcher started: it shows the room and hands a code to the launcher |
+| Joining a room from the game without the launcher, a Multiplayer entry that works in a game Steam started | D11: the hook runs only in a game the launcher started | An in-game panel for a game the launcher started (D17, after release) |
 | Typing or choosing a server, following an invite to its server | D12: one server, built in | `--server` for development only |
 | A proxy DLL (`alut.dll`), files in the game's folder, an installer `.bat` that patches the game | D9, D11 | The readable install scripts put in the mod alone; the launcher injects the hook |
 | An action sent to other games before its channel was checked (a "strict" flag off meaning "send it unchecked") | Fail closed (AGENTS.md) | Off means the action is refused in a multiplayer game; see Part 3 |
 | A speed control in the launcher | Part 2, Dev A: the game's own speed buttons, synced by the server | |
 | Long invites or support IDs, or one code for both | D13 | Six-character codes, separate for a room and a session |
-| Building into another launcher (tearded's Tauri launcher) | D7: our own native launcher | An open question: see Part 4 |
 | Engine entity IDs on the wire | D8: positions in millimetres, resource names, canonical IDs | |
 | Logging an invite code bare | D13: codes cannot be spotted in a log line | `invite=<code>`, which redaction hides |
 
@@ -160,10 +159,10 @@ Dev C (building):
   becomes a crossing (both were TPF2 bugs).
 - [ ] Bulldoze: find the edge by its endpoints plus a 14 m search along
   the centreline.
-- [ ] *Changed:* an in-game Multiplayer panel for a game the launcher
-  started: the room, its players, and an invite code handed to the
-  launcher. Not a way to join without the launcher, and no Steam
-  networking (D2, D11).
+- [ ] *Changed* (D17): an in-game Multiplayer panel for a game the
+  launcher started; for release it shows the room, and after release it
+  takes over connecting, rooms and chat from the launcher. Not a way to
+  join without the launcher, and no Steam networking (D2, D11).
 
 **Test A** (the gate to Part 3):
 
@@ -254,7 +253,10 @@ Dev C:
 - [x] The auto-updater (D7; needs the owner's update key, OPERATIONS.md
   "Before the first release").
 - [x] The server: deployed beside tf2mp-relay (OPERATIONS.md).
-- [ ] Building into the TF2 launcher: *open question for the owner:* we
-  have our own launcher, styled after it on purpose (D7; the owner
-  asked for its look without Tauri).
-  Decide before anyone starts.
+- [x] Building into the TF2 launcher: *decided* (D16): the launcher is
+  tearded's, ported to TF3 in a web view, with the version choice and
+  release notes of his (D18).
+- [ ] *Added* (D17): the room in the game. Connecting, rooms, the lobby
+  and chat move to an in-game panel once TF3's GUI is known; the link
+  carries the launcher's state and actions; the launcher keeps them until
+  the panel is proven.

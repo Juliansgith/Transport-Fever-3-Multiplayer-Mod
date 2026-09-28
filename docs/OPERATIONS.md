@@ -431,7 +431,7 @@ themselves once the new release is published and signed.
 ## Releases
 
 `.github/workflows/release.yml` builds the player's package for Windows x64,
-Linux x64 and macOS arm64: the launcher window (`TPF3-MP.exe`,
+Linux x64 and macOS arm64: the launcher (`TPF3-MP.exe`,
 `TPF3-MP.app`, `tpf3mp-launcher`), the command-line agent, the in-game hook
 library and the server. The Linux package is built on Ubuntu 22.04, so it
 runs on distributions with an older C library too.

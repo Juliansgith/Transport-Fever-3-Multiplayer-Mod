@@ -47,11 +47,9 @@ tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
-# The launcher's native window, and its UI tests.
-eframe = "0.36.2"
-egui_kittest = "0.36.2"
-# The font parser egui uses, to check a system font before egui gets it.
-skrifa = "0.44.0"
+# The launcher's window: a web view over its own pages (D16).
+tauri = "2"
+tauri-build = "2"
 # The launcher's log files.
 tracing-appender = "0.2.5"
 # The launcher's updater: HTTPS with the same rustls and ring as the rest,

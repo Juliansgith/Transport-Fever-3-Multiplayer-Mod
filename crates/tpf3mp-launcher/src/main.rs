@@ -8,16 +8,16 @@ use std::{process::ExitCode, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use eframe::egui;
+use tauri::Manager;
 use tpf3mp_agent::{
     diagnostics::Recorder,
     launcher::{Launcher, LauncherConfig, Remembered, setup},
 };
 use tpf3mp_launcher::{
-    app::{Extras, LauncherApp},
-    backend::Local,
-    icon, logs,
+    logs,
     probe::Probe,
+    releases::Track,
+    shell::{self, Shell, View},
     update,
 };
 use tracing::{error, info, warn};
@@ -102,40 +102,41 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         .as_deref()
         .filter(|_| config.server_fixed)
         .and_then(Probe::start);
-    let mut backend = Local::new(launcher.handle(), runtime.handle().clone());
     let updater = update::Updater::start(runtime.handle().clone());
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("TPF3-MP")
-            .with_app_id("tpf3mp-launcher")
-            // Two columns, as the TPF2 launcher has, and still within a
-            // 1366x768 screen.
-            .with_inner_size([1100.0, 690.0])
-            .with_min_inner_size([600.0, 460.0])
-            .with_icon(icon::icon()),
-        ..Default::default()
-    };
-    let opened = eframe::run_native(
-        "TPF3-MP",
-        options,
-        Box::new(move |creation| {
-            // The window and its renderer exist: this version works, so an
-            // update just installed is complete.
-            update::started();
-            backend.repaint_with(creation.egui_ctx.clone());
-            updater.repaint_with(creation.egui_ctx.clone());
-            Ok(Box::new(LauncherApp::new(
-                backend,
-                Extras {
-                    updater: Some(updater),
-                    probe,
-                },
-            )))
-        }),
+    let shell = Shell::new(
+        launcher.handle(),
+        runtime.handle().clone(),
+        Some(updater),
+        probe,
     );
-    drop(launcher);
-    match opened {
-        Ok(()) => {
+    let window = tauri::Builder::default()
+        .manage(shell)
+        .invoke_handler(tauri::generate_handler![
+            view,
+            act,
+            window_ready,
+            check_update,
+            install_update,
+            open_game_folder,
+            answer_quit,
+            releases,
+            install_version,
+            set_track,
+            resume_updates,
+        ])
+        .on_window_event(|window, event| {
+            // Closing during a game asks first: the page shows the question.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.state::<Shell>().close_needs_asking()
+            {
+                api.prevent_close();
+            }
+        })
+        .build(tauri::generate_context!());
+    match window {
+        Ok(app) => {
+            app.run_return(|_, _| {});
+            drop(launcher);
             info!("the launcher closes");
             // A download may still be running; it can be picked up next time.
             runtime.shutdown_timeout(Duration::from_secs(2));
@@ -143,8 +144,118 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         }
         Err(error) => {
             warn!(%error, "cannot open the launcher's window; opening it in the browser instead");
+            drop(launcher);
             in_browser(&runtime, config)
         }
+    }
+}
+
+/// Everything the page shows.
+#[tauri::command]
+fn view(shell: tauri::State<'_, Shell>) -> View {
+    shell.view()
+}
+
+/// An action the player took on the page.
+#[tauri::command]
+async fn act(shell: tauri::State<'_, Shell>, action: serde_json::Value) -> Result<(), String> {
+    let action = shell::parse_action(action)?;
+    shell.act(action).await
+}
+
+/// The page is up: this version works, so an update just installed is
+/// complete.
+#[tauri::command]
+fn window_ready() {
+    update::started();
+}
+
+#[tauri::command]
+fn check_update(shell: tauri::State<'_, Shell>) {
+    if let Some(updater) = shell.updater() {
+        updater.check();
+    }
+}
+
+/// Installs the downloaded update and closes, for the new version to start.
+#[tauri::command]
+fn install_update(app: tauri::AppHandle, shell: tauri::State<'_, Shell>) {
+    if shell
+        .updater()
+        .is_some_and(update::Updater::install_and_restart)
+    {
+        app.exit(0);
+    }
+}
+
+/// Opens the game's folder, as Steam installed it, in the file manager.
+#[tauri::command]
+fn open_game_folder(shell: tauri::State<'_, Shell>) -> Result<(), String> {
+    let dir = shell
+        .game_dir()
+        .ok_or("Transport Fever 3 was not found in Steam.")?;
+    let opener = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(&dir)
+        .spawn()
+        .map(drop)
+        .map_err(|error| format!("cannot open {dir}: {error}"))
+}
+
+/// A page of the project's releases, for the release notes and history.
+#[tauri::command]
+async fn releases(shell: tauri::State<'_, Shell>, page: u32) -> Result<shell::ReleasePage, String> {
+    shell.releases(page).await
+}
+
+/// Installs the version the player chose, and closes for it to start.
+#[tauri::command]
+async fn install_version(
+    app: tauri::AppHandle,
+    shell: tauri::State<'_, Shell>,
+    version: String,
+) -> Result<(), String> {
+    if shell.install_version(version).await? {
+        app.exit(0);
+    }
+    Ok(())
+}
+
+/// Stable or Experimental.
+#[tauri::command]
+fn set_track(shell: tauri::State<'_, Shell>, experimental: bool) -> Result<(), String> {
+    let track = if experimental {
+        Track::Experimental
+    } else {
+        Track::Stable
+    };
+    shell
+        .updater()
+        .ok_or("This TPF3-MP does not update itself.")?
+        .set_track(track)
+}
+
+/// Lets updates come again after the player held a version.
+#[tauri::command]
+fn resume_updates(shell: tauri::State<'_, Shell>) -> Result<(), String> {
+    shell
+        .updater()
+        .ok_or("This TPF3-MP does not update itself.")?
+        .resume()
+}
+
+/// The player's answer to "Quit TPF3-MP?" during a game.
+#[tauri::command]
+fn answer_quit(app: tauri::AppHandle, shell: tauri::State<'_, Shell>, quit: bool) {
+    shell.answer_quit(quit);
+    if quit {
+        app.exit(0);
     }
 }
 
@@ -173,41 +284,8 @@ fn in_browser(runtime: &tokio::runtime::Runtime, config: LauncherConfig) -> Resu
     })
 }
 
-/// Says why the launcher cannot start, in a window, since a windowed
-/// program has no console to print it on.
+/// Says why the launcher cannot start. A windowed program has no console,
+/// so the log has it too.
 fn show_error(message: &str) {
     eprintln!("TPF3-MP cannot start: {message}");
-    let message = message.to_owned();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("TPF3-MP")
-            .with_inner_size([540.0, 200.0])
-            .with_icon(icon::icon()),
-        ..Default::default()
-    };
-    let _ = eframe::run_native(
-        "TPF3-MP",
-        options,
-        Box::new(move |_| Ok(Box::new(ErrorWindow(message)))),
-    );
-}
-
-struct ErrorWindow(String);
-
-impl eframe::App for ErrorWindow {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            ui.heading("TPF3-MP cannot start");
-            ui.add_space(6.0);
-            ui.label(&self.0);
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new("The launcher's log, in the TPF3-MP logs folder, has more.")
-                    .weak(),
-            );
-            if ui.button("Close").clicked() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        });
-    }
 }
