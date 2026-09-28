@@ -38,16 +38,21 @@ same process unless `--server host:port` (with `--pin-cert`) names one.
 `--repeat` plays each scenario again with another world seed;
 `--replicas` puts more games in each room, the extra ones only watching.
 `--speed`, `--sps`, `--input-delay-ms` and `--checkpoint-interval` set
-the rooms; by default they run at the fastest the server allows.
+the rooms; by default they run at the fastest the server allows. That
+takes a fast machine: on a small one, or in a debug build, play slower
+(`--speed 400`) and fewer rooms at once. A game whose agent is starved
+for 30 s gives up, and its scenario fails with "the agent stopped
+responding".
 
 Where it runs:
 
 - **`ci`**, in `cargo test`: every scenario offline, and the quick subset
   and a four-player room through a real server
-  (`crates/tpf3mp-testkit/tests/regress.rs`). A replica that drifts must
+  (`crates/tpf3mp-testkit/tests/regress.rs`), one room at a time at
+  quarter speed. A replica that drifts must
   fail its scenario, and a wrong expectation must fail on every replica.
 - **`acceptance`**, on every platform: the whole library five times, three
-  games to a room, optimized.
+  games to a room, optimized, at half speed and two rooms at a time.
 
 ## How it plays
 

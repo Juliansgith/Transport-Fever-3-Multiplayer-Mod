@@ -74,6 +74,10 @@ impl Drop for LocalServer {
     }
 }
 
+/// How long a game waits for its agent to beat. Generous: a busy machine
+/// playing several rooms at full speed can starve an agent for seconds.
+const PATIENCE: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone)]
 pub struct HarnessPlan {
     pub server: SocketAddr,
@@ -237,7 +241,7 @@ fn play(
         world_seed: plan.world_seed,
         scenario: plan.scenario.clone(),
         drift_at,
-        patience: Duration::from_secs(10),
+        patience: PATIENCE,
         stall_steps: plan.stall_steps,
     });
     let bridge = tokio::spawn(async move {
