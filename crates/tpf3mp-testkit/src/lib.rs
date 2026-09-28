@@ -6,6 +6,7 @@
 pub mod bot;
 pub mod fake_hook;
 pub mod netem;
+pub mod regress;
 pub mod rng;
 pub mod scenario;
 pub mod toy;

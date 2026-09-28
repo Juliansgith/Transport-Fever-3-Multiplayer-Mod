@@ -183,6 +183,19 @@ Dev C (building):
 - [ ] *Added:* if a list's order differs, sort every engine list walked
   during a step by entity ID (moved here from Part 3).
 
+*Added:* **Test A, automated** ([REGRESSION.md](REGRESSION.md)): scripted
+scenarios that build, buy, make lines and assign vehicles, two or more
+games to a room, checked at every step of the script.
+
+- [x] The harness, `tpf3mp-regress`, playing its scenarios on a model of
+  the game through the whole stack, in `ci` and `acceptance`.
+- [ ] The hook answers the harness's `Observation` from the game.
+- [ ] The hook's test mode walks a scenario file, and scenarios get a file
+  format.
+- [ ] Rooms start from a fixture save everyone has.
+- [ ] Measure how fast the game steps at top speed, minimized, and with
+  drawing skipped; the budget is 10 minutes a platform.
+
 ## Part 3: every action
 
 For each action below:
@@ -192,7 +205,8 @@ For each action below:
 2. Add a `strict_<action>` flag, off by default. **Off means the action is
    refused in a multiplayer game**: the hook cancels it and the player is
    told it is not available yet. It is never sent unchecked (fail closed).
-3. A 2-player sandbox playtest without divergence.
+3. A 2-player sandbox playtest without divergence. *Added:* and a
+   regression scenario for the action ([REGRESSION.md](REGRESSION.md)).
 4. Turn the flag on.
 
 Dev A (moves to whoever finishes Part 2 first where Dev A is still on

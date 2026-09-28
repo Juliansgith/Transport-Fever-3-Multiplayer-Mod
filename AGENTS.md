@@ -83,6 +83,8 @@ update the script's lists and run it again.
   - a bad network (latency, jitter, loss);
   - every bot through the WebSocket tunnel;
   - rooms logged and compacted under load;
+  - the regression scenarios, five times over, three games a room
+    ([docs/REGRESSION.md](docs/REGRESSION.md));
   - a 15-minute soak on Linux.
 - **Manual acceptance**, before promoting to `main`, for changes they
   touch:
