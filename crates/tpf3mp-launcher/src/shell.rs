@@ -44,6 +44,8 @@ pub struct View {
     pub platform: &'static str,
     /// The releases the player is offered.
     pub track: Track,
+    /// Whether this build can follow the Dev track: it trusts a dev key.
+    pub dev_track: bool,
     /// The version the player chose to stay on, if any.
     pub held: Option<String>,
 }
@@ -186,6 +188,7 @@ impl Shell {
                 .and_then(Updater::choice)
                 .map(|choice| choice.track)
                 .unwrap_or_default(),
+            dev_track: update::dev_builds_trusted(),
             held: self
                 .updater
                 .as_ref()

@@ -537,3 +537,40 @@ Consequences, accepted:
 - Release notes and the history come from GitHub's API, 60 requests an
   hour per address: fetched when the player looks, and for the
   Experimental track's checks. Stable's checks still avoid the API.
+
+## D19 (2026-09-28): a Dev track of untested builds, signed with a key of its own
+
+Every push to `dev` is built and published as a **dev build**
+(`dev-build.yml`), as soon as its packages are built: it runs no tests and
+waits for none. Its version is the workspace's next patch version with
+`-dev.<run number>`, such as `0.1.1-dev.14`. The launcher's Settings offer
+a third track, **Dev builds**, which follows them, with a warning that
+they are untested. It is for the team and testers.
+
+Dev builds are signed at once, with no approval, so not with the release
+key (D7), whose every signing a person approves. They have a **dev key**
+of their own, in the `dev-builds` environment, which only `dev` may use.
+A launcher trusts the dev key only while its player is on the Dev track,
+and only for a version named `-dev.<n>`:
+
+- it cannot sign a release or any other pre-release, for anyone;
+- players on Stable or Experimental never take a dev build, and a dev
+  build downloaded before switching away is deleted, since it no longer
+  verifies;
+- a dev build is published as a pre-release that is never GitHub's latest
+  release, and only the newest ten are kept.
+
+This amends D7 for the Dev track only: there, whoever can push to `dev`
+can run code on the machines of the players who chose that track. That
+is the team and its testers, who chose it; everyone else is as before.
+
+Consequences, accepted:
+
+- A push to `dev` reaches Dev-track players within the time a build
+  takes, before `ci` has passed. `ci` still gates `acceptance` (AGENTS.md).
+- A dev build plays only on a server running its protocol version: the
+  project's server runs releases, so a dev build that changed the
+  protocol needs a server of its own.
+- A player who leaves the Dev track stays on their dev build until a
+  release newer than it comes out, or until they install one from the
+  history.

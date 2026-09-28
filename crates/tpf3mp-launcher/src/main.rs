@@ -227,14 +227,12 @@ async fn install_version(
     Ok(())
 }
 
-/// Stable or Experimental.
+/// Stable, Experimental or Dev.
 #[tauri::command]
-fn set_track(shell: tauri::State<'_, Shell>, experimental: bool) -> Result<(), String> {
-    let track = if experimental {
-        Track::Experimental
-    } else {
-        Track::Stable
-    };
+fn set_track(shell: tauri::State<'_, Shell>, track: Track) -> Result<(), String> {
+    if track == Track::Dev && !update::dev_builds_trusted() {
+        return Err("This TPF3-MP was built without the dev build key.".into());
+    }
     shell
         .updater()
         .ok_or("This TPF3-MP does not update itself.")?

@@ -8,7 +8,7 @@
 // (MIT; THIRD_PARTY.md): one big button that says what comes next, quieter
 // buttons under it, a status line, and the game's folder along the bottom.
 
-import { present, notesBlocks, latestRelease, dateText } from "./view.js";
+import { present, notesBlocks, latestRelease, dateText, trackName } from "./view.js";
 
 const $ = (id) => document.getElementById(id);
 const POLL = 400;
@@ -249,7 +249,7 @@ function installVersion(release, p) {
 
 function drawReleases(p) {
   $("release-panel").hidden = Boolean(p.room);
-  $("release-track-label").textContent = p.track === "experimental" ? "Experimental" : "Stable";
+  $("release-track-label").textContent = trackName(p.track);
   const latest = latestRelease(releases, p.track);
   if (releasesFailed && !releases.length) {
     $("news-headline").textContent = "Release notes unavailable";
@@ -265,7 +265,11 @@ function drawReleases(p) {
     const summary = element(
       "summary",
       {},
-      element("span", {}, `Version ${release.version}${release.experimental ? " · Experimental" : ""}`),
+      element(
+        "span",
+        {},
+        `Version ${release.version}${release.dev ? " · Dev build" : release.experimental ? " · Experimental" : ""}`,
+      ),
       element("time", { dateTime: release.date || "" }, dateText(release.date)),
     );
     const notes = element("div", { className: "historical-notes" });
@@ -274,6 +278,11 @@ function drawReleases(p) {
     install.dataset.version = release.version;
     install.addEventListener("click", () => installVersion(release, present(current)));
     $("history-list").append(element("details", { dataset: { version: release.version } }, summary, notes, install));
+  }
+  // Dev builds come with every change to dev: only their track lists them.
+  for (const item of $("history-list").children) {
+    const release = releases.find((r) => r.version === item.dataset.version);
+    item.hidden = Boolean(release?.dev) && p.track !== "dev";
   }
   for (const button of document.querySelectorAll(".history-install")) {
     const release = releases.find((r) => r.version === button.dataset.version);
@@ -289,8 +298,10 @@ function drawReleases(p) {
   $("load-history").disabled = busy;
   $("load-history").querySelector("span").textContent =
     releasePage > 2 ? "Load more releases" : "Browse previous releases";
+  $("track-dev").hidden = !p.devTrack && p.track !== "dev";
   $("release-track").value = p.track;
   $("release-track").disabled = busy || !p.canInstall;
+  $("dev-warning").hidden = p.track !== "dev";
   $("held-note").hidden = !p.held;
   $("held-copy").textContent = p.held
     ? `You chose version ${p.held}. Updates wait until you resume them.`
@@ -487,7 +498,7 @@ function tauriBackend() {
     answerQuit: (quit) => invoke("answer_quit", { quit }),
     releases: (page) => invoke("releases", { page }),
     installVersion: (version) => invoke("install_version", { version }),
-    setTrack: (experimental) => invoke("set_track", { experimental }),
+    setTrack: (track) => invoke("set_track", { track }),
     resumeUpdates: () => invoke("resume_updates"),
   };
 }
@@ -546,9 +557,9 @@ async function start() {
   );
   $("load-history").addEventListener("click", () => task(loadReleases));
   $("release-track").addEventListener("change", (event) => {
-    const experimental = event.target.value === "experimental";
+    const track = event.target.value;
     task(async () => {
-      await backend.setTrack(experimental);
+      await backend.setTrack(track);
       $("track-feedback").textContent = "Saved. Nothing was installed.";
       delete $("release-notes").dataset.version;
     });

@@ -261,10 +261,16 @@
         <select id="release-track">
           <option value="stable">Stable</option>
           <option value="experimental">Experimental</option>
+          <option value="dev" id="track-dev" hidden>Dev builds</option>
         </select>
         <p>
           Experimental also offers pre-releases, which may be less reliable. A server
           plays only with its own version, so play on what your server runs.
+        </p>
+        <p class="dev-warning" id="dev-warning" hidden>
+          Dev builds are every change the team makes, published as soon as it is
+          built and before any test has run. They can break, and a server may not
+          play with them. For the team and testers.
         </p>
         <p id="track-feedback" role="status"></p>
         <div class="held-note" id="held-note" hidden>

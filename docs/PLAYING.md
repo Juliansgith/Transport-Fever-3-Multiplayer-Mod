@@ -130,7 +130,10 @@ next time you start TPF3-MP.
 As in the TPF2 launcher:
 
 - **Stable or Experimental**, in **Settings**: Experimental also offers
-  pre-releases, which may be less reliable.
+  pre-releases, which may be less reliable. Launchers built for testing
+  also offer **Dev builds**: every change the team makes, published as
+  soon as it is built and before any test has run. They can break, and
+  may need a server of their own; they are for the team and testers.
 - **Release history**, on the left under the release notes: every
   release, with its notes, and **Install** for the one you want, older
   ones included. After a confirmation the launcher installs it and

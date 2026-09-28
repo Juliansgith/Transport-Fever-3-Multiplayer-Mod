@@ -2017,3 +2017,9 @@ body #main-action[data-progress] > .action-arrow {
 .held-note p {
   margin-bottom: 8px;
 }
+/* The Dev track's warning, in the held note's colours. */
+.dev-warning {
+  padding: 10px 12px;
+  border-left: 2px solid #d9b36a;
+  background: #d9b36a14;
+}

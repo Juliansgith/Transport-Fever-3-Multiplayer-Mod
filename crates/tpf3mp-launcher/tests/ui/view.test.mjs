@@ -6,7 +6,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { present, speedText, sizeText, differences, steps, notesBlocks, latestRelease } from "../../ui/view.js";
+import {
+  present,
+  speedText,
+  sizeText,
+  differences,
+  steps,
+  notesBlocks,
+  latestRelease,
+  onTrack,
+  trackName,
+} from "../../ui/view.js";
 import { SCENES } from "../../ui/preview.js";
 
 const base = {
@@ -203,6 +213,27 @@ test("the latest release depends on the track", () => {
   assert.equal(latestRelease(releases, "stable").version, "0.2.0", "the newest signed stable one");
   assert.equal(latestRelease(releases, "experimental").version, "0.3.0-beta.1");
   assert.equal(latestRelease([], "stable"), null);
+});
+
+test("only the Dev track offers dev builds", () => {
+  const dev = { version: "0.3.1-dev.12", date: "2026-10-06", experimental: true, dev: true, installable: true };
+  const beta = { version: "0.3.0-beta.1", date: "2026-10-05", experimental: true, installable: true };
+  const stable = { version: "0.2.0", date: "2026-10-01", experimental: false, installable: true };
+  const releases = [dev, beta, stable];
+  assert.equal(latestRelease(releases, "stable").version, "0.2.0");
+  assert.equal(latestRelease(releases, "experimental").version, "0.3.0-beta.1");
+  assert.equal(latestRelease(releases, "dev").version, "0.3.1-dev.12");
+  assert.deepEqual(
+    ["stable", "experimental", "dev"].map((track) => onTrack(dev, track)),
+    [false, false, true],
+  );
+  assert.equal(trackName("dev"), "Dev builds");
+  assert.equal(trackName("anything else"), "Stable");
+});
+
+test("the Dev track is offered only by a build that trusts dev builds", () => {
+  assert.equal(present({ ...view("Not connected"), devTrack: true }).devTrack, true);
+  assert.equal(present({ ...view("Not connected") }).devTrack, false);
 });
 
 test("a held version says so, and versions are chosen outside rooms", () => {

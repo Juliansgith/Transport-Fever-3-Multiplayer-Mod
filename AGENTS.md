@@ -21,7 +21,7 @@ feature branch ──> dev ──> acceptance ──> main
 | branch | holds | may receive | gate to the next |
 |---|---|---|---|
 | feature (`feat/…`, `fix/…`, `docs/…`) | one change in progress | your commits | `ci` green on the branch |
-| `dev` | the integration and testing line | merges of feature branches whose `ci` is green | `ci` green on `dev` |
+| `dev` | the integration and testing line; every push is published at once as a dev build (D19) | merges of feature branches whose `ci` is green | `ci` green on `dev` |
 | `acceptance` | the release candidate | fast-forwards from `dev` | `ci` **and** `acceptance` green on `acceptance`, plus the manual checks below |
 | `main` | what is released | fast-forwards from `acceptance` | the `release` workflow drafts the release |
 
