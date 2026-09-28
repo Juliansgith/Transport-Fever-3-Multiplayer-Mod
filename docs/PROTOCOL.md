@@ -242,7 +242,7 @@ What players feel on their own commands is their round trip, plus their own
 buffer, plus the wait for the next turn. It is not the room's input delay,
 and not anyone else's link: a poor connection only delays its owner. Paced
 bots over 150 ms round trips with jitter feel a median of about 220 ms,
-whether the input delay is 60 or 500 ms.
+whether the input delay is 60 or 1000 ms.
 
 ## Game messages from the client
 
