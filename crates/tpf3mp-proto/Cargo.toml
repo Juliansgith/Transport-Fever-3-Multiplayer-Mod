@@ -19,6 +19,7 @@ thiserror.workspace = true
 mlua.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

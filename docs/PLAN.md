@@ -77,10 +77,12 @@ are.
   game bar plugin, with the Lua side of the link to the hook
   (`tpf3mp/bridge.lua`, HOOKS.md "The Lua side"). How the rest of TpF2
   Multiplayer's mod comes over: [PORTING_TPF2MP.md](PORTING_TPF2MP.md).
-- [ ] Before release day: `script_api_dump` and `determinism_probe` in
-  the same layout. Run them from a GUI `onStep` plugin, since game
-  scripts are not known to exist, and log through `debugPrint` where `io`
-  is missing.
+- [x] Before release day: `script_api_dump` and `determinism_probe` in
+  the same layout (`tools/probe/tf3`), run from a GUI `onStep` plugin and
+  logging through `debugPrint` where `io` is missing; the run script's
+  state has a dump of its own. The TPF2 probes stay as the fallback.
+- [x] Before release day: a tool for each release-day check
+  (`tools/dayone/dayone.py`, DAY_ONE.md "Release day, step by step").
 - [ ] Read the game's `.tl` sources and `.d.tl` API declarations before
   running the probes; list every `api.cmd.make*Cmd` and the tool that
   sends it.

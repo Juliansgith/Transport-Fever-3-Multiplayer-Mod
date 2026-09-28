@@ -1,0 +1,19 @@
+{
+    "dependencies": null,
+    "incompatibilities": null,
+    "modId": "tpf3mp_rundump_1",
+    "options": null,
+    "params": null,
+    "postRunScript": {
+        "fileName": ""
+    },
+    "preRunScript": {
+        "fileName": ""
+    },
+    "revision": 1,
+    "runScript": {
+        "fileName": "tpf3mp_rundump_1::/mod.script@runFn"
+    },
+    "severityAdd": "None",
+    "severityRemove": "None"
+}

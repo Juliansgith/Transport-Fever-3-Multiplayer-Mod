@@ -15,6 +15,57 @@ each finding carries one label:
   40391, is in
   [investigation/TF3_MODS_2026-09-27.md](../investigation/TF3_MODS_2026-09-27.md).
 
+## Release day, step by step
+
+`tools/dayone/dayone.py` runs each check below and writes its report into
+`investigation/dayone-<date>/`, ending in a verdict: **GO**, **CHECK** (a
+person looks) or **STOP** (the plan does not hold as it stands). It needs
+Python and nothing else; it reads the game, never starts or changes it.
+Build `tpfre` once before: `cargo build --release --manifest-path
+tools/tpfre/Cargo.toml`.
+
+1. **Go or no-go** (§0, §5):
+   - `dayone.py gonogo`: the executable's sections, imports and TLS
+     callbacks. SteamStub alone is GO, as on TPF2 (whose executable reads
+     GO); a known protector is STOP; packed code under another name is
+     CHECK.
+   - Start the game from the launcher in a room, then `dayone.py
+     check-launch`: the game's parent process (the launcher: GO; Steam:
+     STOP, the hook is lost), and the end of `hook.log`. In the game: signed
+     in, Mod Hub works, no restart.
+2. **Archive the build** (§1): `dayone.py archive`: the Steam build and depot
+   manifests, every executable's and library's SHA-256, size and PE
+   timestamp into `~/TPF3-MP-builds/<build>/build.json`, and a copy of each
+   executable there, never in the repository. It refuses to overwrite a
+   copy that differs.
+3. **Decode the executable** (§2, §6): `dayone.py decode`: `tpfre` indexes it
+   (seconds) and looks up every hook target by its TPF2 name and source
+   file; `tpfre q <db> sig <name> --toml` then gives each target's profile
+   block. On TPF2 it finds `GameSim::Step` at the known `0x15aa00`.
+4. **Correct the two guesses in the code**: `dayone.py find`: the game's
+   executables against `find_executable`'s names (`crates/tpf3mp-launch`)
+   and the logs and crash dumps it finds against `game_candidates_in`
+   (`crates/tpf3mp-agent/src/logs.rs`), and the mods folders. Until the
+   names are fixed, the launcher starts the game with `--game-exe`.
+5. **The game's scripts and the probes** (§3):
+   - `dayone.py scripts`: every `api.cmd.make*Cmd` the game's `.tl` and
+     `.d.tl` files declare or use, the files that send commands, and the
+     speed controls (`GameSpeedControl`).
+   - `dayone.py probes install`, activate them in Mod Hub, start a game,
+     then `dayone.py collect --log <the game's log>`: the script API of the
+     GUI state and of the run script's state (`tools/probe/tf3`). The TPF2
+     probes (`tools/probe/script_api_dump`, `determinism_probe`) are the
+     fallback should TF3 still run game scripts.
+6. **Determinism** (§4): two games from one save at **1x** speed with the
+   determinism probe, each log collected with its own `--label`, then
+   `dayone.py compare A B`. The probe labels its samples by the simulation
+   step, from the game time, so frames need not line up; two logs that
+   learned different step times are refused.
+
+`python tools/dayone/test_dayone.py` tests the tool on made-up folders,
+executables and logs; `crates/tpf3mp-proto/tests/lua_probes.rs` runs the
+probes in a stand-in for the game's GUI state.
+
 ## 0. Go or no-go first
 
 Two findings can end the plan as it stands, so they come before
@@ -225,6 +276,8 @@ and `cargo build --release` in `tools/tpfre`.
 | `tools/re/selftest.py` | validates the ELF / Mach-O / arm64 code paths on synthetic fixtures (no game binary needed). | -- |
 | `tools/probe/script_api_dump/` | game-script mod: dumps the Lua sandbox and `api.*`/`game.interface.*` from the engine and GUI states. | §3 |
 | `tools/probe/determinism_probe/` | game-script mod: hashes the §4 lanes every N steps to a per-instance log. | §4 |
+| `tools/probe/tf3/` | the TF3 probe mods, in TF3's layout (REPORTED): `tpf3mp_apidump_1` dumps the GUI state from a game bar plugin, `tpf3mp_rundump_1` the run script's state, `tpf3mp_detprobe_1` samples the §4 lanes every 100 simulation steps, labelled by the step. Output to `%LOCALAPPDATA%/tpf3mp/probe`, or the game's log for `dayone.py collect`. | §3, §4 |
+| `tools/dayone/dayone.py` | the release-day checks, one command each ("Release day, step by step"): `find`, `archive`, `gonogo`, `check-launch`, `decode`, `scripts`, `probes`, `collect`, `compare`. | §0-§5 |
 | `tools/probe/compare_runs.py A.log B.log` | first per-lane divergence between two determinism logs. | §4 |
 | `tools/probe/check_lua.py` | syntax-checks the probe Lua with a real Lua 5.2. | §3, §4 |
 | `tools/modio/fetch.py` | downloads mods from mod.io, Mod Hub's backend, for study: the most popular first, scripts and text only unless `--all-files`, into the ignored `.modio/`. Needs a mod.io API key (`MODIO_API_KEY`). | §3 |
@@ -260,11 +313,12 @@ Release-day order:
    databases (or `name_functions.py` and `diff_builds.py` on the maps);
    re-verify any hook whose target is listed resized/appeared/disappeared,
    and run `make_profile.py` on the new build for its profile.
-3. **Script API (per platform):** `check_lua.py` first, then install the
-   `script_api_dump` mod, launch, and collect the engine/GUI dumps (§3).
-4. **Determinism (the D2 calibration):** install `determinism_probe` on two
-   instances from the same save (set a distinct `$TPF3MP_PROBE_INSTANCE` each),
-   run the pairs in the §4 table, then `compare_runs.py` the logs.
+3. **Script API (per platform):** `check_lua.py` first, then `dayone.py
+   probes install` (the TF3 probes), activate them in Mod Hub, start a game,
+   and `dayone.py collect` the dumps (§3).
+4. **Determinism (the D2 calibration):** the determinism probe in two games
+   from the same save at 1x, each log collected with its own `--label`, the
+   pairs in the §4 table, then `dayone.py compare` the logs.
 5. Fill `investigation/TPF3_RECON_TEMPLATE.md` as results arrive.
 6. **Player log bundle:** find where Transport Fever 3 writes its log
    (`stdout.txt` for TPF2) and crash dumps on each platform. The bundle
