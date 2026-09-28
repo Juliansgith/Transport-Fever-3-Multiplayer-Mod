@@ -152,7 +152,7 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-hook` | The library the launcher loads into the game it starts. |
 | `crates/tpf3mp-launch` | Starts the game with the hook in that one process. |
 | `crates/tpf3mp-testkit` | Toy game, bots, network emulator, load tester. |
-| `mod/tpf3mp_1` | The game-side Lua mod: captures builds as actions for the hook. |
+| `mod/tpf3mp_1` | The game-side Lua mod, in Transport Fever 3's layout: captures builds as actions for the hook, linked to it by `tpf3mp/bridge.lua`. |
 | `packaging/` | The install scripts and their tests, and the macOS bundle's files. |
 | `tools/` | Release-day reverse-engineering and determinism probes. |
 | `deploy/` | Container image and compose file. |

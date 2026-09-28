@@ -20,7 +20,7 @@ use tpf3mp_proto::{
 
 macro_rules! modules {
     ($($name:literal),* $(,)?) => {
-        [$(($name, include_str!(concat!("../../../mod/tpf3mp_1/res/scripts/tpf3mp/", $name, ".lua")))),*]
+        [$(($name, include_str!(concat!("../../../mod/tpf3mp_1/content/scripts/tpf3mp/", $name, ".lua")))),*]
     };
 }
 

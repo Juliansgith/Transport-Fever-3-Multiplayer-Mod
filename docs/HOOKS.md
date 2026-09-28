@@ -431,6 +431,30 @@ by hand (see the README). On release day, what remains for TPF3 is:
   logs compact (`crates/tpf3mp-server/src/ruleset.rs`). It is added to
   the server's `RulesMenu` next to `native`, which stays offered.
 
+### The Lua side
+
+The Lua mod runs in the game's GUI state, started by a game bar plugin on
+the first frame of a game (`mod/tpf3mp_1/content/gui/tpf3mp/`). The hook
+and the mod meet through one global table, which the hook registers in
+that state before the mod starts. Its contract is in
+`mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`:
+
+- `tpf3mp_native.version`: 1. The mod refuses any other.
+- `tpf3mp_native.command(payload)`: an action's bytes, for
+  `Session::command`. `false` or an error means refused, and the mod then
+  does not apply the action locally either.
+- `tpf3mp_native.register(handlers)`: the mod's handlers, which the hook
+  keeps with the Lua state they came from.
+  - `handlers.apply(payload)` returns `(ok, reason)`; it is
+    `Game::apply`. This version refuses every event, so a hook that
+    receives one stops following the room.
+  - `handlers.notice(kind, text)` is `Game::notice`.
+  - Neither raises: an error becomes a refusal.
+- `tpf3mp_native.log(line)`: a line for `hook.log`.
+
+Without the table, the mod logs "no hook in this game" and does nothing.
+That is every game Steam started (D11).
+
 ## Release-day procedure: adding a target for a new build
 
 1. **Archive the build.** Record the executable SHA-256, file size and PE

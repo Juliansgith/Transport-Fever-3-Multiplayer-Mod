@@ -70,11 +70,15 @@ before the rest ([DAY_ONE.md](DAY_ONE.md) §0).
 our mod and both probes are TPF2 mods and will not load in TF3 as they
 are.
 
-- [ ] Before release day: port `mod/tpf3mp_1`, `script_api_dump` and
-  `determinism_probe` to TF3's layout (`mod.json`, `_content.json`,
-  `_metadata/modinfo.json`, `content/`). Run the probes from a GUI
-  `onStep` plugin, since game scripts are not known to exist, and log
-  through `debugPrint` where `io` is missing.
+- [x] Before release day: `mod/tpf3mp_1` in TF3's layout (`mod.json`,
+  `_content.json`, `_metadata/modinfo.json`, `content/`), loaded by a
+  game bar plugin, with the Lua side of the link to the hook
+  (`tpf3mp/bridge.lua`, HOOKS.md "The Lua side"). How the rest of TpF2
+  Multiplayer's mod comes over: [PORTING_TPF2MP.md](PORTING_TPF2MP.md).
+- [ ] Before release day: `script_api_dump` and `determinism_probe` in
+  the same layout. Run them from a GUI `onStep` plugin, since game
+  scripts are not known to exist, and log through `debugPrint` where `io`
+  is missing.
 - [ ] Read the game's `.tl` sources and `.d.tl` API declarations before
   running the probes; list every `api.cmd.make*Cmd` and the tool that
   sends it.
