@@ -313,8 +313,8 @@ reach their own agent:
 | `TPF3MP_DATA_DIR` | the folder for the hook's log and profiles; unset or empty, the per-user one |
 
 `tpf3mp-fakegame` reads `TPF3MP_GAME_LINK` too, when no link is given on its
-command line. The multiplayer rig (`tpf3mp-rig`, in the README's
-"Development") sets all three for every game it starts, and starts a real
+command line. The multiplayer rig (`tpf3mp-rig`, in
+[DEVELOPMENT.md](DEVELOPMENT.md)) sets all three for every game it starts, and starts a real
 game with the hook in it as the launcher does.
 
 ## The bridge: what travels over the link
@@ -416,7 +416,7 @@ link. The `games_behind_the_bridge_and_gate_agree` scenario runs three of
 them in one room end to end; others have a player join a running game,
 rebase a replica that drifted, and hand a world on across a server restart.
 `tpf3mp-fakegame` does the same as a separate process, for trying the stack
-by hand (see the README). On release day, what remains for TPF3 is:
+by hand (see [DEVELOPMENT.md](DEVELOPMENT.md)). On release day, what remains for TPF3 is:
 
 - the build profile with its signatures;
 - the detours that call the session;
