@@ -12,3 +12,7 @@
 
 # Python environments for the recon tools (docs/DAY_ONE.md).
 /.venv/
+
+# Mods downloaded for study (tools/modio/fetch.py): other people's work,
+# never committed.
+/.modio/

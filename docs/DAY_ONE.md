@@ -77,6 +77,12 @@ to TF3's layout (`mod.json`, `_content.json`, `content/`) and to a GUI
   what a Mod Hub script mod may contain.
 - Whether game scripts (`res/config/game_script`, `update()` per step)
   still exist. No mod made for build 40391 uses one.
+- Other people's script mods, once Mod Hub is open: it runs on mod.io
+  (`transportfever3` there, hidden until release; tags include
+  `Script Mod`). `tools/modio/fetch.py --tag "Script Mod" --limit 100`
+  downloads the most popular ones' scripts into the ignored `.modio/`,
+  to read for the API in use. Their code is their authors': take what it
+  shows about the API, never the code.
 - How to list the active mods in load order, each with a name and a
   version, and the game's build: the hook reports them over the bridge,
   and the agent declares them (`ContentManifest`) in place of the
@@ -221,6 +227,7 @@ and `cargo build --release` in `tools/tpfre`.
 | `tools/probe/determinism_probe/` | game-script mod: hashes the §4 lanes every N steps to a per-instance log. | §4 |
 | `tools/probe/compare_runs.py A.log B.log` | first per-lane divergence between two determinism logs. | §4 |
 | `tools/probe/check_lua.py` | syntax-checks the probe Lua with a real Lua 5.2. | §3, §4 |
+| `tools/modio/fetch.py` | downloads mods from mod.io, Mod Hub's backend, for study: the most popular first, scripts and text only unless `--all-files`, into the ignored `.modio/`. Needs a mod.io API key (`MODIO_API_KEY`). | §3 |
 
 Which to use for what:
 
