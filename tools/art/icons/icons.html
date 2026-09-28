@@ -1,0 +1,187 @@
+<!doctype html>
+<!--
+  TPF3-MP's in-game icons, drawn in Transport Fever 3's bottom-bar style:
+  a disc with a solid, rounded glyph. Buttons come in three states,
+  measured from the game (build 40391): normal (white disc, slate glyph),
+  selected (blue disc, white glyph) and unavailable (grey disc, dark
+  glyph). Markers are white glyphs on nothing, for the game to tint.
+
+  The designs follow the buttons of TpF2 Multiplayer (the Multiplayer
+  button) and TPF2 Big Maps (the Minimap button), and TpF2 Multiplayer's
+  HUD glyphs. render.py screenshots this page and cuts the icons out.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+      .sheet {
+        display: grid;
+        grid-template-columns: repeat(12, 256px);
+        grid-auto-rows: 256px;
+      }
+      .cell {
+        width: 256px;
+        height: 256px;
+        position: relative;
+      }
+      .disc {
+        position: absolute;
+        inset: 8px;
+        border-radius: 50%;
+        background: var(--disc);
+      }
+      .cell svg {
+        position: absolute;
+        inset: 0;
+        margin: auto;
+        width: 140px;
+        height: 140px;
+        color: var(--glyph);
+        --cut: var(--disc);
+      }
+      /* Markers are drawn white on black and turned into a white mask by
+         render.py, so the separating lines cut through. */
+      .marker {
+        background: #000;
+      }
+      .marker svg {
+        width: 224px;
+        height: 224px;
+        --cut: #000;
+      }
+      .normal {
+        --disc: #ffffff;
+        --glyph: #2e3f4d;
+      }
+      .selected {
+        --disc: #5d9ada;
+        --glyph: #ffffff;
+      }
+      .unavailable {
+        --disc: #808080;
+        --glyph: #4d4d4d;
+      }
+      .marker {
+        --glyph: #ffffff;
+      }
+      /* Lines that separate overlapping shapes are drawn in the disc's own
+         colour; on a marker they are black, and so cut out. */
+      .cut {
+        stroke: var(--cut);
+      }
+      .hole {
+        fill: var(--cut);
+      }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" style="position: absolute">
+      <defs>
+        <!-- Buttons ----------------------------------------------------- -->
+        <symbol id="multiplayer" viewBox="0 0 24 24">
+          <circle cx="5.2" cy="9.4" r="2.5" fill="currentColor" />
+          <circle cx="18.8" cy="9.4" r="2.5" fill="currentColor" />
+          <path d="M0.8 19.5v-1.6a4.4 4.4 0 0 1 7.4-3.2L8.2 19.5Z" fill="currentColor" />
+          <path d="M23.2 19.5v-1.6a4.4 4.4 0 0 0-7.4-3.2l0 4.8Z" fill="currentColor" />
+          <circle cx="12" cy="7.6" r="3.4" fill="currentColor" class="cut" stroke-width="1.4" />
+          <path d="M5.6 20.6v-1.8a6.4 6.4 0 0 1 12.8 0v1.8Z" fill="currentColor" class="cut" stroke-width="1.4" stroke-linejoin="round" />
+        </symbol>
+        <symbol id="minimap" viewBox="0 0 24 24">
+          <path d="M2 6.6 8 4.4l8 2.2 6-2.2v13l-6 2.2-8-2.2-6 2.2Z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+          <path d="M8 4.8v13M16 6.8v6" class="cut" stroke-width="1.3" fill="none" />
+          <path d="M16 6.2a3.6 3.6 0 0 1 3.6 3.6c0 2.7-3.6 6.4-3.6 6.4s-3.6-3.7-3.6-6.4A3.6 3.6 0 0 1 16 6.2Z" fill="currentColor" class="cut" stroke-width="1.4" />
+          <circle cx="16" cy="9.8" r="1.35" class="hole" />
+        </symbol>
+        <symbol id="chat" viewBox="0 0 24 24">
+          <path d="M6.5 3.6h11a4 4 0 0 1 4 4v6.2a4 4 0 0 1-4 4h-6.4l-4.6 3.6v-3.6h0a4 4 0 0 1-4-4V7.6a4 4 0 0 1 4-4Z" fill="currentColor" />
+          <circle cx="8" cy="10.7" r="1.45" class="hole" />
+          <circle cx="12" cy="10.7" r="1.45" class="hole" />
+          <circle cx="16" cy="10.7" r="1.45" class="hole" />
+        </symbol>
+        <symbol id="invite" viewBox="0 0 24 24">
+          <circle cx="9" cy="7.8" r="3.6" fill="currentColor" />
+          <path d="M1.8 20.4v-1.6a7.2 7.2 0 0 1 14.4 0v1.6Z" fill="currentColor" />
+          <path d="M19 6.5v7M15.5 10h7" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" />
+        </symbol>
+
+        <!-- Markers ----------------------------------------------------- -->
+        <symbol id="passenger" viewBox="0 0 24 24">
+          <circle cx="12" cy="4.6" r="2.6" fill="currentColor" />
+          <path d="M9.4 8.6h5.2a2 2 0 0 1 2 2v5.2h-1.8v6.4h-2V16h-1.6v6.2h-2v-6.4H7.4v-5.2a2 2 0 0 1 2-2Z" fill="currentColor" />
+        </symbol>
+        <symbol id="cargo" viewBox="0 0 24 24">
+          <path d="M12 2.6 21 7v10l-9 4.4L3 17V7Z" fill="currentColor" />
+          <path d="M3.4 7.2 12 11.4l8.6-4.2M12 11.4v9.6M7.6 4.9l8.6 4.3" class="cut" stroke-width="1.3" fill="none" />
+        </symbol>
+        <symbol id="bus" viewBox="0 0 24 24">
+          <path d="M6.4 2.8h11.2a2.6 2.6 0 0 1 2.6 2.6V18a1.4 1.4 0 0 1-1.4 1.4h-.6v1.4a1 1 0 0 1-1 1h-1.2a1 1 0 0 1-1-1v-1.4H9v1.4a1 1 0 0 1-1 1H6.8a1 1 0 0 1-1-1v-1.4h-.6A1.4 1.4 0 0 1 3.8 18V5.4a2.6 2.6 0 0 1 2.6-2.6Z" fill="currentColor" />
+          <rect x="6" y="5.6" width="12" height="6.4" rx="1" class="hole" />
+          <circle cx="7.6" cy="15.6" r="1.3" class="hole" />
+          <circle cx="16.4" cy="15.6" r="1.3" class="hole" />
+        </symbol>
+        <symbol id="tram" viewBox="0 0 24 24">
+          <path d="M8.5 1.6h7M12 1.6v2.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          <path d="M7.2 4.4h9.6a3 3 0 0 1 3 3V17a2.4 2.4 0 0 1-2.4 2.4H6.6A2.4 2.4 0 0 1 4.2 17V7.4a3 3 0 0 1 3-3Z" fill="currentColor" />
+          <rect x="6.4" y="6.8" width="11.2" height="5.4" rx="1" class="hole" />
+          <circle cx="8.2" cy="15.8" r="1.3" class="hole" />
+          <circle cx="15.8" cy="15.8" r="1.3" class="hole" />
+          <path d="M7.6 20.2 5.8 22.6M16.4 20.2l1.8 2.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </symbol>
+        <symbol id="truck" viewBox="0 0 24 24">
+          <path d="M2.4 5.2a1.2 1.2 0 0 1 1.2-1.2h10.6a1.2 1.2 0 0 1 1.2 1.2V8h3.3a1.6 1.6 0 0 1 1.3.7l2.2 3.3a1.6 1.6 0 0 1 .3.9v3.9a1.2 1.2 0 0 1-1.2 1.2H2.4Z" fill="currentColor" />
+          <path d="M16.6 9.6h2.4l1.8 2.8h-4.2Z" class="hole" />
+          <circle cx="6.6" cy="18.6" r="2.4" fill="currentColor" class="cut" stroke-width="1.3" />
+          <circle cx="17.4" cy="18.6" r="2.4" fill="currentColor" class="cut" stroke-width="1.3" />
+        </symbol>
+        <symbol id="train" viewBox="0 0 24 24">
+          <path d="M8 2.4h8a4 4 0 0 1 4 4V16a2.6 2.6 0 0 1-2.6 2.6H6.6A2.6 2.6 0 0 1 4 16V6.4a4 4 0 0 1 4-4Z" fill="currentColor" />
+          <rect x="6.4" y="5.4" width="11.2" height="5.6" rx="1.2" class="hole" />
+          <circle cx="8.4" cy="14.6" r="1.4" class="hole" />
+          <circle cx="15.6" cy="14.6" r="1.4" class="hole" />
+          <path d="M7.4 19.4 5.4 22.4M16.6 19.4l2 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </symbol>
+        <symbol id="ship" viewBox="0 0 24 24">
+          <path d="M9.4 3h3.4v3.6H9.4Z" fill="currentColor" />
+          <path d="M6 7.4h9.6a1 1 0 0 1 1 1v3.4H6Z" fill="currentColor" />
+          <path d="M1.6 12.8h20.8l-2.6 5.6a2 2 0 0 1-1.8 1.2H5.4a2 2 0 0 1-1.8-1.1Z" fill="currentColor" />
+          <path d="M1.6 22c1.6 0 2.1-1 3.5-1s1.9 1 3.5 1 2.1-1 3.5-1 1.9 1 3.5 1 2.1-1 3.5-1 1.9 1 3.3 1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none" />
+        </symbol>
+        <symbol id="aircraft" viewBox="0 0 24 24">
+          <path d="M12 1.8c1 0 1.6 1 1.6 2.4v5.2l8.2 4.6v2.2l-8.2-2.4v4.9l2.5 1.8v1.7L12 21.2l-4.1 1v-1.7l2.5-1.8v-4.9l-8.2 2.4V14l8.2-4.6V4.2c0-1.4.6-2.4 1.6-2.4Z" fill="currentColor" />
+        </symbol>
+        <symbol id="depot" viewBox="0 0 24 24">
+          <path d="M12 2.4 22 8v13.2a.8.8 0 0 1-.8.8H2.8a.8.8 0 0 1-.8-.8V8Z" fill="currentColor" />
+          <rect x="6.2" y="10.6" width="11.6" height="11.4" rx="0.8" class="hole" />
+          <path d="M7.4 13.6h9.2M7.4 16.6h9.2M7.4 19.6h9.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </symbol>
+      </defs>
+    </svg>
+    <div class="sheet" id="sheet"></div>
+    <script>
+      // One row per state of each button, then the markers: render.py
+      // reads the order back from ICONS in the same way.
+      const BUTTONS = ["multiplayer", "minimap", "chat", "invite"];
+      const STATES = ["normal", "selected", "unavailable"];
+      const MARKERS = ["passenger", "cargo", "bus", "tram", "truck", "train", "ship", "aircraft", "depot"];
+      const sheet = document.getElementById("sheet");
+      const cell = (classes, id, disc) => {
+        const div = document.createElement("div");
+        div.className = `cell ${classes}`;
+        if (disc) {
+          const d = document.createElement("div");
+          d.className = "disc";
+          div.append(d);
+        }
+        div.insertAdjacentHTML("beforeend", `<svg><use href="#${id}" /></svg>`);
+        sheet.append(div);
+      };
+      for (const id of BUTTONS) for (const state of STATES) cell(state, id, true);
+      for (const id of MARKERS) cell("marker", id, false);
+    </script>
+  </body>
+</html>

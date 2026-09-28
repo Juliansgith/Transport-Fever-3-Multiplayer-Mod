@@ -84,6 +84,12 @@ GUI takes react-style recipes instead:
 
 - the panel is a `GameBarInfoDisplayExtension` plugin, as the mod's
   loader already is;
+- the icons are TF3's own style, measured from its bottom bar
+  (`mod/tpf3mp_1/content/gui/tpf3mp/icons/`, drawn by
+  `tools/art/icons/`): the Multiplayer and Minimap buttons after TpF2
+  Multiplayer's and TPF2 Big Maps', Chat and Invite for the room panel,
+  each normal, selected and unavailable, and white marker glyphs for
+  other players' builds after TpF2 Multiplayer's HUD glyphs;
 - views of one town or vehicle use the entity-window extension points;
 - changes to stock UI go through `react-replacement-config`.
 
