@@ -256,6 +256,11 @@ Dev C:
 - [x] Building into the TF2 launcher: *decided* (D16): the launcher is
   tearded's, ported to TF3 in a web view, with the version choice and
   release notes of his (D18).
+- [ ] *Added:* the minimap ([MINIMAP.md](MINIMAP.md)): TPF2 Big Maps'
+  minimap for TF3, as a game bar plugin in the mod. First script only
+  (towns, industries, network, stations, camera, click to move, companies
+  and industry types); then the terrain picture rendered by the hook; in a
+  room, other players' cameras and builds.
 - [ ] *Added* (D17): the room in the game. Connecting, rooms, the lobby
   and chat move to an in-game panel once TF3's GUI is known; the link
   carries the launcher's state and actions; the launcher keeps them until
