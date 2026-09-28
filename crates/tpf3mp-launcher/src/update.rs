@@ -36,10 +36,18 @@
 //! update not installed then is installed at the next start.
 //!
 //! The player may also choose (D18): the Experimental track, which offers
-//! pre-releases too (found through `releases.rs`), and any signed release,
+//! pre-releases too (found through `releases.rs`), the Dev track (D19),
+//! which offers every build of `dev` as well, and any signed release,
 //! older ones included, which is then installed as an update is and held:
 //! while a chosen version is held, nothing is updated on its own until the
 //! player resumes updates. Both are kept in `.tpf3mp-update/choice.json`.
+//!
+//! Dev builds (`<version>-dev.<n>`) are signed as soon as they are built,
+//! with a key of their own that needs nobody's approval
+//! (`TPF3MP_UPDATE_DEV_PUBLIC_KEY` at build time). A launcher trusts that
+//! key only while the player is on the Dev track, and only for a dev
+//! build: it can never sign a release, and players on the other tracks
+//! never take anything it signed.
 
 use std::{
     ffi::OsString,
@@ -59,8 +67,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{info, warn};
 
-/// This build's version.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// This build's version: the workspace's, or a dev build's own
+/// (`TPF3MP_VERSION` at build time).
+pub const VERSION: &str = match option_env!("TPF3MP_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 /// The repository releases come from.
 pub const REPOSITORY: &str = match option_env!("TPF3MP_REPOSITORY") {
     Some(repository) => repository,
@@ -70,6 +82,9 @@ pub const REPOSITORY: &str = match option_env!("TPF3MP_REPOSITORY") {
 /// their 32 bytes, separated by commas or spaces. More than one lets the
 /// project move to a new key. Without any, this build never updates.
 const PUBLIC_KEYS: Option<&str> = option_env!("TPF3MP_UPDATE_PUBLIC_KEY");
+/// The public halves of the keys dev builds are signed with, in the same
+/// form. They are trusted only on the Dev track, and only for dev builds.
+const DEV_PUBLIC_KEYS: Option<&str> = option_env!("TPF3MP_UPDATE_DEV_PUBLIC_KEY");
 /// The package this build comes in, as release file names name it.
 pub const PLATFORM: Option<&str> = if cfg!(all(windows, target_arch = "x86_64")) {
     Some("windows-x64")
@@ -195,22 +210,75 @@ pub struct Package {
     pub sha256: String,
 }
 
+/// The keys a check trusts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Keys {
+    /// The project's release keys, which may sign any version.
+    pub release: Vec<Vec<u8>>,
+    /// Dev build keys, which may sign only dev builds.
+    pub dev: Vec<Vec<u8>>,
+}
+
+impl Keys {
+    /// The keys this build was made with. An entry that is not a key is
+    /// left out.
+    fn built_in() -> Self {
+        Self {
+            release: parse_keys(PUBLIC_KEYS.unwrap_or_default()),
+            dev: parse_keys(DEV_PUBLIC_KEYS.unwrap_or_default()),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.release.is_empty() && self.dev.is_empty()
+    }
+
+    /// What a copy on `track` trusts: the dev keys only on the Dev track.
+    fn on(&self, track: crate::releases::Track) -> Self {
+        Self {
+            release: self.release.clone(),
+            dev: if track == crate::releases::Track::Dev {
+                self.dev.clone()
+            } else {
+                Vec::new()
+            },
+        }
+    }
+}
+
+/// Whether this build can take dev builds at all: it trusts a dev key.
+pub fn dev_builds_trusted() -> bool {
+    !Keys::built_in().dev.is_empty()
+}
+
+/// Whether `version` is a dev build: `<version>-dev.<n>`.
+pub fn is_dev_build(version: &str) -> bool {
+    semver::Version::parse(version).is_ok_and(|version| version.pre.as_str().starts_with("dev."))
+}
+
 impl Manifest {
-    /// The manifest in `json`, if `signature` is one of `keys`' signature
-    /// of it.
-    pub fn verified(json: &[u8], signature: &[u8], keys: &[Vec<u8>]) -> Result<Self, UpdateError> {
-        let signed = keys.iter().any(|key| {
-            UnparsedPublicKey::new(&ED25519, key)
-                .verify(json, signature)
-                .is_ok()
-        });
-        if !signed {
+    /// The manifest in `json`, if `signature` is a release key's signature
+    /// of it, or a dev key's and it is a dev build.
+    pub fn verified(json: &[u8], signature: &[u8], keys: &Keys) -> Result<Self, UpdateError> {
+        let signed_by = |set: &[Vec<u8>]| {
+            set.iter().any(|key| {
+                UnparsedPublicKey::new(&ED25519, key)
+                    .verify(json, signature)
+                    .is_ok()
+            })
+        };
+        let release = signed_by(&keys.release);
+        if !release && !signed_by(&keys.dev) {
             return Err(UpdateError::BadSignature);
         }
         let manifest: Self = serde_json::from_slice(json)
             .map_err(|error| UpdateError::Malformed(error.to_string()))?;
         semver::Version::parse(&manifest.version)
             .map_err(|error| UpdateError::Malformed(format!("version: {error}")))?;
+        // A dev key signs dev builds and nothing else.
+        if !release && !is_dev_build(&manifest.version) {
+            return Err(UpdateError::BadSignature);
+        }
         for package in manifest.packages.values() {
             if !safe_name(&package.name) || package.sha256.len() != 64 {
                 return Err(UpdateError::Malformed(format!(
@@ -269,11 +337,6 @@ fn safe_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-}
-
-/// The keys this build trusts. An entry that is not a key is left out.
-fn public_keys() -> Vec<Vec<u8>> {
-    parse_keys(PUBLIC_KEYS.unwrap_or_default())
 }
 
 fn parse_keys(text: &str) -> Vec<Vec<u8>> {
@@ -451,7 +514,8 @@ pub struct Updater {
 struct Inner {
     state: Mutex<UpdateState>,
     install: Option<Install>,
-    keys: Vec<Vec<u8>>,
+    /// Every key this build trusts; each check takes those of the track.
+    keys: Keys,
     source: Source,
     runtime: tokio::runtime::Handle,
     /// One check or download at a time in this process.
@@ -463,7 +527,7 @@ impl Updater {
     /// few hours, and downloads what it finds; installing waits for the
     /// player.
     pub fn start(runtime: tokio::runtime::Handle) -> Self {
-        let keys = public_keys();
+        let keys = Keys::built_in();
         let install = Install::of_running();
         let state = match (keys.is_empty(), &install) {
             (true, _) => UpdateState::Off("this build has no update key".into()),
@@ -536,14 +600,15 @@ impl Updater {
                 return;
             }
             updater.set(UpdateState::Checking);
+            let keys = updater.inner.keys.on(choice.track);
             let which = match choice.track {
                 crate::releases::Track::Stable => Ok(Which::Latest),
-                crate::releases::Track::Experimental => updater.newest_experimental(),
+                track => updater.newest_on(track),
             };
             let result = which.and_then(|which| {
                 check_and_download(
                     &install,
-                    &updater.inner.keys,
+                    &keys,
                     &updater.inner.source,
                     &which,
                     |version, bytes, total| {
@@ -572,18 +637,16 @@ impl Updater {
         });
     }
 
-    /// The newest release on the Experimental track, if it is newer than
-    /// this one; else the latest published release, as on Stable.
-    fn newest_experimental(&self) -> Result<Which, UpdateError> {
+    /// The newest release on `track`, if it is newer than this one; else
+    /// the latest published release, as on Stable.
+    fn newest_on(&self, track: crate::releases::Track) -> Result<Which, UpdateError> {
         let (releases, _) = crate::releases::fetch(self.inner.source.api(), 1)?;
-        Ok(
-            match crate::releases::latest(&releases, crate::releases::Track::Experimental) {
-                Some(release) if newer(&release.version, VERSION) => {
-                    Which::Version(release.version.clone())
-                }
-                _ => Which::Latest,
-            },
-        )
+        Ok(match crate::releases::latest(&releases, track) {
+            Some(release) if newer(&release.version, VERSION) => {
+                Which::Version(release.version.clone())
+            }
+            _ => Which::Latest,
+        })
     }
 
     /// The player's choice, if this copy updates at all.
@@ -644,6 +707,7 @@ impl Updater {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let before = install.choice();
+        let keys = self.inner.keys.on(before.track);
         let held = Choice {
             hold: Some(version.to_owned()),
             ..before.clone()
@@ -657,7 +721,7 @@ impl Updater {
         }
         let result = check_and_download(
             install,
-            &self.inner.keys,
+            &keys,
             &self.inner.source,
             &Which::Version(version.to_owned()),
             |version, bytes, total| {
@@ -705,8 +769,10 @@ impl Updater {
             version: version.clone(),
         });
         let installed = install.lock(Duration::ZERO).and_then(|_lock| {
-            let chosen = install.choice().hold.filter(|held| held != VERSION);
-            install_staged(install, &self.inner.keys, chosen.as_deref())
+            let choice = install.choice();
+            let chosen = choice.hold.filter(|held| held != VERSION);
+            let keys = self.inner.keys.on(choice.track);
+            install_staged(install, &keys, chosen.as_deref())
         });
         match installed.and_then(|installed| {
             if installed.is_some() {
@@ -876,7 +942,7 @@ pub fn at_start() -> bool {
     let Ok(install) = Install::of_running() else {
         return false;
     };
-    let keys = public_keys();
+    let keys = Keys::built_in().on(install.choice().track);
     match start(&install, &keys, VERSION) {
         Ok(Started::Restart) => match restart(&install) {
             Ok(()) => true,
@@ -901,7 +967,7 @@ enum Started {
     Restart,
 }
 
-fn start(install: &Install, keys: &[Vec<u8>], running: &str) -> Result<Started, UpdateError> {
+fn start(install: &Install, keys: &Keys, running: &str) -> Result<Started, UpdateError> {
     let _lock = install.lock(LOCK_WAIT)?;
     clear_unpacked(install);
     if let Some(mut journal) = Journal::read(install) {
@@ -1017,7 +1083,7 @@ fn get(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>, UpdateErro
 /// it is newer and not rolled back from, a chosen version whatever it is.
 fn check_and_download(
     install: &Install,
-    keys: &[Vec<u8>],
+    keys: &Keys,
     source: &Source,
     which: &Which,
     mut progress: impl FnMut(&str, u64, u64),
@@ -1151,7 +1217,7 @@ fn hex(bytes: &[u8]) -> String {
 /// there is none. Call it holding the lock.
 fn install_staged(
     install: &Install,
-    keys: &[Vec<u8>],
+    keys: &Keys,
     chosen: Option<&str>,
 ) -> Result<Option<String>, UpdateError> {
     let Some((manifest, archive)) = newest_staged(install, keys, chosen)? else {
@@ -1175,7 +1241,7 @@ fn install_staged(
 /// releases that are neither are deleted.
 fn newest_staged(
     install: &Install,
-    keys: &[Vec<u8>],
+    keys: &Keys,
     chosen: Option<&str>,
 ) -> Result<Option<(Manifest, PathBuf)>, UpdateError> {
     let Ok(entries) = fs::read_dir(install.staging()) else {
@@ -1431,8 +1497,18 @@ mod tests {
         Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap()
     }
 
-    fn keys(pair: &Ed25519KeyPair) -> Vec<Vec<u8>> {
-        vec![pair.public_key().as_ref().to_vec()]
+    fn keys(pair: &Ed25519KeyPair) -> Keys {
+        Keys {
+            release: vec![pair.public_key().as_ref().to_vec()],
+            dev: Vec::new(),
+        }
+    }
+
+    fn dev_keys(pair: &Ed25519KeyPair) -> Keys {
+        Keys {
+            release: Vec::new(),
+            dev: vec![pair.public_key().as_ref().to_vec()],
+        }
     }
 
     fn manifest_json(version: &str) -> Vec<u8> {
@@ -1467,12 +1543,67 @@ mod tests {
             Err(UpdateError::BadSignature)
         ));
         // A new key alongside the old: either signs.
-        let both = [keys(&other), keys(&pair)].concat();
+        let both = Keys {
+            release: [keys(&other).release, keys(&pair).release].concat(),
+            dev: Vec::new(),
+        };
         assert!(Manifest::verified(&json, signature.as_ref(), &both).is_ok());
         assert!(matches!(
-            Manifest::verified(&json, signature.as_ref(), &[]),
+            Manifest::verified(&json, signature.as_ref(), &Keys::default()),
             Err(UpdateError::BadSignature)
         ));
+    }
+
+    #[test]
+    fn a_dev_key_signs_dev_builds_and_nothing_else() {
+        let dev = key_pair();
+        let build = manifest_json("0.1.1-dev.7");
+        let manifest =
+            Manifest::verified(&build, dev.sign(&build).as_ref(), &dev_keys(&dev)).unwrap();
+        assert_eq!(manifest.version, "0.1.1-dev.7");
+        assert!(
+            manifest.newer_than("0.1.0"),
+            "a dev build follows the release before it"
+        );
+        assert!(
+            !manifest.newer_than("0.1.1"),
+            "and the release it leads to follows it"
+        );
+        // A release, or any other pre-release, signed with the dev key.
+        for version in ["9.1.0", "9.1.0-beta.1", "9.1.0-devel.1"] {
+            let json = manifest_json(version);
+            assert!(
+                matches!(
+                    Manifest::verified(&json, dev.sign(&json).as_ref(), &dev_keys(&dev)),
+                    Err(UpdateError::BadSignature)
+                ),
+                "{version}"
+            );
+        }
+        // A release key may sign a dev build too.
+        let release = key_pair();
+        assert!(Manifest::verified(&build, release.sign(&build).as_ref(), &keys(&release)).is_ok());
+    }
+
+    #[test]
+    fn only_the_dev_track_trusts_the_dev_keys() {
+        let all = Keys {
+            release: vec![vec![1; 32]],
+            dev: vec![vec![2; 32]],
+        };
+        assert_eq!(all.on(crate::releases::Track::Dev), all);
+        for track in [
+            crate::releases::Track::Stable,
+            crate::releases::Track::Experimental,
+        ] {
+            let keys = all.on(track);
+            assert_eq!(keys.release, all.release);
+            assert!(keys.dev.is_empty(), "{track:?}");
+        }
+        assert!(is_dev_build("0.1.1-dev.3"));
+        assert!(!is_dev_build("0.1.1"));
+        assert!(!is_dev_build("0.1.1-beta.1"));
+        assert!(!is_dev_build("not a version"));
     }
 
     #[test]
@@ -1516,7 +1647,11 @@ mod tests {
                 .unwrap()
             })
             .collect();
-        let manifest = Manifest::verified(json.as_bytes(), &signature, &[key]).unwrap();
+        let keys = Keys {
+            release: vec![key],
+            dev: Vec::new(),
+        };
+        let manifest = Manifest::verified(json.as_bytes(), &signature, &keys).unwrap();
         assert_eq!(manifest.version, "9.1.0");
         assert_eq!(manifest.packages["windows-x64"].size, 3);
     }

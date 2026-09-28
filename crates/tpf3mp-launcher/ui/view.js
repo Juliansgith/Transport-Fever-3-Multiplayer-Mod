@@ -307,11 +307,24 @@ export function notesBlocks(markdown) {
   return blocks.filter((block) => block.text);
 }
 
+/** Whether `track` offers `release`: Stable only releases, Experimental
+ * pre-releases too, Dev every build of the dev branch as well. */
+export function onTrack(release, track) {
+  if (track === "dev") return true;
+  if (release.dev) return false;
+  return track === "experimental" || !release.experimental;
+}
+
+/** A track's name, as Settings shows it. */
+export function trackName(track) {
+  return { experimental: "Experimental", dev: "Dev builds" }[track] || "Stable";
+}
+
 /** The latest release on the player's track, from a page of releases. */
 export function latestRelease(releases, track) {
   return (
     (releases || [])
-      .filter((r) => r.installable && (track === "experimental" || !r.experimental))
+      .filter((r) => r.installable && onTrack(r, track))
       .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0] || null
   );
 }
@@ -370,6 +383,7 @@ export function present(v) {
     version: v.version,
     askQuit: Boolean(v.quitAsked),
     track: v.track || "stable",
+    devTrack: Boolean(v.devTrack),
     held: v.held || null,
     // Versions are chosen outside a room: installing restarts TPF3-MP.
     canInstall: !state.room && (v.update?.state ?? "none") !== "none" && v.update?.state !== "off",

@@ -100,6 +100,15 @@ function scene(name) {
 
 const RELEASES = [
   {
+    version: "0.2.1-dev.14",
+    title: "Dev build 0.2.1-dev.14",
+    notes: "Built from dev at 1fca952: Keep the paced-latency test from failing on slow CI machines.",
+    date: "2026-10-07T10:00:00Z",
+    experimental: true,
+    dev: true,
+    installable: true,
+  },
+  {
     version: "0.2.0",
     title: "TPF3-MP 0.2.0",
     notes:
@@ -166,6 +175,7 @@ export function previewBackend() {
         quitAsked: false,
         platform: "windows",
         track,
+        devTrack: true,
         held,
       };
     },
@@ -199,14 +209,14 @@ export function previewBackend() {
     async answerQuit() {},
     async releases(page) {
       return page === 1
-        ? { releases: RELEASES.slice(0, 2), more: true }
-        : { releases: RELEASES.slice(2), more: false };
+        ? { releases: RELEASES.slice(0, 3), more: true }
+        : { releases: RELEASES.slice(3), more: false };
     },
     async installVersion(version) {
       held = version;
     },
-    async setTrack(experimental) {
-      track = experimental ? "experimental" : "stable";
+    async setTrack(chosen) {
+      track = chosen;
     },
     async resumeUpdates() {
       held = null;

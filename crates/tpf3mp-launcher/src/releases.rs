@@ -25,6 +25,9 @@ pub enum Track {
     Stable,
     /// Pre-releases too.
     Experimental,
+    /// Every build of the `dev` branch as well, published as soon as it is
+    /// built and not tested (D19).
+    Dev,
 }
 
 /// A release, as the page shows it.
@@ -40,6 +43,8 @@ pub struct Release {
     /// When it was published, as GitHub gives it (RFC 3339).
     pub date: Option<String>,
     pub experimental: bool,
+    /// A build of the `dev` branch (`<version>-dev.<n>`).
+    pub dev: bool,
     /// Whether it has a signed manifest to install from.
     pub installable: bool,
 }
@@ -97,6 +102,7 @@ pub fn parse(json: &[u8]) -> Result<Vec<Release>, UpdateError> {
                 notes,
                 date: release.published_at,
                 experimental: release.prerelease,
+                dev: crate::update::is_dev_build(version),
                 installable,
             })
         })
@@ -111,7 +117,11 @@ pub fn latest(releases: &[Release], track: Track) -> Option<&Release> {
     releases
         .iter()
         .filter(|release| release.installable)
-        .filter(|release| track == Track::Experimental || !release.experimental)
+        .filter(|release| match track {
+            Track::Stable => !release.experimental && !release.dev,
+            Track::Experimental => !release.dev,
+            Track::Dev => true,
+        })
         .max_by(|a, b| a.date.cmp(&b.date))
 }
 
@@ -190,6 +200,25 @@ mod tests {
             latest(&releases, Track::Experimental).map(|r| r.version.as_str()),
             Some("0.3.0-beta.1")
         );
+    }
+
+    #[test]
+    fn only_the_dev_track_offers_dev_builds() {
+        let json = serde_json::json!([
+            {"tag_name": "v0.3.1-dev.12", "published_at": "2026-10-06T10:00:00Z", "prerelease": true,
+             "assets": [{"name": "release.json"}, {"name": "release.json.sig"}]},
+            {"tag_name": "v0.3.0-beta.1", "published_at": "2026-10-05T10:00:00Z", "prerelease": true,
+             "assets": [{"name": "release.json"}, {"name": "release.json.sig"}]},
+            {"tag_name": "v0.2.0", "published_at": "2026-10-01T10:00:00Z",
+             "assets": [{"name": "release.json"}, {"name": "release.json.sig"}]},
+        ]);
+        let releases = parse(json.to_string().as_bytes()).unwrap();
+        assert!(releases[0].dev && !releases[1].dev && !releases[2].dev);
+        let on = |track| latest(&releases, track).map(|r| r.version.as_str());
+        assert_eq!(on(Track::Stable), Some("0.2.0"));
+        assert_eq!(on(Track::Experimental), Some("0.3.0-beta.1"));
+        assert_eq!(on(Track::Dev), Some("0.3.1-dev.12"));
+        assert_eq!(serde_json::to_string(&Track::Dev).unwrap(), r#""dev""#);
     }
 
     #[test]

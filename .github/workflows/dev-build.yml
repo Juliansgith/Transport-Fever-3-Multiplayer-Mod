@@ -1,0 +1,146 @@
+name: dev build
+
+# Publishes every push to `dev` as a dev build for the launcher's Dev track
+# (docs/DECISIONS.md, D19), as soon as its packages are built. It runs no
+# tests and waits for none: `ci` runs beside it, and a red `ci` still stops
+# promotion to `acceptance`, but not the dev build.
+#
+# A dev build's version is the workspace's next patch version with
+# `-dev.<run number>`, such as 0.1.1-dev.14: newer than the release before
+# it, older than the release it leads to. It is published as a pre-release
+# that is never the latest release, so Stable and Experimental never see
+# it, and signed with the dev key: the `dev-builds` environment's secret
+# TPF3MP_DEV_SIGNING_KEY, whose public half is the repository variable
+# TPF3MP_UPDATE_DEV_PUBLIC_KEY. Launchers trust that key only on the Dev
+# track and only for dev builds (docs/OPERATIONS.md, "Dev builds"). The
+# newest KEEP builds are kept; older ones and their tags are deleted.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One at a time, in push order: every build is published.
+concurrency:
+  group: dev-build
+  cancel-in-progress: false
+
+env:
+  KEEP: 10
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if ! [[ "$base" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::cannot read the workspace version from Cargo.toml"
+            exit 1
+          fi
+          major=${BASH_REMATCH[1]} minor=${BASH_REMATCH[2]} patch=${BASH_REMATCH[3]}
+          # A pre-release version already leads to its release; a release
+          # version was published or is about to be, so dev builds follow it.
+          if [ -n "${BASH_REMATCH[4]}" ]; then
+            next="$major.$minor.$patch"
+          else
+            next="$major.$minor.$((patch + 1))"
+          fi
+          echo "version=$next-dev.$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: package
+    needs: version
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  publish:
+    name: sign and publish
+    needs: [version, package]
+    runs-on: ubuntu-latest
+    environment: dev-builds
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: packages
+          merge-multiple: true
+      # Signs the packages this run built, as sign.yml signs a release, and
+      # checks nothing out.
+      - name: Sign and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          SIGNING_KEY: ${{ secrets.TPF3MP_DEV_SIGNING_KEY }}
+          PUBLIC_KEYS: ${{ vars.TPF3MP_UPDATE_DEV_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SIGNING_KEY" ] || [ -z "$PUBLIC_KEYS" ]; then
+            echo "::error::no dev build without the dev-builds environment's secret TPF3MP_DEV_SIGNING_KEY and the variable TPF3MP_UPDATE_DEV_PUBLIC_KEY (docs/OPERATIONS.md, \"Dev builds\")"
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/dev-key.pem"
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          derived=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)
+          if ! printf '%s' "$PUBLIC_KEYS" | tr ', ' '\n\n' | grep -qxF "$derived"; then
+            rm -f "$key"
+            echo "::error::the dev signing key's public half is not in TPF3MP_UPDATE_DEV_PUBLIC_KEY"
+            exit 1
+          fi
+          python3 - <<'EOF'
+          import hashlib, json, os
+          version = os.environ["VERSION"]
+          packages = {}
+          for name in sorted(os.listdir("packages")):
+              stem = name.removesuffix(".zip").removesuffix(".tar.gz")
+              platform = stem.removeprefix(f"tpf3mp-{version}-")
+              if platform == stem:
+                  continue
+              data = open(os.path.join("packages", name), "rb").read()
+              packages[platform] = {
+                  "name": name,
+                  "size": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+              }
+          if not packages:
+              raise SystemExit("the build has no packages")
+          manifest = {"version": version, "packages": packages}
+          open("release.json", "w").write(json.dumps(manifest, indent=2) + chr(10))
+          EOF
+          openssl pkeyutl -sign -rawin -inkey "$key" -in release.json -out release.json.sig
+          rm -f "$key"
+          # Check the signature as a launcher will.
+          printf '%s' "$derived" | base64 -d > "$RUNNER_TEMP/raw.pub"
+          { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; cat "$RUNNER_TEMP/raw.pub"; } > "$RUNNER_TEMP/public.der"
+          openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/public.der" \
+            -in release.json -sigfile release.json.sig
+          subject=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.commit.message' | head -n 1)
+          notes=$(printf 'Built from `dev` at %s: %s\n\n**Untested.** Published as soon as it was built, before any test ran. For the Dev track only.\n' \
+            "${GITHUB_SHA:0:7}" "$subject")
+          gh release create "v$VERSION" packages/* release.json release.json.sig \
+            --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+            --target "$GITHUB_SHA" --title "Dev build $VERSION" --notes "$notes"
+      - name: Delete older dev builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,publishedAt \
+            --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-dev\\.[0-9]+$"))] | sort_by(.publishedAt) | reverse | .[].tagName' |
+            tail -n "+$((KEEP + 1))" |
+            while read -r tag; do
+              echo "deleting $tag"
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            done
