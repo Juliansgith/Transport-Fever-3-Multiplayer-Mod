@@ -31,6 +31,7 @@ ci=(
   "test (windows-latest)" "test (ubuntu-latest)" "test (macos-latest)"
   "release build (windows-latest)" "release build (ubuntu-latest)"
   "release build (macos-latest)" "server image" "launcher page" "tpfre"
+  "release-day tools"
 )
 acceptance=(
   "load (windows-latest)" "load (ubuntu-latest)" "load (macos-latest)"

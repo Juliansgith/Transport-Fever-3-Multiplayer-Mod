@@ -79,6 +79,19 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
+  dayone:
+    name: release-day tools
+    # tools/dayone/dayone.py and the TF3 probe mods' Lua (docs/DAY_ONE.md):
+    # Python and a real Lua, on Linux, where they run as on the players'.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tools/dayone/test_dayone.py
+      - run: pip install lupa==2.8 && python tools/probe/check_lua.py
+
   page:
     name: launcher page
     runs-on: ubuntu-latest

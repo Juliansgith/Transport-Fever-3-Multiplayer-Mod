@@ -49,7 +49,8 @@ local GAME = {
 	["::/gui/game_bar/game_bar_widgets.tl"] = game_bar_widgets,
 }
 
-local MOD = "tpf3mp_1::/"
+-- The mod whose files mod_source reads: ours, or the one MOD_ID names.
+local MOD = (MOD_ID or "tpf3mp_1") .. "::/"
 local loaded = {}
 UG_REQUIRED = {}
 function ug_require(path)
@@ -81,13 +82,15 @@ function mount(recipe)
 	return m
 end
 
--- Runs the mod's entry script and returns its plugin, checking the name the
--- resource file gives (tpf3mp.script@Tpf3mpPlugin).
-function loadPlugin()
-	local entry = assert(loadstring(mod_source("gui/tpf3mp/tpf3mp.script.lua"), "@tpf3mp.script.lua"))
+-- Runs a mod's entry script and returns its plugin, checking the name the
+-- resource file gives: ours (tpf3mp.script@Tpf3mpPlugin) unless named.
+function loadPlugin(script, recipe)
+	script = script or "gui/tpf3mp/tpf3mp.script.lua"
+	recipe = recipe or "Tpf3mpPlugin"
+	local entry = assert(loadstring(mod_source(script), "@" .. script))
 	entry()
 	local exported = data()
-	local plugin = assert(exported.Tpf3mpPlugin, "no Tpf3mpPlugin")
+	local plugin = assert(exported[recipe], "no " .. recipe)
 	assert(plugin.extension == "GameBarInfoDisplayExtension", "on another extension point")
 	return plugin
 end

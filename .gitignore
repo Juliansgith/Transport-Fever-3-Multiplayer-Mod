@@ -16,3 +16,7 @@
 # Mods downloaded for study (tools/modio/fetch.py): other people's work,
 # never committed.
 /.modio/
+
+# tpfre's index of the game's executable (tools/dayone/dayone.py decode):
+# large, and built from Urban Games' binary.
+*.tpfdb

@@ -1,0 +1,15 @@
+{
+    "authors": [
+        {
+            "name": "TPF3-MP recon",
+            "role": "CREATOR"
+        }
+    ],
+    "description": "Writes what the state of a mod run script offers (the sandbox, the global table, api.*) as the game loads mods, to %LOCALAPPDATA%/tpf3mp/probe or the game log. Changes nothing in the game.",
+    "name": "TPF3-MP probe: run-script API dump",
+    "summary": "Recon for TPF3-MP: dumps the script API of the run script state. Read only.",
+    "tags": [
+        "Script Mod"
+    ],
+    "url": "https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod"
+}

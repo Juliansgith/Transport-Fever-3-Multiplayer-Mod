@@ -1,0 +1,15 @@
+{
+    "authors": [
+        {
+            "name": "TPF3-MP recon",
+            "role": "CREATOR"
+        }
+    ],
+    "description": "Writes what the GUI state offers scripts (the sandbox, number formatting, the global table, api.*, the command factories) once as the game loads and once in a game, to %LOCALAPPDATA%/tpf3mp/probe or the game log. Changes nothing in the game.",
+    "name": "TPF3-MP probe: script API dump",
+    "summary": "Recon for TPF3-MP: dumps the script API of the GUI state. Read only.",
+    "tags": [
+        "Script Mod"
+    ],
+    "url": "https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod"
+}
