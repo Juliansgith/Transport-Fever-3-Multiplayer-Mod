@@ -456,21 +456,27 @@ postcard. A replica refuses a payload of another version rather than guess.
 The schema lives inside the protocol's opaque `Payload`, so changing it does
 not change `PROTOCOL_VERSION`: the server never decodes it in `native`
 rooms, and players in one room run the same mod because their content must
-match. Change the version whenever an existing variant's encoding changes;
-the Lua mod's encoder writes the same bytes and is tested against this
-crate.
+match. Change the version whenever an existing variant's encoding changes.
+Only Rust encodes and decodes it: the mod works with tables (below).
 
 **From Lua.** The mod (`mod/tpf3mp_1`) builds the action as a Lua table
-that mirrors the Rust types field for field: a struct is a table of its
-fields by their Rust names, an enum value its variant name
-(`"Ground"`) or a one-entry table (`{Bridge = "cement.lua"}`), vertex
-indices start at 0, and positions are integers in millimetres
-(`tpf3mp/fixed.lua` rounds metres to the nearest, halves away from zero).
-`tpf3mp/wire.lua` encodes it to the payload bytes above, checking every
-bound the Rust decoder checks, and raises rather than write what the
-decoder would refuse. The hook receives those bytes as a Lua string and
-sends them as the intent's payload unchanged; it needs no decoder of its
-own. So far only `BuildRoad` and `BuildTrack` have a Lua encoder.
+that mirrors the Rust types field for field:
+- a struct is a table of its fields by their Rust names, and a `None` is
+  a field left out;
+- an enum value is its variant name (`"Ground"`) or a one-entry table
+  (`{Bridge = "cement.lua"}`);
+- vertex indices start at 0;
+- numbers are in the game's units: metres, and plain fractions for
+  directions and rotations.
+
+The hook turns the table into an `Action` with `tpf3mp_proto::lua`, and
+an `Action` to apply back into a table the same way. That conversion
+rounds metres to millimetres and fractions to millionths (the nearest,
+halves away from zero) and refuses what the schema would: a field the
+type lacks, a missing one, a fraction where a whole number goes, a value
+out of range, text too long. Its errors name the path to the bad value
+(`polyline.vertices[2].pos.x`). So the schema, its bounds and its rounding
+are defined once, in Rust (D15).
 
 `tpf3mp/roads.lua` makes the road or track action from a captured
 proposal, ported from TpF2 Multiplayer's capture: split halves are dropped,

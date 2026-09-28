@@ -1,21 +1,27 @@
-//! The Lua mod's road and track capture writes exactly the payload the
-//! action schema decodes: `tests/lua/road_capture.lua` runs the mod's own
-//! modules against a world of tables, and the payloads it returns must
-//! decode to the actions below. Lua 5.1 here (the workspace's vendored
-//! Lua); the mod targets 5.2 and keeps to what both run.
+//! The Lua mod's road and track capture makes exactly the tables the action
+//! schema takes: `tests/lua/road_capture.lua` runs the mod's own modules
+//! against a world of tables, and the action tables it returns, in metres,
+//! must convert (`tpf3mp_proto::lua`, as the hook converts them) to the
+//! actions below, in millimetres. Tables changed to break the schema must
+//! be refused. Lua 5.1 here (the workspace's vendored Lua); the mod targets
+//! 5.2 and keeps to what both run.
 //!
 //! The modules are compiled into the test binary, so the test does not
 //! depend on the working directory.
 
 #![allow(clippy::unwrap_used)]
 
-use mlua::{Lua, LuaString, Table};
+mod common;
+
+use common::tree;
+use mlua::{Lua, Table, Value};
 use tpf3mp_proto::{
-    BoundedVec, Payload, Text,
+    BoundedVec, Text,
     action::{
         Action, EdgeEnds, EdgeRef, Link, Network, Polyline, Pos, Resolve, RoadBuild, Structure,
         Tangent, TrackBuild, Tram, Vertex,
     },
+    lua::{LuaValue, action_from_lua},
 };
 
 macro_rules! modules {
@@ -25,12 +31,18 @@ macro_rules! modules {
 }
 
 /// Every module of the mod, as `require "tpf3mp.<name>"` finds it.
-const MODULES: [(&str, &str); 5] = modules!("fixed", "wire", "geom", "roads", "engine");
+const MODULES: [(&str, &str); 3] = modules!("geom", "roads", "engine");
 
 const TEST: &str = include_str!("lua/road_capture.lua");
 
-/// Runs the Lua test and returns the payloads it produced.
-fn run() -> (Vec<u8>, Vec<u8>) {
+struct Captured {
+    road: LuaValue,
+    track: LuaValue,
+    must_refuse: Vec<(String, LuaValue)>,
+}
+
+/// Runs the Lua test and returns the tables it produced.
+fn run() -> Captured {
     let lua = Lua::new();
     let preload: Table = lua
         .globals()
@@ -49,16 +61,28 @@ fn run() -> (Vec<u8>, Vec<u8>) {
     // Loading the engine adapter needs no game: its API calls happen only
     // when a capture runs.
     lua.load("require 'tpf3mp.engine'").exec().unwrap();
-    let (road, track): (LuaString, LuaString) = lua
+    let (road, track, refuse): (Value, Value, Table) = lua
         .load(TEST)
         .set_name("@road_capture.lua")
         .eval()
         .unwrap_or_else(|error| panic!("{error}"));
-    (road.as_bytes().to_vec(), track.as_bytes().to_vec())
+    let mut must_refuse: Vec<(String, LuaValue)> = refuse
+        .pairs::<String, Value>()
+        .map(|pair| {
+            let (why, action) = pair.unwrap();
+            (why, tree(&action))
+        })
+        .collect();
+    must_refuse.sort_by(|a, b| a.0.cmp(&b.0));
+    Captured {
+        road: tree(&road),
+        track: tree(&track),
+        must_refuse,
+    }
 }
 
-fn decode(bytes: Vec<u8>) -> Action {
-    Action::from_payload(&Payload::new(bytes).unwrap()).unwrap()
+fn decode(table: LuaValue) -> Action {
+    action_from_lua(&table).unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn text<const N: usize>(value: &str) -> Text<N> {
@@ -89,7 +113,7 @@ fn link(from: u16, to: u16, t0: Tangent, t1: Tangent, structure: Structure) -> L
 
 #[test]
 fn a_captured_road_decodes_as_the_schema_says() {
-    let (road, _) = run();
+    let road = run().road;
     let expected = Action::BuildRoad(RoadBuild {
         street: text("street/standard/town_medium_new.lua"),
         bus_lane: true,
@@ -154,7 +178,7 @@ fn a_captured_road_decodes_as_the_schema_says() {
 
 #[test]
 fn a_captured_track_decodes_as_the_schema_says() {
-    let (_, track) = run();
+    let track = run().track;
     let expected = Action::BuildTrack(TrackBuild {
         track: text("high_speed.lua"),
         catenary: true,
@@ -211,4 +235,16 @@ fn a_captured_track_decodes_as_the_schema_says() {
         .unwrap(),
     });
     assert_eq!(decode(track), expected);
+}
+
+#[test]
+fn a_capture_the_schema_does_not_allow_is_refused() {
+    let refused = run().must_refuse;
+    assert_eq!(refused.len(), 8);
+    for (why, table) in refused {
+        assert!(
+            action_from_lua(&table).is_err(),
+            "{why}: the schema took it"
+        );
+    }
 }

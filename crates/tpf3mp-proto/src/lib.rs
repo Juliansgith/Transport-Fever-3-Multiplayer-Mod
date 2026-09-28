@@ -19,6 +19,7 @@ mod content;
 mod control;
 mod diagnostics;
 mod ids;
+pub mod lua;
 mod snapshot;
 mod text;
 mod turn;

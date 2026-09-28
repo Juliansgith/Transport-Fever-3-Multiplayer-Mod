@@ -400,8 +400,9 @@ and calls the session from its detours:
   agent cuts it into its chunk store and deletes the file.
 - **When the player acts.** Capture the action before the game applies it
   locally and call `command(payload)`. For a build the payload is the
-  bytes the Lua mod encoded (`tpf3mp/wire.lua`, "The action schema" in
-  [BUILDING.md](BUILDING.md)), passed through unchanged. The action happens only when the
+  action the Lua mod handed over as a table, converted by
+  `tpf3mp_proto::lua` and encoded with `Action::to_payload` ("The action
+  schema" in [BUILDING.md](BUILDING.md)). The action happens only when the
   room's event comes back through `Game::apply`, on every replica alike.
 - **Notices.** `Game::notice` receives speed changes, refusals,
   divergences and the end of the session, for the game's UI.
@@ -439,13 +440,17 @@ and the mod meet through one global table, which the hook registers in
 that state before the mod starts. Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`:
 
-- `tpf3mp_native.version`: 1. The mod refuses any other.
-- `tpf3mp_native.command(payload)`: an action's bytes, for
-  `Session::command`. `false` or an error means refused, and the mod then
-  does not apply the action locally either.
+- `tpf3mp_native.version`: 2. The mod refuses any other.
+- `tpf3mp_native.command(action)`: an action table, in the game's units.
+  The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
+  `MAX_DEPTH` and `MAX_NODES`, converts it with `action_from_lua`, and
+  passes `Action::to_payload` to `Session::command`. It returns `true`, or
+  `false` and the conversion's error. `false` or an error means refused,
+  and the mod then does not apply the action locally either.
 - `tpf3mp_native.register(handlers)`: the mod's handlers, which the hook
   keeps with the Lua state they came from.
-  - `handlers.apply(payload)` returns `(ok, reason)`; it is
+  - `handlers.apply(action)`, with the table `action_to_lua` makes of the
+    event's action, returns `(ok, reason)`; it is
     `Game::apply`. This version refuses every event, so a hook that
     receives one stops following the room.
   - `handlers.notice(kind, text)` is `Game::notice`.

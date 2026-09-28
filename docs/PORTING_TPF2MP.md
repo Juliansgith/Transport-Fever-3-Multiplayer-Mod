@@ -132,7 +132,9 @@ release day.
 2. **The link to the hook.** No files: the hook registers
    `tpf3mp_native` in the mod's Lua state, and the mod registers its
    handlers with it (`tpf3mp/bridge.lua`, and "The Lua side" in
-   [HOOKS.md](HOOKS.md)). Neither needs `io` or `os`.
+   [HOOKS.md](HOOKS.md)). Neither needs `io` or `os`. Actions cross it
+   as tables in the game's units; the hook converts them with
+   `tpf3mp_proto::lua`, so the mod has no encoder (D15).
 3. **What the save carries.** TPF2's `save()` held vehicle and line keys,
    company state and the step it was saved at. In TF3 that is
    `setGuiSaveData("tpf3mp", ...)`. With ids from the server there is

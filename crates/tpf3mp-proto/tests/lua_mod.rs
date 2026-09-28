@@ -7,6 +7,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -128,6 +130,18 @@ fn gui() -> Lua {
         })
         .unwrap();
     lua.globals().set("mod_source", source).unwrap();
+    // What the hook does with an action table: convert it with the schema.
+    let schema_check = lua
+        .create_function(|_, action: mlua::Value| {
+            Ok(
+                match tpf3mp_proto::lua::action_from_lua(&common::tree(&action)) {
+                    Ok(_) => (true, None),
+                    Err(error) => (false, Some(error.to_string())),
+                },
+            )
+        })
+        .unwrap();
+    lua.globals().set("schema_check", schema_check).unwrap();
     lua.load(FAKE_GUI).set_name("@fake_gui.lua").exec().unwrap();
     lua
 }
@@ -169,8 +183,12 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
 const FAKE_HOOK: &str = r#"
 HOOK = { logged = {}, commands = {} }
 tpf3mp_native = {
-    version = 1,
-    command = function(payload) HOOK.commands[#HOOK.commands + 1] = payload; return true end,
+    version = 2,
+    command = function(action)
+        local ok, why = schema_check(action)
+        if ok then HOOK.commands[#HOOK.commands + 1] = action end
+        return ok, why
+    end,
     register = function(handlers) HOOK.handlers = handlers end,
     log = function(line) HOOK.logged[#HOOK.logged + 1] = line end,
 }
@@ -187,7 +205,7 @@ fn with_the_hook_the_mod_links_and_refuses_what_it_cannot_apply() {
     );
     let (logged, ok, reason, noticed): (String, bool, String, bool) = lua
         .load(
-            "local ok, reason = HOOK.handlers.apply('\\1\\2')
+            "local ok, reason = HOOK.handlers.apply({ SellVehicle = { vehicles = { 7 } } })
              local noticed = HOOK.handlers.notice('Speed', '2x')
              return table.concat(HOOK.logged, '|'), ok, reason, noticed",
         )
@@ -204,11 +222,11 @@ fn with_the_hook_the_mod_links_and_refuses_what_it_cannot_apply() {
 fn a_hook_of_another_version_is_not_used() {
     let lua = gui();
     lua.load(FAKE_HOOK).exec().unwrap();
-    lua.load("tpf3mp_native.version = 2").exec().unwrap();
+    lua.load("tpf3mp_native.version = 1").exec().unwrap();
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 2, the mod 1; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 2; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -220,7 +238,7 @@ fn a_hook_of_another_version_is_not_used() {
 /// The bridge on its own, as the entry script's `require` finds it.
 fn bridge(lua: &Lua) -> Table {
     lua.load(
-        "for _, name in ipairs({ 'fixed', 'wire', 'bridge' }) do
+        "for _, name in ipairs({ 'bridge' }) do
              package.preload['tpf3mp.' .. name] = function()
                  return ug_require('tpf3mp_1::/scripts/tpf3mp/' .. name .. '.lua')
              end
@@ -232,7 +250,7 @@ fn bridge(lua: &Lua) -> Table {
 }
 
 #[test]
-fn the_bridge_hands_over_only_payloads_the_room_can_take() {
+fn the_bridge_hands_over_only_actions_the_schema_takes() {
     let lua = gui();
     lua.load(FAKE_HOOK).exec().unwrap();
     let bridge = bridge(&lua);
@@ -245,30 +263,33 @@ fn the_bridge_hands_over_only_payloads_the_room_can_take() {
         .load(
             "local out = {}
              local function try(p) local ok, why = LINK:command(p); out[#out + 1] = ok and 'ok' or why end
-             try(42)
-             try('')
-             try(string.rep('x', 48 * 1024 + 1))
-             try(string.rep('x', 48 * 1024))
+             try('bytes')
+             try({ SellVehicle = { vehicles = { 7, 9 } } })
+             try({ SellVehicle = { vehicles = { 0.5 } } })
+             try({ SellVehicle = { vehicles = {}, colour = 'red' } })
              tpf3mp_native.command = function() return false end
-             try('a')
+             try({ SellVehicle = { vehicles = { 7 } } })
              tpf3mp_native.command = function() error('ring full') end
-             try('a')
+             try({ SellVehicle = { vehicles = { 7 } } })
              return out",
         )
         .eval()
         .unwrap();
-    assert_eq!(refusals[0], "a payload is a string of bytes");
-    assert_eq!(refusals[1], "an empty payload");
-    assert_eq!(refusals[2], "49153 bytes; the payload limit is 49152");
-    assert_eq!(refusals[3], "ok");
-    assert_eq!(refusals[4], "the hook refused the action");
+    assert_eq!(refusals[0], "an action is a table");
+    assert_eq!(refusals[1], "ok");
+    assert_eq!(
+        refusals[2],
+        "the hook refused the action: SellVehicle.vehicles[1]: not a whole number: 0.5"
+    );
+    assert_eq!(
+        refusals[3],
+        "the hook refused the action: SellVehicle: variant has no field colour"
+    );
+    assert_eq!(refusals[4], "the hook refused the action: no reason given");
     assert!(refusals[5].starts_with("the hook refused: "));
     assert!(refusals[5].ends_with("ring full"));
     let sent: usize = lua.load("return #HOOK.commands").eval().unwrap();
-    assert_eq!(
-        sent, 1,
-        "only the payload within the limit reached the hook"
-    );
+    assert_eq!(sent, 1, "only the action the schema took reached the room");
 }
 
 #[test]
@@ -315,7 +336,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 1, command = print, register = print })
+             why({ version = 2, command = print, register = print })
              return out",
         )
         .eval()

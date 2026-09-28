@@ -15,7 +15,6 @@
 
 local geom = require "tpf3mp.geom"
 local roads = require "tpf3mp.roads"
-local wire = require "tpf3mp.wire"
 
 local engine = {}
 
@@ -162,17 +161,14 @@ function engine.fromProposal(proposal, network)
 	return capture
 end
 
--- The payload bytes of a street or track builder's proposal, or nil and
--- why not. The caller hands the bytes to the hook, which sends them as an
--- intent; on nil it must let the build run natively.
+-- The action table of a street or track builder's proposal, or nil and why
+-- not. The caller hands it to the hook (tpf3mp/bridge.lua), which checks it
+-- against the schema and sends it as an intent; on nil, or when the hook
+-- refuses it, the build must run natively.
 function engine.captureBuild(proposal, network)
 	local ok, capture = pcall(engine.fromProposal, proposal, network)
 	if not ok then return nil, "unreadable proposal: " .. tostring(capture) end
-	local action, reason = roads.capture(capture, engine.world())
-	if not action then return nil, reason end
-	local encoded, bytes = wire.tryEncode(action)
-	if not encoded then return nil, tostring(bytes) end
-	return bytes
+	return roads.capture(capture, engine.world())
 end
 
 return engine

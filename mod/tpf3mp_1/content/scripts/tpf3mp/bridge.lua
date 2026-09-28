@@ -5,14 +5,20 @@
 -- Lua state the mod runs in, before the mod starts:
 --
 --   tpf3mp_native = {
---     version  = 1,                    -- bridge.VERSION; anything else is refused
---     command  = function(payload),    -- the player acted: an action's bytes
---                                      -- (tpf3mp/wire.lua), for the room to order
+--     version  = 2,                    -- bridge.VERSION; anything else is refused
+--     command  = function(action),     -- the player acted: an action table,
+--                                      -- for the room to order
 --     register = function(handlers),   -- the mod's handlers, which the hook calls:
---                                      --   handlers.apply(payload) -> ok, reason
+--                                      --   handlers.apply(action) -> ok, reason
 --                                      --   handlers.notice(kind, text)
 --     log      = function(line),       -- a line for hook.log
 --   }
+--
+-- An action table mirrors tpf3mp_proto::action::Action field for field, in
+-- the game's units: metres, and plain fractions for directions. The hook
+-- converts it to and from the schema (tpf3mp_proto::lua), so the rounding,
+-- the bounds and the checks live in Rust alone; `command` returns false and
+-- a reason for a table the schema refuses.
 --
 -- These mirror tpf3mp_bridge::Session and its Game trait (docs/HOOKS.md,
 -- "The hook's session"): `command` is Session::command, `apply` is
@@ -27,11 +33,11 @@
 --
 -- Pure Lua; the tests hand attach() a fake table.
 
-local wire = require "tpf3mp.wire"
-
 local bridge = {}
 
-bridge.VERSION = 1
+-- 2: actions travel as tables, which the hook converts; 1 passed bytes the
+-- mod encoded itself.
+bridge.VERSION = 2
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -53,17 +59,15 @@ function bridge.attach(native)
 	return setmetatable({ native = native }, Link)
 end
 
--- Hands an action's payload to the room. Returns true, or nil and why not;
--- an action that was not handed over must not be applied locally either.
-function Link:command(payload)
-	if type(payload) ~= "string" then return nil, "a payload is a string of bytes" end
-	if #payload == 0 then return nil, "an empty payload" end
-	if #payload > wire.MAX_PAYLOAD then
-		return nil, #payload .. " bytes; the payload limit is " .. wire.MAX_PAYLOAD
-	end
-	local ok, result = pcall(self.native.command, payload)
+-- Hands an action table to the room. Returns true, or nil and why not; an
+-- action that was not handed over must not be applied locally either.
+function Link:command(action)
+	if type(action) ~= "table" then return nil, "an action is a table" end
+	local ok, result, reason = pcall(self.native.command, action)
 	if not ok then return nil, "the hook refused: " .. tostring(result) end
-	if result == false then return nil, "the hook refused the action" end
+	if result ~= true then
+		return nil, "the hook refused the action: " .. tostring(reason or "no reason given")
+	end
 	return true
 end
 

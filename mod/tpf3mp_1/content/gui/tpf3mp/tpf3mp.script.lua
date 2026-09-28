@@ -16,7 +16,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "fixed", "wire", "geom", "roads", "engine", "bridge" }
+	local MODULES = { "geom", "roads", "engine", "bridge" }
 
 	local function say(line)
 		pcall(debugPrint, "[tpf3mp] " .. line)
@@ -72,7 +72,7 @@ function data()
 		-- the hook then stops following the room rather than leave this
 		-- game behind the others (fail closed).
 		local registered, err = link:register({
-			apply = function(_payload)
+			apply = function(_action)
 				return false, "this version of the mod applies no actions yet"
 			end,
 			notice = function(kind, text)

@@ -417,3 +417,38 @@ Rejected:
   project locked to one process, so questions queue.
 - **Growing the Python tools**: a full disassembly of every function in
   Python takes minutes, and each query would reload the binary.
+
+## D15 (2026-09-27): the mod hands the hook tables; Rust converts them
+
+The Lua mod and the hook exchange actions as Lua tables in the game's own
+units (metres, and plain fractions for directions). The hook converts
+them to and from `Action` with `tpf3mp_proto::lua`. The mod has no
+encoder: `tpf3mp/wire.lua`, which wrote postcard bytes by hand, and
+`tpf3mp/fixed.lua`, which rounded metres to millimetres, are gone. The
+bridge between them is version 2 (docs/HOOKS.md, "The Lua side").
+
+- **One definition.** The schema, its bounds and its rounding were written
+  twice, once in Rust and once in Lua, and kept in step by tests. Now
+  they are written once. A new action needs no Lua encoder.
+- **The hook needed it anyway.** Applying an event means handing the mod
+  the action to run, so the hook had to turn an `Action` into a table in
+  any case. Doing the reverse in the same place keeps one conversion.
+- **Better refusals.** A table the schema refuses comes back with the path
+  to the bad value (`polyline.vertices[2].pos.x`), where the Lua encoder
+  raised on the first violation.
+- **No game Lua in Rust's way.** The conversion works on a `LuaValue` tree,
+  not on a Lua library: the hook reads the game's own Lua state with the
+  game's functions, within `MAX_DEPTH` and `MAX_NODES`, and hands over the
+  tree.
+
+The unit of each field comes from the type it is in (`Pos` in metres,
+`UnitDir` in fractions, and so on), so the Rust types stay as they are and
+postcard encodes them as before; the action schema's version is
+unchanged.
+
+Rejected:
+
+- **Keeping the Lua encoder** (as until now): two definitions of one
+  schema, and still a decoder to write for applying events.
+- **Integers in the tables** (millimetres from Lua): the rounding would
+  stay in Lua, and every capture would need it.

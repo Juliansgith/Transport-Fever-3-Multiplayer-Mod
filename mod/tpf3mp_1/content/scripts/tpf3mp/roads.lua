@@ -35,13 +35,31 @@
 --                                network passing under (x, y), or nil
 --   }
 --
--- Positions are metres, as the game gives them; the action has millimetres.
-
-local fixed = require "tpf3mp.fixed"
+-- Positions are metres, as the game gives them, and stay metres in the
+-- action table: the hook turns them into the schema's millimetres
+-- (tpf3mp_proto::lua), rounding and range checks included.
 
 local roads = {}
 
 local OTHER = { Street = "Track", Track = "Street" }
+
+-- A position or tangent (an array, or x/y/z fields as the game's Vec3f reads
+-- in Lua) as {x =, y =, z =} in metres, or nil and why not.
+local function vec3(v)
+	if type(v) ~= "table" and type(v) ~= "userdata" then
+		return nil, "not a vector: " .. tostring(v)
+	end
+	local out = {}
+	for i, axis in ipairs({ "x", "y", "z" }) do
+		local c = v[axis]
+		if c == nil then c = v[i] end
+		if type(c) ~= "number" or c ~= c then
+			return nil, axis .. " is not a number: " .. tostring(c)
+		end
+		out[axis] = c
+	end
+	return out
+end
 
 -- The action for `capture`, or nil and why not. Never raises on bad input:
 -- a capture that cannot be converted completely must leave the player's
@@ -98,7 +116,7 @@ function roads.convert(capture, world)
 		if index[id] then return index[id] end
 		local p = posOf(id)
 		if not p then return nil, "node " .. id .. " has no position" end
-		local pos, err = fixed.pos(p)
+		local pos, err = vec3(p)
 		if not pos then return nil, "node " .. id .. ": " .. err end
 		local resolve
 		if id >= 0 then
@@ -107,8 +125,8 @@ function roads.convert(capture, world)
 			resolve = { Node = net }
 		elseif splitOf[id] then
 			local s = splitOf[id]
-			local a, errA = fixed.pos(posOf(s.node0) or {})
-			local b, errB = fixed.pos(posOf(s.node1) or {})
+			local a, errA = vec3(posOf(s.node0) or {})
+			local b, errB = vec3(posOf(s.node1) or {})
 			if not (a and b) then return nil, "split edge end: " .. tostring(errA or errB) end
 			resolve = { Split = { network = s.network, ends = { a = a, b = b } } }
 		else
@@ -143,8 +161,8 @@ function roads.convert(capture, world)
 			local i2, err2 = vertexFor(a2)
 			if not i2 then return nil, err2 end
 			if i1 ~= i2 then
-				local t0, errT0 = fixed.pos(e.tangent0)
-				local t1, errT1 = fixed.pos(e.tangent1)
+				local t0, errT0 = vec3(e.tangent0)
+				local t1, errT1 = vec3(e.tangent1)
 				if not (t0 and t1) then return nil, "edge " .. k .. " tangent: " .. tostring(errT0 or errT1) end
 				links[#links + 1] = {
 					from = i1, to = i2, tangent0 = t0, tangent1 = t1,
@@ -166,8 +184,8 @@ function roads.convert(capture, world)
 		if not isParent(r.node0, r.node1) then
 			local a = type(r.node0) == "number" and posOf(r.node0)
 			local b = type(r.node1) == "number" and posOf(r.node1)
-			local pa = a and fixed.pos(a)
-			local pb = b and fixed.pos(b)
+			local pa = a and vec3(a)
+			local pb = b and vec3(b)
 			if not (pa and pb) then
 				return nil, "removed edge " .. k .. " has no position here"
 			end

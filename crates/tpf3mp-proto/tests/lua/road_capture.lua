@@ -1,13 +1,14 @@
 -- Unit test of the Lua mod's road and track capture (mod/tpf3mp_1,
--- tpf3mp/roads.lua and tpf3mp/wire.lua), in plain Lua against a world made
--- of tables. Run by tests/lua_capture.rs, which preloads the mod's modules
--- and decodes the payloads this returns with the Rust schema; any Lua 5.1
--- or 5.2 that can `require "tpf3mp.roads"` runs it too.
+-- tpf3mp/roads.lua), in plain Lua against a world made of tables. Run by
+-- tests/lua_capture.rs, which preloads the mod's modules and converts the
+-- tables this returns with the Rust schema (tpf3mp_proto::lua), as the hook
+-- does; any Lua 5.1 or 5.2 that can `require "tpf3mp.roads"` runs it too.
 --
--- Returns the payload bytes of the road and the track build below.
+-- Returns the action tables of the road and the track build below, in
+-- metres, and a table of captures changed so that the schema must refuse
+-- them.
 
 local roads = require "tpf3mp.roads"
-local wire = require "tpf3mp.wire"
 local geom = require "tpf3mp.geom"
 
 -- ---------- the world: existing nodes and edges, in metres ----------
@@ -78,14 +79,14 @@ local poly = build.polyline
 assert(#poly.vertices == 4, "the split halves' existing ends are not vertices")
 assert(poly.vertices[1].resolve.Node == "Street")
 assert(poly.vertices[2].resolve == "New" and poly.vertices[3].resolve == "New")
-assert(poly.vertices[3].pos.z == 15000, "rounded to the millimetre")
+assert(poly.vertices[3].pos.z == 15.0004, "in metres, as the game gave it")
 local split = poly.vertices[4].resolve.Split
-assert(split and split.network == "Street" and split.ends.a.y == 0 and split.ends.b.y == 100000)
+assert(split and split.network == "Street" and split.ends.a.y == 0 and split.ends.b.y == 100)
 assert(#poly.links == 3, "the split halves are dropped")
 assert(poly.links[1].from == 0 and poly.links[1].to == 1, "indices start at 0")
 assert(poly.links[2].structure.Bridge == "bridge/cement.lua")
-assert(#poly.removals == 1 and poly.removals[1].a.y == 300000, "only the in-place replacement is removed")
-local roadBytes = wire.encode(action)
+assert(#poly.removals == 1 and poly.removals[1].a.y == 300, "only the in-place replacement is removed")
+local roadAction = action
 
 -- ---------- a track: a level crossing mid-street, a tunnel, a crossing at a street node ----------
 --
@@ -116,9 +117,9 @@ poly = build.polyline
 assert(#poly.vertices == 4 and #poly.links == 3 and #poly.removals == 0)
 assert(poly.vertices[1].resolve.Node == "Track")
 assert(poly.vertices[2].resolve.Split.network == "Street", "a level crossing splits the street")
-assert(poly.vertices[2].pos.y == 1 and poly.vertices[3].pos.y == -1, "halves round away from zero")
+assert(poly.vertices[2].pos.y == 0.0005 and poly.vertices[3].pos.y == -0.0005, "rounding is the hook's")
 assert(poly.vertices[4].resolve.Node == "Street", "a crossing at a street node")
-local trackBytes = wire.encode(action)
+local trackAction = action
 
 -- ---------- captures that must not travel ----------
 
@@ -145,20 +146,21 @@ refused({ network = "Street", street = "s", nodes = { { id = -1, pos = { 0 / 0, 
 refused({ network = "Street", street = "s", nodes = {}, edges = { { node0 = 7, node1 = 12345,
 	network = "Street", tangent0 = { 1, 0, 0 }, tangent1 = { 1, 0, 0 } } } }, "a node nowhere")
 
--- the encoder refuses what the Rust decoder would
-local function unencodable(mutate, why)
+-- Captures the schema must refuse, which the hook refuses in Rust
+-- (tests/lua_capture.rs checks each).
+local mustRefuse = {}
+local function changed(why, mutate)
 	local a = assert(roads.capture(road, world))
 	mutate(a.BuildRoad)
-	local ok = wire.tryEncode(a)
-	assert(not ok, why)
+	mustRefuse[why] = a
 end
-unencodable(function(b) b.street = "street\nname" end, "a control character")
-unencodable(function(b) b.street = string.rep("s", 129) end, "a long name")
-unencodable(function(b) b.polyline.links[1].to = 4 end, "a link past the vertices")
-unencodable(function(b) b.polyline.links[1].to = 0 end, "a link to itself")
-unencodable(function(b) b.polyline.vertices[1].pos.x = 2147483648 end, "past i32")
-unencodable(function(b) b.tram = "Diesel" end, "an unknown variant")
-unencodable(function(b) b.polyline.links = {} end, "no links")
-assert(not wire.tryEncode({ SellVehicle = { vehicles = {} } }), "no Lua encoder yet")
+changed("a control character", function(b) b.street = "street\nname" end)
+changed("a long name", function(b) b.street = string.rep("s", 129) end)
+changed("a link past the vertices", function(b) b.polyline.links[1].to = 4 end)
+changed("a link to itself", function(b) b.polyline.links[1].to = 0 end)
+changed("past i32", function(b) b.polyline.vertices[1].pos.x = 2147484 end)
+changed("an infinite position", function(b) b.polyline.vertices[1].pos.x = 1 / 0 end)
+changed("an unknown variant", function(b) b.tram = "Diesel" end)
+changed("no links", function(b) b.polyline.links = {} end)
 
-return roadBytes, trackBytes
+return roadAction, trackAction, mustRefuse
