@@ -28,9 +28,11 @@ launcher connects out to the server, and everything goes through it.
    The installer is a script, not a program: open `tools\install.ps1`
    (Windows) or `install.sh` (Linux and macOS) to read exactly what it
    changes. It puts the TPF3-MP mod, `tpf3mp_1`, in Steam's folder for
-   your Transport Fever 3 mods, `<Steam>/userdata/<account>/3493540/local/mods`,
+   your Transport Fever 3 mods, `<Steam>/userdata/<account>/3493540/local/staging_area`,
    and notes its version in TPF3-MP's data folder, which the launcher
-   shows. To put it in another mods folder, drop that folder onto
+   shows. Then start the game once, open **Mod Hub**, find TPF3-MP under
+   your mods and click **Activate**: a mod that is not activated does
+   nothing. To put it in another mods folder, drop that folder onto
    `INSTALL_TPF3MP.cmd`, or run `./install.sh "<the mods folder>"`.
 
    Nothing goes into the game's own folder, and no launch option is set.

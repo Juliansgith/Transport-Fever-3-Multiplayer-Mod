@@ -11,7 +11,7 @@
 # What it changes, and nothing else:
 #
 # - The TPF3-MP mod, mod/tpf3mp_1 in this package, goes into Steam's folder
-#   for your Transport Fever 3 mods, <Steam>/userdata/<account>/3493540/local/mods,
+#   for your Transport Fever 3 mods, <Steam>/userdata/<account>/3493540/local/staging_area,
 #   or the folder given. A tpf3mp_1 already there is moved to TPF3-MP's
 #   backups folder first.
 # - installed.txt in TPF3-MP's data folder records the version and where
@@ -181,7 +181,8 @@ find_game() {
 
 # Steam's folder for this player's Transport Fever 3 mods: in the account
 # that played it last. The game makes <account>/3493540/local when it
-# first runs.
+# first runs. Mods made for build 40391 install into its staging_area and
+# are then activated in Mod Hub (investigation/TF3_MODS_2026-09-27.md).
 find_mods_dir() {
   local root local_dir found="" count=0
   while IFS= read -r root; do
@@ -195,7 +196,7 @@ find_mods_dir() {
   if [ "$count" -gt 1 ]; then
     say "More than one Steam account has played Transport Fever 3 here; using the one that played last. Give the mods folder to choose." >&2
   fi
-  printf '%s\n' "$found/mods"
+  printf '%s\n' "$found/staging_area"
 }
 
 # Looks for the game's folder at the start of every running command, both
@@ -276,6 +277,7 @@ do_install() {
   mod="$mods/$MOD_NAME"
   write_record "$version" "$mod"
   say "Installed the TPF3-MP mod in $mod."
+  say "In the game, open Mod Hub, find TPF3-MP under your mods and click Activate."
   say ""
   say "TPF3-MP $version is installed. Play by starting the TPF3-MP launcher: the game runs TPF3-MP only when the launcher starts it."
 }

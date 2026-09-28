@@ -32,7 +32,7 @@ setup() { # NAME
   STEAM="$S/Steam"
   local library="$S/Library"
   GAME="$library/steamapps/common/Transport Fever 3"
-  MODS="$STEAM/userdata/12345/3493540/local/mods"
+  MODS="$STEAM/userdata/12345/3493540/local/staging_area"
   DATA="$S/home/$DATA_IN_HOME"
   RECORD="$DATA/installed.txt"
   XDG=""

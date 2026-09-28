@@ -13,6 +13,10 @@
 -- ASSUMPTION (TPF2, to be re-checked on TPF3): a Script Mod is a folder with this
 -- mod.lua plus res/config/game_script/<name>.lua, and the game runs the returned
 -- update() in the engine state and guiUpdate() in the separate GUI state.
+-- TF3 (investigation/TF3_MODS_2026-09-27.md): mods made for build 40391 use
+-- mod.json, _content.json and content/, and run per-frame code as GUI react
+-- plugins (react.onStep); none uses a game script. This probe must be ported
+-- before it can load in TF3 (docs/PLAN.md, Part 1).
 function data()
   return {
     info = {

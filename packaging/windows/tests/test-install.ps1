@@ -40,7 +40,7 @@ function New-Setup([string]$Name) {
     $escaped = $library.Replace('\', '\\')
     Write-File (Join-Path $steam 'steamapps\libraryfolders.vdf') "`"libraryfolders`"`n{`n`t`"0`"`n`t{`n`t`t`"path`"`t`t`"$escaped`"`n`t}`n}`n"
     Write-File (Join-Path $library 'steamapps\appmanifest_3493540.acf') "`"AppState`"`n{`n`t`"appid`"`t`t`"3493540`"`n`t`"installdir`"`t`t`"Transport Fever 3`"`n}`n"
-    $mods = Join-Path $steam 'userdata\12345\3493540\local\mods'
+    $mods = Join-Path $steam 'userdata\12345\3493540\local\staging_area'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $mods) | Out-Null
     return @{
         Package = $package

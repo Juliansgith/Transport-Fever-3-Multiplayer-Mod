@@ -505,3 +505,10 @@ In the order they were expensive on TPF2:
    requires of the other network at a shared node.
 6. Build a road between two existing junctions and check the capture saw an
    edge with no new nodes.
+7. Whether the road and track builders send their proposal through
+   script (`api.cmd.sendCommand`). TF3's GUI is Teal code, and mods for
+   build 40391 send commands from it
+   ([investigation/TF3_MODS_2026-09-27.md](../investigation/TF3_MODS_2026-09-27.md)).
+   If the builders do too, capture may move into the mod, and the hook's
+   filter for our own replays must change (HOOKS.md, "The command
+   pipeline").

@@ -1208,7 +1208,8 @@ fn steps(state: &State) -> Vec<(&'static str, Step)> {
 /// The TPF3-MP version whose mod the install scripts put in place, from
 /// their record in TPF3-MP's data folder `dir` (`installed.json` from
 /// Windows's, `installed.txt` from Linux's and macOS's), while the mod is
-/// still where the record says.
+/// still where the record says: a folder with Transport Fever 3's
+/// `mod.json`, or Transport Fever 2's `mod.lua` that the mod still carries.
 pub fn installed_mod(dir: &Path) -> Option<String> {
     let (version, folder) = if let Ok(text) = std::fs::read_to_string(dir.join("installed.json")) {
         let record: serde_json::Value =
@@ -1226,9 +1227,10 @@ pub fn installed_mod(dir: &Path) -> Option<String> {
         };
         (field("version=")?, field("mod=")?)
     };
-    Path::new(&folder)
-        .join("mod.lua")
-        .is_file()
+    let folder = Path::new(&folder);
+    ["mod.json", "mod.lua"]
+        .iter()
+        .any(|file| folder.join(file).is_file())
         .then_some(version)
 }
 
@@ -1263,8 +1265,13 @@ mod tests {
         std::fs::write(dir.join("installed.json"), format!("\u{feff}{json}")).unwrap();
         assert_eq!(installed_mod(&dir).as_deref(), Some("0.2.0"));
 
-        // The mod taken away since.
+        // A mod in Transport Fever 3's layout, with mod.json.
         std::fs::remove_file(mods.join("mod.lua")).unwrap();
+        std::fs::write(mods.join("mod.json"), "{}").unwrap();
+        assert_eq!(installed_mod(&dir).as_deref(), Some("0.2.0"));
+
+        // The mod taken away since.
+        std::fs::remove_file(mods.join("mod.json")).unwrap();
         assert_eq!(installed_mod(&dir), None, "the mod is gone");
 
         std::fs::write(dir.join("installed.json"), "damaged").unwrap();

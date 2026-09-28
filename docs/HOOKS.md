@@ -552,7 +552,10 @@ hooks both, and the reason is worth carrying into a TPF3 profile:
   `api.cmd.*` path), so the **return address of the factory call** is the only
   thing that tells a player's command from the mod's replay of one. That
   caller-RVA filter is load-bearing, not tidiness: without it every replay is
-  captured again.
+  captured again. On TF3 it may not hold: the GUI is script, and if the
+  stock tools build their commands through `api.cmd` as our replays do,
+  both arrive from the same caller. Check this before porting the filter
+  ([investigation/TF3_MODS_2026-09-27.md](../investigation/TF3_MODS_2026-09-27.md)).
 
 | factory | RVA | steal | |
 |---|---|---|---|

@@ -7,7 +7,10 @@
 -- mp/roads.lua) and from TPF2's builder GUI events. Each is marked
 -- "TPF2 name" and must be confirmed against Transport Fever 3's script API
 -- on release day (docs/DAY_ONE.md, "Script API recon"); nothing here has run
--- in TPF3. Every call is guarded: a name that is gone makes the capture
+-- in TPF3. Mods for TF3 build 40391 use api.engine.getComponent and
+-- api.type.ComponentType as TPF2 does; the street system, BASE_NODE,
+-- BASE_EDGE, api.res and the builder's proposal event are not seen there
+-- (investigation/TF3_MODS_2026-09-27.md). Every call is guarded: a name that is gone makes the capture
 -- fail, and a failed capture leaves the build to run natively.
 
 local geom = require "tpf3mp.geom"

@@ -10,6 +10,10 @@ each finding carries one label:
   consistent with live behaviour.
 - **MEASURED**: observed in the running game.
 - **INFERRED**: placed by elimination only.
+- **REPORTED**: relied on by third-party mods made for a pre-release
+  build, not yet seen by us. What the first such mods show, for build
+  40391, is in
+  [investigation/TF3_MODS_2026-09-27.md](../investigation/TF3_MODS_2026-09-27.md).
 
 ## 0. Go or no-go first
 
@@ -55,13 +59,24 @@ and hold releases until the hook matches the new build.
 
 ## 3. Script API recon (a probe mod, all three platforms)
 
+*Changed* (TF3_MODS_2026-09-27.md): the game ships its GUI and much of
+its rules as Teal (`.tl`) sources, with declaration files for its API
+(`system.d.tl`). Read those first: `grep` them for `api.cmd.make` to list
+the command factories and see which tool builds which command. The probes
+fill what the sources do not say. They are TPF2 mods, and must be ported
+to TF3's layout (`mod.json`, `_content.json`, `content/`) and to a GUI
+`onStep` plugin before they can run.
+
 - `_VERSION`; availability of `io`, `os`, `require`, `package`, `debug`,
   `load`/`loadstring` in both the game-script and GUI states.
 - Dump `api.*` and `game.interface.*`; list `api.cmd.make.*` factories.
 - Number formatting (`%.17g`), `math.random` behaviour, `pairs` order
   stability for string keys across runs.
-- The mod layout and `mod.lua` format, and what a Mod Hub script mod may
-  contain.
+- The mod layout: REPORTED as `mod.json`, `_content.json` and
+  `_metadata/modinfo.json`, with scripts in `content/`. Confirm it, and
+  what a Mod Hub script mod may contain.
+- Whether game scripts (`res/config/game_script`, `update()` per step)
+  still exist. No mod made for build 40391 uses one.
 - How to list the active mods in load order, each with a name and a
   version, and the game's build: the hook reports them over the bridge,
   and the agent declares them (`ContentManifest`) in place of the
@@ -135,11 +150,21 @@ each platform, that a game started that way plays as one Steam starts:
 - Locate the command factories and the command queue, then prototype capture
   and cancel for one command (road build) on Windows. Use ground-truth sweeps
   through `api.cmd.make.*` rather than inferring from player clicks.
+- *Added:* find out whether the stock tools, the road and track builders
+  first, send their commands through script (`api.cmd.sendCommand`), as
+  the GUI's own Teal code can. If they do, the caller-RVA filter that
+  told a click from a replay on TPF2 (HOOKS.md) cannot, and a mod might
+  capture and cancel by wrapping `api.cmd.sendCommand`. Test whether the
+  GUI state lets a mod write that field.
 - Locate the simulation step, the step size in game time, speed and pause
   control, and the injection point just before a step runs.
 - Catch the game's own speed and pause buttons and send them as the room's
   speed (`Control::Speed`), as TPF2MP's mod does; every game then follows
   the server's pace. The launcher offers no speed control of its own.
+  REPORTED: the speed row is a script recipe
+  (`game_bar_widgets.GameSpeedControl`) a mod can replace, the keybinding
+  `IA_GAME_PAUSE_OR_CYCLE_SPEED` changes speed too, and the engine takes
+  any speed, not only 1x to 4x.
 - Join a third game mid-game and rejoin one after killing it, then compare
   lanes: late join, rejoin and repair all load a save and apply turns, so
   a loaded game must walk its lists in the same order as a running one
@@ -241,8 +266,9 @@ Release-day order:
    that is wrong, drop the "TPF2 location, confirm on TF3" mark from the
    confirmed ones, and update "Sending your logs" in `docs/PLAYING.md`.
 7. **Installer:** confirm on each platform that the game loads mods from
-   `<Steam>/userdata/<account>/3493540/local/mods`, where TPF2 kept a
-   player's own, and how a game enables the TPF3-MP mod. Where not,
+   `<Steam>/userdata/<account>/3493540/local/staging_area` (REPORTED for
+   build 40391; TPF2 used `local/mods`), and that a player enables the
+   TPF3-MP mod once, with Activate in Mod Hub. Where not,
    correct `Find-ModsDir` in `packaging/windows/tools/install.ps1` and
    `find_mods_dir` in `packaging/unix/install.sh`, with their tests in
    `packaging/*/test-install.*`. Their `Find-Game` and `find_game` find

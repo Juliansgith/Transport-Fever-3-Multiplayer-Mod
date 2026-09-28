@@ -4,8 +4,11 @@
 -- builds anything yet: applying ordered actions comes with the hook.
 --
 -- The layout and the fields below are Transport Fever 2's (a folder named
--- <name>_<major version>, a data() function returning info). To be confirmed
--- against Transport Fever 3's mod format on release day (docs/DAY_ONE.md).
+-- <name>_<major version>, a data() function returning info). Mods made for
+-- TF3 build 40391 use another layout: mod.json, _content.json,
+-- _metadata/modinfo.json and their scripts under content/, with runFn taking
+-- (captureParams, settings). This mod must be ported to it before it can load
+-- (investigation/TF3_MODS_2026-09-27.md, docs/PLAN.md Part 1).
 function data()
 	return {
 		info = {
