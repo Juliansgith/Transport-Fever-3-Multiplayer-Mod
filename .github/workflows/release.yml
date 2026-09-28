@@ -101,6 +101,13 @@ jobs:
           if [ -z "$TPF3MP_UPDATE_PUBLIC_KEY" ]; then
             echo "::warning::no TPF3MP_UPDATE_PUBLIC_KEY: these launchers will never update themselves"
           fi
+      # The launcher's window is a web view (D16): WebKitGTK and GTK to
+      # build it on Linux.
+      - name: Linux libraries for the launcher's window
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxdo-dev librsvg2-dev
       - name: Build
         run: |
           cargo build --release --locked -p tpf3mp-launcher -p tpf3mp-agent -p tpf3mp-server -p tpf3mp-hook

@@ -452,3 +452,88 @@ Rejected:
   schema, and still a decoder to write for applying events.
 - **Integers in the tables** (millimetres from Lua): the rounding would
   stay in Lua, and every capture would need it.
+
+## D16 (2026-09-27): the launcher is tearded's TPF2 launcher, ported, in a web view
+
+The launcher's window is a port of tearded's TPF2 Multiplayer Launcher
+(MIT, `github.com/tearded/tpf-multiplayer-launcher`): its page, layout,
+styles and look, in a Tauri web view, over the same launcher backend as
+before (`crates/tpf3mp-launcher`, `ui/`). This supersedes D7's window,
+drawn with egui; the rest of D7, the signed self-updates, stands.
+
+- **The players know it.** TPF2's players use tearded's launcher; the TF3
+  one looks and works the same: the scene, the wordmark, one big button
+  that says what comes next, the game's folder along the bottom.
+- **What is kept of tearded's**: the page and its stylesheet, the dialogs,
+  the release notes and history, the update badge. **What is not**: its
+  mod installer (D9's scripts install the mod), starting the game through
+  Steam (D11: the launcher starts it with the hook), its C# helper and its
+  Linux backend (the Rust agent does their work), and Tauri's updater
+  (D7's stays). What is new: connecting, rooms, the lobby, chat, the
+  game's progress, the support code.
+- **No Node in the build.** The page is plain HTML, CSS and JavaScript,
+  served as they are; the Rust side is a small shell of commands over the
+  launcher (`shell.rs`). What the page shows is worked out in one pure
+  module (`ui/view.js`), tested under plain Node.
+- **Where a window cannot open**, the launcher falls back to the agent's
+  page in the browser, as before.
+
+Costs, accepted:
+
+- Linux players need WebKitGTK 4.1 (most desktops have it); Windows needs
+  WebView2 (Windows 11 has it, Windows 10 mostly does).
+- The page's text is JavaScript, which the checks now test (`node --test`)
+  next to the Rust.
+
+This settles PLAN.md's open question about building into the TF2 launcher,
+and resolves the "another launcher" row of its conflict table: the ask was
+for the look, and the look is now tearded's own.
+
+## D17 (2026-09-27): the room moves into the game after release
+
+Connecting, rooms, the lobby and chat move from the launcher into an
+in-game panel (a game bar plugin, as the TF3 mods have), after release.
+The launcher then keeps: starting the game with the hook, the mod's state,
+updates and settings, the support code. The game shows the room and
+takes the player's choices; the launcher carries the connection.
+
+- **Why after release.** The in-game panel is built on TF3's GUI, known so
+  far only from mods made for build 40391, and first runs on release day.
+  Until it is proven there, the launcher keeps the room, so nobody is
+  left unable to play.
+- **What it needs.** The link between hook and agent carries the
+  launcher's state to the game and its actions back (a bridge version
+  bump); a game can start before a room is chosen, and loads the room's
+  world from the menu.
+- **D11 stands.** Only a game the launcher started has the hook, so only it
+  shows the panel; a game Steam started shows nothing of TPF3-MP.
+
+This replaces PLAN.md's in-game panel that "hands a code to the launcher".
+
+## D18 (2026-09-27): players choose their version and track
+
+As in tearded's launcher, the player may choose which TPF3-MP to run:
+
+- **Stable or Experimental** (Settings): Experimental also offers
+  pre-releases, found through GitHub's release list.
+- **Any earlier or later signed release** (the release history's
+  Install): downloaded and checked exactly as an update (the signed
+  manifest, which must name that version, then the package's size and
+  hash), installed through the same journal, and then **held**: nothing
+  updates on its own until the player resumes updates.
+
+This amends D7, which installed only newer versions so that nobody could
+push players back onto an older build. That protection stays for
+everything automatic; going back is now the player's own, confirmed
+choice in the launcher, of a release the project signed.
+
+Consequences, accepted:
+
+- A server plays only with its own protocol version, so an older TPF3-MP
+  cannot join the project's server once it has moved on (the launcher
+  says so before installing); a pre-release needs a server of its own.
+- A version from before this decision does not know about holding: its
+  updater moves on to the newest release again.
+- Release notes and the history come from GitHub's API, 60 requests an
+  hour per address: fetched when the player looks, and for the
+  Experimental track's checks. Stable's checks still avoid the API.

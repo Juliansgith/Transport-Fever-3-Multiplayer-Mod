@@ -70,7 +70,8 @@ update the script's lists and run it again.
   - the whole test suite;
   - release builds of the binaries players and servers run;
   - the server container image;
-  - that the launcher page's script parses;
+  - that the launcher pages' scripts parse, and the tests of what the
+    launcher's page shows (`node --test crates/tpf3mp-launcher/tests/ui/*.test.mjs`);
   - on Linux, format, lint and tests of the binary-analysis kit
     `tools/tpfre` (D14), its own Cargo workspace.
 - **`acceptance`** (`.github/workflows/acceptance.yml`) runs on pushes to
@@ -88,9 +89,9 @@ update the script's lists and run it again.
     (see [docs/PLAYING.md](docs/PLAYING.md)). Until the game is out,
     `--game-exe` names `tpf3mp-fakegame` as the game: "Start Transport
     Fever 3" then starts it with the hook loaded into it, and it must
-    join the room. `cargo test -p tpf3mp-launcher --test screenshots --
-    --ignored` renders its screens to `target/launcher-screenshots/` for
-    a look at the layout;
+    join the room. For a look at the layout without a launcher, serve
+    `crates/tpf3mp-launcher/ui/` (`python -m http.server` in it) and open
+    it in a browser: it shows sample states, picked at the top;
   - a server upgrade that keeps running games (see "Upgrades" in
     [docs/OPERATIONS.md](docs/OPERATIONS.md)), when the log format, the
     protocol or persistence changed.

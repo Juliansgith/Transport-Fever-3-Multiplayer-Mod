@@ -128,8 +128,9 @@ Everything is Rust. The hook and agent talk through a small shared-memory ABI,
 never the network protocol, so the hook stays small and independently
 testable.
 
-Players drive the agent from the launcher: a native window
-(`tpf3mp-launcher`, egui) that runs the agent's launcher backend in the
+Players drive the agent from the launcher: a window (`tpf3mp-launcher`,
+tearded's TPF2 launcher page ported, in a Tauri web view; D16) that runs
+the agent's launcher backend in the
 same process, or the same backend as a page served on the loopback
 interface (`tpf3mp-agent launcher`, also the window's fallback where no
 window can open). Both show one `State` and send one set of `Action`s:

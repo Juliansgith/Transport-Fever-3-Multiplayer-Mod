@@ -61,8 +61,12 @@ Start the launcher from the package:
   once, then in **System Settings**, **Privacy & Security**, choose **Open
   Anyway**. On earlier versions: right-click it, choose **Open**, then
   **Open** again.
-- **Linux:** `tpf3mp-launcher`. It needs a desktop with Vulkan or OpenGL
-  drivers, as the game does.
+- **Linux:** `tpf3mp-launcher`. Its window needs WebKitGTK 4.1, which
+  most desktops have (`libwebkit2gtk-4.1-0` on Debian and Ubuntu,
+  `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch).
+
+On Windows the window needs Microsoft's WebView2, which Windows 11 has and
+most Windows 10 installs have too.
 
 It opens the TPF3-MP window. Keep it open while you play: closing it ends
 your session, and during a game it asks first. On a system where the
@@ -97,14 +101,14 @@ your own machine, in the tab the launcher opened.
 5. **Ready.** Everyone presses **Ready**. The room's owner then presses
    **Start game**. Everyone's game starts from the owner's world.
 
-The window is laid out as the TPF2 multiplayer launcher is. On the left,
-under the game's name, a checklist ticks these steps off as you go:
-connect to a server, create or join a room, start the game from here,
-everyone ready, play together. The step at hand is on the right. A narrow
-window puts everything in one column.
-
-The **Game** panel follows your game: started from here, downloading the
-room's world, loading it, and playing. The bar along the bottom, **Your
+The window is tearded's TPF2 multiplayer launcher, for Transport Fever 3.
+On the left, under the game's name, a checklist ticks these steps off as
+you go: connect to a server, create or join a room, start the game from
+here, everyone ready, play together; below it, the release notes. In a
+room, the left side shows the room: its players, whose mods differ, the
+chat. The step at hand is on the right, on the big button, which also
+follows your game: started from here, receiving the room's world,
+loading it, and playing. The bar along the bottom, **Your
 game**, says where Steam has Transport Fever 3 and whether the TPF3-MP mod
 is installed (see "Installing"). **Chat**
 reaches everyone in the room. A message **From the server** is its
@@ -116,9 +120,27 @@ back.
 ## Updates
 
 The launcher checks for a new version when it starts and every few hours,
-and downloads it in the background. When it is ready, the window says so:
-**Restart and update** installs it and restarts the launcher. During a game
-it waits: the update installs the next time you start TPF3-MP.
+and downloads it in the background. When it is ready, the badge at the top
+says so: **Settings**, then **Restart and update**, installs it and
+restarts the launcher. During a game it waits: the update installs the
+next time you start TPF3-MP.
+
+### Choosing a version
+
+As in the TPF2 launcher:
+
+- **Stable or Experimental**, in **Settings**: Experimental also offers
+  pre-releases, which may be less reliable.
+- **Release history**, on the left under the release notes: every
+  release, with its notes, and **Install** for the one you want, older
+  ones included. After a confirmation the launcher installs it and
+  restarts into it, and then holds it: nothing updates on its own until
+  you press **Resume automatic updates** in **Settings**.
+
+A server plays only with its own version: an older TPF3-MP cannot join
+the project's server once it has moved on, and a pre-release needs a
+server that runs it. Choose a version while not in a room; installing
+restarts the launcher.
 
 The launcher installs only what the TPF3-MP project signed: a download
 whose signature, version or contents do not check out is refused, and an
@@ -178,7 +200,7 @@ server.
 
 ## When something does not work
 
-The top of the window shows your **support code**, six letters and
+The bottom of the window shows your **support code**, six letters and
 digits like an invite's (**Copy** copies it). It names your connection in
 the server's log: quote it to the server's operator with your report. It
 lets nobody into your room, so it is safe to post. There is nothing to
@@ -199,8 +221,8 @@ the same again. Your game's own log and crash dumps are not sent. The
 server keeps the lines for a limited time, 30 days unless its operator
 chose otherwise.
 
-Untick **Send diagnostics**, in the bar at the bottom of the window (or at
-the bottom of the browser page), to stop: the
+Set **Send diagnostics** to **Off**, in **Settings** (or untick it at the
+bottom of the browser page), to stop: the
 launcher then sends nothing more, forgets the lines it had not sent yet,
 and remembers your choice.
 
