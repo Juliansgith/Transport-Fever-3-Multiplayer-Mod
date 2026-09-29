@@ -533,7 +533,7 @@ for the table (`bridge.find`). Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
 `crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 5. The mod refuses any other.
+- `tpf3mp_native.version`: 6. The mod refuses any other.
 - `tpf3mp_native.command(action)`: an action table, in the game's units.
   The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
   `MAX_DEPTH` and `MAX_NODES` (a function, userdata or a table as a key is
@@ -552,6 +552,11 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.world()`: a world's GUI started.
 - `tpf3mp_native.room()`: whether the room's game runs (the step gate's
   phase, held included), for the guard ("The player's commands" below).
+- `tpf3mp_native.checkpoint()`: in a game script's update, whether it is
+  the last of a batch that ends at a checkpoint step ("The world's lanes"
+  below).
+- `tpf3mp_native.lanes(t)`: the lanes read there, a table from lane
+  numbers to strings. Returns `true`, or `false` and why.
 
 The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
@@ -579,7 +584,8 @@ every game in the same simulation update:
    actions (`lua::begin_batch`), and runs it.
 3. The mod's game script asks the hook in every `update`
    (`tpf3mp_native.take`); the first update of the batch gets the actions
-   and applies them through `api.cmd` (`mod/tpf3mp_1/content/scripts/tpf3mp/apply.lua`).
+   and returns them, and its `postUpdate` applies them through `api.cmd`
+   (`mod/tpf3mp_1/content/scripts/tpf3mp/apply.lua`).
 4. After the batch, the driver checks the actions were taken
    (`lua::end_batch`). If they were not, the world ran step `s` without
    them: none of those steps is reported and the world stands still
@@ -593,6 +599,13 @@ Measured on build 40408:
   `data()` returning the functions, as the GUI's do.
 - The game runs game scripts on a pool of Lua states ("Sim Pool" threads),
   so a script's locals are kept per state, not per game.
+- The game's own scripts decide in `update` and change the world in
+  `postUpdate`, which the game calls with what `update` returned, and not
+  when that is nil: the company script reads its argument unchecked, and
+  a lane read from a `postUpdate` after an update that returned nothing
+  never reached the hook. The mod's game script does the same, so the
+  world changes only in `postUpdate`, not while other scripts' updates may
+  run beside it.
 - In an engine state a command runs at once (the game's
   `api/tealdef/api/cmd.d.tl`), but the game takes no callback in `update`
   ("Callbacks are currently disallowed"): `apply.lua` sends without one,
@@ -690,6 +703,18 @@ Lua state, not a caller's address: the player's commands come from the
 GUI's state, the room's replays from the game script's states, whose
 `api.cmd` the mod leaves alone.
 
+The mod guards the build tools in its game script, whose `guiHandleEvent`
+runs in the GUI's state. The street, track, station and depot, stop and
+bulldozer tools tell game scripts of every proposal they make
+(`builder.proposalCreate`), and of the click that would build one
+(`builder.proposalPrepareForApply`), and they honour an error a script
+returns, as the game's company script refuses constructions without a
+permit (`game_mechanics/company/company.script.tl`). In the room's game
+the mod's script returns "Not in multiplayer yet: building with this tool"
+for each, and the tool shows it in red and builds nothing (seen on build
+40408, with the street tool). The script subscribes to those events by
+name, as a save may carry an older version's subscriptions.
+
 The mod guards the GUI's commands
 (`mod/tpf3mp_1/content/scripts/tpf3mp/guard.lua`). `api.cmd` is a plain
 table whose factories and `sendCommand` (a callable table) can be replaced,
@@ -710,10 +735,57 @@ reference of its own to either. Once linked, the GUI wraps every
   hundredth after.
 
 Before the room begins, and after it ends, every command is sent as it
-would be. A kind the room comes to carry is captured into an action
-instead of refused, and applied by every game ("Actions in the game").
-The native tools are not guarded yet: a road built in the room's game still
-changes that game alone, until the hook cancels it at `CommandList::Add`.
+would be, and every tool builds. A kind the room comes to carry is
+captured into an action instead of refused, and applied by every game
+("Actions in the game").
+
+### The world's lanes
+
+A room finds a game that drifted from the others by comparing the world's
+lanes at every checkpoint step (`checkpoint_interval`, 50 steps by
+default): digests of parts of the world, which the session reports with
+the step (`Session::after_step`, `Game::lanes`). The lanes are read by the
+mod's game script, which sees the world between updates:
+
+- The session ends every batch at a checkpoint step, so a checkpoint is
+  always a batch's last update. The driver knows the step a batch starts
+  at (`RoomGate::next_step`) and so whether it ends at one, and tells the
+  hook's Lua side (`lua::begin_batch`), which counts the batch's updates by
+  their `take()`.
+- In that last update, `tpf3mp_native.checkpoint()` answers true; the game
+  script's `update` returns that, and its `postUpdate` reads the lanes
+  (`mod/tpf3mp_1/content/scripts/tpf3mp/lanes.lua`) and hands them over
+  (`tpf3mp_native.lanes`).
+- After the batch the driver takes them (`lua::end_batch`), makes a
+  SHA-256 digest of each lane's text (`step::lane_digests`), and the
+  session reports them for the checkpoint step. A batch that ended at a
+  checkpoint without them holds the world: the room could not tell whether
+  it is still its own (fail closed).
+
+The lanes, numbered as the regression harness's model numbers its own
+(`crates/tpf3mp-testkit/src/regress/model.rs`, `lane`), each a count and a
+hash of sorted rows, so the order the engine lists things in does not
+matter:
+
+| lane | reads |
+|---|---|
+| 0 network | every street and track edge by its ends (0.1 m) and road template, from the street system's node map |
+| 1 constructions | every construction by its file and position (0.1 m) |
+| 2 lines | every line's number of stops |
+| 3 vehicles | the vehicles' positions (1 m) |
+| 4 economy | the player's balance |
+| 5 towns | each town's number of buildings |
+| 6 people | the number of people |
+
+Nothing is read by an entity id that two games agreeing on the world could
+number differently, except where the save carries it (towns, the player).
+A lane the engine cannot read is `err` on every game alike and says why in
+`hook.log`, once per Lua state. On build 40408 `getEntitiesWithComponent`
+refuses `BASE_EDGE`, `LINE` and `PLAYER` ("Cannot loop over this component
+type"), hence the street and line systems.
+
+Seen on build 40408, two games through the deployed server: every lane
+read, and the room found no divergence over several checkpoints.
 
 ## Release-day procedure: adding a target for a new build
 

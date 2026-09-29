@@ -17,6 +17,10 @@
 --     saved   = function(name, ok, why), -- the GUI's answer to a save
 --     world   = function(),         -- a world's GUI started
 --     room    = function(),         -- whether the room's game runs -> boolean
+--     checkpoint = function(),      -- in a game script's postUpdate: whether
+--                                   -- to read the world's lanes now
+--     lanes   = function(t),        -- those lanes, { [lane] = text }
+--                                   -- -> true | false, why
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -40,11 +44,13 @@
 
 local bridge = {}
 
+-- 6: the game script reads the world's lanes at checkpoints (`checkpoint`,
+-- `lanes`);
 -- 5: the GUI asks whether the room's game runs (`room`), for the guard;
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 5
+bridge.VERSION = 6
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -58,7 +64,8 @@ function bridge.attach(native)
 		return nil, "the hook speaks bridge version " .. tostring(native.version)
 			.. ", the mod " .. bridge.VERSION
 	end
-	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world", "room" }) do
+	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world", "room",
+			"checkpoint", "lanes" }) do
 		if type(native[name]) ~= "function" then
 			return nil, "the hook has no " .. name .. "()"
 		end
@@ -115,6 +122,22 @@ end
 -- A world's GUI started: after a load the hook asked for, the world loaded.
 function Link:world()
 	pcall(self.native.world)
+end
+
+-- Whether this update is the last of a batch that ends at a checkpoint:
+-- the world's lanes are read now, after it.
+function Link:checkpoint()
+	local ok, due = pcall(self.native.checkpoint)
+	return ok and due == true
+end
+
+-- Hands the lanes read at a checkpoint to the hook. Returns true, or nil
+-- and why not; lanes not handed over hold the world.
+function Link:lanes(lanes)
+	local ok, taken, why = pcall(self.native.lanes, lanes)
+	if not ok then return nil, "the hook refused: " .. tostring(taken) end
+	if taken ~= true then return nil, tostring(why or "the hook refused the lanes") end
+	return true
 end
 
 -- Whether the room's game runs. A hook that cannot say is taken to say yes:

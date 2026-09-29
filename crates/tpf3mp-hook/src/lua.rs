@@ -30,6 +30,13 @@
 //! - `room()`: whether the room's game runs ([`set_in_room`]): the GUI then
 //!   refuses the player's commands the room cannot carry yet (docs/HOOKS.md,
 //!   "The player's commands").
+//! - `checkpoint()`: in a game script's `postUpdate`: whether this update is
+//!   the last of a batch that ends at a checkpoint step, so the script reads
+//!   the world's lanes now. The updates of a batch are counted by their
+//!   `take()`.
+//! - `lanes(t)`: the lanes read there, a table from lane numbers to strings,
+//!   which the step gate reports as digests ([`end_batch`]). Returns `true`,
+//!   or `false` and why.
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -67,12 +74,16 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 5.0;
+pub const VERSION: f64 = 6.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
 /// Most actions waiting for the step gate to hand them to the room.
 const MAX_WAITING: usize = 256;
+/// Most lanes one checkpoint reports, and the longest text one lane may be.
+const MAX_LANES: usize = 64;
+const MAX_LANE_TEXT: usize = 4096;
+
 /// Most lines waiting for the hook's log, and the longest kept.
 const MAX_LOG_LINES: usize = 1024;
 const MAX_LOG_LINE: usize = 1000;
@@ -138,11 +149,24 @@ enum Request {
 }
 
 /// What the table's functions share with the step gate.
+/// The batch of updates the game's step is running.
+struct Batch {
+    /// Its actions, until a game script takes them.
+    actions: Option<Vec<LuaValue>>,
+    /// The updates it runs, and those a game script has begun (`take`).
+    updates: u32,
+    begun: u32,
+    /// It ends at a checkpoint step, and the lanes read after its last
+    /// update.
+    lanes_wanted: bool,
+    lanes: Option<Vec<(u16, String)>>,
+}
+
 struct Shared {
     /// Actions handed over, for the room, oldest first.
     commands: VecDeque<Payload>,
-    /// The current batch's actions, until a game script takes them.
-    batch: Option<Vec<LuaValue>>,
+    /// The batch running.
+    batch: Batch,
     /// Lines for the hook's log.
     log: VecDeque<String>,
     /// A request the GUI has not polled yet.
@@ -158,7 +182,13 @@ struct Shared {
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
     commands: VecDeque::new(),
-    batch: None,
+    batch: Batch {
+        actions: None,
+        updates: 0,
+        begun: 0,
+        lanes_wanted: false,
+        lanes: None,
+    },
     log: VecDeque::new(),
     request: None,
     save_answer: None,
@@ -184,10 +214,11 @@ pub fn take_commands() -> Vec<Payload> {
     shared().commands.drain(..).collect()
 }
 
-/// A batch of updates begins; its first update applies `actions`, the
-/// room's events for the step it starts at. Refuses an action with no table
-/// form, before any update runs.
-pub fn begin_batch(actions: &[Action]) -> Result<(), String> {
+/// A batch of `updates` updates begins; its first update applies
+/// `actions`, the room's events for the step it starts at, and with
+/// `lanes` its last update reads the world's lanes. Refuses an action with
+/// no table form, before any update runs.
+pub fn begin_batch(actions: &[Action], updates: u32, lanes: bool) -> Result<(), String> {
     let tables = actions
         .iter()
         .map(|action| {
@@ -195,19 +226,34 @@ pub fn begin_batch(actions: &[Action]) -> Result<(), String> {
                 .map_err(|error| format!("an action the room ordered has no table form: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    shared().batch = (!tables.is_empty()).then_some(tables);
+    shared().batch = Batch {
+        actions: (!tables.is_empty()).then_some(tables),
+        updates,
+        begun: 0,
+        lanes_wanted: lanes,
+        lanes: None,
+    };
     Ok(())
 }
 
-/// The batch ended. Refuses if its actions were not taken: the world then
-/// ran the room's step without them.
-pub fn end_batch() -> Result<(), String> {
-    match shared().batch.take() {
-        None => Ok(()),
-        Some(tables) => Err(format!(
-            "the mod's game script did not take the {} action(s) the room ordered for this step",
-            tables.len()
-        )),
+/// The batch ended: the lanes read after its last update, if it wanted and
+/// got them. Refuses if its actions were not taken: the world then ran the
+/// room's step without them.
+pub fn end_batch() -> Result<Option<Vec<(u16, String)>>, String> {
+    let mut shared = shared();
+    let batch = &mut shared.batch;
+    batch.lanes_wanted = false;
+    batch.updates = 0;
+    batch.begun = 0;
+    match batch.actions.take() {
+        None => Ok(batch.lanes.take()),
+        Some(tables) => {
+            batch.lanes = None;
+            Err(format!(
+                "the mod's game script did not take the {} action(s) the room ordered for this step",
+                tables.len()
+            ))
+        }
     }
 }
 
@@ -291,6 +337,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"saved", native_saved),
                 (b"world", native_world),
                 (b"room", native_room),
+                (b"checkpoint", native_checkpoint),
+                (b"lanes", native_lanes),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -501,7 +549,11 @@ unsafe extern "C-unwind" fn native_take(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
-    let batch = shared().batch.take();
+    let batch = {
+        let mut shared = shared();
+        shared.batch.begun = shared.batch.begun.saturating_add(1);
+        shared.batch.actions.take()
+    };
     let Some(tables) = batch else {
         // SAFETY: Lua calls this with its own state, on its thread.
         unsafe { (api.pushnil)(l) };
@@ -528,7 +580,7 @@ unsafe extern "C-unwind" fn native_take(l: State) -> c_int {
         return 1;
     }
     // Not handed over: the step gate finds them untaken and holds.
-    shared().batch = Some(tables);
+    shared().batch.actions = Some(tables);
     // SAFETY: as above.
     unsafe {
         (api.settop)(l, top);
@@ -621,6 +673,103 @@ unsafe extern "C-unwind" fn native_saved(l: State) -> c_int {
 unsafe extern "C-unwind" fn native_world(_l: State) -> c_int {
     shared().worlds += 1;
     0
+}
+
+/// `checkpoint()`: whether the update running is the last of a batch that
+/// ends at a checkpoint step, and its lanes are not read yet.
+unsafe extern "C-unwind" fn native_checkpoint(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let due = {
+        let batch = &shared().batch;
+        batch.lanes_wanted && batch.begun == batch.updates && batch.lanes.is_none()
+    };
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe { (api.pushboolean)(l, c_int::from(due)) };
+    1
+}
+
+/// The lanes in a table from lane numbers to strings, or why not.
+fn lanes_from(value: &LuaValue) -> Result<Vec<(u16, String)>, String> {
+    let LuaValue::Table(entries) = value else {
+        return Err("the lanes are a table".into());
+    };
+    if entries.len() > MAX_LANES {
+        return Err(format!("more than {MAX_LANES} lanes"));
+    }
+    let mut lanes = Vec::with_capacity(entries.len());
+    for (key, text) in entries {
+        let lane = match key {
+            LuaValue::Number(n) if n.fract() == 0.0 && (0.0..=f64::from(u16::MAX)).contains(n) => {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let lane = *n as u16;
+                lane
+            }
+            _ => return Err("a lane's number is a whole number from 0 to 65535".into()),
+        };
+        let LuaValue::String(bytes) = text else {
+            return Err(format!("lane {lane} is not a string"));
+        };
+        if bytes.len() > MAX_LANE_TEXT {
+            return Err(format!("lane {lane} is longer than {MAX_LANE_TEXT} bytes"));
+        }
+        let text =
+            String::from_utf8(bytes.clone()).map_err(|_| format!("lane {lane} is not UTF-8"))?;
+        lanes.push((lane, text));
+    }
+    lanes.sort_by_key(|(lane, _)| *lane);
+    if lanes.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err("a lane is given twice".into());
+    }
+    Ok(lanes)
+}
+
+/// `lanes(t)`: the lanes read at the checkpoint. Returns `true`, or `false`
+/// and why: none is due, or the table is not lanes.
+unsafe extern "C-unwind" fn native_lanes(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let due = {
+            let batch = &shared().batch;
+            batch.lanes_wanted && batch.begun == batch.updates && batch.lanes.is_none()
+        };
+        if !due {
+            return Err("no checkpoint is due in this update".to_owned());
+        }
+        let mut nodes = 0;
+        // SAFETY: Lua calls this with its own state; index 1 is the
+        // argument, if any.
+        let value = unsafe {
+            if (api.gettop)(l) < 1 {
+                return Err("no lanes given".to_owned());
+            }
+            read(api, l, 1, 0, &mut nodes)?
+        };
+        let lanes = lanes_from(&value)?;
+        shared().batch.lanes = Some(lanes);
+        Ok(())
+    }));
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(_) => Err("reading the lanes failed".to_owned()),
+    };
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        match outcome {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
 }
 
 /// `room()`: `true` while the room's game runs.
@@ -876,6 +1025,81 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_checkpoint_is_due_in_the_last_update_of_its_batch_only() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        // Three updates, ending at a checkpoint: each update begins with
+        // take(), and only the third may report lanes.
+        begin_batch(&[], 3, true).unwrap();
+        let mut due = Vec::new();
+        for _ in 0..3 {
+            lua.run("tpf3mp_native.take()").unwrap();
+            due.push(lua.run("return tpf3mp_native.checkpoint()").unwrap());
+        }
+        assert_eq!(due, ["false", "false", "true"]);
+        assert_eq!(
+            lua.run("return tpf3mp_native.lanes({ [0] = 'net', [3] = 'vehicles' })"),
+            Ok("true".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.checkpoint()"),
+            Ok("false".into()),
+            "read once"
+        );
+        assert_eq!(
+            end_batch(),
+            Ok(Some(vec![
+                (0, "net".to_owned()),
+                (3, "vehicles".to_owned())
+            ]))
+        );
+        // A batch that does not end at a checkpoint wants none, and takes
+        // none.
+        begin_batch(&[], 1, false).unwrap();
+        lua.run("tpf3mp_native.take()").unwrap();
+        assert_eq!(
+            lua.run("return tpf3mp_native.checkpoint()"),
+            Ok("false".into())
+        );
+        let refused = lua
+            .run("return tpf3mp_native.lanes({ [0] = 'x' })")
+            .unwrap();
+        assert!(refused.starts_with("false|no checkpoint"), "{refused}");
+        assert_eq!(end_batch(), Ok(None));
+        // A checkpoint whose lanes never came ends without them.
+        begin_batch(&[], 1, true).unwrap();
+        lua.run("tpf3mp_native.take()").unwrap();
+        assert_eq!(end_batch(), Ok(None));
+    }
+
+    #[test]
+    fn lanes_refuses_what_is_not_lanes() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        for (lanes, why) in [
+            ("'text'", "the lanes are a table"),
+            ("{ x = 'a' }", "whole number"),
+            ("{ [0.5] = 'a' }", "whole number"),
+            ("{ [70000] = 'a' }", "whole number"),
+            ("{ [1] = 5 }", "lane 1 is not a string"),
+            ("{ [1] = string.rep('a', 5000) }", "longer than"),
+        ] {
+            begin_batch(&[], 1, true).unwrap();
+            lua.run("tpf3mp_native.take()").unwrap();
+            let result = lua
+                .run(&format!("return tpf3mp_native.lanes({lanes})"))
+                .unwrap();
+            assert!(result.starts_with("false|"), "{lanes}: {result}");
+            assert!(result.contains(why), "{lanes}: {result}");
+            assert_eq!(end_batch(), Ok(None), "{lanes}: nothing kept");
+        }
+    }
+
+    #[test]
     fn a_state_gets_the_table_once_even_with_strict_globals() {
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let lua = Lua::new();
@@ -890,9 +1114,10 @@ pub(crate) mod tests {
             lua.run(
                 "return tpf3mp_native.version, type(tpf3mp_native.command), \
                  type(tpf3mp_native.take), type(tpf3mp_native.log), type(tpf3mp_native.poll), \
-                 type(tpf3mp_native.saved), type(tpf3mp_native.world), type(tpf3mp_native.room)"
+                 type(tpf3mp_native.saved), type(tpf3mp_native.world), type(tpf3mp_native.room), \
+                 type(tpf3mp_native.checkpoint), type(tpf3mp_native.lanes)"
             ),
-            Ok("5|function|function|function|function|function|function|function".into())
+            Ok("6|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -963,7 +1188,7 @@ pub(crate) mod tests {
         let lua = Lua::new();
         lua.register();
         assert_eq!(lua.run("return tpf3mp_native.take()"), Ok("nil".into()));
-        begin_batch(&[depot_build()]).unwrap();
+        begin_batch(&[depot_build()], 1, false).unwrap();
         assert_eq!(
             lua.run(
                 "local first = tpf3mp_native.take() local again = tpf3mp_native.take() \
@@ -972,18 +1197,18 @@ pub(crate) mod tests {
             ),
             Ok("1|depot/road_depot_era_a.con|1250.5|2.5|nil".into())
         );
-        assert_eq!(end_batch(), Ok(()));
+        assert_eq!(end_batch(), Ok(None));
         // An action nobody took is found at the batch's end.
-        begin_batch(&[depot_build()]).unwrap();
+        begin_batch(&[depot_build()], 1, false).unwrap();
         assert!(
             end_batch()
                 .unwrap_err()
                 .contains("did not take the 1 action")
         );
         // A batch without actions has nothing to take.
-        begin_batch(&[]).unwrap();
+        begin_batch(&[], 1, false).unwrap();
         assert_eq!(lua.run("return tpf3mp_native.take()"), Ok("nil".into()));
-        assert_eq!(end_batch(), Ok(()));
+        assert_eq!(end_batch(), Ok(None));
     }
 
     #[test]

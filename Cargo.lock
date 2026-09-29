@@ -4443,6 +4443,7 @@ version = "0.1.0"
 dependencies = [
  "ctor",
  "mlua",
+ "ring",
  "tpf3mp-bridge",
  "tpf3mp-hookcore",
  "tpf3mp-ipc",
