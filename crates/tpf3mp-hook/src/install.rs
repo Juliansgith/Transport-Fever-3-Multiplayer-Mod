@@ -300,7 +300,10 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         .map_err(|error| format!("the agent's link: {error}"))?;
     lua::install_api(api);
     *DRIVER.lock().unwrap_or_else(|p| p.into_inner()) =
-        Some(Box::new(crate::step::StepDriver::new(session)));
+        Some(Box::new(crate::step::StepDriver::new(
+            session,
+            Box::new(crate::worlds::GuiWorlds::in_steam_folder()),
+        )));
 
     // SAFETY: both targets are functions the profile resolved, exactly once,
     // in this process's code; the game has not run a step yet (the hook
@@ -403,7 +406,7 @@ mod tests {
         lua::tests::{Lua, SERIAL, depot_build, lua51, run_in},
         step::{
             StepDriver,
-            tests::{Script, begin, command_event},
+            tests::{FakeControl, Script, begin, command_event},
         },
     };
 
@@ -520,7 +523,10 @@ mod tests {
             StepGate::Run,
             StepGate::Wait,
         ]);
-        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(script)));
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            script,
+            Box::new(FakeControl::default()),
+        )));
         let target = fake_step as *mut u8;
         // SAFETY: fake_step is this binary's own function, not running now,
         // and step_detour has its signature.
@@ -585,7 +591,10 @@ mod tests {
         script
             .events
             .extend([vec![], vec![command_event(1, 1, &depot_build())]]);
-        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(script)));
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            script,
+            Box::new(FakeControl::default()),
+        )));
         let target = fake_step as *mut u8;
         // SAFETY: fake_step is this binary's own function, not running now,
         // and step_detour has its signature.
@@ -627,7 +636,10 @@ mod tests {
         script
             .events
             .push_back(vec![command_event(1, 1, &depot_build())]);
-        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(script)));
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            script,
+            Box::new(FakeControl::default()),
+        )));
         let target = fake_step as *mut u8;
         // SAFETY: as above.
         let detour = unsafe { InlineDetour::install(target, step_detour as *const u8) }.unwrap();
@@ -667,7 +679,7 @@ mod tests {
         let results = unsafe { print_detour(state.state()) };
         assert_eq!(results, 0);
         assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
-        assert_eq!(state.run("return tpf3mp_native.version"), Ok("3".into()));
+        assert_eq!(state.run("return tpf3mp_native.version"), Ok("4".into()));
         PRINT_ORIGINAL.store(0, Ordering::Release);
     }
 }

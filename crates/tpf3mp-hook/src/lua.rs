@@ -20,6 +20,13 @@
 //!   `update`, which the game runs once per simulation update, where a
 //!   command runs at once, the same update on every game.
 //! - `log(line)`: a line for `hook.log`.
+//! - `poll()`: in the GUI, every frame: what the hook asks of the game, a
+//!   table `{ save = name }` or `{ load = name }` (a save of the game's own
+//!   save folder), once, or `nil`. The GUI saves with `app.saveGame` and
+//!   loads with `app.loadGame` ([`request_save`], [`request_load`]).
+//! - `saved(name, ok, why)`: the GUI's answer to a save ([`take_save_answer`]).
+//! - `world()`: a world's GUI started. Once the GUI has taken a load, the
+//!   next world to start is the one it loaded ([`load_done`]).
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -54,7 +61,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 3.0;
+pub const VERSION: f64 = 4.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -117,6 +124,13 @@ pub fn api() -> Option<&'static LuaApi> {
     API.get()
 }
 
+/// What the hook asks of the game's GUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Request {
+    Save(String),
+    Load(String),
+}
+
 /// What the table's functions share with the step gate.
 struct Shared {
     /// Actions handed over, for the room, oldest first.
@@ -125,12 +139,25 @@ struct Shared {
     batch: Option<Vec<LuaValue>>,
     /// Lines for the hook's log.
     log: VecDeque<String>,
+    /// A request the GUI has not polled yet.
+    request: Option<Request>,
+    /// The GUI's answer to the last save: the name saved, or why not.
+    save_answer: Option<Result<String, String>>,
+    /// Worlds whose GUI started since the hook began.
+    worlds: u64,
+    /// A load asked for: `None` until the GUI took it, then the worlds
+    /// started by then.
+    load: Option<Option<u64>>,
 }
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
     commands: VecDeque::new(),
     batch: None,
     log: VecDeque::new(),
+    request: None,
+    save_answer: None,
+    worlds: 0,
+    load: None,
 });
 
 fn shared() -> MutexGuard<'static, Shared> {
@@ -174,6 +201,39 @@ pub fn take_log() -> Vec<String> {
     shared().log.drain(..).collect()
 }
 
+/// Asks the GUI to save the world under `name`, in the game's own save
+/// folder; the answer comes through [`take_save_answer`].
+pub fn request_save(name: &str) {
+    let mut shared = shared();
+    shared.request = Some(Request::Save(name.to_owned()));
+    shared.save_answer = None;
+}
+
+/// The GUI's answer to the last save request, once: the name it saved, or
+/// why it did not.
+pub fn take_save_answer() -> Option<Result<String, String>> {
+    shared().save_answer.take()
+}
+
+/// Asks the GUI to load the save `name` of the game's own save folder.
+pub fn request_load(name: &str) {
+    let mut shared = shared();
+    shared.request = Some(Request::Load(name.to_owned()));
+    shared.load = Some(None);
+}
+
+/// Whether the load asked for is done: a world's GUI started after the GUI
+/// took the request (a world that started before, the one the GUI loaded
+/// from, does not count). Once.
+pub fn load_done() -> bool {
+    let mut shared = shared();
+    let done = matches!(shared.load, Some(Some(taken)) if shared.worlds > taken);
+    if done {
+        shared.load = None;
+    }
+    done
+}
+
 fn log(line: String) {
     let mut shared = shared();
     if shared.log.len() < MAX_LOG_LINES {
@@ -212,6 +272,9 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (&b"command"[..], native_command as CFunction),
                 (b"take", native_take),
                 (b"log", native_log),
+                (b"poll", native_poll),
+                (b"saved", native_saved),
+                (b"world", native_world),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -458,21 +521,100 @@ unsafe extern "C-unwind" fn native_take(l: State) -> c_int {
     1
 }
 
+/// The string argument at `index`, if it is one, up to `max` bytes.
+///
+/// # Safety
+///
+/// Lua's own state, on its thread.
+unsafe fn string_arg(api: &LuaApi, l: State, index: c_int, max: usize) -> Option<String> {
+    // SAFETY: the caller's.
+    unsafe {
+        if (api.gettop)(l) < index || (api.type_of)(l, index) != TSTRING {
+            return None;
+        }
+        let mut len = 0;
+        let text = (api.tolstring)(l, index, &raw mut len);
+        if text.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(text.cast::<u8>(), len.min(max));
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
+/// `poll()`.
+unsafe extern "C-unwind" fn native_poll(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let request = {
+        let mut shared = shared();
+        let request = shared.request.take();
+        if matches!(request, Some(Request::Load(_))) {
+            shared.load = Some(Some(shared.worlds));
+        }
+        request
+    };
+    let table = match request {
+        None => LuaValue::Nil,
+        Some(Request::Save(name)) => {
+            LuaValue::Table(vec![(LuaValue::string("save"), LuaValue::string(&name))])
+        }
+        Some(Request::Load(name)) => {
+            LuaValue::Table(vec![(LuaValue::string("load"), LuaValue::string(&name))])
+        }
+    };
+    // SAFETY: Lua calls this with its own state, on its thread.
+    let top = unsafe { (api.gettop)(l) };
+    let pushed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: as above.
+        unsafe { push(api, l, &table, 0) }
+    }));
+    if !matches!(pushed, Ok(Ok(()))) {
+        // SAFETY: as above.
+        unsafe {
+            (api.settop)(l, top);
+            (api.pushnil)(l);
+        }
+    }
+    1
+}
+
+/// `saved(name, ok, why)`.
+unsafe extern "C-unwind" fn native_saved(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread.
+    let (name, ok, why) = unsafe {
+        (
+            string_arg(api, l, 1, MAX_LOG_LINE).unwrap_or_default(),
+            (api.gettop)(l) >= 2 && (api.toboolean)(l, 2) != 0,
+            string_arg(api, l, 3, MAX_LOG_LINE),
+        )
+    };
+    shared().save_answer = Some(if ok {
+        Ok(name)
+    } else {
+        Err(why.unwrap_or_else(|| "the game did not save".into()))
+    });
+    0
+}
+
+/// `world()`.
+unsafe extern "C-unwind" fn native_world(_l: State) -> c_int {
+    shared().worlds += 1;
+    0
+}
+
 /// `log(line)`.
 unsafe extern "C-unwind" fn native_log(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
     // SAFETY: Lua calls this with its own state, on its thread.
-    unsafe {
-        if (api.gettop)(l) >= 1 && (api.type_of)(l, 1) == TSTRING {
-            let mut len = 0;
-            let text = (api.tolstring)(l, 1, &raw mut len);
-            if !text.is_null() {
-                let bytes = std::slice::from_raw_parts(text.cast::<u8>(), len.min(MAX_LOG_LINE));
-                log(format!("mod: {}", String::from_utf8_lossy(bytes)));
-            }
-        }
+    if let Some(line) = unsafe { string_arg(api, l, 1, MAX_LOG_LINE) } {
+        log(format!("mod: {line}"));
     }
     0
 }
@@ -721,9 +863,10 @@ pub(crate) mod tests {
         assert_eq!(
             lua.run(
                 "return tpf3mp_native.version, type(tpf3mp_native.command), \
-                 type(tpf3mp_native.take), type(tpf3mp_native.log)"
+                 type(tpf3mp_native.take), type(tpf3mp_native.log), type(tpf3mp_native.poll), \
+                 type(tpf3mp_native.saved), type(tpf3mp_native.world)"
             ),
-            Ok("3|function|function|function".into())
+            Ok("4|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -829,5 +972,39 @@ pub(crate) mod tests {
             take_log(),
             vec!["mod: the game script is linked".to_owned()]
         );
+    }
+
+    #[test]
+    fn the_gui_polls_each_request_once_and_answers_saves() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        let _ = take_save_answer();
+        assert_eq!(lua.run("return tpf3mp_native.poll()"), Ok("nil".into()));
+        request_save("tpf3mp_77_5");
+        assert_eq!(
+            lua.run("local r = tpf3mp_native.poll() return r.save, r.load, tpf3mp_native.poll()"),
+            Ok("tpf3mp_77_5|nil|nil".into())
+        );
+        assert_eq!(take_save_answer(), None, "not answered yet");
+        lua.run("tpf3mp_native.saved('tpf3mp_77_5', true)").unwrap();
+        assert_eq!(take_save_answer(), Some(Ok("tpf3mp_77_5".into())));
+        assert_eq!(take_save_answer(), None, "once");
+        request_save("tpf3mp_77_6");
+        lua.run("tpf3mp_native.poll() tpf3mp_native.saved('tpf3mp_77_6', false, 'disk full')")
+            .unwrap();
+        assert_eq!(take_save_answer(), Some(Err("disk full".into())));
+        request_load("tpf3mp_room_77");
+        // A world whose GUI starts before the GUI takes the load is not it.
+        lua.run("tpf3mp_native.world()").unwrap();
+        assert!(!load_done());
+        assert_eq!(
+            lua.run("return tpf3mp_native.poll().load"),
+            Ok("tpf3mp_room_77".into())
+        );
+        assert!(!load_done(), "taken, not loaded yet");
+        lua.run("tpf3mp_native.world()").unwrap();
+        assert!(load_done(), "the next world is the loaded one");
+        assert!(!load_done(), "once");
     }
 }

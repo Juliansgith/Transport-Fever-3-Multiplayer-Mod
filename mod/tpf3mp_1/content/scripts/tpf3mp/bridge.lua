@@ -5,12 +5,17 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 3,                  -- bridge.VERSION; anything else is refused
+--     version = 4,                  -- bridge.VERSION; anything else is refused
 --     command = function(action),   -- the player acted: an action table, for
 --                                   -- the room to order -> true | false, why
 --     take    = function(),         -- in a game script's update: the actions
 --                                   -- the room ordered for this update, or nil
 --     log     = function(line),     -- a line for hook.log
+--     poll    = function(),         -- in the GUI, every frame: what the hook
+--                                   -- asks, { save = name } or { load = name }
+--                                   -- (the game's own save folder), or nil
+--     saved   = function(name, ok, why), -- the GUI's answer to a save
+--     world   = function(),         -- a world's GUI started
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -34,9 +39,10 @@
 
 local bridge = {}
 
+-- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 3
+bridge.VERSION = 4
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -50,7 +56,7 @@ function bridge.attach(native)
 		return nil, "the hook speaks bridge version " .. tostring(native.version)
 			.. ", the mod " .. bridge.VERSION
 	end
-	for _, name in ipairs({ "command", "take", "log" }) do
+	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world" }) do
 		if type(native[name]) ~= "function" then
 			return nil, "the hook has no " .. name .. "()"
 		end
@@ -89,6 +95,24 @@ end
 
 function Link:log(line)
 	pcall(self.native.log, tostring(line))
+end
+
+-- What the hook asks of the game, once: { save = name }, { load = name },
+-- or nil.
+function Link:poll()
+	local ok, request = pcall(self.native.poll)
+	if not ok or type(request) ~= "table" then return nil end
+	return request
+end
+
+-- Answers a save the hook asked for.
+function Link:saved(name, ok, why)
+	pcall(self.native.saved, tostring(name), ok == true, why and tostring(why) or nil)
+end
+
+-- A world's GUI started: after a load the hook asked for, the world loaded.
+function Link:world()
+	pcall(self.native.world)
 end
 
 return bridge

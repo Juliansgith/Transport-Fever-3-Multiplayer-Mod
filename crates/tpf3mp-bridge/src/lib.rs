@@ -30,7 +30,7 @@ use thiserror::Error;
 use tpf3mp_proto::{ChatText, Event, IntentRejection, LaneDigest, Payload, RulesName, Speed, Text};
 
 pub use gate::{Gate, GateError, Gated};
-pub use session::{Begin, Game, Load, Notice, Session, SessionError, StepGate};
+pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, StepGate};
 
 /// Version of these messages. Both sides send it first and refuse a peer
 /// that speaks another.

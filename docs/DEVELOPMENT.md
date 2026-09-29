@@ -231,11 +231,15 @@ tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server loc
   the same moment failed while setting up their graphics. The later games
   start while the room is set up, so every hook finds its link.
 - `--wait-for-games` starts the room's game only once every game has
-  attached, so none joins it late: a late joiner gets the room's world as
-  a save, which the hook cannot load yet.
+  attached, so each is in it from the start.
 - `--no-snapshots` runs the local server without a snapshot store, so every
   player loads the world it starts from itself (`Load` without a file):
   every game must load the same save. The fake games all take seed 0.
+  Without it, as on a real server (`--server host:port`, which keeps
+  worlds), the owner's game saves its world for the room, and every other
+  game loads that save through its GUI ("The room's world" in
+  [HOOKS.md](HOOKS.md)). The GUI runs only in a world, so each of those
+  games must first be in one of its own, whichever.
 - The games share the Steam user's folder, and so its `settings.lua` and
   log. For tests, set `debugMode = true` (the console), `screenMode =
   "WINDOWED"` with `windowSize = { 2560, 1440 }` (smaller, and the

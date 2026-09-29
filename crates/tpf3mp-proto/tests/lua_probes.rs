@@ -361,6 +361,14 @@ fn determinism_run_with(
     update_count: bool,
 ) -> (BTreeMap<u64, String>, String) {
     let lua = gui("tpf3mp_detprobe_1", WORLD, None);
+    run_probe(&lua, frames, steps_per_frame, update_count);
+    let log = log(&lua);
+    (samples(&log), log)
+}
+
+/// Mounts the determinism probe in `lua` and runs it for `frames` frames
+/// (see [`determinism_run`]).
+fn run_probe(lua: &Lua, frames: usize, steps_per_frame: f64, update_count: bool) {
     let tpf2 = TPF2_WORLD.with(|flag| flag.get());
     lua.load(format!(
         "WITH_UPDATE_COUNT = {update_count} TPF2_SHAPE = {tpf2}          local m = mount(loadPlugin('gui/tpf3mp_detprobe/detprobe.script.lua', 'Tpf3mpDetProbe')) \
@@ -374,17 +382,42 @@ fn determinism_run_with(
          end"
     ))
     .exec()
-    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
-    let log = log(&lua);
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(lua)));
+}
+
+/// The samples in the probe's lines, by step.
+fn samples(lines: &str) -> BTreeMap<u64, String> {
     let mut samples = BTreeMap::new();
-    for line in log.lines() {
+    for line in lines.lines() {
         let Some(sample) = line.strip_prefix("[tpf3mp-probe det] step=") else {
             continue;
         };
         let (step, rest) = sample.split_once(' ').unwrap();
         samples.insert(step.parse().unwrap(), rest.to_owned());
     }
-    (samples, log)
+    samples
+}
+
+#[test]
+fn in_a_game_with_the_hook_the_samples_go_to_its_log() {
+    // Games on one PC share the game's log, and write over each other's
+    // lines in it; each hook keeps a log of its own.
+    let lua = gui("tpf3mp_detprobe_1", WORLD, None);
+    lua.load(
+        "HOOK_LOG = {} \
+         tpf3mp_native = { log = function(line) HOOK_LOG[#HOOK_LOG + 1] = line end }",
+    )
+    .exec()
+    .unwrap();
+    run_probe(&lua, 2000, 1.0, true);
+    let hook_log: Vec<String> = lua.load("return HOOK_LOG").eval().unwrap();
+    let hooked = samples(&hook_log.join("\n"));
+    assert!(hooked.len() >= 15, "{hook_log:?}");
+    let game_log = log(&lua);
+    assert!(samples(&game_log).is_empty(), "{game_log}");
+    // The same samples the game's log gets without the hook.
+    let (plain, _) = determinism_run_with(2000, 1.0, true);
+    assert_eq!(hooked, plain);
 }
 
 #[test]

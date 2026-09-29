@@ -126,6 +126,13 @@ fn run(config: &FakeHookConfig) -> Result<HookReport, HookError> {
                 ran = load.next_step - 1;
                 continue;
             }
+            // before_step saves by itself; were it to hand a save over,
+            // this is what it asks.
+            StepGate::Save(order) => {
+                let outcome = game.save(&order.file);
+                session.saved(&mut game, outcome)?;
+                continue;
+            }
             StepGate::Ended | StepGate::Wait => {
                 ended = true;
                 break;

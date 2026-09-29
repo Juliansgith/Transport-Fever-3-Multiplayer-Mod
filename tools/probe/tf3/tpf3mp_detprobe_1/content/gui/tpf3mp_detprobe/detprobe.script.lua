@@ -21,9 +21,11 @@
 -- per player, n people. Each is read through api.engine first, as mods for
 -- build 40391 do, then TPF2's game.interface; a lane it cannot read is
 -- "err", never a guess. Output goes to $TPF3MP_PROBE_DIR (or
--- %LOCALAPPDATA%/tpf3mp/probe) where the state can write files, else to the
--- game's log as "[tpf3mp-probe det] ..." lines for
--- tools/dayone/dayone.py collect.
+-- %LOCALAPPDATA%/tpf3mp/probe) where the state can write files, else as
+-- "[tpf3mp-probe det] ..." lines for tools/dayone/dayone.py collect: in a
+-- game TPF3-MP's launcher started, to its hook's log (hook.log, through
+-- tpf3mp_native.log, docs/HOOKS.md "The Lua side"), since several games on
+-- one PC write over each other's game log; elsewhere to the game's log.
 function data()
   local STRIDE = 100      -- steps between samples
   local CALIBRATE = 30    -- game-time changes watched to learn one step
@@ -275,6 +277,21 @@ function data()
   local DIR = getenv("TPF3MP_PROBE_DIR")
     or (getenv("LOCALAPPDATA") and (getenv("LOCALAPPDATA") .. "/tpf3mp/probe"))
     or (getenv("HOME") and (getenv("HOME") .. "/.local/share/tpf3mp/probe"))
+  -- The hook's log, in a game with TPF3-MP's hook. The hook gives its
+  -- table to a state that has printed, so this prints once first; the
+  -- global is read through pcall, as a strict state raises on a missing one.
+  local lookedForHook = false
+  local function hookLog()
+    if not lookedForHook then
+      lookedForHook = true
+      pcall(print, "[tpf3mp-probe det] looking for TPF3-MP's hook")
+    end
+    local ok, native = pcall(function() return tpf3mp_native end)
+    if ok and type(native) == "table" and type(native.log) == "function" then
+      return native.log
+    end
+    return nil
+  end
   local function emit(text)
     if DIR then
       local ok, f = pcall(function() return io.open(DIR .. "/determinism_probe.log", "a") end)
@@ -284,6 +301,8 @@ function data()
         return
       end
     end
+    local log = hookLog()
+    if log and pcall(log, "[tpf3mp-probe det] " .. text) then return end
     local ok = pcall(function() debugPrint("[tpf3mp-probe det] " .. text) end)
     if not ok then pcall(function() print("[tpf3mp-probe det] " .. text) end) end
   end
