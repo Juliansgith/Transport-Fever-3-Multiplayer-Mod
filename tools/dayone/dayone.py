@@ -930,8 +930,8 @@ def cmd_compare(args) -> int:
     a, b = Path(args.a), Path(args.b)
     ta, tb = step_time(a), step_time(b)
     if ta != tb:
-        say(f"STOP: the two logs learned different step times ({ta} and {tb}): their step labels do not match. "
-            "Run both games at 1x speed and sample again.")
+        say(f"STOP: the two logs label steps differently ({ta} and {tb}), so their steps do not match. "
+            "Both must count the game's updateCount, or both run at 1x speed; sample again.")
         return 1
     return subprocess.run([sys.executable, str(REPO / "tools" / "probe" / "compare_runs.py"), str(a), str(b),
                            "-o", str(out_dir(args) / "6-determinism.md")], check=False).returncode

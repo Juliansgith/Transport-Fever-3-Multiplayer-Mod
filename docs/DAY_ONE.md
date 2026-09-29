@@ -59,8 +59,12 @@ tools/tpfre/Cargo.toml`.
 6. **Determinism** (§4): two games from one save at **1x** speed with the
    determinism probe, each log collected with its own `--label`, then
    `dayone.py compare A B`. The probe labels its samples by the simulation
-   step, from the game time, so frames need not line up; two logs that
-   learned different step times are refused.
+   step, so frames need not line up: the game's own `GameTime.updateCount`
+   where the release API has it (documented, `stepTime=updateCount` in the
+   log's header; then any speed will do), else a step learned from the game
+   time. Two logs labelled differently are refused. The release builds are
+   40408 on Steam and 40393 on Epic and GOG
+   ([TF3_API_2026-09-29.md](../investigation/TF3_API_2026-09-29.md)).
 
 `python tools/dayone/test_dayone.py` tests the tool on made-up folders,
 executables and logs; `crates/tpf3mp-proto/tests/lua_probes.rs` runs the
