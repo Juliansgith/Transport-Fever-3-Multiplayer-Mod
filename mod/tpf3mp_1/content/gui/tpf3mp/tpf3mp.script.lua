@@ -46,13 +46,13 @@ function data()
 	-- Refusals so far, by kind, for the hook's log.
 	local refusals = {}
 
-	local function refused(kind)
+	local function refused(kind, why)
 		local name = kind or "command no factory made"
 		local count = (refusals[name] or 0) + 1
 		refusals[name] = count
-		if count == 1 or count % 100 == 0 then
+		if count == 1 or count % 100 == 0 or why then
 			link:log("refused the player's " .. name .. " in the room's game ("
-				.. count .. " so far)")
+				.. count .. " so far)" .. (why and (": " .. tostring(why)) or ""))
 		end
 		notice = require("tpf3mp.guard").notice(kind)
 	end
@@ -72,6 +72,7 @@ function data()
 		local ok, cmd = pcall(function() return api.cmd end)
 		local wrapped, why = require("tpf3mp.guard").install(ok and cmd or nil, {
 			inRoom = function() return link:room() end,
+			command = function(action) return link:command(action) end,
 			refused = refused,
 			later = function(fn) pending[#pending + 1] = fn end,
 		})

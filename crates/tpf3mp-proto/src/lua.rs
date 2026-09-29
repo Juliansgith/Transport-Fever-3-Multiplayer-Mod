@@ -193,7 +193,7 @@ fn field_scale(owner: &str, field: &str) -> Scale {
     match (owner, field) {
         ("Pos" | "Pos2" | "Tangent" | "TerrainCell", _) => Scale::Milli,
         ("Terraform" | "TerraformFields", "cell") => Scale::Milli,
-        ("UnitDir", _) | ("Transform", "basis") => Scale::Micro,
+        ("UnitDir", _) | ("Transform", "basis") | ("LoanTerms", "percentage") => Scale::Micro,
         _ => Scale::One,
     }
 }
@@ -1089,6 +1089,66 @@ mod tests {
         assert_eq!(action_from_lua(&back).unwrap(), expected);
     }
 
+    #[test]
+    fn a_loan_keeps_its_terms_and_its_rate_in_millionths() {
+        // The finance window's "Obtain": the offer drawn to follow, and the
+        // offer taken, as the loan script's tables have them.
+        let next = t(vec![
+            ("type", s("Small")),
+            ("amount", n(7_000_000.0)),
+            ("duration", n(2_190_000.0)),
+            ("percentage", n(0.04)),
+            ("birthDay", n(1_234_000.0)),
+        ]);
+        let offer = t(vec![
+            ("type", s("Small")),
+            ("amount", n(5_000_000.0)),
+            ("duration", n(1_095_000.0)),
+            ("percentage", n(0.03)),
+            ("birthDay", n(400_000.0)),
+        ]);
+        let table = t(vec![(
+            "Loan",
+            t(vec![("Take", t(vec![("next", next), ("offer", offer)]))]),
+        )]);
+        let action = action_from_lua(&table).unwrap();
+        let Action::Loan(op) = &action else {
+            panic!("{action:?}");
+        };
+        let crate::action::LoanOp::Take { next, offer } = op.as_ref() else {
+            panic!("{action:?}");
+        };
+        assert_eq!(offer.kind.as_str(), "Small");
+        assert_eq!(offer.amount, 5_000_000);
+        assert_eq!(offer.percentage, 30_000, "0.03 in millionths");
+        assert_eq!(offer.birth_day, Some(400_000));
+        assert_eq!(offer.id, None);
+        assert_eq!(next.percentage, 40_000);
+        let back = action_to_lua(&action).unwrap();
+        assert_eq!(action_from_lua(&back).unwrap(), action);
+        // A rate finer than a millionth is rounded, a fractional amount
+        // refused.
+        let odd = t(vec![(
+            "Loan",
+            t(vec![(
+                "Repay",
+                t(vec![(
+                    "loan",
+                    t(vec![
+                        ("type", s("Custom")),
+                        ("amount", n(1.5)),
+                        ("duration", n(1.0)),
+                        ("percentage", n(0.1)),
+                    ]),
+                )]),
+            )]),
+        )]);
+        assert_eq!(
+            refusal(odd),
+            "Loan.Repay.loan.amount: not a whole number: 1.5"
+        );
+    }
+
     fn refusal(value: LuaValue) -> String {
         action_from_lua(&value).unwrap_err().to_string()
     }
@@ -1202,7 +1262,7 @@ mod tests {
             refusal(s("Nonsense")),
             "unknown variant `Nonsense`, expected one of `BuildRoad`, `BuildTrack`, \
              `Bulldoze`, `BuildConstruction`, `BuyVehicle`, `SellVehicle`, `CreateLine`, \
-             `EditLine`, `AssignLine`, `PlaceStop`, `Terraform`, `CompanyOp`"
+             `EditLine`, `AssignLine`, `PlaceStop`, `Terraform`, `CompanyOp`, `Loan`"
         );
     }
 

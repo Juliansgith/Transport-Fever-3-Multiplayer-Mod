@@ -150,11 +150,13 @@ protected folder such as Program Files.
   and your game reloads it. A notice says so.
 - **Saving.** The room saves everyone's game together from time to time,
   which you notice as a short pause, like an autosave.
+- **Loans.** Take and pay back loans in the company window as usual: every
+  player's game books them together.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
   does not happen in your game either. The game bar says "Not in
   multiplayer yet: …" for what the game's windows do (buying vehicles,
-  lines, loans, …), and the road, track, station and bulldozer tools show
-  "Not in multiplayer yet: building with this tool" and build nothing.
+  lines, …), and the road, track, station and bulldozer tools show "Not in
+  multiplayer yet: building with this tool" and build nothing.
 
 ## Playtesting before the game is out
 

@@ -25,7 +25,7 @@ use tpf3mp_proto::{
     Event, EventBody, FixedBytes, LaneDigest, PlayerId,
     action::{
         Action, Bulldoze, CompanyId, CompanyOp, ConstructionBuild, ConstructionRef, EdgeEnds,
-        LineChange, LineId, Network, Polyline, Pos, Resolve, Structure, Terraform,
+        LineChange, LineId, LoanOp, Network, Polyline, Pos, Resolve, Structure, Terraform,
     },
 };
 
@@ -408,6 +408,20 @@ impl State {
                 Ok(())
             }
             Action::Terraform(terraform) => self.terraform(terraform, company),
+            // A loan pays its amount in, and paying it back takes it out;
+            // the model keeps no interest.
+            Action::Loan(op) => match op.as_ref() {
+                LoanOp::Take { offer, .. } => {
+                    if offer.amount <= 0 {
+                        refuse!("a loan of {}", offer.amount);
+                    }
+                    if let Some(entry) = self.companies.get_mut(&company) {
+                        entry.money = entry.money.saturating_add(offer.amount);
+                    }
+                    Ok(())
+                }
+                LoanOp::Repay { loan } => self.charge(company, loan.amount.max(0)),
+            },
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }
@@ -1051,5 +1065,85 @@ fn lane_digest<T: Serialize>(lane: u16, value: &T) -> LaneDigest {
     LaneDigest {
         lane,
         digest: FixedBytes(out),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tpf3mp_proto::{Platform, Text, action::LoanTerms};
+
+    use super::*;
+
+    fn event(seq: u64, body: EventBody) -> Event {
+        Event {
+            seq,
+            step: seq,
+            body,
+        }
+    }
+
+    fn loan(amount: i64) -> LoanTerms {
+        LoanTerms {
+            kind: Text::new("Small").unwrap(),
+            amount,
+            duration: 1_095_000,
+            percentage: 30_000,
+            birth_day: None,
+            cooldown_until: None,
+            last_pay_day: None,
+            times_paid: None,
+            id: None,
+        }
+    }
+
+    fn act(world: &mut ModelWorld, seq: u64, player: PlayerId, action: &Action) {
+        world.apply(&event(
+            seq,
+            EventBody::Command {
+                player,
+                client_seq: seq,
+                payload: action.to_payload().unwrap(),
+            },
+        ));
+    }
+
+    #[test]
+    fn a_loan_pays_its_amount_in_and_paying_it_back_takes_it_out() {
+        let player = PlayerId(FixedBytes([1; 32]));
+        let mut world = ModelWorld::new(1);
+        world.apply(&event(
+            1,
+            EventBody::PlayerJoined {
+                player,
+                name: Text::new("p1").unwrap(),
+                platform: Platform::current(),
+            },
+        ));
+        let take = Action::Loan(Box::new(LoanOp::Take {
+            next: loan(7_000_000),
+            offer: loan(5_000_000),
+        }));
+        act(&mut world, 2, player, &take);
+        assert_eq!(world.observe().money[0], Some(START_MONEY + 5_000_000));
+        act(
+            &mut world,
+            3,
+            player,
+            &Action::Loan(Box::new(LoanOp::Repay {
+                loan: loan(5_000_000),
+            })),
+        );
+        assert_eq!(world.observe().money[0], Some(START_MONEY));
+        // More than the company has is refused, and changes nothing.
+        act(
+            &mut world,
+            4,
+            player,
+            &Action::Loan(Box::new(LoanOp::Repay {
+                loan: loan(START_MONEY + 1),
+            })),
+        );
+        assert_eq!(world.observe().money[0], Some(START_MONEY));
+        assert_eq!(world.ignored().len(), 1);
     }
 }

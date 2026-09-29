@@ -246,6 +246,9 @@ api.cmd = {
     makeGameSetSpeedCmd = function(speed) return { kind = 'speed', speed = speed } end,
     makeVehicleBuyCmd = function(player, depot, config) return { kind = 'buy', depot = depot } end,
     makeLineCreateCmd = function(line) return { kind = 'line' } end,
+    makeScriptingSendEventCmd = function(src, id, name, param)
+        return { kind = 'event', id = id, name = name, param = param }
+    end,
     sendCommand = function(command, ...)
         SENT[#SENT + 1] = { command = command, extra = select('#', ...), callback = (...) }
     end,
@@ -284,7 +287,7 @@ fn with_the_hook_the_gui_links_once() {
         .unwrap();
     assert_eq!(
         logged,
-        "the GUI is linked|the guard is on 3 command factories"
+        "the GUI is linked|the guard is on 4 command factories"
     );
     let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
     assert_eq!(worlds, 1, "the world's GUI started once");
@@ -557,6 +560,73 @@ fn in_the_rooms_game_the_gui_refuses_what_the_room_cannot_carry() {
     assert_eq!(sent, 3);
 }
 
+/// A loan offer as the game's loan script and finance window keep it.
+const OFFER: &str = "{ type = 'Small', amount = 5000000, duration = 1095000, \
+                       percentage = 0.03, birthDay = 400000 }";
+
+#[test]
+fn in_the_rooms_game_a_loan_goes_to_the_room_and_nothing_else_of_its_kind() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load("M = mount(loadPlugin()) M.step() HOOK.room = true")
+        .exec()
+        .unwrap();
+    // The finance window's "Obtain", as it sends it.
+    lua.load(format!(
+        "NEXT = {OFFER} NEXT.amount = 7000000 \
+         CALLED = nil \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Loan', 'Obtain', {{ NEXT, {OFFER} }}), \
+             function(data, ok) CALLED = ok end) \
+         M.step()"
+    ))
+    .exec()
+    .unwrap();
+    let (sent, handed, called): (usize, usize, bool) = lua
+        .load("return #SENT, #HOOK.commands, CALLED")
+        .eval()
+        .unwrap();
+    assert_eq!(sent, 0, "not run here: the room orders it for every game");
+    assert_eq!(handed, 1, "handed to the room, through the schema");
+    assert!(called, "the window hears it went");
+    let (take, amount): (bool, u32) = lua
+        .load("local l = HOOK.commands[1].Loan return l.Take ~= nil, l.Take.offer.amount")
+        .eval()
+        .unwrap();
+    assert!(take);
+    assert_eq!(amount, 5_000_000);
+    // Paying back goes too.
+    lua.load(format!(
+        "api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Loan', 'Repay', {{ nil, {OFFER} }}))"
+    ))
+    .exec()
+    .unwrap();
+    let repay: bool = lua
+        .load("return HOOK.commands[2].Loan.Repay.loan.amount == 5000000")
+        .eval()
+        .unwrap();
+    assert!(repay);
+    // Another script event is refused, as is a loan the schema does not
+    // take.
+    lua.load(
+        "api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'MakeGreen', 'go', {})) \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Loan', 'Obtain', \
+             { { type = 'Small' }, { type = 'Small', amount = 1.5 } }))",
+    )
+    .exec()
+    .unwrap();
+    let (sent, handed): (usize, usize) = lua.load("return #SENT, #HOOK.commands").eval().unwrap();
+    assert_eq!((sent, handed), (0, 2));
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.contains("makeScriptingSendEventCmd")
+                && l.contains("the hook refused the action: Loan.Take")),
+        "{logged:?}"
+    );
+}
+
 #[test]
 fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
     let lua = gui();
@@ -590,8 +660,8 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
     assert_eq!(
         results,
         [
-            "3",
-            "3",
+            "4",
+            "4",
             "true",
             "api.cmd is not a table",
             "api.cmd has no sendCommand",
@@ -647,6 +717,9 @@ api = {
         makeWorldBuildProposalCmd = function(proposal, context, ignoreErrors, playerInitiated)
             return { proposal = proposal, context = context, ignoreErrors = ignoreErrors,
                      playerInitiated = playerInitiated }
+        end,
+        makeScriptingSendEventCmd = function(src, id, name, param)
+            return { event = { src = src, id = id, name = name, param = param } }
         end,
         sendCommand = function(command, callback)
             -- As the game in a game script's update.
@@ -898,6 +971,35 @@ fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
             .eval::<String>()
             .unwrap(),
         "the game script is linked"
+    );
+}
+
+#[test]
+fn the_game_script_takes_and_repays_loans_through_the_loan_scripts_events() {
+    let (lua, _script) = engine();
+    lua.load(format!(
+        "HOOK.batch = {{ {{ Loan = {{ Take = {{ next = {OFFER}, offer = {OFFER} }} }} }}, \
+                         {{ Loan = {{ Repay = {{ loan = {OFFER} }} }} }} }} \
+         UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let events: String = lua
+        .load(
+            "local out = {} \
+             for _, c in ipairs(SENT) do \
+                 local e = c.event \
+                 local p1 = e.param[1] and e.param[1].amount or 'nil' \
+                 out[#out + 1] = e.src .. '|' .. e.id .. '|' .. e.name .. '|' .. tostring(p1) \
+                     .. '|' .. e.param[2].amount .. '|' .. e.param[2].percentage .. '|' .. e.param[2].type \
+             end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        events,
+        "|Loan|Obtain|5000000|5000000|0.03|Small |Loan|Repay|nil|5000000|0.03|Small"
     );
 }
 

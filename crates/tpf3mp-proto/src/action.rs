@@ -513,6 +513,42 @@ pub enum CompanyOp {
     Delete(CompanyId),
 }
 
+/// A loan on its terms, as Transport Fever 3's loan script keeps it
+/// (`game_mechanics/finance/loan.d.tl`), field for field. Nothing in it
+/// names an entity: a loan is the acting player's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoanTerms {
+    /// "Small", "Medium", "Large", "ExtraLarge" or "Custom".
+    #[serde(rename = "type")]
+    pub kind: Text<16>,
+    /// In the game's money.
+    pub amount: i64,
+    /// In the game's milliseconds.
+    pub duration: i64,
+    /// The interest a year, in millionths: 0.03 is 30 000.
+    pub percentage: i64,
+    #[serde(rename = "birthDay")]
+    pub birth_day: Option<i64>,
+    #[serde(rename = "cooldownUntil")]
+    pub cooldown_until: Option<i64>,
+    #[serde(rename = "lastPayDay")]
+    pub last_pay_day: Option<i64>,
+    #[serde(rename = "timesPaid")]
+    pub times_paid: Option<i64>,
+    pub id: Option<i64>,
+}
+
+/// Taking or paying back a loan: the loan script's two events, with the
+/// parameters the game's finance window sends them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoanOp {
+    /// Take the loan `offer`; the game's window also sends the offer it
+    /// drew to follow it (`next`), whose kind the script puts on cooldown.
+    Take { next: LoanTerms, offer: LoanTerms },
+    /// Pay back a loan taken, named by its terms and id.
+    Repay { loan: LoanTerms },
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -530,6 +566,8 @@ pub enum Action {
     PlaceStop(PlaceStop),
     Terraform(Terraform),
     CompanyOp(CompanyOp),
+    /// Boxed: its terms are larger than every other action.
+    Loan(Box<LoanOp>),
 }
 
 #[derive(Debug, Error)]

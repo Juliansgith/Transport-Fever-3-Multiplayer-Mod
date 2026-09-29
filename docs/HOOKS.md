@@ -623,13 +623,24 @@ games applied it in the same update; the determinism probe's construction
 lane changed between steps 500 and 600 in both, to the same value, and
 matched at every sample after.
 
-`apply.lua` applies `BuildConstruction` so far: a `SimpleProposal` with
-one `ConstructionEntity` (the file, the matrix from the transform, the
-parameters from their flattened paths, the name, the player), sent with
-`ignoreErrors` false and `playerInitiated` true, as the player's own
-build. Every other action is refused with a line in `hook.log`, the same
-on every game, so the worlds stay alike. What the GUI captures from the
-player, and the native build tools, come next.
+Seen on build 40408, two games through the deployed server: a loan
+taken in the guest's finance window went to the room, and both games
+booked it in the same update, the account and the loan script's list of
+loans alike in both; the loan script's own callback, which books the
+money, ran in the game script's `postUpdate`.
+
+`apply.lua` applies two actions so far:
+
+- `BuildConstruction`: a `SimpleProposal` with one `ConstructionEntity`
+  (the file, the matrix from the transform, the parameters from their
+  flattened paths, the name, the player), sent with `ignoreErrors` false
+  and `playerInitiated` true, as the player's own build;
+- `Loan`: the loan script's own event, `makeScriptingSendEventCmd("",
+  "Loan", "Obtain", { next, offer })` or `"Repay", { nil, loan }`, with the
+  tables the finance window sends.
+
+Every other action is refused with a line in `hook.log`, the same on every
+game, so the worlds stay alike. The native build tools come next.
 
 ### The room's world
 
@@ -726,6 +737,13 @@ reference of its own to either. Once linked, the GUI wraps every
 - a command of a kind in `guard.PASS` is sent, its arguments untouched. So
   far that is the speed row's `makeGameSetSpeedCmd`, which the step gate
   reads as the player's request to the room;
+- a command `guard.CARRY` makes an action of goes to the room instead
+  (`tpf3mp_native.command`), which orders it for every game, this one
+  included ("Actions in the game"); its callback hears on the next frame
+  that it went, as the game's windows expect. So far: loans, the finance
+  window's `makeScriptingSendEventCmd("", "Loan", "Obtain" | "Repay", …)`,
+  as a `Loan` action carrying the loans' terms, which every game's game
+  script replays through the loan script's own event;
 - any other kind, and a command no wrapped factory made, is refused, as
   PLAN.md (Part 3) says of every action whose strict flag is off. It is
   not sent. Its callback, if it has one, is called on the next frame with

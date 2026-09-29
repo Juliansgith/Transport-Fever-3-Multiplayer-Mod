@@ -1,10 +1,10 @@
 -- tpf3mp/apply.lua -- runs an action the room ordered, in the mod's game
--- script's update (docs/HOOKS.md, "Actions in the game").
+-- script's postUpdate (docs/HOOKS.md, "Actions in the game").
 --
 -- A game script runs in an engine state, where a command runs at once (the
--- game's own api/tealdef/api/cmd.d.tl). In its update the game takes no
--- callback ("Callbacks are currently disallowed", build 40408), so a
--- command is sent without one; one the game refuses raises.
+-- game's own api/tealdef/api/cmd.d.tl). A command is sent without a
+-- callback, which the game refused in update ("Callbacks are currently
+-- disallowed", build 40408); one the game refuses raises.
 -- Every game applies the room's action in the same simulation update, so
 -- what this makes of an action may depend on nothing but the action and the
 -- world, which every game has alike: no time of day, no camera, no GUI.
@@ -93,6 +93,29 @@ function HANDLERS.BuildConstruction(build)
 	proposal.constructionsToAdd = { entity }
 	-- ignoreErrors false and playerInitiated true: as the player's own build.
 	return run(api.cmd.makeWorldBuildProposalCmd(proposal, nil, false, true))
+end
+
+-- A loan's terms as the loan script keeps them (loan.d.tl): the action's
+-- table has the script's own field names and fractions.
+local function loanTerms(terms)
+	local out = {}
+	for key, value in pairs(terms) do out[key] = value end
+	return out
+end
+
+-- Loans go through the loan script's own events, with the parameters the
+-- game's finance window sends (game_mechanics/finance/finances_loan_gui.tl):
+-- here they run at once, in every game at the same update.
+function HANDLERS.Loan(op)
+	if op.Take then
+		return run(api.cmd.makeScriptingSendEventCmd("", "Loan", "Obtain",
+			{ loanTerms(op.Take.next), loanTerms(op.Take.offer) }))
+	elseif op.Repay then
+		local param = {}
+		param[2] = loanTerms(op.Repay.loan)
+		return run(api.cmd.makeScriptingSendEventCmd("", "Loan", "Repay", param))
+	end
+	return false, "a loan is taken or paid back"
 end
 
 -- Runs one action. Returns true, or false and why not; never raises.

@@ -425,6 +425,7 @@ appended.
 | `PlaceStop` | the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, the model |
 | `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
 | `CompanyOp` | create, join, rename or delete a company |
+| `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
 
 **Polylines.** A road or track build is a polyline, the capture's decisions
 included:
