@@ -56,7 +56,7 @@ tools/tpfre/Cargo.toml`.
      GUI state and of the run script's state (`tools/probe/tf3`). The TPF2
      probes (`tools/probe/script_api_dump`, `determinism_probe`) are the
      fallback should TF3 still run game scripts.
-6. **Determinism** (§4): two games from one save at **1x** speed with the
+6. **Determinism** (§4): two games from one save with the
    determinism probe, each log collected with its own `--label`, then
    `dayone.py compare A B`. The probe labels its samples by the simulation
    step, so frames need not line up: the game's own `GameTime.updateCount`
@@ -65,6 +65,33 @@ tools/tpfre/Cargo.toml`.
    time. Two logs labelled differently are refused. The release builds are
    40408 on Steam and 40393 on Epic and GOG
    ([TF3_API_2026-09-29.md](../investigation/TF3_API_2026-09-29.md)).
+
+7. **What the API reference says, confirmed** (documented on
+   wiki.transportfever3.com/script-doc, never seen running;
+   [TF3_API_2026-09-29.md](../investigation/TF3_API_2026-09-29.md)). In the
+   API dump from step 5, and in the game's console:
+   - `GameTime.updateCount` counts simulation steps and stops while paused;
+   - `api.type.RoadType.STREET` and `TRACK` exist, and a build proposal's
+     `BaseEdge.roadTemplate` and `roadStyle` are plain strings (the mod's
+     capture refuses anything else, `engine.lua`);
+   - a street's bus lane and tram track: part of the road template, or
+     fields of their own (the capture records none, a guess to replace);
+   - `makeWorldBuildProposalCmd`'s `playerInitiated`: whether the stock
+     street tool sets it, and whether the hook sees it where the command is
+     queued (HOOKS.md, the caller-RVA filter);
+   - whether `api.cmd.Debug.makeGamePerformSimulationStepsCmd` works in the
+     release build (REGRESSION.md, "With the real game");
+   - the Epic/GOG build (40393) next to Steam's (40408): run steps 1 to 3 on
+     both executables, since the hook needs a profile for each.
+
+   The manual's in-game tools page (marked as possibly TPF2's) names the
+   aids for this: debug mode (`debugMode` in `settings.lua`, or the
+   advanced settings), a Lua console on the key below Esc that runs
+   commands and prints to `stdout.txt` (the log `logs.rs` expects), and
+   simulation speed up to 32x in debug mode. Local mods go to
+   `<Steam>/userdata/<Steam ID>/3493540/local/staging_area/`, as the
+   installer does; a mod there wins over a manually installed or
+   subscribed one with the same modId.
 
 `python tools/dayone/test_dayone.py` tests the tool on made-up folders,
 executables and logs; `crates/tpf3mp-proto/tests/lua_probes.rs` runs the
