@@ -18,9 +18,11 @@
 //!   player is behind): the game's paused path, and the world stands still;
 //! - before a room has begun a game, and after it has ended, what the
 //!   game's own speed says;
+//! - while the game saves its world for the room, or loads the room's
+//!   (docs/HOOKS.md, "The room's world"), none;
 //! - on anything it cannot follow (the agent gone, a malformed message, a
-//!   save it cannot load yet) none, for good: the world stands still rather
-//!   than run on apart from the room's (fail closed).
+//!   room's world that did not load) none, for good: the world stands still
+//!   rather than run on apart from the room's (fail closed).
 //!
 //! Answering the step's own speed call rather than skipping calls is how
 //! TPF2MP paced TPF2 (`tpf2-multiplayer/native/src/speedhook.cpp`, which
@@ -39,7 +41,12 @@
 //! game's step as a closure, and the room's side is a [`RoomGate`], the
 //! real [`Session`] in the game and a script in the tests.
 
-use tpf3mp_bridge::{Begin, Game, Notice, Session, SessionError, StepGate};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+use tpf3mp_bridge::{Begin, Game, Notice, SaveOrder, Session, SessionError, StepGate};
 use tpf3mp_proto::{Event, EventBody, LaneDigest, Payload, Speed, action::Action};
 
 /// Most steps one call of the game's step runs, catching up with the room:
@@ -66,6 +73,46 @@ pub trait RoomGate {
     fn loaded(&mut self, next_step: u64) -> Result<(), SessionError>;
     fn request_speed(&mut self, speed: Speed) -> Result<(), SessionError>;
     fn command(&mut self, payload: Payload) -> Result<u64, SessionError>;
+    fn saved(
+        &mut self,
+        game: &mut HookGame,
+        outcome: Result<(), String>,
+    ) -> Result<(), SessionError>;
+}
+
+/// Longest a save the room ordered may take the game before it is reported
+/// as failed.
+pub const SAVE_PATIENCE: Duration = Duration::from_secs(120);
+/// Longest a load of the room's save may take before the world is held.
+pub const LOAD_PATIENCE: Duration = Duration::from_secs(600);
+
+/// What the driver asks of the game beyond its step: saving and loading
+/// whole worlds, which the game's GUI does (the mod, through
+/// [`crate::lua`], and [`crate::worlds`] for the files).
+pub trait GameControl: Send {
+    /// Asks the game to save its world under `name`.
+    fn request_save(&mut self, name: &str);
+    /// The last save's outcome, once the game has one: the file written, or
+    /// why not.
+    fn save_result(&mut self) -> Option<Result<PathBuf, String>>;
+    /// Asks the game to load the save `file` (the room's world).
+    fn request_load(&mut self, file: &Path) -> Result<(), String>;
+    /// Whether the world the last load asked for is up. Once.
+    fn load_done(&mut self) -> bool;
+}
+
+/// A save the game is making for the room.
+#[derive(Debug)]
+struct Saving {
+    event: u64,
+    since: Instant,
+}
+
+/// A load of the room's save the game is making.
+#[derive(Debug)]
+struct Loading {
+    next_step: u64,
+    since: Instant,
 }
 
 impl RoomGate for Session {
@@ -89,6 +136,13 @@ impl RoomGate for Session {
     }
     fn command(&mut self, payload: Payload) -> Result<u64, SessionError> {
         Session::command(self, payload)
+    }
+    fn saved(
+        &mut self,
+        game: &mut HookGame,
+        outcome: Result<(), String>,
+    ) -> Result<(), SessionError> {
+        Session::saved(self, game, outcome)
     }
 }
 
@@ -126,7 +180,9 @@ impl Game for HookGame {
     }
 
     fn save(&mut self, _file: &std::path::Path) -> Result<(), String> {
-        Err("the hook cannot save the world yet".into())
+        // Only `Session::before_step` saves here; the driver polls, and
+        // saves at `StepGate::Save`, through the GUI.
+        Err("the hook saves the world through the game's GUI, not here".into())
     }
 
     fn notice(&mut self, notice: Notice) {
@@ -188,6 +244,12 @@ pub type RunStep<'a> = dyn FnMut(Updates, &[Action]) -> Result<(), String> + 'a;
 pub struct StepDriver<G> {
     gate: G,
     game: HookGame,
+    control: Box<dyn GameControl>,
+    /// Names this game's saves apart from another game's on this PC, which
+    /// shares the save folder.
+    tag: String,
+    saving: Option<Saving>,
+    loading: Option<Loading>,
     phase: Phase,
     /// The speed row's last value in the room's game, once seen.
     chosen: Option<u64>,
@@ -196,10 +258,14 @@ pub struct StepDriver<G> {
 }
 
 impl<G: RoomGate> StepDriver<G> {
-    pub fn new(gate: G) -> Self {
+    pub fn new(gate: G, control: Box<dyn GameControl>) -> Self {
         Self {
             gate,
             game: HookGame::default(),
+            control,
+            tag: std::process::id().to_string(),
+            saving: None,
+            loading: None,
             phase: Phase::BeforeBegin,
             chosen: None,
             log: Vec::new(),
@@ -357,6 +423,11 @@ impl<G: RoomGate> StepDriver<G> {
                     };
                 }
                 Ok(StepGate::Wait) => return Updates::Exactly(0),
+                Ok(StepGate::Save(order)) => {
+                    if !self.save(&order) {
+                        return Updates::Exactly(0);
+                    }
+                }
                 Ok(StepGate::Load(load)) => match load.file {
                     // The world every player starts from: the one this
                     // game has loaded, which the launcher started for the
@@ -372,11 +443,9 @@ impl<G: RoomGate> StepDriver<G> {
                         ));
                     }
                     Some(file) => {
-                        self.hold(format!(
-                            "the room sent a save ({}), and loading one is not implemented yet",
-                            file.display()
-                        ));
-                        return Updates::Exactly(0);
+                        if !self.load(&file, load.next_step) {
+                            return Updates::Exactly(0);
+                        }
                     }
                 },
                 Ok(StepGate::Ended) => {
@@ -393,11 +462,113 @@ impl<G: RoomGate> StepDriver<G> {
         }
     }
 
+    /// Moves the room's save on: asks the game for it, waits, and reports
+    /// it once the game answers. Returns whether it is reported, so the
+    /// room's steps may go on; until then the world stands still.
+    fn save(&mut self, order: &SaveOrder) -> bool {
+        let now = Instant::now();
+        let Some(saving) = &self.saving else {
+            let name = format!("tpf3mp_{}_{}", self.tag, order.event);
+            self.control.request_save(&name);
+            self.log.push(format!(
+                "saving the world for the room (event {}) as {name}",
+                order.event
+            ));
+            self.saving = Some(Saving {
+                event: order.event,
+                since: now,
+            });
+            return false;
+        };
+        let outcome = match self.control.save_result() {
+            None if now.saturating_duration_since(saving.since) < SAVE_PATIENCE => return false,
+            None => Err(format!(
+                "the game did not save within {} s",
+                SAVE_PATIENCE.as_secs()
+            )),
+            Some(Err(reason)) => Err(reason),
+            Some(Ok(written)) => move_file(&written, &order.file).map_err(|error| {
+                format!(
+                    "moving the save {} to {}: {error}",
+                    written.display(),
+                    order.file.display()
+                )
+            }),
+        };
+        let event = saving.event;
+        self.saving = None;
+        match &outcome {
+            Ok(()) => self
+                .log
+                .push(format!("saved the world for the room (event {event})")),
+            Err(reason) => self.log.push(format!(
+                "the world was not saved for the room (event {event}): {reason}"
+            )),
+        }
+        if let Err(error) = self.gate.saved(&mut self.game, outcome) {
+            self.hold(format!("reporting a save: {error}"));
+            return false;
+        }
+        true
+    }
+
+    /// Moves a load of the room's save on: asks the game to load it, then
+    /// waits for its world. Returns whether the world is loaded; until then
+    /// the world stands still.
+    fn load(&mut self, file: &Path, next_step: u64) -> bool {
+        let now = Instant::now();
+        let Some(loading) = &self.loading else {
+            match self.control.request_load(file) {
+                Ok(()) => {
+                    self.log.push(format!(
+                        "loading the room's world from {} to run step {next_step} next",
+                        file.display()
+                    ));
+                    self.loading = Some(Loading {
+                        next_step,
+                        since: now,
+                    });
+                }
+                Err(reason) => self.hold(format!("loading the room's world: {reason}")),
+            }
+            return false;
+        };
+        if !self.control.load_done() {
+            if now.saturating_duration_since(loading.since) >= LOAD_PATIENCE {
+                self.hold(format!(
+                    "the room's world did not load within {} s",
+                    LOAD_PATIENCE.as_secs()
+                ));
+            }
+            return false;
+        }
+        let next_step = loading.next_step;
+        self.loading = None;
+        if let Err(error) = self.gate.loaded(next_step) {
+            self.hold(format!("taking the room's world: {error}"));
+            return false;
+        }
+        self.log.push(format!(
+            "playing the room's world from its save, from step {next_step}"
+        ));
+        true
+    }
+
     fn hold(&mut self, reason: String) {
         self.log
             .push(format!("holding the world (fail closed): {reason}"));
         self.phase = Phase::Holding(reason);
     }
+}
+
+/// Moves a file, across drives too: a copy then a removal when a rename
+/// cannot.
+pub fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to)?;
+    std::fs::remove_file(from)
 }
 
 #[cfg(test)]
@@ -422,6 +593,7 @@ pub(crate) mod tests {
         /// Events each poll applies before it answers, one list a poll.
         pub(crate) events: VecDeque<Vec<Event>>,
         pub(crate) commands: Vec<Payload>,
+        pub(crate) saves: Vec<Result<(), String>>,
     }
 
     impl RoomGate for Script {
@@ -433,8 +605,12 @@ pub(crate) mod tests {
                 game.apply(&event);
             }
             match self.gates.front() {
-                // A Run stays until the step ran, as the session's does.
+                // A Run stays until the step ran, a Save until it is
+                // reported and a Load until the world is loaded, as the
+                // session's do.
                 Some(StepGate::Run) => Ok(StepGate::Run),
+                Some(StepGate::Save(order)) => Ok(StepGate::Save(order.clone())),
+                Some(StepGate::Load(load)) => Ok(StepGate::Load(load.clone())),
                 _ => Ok(self.gates.pop_front().unwrap_or(StepGate::Wait)),
             }
         }
@@ -460,6 +636,10 @@ pub(crate) mod tests {
             Ok(self.ran)
         }
         fn loaded(&mut self, next_step: u64) -> Result<(), SessionError> {
+            assert!(
+                matches!(self.gates.pop_front(), Some(StepGate::Load(_))),
+                "a world nobody ordered was loaded"
+            );
             self.loaded.push(next_step);
             Ok(())
         }
@@ -470,6 +650,57 @@ pub(crate) mod tests {
         fn command(&mut self, payload: Payload) -> Result<u64, SessionError> {
             self.commands.push(payload);
             Ok(self.commands.len() as u64 - 1)
+        }
+        fn saved(
+            &mut self,
+            _game: &mut HookGame,
+            outcome: Result<(), String>,
+        ) -> Result<(), SessionError> {
+            assert!(
+                matches!(self.gates.pop_front(), Some(StepGate::Save(_))),
+                "a save nobody ordered was reported"
+            );
+            self.saves.push(outcome);
+            Ok(())
+        }
+    }
+
+    /// The game's side of saves and loads, from the tests: what it was
+    /// asked, and the answers they give it.
+    #[derive(Default)]
+    pub(crate) struct FakeControl {
+        pub(crate) state: std::sync::Arc<std::sync::Mutex<ControlState>>,
+    }
+
+    #[derive(Default)]
+    pub(crate) struct ControlState {
+        pub(crate) save_requests: Vec<String>,
+        pub(crate) save_answer: Option<Result<PathBuf, String>>,
+        pub(crate) load_requests: Vec<PathBuf>,
+        pub(crate) load_done: bool,
+    }
+
+    impl GameControl for FakeControl {
+        fn request_save(&mut self, name: &str) {
+            self.state
+                .lock()
+                .unwrap()
+                .save_requests
+                .push(name.to_owned());
+        }
+        fn save_result(&mut self) -> Option<Result<PathBuf, String>> {
+            self.state.lock().unwrap().save_answer.take()
+        }
+        fn request_load(&mut self, file: &Path) -> Result<(), String> {
+            self.state
+                .lock()
+                .unwrap()
+                .load_requests
+                .push(file.to_owned());
+            Ok(())
+        }
+        fn load_done(&mut self) -> bool {
+            std::mem::take(&mut self.state.lock().unwrap().load_done)
         }
     }
 
@@ -498,7 +729,21 @@ pub(crate) mod tests {
     type Calls = Vec<Updates>;
 
     fn driver(script: Script) -> (StepDriver<Script>, Calls) {
-        (StepDriver::new(script), Vec::new())
+        (
+            StepDriver::new(script, Box::new(FakeControl::default())),
+            Vec::new(),
+        )
+    }
+
+    fn driver_with(
+        script: Script,
+    ) -> (
+        StepDriver<Script>,
+        std::sync::Arc<std::sync::Mutex<ControlState>>,
+    ) {
+        let control = FakeControl::default();
+        let state = std::sync::Arc::clone(&control.state);
+        (StepDriver::new(script, Box::new(control)), state)
     }
 
     fn call(driver: &mut StepDriver<Script>, calls: &mut Calls) -> Updates {
@@ -697,22 +942,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_save_it_cannot_load_or_a_lost_agent_holds_the_world() {
-        let mut script = Script::default();
-        script.begin.push_back(Some(begin()));
-        script.gates.push_back(StepGate::Load(Load {
-            file: Some(PathBuf::from("room.sav")),
-            next_step: 101,
-        }));
-        script.gates.extend([StepGate::Run, StepGate::Run]);
-        let (mut d, mut calls) = driver(script);
-        assert_eq!(call(&mut d, &mut calls), PAUSED);
-        assert!(matches!(d.phase(), Phase::Holding(_)));
-        // Held for good: later calls run no update, whatever the room says.
-        assert_eq!(call(&mut d, &mut calls), PAUSED);
-        assert_eq!(d.gate.ran, 0);
-        assert!(d.take_log().iter().any(|l| l.contains("fail closed")));
-
+    fn a_lost_agent_holds_the_world() {
         let mut script = Script::default();
         script.begin.push_back(Some(begin()));
         script.gates.extend([StepGate::Run, StepGate::Run]);
@@ -786,5 +1016,94 @@ pub(crate) mod tests {
         assert_eq!(call(&mut d, &mut calls), Updates::Own);
         assert_eq!(d.phase(), &Phase::Ended);
         assert_eq!(call(&mut d, &mut calls), Updates::Own);
+    }
+
+    fn order(event: u64, file: &Path) -> SaveOrder {
+        SaveOrder {
+            event,
+            file: file.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_save_holds_the_world_until_the_game_saved_and_is_moved_to_the_room() {
+        let dir = std::env::temp_dir().join(format!("tpf3mp-step-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let written = dir.join("written.sav");
+        let wanted = dir.join("save-7.sav");
+        std::fs::write(&written, b"world").unwrap();
+
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Save(order(7, &wanted)),
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        let (mut d, state) = driver_with(script);
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), PAUSED, "asked the game to save");
+        let name = state.lock().unwrap().save_requests.clone();
+        assert_eq!(name, vec![format!("tpf3mp_{}_7", std::process::id())]);
+        assert_eq!(call(&mut d, &mut calls), PAUSED, "no answer yet: held");
+        state.lock().unwrap().save_answer = Some(Ok(written.clone()));
+        assert_eq!(
+            call(&mut d, &mut calls),
+            Updates::Exactly(1),
+            "saved and reported: the steps go on"
+        );
+        assert_eq!(d.gate.saves, vec![Ok(())]);
+        assert!(
+            !written.exists() && wanted.exists(),
+            "moved to the room's file"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_the_game_could_not_make_is_reported_failed_and_the_game_goes_on() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Save(order(8, Path::new("never.sav"))),
+            StepGate::Run,
+        ]);
+        let (mut d, state) = driver_with(script);
+        let mut calls = Vec::new();
+        call(&mut d, &mut calls);
+        state.lock().unwrap().save_answer = Some(Err("disk full".into()));
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(d.gate.saves, vec![Err("disk full".into())]);
+        assert_eq!(d.phase(), &Phase::Running);
+    }
+
+    #[test]
+    fn the_rooms_save_is_loaded_and_its_world_plays_once_it_is_up() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        let file = PathBuf::from("worlds/room.sav");
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: Some(file.clone()),
+                next_step: 101,
+            }),
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        let (mut d, state) = driver_with(script);
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), PAUSED, "asked to load");
+        assert_eq!(state.lock().unwrap().load_requests, vec![file]);
+        assert_eq!(call(&mut d, &mut calls), PAUSED, "still loading");
+        assert!(d.gate.loaded.is_empty());
+        // The loaded world's GUI started.
+        state.lock().unwrap().load_done = true;
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(d.gate.loaded, vec![101]);
+        assert!(
+            d.take_log()
+                .iter()
+                .any(|line| line.contains("from its save, from step 101"))
+        );
     }
 }

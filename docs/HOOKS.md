@@ -473,10 +473,11 @@ call of the speed getter, as TPF2MP's speed hook
   the game's paused path, and the world stands still.
 - **The room's world.** A `Load` without a file (the world every player
   starts from) takes the world the game has loaded. A `Load` with a save
-  file, and any error (the agent gone, a malformed message, a failed
-  report), **hold** the world for good: every call answers 0, rather than
-  run apart from the room's (fail closed). Loading a room's save is the next
-  piece (`CMenuUI::StartSavegame`, in the profile).
+  file, and a `Save` the room orders, go through the mod's GUI ("The
+  room's world" below), every call answering 0 until they are done. Any
+  error (the agent gone, a malformed message, a failed report, a world
+  that did not load) **holds** the world for good: every call answers 0,
+  rather than run apart from the room's (fail closed).
 - **Only the step's own call is changed.** The profile's target
   `GameSim::Step/GetSpeed call` (`0x1593ee`) is the step's one call of
   `CGameTime::GetSpeed` (`0x2a95a0`); the hook redirects that call
@@ -532,7 +533,7 @@ for the table (`bridge.find`). Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
 `crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 3. The mod refuses any other.
+- `tpf3mp_native.version`: 4. The mod refuses any other.
 - `tpf3mp_native.command(action)`: an action table, in the game's units.
   The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
   `MAX_DEPTH` and `MAX_NODES` (a function, userdata or a table as a key is
@@ -544,6 +545,11 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.take()`: the actions the room ordered for this simulation
   update, as `action_to_lua` tables, or `nil` (below).
 - `tpf3mp_native.log(line)`: a line for `hook.log`, marked `mod:`.
+- `tpf3mp_native.poll()`: in the GUI, every frame: what the hook asks of
+  it, once, `{ save = name }` or `{ load = name }`, or `nil` ("The room's
+  world" below).
+- `tpf3mp_native.saved(name, ok, why)`: the GUI's answer to a save.
+- `tpf3mp_native.world()`: a world's GUI started.
 
 The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
@@ -609,6 +615,47 @@ parameters from their flattened paths, the name, the player), sent with
 build. Every other action is refused with a line in `hook.log`, the same
 on every game, so the worlds stay alike. What the GUI captures from the
 player, and the native build tools, come next.
+
+### The room's world
+
+A room plays its owner's world. On a server that keeps worlds, the room
+has the owner's game save it before step 1, and every other player's game
+loads that save; a player who joins later loads the room's latest one
+("The first world" in [PROTOCOL.md](PROTOCOL.md)). Transport Fever 3 saves and loads only through its GUI's
+script API (`app.saveGame`, `app.loadGame`) and only in its own save
+folder, so the hook asks the mod's GUI for both
+(`crates/tpf3mp-hook/src/worlds.rs`,
+`mod/tpf3mp_1/content/gui/tpf3mp/tpf3mp.script.lua`), and the world
+stands still meanwhile:
+
+- **Saving.** The session answers `StepGate::Save(order)` until the save
+  is reported (`Session::saved`). The driver asks the GUI to save under a
+  name of this game's own, `tpf3mp_<pid>_<event>`, as two games on one PC
+  share the folder. The GUI calls `app.saveGame(name, callback, false,
+  true)` (the last argument leaves the player's own save name alone) and
+  answers through `tpf3mp_native.saved` from the callback, once the file
+  is written. The hook finds `<name>.sav`, removes the picture the game
+  writes beside it, and moves the save to `order.file`, which the agent
+  cuts into its store. A save the game refuses, or does not make within
+  `SAVE_PATIENCE` (120 s), is reported failed, and the game goes on.
+- **Loading.** A `Load` with a file (the room's save, fetched by the
+  agent) is copied into the folder as `tpf3mp_room_<pid>.sav`, and the GUI
+  asked to load it (`app.loadGame`, with a `SavegameId` in the game's save
+  namespace). The GUI tells the hook each time a world's GUI starts
+  (`tpf3mp_native.world`); the room's world is the first to start after
+  the GUI took the request, never the one it was asked in, whose GUI may
+  well report itself in between. Then `Session::loaded(next_step)`, and
+  the room's steps run on. A world not up within `LOAD_PATIENCE` (600 s)
+  is held.
+- **The folder** is Steam's for the account playing,
+  `<Steam>/userdata/<account>/3493540/local/save`, from the registry
+  (Steam's `SteamPath` and `ActiveProcess\ActiveUser`), or else the one
+  account with a save folder for the game. Without one, a load holds the
+  world and a save is reported failed.
+
+The GUI runs only in a world, so a game must be in one, any one, before it
+can load the room's. Loading from the main menu (`CMenuUI::StartSavegame`,
+in the profile) is next.
 
 ## Release-day procedure: adding a target for a new build
 

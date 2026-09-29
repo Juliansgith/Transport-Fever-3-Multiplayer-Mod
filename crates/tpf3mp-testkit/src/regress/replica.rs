@@ -160,6 +160,13 @@ fn run(config: &ReplicaConfig) -> Result<ReplicaReport, ReplicaError> {
                 session.loaded(load.next_step)?;
                 continue;
             }
+            // before_step saves by itself; were it to hand a save over,
+            // this is what it asks.
+            StepGate::Save(order) => {
+                let outcome = game.save(&order.file);
+                session.saved(&mut game, outcome)?;
+                continue;
+            }
             StepGate::Ended | StepGate::Wait => {
                 ended = true;
                 break;

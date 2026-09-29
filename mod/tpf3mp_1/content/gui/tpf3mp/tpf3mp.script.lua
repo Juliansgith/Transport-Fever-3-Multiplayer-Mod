@@ -4,6 +4,11 @@
 -- started, it logs one line and does nothing more. The room's actions are
 -- applied by the mod's game script (tpf3mp_sim/), not here.
 --
+-- Every frame it does what the hook asks (docs/HOOKS.md, "The room's
+-- world"): save the world under a name when the room orders a save, or load
+-- the room's world from the game's save folder. It tells the hook each time
+-- a world's GUI starts, which is how the hook sees a load finish.
+--
 -- It follows what mods made for Transport Fever 3 build 40391 rely on
 -- (investigation/TF3_MODS_2026-09-27.md): a .script.lua defines data();
 -- ug_require loads the game's files ("::/...") and a mod's own
@@ -22,6 +27,9 @@ function data()
 	local function say(line)
 		pcall(debugPrint, "[tpf3mp] " .. line)
 	end
+
+	-- The link to the hook, once a world's GUI has found it.
+	local link = nil
 
 	-- The modules name each other `require "tpf3mp.<name>"`, as TPF2's
 	-- did. The game's GUI state has `require` and package.loaded but no
@@ -57,13 +65,43 @@ function data()
 		say("modules loaded")
 
 		local bridge = require "tpf3mp.bridge"
-		local link, reason = bridge.attach(bridge.find())
-		if not link then
+		local found, reason = bridge.attach(bridge.find())
+		if not found then
 			say(reason .. "; this is the plain game")
 			return
 		end
+		link = found
+		link:world()
 		link:log("the GUI is linked")
 		say("linked to the hook")
+	end
+
+	-- Does what the hook asks: saving the world under the name it gives, or
+	-- loading the room's world from the game's save folder.
+	local function serve()
+		if not link then return end
+		local request = link:poll()
+		if not request then return end
+		if request.save then
+			local name = request.save
+			local ok, err = pcall(app.saveGame, name, function()
+				link:saved(name, true)
+			end, false, true)
+			if not ok then link:saved(name, false, tostring(err)) end
+		elseif request.load then
+			local ok, err = pcall(function()
+				local id = api.type.SavegameId.new()
+				id.path = ""
+				id.saveGameName = request.load
+				id.saveGameNamespace = app.SaveGameNamespace.getSavegame()
+				app.loadGame(id, false, nil)
+			end)
+			if ok then
+				link:log("loading the room's world")
+			else
+				link:log("loading the room's world failed: " .. tostring(err))
+			end
+		end
 	end
 
 	local react = ug_require "::/gui/main/react.lua"
@@ -79,6 +117,8 @@ function data()
 				local ok, err = pcall(start)
 				if not ok then say("start failed: " .. tostring(err)) end
 			end
+			local ok, err = pcall(serve)
+			if not ok then say("serving the hook failed: " .. tostring(err)) end
 		end)
 		-- An empty layout keeps the plugin mounted, so onStep keeps running.
 		return builtin.BoxLayout{

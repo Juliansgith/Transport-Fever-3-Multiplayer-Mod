@@ -77,6 +77,20 @@ pub enum StepGate {
     Ended,
     /// Replace the world with this one, then call [`Session::loaded`].
     Load(Load),
+    /// Save the world as it stands into the order's file, then call
+    /// [`Session::saved`]. No step runs until then. Only
+    /// [`Session::poll_step`] answers this: [`Session::before_step`] saves
+    /// at once through [`Game::save`].
+    Save(SaveOrder),
+}
+
+/// A save the room ordered: see [`StepGate::Save`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveOrder {
+    /// The save event's number, which the report names.
+    pub event: u64,
+    /// Where the save goes: in the directory [`Begin`] named.
+    pub file: PathBuf,
 }
 
 /// A world to load: see [`ToHook::Load`](crate::ToHook::Load).
@@ -118,6 +132,8 @@ pub enum SessionError {
     LoadedElsewhere { expected: u64, got: u64 },
     #[error("the game loaded a world nobody ordered")]
     NotLoading,
+    #[error("the game saved a world nobody ordered")]
+    NotSaving,
 }
 
 /// The hook's end of one session with the agent.
@@ -126,6 +142,8 @@ pub struct Session {
     gate: Gate,
     /// A load the agent ordered that the game has not finished.
     pending_load: Option<Load>,
+    /// A save the room ordered that the game has not reported.
+    pending_save: Option<SaveOrder>,
     saves: PathBuf,
     checkpoint_interval: u64,
     /// How long the agent's heartbeat may stand still.
@@ -155,6 +173,7 @@ impl Session {
             link,
             gate: Gate::new(1),
             pending_load: None,
+            pending_save: None,
             saves: PathBuf::new(),
             checkpoint_interval: u64::MAX,
             patience,
@@ -242,6 +261,9 @@ impl Session {
             if self.gate.ended() {
                 return Ok(StepGate::Ended);
             }
+            if let Some(save) = &self.pending_save {
+                return Ok(StepGate::Save(save.clone()));
+            }
             if let Some(load) = &self.pending_load {
                 return Ok(StepGate::Load(load.clone()));
             }
@@ -263,9 +285,49 @@ impl Session {
         loop {
             match self.poll_step(game)? {
                 StepGate::Wait => std::thread::sleep(POLL),
+                StepGate::Save(order) => {
+                    let outcome = game.save(&order.file);
+                    self.saved(game, outcome)?;
+                }
                 other => return Ok(other),
             }
         }
+    }
+
+    /// The world was saved into the file [`StepGate::Save`] named, or saving
+    /// failed: reports it, with the world's lanes there. The steps after it
+    /// may then run. A failed save is reported too: the room decides
+    /// without it.
+    pub fn saved(
+        &mut self,
+        game: &mut impl Game,
+        outcome: Result<(), String>,
+    ) -> Result<(), SessionError> {
+        let Some(order) = self.pending_save.take() else {
+            return Err(SessionError::NotSaving);
+        };
+        let lanes = game.lanes();
+        let file = match outcome {
+            Ok(()) => match Text::new(order.file.to_string_lossy().into_owned()) {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    self.log(&format!(
+                        "cannot report the save {}: {error}",
+                        order.file.display()
+                    ))?;
+                    None
+                }
+            },
+            Err(reason) => {
+                self.log(&format!("saving the world failed: {reason}"))?;
+                None
+            }
+        };
+        self.send(&ToAgent::Saved {
+            event: order.event,
+            lanes,
+            file,
+        })
     }
 
     /// After [`Session::poll_step`] said [`StepGate::Run`]: how many steps
@@ -352,7 +414,10 @@ impl Session {
     fn handle(&mut self, message: ToHook, game: &mut impl Game) -> Result<(), SessionError> {
         match self.gate.on_message(message)? {
             Gated::Apply(event) if matches!(event.body, EventBody::Save) => {
-                self.save(event.seq, game)?;
+                self.pending_save = Some(SaveOrder {
+                    event: event.seq,
+                    file: self.saves.join(format!("save-{}.sav", event.seq)),
+                });
             }
             Gated::Apply(event) => game.apply(&event),
             Gated::Load { file, next_step } => {
@@ -371,32 +436,6 @@ impl Session {
             Gated::Nothing => {}
         }
         Ok(())
-    }
-
-    /// Saves the world at the save event `event` and reports it, with the
-    /// world's lanes there. A failed save is reported too: the room decides
-    /// without it.
-    fn save(&mut self, event: u64, game: &mut impl Game) -> Result<(), SessionError> {
-        let file = self.saves.join(format!("save-{event}.sav"));
-        let saved = game.save(&file);
-        let lanes = game.lanes();
-        let file = match saved {
-            Ok(()) => match Text::new(file.to_string_lossy().into_owned()) {
-                Ok(file) => Some(file),
-                Err(error) => {
-                    self.log(&format!(
-                        "cannot report the save {}: {error}",
-                        file.display()
-                    ))?;
-                    None
-                }
-            },
-            Err(reason) => {
-                self.log(&format!("saving the world failed: {reason}"))?;
-                None
-            }
-        };
-        self.send(&ToAgent::Saved { event, lanes, file })
     }
 
     fn send(&mut self, message: &ToAgent) -> Result<(), SessionError> {
@@ -566,5 +605,132 @@ mod tests {
         }
         assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
         assert_eq!(session.batch(&mut world, 16).unwrap(), 2, "11 and 12");
+    }
+
+    /// The next message the hook sent, past the hellos and loads.
+    fn heard(agent: &Link) -> ToAgent {
+        let mut buf = vec![0; MAX_MESSAGE];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(len) = agent.recv_into(&mut buf).unwrap() {
+                let message: ToAgent = decode(&buf[..len]).unwrap();
+                if !matches!(message, ToAgent::Hello { .. } | ToAgent::Loaded { .. }) {
+                    return message;
+                }
+            }
+            assert!(Instant::now() < deadline, "the hook said nothing");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn a_save_holds_the_steps_until_the_game_reports_it() {
+        let (mut session, agent, mut world) = playing("save", 50);
+        say(
+            &agent,
+            &ToHook::Apply(Event {
+                seq: 5,
+                step: 1,
+                body: EventBody::Save,
+            }),
+        );
+        say(&agent, &ToHook::Release { through: 1 });
+        let order = match session.poll_step(&mut world).unwrap() {
+            StepGate::Save(order) => order,
+            other => panic!("expected a save, got {other:?}"),
+        };
+        assert_eq!(order.event, 5);
+        assert!(
+            order.file.ends_with("save-5.sav"),
+            "{}",
+            order.file.display()
+        );
+        // Not saved yet: still the save, and no step.
+        assert_eq!(
+            session.poll_step(&mut world).unwrap(),
+            StepGate::Save(order.clone())
+        );
+        session.saved(&mut world, Ok(())).unwrap();
+        match heard(&agent) {
+            ToAgent::Saved { event, file, .. } => {
+                assert_eq!(event, 5);
+                assert_eq!(file.unwrap().as_str(), order.file.to_string_lossy());
+            }
+            other => panic!("expected the save's report, got {other:?}"),
+        }
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert!(matches!(
+            session.saved(&mut world, Ok(())),
+            Err(SessionError::NotSaving)
+        ));
+    }
+
+    #[test]
+    fn a_failed_save_is_reported_without_a_file_and_the_game_goes_on() {
+        let (mut session, agent, mut world) = playing("failed-save", 50);
+        say(
+            &agent,
+            &ToHook::Apply(Event {
+                seq: 9,
+                step: 1,
+                body: EventBody::Save,
+            }),
+        );
+        say(&agent, &ToHook::Release { through: 1 });
+        assert!(matches!(
+            session.poll_step(&mut world).unwrap(),
+            StepGate::Save(_)
+        ));
+        session
+            .saved(&mut world, Err("the disk is full".into()))
+            .unwrap();
+        // The failure goes to the agent's log, then the report.
+        let mut report = heard(&agent);
+        if matches!(report, ToAgent::Log { .. }) {
+            report = heard(&agent);
+        }
+        assert!(
+            matches!(
+                report,
+                ToAgent::Saved {
+                    event: 9,
+                    file: None,
+                    ..
+                }
+            ),
+            "{report:?}"
+        );
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+    }
+
+    #[test]
+    fn before_step_saves_at_once() {
+        let (mut session, agent, mut world) = playing("before-step-save", 50);
+        say(
+            &agent,
+            &ToHook::Apply(Event {
+                seq: 3,
+                step: 1,
+                body: EventBody::Save,
+            }),
+        );
+        say(&agent, &ToHook::Release { through: 1 });
+        assert_eq!(session.before_step(&mut world).unwrap(), StepGate::Run);
+        let mut report = heard(&agent);
+        if matches!(report, ToAgent::Log { .. }) {
+            report = heard(&agent);
+        }
+        // The test world refuses to save: reported without a file.
+        assert!(
+            matches!(
+                report,
+                ToAgent::Saved {
+                    event: 3,
+                    file: None,
+                    ..
+                }
+            ),
+            "{report:?}"
+        );
     }
 }

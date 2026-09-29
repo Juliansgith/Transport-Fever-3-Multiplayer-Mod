@@ -201,9 +201,9 @@ fn loaded_names(lua: &Lua) -> Vec<String> {
 }
 
 const FAKE_HOOK: &str = r#"
-HOOK = { logged = {}, commands = {}, batch = nil }
+HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, worlds = 0 }
 tpf3mp_native = {
-    version = 3,
+    version = 4,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then HOOK.commands[#HOOK.commands + 1] = action end
@@ -215,7 +215,32 @@ tpf3mp_native = {
         return batch
     end,
     log = function(line) HOOK.logged[#HOOK.logged + 1] = line end,
+    poll = function()
+        local request = HOOK.request
+        HOOK.request = nil
+        return request
+    end,
+    saved = function(name, ok, why)
+        HOOK.saved[#HOOK.saved + 1] = tostring(name) .. ' ' .. tostring(ok) .. ' ' .. tostring(why)
+    end,
+    world = function() HOOK.worlds = HOOK.worlds + 1 end,
 }
+"#;
+
+/// The game's save and load, as the GUI state has them.
+const FAKE_APP: &str = r#"
+APP = { saves = {}, loads = {} }
+app = {
+    saveGame = function(name, callback, isMapEditor, skipSetName)
+        APP.saves[#APP.saves + 1] = { name = name, callback = callback,
+                                      isMapEditor = isMapEditor, skipSetName = skipSetName }
+    end,
+    loadGame = function(id, isMapEditor, info)
+        APP.loads[#APP.loads + 1] = { id = id, isMapEditor = isMapEditor }
+    end,
+    SaveGameNamespace = { getSavegame = function() return "savegame" end },
+}
+api = { type = { SavegameId = { new = function() return {} end } } }
 "#;
 
 #[test]
@@ -232,6 +257,64 @@ fn with_the_hook_the_gui_links_once() {
         .eval()
         .unwrap();
     assert_eq!(logged, "the GUI is linked");
+    let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
+    assert_eq!(worlds, 1, "the world's GUI started once");
+}
+
+#[test]
+fn the_gui_saves_what_the_hook_asks_and_answers_when_written() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_APP).exec().unwrap();
+    lua.load("M = mount(loadPlugin())").exec().unwrap();
+    lua.load("M.step() HOOK.request = { save = 'tpf3mp_77_5' } M.step()")
+        .exec()
+        .unwrap();
+    let (name, map_editor, skip): (String, bool, bool) = lua
+        .load("local s = APP.saves[1] return s.name, s.isMapEditor, s.skipSetName")
+        .eval()
+        .unwrap();
+    assert_eq!(name, "tpf3mp_77_5");
+    assert!(!map_editor);
+    assert!(skip, "the player's own save name is left alone");
+    let answered: usize = lua.load("return #HOOK.saved").eval().unwrap();
+    assert_eq!(answered, 0, "not written yet");
+    lua.load("APP.saves[1].callback()").exec().unwrap();
+    let saved: Vec<String> = lua.load("return HOOK.saved").eval().unwrap();
+    assert_eq!(saved, ["tpf3mp_77_5 true nil"]);
+    // A save the game refuses at once is answered as failed.
+    lua.load(
+        "app.saveGame = function() error('no disk') end \
+         HOOK.request = { save = 'tpf3mp_77_6' } M.step()",
+    )
+    .exec()
+    .unwrap();
+    let saved: Vec<String> = lua.load("return HOOK.saved").eval().unwrap();
+    assert!(saved[1].starts_with("tpf3mp_77_6 false "), "{}", saved[1]);
+    assert!(saved[1].ends_with("no disk"), "{}", saved[1]);
+}
+
+#[test]
+fn the_gui_loads_the_rooms_world_from_the_save_folder() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_APP).exec().unwrap();
+    lua.load(
+        "M = mount(loadPlugin()) M.step() HOOK.request = { load = 'tpf3mp_room_77' } M.step()",
+    )
+    .exec()
+    .unwrap();
+    let loaded: String = lua
+        .load(
+            "local l = APP.loads[1] \
+             return l.id.path .. '|' .. l.id.saveGameName .. '|' .. l.id.saveGameNamespace \
+               .. '|' .. tostring(l.isMapEditor)",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(loaded, "|tpf3mp_room_77|savegame|false");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert_eq!(logged.last().unwrap(), "loading the room's world");
 }
 
 #[test]
@@ -242,7 +325,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 3; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 4; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -335,7 +418,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 3, command = print, log = print })
+             why({ version = 4, command = print, log = print })
              return out",
         )
         .eval()

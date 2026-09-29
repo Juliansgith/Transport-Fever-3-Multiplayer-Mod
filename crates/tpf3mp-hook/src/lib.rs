@@ -37,6 +37,7 @@ mod install;
 pub mod lua;
 mod platform;
 pub mod step;
+pub mod worlds;
 
 /// Names the link to the launcher that started this game, and that
 /// launcher's process. The launcher always sets both; without them, the hook
