@@ -41,7 +41,14 @@ tools/tpfre/Cargo.toml`.
 3. **Decode the executable** (§2, §6): `dayone.py decode`: `tpfre` indexes it
    (seconds) and looks up every hook target by its TPF2 name and source
    file; `tpfre q <db> sig <name> --toml` then gives each target's profile
-   block. On TPF2 it finds `GameSim::Step` at the known `0x15aa00`.
+   block. On TPF2 it finds `GameSim::Step` at the known `0x15aa00`. TF3
+   dropped the `__FUNCSIG__` strings those names came from (it keeps RTTI
+   and `__FILE__`), so give it TPF2's executable or index too:
+   `dayone.py decode --names-from <TransportFever2.exe>` carries TPF2's
+   names over with `tpfre match` first. On build 40408 that found
+   `GameSim::Step`, `CGame::Step`, `CGame::RunGameSimLoop`,
+   `CommandList::Add` and `UI::CMenuUI::CreatePage`, each in the source
+   file TF3 itself names for it.
 4. **Correct the two guesses in the code**: `dayone.py find`: the game's
    executables against `find_executable`'s names (`crates/tpf3mp-launch`)
    and the logs and crash dumps it finds against `game_candidates_in`

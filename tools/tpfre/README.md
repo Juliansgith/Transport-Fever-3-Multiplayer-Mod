@@ -327,6 +327,36 @@ summary unchanged=24200 moved=0 resized=0 appeared=0 disappeared=0
 resized Beta::Run game\alpha.cpp 0x1040->0x1040 size 27->28
 ```
 
+### `match <old.tpfdb> <new.tpfdb> [--dry-run] [--limit N]`
+
+Carries function names from an old build to a new one that lacks them.
+Transport Fever 3 keeps RTTI and `__FILE__` but drops the `__FUNCSIG__`
+strings that named 20,000 of TPF2's functions, and `diff` matches by those
+names. `match` pairs functions by what survives in both builds instead:
+
+- a string (an assert's condition, a log line) that exactly one function
+  uses in each build: each shared string is a vote;
+- the same slot of the same class's vtable, when the vtable has as many
+  slots in both and no other slot holds the function;
+- from those anchors, the call graph: a callee or caller with exactly one
+  plausible partner (instruction and callee counts within a quarter),
+  which has it as its only one too; hubs (over 64 neighbours) are skipped;
+- between two matched functions of one source file, the unmatched ones in
+  the gap, in address order, when both gaps hold as many.
+
+A pair is kept only when each side is the other's single best candidate
+and both builds' source files, where known, agree. The names go into the
+new database's `names` table as source `matched` (confidence `string(N)`,
+`rtti`, `calls` or `file-order`, with the evidence in `detail`), so `names`,
+`func` and the rest find them; the old database is only read. It prints
+its progress, and takes about 2 seconds for TPF2 onto TF3:
+
+```
+matched 10368 functions, 3942 of them named in the old build (calls 6165, file-order 154, rtti 2026, string 2023)
+0x159390 GameSim::Step [string(3)] old 0x15aa00: "millis > 0 && dt > .0f"
+0x11f3b0 CGame::Step [string(2)] old 0x118e90: "m_data->totalTime >= m_data->lastSyncTime"
+```
+
 ## Performance
 
 Transport Fever 2 build 35924 (72 MB, 115,484 `.pdata` functions), on a
