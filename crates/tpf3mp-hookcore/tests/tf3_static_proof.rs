@@ -20,6 +20,7 @@ const PROFILE: &str = include_str!("../../../profiles/tf3_build40408_steam_windo
 const TARGETS: &[(&str, u64)] = &[
     ("GameSim::Step", 0x159390),
     ("CGame::Step", 0x11f3b0),
+    ("CGameTime::GetSpeed", 0x2a95a0),
     ("UI::CMenuUI::StartSavegame", 0x6a2880),
     ("UI::CMenuUI::CreatePage", 0x6a2ee0),
     ("CommandList::Add::lambda", 0x9d23c0),

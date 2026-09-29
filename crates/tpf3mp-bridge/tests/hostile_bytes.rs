@@ -100,6 +100,9 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         ToAgent::Chat {
             text: Text::new("brb").unwrap(),
         },
+        ToAgent::Speed {
+            speed: Speed::PAUSED,
+        },
     ];
     let mut samples: Vec<(Check, Vec<u8>)> = Vec::new();
     samples.extend(

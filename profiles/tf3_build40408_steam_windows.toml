@@ -12,8 +12,8 @@
 #
 # Not yet confirmed by running a hook: the addresses are static findings
 # (investigation/TF3_OFFICIAL_API_2026-09-29.md, "Measured on the release build").
-# TPF2's CGameTime::GetSpeed has no counterpart here: TF3 sets speed through the
-# script command makeGameSetSpeedCmd, which the room can take over in Lua.
+# TF3 sets the speed through the script command makeGameSetSpeedCmd; the getter
+# the simulation step reads it through is CGameTime::GetSpeed below.
 
 name = "Transport Fever 3 Build 40408 (Steam, Windows x64)"
 image_base = 0x140000000
@@ -41,6 +41,19 @@ name = "CGame::Step"
 signature = "40 53 48 83 EC 20 48 8B 81 F0 01 00 00 48 8B D9"
 offset = 0
 prologue = "40 53 48 83 EC 20 48 8B 81 F0 01 00 00 48 8B D9"
+required = true
+
+# CGameTime::GetSpeed (TPF2 0x2877a0; here 0x2a95a0): the speed GameSim::Step
+# reads, in updates per call (GameSpeed.speedup). Not matched by name: it is
+# the getter GameSim::Step calls before its update loop, 27 bytes returning the
+# component's speedup, in gametime.cpp, as TPF2's. In a room's game the hook
+# makes it answer 1, so one call of the step is one update (HOOKS.md, "The step
+# gate in the game").
+[[target]]
+name = "CGameTime::GetSpeed"
+signature = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 04"
+offset = 0
+prologue = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10"
 required = true
 
 # UI::CMenuUI::StartSavegame (TPF2 0x6785c0; here 0x6a2880): the in-process

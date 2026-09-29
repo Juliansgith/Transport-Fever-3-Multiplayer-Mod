@@ -95,10 +95,11 @@ function data()
 		-- Once per game: the ref lives as long as this plugin is mounted.
 		local started = react.useRef(false)
 		react.onStep(function()
-			if started:get() then return end
-			started:set(true)
-			local ok, err = pcall(start)
-			if not ok then say("start failed: " .. tostring(err)) end
+			if not started:get() then
+				started:set(true)
+				local ok, err = pcall(start)
+				if not ok then say("start failed: " .. tostring(err)) end
+			end
 		end)
 		-- An empty layout keeps the plugin mounted, so onStep keeps running.
 		return builtin.BoxLayout{

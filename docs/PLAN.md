@@ -131,7 +131,12 @@ Dev A where it can):
   names for them).
 - [ ] Detour the step: `Session::before_step` before each step,
   `after_step` after. Done when the game holds while the agent withholds
-  a turn and goes on when it releases it.
+  a turn and goes on when it releases it. *Changed:* built and tested
+  against a stand-in step (`crates/tpf3mp-hook`, HOOKS.md "The step gate
+  in the game"): a `GameSim::Step` call runs one update per step at the
+  game's 1x, so the detour runs it once per released step and not at all
+  while one is withheld. Still to see in the real game, and to add: the
+  mod holding the game at 1x, and loading a room's save.
 - [ ] Detour the command queue's add: a road build is cancelled locally
   and its payload goes to `Session::command`. Done when a click builds
   nothing locally and the command shows in the agent's log.
@@ -143,7 +148,13 @@ Dev A where it can):
   `Session::command` (`Control::Speed`). The launcher has no speed
   control. *Added:* the speed row is a script recipe a mod can replace,
   so this may need no native code; the pause-or-cycle key must be caught
-  too.
+  too. *Changed:* built, not yet seen in the real game: the game's own
+  speed is held at 1x in a room's game (the hook's `CGameTime::GetSpeed`
+  detour), so no button or key runs the world at another pace, and the
+  speed row's value, pause included, goes to the room as a speed request
+  (`ToAgent::Speed`); the owner's sets the room's speed, anyone else's is
+  refused as a notice. Other players' speed rows still show their own
+  value, not the room's.
 - [ ] *Added:* whether the stock tools send their commands through
   `api.cmd.sendCommand`. If they do, the caller-RVA filter cannot tell a
   click from our replay (HOOKS.md), and the hook needs another way to

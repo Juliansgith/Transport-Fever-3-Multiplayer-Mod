@@ -357,6 +357,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     directory `Begin` named; the agent takes in no other.
   - `Chat { text }`: the player says something to the room
     (`Session::chat`).
+  - `Speed { speed }`: the player picked this speed in the game's speed
+    row (`Session::request_speed`); the agent asks the room, which takes it
+    from the owner only. Bridge version 4.
   - `Log`: a line for the agent's log.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
@@ -434,6 +437,60 @@ by hand (see [DEVELOPMENT.md](DEVELOPMENT.md)). On release day, what remains for
   applies the canonical economy, with `save` and `restore` so its rooms'
   logs compact (`crates/tpf3mp-server/src/ruleset.rs`). It is added to
   the server's `RulesMenu` next to `native`, which stays offered.
+
+### The step gate in the game
+
+`tpf3mp-hook` detours the game's `GameSim::Step` (TF3 build 40408:
+`0x159390`, from the built-in profile) and hands every call to
+`step::StepDriver` (`crates/tpf3mp-hook/src/step.rs`, `install.rs`).
+
+What one call of `GameSim::Step` does decides the design. In TPF2 and TF3
+alike it reads the game's speed and runs that many simulation updates:
+none while paused, one at 1x, four at 4x. TF3 also adds a pending count,
+fed by the debug command `makeGamePerformSimulationStepsCmd` and capped at
+64 a call (the global at `0x403b8e0`). So with the game held at 1x and
+nothing pending, one call is exactly one update, the unit the room orders:
+
+- **Before the room begins a game**, and **after it ends**, each call runs
+  the game's step as the game would.
+- **In the room's game**, each call runs the game's step once for each
+  step the room has released (`Session::poll_step`, never blocking the
+  game's thread), reporting each (`after_step`), at most 16 a call. A room
+  faster than the game's own 1x pace catches up that way, up to 16x. When
+  the room withholds the next step (paused, or a player behind), the call
+  runs nothing and the world stands still.
+- **The room's world.** A `Load` without a file (the world every player
+  starts from) takes the world the game has loaded. A `Load` with a save
+  file, and any error (the agent gone, a malformed message, a failed
+  report), **hold** the world for good: no more steps run, rather than run
+  apart from the room's (fail closed). Loading a room's save is the next
+  piece (`CMenuUI::StartSavegame`, in the profile).
+- **The game's speed is held at 1x.** In the room's game the hook's
+  detour on `CGameTime::GetSpeed` (`0x2a95a0`, the getter `GameSim::Step`
+  reads) answers 1, whatever the speed row, a key or a script set, so one
+  call is always one update and the game's own pause stops nothing (the
+  room's pause is the only pause). A correction after the fact would not
+  do: one call at 4x would already have run four updates as one step.
+  Nothing may send the debug step command during a room: its pending count
+  would add updates to a call.
+- **The speed row asks the room.** The getter's detour still reads the
+  game's own speed, the speed row's value, every time the game asks
+  (`CGame::Sync` and the game UI ask every frame, paused or not). When it
+  changes in the room's game, the hook sends `ToAgent::Speed` and the agent
+  asks the room (`Request::SetSpeed`): the owner's choice sets the room's
+  speed for everyone, and anyone else's is refused, shown as a notice. The
+  value found on entering the room's game is not sent, so joining never
+  resets a room's speed.
+
+The hook installs the detour from its bootstrap thread while the game
+starts, before any world is loaded, so no thread is inside the step when
+it is patched. It resolves the profile in the game's own mapped image
+(not the file on disk), attaches the `Session` to the launcher's link, and
+calls the game's step through the detour's trampoline with all four
+register arguments passed through unchanged. A panic in the detour sets it
+to hold. Tests: `step::tests` drive the driver against a scripted room;
+`install::tests` detours a stand-in step in the test binary and checks it
+runs exactly once per released step with its arguments untouched.
 
 ### The Lua side
 

@@ -132,6 +132,11 @@ protected folder such as Program Files.
 
 ## While you play
 
+- **Speed and pause.** The room's owner sets the room's speed, pause
+  included, with the game's own speed buttons, and everyone's game runs at
+  it. Anyone else's speed buttons do not change the room's speed: the
+  launcher says so, and the game keeps the room's pace whatever the
+  buttons show.
 - **Joining later.** You can join a game that is already running: the
   room sends you its world, and your game loads it and catches up.
 - **Losing the connection.** If your connection or the server drops, the
