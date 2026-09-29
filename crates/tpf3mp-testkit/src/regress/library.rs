@@ -104,6 +104,7 @@ pub fn polyline(vertices: Vec<Vertex>, structure: &Structure) -> Polyline {
 pub fn road(vertices: Vec<Vertex>) -> Action {
     Action::BuildRoad(RoadBuild {
         street: text(STREET),
+        style: None,
         bus_lane: false,
         tram: Tram::None,
         polyline: polyline(vertices, &Structure::Ground),
@@ -113,6 +114,7 @@ pub fn road(vertices: Vec<Vertex>) -> Action {
 pub fn track(vertices: Vec<Vertex>, structure: &Structure) -> Action {
     Action::BuildTrack(TrackBuild {
         track: text(TRACK),
+        style: None,
         catenary: true,
         polyline: polyline(vertices, structure),
     })

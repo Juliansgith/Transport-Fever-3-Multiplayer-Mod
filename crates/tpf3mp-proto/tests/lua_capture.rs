@@ -116,6 +116,7 @@ fn a_captured_road_decodes_as_the_schema_says() {
     let road = run().road;
     let expected = Action::BuildRoad(RoadBuild {
         street: text("street/standard/town_medium_new.lua"),
+        style: Some(text("style/old_town.lua")),
         bus_lane: true,
         tram: Tram::Electric,
         polyline: Polyline::new(
@@ -181,6 +182,7 @@ fn a_captured_track_decodes_as_the_schema_says() {
     let track = run().track;
     let expected = Action::BuildTrack(TrackBuild {
         track: text("high_speed.lua"),
+        style: None,
         catenary: true,
         polyline: Polyline::new(
             list(vec![
@@ -247,4 +249,82 @@ fn a_capture_the_schema_does_not_allow_is_refused() {
             "{why}: the schema took it"
         );
     }
+}
+
+/// Reads a builder proposal with the mod's `engine.fromProposal`, in a
+/// stand-in for the game's API, and returns `street`, `track`, `style` and
+/// the first edge's network, joined by `|`, or the error.
+fn read_proposal(api: &str, segment: &str, network: &str) -> Result<String, String> {
+    let lua = Lua::new();
+    let preload: Table = lua
+        .globals()
+        .get::<Table>("package")
+        .unwrap()
+        .get("preload")
+        .unwrap();
+    for (name, source) in MODULES {
+        let chunk = lua.load(source).into_function().unwrap();
+        preload.set(format!("tpf3mp.{name}"), chunk).unwrap();
+    }
+    lua.load(format!(
+        "api = {api}
+         local engine = require 'tpf3mp.engine'
+         local function v(x, y, z) return {{ x = x, y = y, z = z }} end
+         local seg = {segment}
+         local proposal = {{
+             addedNodes = {{ {{ entity = -1, comp = {{ position = v(0, 0, 0) }} }},
+                            {{ entity = -2, comp = {{ position = v(100, 0, 0) }} }} }},
+             addedSegments = {{ seg }},
+             removedSegments = {{}},
+         }}
+         local c = engine.fromProposal(proposal, '{network}')
+         return table.concat({{ tostring(c.street), tostring(c.track), tostring(c.style), c.edges[1].network }}, '|')"
+    ))
+    .eval::<String>()
+    .map_err(|error| error.to_string())
+}
+
+const TF3_API: &str = "{ type = { RoadType = { STREET = 0, TRACK = 1 } } }";
+
+fn tf3_segment(road_type: u8, style: &str) -> String {
+    format!(
+        "{{ entity = -3, type = 0, streetEdge = {{}}, comp = {{ node0 = -1, node1 = -2, \
+         tangent0 = v(100, 0, 0), tangent1 = v(100, 0, 0), type = 0, typeIndex = -1, \
+         roadType = {road_type}, roadTemplate = 'road/town_medium.lua', roadStyle = {style} }} }}"
+    )
+}
+
+#[test]
+fn a_tf3_proposal_is_read_by_road_template_and_style() {
+    let street = read_proposal(TF3_API, &tf3_segment(0, "'style/old_town.lua'"), "Street");
+    assert_eq!(
+        street.unwrap(),
+        "road/town_medium.lua|nil|style/old_town.lua|Street"
+    );
+    let track = read_proposal(TF3_API, &tf3_segment(1, "nil"), "Track");
+    assert_eq!(track.unwrap(), "nil|road/town_medium.lua|nil|Track");
+}
+
+#[test]
+fn a_tf3_proposal_the_mod_cannot_place_fails_the_capture() {
+    // No api.type.RoadType: which network the edge is in is unknown.
+    let unknown = read_proposal("{}", &tf3_segment(1, "nil"), "Track");
+    assert!(unknown.unwrap_err().contains("api.type.RoadType"));
+    // A style that is not a resource name.
+    let odd = read_proposal(TF3_API, &tf3_segment(0, "7"), "Street");
+    assert!(odd.unwrap_err().contains("roadStyle"));
+}
+
+#[test]
+fn a_tpf2_proposal_still_reads_by_type_file() {
+    let api =
+        "{ res = { streetTypeRep = { getName = function(i) return 'street/standard.lua' end } } }";
+    let segment = "{ entity = -3, type = 0, \
+        streetEdge = { streetType = 4, hasBus = true, tramTrackType = 2 }, \
+        comp = { node0 = -1, node1 = -2, tangent0 = v(100, 0, 0), tangent1 = v(100, 0, 0), \
+                 type = 0, typeIndex = -1 } }";
+    assert_eq!(
+        read_proposal(api, segment, "Street").unwrap(),
+        "street/standard.lua|nil|nil|Street"
+    );
 }

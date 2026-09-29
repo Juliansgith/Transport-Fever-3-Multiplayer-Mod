@@ -23,6 +23,7 @@
 --     network  = "Street" | "Track",     -- the tool's network
 --     street, bus_lane, tram,             -- a road: its type file, bus lane, "None" | "Plain" | "Electric"
 --     track, catenary,                    -- a track: its type file, catenary
+--     style,                              -- TF3: the road style, with street or track the template
 --     nodes   = { { id = -1, pos = {x, y, z} }, ... },   -- the proposal's new nodes (placeholder ids < 0)
 --     edges   = { { node0 =, node1 =, network =, tangent0 = {..}, tangent1 = {..},
 --                   structure = "Ground" | { Bridge = file } | { Tunnel = file } }, ... },
@@ -196,12 +197,12 @@ function roads.convert(capture, world)
 	local polyline = { vertices = vertices, links = links, removals = removals }
 	if own == "Street" then
 		return { BuildRoad = {
-			street = capture.street, bus_lane = capture.bus_lane == true,
+			street = capture.street, style = capture.style, bus_lane = capture.bus_lane == true,
 			tram = capture.tram or "None", polyline = polyline,
 		} }
 	end
 	return { BuildTrack = {
-		track = capture.track, catenary = capture.catenary == true, polyline = polyline,
+		track = capture.track, style = capture.style, catenary = capture.catenary == true, polyline = polyline,
 	} }
 end
 

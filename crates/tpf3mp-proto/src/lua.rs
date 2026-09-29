@@ -1047,6 +1047,7 @@ mod tests {
         };
         let expected = Action::BuildRoad(RoadBuild {
             street: Text::new("street/standard/town_medium_new.lua").unwrap(),
+            style: None,
             bus_lane: false,
             tram: Tram::None,
             polyline: Polyline::new(
