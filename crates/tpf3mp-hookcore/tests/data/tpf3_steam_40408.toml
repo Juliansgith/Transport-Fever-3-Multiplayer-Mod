@@ -1,0 +1,121 @@
+# Signature profile for Transport Fever 3, Steam build 40408 (Windows x64).
+#
+# The first TF3 profile, from the release-day static recon
+# (investigation/TPF3_RECON_2026-09-29.md). Targets were located by RTTI,
+# source-file asserts and luabridge (TF3's release build has almost no
+# __FUNCSIG__ names), and each signature was generated with
+# `tpfre q sig <rva> --toml` and confirmed to match exactly once across
+# `.text`. RVAs are from image base 0x140000000; `.text` is readable on disk
+# for this build (the SteamStub `.bind` section does not encrypt it).
+#
+# NOT YET MEASURED in-game. The targets resolve statically (proven by
+# tests/tpf3_steam_static_proof.rs against the real exe), but which of them
+# the hook detours, and the CommandList-vs-DeferredCommandBuffer question,
+# wait on the in-game reconciliation TPF3_RECON_2026-09-29.md lists. The
+# Epic/GOG build (40393) needs its own profile.
+
+name = "Transport Fever 3 Build 40408 (Steam, Windows x64)"
+image_base = 0x140000000
+region = ".text"
+
+[build]
+sha256 = "de1daad3a13f3b7e9f79903361bb43769cf4f15e59271a263aefe1f075f23ef2"
+size = 69711288
+pe_timestamp = 0x6AB69FE5
+
+# The per-frame simulation entry; runs max(speed,budget) sub-steps (recon 0x159390).
+[[target]]
+name = "GameSim::Step"
+signature = "40 55 41 56 48 83 EC 48 4C 8B F2 48 8B E9"
+offset = 0
+prologue = "40 55 41 56 48 83 EC 48 4C 8B F2 48 8B E9"
+required = true
+
+# The sim loop, on the "Simulation Thread" (recon 0x11e210).
+[[target]]
+name = "CGame::RunGameSimLoop"
+signature = "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D A8 C8 FE FF FF 48 81 EC 10 02 00 00 C5 F8 29 70 C8 C5 F8 29 78 B8 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 E0 00 00 00 4C 8B E9"
+offset = 0
+prologue = "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20"
+required = true
+
+# Step boundary: drains the command list, records the lockstep ledger (recon 0x11f650).
+[[target]]
+name = "CGame::Sync"
+signature = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 40 4C 8B F2 48 8B D9"
+offset = 0
+prologue = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56"
+required = true
+
+# Copies the simulated GameState into the other of the two buffers (recon 0x255de0).
+[[target]]
+name = "GameState::Replicate"
+signature = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 50 41 8B E8"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18"
+required = true
+
+# Integer speed from ecs::component::GameSpeed (+4); 0 = paused (recon 0x2a95a0).
+[[target]]
+name = "CGameTime::GetSpeed"
+signature = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 04"
+offset = 0
+prologue = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10"
+required = true
+
+# Enqueue and only cancel point (returns a Connection). Recon open item (recon 0x9d29c0).
+[[target]]
+name = "CommandList::Add"
+signature = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 98 48 81 EC 68 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 49 8B F1"
+offset = 0
+prologue = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 98"
+required = true
+
+# Double-buffer swap that drains the accumulated commands (recon 0x9d2d20).
+[[target]]
+name = "CommandList::Swap"
+signature = "48 89 7C 24 18 41 56 48 83 EC 20 4C 8B F1 48 8B FA"
+offset = 0
+prologue = "48 89 7C 24 18 41 56 48 83 EC 20 4C 8B F1"
+required = true
+
+# Jump table keyed by the command-kind byte at payload+0x9b8 (recon 0x9d7350).
+[[target]]
+name = "CommandApply::Dispatch"
+signature = "48 8B C4 48 89 58 08 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 E8 FA FF FF"
+offset = 0
+prologue = "48 8B C4 48 89 58 08 55 56 57 41 54 41 55"
+required = true
+
+# Applies one command on the sim thread, fires its callback (recon 0x9e1c10).
+[[target]]
+name = "CommandApply::One"
+signature = "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 56 41 57 48 8D 6C 24 C9 48 81 EC B0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 2F 4C 8B F2"
+offset = 0
+prologue = "48 89 5C 24 18 48 89 74 24 20 55 57 41 54"
+required = true
+
+# luabridge registrar that builds the whole api.cmd.* table (recon 0xe38ae0).
+[[target]]
+name = "SetupCommandInterface"
+signature = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 F5 FF FF 48 81 EC 78 0B 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 68 0A 00 00"
+offset = 0
+prologue = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 88 F5 FF FF"
+required = true
+
+# Creates a player entity (Player/Name/Color/Account/LogBook) (recon 0xcceee0).
+[[target]]
+name = "Player::Create"
+signature = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 B8 48 81 EC 48 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 38 49 8B F0"
+offset = 0
+prologue = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 B8"
+required = true
+
+# Generic PlayerOwned write; uniform across entity kinds (recon 0x9db080).
+[[target]]
+name = "EntitySetPlayer::Apply"
+signature = "48 89 5C 24 18 55 56 57 41 56 41 57 48 83 EC 40 48 8B F2"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 41 56 41 57 48 83 EC 40"
+required = true
+

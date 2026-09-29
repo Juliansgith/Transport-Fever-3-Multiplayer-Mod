@@ -521,6 +521,30 @@ reconciliations to settle in-game first (e.g. `CommandList` vs
 6. **Never widen a signature to force a match** on a build you have not archived.
    An unknown build must stay unknown, so the hook fails closed.
 
+## What was verified on the TF3 Steam binary
+
+The first TF3 profile,
+`crates/tpf3mp-hookcore/tests/data/tpf3_steam_40408.toml`, holds 12 targets
+from the release-day recon
+([investigation/TPF3_RECON_2026-09-29.md](../investigation/TPF3_RECON_2026-09-29.md)):
+the command queue (`CommandList::Add`/`Swap`, the apply dispatcher and
+applier, `SetupCommandInterface`), the sim clock (`GameSim::Step`,
+`CGame::RunGameSimLoop`, `CGame::Sync`, `GameState::Replicate`,
+`CGameTime::GetSpeed`) and the player commands (`Player::Create`,
+`EntitySetPlayer::Apply`). `tests/tpf3_steam_static_proof.rs` resolves the
+profile against the real `TransportFever3.exe` (Steam, SHA-256
+`de1daad3...f23ef2`, size 69,711,288, PE timestamp `0x6AB69FE5`): every
+target matches **exactly once** across `.text`, and corrupting one makes it
+fail closed. Like the TPF2 proof, the test is skipped where the exe is
+absent (CI and any machine without the game). Each signature wildcards its
+build-variable bytes and each prologue is the exact bytes the detour
+relocates.
+
+Not yet measured in-game: which targets the hook detours, the
+`CommandList` vs `DeferredCommandBuffer` question, and the Epic/GOG build
+(40393), which needs its own profile. The RVAs move on any patch (patch
+duty).
+
 ## What was verified on the TPF2 binary
 
 Against `TransportFever2.exe`, Steam build 35924 (SHA-256
