@@ -34,6 +34,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -748,54 +749,108 @@ CMD_PATTERN = re.compile(r"\bapi\.cmd\.(make\w*Cmd|make\.\w+)\b")
 DECL_PATTERN = re.compile(r"\b(make\w*Cmd)\s*:")
 
 
+# TF3's content archives (base/content/*.zip) are zips whose local file
+# headers start "UG\x03\x04" instead of "PK\x03\x04"; the central directory
+# is a plain zip's. Seen in build 40408's download, 2026-09-29.
+ZIP_LOCAL_MAGICS = (b"PK\x03\x04", b"UG\x03\x04")
+
+
+def archive_scripts(path: Path):
+    """The .tl and .lua files inside a zip or TF3 content archive, as (name,
+    text). Raises ValueError for an archive it cannot read whole."""
+    data = path.read_bytes()
+    end = data.rfind(b"PK\x05\x06")
+    if end < 0:
+        raise ValueError("no end of central directory")
+    count, _size, at = struct.unpack_from("<HII", data, end + 10)
+    for _ in range(count):
+        if data[at:at + 4] != b"PK\x01\x02":
+            raise ValueError(f"bad central directory entry at {at}")
+        method = struct.unpack_from("<H", data, at + 10)[0]
+        csize, usize = struct.unpack_from("<II", data, at + 20)
+        nlen, xlen, clen = struct.unpack_from("<HHH", data, at + 28)
+        local = struct.unpack_from("<I", data, at + 42)[0]
+        name = data[at + 46:at + 46 + nlen].decode("utf-8", "replace")
+        at += 46 + nlen + xlen + clen
+        if not name.lower().endswith((".tl", ".lua")):
+            continue
+        if data[local:local + 4] not in ZIP_LOCAL_MAGICS:
+            raise ValueError(f"{name}: unknown local header {data[local:local + 4]!r}")
+        lnlen, lxlen = struct.unpack_from("<HH", data, local + 26)
+        start = local + 30 + lnlen + lxlen
+        raw = data[start:start + csize]
+        if method == 0:
+            body = raw
+        elif method == 8:
+            body = zlib.decompress(raw, -15)
+        else:
+            raise ValueError(f"{name}: compression method {method}")
+        if len(body) != usize:
+            raise ValueError(f"{name}: {len(body)} bytes, expected {usize}")
+        yield name, body.decode("utf-8", errors="replace")
+
+
 def scan_scripts(folder: Path) -> dict:
-    """The game's own script sources: which command factories exist, and
-    which files send commands."""
-    result = {"files": 0, "tl": 0, "dtl": 0, "lua": 0, "archives": [], "factories": {}, "declared": {},
-              "senders": [], "game_script_dirs": [], "speed": []}
+    """The game's own script sources, loose and inside its content archives:
+    which command factories exist, and which files send commands."""
+    result = {"files": 0, "tl": 0, "dtl": 0, "lua": 0, "archives": [], "packed": 0, "factories": {},
+              "declared": {}, "senders": [], "game_script_dirs": [], "speed": []}
     for path in sorted(folder.rglob("*")):
         if not path.is_file():
             continue
         name = path.name.lower()
         rel = path.relative_to(folder).as_posix()
-        if (path.suffix.lower() in (".zip", ".pak", ".arc", ".dat") and path.stat().st_size > (1 << 20)
-                and not re.search(r"(?i)texture|audio|sound|model|font", rel)):
+        if path.suffix.lower() == ".zip":
+            try:
+                for inner, text in archive_scripts(path):
+                    result["packed"] += 1
+                    scan_script_text(f"{rel}!{inner}", inner.lower(), text, result)
+            except (OSError, ValueError, struct.error, zlib.error) as error:
+                result["archives"].append(f"{rel} ({error})")
+            continue
+        if path.suffix.lower() in (".pak", ".arc", ".dat") and path.stat().st_size > (1 << 20) \
+                and not re.search(r"(?i)texture|audio|sound|model|font", rel):
             result["archives"].append(rel)
         if not (name.endswith(".tl") or name.endswith(".lua")):
             continue
-        result["files"] += 1
-        if name.endswith(".d.tl"):
-            result["dtl"] += 1
-        elif name.endswith(".tl"):
-            result["tl"] += 1
-        else:
-            result["lua"] += 1
-        if "/game_script/" in "/" + rel:
-            result["game_script_dirs"].append(rel)
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for number, line in enumerate(text.splitlines(), 1):
-            for m in CMD_PATTERN.finditer(line):
-                result["factories"].setdefault(m.group(1), []).append(f"{rel}:{number}")
-            if name.endswith(".d.tl"):
-                for m in DECL_PATTERN.finditer(line):
-                    result["declared"].setdefault(m.group(1), []).append(f"{rel}:{number}")
-            if "sendCommand" in line:
-                result["senders"].append(f"{rel}:{number}")
-            if re.search(r"GameSpeedControl|setSpeed|IA_GAME_PAUSE", line):
-                result["speed"].append(f"{rel}:{number}: {line.strip()[:120]}")
+        scan_script_text(rel, name, text, result)
     return result
+
+
+def scan_script_text(rel: str, name: str, text: str, result: dict) -> None:
+    result["files"] += 1
+    if name.endswith(".d.tl"):
+        result["dtl"] += 1
+    elif name.endswith(".tl"):
+        result["tl"] += 1
+    else:
+        result["lua"] += 1
+    if "/game_script/" in "/" + rel:
+        result["game_script_dirs"].append(rel)
+    for number, line in enumerate(text.splitlines(), 1):
+        for m in CMD_PATTERN.finditer(line):
+            result["factories"].setdefault(m.group(1), []).append(f"{rel}:{number}")
+        if name.endswith(".d.tl"):
+            for m in DECL_PATTERN.finditer(line):
+                result["declared"].setdefault(m.group(1), []).append(f"{rel}:{number}")
+        if "sendCommand" in line:
+            result["senders"].append(f"{rel}:{number}")
+        if re.search(r"GameSpeedControl|setSpeed|IA_GAME_PAUSE", line):
+            result["speed"].append(f"{rel}:{number}: {line.strip()[:120]}")
 
 
 def cmd_scripts(args) -> int:
     game = need_game(args)
     s = scan_scripts(game.folder)
     r = Report("The game's script sources")
-    r.add(f"- {s['files']} script files: {s['tl']} .tl, {s['dtl']} .d.tl declarations, {s['lua']} .lua")
+    r.add(f"- {s['files']} script files: {s['tl']} .tl, {s['dtl']} .d.tl declarations, {s['lua']} .lua;"
+          f" {s['packed']} of them inside the content archives")
     if s["archives"]:
-        r.add(f"- packed archives that may hold more scripts: {', '.join(s['archives'][:20])}")
+        r.add(f"- CHECK: archives not read, which may hold more scripts: {', '.join(s['archives'][:20])}")
     r.add(f"- game_script folders: {', '.join(s['game_script_dirs']) or 'none (engine-state scripts may be gone; the probes use the GUI state)'}")
     r.add("")
     names = sorted(set(s["factories"]) | set(s["declared"]))
