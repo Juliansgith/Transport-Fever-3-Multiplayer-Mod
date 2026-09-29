@@ -941,7 +941,9 @@ BLOCK = re.compile(r"\[tpf3mp-probe ([\w-]+)\] (.*)$")
 
 def collect_lines(text: str) -> tuple[dict[str, list[str]], list[str]]:
     """The probes' blocks (by file name) and determinism lines, out of a
-    game log."""
+    game log. The determinism lines are the last run's: each game loaded in
+    one session starts the probe again with a header, and a run is compared
+    from its own header on."""
     blocks: dict[str, list[str]] = {}
     det: list[str] = []
     open_blocks: dict[str, str] = {}
@@ -951,6 +953,8 @@ def collect_lines(text: str) -> tuple[dict[str, list[str]], list[str]]:
             continue
         tag, rest = m.groups()
         if tag == "det":
+            if rest.startswith("# determinism_probe"):
+                det = []
             det.append(rest)
             continue
         if rest.startswith("BEGIN "):
