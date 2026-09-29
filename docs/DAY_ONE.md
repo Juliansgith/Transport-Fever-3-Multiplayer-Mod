@@ -149,6 +149,17 @@ fill what the sources do not say. They are TPF2 mods, and must be ported
 to TF3's layout (`mod.json`, `_content.json`, `content/`) and to a GUI
 `onStep` plugin before they can run.
 
+*Added* (TF3_OFFICIAL_API_2026-09-29.md): Urban Games' generated
+reference at `wiki.transportfever3.com/script-doc/` documents the API,
+including the **61 `api.cmd.make*Cmd` factories** with their argument
+types (recorded in
+[investigation/TF3_OFFICIAL_API_2026-09-29.md](../investigation/TF3_OFFICIAL_API_2026-09-29.md)),
+and the **companies** command API (`makeGameAddPlayerCmd`,
+`makeEntitySetPlayerCmd`). The recon confirms and measures those against
+the running game; it no longer discovers them from scratch. The reference
+"is not yet complete", so the dump still fills gaps and catches build
+changes.
+
 - `_VERSION`; availability of `io`, `os`, `require`, `package`, `debug`,
   `load`/`loadstring` in both the game-script and GUI states.
 - Dump `api.*` and `game.interface.*`; list `api.cmd.make.*` factories.

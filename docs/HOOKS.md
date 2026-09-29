@@ -567,6 +567,18 @@ than relocating them, so its steals are a conservative bound for one that does.
 
 ### The command pipeline: two hooks, not one
 
+TF3's command surface is now documented, not guessed: Urban Games'
+reference lists **61 `api.cmd.make*Cmd` factories** with their argument
+types, recorded in
+[investigation/TF3_OFFICIAL_API_2026-09-29.md](../investigation/TF3_OFFICIAL_API_2026-09-29.md).
+A TF3 profile's factory targets are found for that list, not ported name
+for name from TPF2's. Two entries change the design directly:
+`makeWorldBuildProposalCmd` takes a fifth `playerInitiated` argument (a
+possible player-vs-replay signal, see below), and companies are commands
+(`makeGameAddPlayerCmd`, `makeEntitySetPlayerCmd`), so ownership changes go
+through this same pipeline rather than the native, assert-bypassed
+`setPlayer` binding TPF2 patched.
+
 Every player action becomes a `Command` built by a `make_cmd::*` factory and
 handed to `CommandList::Add(list, OUT handle, cmd, ..., callback)`. The mod
 hooks both, and the reason is worth carrying into a TPF3 profile:
