@@ -219,11 +219,11 @@ The zip holds:
 
 - `tpf3mp/logs/`: the launcher's logs, which record its crashes too;
 - `tpf3mp/hook.log`: the in-game hook's log;
-- `game/…`: the game's own log (`stdout.txt`) and crash dumps. Until
-  Transport Fever 3 is out, these are looked for in its Steam folder where
-  Transport Fever 2 kept them in its own,
-  `<Steam>/userdata/<account>/3493540/local/` (`stdout.txt` and
-  `crash_dump/`); the manifest marks them "TPF2 location, confirm on TF3";
+- `game/…`: the game's own log (`stdout.txt`) and crash reports, from
+  `<Steam>/userdata/<account>/3493540/local/crash_dump/`, where Transport
+  Fever 3 writes them on Windows. It also looks in `local/stdout.txt`,
+  where Transport Fever 2 kept its log, marked "TPF2 location, not seen on
+  TF3 Windows", until Linux and macOS are checked;
 - `manifest.txt`: the versions of TPF3-MP, its protocol and its link to the
   game, your system, your support code when connected, every file with its
   size, and which places were not found.

@@ -58,11 +58,15 @@ before the rest ([DAY_ONE.md](DAY_ONE.md) §0).
   loaded, `SteamAppId` set, Steam running), the game runs signed in, with
   the Workshop, and does not restart itself through Steam (which would
   lose the hook). DAY_ONE.md §5.
-- [ ] **Anti-tamper.** `binary_survey.py`: packer sections, entropy, TLS
+- [x] **Anti-tamper.** `binary_survey.py`: packer sections, entropy, TLS
   callbacks. TPF2 had SteamStub only; Denuvo or a VM protector changes
-  the native plan.
-- [ ] **Archive the build.** Steam build ID, depot manifests, executable
-  hashes, and a private copy of each executable (DAY_ONE.md §1).
+  the native plan. *Done 2026-09-29, Steam build 40408 on Windows:*
+  SteamStub only, `.text` unencrypted, 3 TLS callbacks
+  (`investigation/dayone-2026-09-29/1-gonogo.md`). Epic/GOG's 40393 and
+  the other platforms are still to check.
+- [x] **Archive the build.** Steam build ID, depot manifests, executable
+  hashes, and a private copy of each executable (DAY_ONE.md §1). *Done
+  for Steam build 40408 (Steam build ID 25533170).*
 - [ ] **Patch duty.** Name one person who, on every game patch, reruns the
   naming, the build diff and the profile, and holds the release until the
   hook matches. Expect a day-one patch.
@@ -83,28 +87,39 @@ are.
   state has a dump of its own. The TPF2 probes stay as the fallback.
 - [x] Before release day: a tool for each release-day check
   (`tools/dayone/dayone.py`, DAY_ONE.md "Release day, step by step").
-- [ ] Read the game's `.tl` sources and `.d.tl` API declarations before
+- [x] Read the game's `.tl` sources and `.d.tl` API declarations before
   running the probes; list every `api.cmd.make*Cmd` and the tool that
-  sends it.
+  sends it. *Done:* 61 factories, 311 sending places
+  (`investigation/dayone-2026-09-29/5-scripts.md`).
 
 Then:
 
-- [ ] `binary_survey.py`: the Lua version, whether RTTI and `__FUNCSIG__`
-  strings are present. (*Changed:* no proxy DLL to find, D11.)
-- [ ] `tools/tpfre` (D14; `name_functions.py` to cross-check): TF3's
+- [x] `binary_survey.py`: the Lua version, whether RTTI and `__FUNCSIG__`
+  strings are present. (*Changed:* no proxy DLL to find, D11.) *Done:*
+  Lua 5.2; RTTI and `__FILE__` kept, `__FUNCSIG__` gone.
+- [x] `tools/tpfre` (D14; `name_functions.py` to cross-check): TF3's
   equivalents of TPF2's `GameSim::Step`, `CGame::Step`,
   `CommandList::Add`, save and load, into the recon log. TF3's names may
-  differ from TPF2's.
-- [ ] `script_api_dump`: both state dumps (game script and GUI); every
+  differ from TPF2's. *Done* with `tpfre match` (TPF2's names carried
+  over); the targets are in `profiles/tf3_build40408_steam_windows.toml`,
+  proven against the installed game
+  (`crates/tpf3mp-hookcore/tests/tf3_static_proof.rs`).
+- [x] `script_api_dump`: both state dumps (game script and GUI); every
   `api.cmd.make.*` factory; whether `io`, `os`, `require` and `load`
-  exist.
+  exist. *Done* for the GUI and run-script states
+  (`investigation/dayone-2026-09-29/probe/`); no `io`, `load` present.
 - [ ] `determinism_probe` on two games from one save: 60 in-game days
   without input, then with scripted input; `compare_runs.py`, the first
-  differing step per lane.
+  differing step per lane. *Changed (owner, 2026-09-29):* deferred.
+  Determinism is assumed to be TPF2's until two hooked games measure it
+  at their checkpoints, which is exact at any speed; the GUI-frame probe
+  needs 1x (at 4x it skips most samples).
 - [ ] A Windows save loaded on Linux and the reverse: does it load, do the
   lanes match.
 - [ ] Where the game writes its log and crash dumps, and where it loads
-  mods from (DAY_ONE.md, release-day order 6 and 7).
+  mods from (DAY_ONE.md, release-day order 6 and 7). *Windows done:* the
+  log is `local/crash_dump/stdout.txt` (not TPF2's `local/stdout.txt`),
+  mods load from `local/staging_area`; Linux and macOS to check.
 
 ## Part 2: the first playable room
 
