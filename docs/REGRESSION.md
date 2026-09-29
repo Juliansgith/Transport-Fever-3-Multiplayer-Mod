@@ -83,6 +83,10 @@ second at 16x). How many steps is not fixed, so a check must hold however
 many passed: money is checked right after building, before fares come in,
 not after a long run.
 
+A game sends its acts at least 60 ms apart (`HarnessPlan::min_gap`): a
+room takes 20 intents a second from one player, after a burst of 40, and
+a script can act faster than that where the round trip is short.
+
 A game stops at the first checkpoint after the script ends, so the room
 compares every world there too. The scenario fails if:
 
