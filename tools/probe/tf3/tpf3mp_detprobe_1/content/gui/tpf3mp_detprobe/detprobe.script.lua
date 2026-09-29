@@ -4,7 +4,11 @@
 -- TF3's mods run code per frame, from a game bar plugin's react.onStep, not
 -- per simulation step as TPF2's game scripts did. Frames and steps do not
 -- line up between two games, so this probe labels each sample by the
--- simulation step it saw, taken from the game time: it learns the time one
+-- simulation step it saw. The release API documents the step count itself,
+-- GameTime.updateCount (simulation updates, stopped while paused); where it
+-- is there, the probe samples when it lands on a multiple of STRIDE and
+-- writes step=<updateCount>, with stepTime=updateCount in its header.
+-- Otherwise it takes the step from the game time: it learns the time one
 -- step advances (the smallest change it sees over its first frames), then
 -- samples only when the game time lands exactly on a multiple of STRIDE
 -- steps, and writes step=<steps since time 0>. Two games from one save then
@@ -225,6 +229,17 @@ function data()
     return nil
   end
 
+  -- The simulation's own update count, where the API has it.
+  local function updateCount()
+    local n = nil
+    pcall(function()
+      local world = api().engine.util.getWorld()
+      n = api().engine.getComponent(world, ct().GAME_TIME).updateCount
+    end)
+    if type(n) == "number" and n == math.floor(n) then return n end
+    return nil
+  end
+
   -- Output: a file where the state can write one, else the game's log.
   local function getenv(key)
     local ok, v = pcall(function() return os.getenv(key) end)
@@ -260,6 +275,23 @@ function data()
   -- STRIDE steps.
   local state = { last = nil, changes = 0, step = nil, nextStep = nil, header = false }
   local function onFrame()
+    local n = updateCount()
+    if n ~= nil then
+      if not state.header then
+        state.header = true
+        emit(string.format("# determinism_probe (tf3) stride=%d stepTime=updateCount lanes=v,p,e,c,t,m,n", STRIDE))
+        state.nextStep = (math.floor(n / STRIDE) + 1) * STRIDE
+      end
+      if n >= state.nextStep then
+        if n == state.nextStep then
+          sample(n, gameTime() or -1)
+        else
+          emit(string.format("# skipped step=%d (this frame saw step %d)", state.nextStep, n))
+        end
+        state.nextStep = (math.floor(n / STRIDE) + 1) * STRIDE
+      end
+      return
+    end
     local t = gameTime()
     if t == nil then return end
     if state.last == nil then state.last = t return end

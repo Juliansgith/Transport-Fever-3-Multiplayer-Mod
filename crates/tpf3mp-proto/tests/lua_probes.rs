@@ -278,6 +278,8 @@ const WORLD: &str = r#"
 local CT = { GAME_TIME = 1, TRANSPORT_VEHICLE = 2, BASE_EDGE = 3, BASE_NODE = 4,
              CONSTRUCTION = 5, TOWN = 6, PLAYER = 7, SIM_PERSON = 8 }
 local world = { step = 1234 }
+-- Whether the game time carries the release API's updateCount.
+WITH_UPDATE_COUNT = false
 function advance(n) world.step = world.step + n end
 local function s() return world.step end
 game = { interface = { getEntity = function(id)
@@ -307,7 +309,9 @@ api = {
             return {}
         end,
         getComponent = function(id, comp)
-            if id == 0 and comp == CT.GAME_TIME then return { gameTime = s() * 200 } end
+            if id == 0 and comp == CT.GAME_TIME then
+                return { gameTime = s() * 200, updateCount = WITH_UPDATE_COUNT and s() or nil }
+            end
             if id == 41 and comp == CT.BASE_EDGE then return { node0 = 42, node1 = 43 } end
             if id == 42 and comp == CT.BASE_NODE then return { position = { x = 0, y = 0, z = 0 } } end
             if id == 43 and comp == CT.BASE_NODE then return { position = { x = s() / 1000, y = 1, z = 0 } } end
@@ -325,9 +329,18 @@ api = {
 /// frame (0.5: one step every other frame), and returns what the
 /// determinism probe logged, by step.
 fn determinism_run(frames: usize, steps_per_frame: f64) -> (BTreeMap<u64, String>, String) {
+    determinism_run_with(frames, steps_per_frame, false)
+}
+
+/// As [`determinism_run`], with the game time's `updateCount` or without.
+fn determinism_run_with(
+    frames: usize,
+    steps_per_frame: f64,
+    update_count: bool,
+) -> (BTreeMap<u64, String>, String) {
     let lua = gui("tpf3mp_detprobe_1", WORLD, None);
     lua.load(format!(
-        "local m = mount(loadPlugin('gui/tpf3mp_detprobe/detprobe.script.lua', 'Tpf3mpDetProbe')) \
+        "WITH_UPDATE_COUNT = {update_count}          local m = mount(loadPlugin('gui/tpf3mp_detprobe/detprobe.script.lua', 'Tpf3mpDetProbe')) \
          local owed = 0 \
          for _ = 1, {frames} do \
              m.step() \
@@ -386,4 +399,31 @@ fn a_game_that_skips_steps_logs_only_the_steps_it_saw() {
         log.contains("stepTime=600.000000"),
         "three steps a frame looks like one step: {log}"
     );
+}
+
+#[test]
+fn with_the_update_count_the_probe_samples_it_directly() {
+    let (fast, fast_log) = determinism_run_with(2000, 1.0, true);
+    // Three steps a frame: only every third step is seen.
+    let (skipping, skipping_log) = determinism_run_with(3000, 3.0, true);
+    for log in [&fast_log, &skipping_log] {
+        assert!(log.contains("stride=100 stepTime=updateCount"), "{log}");
+    }
+    assert!(fast.len() >= 15, "{fast_log}");
+    assert!(fast.keys().all(|step| step % 100 == 0), "{fast:?}");
+    // Every third step is seen, so every third multiple of 100 is sampled
+    // and the others are logged as skipped; the samples agree.
+    assert!(skipping_log.contains("# skipped step="), "{skipping_log}");
+    let common: Vec<&u64> = fast
+        .keys()
+        .filter(|step| skipping.contains_key(step))
+        .collect();
+    assert!(
+        !common.is_empty(),
+        "{fast:?}
+{skipping:?}"
+    );
+    for step in common {
+        assert_eq!(fast[step], skipping[step], "step {step}");
+    }
 }
