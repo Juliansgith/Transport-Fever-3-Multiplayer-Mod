@@ -83,6 +83,9 @@ impl Game for HookGame {
 pub trait StepHandler: Send {
     fn on_step(&mut self, run: &mut dyn FnMut()) -> Outcome;
     fn take_log(&mut self) -> Vec<String>;
+    /// In the room's game: the game's speed is then the room's, and one call
+    /// of the game's step must be one update.
+    fn in_room(&self) -> bool;
 }
 
 impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
@@ -91,6 +94,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn take_log(&mut self) -> Vec<String> {
         StepDriver::take_log(self)
+    }
+    fn in_room(&self) -> bool {
+        matches!(self.phase, Phase::Running | Phase::Holding(_))
     }
 }
 
@@ -360,6 +366,23 @@ pub(crate) mod tests {
         );
         assert!(matches!(d.phase(), Phase::Holding(_)));
         assert_eq!(call(&mut d, &mut ran).ran, 0);
+    }
+
+    #[test]
+    fn the_speed_is_the_rooms_from_the_room_s_game_on_until_it_ends() {
+        let mut script = Script::default();
+        script.begin.push_back(None);
+        script.begin.push_back(Some(begin()));
+        script
+            .gates
+            .extend([StepGate::Run, StepGate::Wait, StepGate::Ended]);
+        let (mut d, mut ran) = driver(script);
+        call(&mut d, &mut ran);
+        assert!(!d.in_room(), "before the room begins, the game's own speed");
+        call(&mut d, &mut ran);
+        assert!(d.in_room());
+        call(&mut d, &mut ran);
+        assert!(!d.in_room(), "after it ends, the game's own speed again");
     }
 
     #[test]

@@ -27,6 +27,7 @@
         "scripts/tpf3mp/bridge.lua",
         "scripts/tpf3mp/engine.lua",
         "scripts/tpf3mp/geom.lua",
-        "scripts/tpf3mp/roads.lua"
+        "scripts/tpf3mp/roads.lua",
+        "scripts/tpf3mp/speed.lua"
     ]
 }

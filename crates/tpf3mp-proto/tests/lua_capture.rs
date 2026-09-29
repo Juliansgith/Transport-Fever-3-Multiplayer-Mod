@@ -31,7 +31,7 @@ macro_rules! modules {
 }
 
 /// Every module of the mod, as `require "tpf3mp.<name>"` finds it.
-const MODULES: [(&str, &str); 3] = modules!("geom", "roads", "engine");
+const MODULES: [(&str, &str); 4] = modules!("geom", "roads", "engine", "speed");
 
 const TEST: &str = include_str!("lua/road_capture.lua");
 
@@ -327,4 +327,63 @@ fn a_tpf2_proposal_still_reads_by_type_file() {
         read_proposal(api, segment, "Street").unwrap(),
         "street/standard.lua|nil|nil|Street"
     );
+}
+
+/// Runs the speed keeper (`tpf3mp/speed.lua`) against a game whose speed
+/// the Lua snippet `script` changes between frames, and returns what each
+/// frame did, joined by spaces, then the commands sent and the log lines.
+fn keep_speed(in_room: bool, script: &str) -> String {
+    let lua = Lua::new();
+    let preload: Table = lua
+        .globals()
+        .get::<Table>("package")
+        .unwrap()
+        .get("preload")
+        .unwrap();
+    for (name, source) in MODULES {
+        let chunk = lua.load(source).into_function().unwrap();
+        preload.set(format!("tpf3mp.{name}"), chunk).unwrap();
+    }
+    lua.load(format!(
+        "local speed = require 'tpf3mp.speed'
+         local game = {{ speed = 1, sent = {{}}, log = {{}}, waiting = nil }}
+         local keeper = speed.keeper({{
+             inRoom = function() return {in_room} end,
+             getSpeed = function() return game.speed end,
+             setSpeed = function(n, done) game.sent[#game.sent + 1] = n; game.waiting = function() game.speed = n; done() end end,
+             log = function(line) game.log[#game.log + 1] = line end,
+         }})
+         local did = {{}}
+         local function frame() did[#did + 1] = keeper.step() end
+         local function land() if game.waiting then local w = game.waiting; game.waiting = nil; w() end end
+         {script}
+         return table.concat(did, ' ') .. ' | ' .. table.concat(game.sent, ',') .. ' | ' .. table.concat(game.log, ';')"
+    ))
+    .eval::<String>()
+    .unwrap_or_else(|error| panic!("{error}"))
+}
+
+#[test]
+fn in_a_rooms_game_the_speed_goes_back_to_1x_one_command_at_a_time() {
+    // The player picks 4x: one command, waited on until the game has run
+    // it, then all is well; a pause (0) is set back too.
+    let out = keep_speed(
+        true,
+        "frame() game.speed = 4 frame() frame() land() frame() game.speed = 0 frame() land() frame()",
+    );
+    let (did, rest) = out.split_once(" | ").unwrap();
+    assert_eq!(did, "ok set waiting ok set ok");
+    let (sent, log) = rest.split_once(" | ").unwrap();
+    assert_eq!(sent, "1,1");
+    assert_eq!(
+        log.matches("the room sets the pace").count(),
+        1,
+        "told once: {log}"
+    );
+}
+
+#[test]
+fn outside_a_rooms_game_the_speed_is_the_players() {
+    let out = keep_speed(false, "game.speed = 4 frame() frame()");
+    assert_eq!(out, "outside outside |  | ");
 }

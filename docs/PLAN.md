@@ -148,7 +148,11 @@ Dev A where it can):
   `Session::command` (`Control::Speed`). The launcher has no speed
   control. *Added:* the speed row is a script recipe a mod can replace,
   so this may need no native code; the pause-or-cycle key must be caught
-  too.
+  too. *Changed:* the game's own speed is now held at 1x in a room's game
+  (the hook's `CGameTime::GetSpeed` detour, and the mod setting the speed
+  row back), so no button or key can run the world at another pace. What
+  remains is the other half: the speed row sending the player's choice to
+  the room as `Control::Speed`.
 - [ ] *Added:* whether the stock tools send their commands through
   `api.cmd.sendCommand`. If they do, the caller-RVA filter cannot tell a
   click from our replay (HOOKS.md), and the hook needs another way to

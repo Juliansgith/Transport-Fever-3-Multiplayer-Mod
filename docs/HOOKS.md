@@ -462,11 +462,16 @@ nothing pending, one call is exactly one update, the unit the room orders:
   report), **hold** the world for good: no more steps run, rather than run
   apart from the room's (fail closed). Loading a room's save is the next
   piece (`CMenuUI::StartSavegame`, in the profile).
-- **The game's speed must stay at 1x** and nothing may send the debug
-  step command during a room: otherwise one call runs several updates and
-  the steps counted drift from the world, which the checkpoints then
-  report. The Lua mod takes the speed row over for that (PLAN Part 2,
-  "Speed and pause follow the room").
+- **The game's speed is held at 1x.** In the room's game the hook's
+  detour on `CGameTime::GetSpeed` (`0x2a95a0`, the getter `GameSim::Step`
+  reads) answers 1, whatever the speed row, a key or a script set, so one
+  call is always one update and the game's own pause stops nothing (the
+  room's pause is the only pause). A correction after the fact would not
+  do: one call at 4x would already have run four updates as one step. The
+  mod keeps what the player sees at 1x too (`tpf3mp/speed.lua`: in a game
+  the launcher started, it sends `makeGameSetSpeedCmd(1)` whenever the
+  speed is anything else). Nothing may send the debug step command during
+  a room: its pending count would add updates to a call.
 
 The hook installs the detour from its bootstrap thread while the game
 starts, before any world is loaded, so no thread is inside the step when
