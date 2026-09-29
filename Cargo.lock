@@ -4442,6 +4442,8 @@ name = "tpf3mp-hook"
 version = "0.1.0"
 dependencies = [
  "ctor",
+ "serde",
+ "serde_json",
  "tpf3mp-hookcore",
  "tpf3mp-ipc",
  "windows-sys 0.61.2",

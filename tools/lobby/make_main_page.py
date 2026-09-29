@@ -43,6 +43,28 @@ local record Tpf3mpLobbyWindowParam
 	pos : Vec2f
 end
 
+-- TPF3-MP: the lobby's content, or, should its Lua fail, the error and a way
+-- out - never a window that cannot be closed.
+local function safeContent(onClose : function()) : TreeNodeId
+	local ok, result = pcall(lobby.content, onClose)
+	if ok then
+		return result as TreeNodeId
+	end
+	pcall(debugPrint, "[tpf3mp] lobby: content failed: " .. tostring(result))
+	return builtin.BoxLayout{
+		orientation = builtin.type.Orientation.Vertical,
+		children = {
+			builtin.TextView{ meta = { class = "font-scale-title-4" }, text = _("Multiplayer") },
+			builtin.TextView{ meta = { class = "font-scale-body, error" }, text = tostring(result) },
+			builtin.Button{
+				meta = { class = "secondary" },
+				content = builtin.TextView{ text = _("Close") },
+				onClick = onClose,
+			},
+		},
+	}
+end
+
 local Tpf3mpLobbyWindow = react.RegisterWrapperRecipe("Tpf3mpLobbyWindow", builtin.Window, function(param : Tpf3mpLobbyWindowParam) : TreeNodeId
 	return builtin.Window{
 		title = _("Multiplayer"),
@@ -55,7 +77,7 @@ local Tpf3mpLobbyWindow = react.RegisterWrapperRecipe("Tpf3mpLobbyWindow", built
 		movable = false,
 		closable = true,
 		onClose = param.onClose,
-		content = lobby.content(param.onClose),
+		content = safeContent(param.onClose),
 	}
 end)
 
