@@ -657,6 +657,17 @@ The GUI runs only in a world, so a game must be in one, any one, before it
 can load the room's. Loading from the main menu (`CMenuUI::StartSavegame`,
 in the profile) is next.
 
+Tried on build 40408 through the deployed server, with two games on one PC
+(the rig, the fixture save): the owner's game saved its world for the room
+in 215 ms and reported it within a second. The guest fetched the save,
+its GUI took the load in the world it was in, and the room's world was up
+4 s later and played from step 1. A road depot sent from the owner's
+console was applied by both games, and the determinism probe's 15 samples
+from step 500 to 1900 matched in every lane it reads, the construction and
+money lanes changing alike after the build
+(`investigation/dayone-2026-09-29/6-determinism.md`; the edge lane is
+still unread there).
+
 ## Release-day procedure: adding a target for a new build
 
 The first TF3 build's targets are already located (RVAs, RTTI/source
