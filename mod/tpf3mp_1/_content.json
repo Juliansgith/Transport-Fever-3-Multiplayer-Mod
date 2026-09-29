@@ -1,6 +1,7 @@
 {
     "archives": null,
     "files": [
+        "gui/menu/main_page.tl",
         "gui/tpf3mp/icons/button_chat.tga",
         "gui/tpf3mp/icons/button_chat_selected.tga",
         "gui/tpf3mp/icons/button_chat_unavailable.tga",

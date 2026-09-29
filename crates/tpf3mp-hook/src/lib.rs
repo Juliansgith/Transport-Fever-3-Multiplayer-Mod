@@ -32,6 +32,10 @@ use tpf3mp_ipc::{Link, Role};
 
 mod platform;
 
+/// The main-menu Multiplayer entry (docs/LOBBY.md): Windows x86-64 only.
+#[cfg(all(windows, target_arch = "x86_64"))]
+pub mod menu;
+
 /// Names the link to the launcher that started this game, and that
 /// launcher's process. The launcher always sets both; without them, the hook
 /// does nothing (D11).
@@ -62,10 +66,13 @@ pub fn bootstrap() {
     log.line("hook bootstrap starting");
 
     match resolve_build(&mut log, data_dir.as_deref()) {
-        BuildOutcome::Matched { name, targets } => {
-            log.line(&format!(
-                "matched profile {name:?} ({targets} targets); target installation lands with the release-day profile"
-            ));
+        BuildOutcome::Matched {
+            name,
+            targets,
+            profile,
+        } => {
+            log.line(&format!("matched profile {name:?} ({targets} targets)"));
+            install_menu(&profile, &mut log, data_dir.as_deref());
         }
         BuildOutcome::FailedClosed(reason) => {
             log.line(&format!("multiplayer disabled (fail-closed): {reason}"));
@@ -88,9 +95,43 @@ pub fn bootstrap() {
     log.line("hook bootstrap complete");
 }
 
+/// Arms the main-menu Multiplayer entry (docs/LOBBY.md) from the matched
+/// profile. When a target is missing the menu stays the game's, and the
+/// reason is logged (fail-closed).
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+fn install_menu(profile: &Profile, log: &mut Logger, data_dir: Option<&Path>) {
+    match menu::resolve_targets(profile) {
+        Ok(targets) => {
+            let log_path = data_dir.map(|dir| dir.join("hook.log"));
+            // SAFETY: the launcher loaded the hook into the suspended game, so
+            // no game code runs yet, and the targets are profile-verified.
+            match unsafe { menu::install(&targets, log_path.as_deref()) } {
+                Ok(()) => log.line(&format!(
+                    "main-menu Multiplayer entry armed (loader at {:#x})",
+                    targets.loadfile
+                )),
+                Err(error) => log.line(&format!("main-menu entry not armed: {error}")),
+            }
+        }
+        Err(reason) => log.line(&format!(
+            "main-menu entry not armed (fail-closed): {reason}"
+        )),
+    }
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn install_menu(_profile: &Profile, log: &mut Logger, _data_dir: Option<&Path>) {
+    log.line("main-menu entry: Windows x86-64 only for now");
+}
+
 /// The result of trying to match the running build to a profile.
 enum BuildOutcome {
-    Matched { name: String, targets: usize },
+    Matched {
+        name: String,
+        targets: usize,
+        profile: Profile,
+    },
     FailedClosed(String),
 }
 
@@ -132,6 +173,7 @@ fn resolve_build(log: &mut Logger, data_dir: Option<&Path>) -> BuildOutcome {
         Some(profile) => BuildOutcome::Matched {
             name: profile.name.clone(),
             targets: profile.targets.len(),
+            profile: profile.clone(),
         },
         None => BuildOutcome::FailedClosed(format!(
             "no profile in {:?} matches build {}",

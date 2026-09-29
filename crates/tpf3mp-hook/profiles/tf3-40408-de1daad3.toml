@@ -1,0 +1,53 @@
+# Transport Fever 3, Steam build 40408 (release day, 2026-09-29), Windows x64.
+#
+# The targets of the main-menu Multiplayer entry (docs/LOBBY.md): the game's
+# Lua loader body, which is detoured so it serves the mod's copy of
+# gui/menu/main_page.tl, and the three Lua 5.2 C API entry points the hook
+# calls to run its patch in the game's Lua states. Signatures from
+# `tpfre q <db> sig <rva> --toml`; lua_settop's by hand (the tool refuses to
+# *detour* it, which the hook never does - it only calls it).
+#
+# On a game patch: `tpfre index` the new exe, `tpfre q <db> names`/`str` to
+# find the same four functions (loader.cpp's "Could no load file", the pcall
+# with "Error while pcalling", lua_settop's top-of-stack shape), regenerate
+# the signatures, and add a new profile file next to this one.
+
+name = "Transport Fever 3 build 40408 (Windows x64)"
+
+[build]
+sha256 = "de1daad3a13f3b7e9f79903361bb43769cf4f15e59271a263aefe1f075f23ef2"
+size = 69711288
+pe_timestamp = 0x6AB69FE5
+
+# framework/lua/Loader.cpp, lua::MakeState::<lambda_8>: the body of the Lua
+# function resolveutil.loadfile(path). Detoured; the detour reads the Lua state
+# from its closure and tail-calls the original.
+[[target]]
+name = "lua_loadfile"
+signature = "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 41 56 41 57 48 8D AC 24 C0 FE FF FF 48 81 EC 40 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 30 01 00 00 0F B6 DA 4C 8B F1"
+prologue = "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20"
+required = true
+
+# Lua 5.2 lua_load(L, reader, data, chunkname, mode): luaZ_init, the "?" default
+# chunk name, luaD_protectedparser, then the _ENV upvalue fix-up. Called, never
+# detoured. (The nearby function that checks for a Lua closure on the stack top
+# is lua_dump, which the loader uses for its bytecode cache - not this one.)
+[[target]]
+name = "lua_load"
+signature = "48 89 5C 24 10 56 48 83 EC 50 49 8B D9 48 8B F1"
+prologue = "48 89 5C 24 10 56 48 83 EC 50 49 8B D9 48 8B F1"
+required = true
+
+# Lua 5.2 lua_pcallk(L, nargs, nresults, errfunc, ctx, k). Called, never detoured.
+[[target]]
+name = "lua_pcallk"
+signature = "48 89 74 24 18 57 48 83 EC 40 33 F6 48 89 6C 24 58"
+prologue = "48 89 74 24 18 57 48 83 EC 40 33 F6 48 89 6C 24 58"
+required = true
+
+# Lua 5.2 lua_settop(L, idx). Called, never detoured.
+[[target]]
+name = "lua_settop"
+signature = "85 D2 78 35 48 8B 41 20 4C 63 CA 49 FF C1 49 C1 E1 04 4C 03 08 48 8B 41 10"
+prologue = "85 D2 78 35 48 8B 41 20"
+required = true

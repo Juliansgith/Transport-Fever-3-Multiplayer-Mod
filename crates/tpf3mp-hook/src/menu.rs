@@ -1,0 +1,382 @@
+//! The Multiplayer entry on the game's main menu (D17), on Windows x86-64.
+//!
+//! Transport Fever 3 draws its main menu from a Teal script,
+//! `gui/menu/main_page.tl`, which the game loads through its Lua loader.
+//! A mod cannot replace that file: the game applies a mod's files only once
+//! a game is loaded, and the menu offers mods no extension point. So the hook
+//! steps in at the loader. The game's Lua `resolveutil.loadfile(path)` is a C++
+//! lambda ([`PATCH`] explains the Lua side); its body is the profile's
+//! `lua_loadfile` target, and this module detours it with a thunk that:
+//!
+//! 1. reads the Lua state out of the lambda's closure (`**(closure + 0x10)`,
+//!    the layout `tpfre` showed at the body's own `lua_pcallk` call),
+//! 2. the first time it sees a state, runs [`PATCH`] in it with `lua_load` and
+//!    `lua_pcallk` - Lua that wraps `resolveutil.loadfile` so a request for the
+//!    game's `gui/menu/main_page.tl` is answered with the mod's copy
+//!    (`tpf3mp_1::/gui/menu/main_page.tl`, which adds the Multiplayer card and
+//!    window), and every other request passes through untouched,
+//! 3. restores the argument registers and tail-jumps into the original body,
+//!    so the loader itself runs exactly as before.
+//!
+//! The loader's first call in a state comes from `base/init.lua`'s own
+//! requires, long before the menu is built, and `resolveutil` is registered
+//! before any Lua runs, so the wrap is in place when the menu asks for its page.
+//! A game started by Steam has no hook and keeps the plain menu (D11).
+//!
+//! Everything here is resolved by signature from the build's profile
+//! (`profiles/*.toml`, `docs/HOOKS.md`); nothing is pinned to an address.
+
+#![allow(unsafe_code)]
+
+use std::ffi::{c_char, c_int, c_void};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::Path;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+use tpf3mp_hookcore::detour::InlineDetour;
+use tpf3mp_hookcore::pe::PeHeaders;
+use tpf3mp_hookcore::profile::{self, Profile};
+
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+
+/// The Lua run once in each of the game's Lua states, the first time the
+/// loader runs there. It wraps `resolveutil.loadfile` (the function
+/// `base/init.lua` calls for every `ug_require`) so that the game's
+/// `gui/menu/main_page.tl` is served from the mod's copy. The mod's own copy
+/// is never redirected, so the wrap cannot loop, and the original resolved
+/// path stays the module's cache key, so the rest of the menu sees the same
+/// `MainPage` value it always did.
+const PATCH: &str = r#"
+local ru = resolveutil
+if type(ru) ~= "table" then
+	pcall(debugPrint, "[tpf3mp] main menu: resolveutil is not here yet; the menu stays the game's")
+	return
+end
+if ru.__tpf3mp_menu then return end
+ru.__tpf3mp_menu = true
+local orig = ru.loadfile
+ru.loadfile = function(path, ...)
+	if type(path) == "string" and path:find("gui/menu/main_page%.tl$") and not path:find("^tpf3mp_1::") then
+		pcall(debugPrint, "[tpf3mp] main menu: " .. path .. " is served from tpf3mp_1::/gui/menu/main_page.tl")
+		return orig("tpf3mp_1::/gui/menu/main_page.tl", ...)
+	end
+	return orig(path, ...)
+end
+pcall(debugPrint, "[tpf3mp] main menu: resolveutil.loadfile is wrapped")
+"#;
+
+/// The addresses the profile resolved, as this process sees them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Targets {
+    pub loadfile: usize,
+    pub lua_load: usize,
+    pub lua_pcallk: usize,
+    pub lua_settop: usize,
+}
+
+/// The original loader body (the detour's trampoline); null until installed.
+static ORIGINAL: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
+static LUA_LOAD: AtomicUsize = AtomicUsize::new(0);
+static LUA_PCALLK: AtomicUsize = AtomicUsize::new(0);
+static LUA_SETTOP: AtomicUsize = AtomicUsize::new(0);
+/// The Lua states already patched.
+static PATCHED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Keeps the detour armed for the life of the process.
+static DETOUR: Mutex<Option<InlineDetour>> = Mutex::new(None);
+/// The hook's log, for what happens at run time.
+static LOG: Mutex<Option<File>> = Mutex::new(None);
+
+type LuaReader = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut usize) -> *const c_char;
+type LuaLoad = unsafe extern "C" fn(
+    *mut c_void,
+    LuaReader,
+    *mut c_void,
+    *const c_char,
+    *const c_char,
+) -> c_int;
+type LuaPcallk =
+    unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, c_int, *const c_void) -> c_int;
+type LuaSettop = unsafe extern "C" fn(*mut c_void, c_int);
+
+/// Resolves the four targets against the running image's `.text`.
+pub fn resolve_targets(profile: &Profile) -> Result<Targets, String> {
+    let (text_addr, text_len) =
+        main_module_text().ok_or_else(|| "cannot find the main module's .text".to_owned())?;
+    // SAFETY: `text_addr..+text_len` is the mapped, readable code section.
+    let image = unsafe { std::slice::from_raw_parts(text_addr as *const u8, text_len) };
+    let resolved = profile::resolve(profile, image, text_addr as u64)
+        .map_err(|refusal| refusal.to_string())?;
+    let address = |name: &str| -> Result<usize, String> {
+        resolved
+            .get(name)
+            .map(|target| target.address as usize)
+            .ok_or_else(|| format!("the profile has no target {name:?}"))
+    };
+    Ok(Targets {
+        loadfile: address("lua_loadfile")?,
+        lua_load: address("lua_load")?,
+        lua_pcallk: address("lua_pcallk")?,
+        lua_settop: address("lua_settop")?,
+    })
+}
+
+/// Arms the menu entry: detours the loader body at `targets.loadfile`.
+///
+/// # Safety
+///
+/// Call once, before the game's code runs (the launcher loads the hook into
+/// the suspended game), with targets resolved from a matching profile.
+pub unsafe fn install(targets: &Targets, log_path: Option<&Path>) -> Result<(), String> {
+    if let Some(path) = log_path {
+        let file = OpenOptions::new().create(true).append(true).open(path).ok();
+        *LOG.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = file;
+    }
+    LUA_LOAD.store(targets.lua_load, Ordering::Release);
+    LUA_PCALLK.store(targets.lua_pcallk, Ordering::Release);
+    LUA_SETTOP.store(targets.lua_settop, Ordering::Release);
+    // SAFETY: the caller guarantees a quiescent, prologue-verified target; the
+    // thunk forwards every argument and the stack untouched.
+    let detour = unsafe {
+        InlineDetour::install(
+            targets.loadfile as *mut u8,
+            entry_thunk as *const () as *const u8,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    ORIGINAL.store(detour.trampoline() as *mut u8, Ordering::Release);
+    *DETOUR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(detour);
+    Ok(())
+}
+
+fn note(message: &str) {
+    if let Some(file) = LOG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_mut()
+    {
+        let _ = writeln!(file, "[menu] {message}");
+    }
+}
+
+/// The main module's `.text` section in memory: address and length.
+fn main_module_text() -> Option<(usize, usize)> {
+    // SAFETY: a null module name asks for the process's own image base.
+    let base = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: the PE headers are mapped and readable at the image base; 0x1000
+    // bytes covers the DOS header, PE header and section table of a game exe.
+    let header = unsafe { std::slice::from_raw_parts(base as *const u8, 0x1000) };
+    let pe = PeHeaders::parse(header).ok()?;
+    let text = pe.section(".text")?;
+    let addr = base.checked_add(text.virtual_address as usize)?;
+    Some((addr, text.virtual_size as usize))
+}
+
+/// The Lua state the loader lambda works on: `**(closure + 0x10)`.
+fn lua_state_of(closure: *const u8) -> Option<*mut c_void> {
+    if closure.is_null() {
+        return None;
+    }
+    // SAFETY: the closure is the lambda's own object; its field at +0x10 points
+    // at a holder whose first word is the lua_State*, as the loader body reads
+    // it before its own lua_pcallk call.
+    let holder = unsafe { *(closure.add(0x10) as *const *const *mut c_void) };
+    if holder.is_null() {
+        return None;
+    }
+    let state = unsafe { *holder };
+    (!state.is_null()).then_some(state)
+}
+
+/// One buffer handed to `lua_load` through [`read_chunk`], whole, once.
+struct Chunk {
+    ptr: *const u8,
+    len: usize,
+    done: bool,
+}
+
+unsafe extern "C" fn read_chunk(
+    _state: *mut c_void,
+    data: *mut c_void,
+    size: *mut usize,
+) -> *const c_char {
+    // SAFETY: `data` is the `Chunk` the caller passed to lua_load.
+    let chunk = unsafe { &mut *data.cast::<Chunk>() };
+    if chunk.done {
+        // SAFETY: `size` is lua_load's out-parameter.
+        unsafe { *size = 0 };
+        return std::ptr::null();
+    }
+    chunk.done = true;
+    // SAFETY: as above.
+    unsafe { *size = chunk.len };
+    chunk.ptr.cast::<c_char>()
+}
+
+/// Runs [`PATCH`] in `state` the first time the state is seen.
+fn patch_once(state: *mut c_void) {
+    let mut seen = PATCHED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if seen.contains(&(state as usize)) {
+        return;
+    }
+    seen.push(state as usize);
+
+    let load = LUA_LOAD.load(Ordering::Acquire);
+    let pcallk = LUA_PCALLK.load(Ordering::Acquire);
+    let settop = LUA_SETTOP.load(Ordering::Acquire);
+    if load == 0 || pcallk == 0 || settop == 0 {
+        note("Lua API not resolved; the menu stays the game's");
+        return;
+    }
+    // SAFETY: the addresses are the profile-verified Lua 5.2 API functions.
+    let (load, pcallk, settop) = unsafe {
+        (
+            std::mem::transmute::<usize, LuaLoad>(load),
+            std::mem::transmute::<usize, LuaPcallk>(pcallk),
+            std::mem::transmute::<usize, LuaSettop>(settop),
+        )
+    };
+    let mut chunk = Chunk {
+        ptr: PATCH.as_ptr(),
+        len: PATCH.len(),
+        done: false,
+    };
+    // SAFETY: a live lua_State on its own thread, a reader over a static
+    // buffer, and NUL-terminated chunk name and mode.
+    let status = unsafe {
+        load(
+            state,
+            read_chunk,
+            (&mut chunk as *mut Chunk).cast::<c_void>(),
+            c"=tpf3mp-menu".as_ptr(),
+            c"t".as_ptr(),
+        )
+    };
+    if status != 0 {
+        // The error message is on the stack; pop it.
+        unsafe { settop(state, -2) };
+        note(&format!(
+            "lua_load of the menu patch failed (status {status}) in state {state:p}"
+        ));
+        return;
+    }
+    // SAFETY: the compiled chunk is on the stack; no arguments, no results.
+    let status = unsafe { pcallk(state, 0, 0, 0, 0, std::ptr::null()) };
+    if status != 0 {
+        unsafe { settop(state, -2) };
+        note(&format!(
+            "the menu patch raised (status {status}) in state {state:p}"
+        ));
+        return;
+    }
+    note(&format!("menu patch installed in Lua state {state:p}"));
+}
+
+/// Called by [`entry_thunk`] with the four saved argument registers; returns
+/// the original body to tail-jump into.
+extern "C" fn on_entry(args: *const u64) -> *const u8 {
+    let mut original = ORIGINAL.load(Ordering::Acquire);
+    while original.is_null() {
+        std::hint::spin_loop();
+        original = ORIGINAL.load(Ordering::Acquire);
+    }
+    // SAFETY: the thunk saved four argument words at `args`; the first is rcx,
+    // the lambda's closure.
+    let closure = unsafe { *args } as *const u8;
+    if let Some(state) = lua_state_of(closure) {
+        patch_once(state);
+    }
+    original
+}
+
+/// The detour installed on the loader body. Saves the argument registers
+/// (integer and vector), calls [`on_entry`], restores them and tail-jumps
+/// into the original with the stack exactly as the caller left it. The frame
+/// layout and alignment are those of the tracer's entry thunk
+/// (`crates/tpf3mp-trace`), which its test validates.
+#[unsafe(naked)]
+unsafe extern "C" fn entry_thunk() {
+    core::arch::naked_asm!(
+        "sub rsp, 0x88",
+        "mov [rsp+0x20], rcx",
+        "mov [rsp+0x28], rdx",
+        "mov [rsp+0x30], r8",
+        "mov [rsp+0x38], r9",
+        "movaps [rsp+0x40], xmm0",
+        "movaps [rsp+0x50], xmm1",
+        "movaps [rsp+0x60], xmm2",
+        "movaps [rsp+0x70], xmm3",
+        "lea rcx, [rsp+0x20]",
+        "call {on_entry}",
+        "mov rcx, [rsp+0x20]",
+        "mov rdx, [rsp+0x28]",
+        "mov r8, [rsp+0x30]",
+        "mov r9, [rsp+0x38]",
+        "movaps xmm0, [rsp+0x40]",
+        "movaps xmm1, [rsp+0x50]",
+        "movaps xmm2, [rsp+0x60]",
+        "movaps xmm3, [rsp+0x70]",
+        "add rsp, 0x88",
+        "jmp rax",
+        on_entry = sym on_entry,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reader_hands_the_chunk_over_whole_and_once() {
+        let text = b"return 1";
+        let mut chunk = Chunk {
+            ptr: text.as_ptr(),
+            len: text.len(),
+            done: false,
+        };
+        let mut size = 0usize;
+        // SAFETY: a valid Chunk and out-parameter.
+        let first = unsafe {
+            read_chunk(
+                std::ptr::null_mut(),
+                (&mut chunk as *mut Chunk).cast::<c_void>(),
+                &mut size,
+            )
+        };
+        assert_eq!(first.cast::<u8>(), text.as_ptr());
+        assert_eq!(size, text.len());
+        let second = unsafe {
+            read_chunk(
+                std::ptr::null_mut(),
+                (&mut chunk as *mut Chunk).cast::<c_void>(),
+                &mut size,
+            )
+        };
+        assert!(second.is_null());
+        assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn the_patch_redirects_only_the_games_main_page() {
+        assert!(PATCH.contains(r#"path:find("gui/menu/main_page%.tl$")"#));
+        assert!(PATCH.contains(r#"not path:find("^tpf3mp_1::")"#));
+        assert!(PATCH.contains(r#"orig("tpf3mp_1::/gui/menu/main_page.tl", ...)"#));
+        assert!(
+            PATCH.contains("ru.__tpf3mp_menu"),
+            "the wrap must be idempotent"
+        );
+    }
+
+    #[test]
+    fn no_state_is_read_from_a_null_closure() {
+        assert!(lua_state_of(std::ptr::null()).is_none());
+    }
+}
