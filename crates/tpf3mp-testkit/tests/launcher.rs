@@ -455,6 +455,108 @@ async fn a_window_drives_the_launcher_in_process() {
     let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
 }
 
+/// After leaving a room the launcher connects again on its own; that
+/// connection declares the game's content too, so the next room it makes
+/// can start. Without it the server holds no content for the player and
+/// refuses every start as "different game versions or mods" (found in the
+/// two-instance playtest of 2026-09-29).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_made_after_leaving_one_can_start() {
+    use tpf3mp_agent::launcher::{Action, Connection, MemberContent, Phase};
+
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
+    config.rules = toy_rules_menu();
+    config.max_sessions_per_address = 100;
+    config.max_handshakes_per_address = 100;
+    let server = Server::bind(config).unwrap();
+    let server_address = server.local_addr().unwrap().to_string();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(server.run(async {
+        let _ = stopped.await;
+    }));
+
+    let config = launcher_config(
+        root.path(),
+        "fay",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    let launcher = Launcher::start_local(config);
+    let handle = launcher.handle();
+    handle
+        .act(Action::Connect {
+            server: server_address,
+            name: "Fay".into(),
+        })
+        .await
+        .unwrap();
+    let create = || Action::Create {
+        room: "again".into(),
+        max_players: 1,
+        password: None,
+        rules: None,
+    };
+    handle.act(create()).await.unwrap();
+    handle.act(Action::Leave).await.unwrap();
+    // The session hands its connection back and the launcher connects again.
+    tokio::time::timeout(WAIT, async {
+        while handle.state().room.is_some() || handle.state().connection != Connection::Connected {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("connected again after leaving");
+
+    handle.act(create()).await.unwrap();
+    handle.act(Action::Ready { ready: true }).await.unwrap();
+    let me = tokio::time::timeout(WAIT, async {
+        loop {
+            let me = handle
+                .state()
+                .room
+                .and_then(|room| room.members.into_iter().find(|member| member.you));
+            if let Some(me) = me.filter(|me| me.ready) {
+                return me;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("ready in the new room");
+    assert_eq!(
+        me.content,
+        MemberContent::Same,
+        "the new connection declared no content"
+    );
+    handle.act(Action::Start).await.unwrap();
+    let started = tokio::time::timeout(WAIT, async {
+        loop {
+            let state = handle.state();
+            if state
+                .room
+                .as_ref()
+                .is_some_and(|room| room.phase != Phase::Lobby)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        started.is_ok(),
+        "the room never started; notices: {:?}",
+        handle.state().notices
+    );
+
+    drop(launcher);
+    let _ = stop.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
+}
+
 /// A launcher built for a server plays on it alone (D12): Connect takes
 /// no server, and an invite to another is refused, not followed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

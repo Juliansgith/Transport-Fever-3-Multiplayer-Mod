@@ -281,7 +281,8 @@ async fn control(shared: Arc<Shared>, config: LauncherConfig, mut actions: Actio
                 }
                 // Back to the server, ready for the next room.
                 if let Some(finished) = finished {
-                    connected = reconnect(&shared, finished.options).await;
+                    connected =
+                        reconnect(&shared, finished.options, config.content.clone()).await;
                 }
             }
             event = next_event(&mut connected) => match event {
@@ -574,8 +575,22 @@ async fn forward(session: &Option<Session>, control: Control) -> Result<(), Stri
 }
 
 /// Connects again after a room session, which took the old connection.
-async fn reconnect(shared: &Arc<Shared>, options: ConnectOptions) -> Option<Connected> {
-    match connect(options.clone()).await {
+/// What the game runs goes with this connection too, as with the first
+/// (`connect_to`): without it the server knows no content for the player,
+/// and every room made on it refuses to start.
+async fn reconnect(
+    shared: &Arc<Shared>,
+    options: ConnectOptions,
+    content: ContentManifest,
+) -> Option<Connected> {
+    let connected = match connect(options.clone()).await {
+        Ok((client, events)) => match client.declare_content(content).await {
+            Ok(()) => Ok((client, events)),
+            Err(error) => Err(error.to_string()),
+        },
+        Err(error) => Err(error.to_string()),
+    };
+    match connected {
         Ok((client, events)) => {
             let mut view = shared.view();
             view.connected = true;
@@ -591,7 +606,7 @@ async fn reconnect(shared: &Arc<Shared>, options: ConnectOptions) -> Option<Conn
             warn!(%error, "cannot reconnect after the session");
             let mut view = shared.view();
             view.connected = false;
-            view.error = Some(error.to_string());
+            view.error = Some(error);
             None
         }
     }
