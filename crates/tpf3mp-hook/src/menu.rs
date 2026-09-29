@@ -68,8 +68,12 @@ ru.__tpf3mp_menu = true
 local orig = ru.loadfile
 ru.loadfile = function(path, ...)
 	if type(path) == "string" and path:find("gui/menu/main_page%.tl$") and not path:find("^tpf3mp_1::") then
-		pcall(debugPrint, "[tpf3mp] main menu: " .. path .. " is served from tpf3mp_1::/gui/menu/main_page.tl")
-		return orig("tpf3mp_1::/gui/menu/main_page.tl", ...)
+		local ok, chunk, err = pcall(orig, "tpf3mp_1::/gui/menu/main_page.tl", ...)
+		if ok and chunk then
+			pcall(debugPrint, "[tpf3mp] main menu: " .. path .. " is served from tpf3mp_1::/gui/menu/main_page.tl")
+			return chunk, err
+		end
+		pcall(debugPrint, "[tpf3mp] main menu: the mod's main_page.tl is not loadable (" .. tostring(ok and err or chunk) .. "); the menu stays the game's")
 	end
 	return orig(path, ...)
 end
@@ -575,7 +579,11 @@ mod tests {
     fn the_patch_redirects_only_the_games_main_page() {
         assert!(PATCH.contains(r#"path:find("gui/menu/main_page%.tl$")"#));
         assert!(PATCH.contains(r#"not path:find("^tpf3mp_1::")"#));
-        assert!(PATCH.contains(r#"orig("tpf3mp_1::/gui/menu/main_page.tl", ...)"#));
+        assert!(PATCH.contains(r#"pcall(orig, "tpf3mp_1::/gui/menu/main_page.tl", ...)"#));
+        assert!(
+            PATCH.contains("the menu stays the game's"),
+            "a missing mod copy must fall back"
+        );
         assert!(
             PATCH.contains("ru.__tpf3mp_menu"),
             "the wrap must be idempotent"
