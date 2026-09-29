@@ -109,6 +109,29 @@ local function resName(rep, index)
 	return name
 end
 
+-- TF3 (documented, wiki.transportfever3.com/script-doc, api.type and
+-- api.engine): streets and tracks are one kind of edge. A proposal's
+-- segment has .comp, a BaseEdge with roadType (api.type.RoadType.STREET or
+-- TRACK), roadTemplate and roadStyle (resource names), besides TPF2's
+-- node0, node1, tangents, type and typeIndex; its .streetEdge holds only
+-- precedence. Whether roadTemplate is a plain string is not documented: a
+-- name that is not one fails the capture.
+local function isTf3(seg)
+	return seg.comp ~= nil and seg.comp.roadTemplate ~= nil
+end
+
+local function tf3Network(c)
+	local track
+	pcall(function() track = api.type.RoadType.TRACK end)
+	if track == nil then error("a TF3 edge, but no api.type.RoadType.TRACK") end
+	return c.roadType == track and "Track" or "Street"
+end
+
+local function tf3Name(v, what)
+	if type(v) ~= "string" or v == "" then error(what .. " is not a resource name: " .. tostring(v)) end
+	return v
+end
+
 -- TPF2 names: a builder proposal's segment has .comp (BaseEdge: node0,
 -- node1, tangent0, tangent1, type 0 ground / 1 bridge / 2 tunnel,
 -- typeIndex), .type (0 street, 1 track), .streetEdge (streetType, hasBus,
@@ -116,9 +139,11 @@ end
 -- catenary).
 local function segment(seg)
 	local c = seg.comp
+	local network
+	if isTf3(seg) then network = tf3Network(c) else network = seg.type == 1 and "Track" or "Street" end
 	local e = {
 		node0 = c.node0, node1 = c.node1,
-		network = seg.type == 1 and "Track" or "Street",
+		network = network,
 		tangent0 = vec3(c.tangent0), tangent1 = vec3(c.tangent1),
 		structure = "Ground",
 	}
@@ -150,7 +175,21 @@ function engine.fromProposal(proposal, network)
 	for _, seg in pairs(proposal.removedSegments) do
 		capture.removed[#capture.removed + 1] = { node0 = seg.comp.node0, node1 = seg.comp.node1 }
 	end
-	if first and network == "Street" then
+	if first and isTf3(first) then
+		-- The template and style name the edge whole on TF3; its bus lane
+		-- and tram track, if TF3 still has them apart from the template,
+		-- are not documented, and are recorded as none. To confirm on
+		-- release day (DAY_ONE.md).
+		local name = tf3Name(first.comp.roadTemplate, "roadTemplate")
+		local style = first.comp.roadStyle
+		if style ~= nil then style = tf3Name(style, "roadStyle") end
+		if network == "Street" then
+			capture.street, capture.bus_lane, capture.tram = name, false, "None"
+		else
+			capture.track, capture.catenary = name, false
+		end
+		capture.style = style
+	elseif first and network == "Street" then
 		capture.street = resName("streetTypeRep", first.streetEdge.streetType)
 		capture.bus_lane = first.streetEdge.hasBus == true
 		capture.tram = TRAM[first.streetEdge.tramTrackType or 0]

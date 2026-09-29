@@ -123,12 +123,14 @@ fn samples() -> Vec<Action> {
     vec![
         Action::BuildRoad(RoadBuild {
             street: text("street/standard/town_medium_new.lua"),
+            style: None,
             bus_lane: true,
             tram: Tram::Electric,
             polyline: polyline(),
         }),
         Action::BuildTrack(TrackBuild {
             track: text("high_speed.lua"),
+            style: None,
             catenary: true,
             polyline: polyline(),
         }),
@@ -370,6 +372,7 @@ fn a_link_to_a_missing_vertex_is_refused() {
     #[derive(serde::Serialize)]
     struct UncheckedTrack {
         track: String,
+        style: Option<String>,
         catenary: bool,
         vertices: Vec<Vertex>,
         links: Vec<Link>,
@@ -388,6 +391,7 @@ fn a_link_to_a_missing_vertex_is_refused() {
     );
     let track = UncheckedTrack {
         track: "high_speed.lua".into(),
+        style: None,
         catenary: false,
         vertices,
         links: good.links.to_vec(),

@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 1;
+pub const ACTION_SCHEMA_VERSION: u32 = 2;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -279,10 +279,16 @@ pub enum Tram {
     Electric,
 }
 
+/// Transport Fever 3 types every street and track by a road template and a
+/// road style (`BaseEdge.roadTemplate`, `roadStyle`); TPF2 had one type
+/// file. A build names its template where TPF2 named the type, and its
+/// style where the game has one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoadBuild {
-    /// The street type.
+    /// The street's type: its road template on TF3.
     pub street: ResName,
+    /// The street's road style, on TF3.
+    pub style: Option<ResName>,
     pub bus_lane: bool,
     pub tram: Tram,
     pub polyline: Polyline,
@@ -290,8 +296,10 @@ pub struct RoadBuild {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackBuild {
-    /// The track type.
+    /// The track's type: its road template on TF3.
     pub track: ResName,
+    /// The track's road style, on TF3.
+    pub style: Option<ResName>,
     pub catenary: bool,
     pub polyline: Polyline,
 }
@@ -660,13 +668,14 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                1, // schema version
+                2, // schema version
                 5, // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
         );
         let track = Action::BuildTrack(TrackBuild {
             track: Text::new("t").unwrap(),
+            style: Some(Text::new("s").unwrap()),
             catenary: true,
             polyline: Polyline::new(
                 BoundedVec::new(vec![
@@ -688,9 +697,9 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                1, // schema version
+                2, // schema version
                 1, // Action::BuildTrack
-                1, b't', 1, // track, catenary
+                1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
                 1, 2, 0, 1, 0, // (-1, 1, 0) zigzag, Resolve::Node(Street)
                 0, 0, 0, 0, // (0, 0, 0), Resolve::New
@@ -708,10 +717,10 @@ mod tests {
         assert_eq!(Action::from_payload(&payload).unwrap(), action);
 
         let mut other = payload.as_bytes().to_vec();
-        other[0] = 2;
+        other[0] = 1;
         assert!(matches!(
             Action::from_payload(&Payload::new(other).unwrap()),
-            Err(ActionError::Schema { found: 2 })
+            Err(ActionError::Schema { found: 1 })
         ));
 
         let mut padded = payload.as_bytes().to_vec();

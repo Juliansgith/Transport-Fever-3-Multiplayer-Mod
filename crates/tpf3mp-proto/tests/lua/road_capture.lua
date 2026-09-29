@@ -55,7 +55,7 @@ local function flat(t) return { t[1], 0, t[3] or 0 } end
 -- removal must.
 local road = {
 	network = "Street",
-	street = "street/standard/town_medium_new.lua", bus_lane = true, tram = "Electric",
+	street = "street/standard/town_medium_new.lua", style = "style/old_town.lua", bus_lane = true, tram = "Electric",
 	nodes = {
 		{ id = -1, pos = { 160, 200, 12 } },
 		{ id = -2, pos = { 220, 230, 15.0004 } },

@@ -386,7 +386,7 @@ lossless from Lua. Rules:
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (1). The Lua mod builds an action from a captured
+`ACTION_SCHEMA_VERSION` (2; 1 had no road style). The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
 command carried as text travels here as typed, bounded fields.
@@ -413,8 +413,8 @@ appended.
 
 | action | carries |
 |---|---|
-| `BuildRoad` | street type, bus lane, tram track (none, plain, electric), a polyline |
-| `BuildTrack` | track type, catenary, a polyline |
+| `BuildRoad` | street type (TF3: its road template), road style (TF3), bus lane, tram track (none, plain, electric), a polyline |
+| `BuildTrack` | track type (TF3: its road template), road style (TF3), catenary, a polyline |
 | `Bulldoze` | edges of one network by their ends; or a construction by file and position; or a stop, signal or waypoint by its edge, position and model |
 | `BuildConstruction` | file, transform, every parameter (`seed` included), name, and the construction it replaces for a module edit |
 | `BuyVehicle` | the depot by file and position, the consist's model files front to back |
