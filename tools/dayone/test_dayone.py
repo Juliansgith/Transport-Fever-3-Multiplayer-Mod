@@ -15,6 +15,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -241,6 +242,30 @@ class ScriptsTest(unittest.TestCase):
             self.assertEqual(s["senders"], ["res/scripts/line_tool.tl:2"])
             self.assertEqual(len(s["speed"]), 1)
             self.assertEqual(s["game_script_dirs"], ["res/config/game_script/base.lua"])
+
+    def test_scripts_inside_tf3_content_archives_are_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            (game / "base/content").mkdir(parents=True)
+            packed = game / "base/content/gui.zip"
+            with zipfile.ZipFile(packed, "w") as z:
+                z.writestr("gui/line_tool.tl", "api.cmd.sendCommand(api.cmd.makeLineCreateCmd(n))\n")
+                z.writestr("gui/model.msh", b"\0" * 64, compress_type=zipfile.ZIP_DEFLATED)
+                z.writestr("gui/speed.tl", "GameSpeedControl()\n", compress_type=zipfile.ZIP_DEFLATED)
+            # TF3 archives: every local header's magic is UG, not PK.
+            packed.write_bytes(packed.read_bytes().replace(b"PK\x03\x04", b"UG\x03\x04"))
+            with zipfile.ZipFile(game / "base/content/broken.zip", "w") as z:
+                z.writestr("x.tl", "api.cmd.makeTownCreateCmd()\n")
+            broken = game / "base/content/broken.zip"
+            broken.write_bytes(broken.read_bytes().replace(b"PK\x03\x04", b"XX\x03\x04"))
+            s = dayone.scan_scripts(game)
+            self.assertEqual((s["tl"], s["packed"]), (2, 2))
+            self.assertEqual(sorted(s["factories"]), ["makeLineCreateCmd"])
+            self.assertEqual(s["senders"], ["base/content/gui.zip!gui/line_tool.tl:1"])
+            self.assertEqual(len(s["speed"]), 1)
+            # An archive it cannot read is named, never skipped quietly.
+            self.assertEqual(len(s["archives"]), 1)
+            self.assertIn("broken.zip", s["archives"][0])
 
 
 class ProbesTest(unittest.TestCase):
