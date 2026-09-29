@@ -184,6 +184,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             }
         });
         IN_ROOM.store(driver.in_room(), Ordering::Release);
+        lua::set_in_room(driver.in_room());
         let chosen = CHOSEN.load(Ordering::Acquire);
         if chosen != NO_SPEED {
             driver.chosen_speed(chosen);
@@ -679,7 +680,7 @@ mod tests {
         let results = unsafe { print_detour(state.state()) };
         assert_eq!(results, 0);
         assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
-        assert_eq!(state.run("return tpf3mp_native.version"), Ok("4".into()));
+        assert_eq!(state.run("return tpf3mp_native.version"), Ok("5".into()));
         PRINT_ORIGINAL.store(0, Ordering::Release);
     }
 }

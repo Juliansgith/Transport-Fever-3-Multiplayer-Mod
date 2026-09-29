@@ -184,6 +184,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.bridge",
             "tpf3mp.engine",
             "tpf3mp.geom",
+            "tpf3mp.guard",
             "tpf3mp.roads"
         ]
     );
@@ -201,9 +202,10 @@ fn loaded_names(lua: &Lua) -> Vec<String> {
 }
 
 const FAKE_HOOK: &str = r#"
-HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, worlds = 0 }
+HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, worlds = 0,
+         room = false }
 tpf3mp_native = {
-    version = 4,
+    version = 5,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then HOOK.commands[#HOOK.commands + 1] = action end
@@ -224,6 +226,22 @@ tpf3mp_native = {
         HOOK.saved[#HOOK.saved + 1] = tostring(name) .. ' ' .. tostring(ok) .. ' ' .. tostring(why)
     end,
     world = function() HOOK.worlds = HOOK.worlds + 1 end,
+    room = function() return HOOK.room end,
+}
+"#;
+
+/// The GUI state's api.cmd, as much of it as the guard's tests use: three
+/// factories, and a sendCommand that keeps what it was sent.
+const FAKE_CMD: &str = r#"
+SENT = {}
+api = api or {}
+api.cmd = {
+    makeGameSetSpeedCmd = function(speed) return { kind = 'speed', speed = speed } end,
+    makeVehicleBuyCmd = function(player, depot, config) return { kind = 'buy', depot = depot } end,
+    makeLineCreateCmd = function(line) return { kind = 'line' } end,
+    sendCommand = function(command, ...)
+        SENT[#SENT + 1] = { command = command, extra = select('#', ...), callback = (...) }
+    end,
 }
 "#;
 
@@ -247,6 +265,7 @@ api = { type = { SavegameId = { new = function() return {} end } } }
 fn with_the_hook_the_gui_links_once() {
     let lua = gui();
     lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
     run_frames(&lua, 2);
     assert_eq!(
         log(&lua),
@@ -256,7 +275,10 @@ fn with_the_hook_the_gui_links_once() {
         .load("return table.concat(HOOK.logged, '|')")
         .eval()
         .unwrap();
-    assert_eq!(logged, "the GUI is linked");
+    assert_eq!(
+        logged,
+        "the GUI is linked|the guard is on 3 command factories"
+    );
     let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
     assert_eq!(worlds, 1, "the world's GUI started once");
 }
@@ -325,7 +347,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 4; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 5; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -418,7 +440,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 4, command = print, log = print })
+             why({ version = 5, command = print, log = print })
              return out",
         )
         .eval()
@@ -429,6 +451,144 @@ fn attach_refuses_a_partial_hook() {
             "no hook in this game",
             "tpf3mp_native is not a table",
             "the hook has no take()",
+        ]
+    );
+}
+
+/// The game bar's text, if the plugin shows any.
+fn shown(lua: &Lua) -> Option<String> {
+    lua.load(
+        "local c = M.render().params.children[1] \
+         return c and c.params.text",
+    )
+    .eval()
+    .unwrap()
+}
+
+#[test]
+fn in_the_rooms_game_the_gui_refuses_what_the_room_cannot_carry() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load("M = mount(loadPlugin()) M.step()").exec().unwrap();
+
+    // Before the room's game every command is sent, arguments as given.
+    lua.load("api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(1, 2, {}))")
+        .exec()
+        .unwrap();
+    let (sent, extra): (usize, usize) = lua.load("return #SENT, SENT[1].extra").eval().unwrap();
+    assert_eq!(
+        (sent, extra),
+        (1, 0),
+        "a callback left out is not passed as nil"
+    );
+
+    // In the room's game the speed row's speed is sent; a vehicle bought
+    // is refused, and its callback hears so on the next frame.
+    lua.load(
+        "HOOK.room = true \
+         api.cmd.sendCommand(api.cmd.makeGameSetSpeedCmd(4)) \
+         CALLED = nil \
+         BUY = api.cmd.makeVehicleBuyCmd(1, 2, {}) \
+         api.cmd.sendCommand(BUY, function(data, ok, entities) \
+             CALLED = { data = data, ok = ok, entities = #entities } end)",
+    )
+    .exec()
+    .unwrap();
+    let (sent, speed): (usize, u32) = lua
+        .load("return #SENT, SENT[2].command.speed")
+        .eval()
+        .unwrap();
+    assert_eq!((sent, speed), (2, 4), "the speed went, the vehicle did not");
+    let called: bool = lua.load("return CALLED ~= nil").eval().unwrap();
+    assert!(!called, "not within sendCommand");
+    lua.load("M.step()").exec().unwrap();
+    let (same, ok, entities): (bool, bool, usize) = lua
+        .load("return CALLED.data == BUY, CALLED.ok, CALLED.entities")
+        .eval()
+        .unwrap();
+    assert!(same && !ok, "the callback heard the command failed");
+    assert_eq!(entities, 0);
+    assert_eq!(
+        shown(&lua).as_deref(),
+        Some("Not in multiplayer yet: buying vehicles")
+    );
+
+    // A command no factory made is refused too.
+    lua.load("api.cmd.sendCommand({ kind = 'forged' }) M.step()")
+        .exec()
+        .unwrap();
+    assert_eq!(
+        shown(&lua).as_deref(),
+        Some("Not in multiplayer yet: this action")
+    );
+    let sent: usize = lua.load("return #SENT").eval().unwrap();
+    assert_eq!(sent, 2);
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.contains(
+            &"refused the player's makeVehicleBuyCmd in the room's game (1 so far)".to_owned()
+        ),
+        "{logged:?}"
+    );
+    assert!(
+        logged.contains(
+            &"refused the player's command no factory made in the room's game (1 so far)"
+                .to_owned()
+        ),
+        "{logged:?}"
+    );
+
+    // The notice goes after a few seconds; after the room's game, commands
+    // are sent again.
+    lua.load("for _ = 1, 400 do M.step() end").exec().unwrap();
+    assert_eq!(shown(&lua), None);
+    lua.load("HOOK.room = false api.cmd.sendCommand(api.cmd.makeLineCreateCmd({}))")
+        .exec()
+        .unwrap();
+    let sent: usize = lua.load("return #SENT").eval().unwrap();
+    assert_eq!(sent, 3);
+}
+
+#[test]
+fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
+    let lua = gui();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let results: Vec<String> = lua
+        .load(
+            "local guard = ug_require('tpf3mp_1::/scripts/tpf3mp/guard.lua')
+             local env = { inRoom = function() return true end,
+                           refused = function() end, later = function() end }
+             local out = {}
+             out[#out + 1] = tostring(guard.install(api.cmd, env))
+             local send = api.cmd.sendCommand
+             out[#out + 1] = tostring(guard.install(api.cmd, env))
+             out[#out + 1] = tostring(api.cmd.sendCommand == send)
+             out[#out + 1] = select(2, guard.install(nil, env))
+             out[#out + 1] = select(2, guard.install({}, env))
+             local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
+             local native = { version = 5 }
+             for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world' }) do
+                 native[n] = function() end
+             end
+             native.room = function() error('gone') end
+             out[#out + 1] = tostring(bridge.attach(native):room())
+             native.room = function() return 1 end
+             out[#out + 1] = tostring(bridge.attach(native):room())
+             return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        results,
+        [
+            "3",
+            "3",
+            "true",
+            "api.cmd is not a table",
+            "api.cmd has no sendCommand",
+            "true",
+            "false"
         ]
     );
 }
