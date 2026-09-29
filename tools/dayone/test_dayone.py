@@ -283,6 +283,18 @@ class CollectRunsTest(unittest.TestCase):
         self.assertEqual(det[1], "step=100 v=1")
 
 
+class CompareStepsTest(unittest.TestCase):
+    def test_two_logs_with_no_step_in_common_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b = Path(tmp) / "a.log", Path(tmp) / "b.log"
+            head = "# determinism_probe (tf3) stride=100 stepTime=updateCount lanes=v" + chr(10)
+            a.write_text(head + "step=100 v=1" + chr(10) + "step=700 v=5" + chr(10))
+            b.write_text(head + "step=800 v=5" + chr(10))
+            code_, text = quiet(dayone.main, ["--out", tmp, "compare", str(a), str(b)])
+            self.assertEqual(code_, 1)
+            self.assertIn("share no sampled step", text)
+
+
 class CarryNamesTest(unittest.TestCase):
     def test_an_executable_is_indexed_then_matched_onto_the_new_index(self):
         with tempfile.TemporaryDirectory() as tmp:

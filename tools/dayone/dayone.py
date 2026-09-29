@@ -1004,8 +1004,23 @@ def step_time(path: Path) -> str | None:
     return None
 
 
+def sampled_steps(path: Path) -> set[int]:
+    steps = set()
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"step=(\d+) ", line)
+        if m:
+            steps.add(int(m.group(1)))
+    return steps
+
+
 def cmd_compare(args) -> int:
     a, b = Path(args.a), Path(args.b)
+    sa, sb = sampled_steps(a), sampled_steps(b)
+    if not sa & sb:
+        say(f"STOP: the two logs share no sampled step ({min(sa, default='-')}..{max(sa, default='-')} and "
+            f"{min(sb, default='-')}..{max(sb, default='-')}): nothing to compare. Load the same save for both runs, "
+            "unpaused, and run each past the same step.")
+        return 1
     ta, tb = step_time(a), step_time(b)
     if ta != tb:
         say(f"STOP: the two logs label steps differently ({ta} and {tb}), so their steps do not match. "
