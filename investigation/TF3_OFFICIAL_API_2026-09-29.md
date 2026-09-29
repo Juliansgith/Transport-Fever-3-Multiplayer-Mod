@@ -223,18 +223,113 @@ names against the reference:
 - **Confirmed by the reference:** `makeLineCreateCmd`,
   `makeWorldBuildProposalCmd`, `makeEntitySetNameCmd`,
   `makeGameSetSpeedCmd`, and the per-player line, the `Proposal`.
-- **To reconcile:** `engine.lua` reads the street graph with
-  `api.engine.system.streetSystem.getNode2StreetEdgeMap`. The reference's
-  `api/engine/system.html` is the place to confirm that name or find the
-  documented one (mods use `getNodeSegments`,
-  TF3_MODHUB_SCRIPT_MODS_2026-09-29.md). This is a release-day task, since
-  nothing has run.
+- **The street graph:** `StreetSystem` documents
+  `getNode2StreetEdgeMap` and `getNode2TrackEdgeMap`, the names
+  `engine.lua` uses, besides `getNodeSegments`, `getNodeStreetSegments`,
+  `getNodeTrackSegments` and `getEdgeObject2EdgeMap`.
+- **Corrected: roads and tracks are one kind of edge.** A proposal's
+  `SegmentAndEntity.comp` is a `BaseEdge` with `roadType`
+  (`api.type.RoadType.STREET` or `TRACK`), `roadTemplate` and `roadStyle`
+  (resource names); its `streetEdge` (`BaseEdgeStreet`) holds only
+  precedence, and there is no track edge. `api.res` has `streetTemplateRep`
+  and `streetStyleRep` but no `streetTypeRep` or `trackTypeRep`. The
+  capture read TPF2's `streetEdge.streetType`, so it would have failed on
+  the first road. It now reads `roadType`, `roadTemplate` and `roadStyle`
+  (falling back to TPF2's names), refuses a TF3 edge whose network or names
+  it cannot read, and the action schema (version 2) carries the style.
+  `api.type.transformator` numbers road types the other way round
+  (`0 track, 1 street`), so compare against the `RoadType` values, never a
+  number.
+- **Vehicle positions:** `api.engine.util.transport.getPosition(vehicle)`;
+  the determinism probe reads it first.
+
+## More from the reference and the release download
+
+- **The release builds** (the wiki's release notes): **40408 on Steam,
+  40393 on Epic and GOG**, both September 29. The stores ship different
+  builds, so the hook needs a profile for each, and the day-one tools run
+  against both executables. The mods of TF3_MODS_2026-09-27.md were made
+  for 40391.
+- **The step counter.** `GameTime.updateCount` counts simulation updates
+  and stops while paused; `tickCount` counts frames, paused or not.
+  `TickEpoch` stamps each entity with the update, the command within it
+  and a sub-index. The determinism probe now labels its samples with
+  `updateCount` where the API has it, so the two games no longer need 1x,
+  and falls back to learning the step from the game time.
+- **Game scripts exist, and run much of the economy.** A `GameScript`
+  component holds each script's state; `content/scripts/gamescript` types
+  `update`, `postUpdate`, `handleEvent`, `guiUpdate` and `guiHandleEvent`.
+  Companies, finance and loans, subsidies, notifications and town growth
+  are Teal modules whose state lives there, and scripts price tickets
+  (`CalcTicketPriceEvent`, `CalcTicketPriceCargoEvent`) and see arrivals
+  (`ArriveAtStop`). Lua's float formatting, `math.random` and `pairs`
+  order therefore reach the simulation, and the lanes must cover
+  game-script state. The manual's game-script page is still TPF2's ("not
+  yet adapted for TF3").
+- **Money is integer:** `Account.balance` and `loan`. `PlayerOwned`
+  marks an entity bulldozable only by its owner.
+- **Script events as one action.** Script mechanics and mods reach the
+  engine through `makeScriptingSendEventCmd`. One portable action carrying
+  a script event, its Lua parameter checked like save data, could cover
+  loans, prospecting, subsidies and mods such as Timetables. It widens what
+  a room accepts, so it is the owner's to decide.
+- **`api.modhub`** names mods by a `ModId` and knows install states: a
+  source for the `ContentManifest`'s active mods.
+- **The shipped definitions.** The release download carries the game's
+  own typed API, `api/tealdef/*.d.tl`. It confirms `ResName` is a plain
+  string (as the capture requires), `RoadType`, the edge's road fields and
+  `updateCount`. `api_def.d.tl` loads `api.cmd`, which had not yet
+  downloaded when this was written: whether `playerInitiated` is in the
+  shipped signature is still to see.
+- **Content archives.** `base/content/*.zip` are zips whose local file
+  headers start `UG\x03\x04` instead of `PK\x03\x04`; the central
+  directory is a plain zip's and entries are stored. Standard zip readers
+  refuse them; `dayone.py scripts` reads the scripts inside them.
+
+How our action schema maps to the commands:
+
+| our action | the command |
+|---|---|
+| `BuildRoad`, `BuildTrack`, `BuildConstruction`, `Bulldoze`, `PlaceStop` | `makeWorldBuildProposalCmd` |
+| `Terraform` | a proposal too, to confirm |
+| `BuyVehicle`, `SellVehicle` | `makeVehicleBuyCmd`, `makeVehicleSellCmd` (and `makeVehicleReplaceCmd`) |
+| `CreateLine`, `EditLine` | `makeLineCreateCmd`, `makeLineUpdateCmd`, `makeLineDestroyCmd` |
+| `AssignLine` | `makeVehicleSetLineCmd` |
+| `CompanyOp` | `makeGameAddPlayerCmd`, `makeEntitySetPlayerCmd`, company scripts |
+| speed and pause | `makeGameSetSpeedCmd` |
+
+Not yet in the schema, and so refused in a multiplayer game until each has
+an action and a checked channel (PLAN Part 3): the vehicle commands besides
+buy, sell and line; names and colours; stocks and warehouses; industry
+expansion and development; script events; the journal and logbooks;
+`makeWorldSetBulldozableCmd`. A multiplayer game never sends the
+map-editor and debug commands (towns, terrain, animals, date, time of day,
+weather).
+
+## The modding manual
+
+Documented in the wiki's modding manual:
+
+- **Local mods** go to `<Steam>/userdata/<Steam ID>/3493540/local/staging_area/`,
+  as the installer puts them. A mod is known by its `modId`, not its
+  folder; when two share one, the staging area wins over the manual
+  installation directory, which wins over subscribed mods.
+- **`modId`** takes `a-z`, `0-9` and `_`, and TF3 drops TPF2's version
+  suffix; ours, `tpf3mp_1`, is still valid.
+- **`mod.json`** gains `visible` and `cosmetic`. `cosmetic` is the
+  author's claim that a mod leaves the simulation alone; a room never takes
+  it as a reason to let content differ.
+- **Debug aids** (the in-game tools page, marked possibly TPF2's): debug
+  mode (`debugMode` in `settings.lua`, or the advanced settings), a Lua
+  console on the key below Esc printing to `stdout.txt`, and simulation
+  speed up to 32x. DAY_ONE.md step 7 uses them.
 
 ## Still to do on release day
 
-- Read `api/engine/system.html` and `api/type.html` for the street graph,
-  `Proposal`, `SimpleProposal`, `BASE_EDGE`/`BASE_NODE` and the component
-  fields, and reconcile `engine.lua` with the documented names.
+- In the game, confirm the road model the capture now reads: `roadType`,
+  and `roadTemplate` and `roadStyle` as plain strings; and whether a
+  street's bus lane and tram track are part of its template (the capture
+  records none, a guess to replace).
 - Measure the companies path: `makeGameAddPlayerCmd`,
   `makeEntitySetPlayerCmd` on stations, lines and a vehicle, and whether
   the stock UI gates other companies.
@@ -244,3 +339,7 @@ names against the reference:
 - Run the API dump probe (`tools/probe/tf3`) and diff it against this
   reference, to find what the reference leaves out ("not yet complete")
   and what a build changed.
+- Whether `makeGamePerformSimulationStepsCmd` (under `api.cmd.Debug`)
+  works in the release build: it would let the regression harness step a
+  real game without drawing (REGRESSION.md).
+- Run the day-one steps on the Epic/GOG build too.
