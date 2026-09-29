@@ -45,6 +45,36 @@ impl InlineDetour {
     }
 }
 
+/// A placeholder that can never be constructed on this architecture.
+pub enum CallRedirect {}
+
+impl CallRedirect {
+    /// Always fails on a non-x86-64 build.
+    ///
+    /// # Safety
+    ///
+    /// Never patches anything; the `unsafe` keeps one signature across
+    /// architectures.
+    pub unsafe fn install(
+        _site: *mut u8,
+        _expected: usize,
+        _to: *const u8,
+    ) -> Result<Self, DetourError> {
+        Err(DetourError::UnsupportedArchitecture {
+            arch: std::env::consts::ARCH,
+        })
+    }
+
+    /// Nothing to restore.
+    ///
+    /// # Safety
+    ///
+    /// Never constructed.
+    pub unsafe fn detach(self) -> Result<(), DetourError> {
+        match self {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

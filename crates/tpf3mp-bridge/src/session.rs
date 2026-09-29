@@ -133,6 +133,8 @@ pub struct Session {
     agent_beat: (u64, Instant),
     buf: Vec<u8>,
     commands: u64,
+    /// A message read ahead for a batch and left for the next step.
+    peeked: Option<ToHook>,
 }
 
 impl Session {
@@ -158,6 +160,7 @@ impl Session {
             patience,
             buf: vec![0; MAX_MESSAGE],
             commands: 0,
+            peeked: None,
         };
         session.send(&ToAgent::Hello {
             version: BRIDGE_VERSION,
@@ -261,6 +264,39 @@ impl Session {
             match self.poll_step(game)? {
                 StepGate::Wait => std::thread::sleep(POLL),
                 other => return Ok(other),
+            }
+        }
+    }
+
+    /// After [`Session::poll_step`] said [`StepGate::Run`]: how many steps
+    /// from the next the game may run as one batch, at most `max`, before it
+    /// calls [`Session::after_step`] once for each (see [`Gate::batch`]).
+    ///
+    /// The agent releases steps one message at a time, so this reads on
+    /// while the messages waiting are releases or things to show the
+    /// player, and stops at the first that must wait for the next step (an
+    /// event, a load, the end), which the next [`Session::poll_step`] reads.
+    pub fn batch(&mut self, game: &mut impl Game, max: u32) -> Result<u32, SessionError> {
+        let max = u64::from(max);
+        loop {
+            let steps = self.gate.batch(max, self.checkpoint_interval);
+            // Cut by the cap or a checkpoint: more releases change nothing.
+            if steps == 0 || steps >= max || steps < self.gate.released_ahead() {
+                return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
+            }
+            let Some(message) = self.try_recv()? else {
+                return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
+            };
+            match message {
+                ToHook::Release { .. }
+                | ToHook::Speed(_)
+                | ToHook::Chat { .. }
+                | ToHook::Refused { .. }
+                | ToHook::Diverged { .. } => self.handle(message, game)?,
+                other => {
+                    self.peeked = Some(other);
+                    return Ok(u32::try_from(steps).unwrap_or(u32::MAX));
+                }
             }
         }
     }
@@ -379,6 +415,9 @@ impl Session {
     }
 
     fn try_recv(&mut self) -> Result<Option<ToHook>, SessionError> {
+        if let Some(message) = self.peeked.take() {
+            return Ok(Some(message));
+        }
         match self.link.recv_into(&mut self.buf) {
             Ok(Some(len)) => Ok(Some(decode(&self.buf[..len])?)),
             Ok(None) => Ok(None),
@@ -406,5 +445,126 @@ impl Session {
             return Err(SessionError::AgentGone);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tpf3mp_ipc::Config;
+    use tpf3mp_proto::{FixedBytes, PlayerId};
+
+    use super::*;
+
+    #[derive(Default)]
+    struct World {
+        applied: Vec<u64>,
+        notices: Vec<Notice>,
+    }
+
+    impl Game for World {
+        fn apply(&mut self, event: &Event) {
+            self.applied.push(event.step);
+        }
+        fn lanes(&mut self) -> Vec<LaneDigest> {
+            Vec::new()
+        }
+        fn save(&mut self, _file: &Path) -> Result<(), String> {
+            Err("no saves here".into())
+        }
+        fn notice(&mut self, notice: Notice) {
+            self.notices.push(notice);
+        }
+    }
+
+    fn event(step: u64) -> Event {
+        Event {
+            seq: step,
+            step,
+            body: EventBody::PlayerLeft {
+                player: PlayerId(FixedBytes([1; 32])),
+                kicked: false,
+            },
+        }
+    }
+
+    /// A session over a real link, with the agent's end, past the hellos
+    /// and the load of the world every player starts from.
+    fn playing(tag: &str, checkpoint_interval: u32) -> (Session, Link, World) {
+        let name = format!("test.session.{tag}.{}", std::process::id());
+        let agent = Link::create(&Config::new(name.clone()), Role::Agent).unwrap();
+        let say = |message: &ToHook| agent.send(&encode(message).unwrap()).unwrap();
+        say(&ToHook::Hello {
+            version: BRIDGE_VERSION,
+        });
+        let mut session = Session::attach(&name, "test", Duration::from_secs(10)).unwrap();
+        say(&ToHook::Begin {
+            rules: RulesName::new("native").unwrap(),
+            steps_per_second: 5,
+            checkpoint_interval,
+            saves: Text::lossy("saves"),
+        });
+        say(&ToHook::Load {
+            file: None,
+            next_step: 1,
+        });
+        assert!(session.try_begin().unwrap().is_some());
+        let mut world = World::default();
+        assert!(matches!(
+            session.poll_step(&mut world).unwrap(),
+            StepGate::Load(_)
+        ));
+        session.loaded(1).unwrap();
+        (session, agent, world)
+    }
+
+    fn say(agent: &Link, message: &ToHook) {
+        agent.send(&encode(message).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_batch_reads_the_releases_ahead_and_stops_at_an_event() {
+        let (mut session, agent, mut world) = playing("batch", 50);
+        for through in 1..=3 {
+            say(&agent, &ToHook::Release { through });
+        }
+        say(&agent, &ToHook::Speed(Speed(200)));
+        say(&agent, &ToHook::Apply(event(4)));
+        say(&agent, &ToHook::Release { through: 4 });
+
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(
+            session.batch(&mut world, 16).unwrap(),
+            3,
+            "steps 1 to 3, released one message at a time"
+        );
+        assert_eq!(world.notices, vec![Notice::Speed(Speed(200))]);
+        assert!(world.applied.is_empty(), "step 4's event waits for step 4");
+        for step in 1..=3 {
+            assert_eq!(session.after_step(&mut world).unwrap(), step);
+        }
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(world.applied, vec![4], "the event read ahead, applied now");
+        assert_eq!(session.batch(&mut world, 16).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_batch_stops_at_the_cap_and_at_a_checkpoint() {
+        let (mut session, agent, mut world) = playing("cap", 5);
+        for through in 1..=12 {
+            say(&agent, &ToHook::Release { through });
+        }
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(session.batch(&mut world, 3).unwrap(), 3, "the cap");
+        assert_eq!(session.batch(&mut world, 16).unwrap(), 5, "to checkpoint 5");
+        for _ in 0..5 {
+            session.after_step(&mut world).unwrap();
+        }
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(session.batch(&mut world, 16).unwrap(), 5, "6 to 10");
+        for _ in 0..5 {
+            session.after_step(&mut world).unwrap();
+        }
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(session.batch(&mut world, 16).unwrap(), 2, "11 and 12");
     }
 }

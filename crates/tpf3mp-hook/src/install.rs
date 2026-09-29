@@ -16,12 +16,14 @@ use std::sync::{
 
 use tpf3mp_hookcore::profile::Profile;
 
-use crate::step::StepHandler;
+use crate::step::{StepHandler, Updates};
 
 /// The profile's name for the simulation step.
 pub const STEP_TARGET: &str = "GameSim::Step";
 /// The profile's name for the speed the step reads.
 pub const SPEED_TARGET: &str = "CGameTime::GetSpeed";
+/// The profile's name for the step's own call of the speed getter.
+pub const SPEED_CALL_TARGET: &str = "GameSim::Step/GetSpeed call";
 
 /// The game's own step, reached through the detour's trampoline.
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -34,8 +36,12 @@ static BROKEN: AtomicBool = AtomicBool::new(false);
 static LOG: Mutex<Option<crate::Logger>> = Mutex::new(None);
 /// The game's own speed getter, reached through its detour's trampoline.
 static SPEED_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-/// In the room's game: the speed getter answers 1.
+/// In the room's game: the speed row's value is recorded.
 static IN_ROOM: AtomicBool = AtomicBool::new(false);
+/// While the game's step runs, the updates it must run (`OWN_SPEED` for the
+/// game's own speed): what the step's call of the speed getter answers.
+static UPDATES: AtomicU64 = AtomicU64::new(OWN_SPEED);
+const OWN_SPEED: u64 = u64::MAX;
 /// The game's own speed (the speed row) as the getter last read it in the
 /// room's game; `NO_SPEED` until then.
 static CHOSEN: AtomicU64 = AtomicU64::new(NO_SPEED);
@@ -44,11 +50,11 @@ const NO_SPEED: u64 = u64::MAX;
 /// The speed getter's signature, passed through as the step's is.
 type SpeedFn = unsafe extern "C" fn(usize, usize, usize, usize) -> u64;
 
-/// The speed getter's detour. In the room's game the room sets the pace (the
-/// step gate releases steps at its speed), so the game's own speed is held at
-/// one update per call of its step, whatever the speed row or a key says,
-/// paused included: the room's pause is the only pause. Otherwise the game's
-/// own answer.
+/// The speed getter's detour: it only reads. In the room's game the speed
+/// row's value is the player's request to the room (the step detour passes
+/// it on). Every caller gets the game's own answer: the UI, the camera and
+/// the particles read it too, and the game asserts when they are told a
+/// speed it is not running at.
 unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> u64 {
     let original = SPEED_ORIGINAL.load(Ordering::Acquire);
     if original == 0 {
@@ -60,13 +66,24 @@ unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> 
     // SAFETY: the game's own getter, called as the game called it.
     let own = unsafe { original(this, a, b, c) };
     if IN_ROOM.load(Ordering::Acquire) {
-        // The speed row's value is the player's request to the room (the
-        // step detour passes it on); the game runs one update a call. The
-        // getter returns an int: its low 32 bits.
+        // The getter returns an int: its low 32 bits.
         CHOSEN.store(u64::from(own as u32), Ordering::Release);
-        return 1;
     }
     own
+}
+
+/// Where the step's own call of the speed getter goes: the number of
+/// updates the step driver chose for this call of the step. In the room's
+/// game the room sets the pace (the step gate releases steps at its speed),
+/// whatever the speed row or a key says, paused included: the room's pause
+/// is the only pause. Otherwise the game's own answer.
+unsafe extern "C" fn step_speed(this: usize, a: usize, b: usize, c: usize) -> u64 {
+    // SAFETY: the getter's detour, called with the arguments the step passed.
+    let own = unsafe { speed_detour(this, a, b, c) };
+    match UPDATES.load(Ordering::Acquire) {
+        OWN_SPEED => own,
+        updates => updates,
+    }
 }
 
 /// The step's signature: a member function, `this` and its arguments in
@@ -74,24 +91,52 @@ unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> 
 /// transparent whatever the game's step takes in them.
 type StepFn = unsafe extern "C" fn(usize, usize, usize, usize);
 
-/// The detour: every call of the game's step comes here.
+/// Runs the game's own step once, with `updates` answered to its call of
+/// the speed getter.
+///
+/// # Safety
+///
+/// `original` is the step's trampoline; the arguments are the game's.
+unsafe fn run_step(original: StepFn, updates: Updates, this: usize, a: usize, b: usize, c: usize) {
+    let answer = match updates {
+        Updates::Own => OWN_SPEED,
+        Updates::Exactly(updates) => u64::from(updates),
+    };
+    UPDATES.store(answer, Ordering::Release);
+    // SAFETY: the caller's.
+    unsafe { original(this, a, b, c) };
+    UPDATES.store(OWN_SPEED, Ordering::Release);
+}
+
+/// The detour: every call of the game's step comes here, and runs the
+/// game's step exactly once (a call skipped turns the game's clock back).
 unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     let original = ORIGINAL.load(Ordering::Acquire);
-    if original == 0 || BROKEN.load(Ordering::Acquire) {
+    if original == 0 {
         return;
     }
     // SAFETY: ORIGINAL holds the trampoline InlineDetour::install returned
     // for this function, which keeps the game's own ABI.
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
+    if BROKEN.load(Ordering::Acquire) {
+        // SAFETY: the game's step on its paused path: the world stands still.
+        unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+        return;
+    }
+    let mut ran = false;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut driver = DRIVER.lock().unwrap_or_else(|poison| poison.into_inner());
         let Some(driver) = driver.as_mut() else {
+            ran = true;
             // SAFETY: the game's own step, called as the game called it.
-            unsafe { original(this, a, b, c) };
+            unsafe { run_step(original, Updates::Own, this, a, b, c) };
             return;
         };
-        // SAFETY: as above, once per step the room released.
-        driver.on_step(&mut || unsafe { original(this, a, b, c) });
+        // SAFETY: as above, once per call, with the updates the driver chose.
+        driver.on_step(&mut |updates| {
+            ran = true;
+            unsafe { run_step(original, updates, this, a, b, c) }
+        });
         IN_ROOM.store(driver.in_room(), Ordering::Release);
         let chosen = CHOSEN.load(Ordering::Acquire);
         if chosen != NO_SPEED {
@@ -108,6 +153,11 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     }));
     if result.is_err() {
         BROKEN.store(true, Ordering::Release);
+        UPDATES.store(OWN_SPEED, Ordering::Release);
+        if !ran {
+            // SAFETY: as above.
+            unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+        }
     }
 }
 
@@ -181,6 +231,10 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         .get(SPEED_TARGET)
         .ok_or_else(|| format!("the profile has no {SPEED_TARGET}"))?
         .address;
+    let call_rva = resolved
+        .get(SPEED_CALL_TARGET)
+        .ok_or_else(|| format!("the profile has no {SPEED_CALL_TARGET}"))?
+        .address;
 
     let session = tpf3mp_bridge::Session::attach(link_name, &profile.name, Duration::from_secs(30))
         .map_err(|error| format!("the agent's link: {error}"))?;
@@ -191,8 +245,8 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     // in this process's code; the game has not run a step yet (the hook
     // installs while the game starts, before any world is loaded); each
     // detour has its target's ABI (four register arguments passed through).
-    // The getter goes first, so the step never runs with the room's pace but
-    // the game's speed.
+    // The getter and the step's call of it go first, so the step never runs
+    // with the room's pace but the game's speed.
     let speed = unsafe {
         detour_forever(
             (base + speed_rva as usize) as *mut u8,
@@ -201,6 +255,18 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     }
     .map_err(|error| format!("detouring {SPEED_TARGET}: {error}"))?;
     SPEED_ORIGINAL.store(speed, Ordering::Release);
+    // SAFETY: the call site the profile resolved inside the step, which no
+    // thread runs yet; install checks it is a call of the getter, and
+    // step_speed has the getter's ABI.
+    let redirect = unsafe {
+        tpf3mp_hookcore::detour::CallRedirect::install(
+            (base + call_rva as usize) as *mut u8,
+            base + speed_rva as usize,
+            step_speed as *const u8,
+        )
+    }
+    .map_err(|error| format!("redirecting {SPEED_CALL_TARGET}: {error:?}"))?;
+    std::mem::forget(redirect);
     // SAFETY: as above.
     let step = unsafe {
         detour_forever(
@@ -220,7 +286,6 @@ fn install_inner(_profile: &Profile, _link_name: &str) -> Result<u64, String> {
 
 #[cfg(all(test, windows, target_arch = "x86_64"))]
 mod tests {
-    use std::sync::atomic::AtomicU64;
 
     use tpf3mp_bridge::{Load, StepGate};
     use tpf3mp_hookcore::detour::InlineDetour;
@@ -231,18 +296,27 @@ mod tests {
         tests::{Script, begin},
     };
 
-    static CALLS: AtomicU64 = AtomicU64::new(0);
+    /// The tests share the hook's statics: one at a time.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// What each call of the fake step was told to run.
+    static CALLS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
     static ARGS_OK: AtomicBool = AtomicBool::new(true);
 
     /// A stand-in for the game's step, in this test binary: long enough a
-    /// prologue for the detour engine to steal, and it checks the arguments
-    /// arrive unchanged.
+    /// prologue for the detour engine to steal. It checks the arguments
+    /// arrive unchanged and records what its call of the speed getter would
+    /// be answered.
     #[inline(never)]
     extern "C" fn fake_step(this: usize, a: usize, b: usize, c: usize) {
         if (this, a, b, c) != (0x1111, 0x2222, 0x3333, 0x4444) {
             ARGS_OK.store(false, Ordering::SeqCst);
         }
-        CALLS.fetch_add(std::hint::black_box(1), Ordering::SeqCst);
+        let updates = std::hint::black_box(UPDATES.load(Ordering::SeqCst));
+        CALLS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(updates);
     }
 
     static SPEED: AtomicU64 = AtomicU64::new(4);
@@ -257,7 +331,8 @@ mod tests {
     }
 
     #[test]
-    fn in_the_rooms_game_the_speed_is_one_and_otherwise_the_games() {
+    fn the_step_reads_the_drivers_updates_and_everyone_else_the_games_speed() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         let target = fake_speed as *mut u8;
         // SAFETY: fake_speed is this binary's own function, not running now,
         // and speed_detour has its signature.
@@ -265,13 +340,20 @@ mod tests {
         SPEED_ORIGINAL.store(detour.trampoline() as usize, Ordering::Release);
         let speed: extern "C" fn(usize, usize, usize, usize) -> u64 =
             std::hint::black_box(fake_speed);
+        // SAFETY: step_speed is what the step's redirected call reaches.
+        let step_reads = |this| unsafe { step_speed(this, 2, 3, 4) };
         IN_ROOM.store(false, Ordering::Release);
+        UPDATES.store(OWN_SPEED, Ordering::Release);
         assert_eq!(speed(1, 2, 3, 4), 4, "outside a room, the game's own speed");
+        assert_eq!(step_reads(1), 4, "for the step too");
+        assert_eq!(CHOSEN.load(Ordering::SeqCst), NO_SPEED);
         IN_ROOM.store(true, Ordering::Release);
+        UPDATES.store(1, Ordering::Release);
+        assert_eq!(step_reads(1), 1, "in the room's game, the driver's updates");
         assert_eq!(
             speed(1, 2, 3, 4),
-            1,
-            "in the room's game, one update a call"
+            4,
+            "every other caller still reads the game's own speed"
         );
         assert_eq!(
             CHOSEN.load(Ordering::SeqCst),
@@ -280,7 +362,7 @@ mod tests {
         );
         SPEED.store(0, Ordering::SeqCst);
         assert_eq!(
-            speed(1, 2, 3, 4),
+            step_reads(1),
             1,
             "the game's own pause does not stop the room"
         );
@@ -289,17 +371,22 @@ mod tests {
             0,
             "but it asks the room to pause"
         );
+        UPDATES.store(0, Ordering::Release);
+        SPEED.store(4, Ordering::SeqCst);
+        assert_eq!(step_reads(1), 0, "nor does its 4x run a withheld step");
+        UPDATES.store(OWN_SPEED, Ordering::Release);
         CHOSEN.store(NO_SPEED, Ordering::SeqCst);
         IN_ROOM.store(false, Ordering::Release);
         SPEED_ORIGINAL.store(0, Ordering::Release);
         // SAFETY: nothing runs fake_speed now.
         unsafe { detour.detach() }.unwrap();
-        SPEED.store(4, Ordering::SeqCst);
     }
 
     #[test]
-    fn the_detour_runs_the_games_step_once_per_released_step() {
+    fn the_detour_runs_the_games_step_once_a_call_with_the_released_steps() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         let mut script = Script::default();
+        script.begin.push_back(None);
         script.begin.push_back(Some(begin()));
         script.gates.extend([
             StepGate::Load(Load {
@@ -319,13 +406,19 @@ mod tests {
         ORIGINAL.store(detour.trampoline() as usize, Ordering::Release);
 
         let step: extern "C" fn(usize, usize, usize, usize) = std::hint::black_box(fake_step);
+        // No room's game yet: the game's own speed.
+        step(0x1111, 0x2222, 0x3333, 0x4444);
         // The room released three steps: one call of the game's step runs
-        // three.
+        // three updates.
         step(0x1111, 0x2222, 0x3333, 0x4444);
-        assert_eq!(CALLS.load(Ordering::SeqCst), 3);
-        // Withheld: the game's step does not run at all.
+        // Withheld: the game's step still runs, on its paused path.
         step(0x1111, 0x2222, 0x3333, 0x4444);
-        assert_eq!(CALLS.load(Ordering::SeqCst), 3);
+        assert_eq!(*CALLS.lock().unwrap(), vec![OWN_SPEED, 3, 0]);
+        assert_eq!(
+            UPDATES.load(Ordering::SeqCst),
+            OWN_SPEED,
+            "outside the step, the getter is the game's own"
+        );
         assert!(
             ARGS_OK.load(Ordering::SeqCst),
             "the arguments reached the step unchanged"
@@ -336,9 +429,10 @@ mod tests {
         // SAFETY: nothing runs fake_step now.
         unsafe { detour.detach() }.unwrap();
         *DRIVER.lock().unwrap() = None;
+        IN_ROOM.store(false, Ordering::Release);
         step(0x1111, 0x2222, 0x3333, 0x4444);
         assert_eq!(
-            CALLS.load(Ordering::SeqCst),
+            CALLS.lock().unwrap().len(),
             4,
             "detached, the step is the game's own again"
         );

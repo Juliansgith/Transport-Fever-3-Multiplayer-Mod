@@ -104,6 +104,30 @@ impl Gate {
         self.next_step
     }
 
+    /// The steps from the next that are released: 0 when the next is not.
+    pub fn released_ahead(&self) -> u64 {
+        if self.may_run() {
+            self.released - self.next_step + 1
+        } else {
+            0
+        }
+    }
+
+    /// How many steps from the next the game may run as one batch, at most
+    /// `max`: the steps released so far (no event can fall between them: an
+    /// event for a released step is refused), ending at the first checkpoint
+    /// step, whose lanes must be the world's right after it. 0 when the next
+    /// step is not released.
+    pub fn batch(&self, max: u64, checkpoint_interval: u64) -> u64 {
+        if !self.may_run() {
+            return 0;
+        }
+        let released = self.released_ahead();
+        let interval = checkpoint_interval.max(1);
+        let to_checkpoint = (interval - self.next_step % interval) % interval + 1;
+        released.min(to_checkpoint).min(max)
+    }
+
     /// Whether the game may run its next step now.
     pub fn may_run(&self) -> bool {
         !self.ended && !self.loading && self.released >= self.next_step
@@ -201,6 +225,24 @@ mod tests {
         gate.on_message(ToHook::Apply(event(2, 4))).unwrap();
         gate.on_message(ToHook::Release { through: 4 }).unwrap();
         assert_eq!(gate.ran(), Ok(4));
+    }
+
+    #[test]
+    fn a_batch_is_the_released_steps_up_to_a_checkpoint() {
+        let mut gate = Gate::new(1);
+        assert_eq!(gate.batch(16, 50), 0, "nothing released");
+        gate.on_message(ToHook::Release { through: 30 }).unwrap();
+        assert_eq!(gate.batch(16, 50), 16, "at most max");
+        assert_eq!(gate.batch(64, 50), 30, "the released steps");
+        assert_eq!(gate.batch(64, 10), 10, "ending at checkpoint step 10");
+        for _ in 0..10 {
+            gate.ran().unwrap();
+        }
+        assert_eq!(gate.batch(64, 10), 10, "steps 11 to 20");
+        gate.ran().unwrap();
+        assert_eq!(gate.batch(64, 10), 9, "steps 12 to 20");
+        assert_eq!(gate.batch(64, 1), 1, "every step a checkpoint");
+        assert_eq!(gate.batch(64, 0), 1, "an interval of 0 is taken as 1");
     }
 
     #[test]

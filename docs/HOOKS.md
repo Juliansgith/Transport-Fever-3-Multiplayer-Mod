@@ -445,44 +445,67 @@ by hand (see [DEVELOPMENT.md](DEVELOPMENT.md)). On release day, what remains for
 `step::StepDriver` (`crates/tpf3mp-hook/src/step.rs`, `install.rs`).
 
 What one call of `GameSim::Step` does decides the design. In TPF2 and TF3
-alike it reads the game's speed and runs that many simulation updates:
-none while paused, one at 1x, four at 4x. TF3 also adds a pending count,
-fed by the debug command `makeGamePerformSimulationStepsCmd` and capped at
-64 a call (the global at `0x403b8e0`). So with the game held at 1x and
-nothing pending, one call is exactly one update, the unit the room orders:
+alike it is one batch of the game's own pacing: the main thread
+(`CGame::Step`/`CGame::Sync`) calls it on its own schedule, 5 times a second
+at 1x, and it runs as many simulation updates as its one call of the speed
+getter answers: none while paused (the game's own paused path), one at 1x,
+four at 4x. TF3 also adds a pending count, fed by the debug command
+`makeGamePerformSimulationStepsCmd` and capped at 64 a call (the global at
+`0x403b8e0`). The renderer interpolates from each batch, so **every call
+must run**: a call skipped looks like a batch that ran without the world
+moving on, the render clock goes back, and TF3 fails
+`data.emitCount >= .0f && data.emitCount < 1.0f` in
+`UI::particle_manager_util::UpdateParticleSystemInstance` (a negative
+particle time step) within seconds of starting a game. The hook therefore
+runs the game's step exactly once per call and chooses the answer to its
+call of the speed getter, as TPF2MP's speed hook
+(`tpf2-multiplayer/native/src/speedhook.cpp`) patched TPF2's step:
 
-- **Before the room begins a game**, and **after it ends**, each call runs
-  the game's step as the game would.
-- **In the room's game**, each call runs the game's step once for each
-  step the room has released (`Session::poll_step`, never blocking the
-  game's thread), reporting each (`after_step`), at most 16 a call. A room
-  faster than the game's own 1x pace catches up that way, up to 16x. When
-  the room withholds the next step (paused, or a player behind), the call
-  runs nothing and the world stands still.
+- **Before the room begins a game**, and **after it ends**, the game's own
+  speed.
+- **In the room's game**, the steps the room has released
+  (`Session::poll_step`, never blocking the game's thread, then
+  `Session::batch`, which reads on through the agent's one-step releases),
+  at most 16 a call and never past a checkpoint step, whose lanes must be
+  the world's right after it; the call then reports each (`after_step`).
+  A room faster than the game's own pace catches up that way, up to 16x.
+  When the room withholds the next step (paused, or a player behind), 0:
+  the game's paused path, and the world stands still.
 - **The room's world.** A `Load` without a file (the world every player
   starts from) takes the world the game has loaded. A `Load` with a save
   file, and any error (the agent gone, a malformed message, a failed
-  report), **hold** the world for good: no more steps run, rather than run
-  apart from the room's (fail closed). Loading a room's save is the next
+  report), **hold** the world for good: every call answers 0, rather than
+  run apart from the room's (fail closed). Loading a room's save is the next
   piece (`CMenuUI::StartSavegame`, in the profile).
-- **The game's speed is held at 1x.** In the room's game the hook's
-  detour on `CGameTime::GetSpeed` (`0x2a95a0`, the getter `GameSim::Step`
-  reads) answers 1, whatever the speed row, a key or a script set, so one
-  call is always one update and the game's own pause stops nothing (the
-  room's pause is the only pause). A correction after the fact would not
-  do: one call at 4x would already have run four updates as one step.
+- **Only the step's own call is changed.** The profile's target
+  `GameSim::Step/GetSpeed call` (`0x1593ee`) is the step's one call of
+  `CGameTime::GetSpeed` (`0x2a95a0`); the hook redirects that call
+  (`hookcore::detour::CallRedirect`, which checks the call targets the
+  getter) to answer the chosen count. The getter's six other callers
+  (`CGame::Sync`, the UI, the camera, the particles) read the game's own
+  speed: telling them 1 when the speed row says otherwise also trips the
+  particle assertion. The game's own speed and pause therefore change
+  nothing in the room's game but the display, until the room follows them.
   Nothing may send the debug step command during a room: its pending count
   would add updates to a call.
-- **The speed row asks the room.** The getter's detour still reads the
+- **The speed row asks the room.** The getter's detour only reads: the
   game's own speed, the speed row's value, every time the game asks
   (`CGame::Sync` and the game UI ask every frame, paused or not). When it
   changes in the room's game, the hook sends `ToAgent::Speed` and the agent
   asks the room (`Request::SetSpeed`): the owner's choice sets the room's
   speed for everyone, and anyone else's is refused, shown as a notice. The
   value found on entering the room's game is not sent, so joining never
-  resets a room's speed.
+  resets a room's speed. What the room says back (its speed, a refusal, the
+  end) goes to the hook's log.
 
-The hook installs the detour from its bootstrap thread while the game
+Measured in TF3 build 40408 on release day (the rig with one player,
+`app.startGame()` from the console, the game's speed set with
+`makeGameSetSpeedCmd` as the speed row does, `GameTime.updateCount` read
+before and after): 4.97 updates a second at 1x, 20.34 at 4x, 10.02 at 2x,
+none paused, 4.98 back at 1x, the room confirming each change within a
+second, and no assertion in several minutes of play.
+
+The hook installs the detours from its bootstrap thread while the game
 starts, before any world is loaded, so no thread is inside the step when
 it is patched. It resolves the profile in the game's own mapped image
 (not the file on disk), attaches the `Session` to the launcher's link, and
@@ -490,7 +513,9 @@ calls the game's step through the detour's trampoline with all four
 register arguments passed through unchanged. A panic in the detour sets it
 to hold. Tests: `step::tests` drive the driver against a scripted room;
 `install::tests` detours a stand-in step in the test binary and checks it
-runs exactly once per released step with its arguments untouched.
+runs exactly once per call with the count chosen and its arguments
+untouched; `session::tests` read releases ahead over a real link;
+`detour::x86_64::tests` redirect one call in hand-written code.
 
 ### The Lua side
 
