@@ -1,0 +1,8 @@
+{
+    "authors": [ { "name": "TPF3-MP", "role": "CREATOR" } ],
+    "description": "Prototype of big maps for Transport Fever 3, after TpF2 Big Maps by silver2127: map sizes up to 128 km a side. It does nothing yet: it registers nothing with the game until the New Game menu's recipe is known.",
+    "name": "TPF3-MP Big Maps (prototype)",
+    "summary": "Prototype: bigger maps. Does nothing yet.",
+    "tags": [ "Script Mod" ],
+    "url": "https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod"
+}

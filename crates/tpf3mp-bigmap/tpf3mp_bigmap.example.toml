@@ -1,0 +1,23 @@
+# Big maps settings, as TpF2 Big Maps ships them on TPF2 (bigmap/cfg): the
+# added size ladder up to 128 km, a coarser street raster past its budget,
+# and the octree root moved to depth 11 (512 tiles). The file the mod's
+# ladder is generated from (crates/tpf3mp-bigmap/src/mod_data.rs). Without a
+# file every feature is off.
+
+[sizes]
+add_rows = true
+max_tiles = 512
+
+[limits]
+octree_depth = 11
+street_raster = true
+cell_budget_millions = 1500
+
+[generation]
+# The stock budget. Big Maps offers 50, which generates faster but places
+# less evenly; it changes the simulation, so the whole room shares it.
+placement_attempts = 200
+density_levels = false
+
+[ui]
+minimap = false

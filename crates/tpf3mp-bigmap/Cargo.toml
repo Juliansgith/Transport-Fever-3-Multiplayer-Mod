@@ -1,0 +1,25 @@
+[package]
+name = "tpf3mp-bigmap"
+description = "Big maps for Transport Fever 3, prototype: the size ladder, the ceilings a size hits, the terms every player in a room shares, and which features a build can run"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+sha2.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+# The mod's Lua, run as the game would run plain Lua (its version is not
+# known yet; the mod keeps to what every 5.x runs).
+mlua.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
