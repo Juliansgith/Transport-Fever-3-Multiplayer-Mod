@@ -96,3 +96,27 @@ async fn a_replica_that_drifts_fails_the_scenario() {
         show(&outcome)
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_long_run_of_quick_actions_stays_under_the_rooms_limit() {
+    let _turn = ONE_AT_A_TIME.lock().await;
+    let server = LocalServer::start().unwrap();
+    // More acts than a room's burst, each ordered within milliseconds on
+    // a fast machine: without pacing, the room refuses some as too fast.
+    let mut script = library::Script::default();
+    for i in 0..100 {
+        let (a, b) = (library::at(i * 10, 0), library::at(i * 10, 5));
+        script = script.act(0, library::road(vec![library::new(a), library::new(b)]));
+    }
+    let scenario = script
+        .expect(tpf3mp_testkit::regress::script::Check::StreetEdges(100))
+        .scenario("quick", "100 quick actions", false, 1);
+    let mut plan = server.plan(Arc::new(scenario));
+    plan.speed = Speed(400);
+    let gap = plan.min_gap;
+    let outcome = run_scenario(plan).await.unwrap();
+    assert!(outcome.passed(), "{}", show(&outcome));
+    // Where a round trip takes longer than the room's limit asks, pacing
+    // never shows; so check it does not only by its absence of refusals.
+    assert!(outcome.elapsed >= gap * 99, "{:?}", outcome.elapsed);
+}

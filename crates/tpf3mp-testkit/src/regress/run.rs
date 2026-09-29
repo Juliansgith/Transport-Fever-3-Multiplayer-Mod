@@ -97,6 +97,10 @@ pub struct HarnessPlan {
     /// An act fails when the room has not ordered it this many steps after
     /// its turn came.
     pub stall_steps: u64,
+    /// The least time between two acts of one game. A room takes 20
+    /// intents a second from a player, after a burst of 40 (`room.rs`);
+    /// a script can act faster than any player, so it is held to less.
+    pub min_gap: Duration,
 }
 
 impl HarnessPlan {
@@ -120,6 +124,7 @@ impl HarnessPlan {
             drift: None,
             deadline: Duration::from_secs(120),
             stall_steps: 40_000,
+            min_gap: Duration::from_millis(60),
         }
     }
 }
@@ -243,6 +248,7 @@ fn play(
         drift_at,
         patience: PATIENCE,
         stall_steps: plan.stall_steps,
+        min_gap: plan.min_gap,
     });
     let bridge = tokio::spawn(async move {
         let mut bridge = Bridge::new(link, BridgeOptions::default());

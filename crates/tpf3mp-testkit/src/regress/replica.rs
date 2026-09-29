@@ -37,6 +37,9 @@ pub struct ReplicaConfig {
     /// The script fails when an act waits longer than this many steps for
     /// the room to order it.
     pub stall_steps: u64,
+    /// The least time between two of this game's acts, to stay under the
+    /// room's limit on a player's intents.
+    pub min_gap: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +143,7 @@ fn run(config: &ReplicaConfig) -> Result<ReplicaReport, ReplicaError> {
     let mut lag = Vec::new();
     // The act in flight: its item, and the step and time it was sent at.
     let mut in_flight: Option<(usize, u64, Instant)> = None;
+    let mut last_sent = None;
     let mut stalled = false;
     let mut ended = false;
     loop {
@@ -184,7 +188,9 @@ fn run(config: &ReplicaConfig) -> Result<ReplicaReport, ReplicaError> {
             stalled = true;
             break;
         }
-        if let Some((item, payload)) = game.cursor.due(&game.world, &config.player) {
+        let rested = last_sent.is_none_or(|at: Instant| at.elapsed() >= config.min_gap);
+        if rested && let Some((item, payload)) = game.cursor.due(&game.world, &config.player) {
+            last_sent = Some(Instant::now());
             let command = session.command(payload)?;
             game.cursor.sent(item, command);
             in_flight = Some((item, game.ran, Instant::now()));
