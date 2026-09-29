@@ -268,6 +268,27 @@ class ScriptsTest(unittest.TestCase):
             self.assertIn("broken.zip", s["archives"][0])
 
 
+class CarryNamesTest(unittest.TestCase):
+    def test_an_executable_is_indexed_then_matched_onto_the_new_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = []
+
+            def run(argv):
+                calls.append(argv)
+                return "matched 12 functions, 5 of them named in the old build (string 5)" if argv[0] == "match" else "seconds 1"
+            report = dayone.Report("t")
+            with redirect_stdout(io.StringIO()):
+                dayone.carry_names(Path("TransportFever2.exe"), Path("tf3.tpfdb"), Path(tmp), run, report)
+            self.assertEqual(calls[0][0], "index")
+            self.assertEqual(calls[1][:1] + calls[1][2:], ["match", "tf3.tpfdb", "--limit", "0"])
+            self.assertIn("5 of them named", "\n".join(report.lines))
+            # A .tpfdb is used as it is, not indexed again.
+            calls.clear()
+            with redirect_stdout(io.StringIO()):
+                dayone.carry_names(Path("tpf2.tpfdb"), Path("tf3.tpfdb"), Path(tmp), run, report)
+            self.assertEqual([c[0] for c in calls], ["match"])
+
+
 class ProbesTest(unittest.TestCase):
     def test_probes_go_into_the_accounts_staging_area_and_out_again(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,0 +1,165 @@
+# The game's script sources
+
+Made by tools/dayone/dayone.py on 2026-09-29 18:40.
+
+- 6041 script files: 967 .tl, 685 .d.tl declarations, 4389 .lua; 5356 of them inside the content archives
+- game_script folders: none (engine-state scripts may be gone; the probes use the GUI state)
+
+## Command factories (61)
+- `api.cmd.makeAnimalSetStateCmd`: declared api/tealdef/api/cmd.d.tl:613; used 0x
+- `api.cmd.makeAnimalSpawnAtCmd`: declared api/tealdef/api/cmd.d.tl:620; used 0x
+- `api.cmd.makeClearLogbooksCmd`: declared api/tealdef/api/cmd.d.tl:1023; used 0x
+- `api.cmd.makeComponentExchangeCmd`: declared api/tealdef/api/cmd.d.tl:1008; used 0x
+- `api.cmd.makeCreateIndustryExtendProposalCmd`: declared api/tealdef/api/cmd.d.tl:738; used 1x (base/content/gui.zip!gui/entity_window/industry/industry.tl:95)
+- `api.cmd.makeCustomEntityCreateCmd`: declared api/tealdef/api/cmd.d.tl:632; used 2x (base/content/game_mechanics.zip!game_mechanics/fun_elements/custom_entity_util.tl:29, dlcs/urbangames_deluxe_upgrade_pack/content/fun_elements.zip!fun_elements/balloon.script.tl:101)
+- `api.cmd.makeCustomEntityDestroyCmd`: declared api/tealdef/api/cmd.d.tl:627; used 4x (base/content/game_mechanics.zip!game_mechanics/company/explorations/exploration_plane.script.tl:192, base/content/game_mechanics.zip!game_mechanics/fun_elements/custom_entity_util.tl:57, dlcs/urbangames_deluxe_upgrade_pack/content/fun_elements.zip!fun_elements/balloon.script.tl:127, mods/release/urbangames_campaign_mission_03/content/init.zip!init/init.script.tl:43)
+- `api.cmd.makeCustomEntityUpdateStateCmd`: declared api/tealdef/api/cmd.d.tl:638; used 6x (base/content/game_mechanics.zip!game_mechanics/company/explorations/exploration_plane.script.tl:111, base/content/game_mechanics.zip!game_mechanics/fun_elements/blimp_util.tl:161, base/content/game_mechanics.zip!game_mechanics/fun_elements/blimp_util.tl:250, base/content/game_mechanics.zip!game_mechanics/fun_elements/rocket_util.tl:48)
+- `api.cmd.makeCustomEntityUpdateTransformationCmd`: declared api/tealdef/api/cmd.d.tl:644; used 3x (base/content/game_mechanics.zip!game_mechanics/fun_elements/custom_entity_util.tl:38, base/content/game_mechanics.zip!game_mechanics/fun_elements/custom_entity_util.tl:47, dlcs/urbangames_deluxe_upgrade_pack/content/fun_elements.zip!fun_elements/balloon.script.tl:89)
+- `api.cmd.makeCustomVehicleCreateOrUpdateCmd`: declared api/tealdef/api/cmd.d.tl:653; used 2x (base/content/game_mechanics.zip!game_mechanics/company/explorations/exploration_plane.script.tl:99, base/content/game_mechanics.zip!game_mechanics/company/explorations/exploration_plane.script.tl:145)
+- `api.cmd.makeEntitySetColorCmd`: declared api/tealdef/api/cmd.d.tl:662; used 5x (base/content/gui.zip!gui/entity_window/line/line.tl:85, base/content/gui.zip!gui/entity_window/vehicle/vehicle_eow.script.tl:150, base/content/gui.zip!gui/line_vehicle_mgmt/line_react_util.tl:597, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:3596)
+- `api.cmd.makeEntitySetEmissionsCmd`: declared api/tealdef/api/cmd.d.tl:671; used 2x (base/content/game_mechanics.zip!game_mechanics/emission/emissions.script.tl:130, mods/release/urbangames_campaign_mission_07/content/mod.script.tl:14)
+- `api.cmd.makeEntitySetNameCmd`: declared api/tealdef/api/cmd.d.tl:679; used 14x (base/content/game_mechanics.zip!game_mechanics/company/company.tl:938, base/content/game_mechanics.zip!game_mechanics/finance/account.tl:146, base/content/gui.zip!gui/entity_window/view_manager.tl:198, base/content/gui.zip!gui/line_vehicle_mgmt/line_manager_panel.tl:766)
+- `api.cmd.makeEntitySetPlayerCmd`: declared api/tealdef/api/cmd.d.tl:685; used 15x (base/content/gui.zip!gui/debug_panel/make_entity_debug_panel.tl:422, base/content/mission.zip!mission/mission_framework/mission_framework_util_entity.tl:4, base/content/mission.zip!mission/mission_framework/mission_framework_util_entity.tl:12, base/content/mission.zip!mission/mission_savegame_util.tl:25)
+- `api.cmd.makeGameAddPlayerCmd`: declared api/tealdef/api/cmd.d.tl:693; used 1x (base/content/mission.zip!mission/tasks/transfer_ownership/transfer_ownership_util.tl:5)
+- `api.cmd.makeGamePerformSimulationStepsCmd`: declared api/tealdef/api/cmd.d.tl:1019; used 0x
+- `api.cmd.makeGameSetCalendarSpeedCmd`: declared api/tealdef/api/cmd.d.tl:698; used 17x (base/content/gui.zip!gui/game_bar/game_bar_widgets.tl:344, mods/release/urbangames_campaign_mission_01/content/mission.zip!mission/tasks/everything/everything.tl:37, mods/release/urbangames_campaign_mission_01/content/mission.zip!mission/tasks/everything/everything.tl:68, mods/release/urbangames_campaign_mission_02/content/mission.zip!mission/tasks/everything/everything.tl:38)
+- `api.cmd.makeGameSetCloudCoverageCmd`: declared api/tealdef/api/cmd.d.tl:716; used 1x (base/content/game_mechanics.zip!game_mechanics/game_time/game_time.script.tl:259)
+- `api.cmd.makeGameSetDateCmd`: declared api/tealdef/api/cmd.d.tl:703; used 4x (base/content/gui.zip!gui/game_bar/game_bar_widgets.tl:680, base/content/mission.zip!mission/calendar.lua:23, mods/release/urbangames_campaign_mission_02/content/mission.zip!mission/tasks/everything/everything.tl:37, mods/release/urbangames_campaign_mission_07/content/mission.zip!mission/tasks/everything/everything.tl:44)
+- `api.cmd.makeGameSetSpeedCmd`: declared api/tealdef/api/cmd.d.tl:708; used 13x (base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:403, base/content/gui.zip!gui/main/game.tl:670, base/content/mission.zip!mission/guide_system/guide_system_react.tl:150, base/content/mission.zip!mission/guide_system/guide_system_react.tl:164)
+- `api.cmd.makeGameSetTimeOfDayCmd`: declared api/tealdef/api/cmd.d.tl:712; used 5x (base/content/game_mechanics.zip!game_mechanics/game_time/game_time.script.tl:195, base/content/game_mechanics.zip!game_mechanics/game_time/game_time.script.tl:203, base/content/game_mechanics.zip!game_mechanics/game_time/game_time.script.tl:230, base/content/gui.zip!gui/game_bar/game_bar_widgets.tl:412)
+- `api.cmd.makeIndustrySetDespawnTimeCmd`: declared api/tealdef/api/cmd.d.tl:724; used 3x (base/content/game_mechanics.zip!game_mechanics/industries/industries.script.tl:96, base/content/game_mechanics.zip!game_mechanics/industries/industries.script.tl:102, base/content/game_mechanics.zip!game_mechanics/subventions/subvention_util.tl:481)
+- `api.cmd.makeIndustrySetManualDevelopmentCmd`: declared api/tealdef/api/cmd.d.tl:730; used 0x
+- `api.cmd.makeJournalBookAssetCmd`: declared api/tealdef/api/cmd.d.tl:747; used 19x (base/content/game_mechanics.zip!game_mechanics/finance/loan.script.tl:101, base/content/game_mechanics.zip!game_mechanics/finance/loan.script.tl:103, base/content/game_mechanics.zip!game_mechanics/finance/loan.script.tl:136, base/content/game_mechanics.zip!game_mechanics/finance/loan.script.tl:175)
+- `api.cmd.makeJournalClearAllCmd`: declared api/tealdef/api/cmd.d.tl:751; used 8x (mods/release/urbangames_campaign_mission_01/content/mission.zip!mission/tasks/everything/everything.tl:39, mods/release/urbangames_campaign_mission_02/content/mission.zip!mission/tasks/everything/everything.tl:40, mods/release/urbangames_campaign_mission_03/content/mission.zip!mission/tasks/everything/everything.tl:41, mods/release/urbangames_campaign_mission_04/content/mission.zip!mission/tasks/everything/everything.tl:47)
+- `api.cmd.makeJournalLogEntryCmd`: declared api/tealdef/api/cmd.d.tl:757; used 3x (base/content/game_mechanics.zip!game_mechanics/industries/industries.script.tl:186, base/content/game_mechanics.zip!game_mechanics/towns/town_growth.script.tl:333, base/content/game_mechanics.zip!game_mechanics/towns/town_util.tl:793)
+- `api.cmd.makeLineCreateCmd`: declared api/tealdef/api/cmd.d.tl:767; used 2x (base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:6537, base/content/mission.zip!mission/tasks/vehicle_util/mission_vehicle_util.tl:19)
+- `api.cmd.makeLineDestroyCmd`: declared api/tealdef/api/cmd.d.tl:772; used 4x (base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:2248, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:6611, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:6830, base/content/mission.zip!mission/tasks/vehicle_util/mission_vehicle_util.tl:52)
+- `api.cmd.makeLineUpdateCmd`: declared api/tealdef/api/cmd.d.tl:778; used 5x (base/content/gui.zip!gui/entity_window/line/line.tl:33, base/content/gui.zip!gui/entity_window/line/line_eow.script.tl:445, base/content/gui.zip!gui/line_vehicle_mgmt/cargofilter_window.tl:440, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:6558)
+- `api.cmd.makeMaintenanceCostUpdateCmd`: declared api/tealdef/api/cmd.d.tl:993; used 0x
+- `api.cmd.makeScriptingSendEventCmd`: declared api/tealdef/api/cmd.d.tl:788; used 125x (base/content/game_mechanics.zip!game_mechanics/celebrations/celebrations.script.tl:193, base/content/game_mechanics.zip!game_mechanics/celebrations/celebrations.script.tl:214, base/content/game_mechanics.zip!game_mechanics/celebrations/celebrations.script.tl:247, base/content/game_mechanics.zip!game_mechanics/celebrations/celebrations.script.tl:268)
+- `api.cmd.makeSimPersonSetStateCmd`: declared api/tealdef/api/cmd.d.tl:998; used 0x
+- `api.cmd.makeStockListDiscardCargoCmd`: declared api/tealdef/api/cmd.d.tl:797; used 2x (base/content/gui.zip!gui/entity_window/entity_window_util.tl:427, mods/release/urbangames_campaign_mission_01/content/mission.zip!mission/tasks/everything/everything.tl:55)
+- `api.cmd.makeStockListSetModifiersCmd`: declared api/tealdef/api/cmd.d.tl:810; used 1x (base/content/industries/industry_workers.script.tl:13)
+- `api.cmd.makeStockListSetStocksCargoTypeCmd`: declared api/tealdef/api/cmd.d.tl:804; used 1x (base/content/gui.zip!gui/entity_window/entity_window_util.tl:368)
+- `api.cmd.makeStockSetCargoAmountCmd`: declared api/tealdef/api/cmd.d.tl:1015; used 0x
+- `api.cmd.makeTownAutoDetectConnectionsCmd`: declared api/tealdef/api/cmd.d.tl:825; used 1x (base/content/gui.zip!gui/map_editor/map_editor.tl:2504)
+- `api.cmd.makeTownBuildingSetBlockedDevelopmentCmd`: declared api/tealdef/api/cmd.d.tl:883; used 1x (base/content/gui.zip!gui/entity_window/town_building/town_building.tl:206)
+- `api.cmd.makeTownConnectWithIndustriesCmd`: declared api/tealdef/api/cmd.d.tl:819; used 1x (base/content/gui.zip!gui/map_editor/map_editor.tl:2632)
+- `api.cmd.makeTownCreateCmd`: declared api/tealdef/api/cmd.d.tl:831; used 1x (base/content/gui.zip!gui/map_editor/map_editor.tl:1636)
+- `api.cmd.makeTownCustomDistributionWeightsCmd`: declared api/tealdef/api/cmd.d.tl:850; used 1x (base/content/gui.zip!gui/entity_window/town/town_eow.script.tl:731)
+- `api.cmd.makeTownDestroyCmd`: declared api/tealdef/api/cmd.d.tl:836; used 2x (base/content/gui.zip!gui/map_editor/map_editor.tl:772, base/content/gui.zip!gui/map_editor/map_editor.tl:1627)
+- `api.cmd.makeTownDevelopAtCmd`: declared api/tealdef/api/cmd.d.tl:844; used 0x
+- `api.cmd.makeTownSetDevelopmentActiveCmd`: declared api/tealdef/api/cmd.d.tl:856; used 2x (base/content/gui.zip!gui/entity_window/town/town_eow.script.tl:1035, base/content/mission.zip!mission/tasks/utility/town_development.tl:8)
+- `api.cmd.makeTownSetInitialLandUseCapacitiesCmd`: declared api/tealdef/api/cmd.d.tl:862; used 1x (base/content/gui.zip!gui/entity_window/town/town_eow.script.tl:1020)
+- `api.cmd.makeTownUpdateCargoNeedsCmd`: declared api/tealdef/api/cmd.d.tl:869; used 3x (base/content/game_mechanics.zip!game_mechanics/towns/town_growth.script.tl:279, base/content/gui.zip!gui/entity_window/town/town_eow.script.tl:576, base/content/mission.zip!mission/tasks/utility/mission_town_util.tl:34)
+- `api.cmd.makeTownUpdateSizeCmd`: declared api/tealdef/api/cmd.d.tl:876; used 2x (base/content/game_mechanics.zip!game_mechanics/towns/town_growth.script.tl:550, base/content/game_mechanics.zip!game_mechanics/towns/town_growth.script.tl:557)
+- `api.cmd.makeVehicleBuyCmd`: declared api/tealdef/api/cmd.d.tl:892; used 1x (base/content/gui.zip!gui/line_vehicle_mgmt/vehicle_react_util.tl:350)
+- `api.cmd.makeVehicleReplaceCmd`: declared api/tealdef/api/cmd.d.tl:898; used 2x (base/content/gui.zip!gui/line_vehicle_mgmt/vehicle_react_util.tl:407, base/content/mission.zip!mission/tasks/vehicle_util/replace_vehicles.tl:21)
+- `api.cmd.makeVehicleReverseCmd`: declared api/tealdef/api/cmd.d.tl:903; used 2x (base/content/gui.zip!gui/entity_window/vehicle/vehicle.tl:317, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:4989)
+- `api.cmd.makeVehicleSellCmd`: declared api/tealdef/api/cmd.d.tl:908; used 9x (base/content/gui.zip!gui/entity_window/vehicle/vehicle.tl:361, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:2244, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:5344, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:6607)
+- `api.cmd.makeVehicleSendToDepotCmd`: declared api/tealdef/api/cmd.d.tl:915; used 4x (base/content/gui.zip!gui/entity_window/vehicle/vehicle.tl:343, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:5301, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:5597, mods/release/urbangames_campaign_mission_05/content/mission.zip!mission/tasks/drilling/observe_drilling.tl:80)
+- `api.cmd.makeVehicleSetLineCmd`: declared api/tealdef/api/cmd.d.tl:922; used 5x (base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:4753, base/content/gui.zip!gui/line_vehicle_mgmt/vehicle_react_util.tl:376, mods/release/urbangames_campaign_mission_02/content/mission.zip!mission/mission_story.tl:1595, mods/release/urbangames_campaign_mission_05/content/mission.zip!mission/tasks/drilling/observe_drilling.tl:83)
+- `api.cmd.makeVehicleSetManualDepartureCmd`: declared api/tealdef/api/cmd.d.tl:930; used 0x
+- `api.cmd.makeVehicleSetModifiersCmd`: declared api/tealdef/api/cmd.d.tl:942; used 2x (base/content/vehicle/vehicle_modifier.script.tl:97, base/content/vehicle/vehicle_modifier.script.tl:108)
+- `api.cmd.makeVehicleSetStoppedByUserCmd`: declared api/tealdef/api/cmd.d.tl:936; used 6x (base/content/gui.zip!gui/entity_window/vehicle/vehicle.tl:330, base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:5036, base/content/mission.zip!mission/tasks/vehicle_util/mission_vehicle_util.tl:45, mods/release/urbangames_campaign_mission_05/content/mission.zip!mission/tasks/drilling/send_vehicle.tl:164)
+- `api.cmd.makeVehicleTryToDepartCmd`: declared api/tealdef/api/cmd.d.tl:950; used 0x
+- `api.cmd.makeWorldBuildProposalCmd`: declared api/tealdef/api/cmd.d.tl:961, api/tealdef/api/cmd.d.tl:962; used 39x (api/tealdef/api/type.d.tl:2487, base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:212, base/content/game_mechanics.zip!game_mechanics/industries/industries.script.tl:31, base/content/gui.zip!gui/construction/construction.tl:1301)
+- `api.cmd.makeWorldChangeWindCmd`: declared api/tealdef/api/cmd.d.tl:968; used 0x
+- `api.cmd.makeWorldReplaceTerrainCmd`: declared api/tealdef/api/cmd.d.tl:977; used 3x (base/content/gui.zip!gui/map_editor/map_editor.tl:796, base/content/gui.zip!gui/map_editor/map_editor.tl:1007, base/content/gui.zip!gui/map_editor/map_editor.tl:1316)
+- `api.cmd.makeWorldSetBulldozableCmd`: declared api/tealdef/api/cmd.d.tl:983; used 1x (base/content/mission.zip!mission/mission_sim.script.tl:783)
+
+## Files that send commands (311)
+- api/tealdef/api/cmd.d.tl:15
+- api/tealdef/api/cmd.d.tl:598
+- base/content/game_mechanics.zip!game_mechanics/celebrations/celebrations.script.tl:193
+- base/content/game_mechanics.zip!game_mechanics/celebrations/celebrations.script.tl:214
+- base/content/game_mechanics.zip!game_mechanics/celebrations/celebrations.script.tl:247
+- base/content/game_mechanics.zip!game_mechanics/celebrations/celebrations.script.tl:268
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:118
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:120
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:160
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:163
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:175
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:212
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:403
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:423
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:466
+- base/content/game_mechanics.zip!game_mechanics/company/company.script.tl:501
+- base/content/game_mechanics.zip!game_mechanics/company/company.tl:422
+- base/content/game_mechanics.zip!game_mechanics/company/company_growth.script.tl:7
+- base/content/game_mechanics.zip!game_mechanics/company/company_growth.script.tl:105
+- base/content/game_mechanics.zip!game_mechanics/company/company_growth.script.tl:107
+- base/content/game_mechanics.zip!game_mechanics/company/explorations/exploration_plane.script.tl:99
+- base/content/game_mechanics.zip!game_mechanics/company/explorations/exploration_plane.script.tl:111
+- base/content/game_mechanics.zip!game_mechanics/company/explorations/exploration_plane.script.tl:145
+- base/content/game_mechanics.zip!game_mechanics/company/explorations/exploration_plane.script.tl:192
+- base/content/game_mechanics.zip!game_mechanics/emission/emissions.script.tl:130
+- base/content/game_mechanics.zip!game_mechanics/finance/account.tl:146
+- base/content/game_mechanics.zip!game_mechanics/finance/loan.script.tl:102
+- base/content/game_mechanics.zip!game_mechanics/finance/loan.script.tl:104
+- base/content/game_mechanics.zip!game_mechanics/finance/loan.script.tl:138
+- base/content/game_mechanics.zip!game_mechanics/finance/loan.script.tl:176
+- base/content/game_mechanics.zip!game_mechanics/finance/loan.script.tl:180
+- base/content/game_mechanics.zip!game_mechanics/fun_elements/blimp_util.tl:160
+- base/content/game_mechanics.zip!game_mechanics/fun_elements/blimp_util.tl:249
+- base/content/game_mechanics.zip!game_mechanics/fun_elements/custom_entity_util.tl:38
+- base/content/game_mechanics.zip!game_mechanics/fun_elements/custom_entity_util.tl:43
+- base/content/game_mechanics.zip!game_mechanics/fun_elements/custom_entity_util.tl:48
+- base/content/game_mechanics.zip!game_mechanics/fun_elements/custom_entity_util.tl:58
+- base/content/game_mechanics.zip!game_mechanics/fun_elements/fun_elements.script.tl:7
+- base/content/game_mechanics.zip!game_mechanics/fun_elements/rocket_util.tl:48
+- base/content/game_mechanics.zip!game_mechanics/fun_elements/rocket_util.tl:74
+- base/content/game_mechanics.zip!game_mechanics/game_time/game_time.script.tl:195
+- base/content/game_mechanics.zip!game_mechanics/game_time/game_time.script.tl:203
+- base/content/game_mechanics.zip!game_mechanics/game_time/game_time.script.tl:230
+- base/content/game_mechanics.zip!game_mechanics/game_time/game_time.script.tl:259
+- base/content/game_mechanics.zip!game_mechanics/industries/industries.script.tl:31
+- base/content/game_mechanics.zip!game_mechanics/industries/industries.script.tl:96
+- base/content/game_mechanics.zip!game_mechanics/industries/industries.script.tl:102
+- base/content/game_mechanics.zip!game_mechanics/industries/industries.script.tl:186
+- base/content/game_mechanics.zip!game_mechanics/industries/industries.script.tl:198
+- base/content/game_mechanics.zip!game_mechanics/notifications/availability_notifications.script.tl:192
+- base/content/game_mechanics.zip!game_mechanics/notifications/availability_notifications.script.tl:209
+- base/content/game_mechanics.zip!game_mechanics/notifications/availability_notifications.script.tl:227
+- base/content/game_mechanics.zip!game_mechanics/notifications/availability_notifications.script.tl:245
+- base/content/game_mechanics.zip!game_mechanics/notifications/availability_notifications.script.tl:269
+- base/content/game_mechanics.zip!game_mechanics/notifications/availability_notifications.script.tl:296
+- base/content/game_mechanics.zip!game_mechanics/notifications/availability_notifications.script.tl:311
+- base/content/game_mechanics.zip!game_mechanics/notifications/availability_notifications.script.tl:327
+- base/content/game_mechanics.zip!game_mechanics/notifications/gui/notification_popups.tl:107
+- base/content/game_mechanics.zip!game_mechanics/notifications/notifications.script.tl:11
+- base/content/game_mechanics.zip!game_mechanics/subventions/subventions.script.tl:11
+
+## Speed and pause
+- base/content/game_mechanics.zip!game_mechanics/notifications/gui/notification_log.tl:600: "IA_GAME_PAUSE_OR_CYCLE_SPEED",
+- base/content/gui.zip!gui/context_helper/context_helper_react.tl:879: "IA_GAME_PAUSE_OR_CYCLE_SPEED",
+- base/content/gui.zip!gui/game_bar/game_bar.css.lua:627: R::GameBarMenuRight R::GameSpeedControl KeybindingHintDisplay!overflow-mode]], {
+- base/content/gui.zip!gui/game_bar/game_bar.css.lua:674: a("R::GameBarMenuRight R::GameSpeedControl", {
+- base/content/gui.zip!gui/game_bar/game_bar.tl:1334: game_bar_widgets.GameSpeedControl{
+- base/content/gui.zip!gui/game_bar/game_bar_widgets.d.tl:4: record GameSpeedControlParams
+- base/content/gui.zip!gui/game_bar/game_bar_widgets.d.tl:9: GameSpeedControl : Recipe<GameSpeedControlParams>
+- base/content/gui.zip!gui/game_bar/game_bar_widgets.tl:179: game_bar_widgets.GameSpeedControl = react.RegisterRecipe("GameSpeedControl", function(params : GameBarWidgets.GameSpeedC
+- base/content/gui.zip!gui/game_bar/game_bar_widgets.tl:239: params.gameSpeedHelper:get():getApi().setSpeed(speedups[index])
+- base/content/gui.zip!gui/game_bar/game_bar_widgets.tl:249: inputAction = "IA_GAME_PAUSE_OR_CYCLE_SPEED",
+- base/content/gui.zip!gui/layers/layers_button_ridge.tl:53: "IA_GAME_PAUSE_OR_CYCLE_SPEED",
+- base/content/gui.zip!gui/line_vehicle_mgmt/manager_window.tl:8231: "IA_GAME_PAUSE_OR_CYCLE_SPEED",
+- base/content/gui.zip!gui/main/disable_features.d.tl:5: "GameSpeedControl"
+- base/content/gui.zip!gui/main/game.tl:694: return game_react_globals.getDisableFeatures()["GameSpeedControl"] ~= true
+- base/content/gui.zip!gui/main/game.tl:699: setSpeed = commit,
+- base/content/gui.zip!gui/main/game.tl:756: return game_react_globals.getDisableFeatures()["GameSpeedControl"] ~= true
+- base/content/gui.zip!gui/main/game.tl:762: return game_react_globals.getDisableFeatures()["GameSpeedControl"] ~= true
+- base/content/gui.zip!gui/main/game.tl:766: react.useInputAction("IA_GAME_PAUSE_OR_CYCLE_SPEED", react.iaHandlerExtended(function(data : Gui.InputAction.InvokeData)
+- base/content/gui.zip!gui/main/game.tl:787: return game_react_globals.getDisableFeatures()["GameSpeedControl"] ~= true
+- base/content/gui.zip!gui/main/game_context.d.tl:78: setSpeed : function(integer)
+- base/content/gui.zip!gui/menu/load_game_page.tl:79: react.useInputAction("IA_GAME_PAUSE_OR_CYCLE_SPEED", react.iaForward(detailPageRef, "IA_GAME_PAUSE_OR_CYCLE_SPEED"))
+- base/tealdef/gui/game_bar/game_bar_widgets.d.tl:4: record GameSpeedControlParams
+- base/tealdef/gui/game_bar/game_bar_widgets.d.tl:9: GameSpeedControl : Recipe<GameSpeedControlParams>
+- base/tealdef/gui/main/disable_features.d.tl:5: "GameSpeedControl"
+- base/tealdef/gui/main/game_context.d.tl:78: setSpeed : function(integer)
+- mods/release/urbangames_campaign_mission_02/content/mission.zip!mission/mission_story.tl:991: ["GameSpeedControl"] = true,
+- mods/release/urbangames_campaign_mission_02/content/mission.zip!mission/mission_story.tl:1093: ["GameSpeedControl"] = true,
+- mods/release/urbangames_campaign_mission_02/content/mission.zip!mission/mission_story.tl:1140: ["GameSpeedControl"] = true,
+- mods/release/urbangames_campaign_mission_02/content/mission.zip!mission/mission_story_cutscenes_only.tl:239: ["GameSpeedControl"] = true,
+- mods/release/urbangames_campaign_mission_02/content/mission.zip!mission/mission_story_cutscenes_only.tl:254: ["GameSpeedControl"] = true,
+
+Verdict: GO

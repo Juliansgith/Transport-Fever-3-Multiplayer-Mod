@@ -309,6 +309,46 @@ expansion and development; script events; the journal and logbooks;
 map-editor and debug commands (towns, terrain, animals, date, time of day,
 weather).
 
+## Measured on the release build, 2026-09-29 evening
+
+From Steam build 40408 as installed (`investigation/dayone-2026-09-29/`),
+read without starting the game:
+
+- **Go/no-go: GO.** SteamStub alone, as on TPF2; `.text` is not
+  encrypted on disk (entropy 6.49); 3 TLS callbacks, as TPF2; the game
+  still imports `alut.dll`.
+- **Names.** 16 functions keep a `__FUNCSIG__` name (TPF2: 20,746), but
+  `__FILE__` survives (858 source files, 6,204 functions tied directly)
+  and so does RTTI (7,947 vtables). `tpfre match` carries TPF2's names
+  over by shared assert strings, RTTI slots, the call graph and
+  source-file order: 3,942 named functions, among them `GameSim::Step`
+  (`0x159390`), `CGame::Step` (`0x11f3b0`), `CGame::RunGameSimLoop`
+  (`0x11e210`), `CommandList::Add` (its lambda, `0x9d23c0`) and
+  `UI::CMenuUI::CreatePage` (`0x6a2ee0`), each in the file TF3 names for
+  it. Not found yet: `CMenuUI::StartSavegame`, `CGameTime::GetSpeed`.
+- **`playerInitiated` is the fourth argument, not the fifth.** The
+  shipped `api/tealdef/api/cmd.d.tl` declares
+  `makeWorldBuildProposalCmd(proposal, context, ignoreErrors,
+  playerInitiated, doDust?)`, for a `Proposal` or a `SimpleProposal`; the
+  wiki's order is wrong. The mods' `(proposal, nil, true, true)` therefore
+  sets `playerInitiated`.
+- **Who builds through script, and with what flag.** The stock
+  construction tool (`gui/construction/construction.tl`) sends its
+  proposal with `playerInitiated = true`, as do the entity windows (bridge
+  and tunnel, double slip switch); the game's own scripts (industries,
+  companies, missions, the map editor) send `false`. So the flag tells a
+  player's build from the game's, but not from a mod's.
+- **Streets and tracks are built natively.** The street and track tools
+  are native builder actions (`ConstructionActionStreetEdgeBuilder`,
+  `TrackEdgeBuilder`) that the GUI script only configures, so road and
+  track capture still needs the native hook on `CommandList::Add`;
+  constructions placed through the script can be captured in Lua.
+- **Speed is a script command.** The game bar sends
+  `makeGameSetSpeedCmd` (`gui/main/game.tl`), which the room can take over
+  in Lua.
+- **Scripts.** 6,041 script files, 5,356 of them packed in the `UG`
+  archives; 311 places send commands (`5-scripts.md`).
+
 ## The modding manual
 
 Documented in the wiki's modding manual:

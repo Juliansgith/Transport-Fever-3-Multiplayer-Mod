@@ -696,6 +696,23 @@ def run_tool(argv: list[str]) -> str:
     return (done.stdout or "") + (("\n" + done.stderr) if done.returncode and done.stderr else "")
 
 
+def carry_names(source: Path, db: Path, folder: Path, run, report: Report) -> None:
+    """TF3 has no __FUNCSIG__ strings, which named TPF2's functions: carry
+    an older build's names over with `tpfre match` (strings, RTTI slots,
+    the call graph and source-file order). `source` is that build's
+    executable or its .tpfdb."""
+    old_db = source
+    if source.suffix.lower() != ".tpfdb":
+        old_db = folder / f"{source.stem}.names-from.tpfdb"
+        say(f"indexing {source} for its names ...")
+        say(run(["index", str(source), "-o", str(old_db)]).strip())
+    say(f"matching {old_db.name} onto {db.name} ...")
+    out = run(["match", str(old_db), str(db), "--limit", "0"]).strip()
+    report.add(f"Names carried from `{source.name}` (tpfre match): {out.splitlines()[0] if out else 'nothing'}")
+    report.add("A carried name is shown with source `matched`; check it against the function's source file.")
+    report.add("")
+
+
 def decode_report(exe: Path, db: Path, run, report: Report) -> str:
     """The hook's targets, looked up in tpfre's index of `exe`."""
     word = "GO"
@@ -738,6 +755,8 @@ def cmd_decode(args) -> int:
     say(f"indexing {exe} ...")
     say(run_tool([str(tpfre), "index", str(exe), "-o", str(db)]).strip())
     r = Report(f"Hook targets in {exe.name}")
+    if args.names_from:
+        carry_names(Path(args.names_from), db, folder, lambda argv: run_tool([str(tpfre)] + argv), r)
     word = decode_report(exe, db, lambda argv: run_tool([str(tpfre)] + argv), r)
     r.add(f"Verdict: {word}")
     r.save(folder, "3-decode.md")
@@ -1011,6 +1030,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("decode")
     p.add_argument("--exe")
     p.add_argument("--tpfre", help="the tpfre binary (default tools/tpfre/target/release)")
+    p.add_argument("--names-from", help="an older build's executable or .tpfdb (TPF2's) to carry function names from")
     sub.add_parser("scripts")
     p = sub.add_parser("probes")
     p.add_argument("action", choices=["install", "remove"])

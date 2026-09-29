@@ -1,11 +1,11 @@
-//! The command line: `tpfre index`, `tpfre q`, `tpfre diff`.
+//! The command line: `tpfre index`, `tpfre q`, `tpfre diff`, `tpfre match`.
 
 use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::PathBuf;
 
 use crate::query::Query;
-use crate::{diff, index, sig};
+use crate::{diff, index, matching, sig};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -49,6 +49,20 @@ pub enum Cmd {
         json: bool,
         #[command(subcommand)]
         cmd: QCmd,
+    },
+    /// Carry the old build's function names to a new build that lacks them
+    /// (TF3 has no __FUNCSIG__ strings), matched by shared strings, RTTI
+    /// slots and the call graph; written into NEW as source 'matched'.
+    Match {
+        old: PathBuf,
+        new: PathBuf,
+        /// Report only; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
     },
     /// Named functions moved, resized, appeared or disappeared between builds.
     Diff {
@@ -261,6 +275,13 @@ fn dispatch(cli: Cli, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Resul
             limit,
             json,
         } => diff::run(&old, &new, moved, limit, json, out),
+        Cmd::Match {
+            old,
+            new,
+            dry_run,
+            limit,
+            json,
+        } => matching::run(&old, &new, dry_run, limit, json, out),
         Cmd::Q { db, bin, json, cmd } => {
             let mut q = Query::open(&db, bin, json, out)?;
             let code = match cmd {
