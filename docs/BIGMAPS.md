@@ -327,3 +327,31 @@ Disabled" removes both timers, and closures still happen.
    the stall and load timeouts.
 6. Whether town and industry placement and runtime founding are on one path,
    and whether it reads anything but the seed and the terrain.
+
+## The TF3 prototype
+
+`crates/tpf3mp-bigmap` and `mod/tpf3mp_bigmap_1` carry Big Maps'
+features over as far as they can go before anyone has read TF3's
+executable. Whether the project ships big maps, and which of them, is
+the owner's to decide (PLAN.md, "Big maps"); this is what it would be
+built on. Every number in it is TPF2 build 35924's, labelled measured or
+derived (`WorldModel::TPF2_BUILD_35924`), until TF3's are measured.
+
+| Big Maps on TPF2 | the prototype |
+|---|---|
+| The added size rows, 32 to 128 km, labelled in the page's own km, with the ratio dropdown shaping each (`add_size_rows`) | `ladder`: the rows and their 1:k shapes. The mod's `ladder.lua` is generated from the settings, and `menu.lua` answers a pick the way the TPF2 detour answered `GetNumTilesNew`: stock rows to the game, added rows by position. On TF3 the New Game menu may be script, in which case the mod adds the rows itself and the ratio labels, which TPF2 could not change, can say what they do. The mod registers nothing until that recipe is known. |
+| The street raster's 32-bit wall past 180 tiles (`street_raster`, `cell_budget_millions`) | `ceilings`: the cell count at the stock cell, and the cell the budget needs. |
+| The octree root's 32,768 m wall past 256 tiles (`octree`, `octree_depth` 11 to 13) | `ceilings`: the map's half-extent against the root at the depth in use. |
+| The heightmap's 32-bit pixel count (derived, about 722 tiles) | `ceilings`: refused, since no setting passes it. |
+| The memory law, 2.5 MB per km² plus the game | `ceilings`: the expected peak for every size, before it is generated. |
+| Density levels, placement attempts | `config` and `features`: settings that change the simulation. |
+| Byte-verified sites, each feature off with a log line when its sites are missing | `features`: each feature names the profile targets it needs (roles such as `bigmap::octree_root`, TF3's functions to be found). In a room, a missing feature that changes the simulation refuses the room instead of degrading. |
+| "Every peer needs the same `octree_depth`" | `terms`: the size, octree depth, street cell, placement budget and density levels, with a fingerprint the room compares, and the names of what differs. |
+| The minimap | [MINIMAP.md](MINIMAP.md): a script mod on TF3. |
+| Terrain cache compression, dedup, lazy zeroing, the SSE2 terrain paths, generator buffers, faster saves | Not in the prototype: each rests on a TPF2 structure that has to be found in TF3 first ("Measure these first on TPF3" above). |
+
+`cargo run -p tpf3mp-bigmap -- ladder` prints the ladder under a settings
+file (`--config`, the example is `crates/tpf3mp-bigmap/tpf3mp_bigmap.example.toml`,
+Big Maps' own settings), and `check 320x320` what one size costs and
+needs. `lua` regenerates the mod's `ladder.lua`; a test fails if it was
+edited or the settings changed without it.
