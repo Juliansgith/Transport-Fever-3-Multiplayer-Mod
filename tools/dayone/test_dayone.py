@@ -268,6 +268,21 @@ class ScriptsTest(unittest.TestCase):
             self.assertIn("broken.zip", s["archives"][0])
 
 
+class CollectRunsTest(unittest.TestCase):
+    def test_only_the_last_loaded_games_samples_are_kept(self):
+        log = chr(10).join([
+            "[x] [tpf3mp-probe det] # determinism_probe (tf3) stride=100 stepTime=updateCount lanes=v",
+            "[x] [tpf3mp-probe det] step=100 v=1",
+            "[x] [tpf3mp-probe det] step=200 v=2",
+            "[x] [tpf3mp-probe det] # determinism_probe (tf3) stride=100 stepTime=updateCount lanes=v",
+            "[x] [tpf3mp-probe det] step=100 v=1",
+        ])
+        _, det = dayone.collect_lines(log)
+        self.assertEqual(len(det), 2)
+        self.assertTrue(det[0].startswith("# determinism_probe"))
+        self.assertEqual(det[1], "step=100 v=1")
+
+
 class CarryNamesTest(unittest.TestCase):
     def test_an_executable_is_indexed_then_matched_onto_the_new_index(self):
         with tempfile.TemporaryDirectory() as tmp:
