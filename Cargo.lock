@@ -4442,6 +4442,7 @@ name = "tpf3mp-hook"
 version = "0.1.0"
 dependencies = [
  "ctor",
+ "mlua",
  "tpf3mp-bridge",
  "tpf3mp-hookcore",
  "tpf3mp-ipc",

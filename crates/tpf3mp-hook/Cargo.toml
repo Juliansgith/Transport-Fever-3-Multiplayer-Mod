@@ -18,6 +18,10 @@ tpf3mp-hookcore.workspace = true
 tpf3mp-ipc.workspace = true
 tpf3mp-proto.workspace = true
 
+[dev-dependencies]
+# A real Lua for the link's tests (Lua 5.1, as the workspace builds it).
+mlua.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

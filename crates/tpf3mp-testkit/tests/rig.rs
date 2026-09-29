@@ -107,6 +107,64 @@ fn three_fake_games_play_one_room_and_agree() {
     assert_ne!(keys[1], keys[2]);
 }
 
+#[test]
+fn staggered_games_start_one_after_another_and_still_agree() {
+    let root = tempfile::tempdir().unwrap();
+    let started = Instant::now();
+    let output = rig(
+        root.path(),
+        &["--players", "2", "--steps", "20", "--stagger", "2"],
+    );
+    assert!(
+        output.contains("rig: starting p2's game in 2 s"),
+        "{output}"
+    );
+    assert!(started.elapsed() >= Duration::from_secs(2), "{output}");
+    assert!(
+        output.contains("rig: all 2 games ended on the same lane digests"),
+        "{output}"
+    );
+}
+
+#[test]
+fn without_snapshots_every_game_loads_its_own_world_once_all_attached() {
+    let root = tempfile::tempdir().unwrap();
+    let output = rig(
+        root.path(),
+        &[
+            "--players",
+            "2",
+            "--steps",
+            "60",
+            "--stagger",
+            "2",
+            "--wait-for-games",
+            "--no-snapshots",
+        ],
+    );
+    let waited = output
+        .find("rig: waiting for every game to attach")
+        .unwrap_or_else(|| panic!("{output}"));
+    let started = output
+        .find("rig: game started with 2 players")
+        .unwrap_or_else(|| panic!("{output}"));
+    let second = output
+        .find("rig: p2 plays on link")
+        .unwrap_or_else(|| panic!("{output}"));
+    assert!(waited < second && second < started, "{output}");
+    assert!(
+        output.contains("rig: all 2 games ended on the same lane digests"),
+        "{output}"
+    );
+    for player in ["p1", "p2"] {
+        let report = output
+            .lines()
+            .find(|line| line.starts_with(&format!("[{player}] ran ")))
+            .unwrap_or_else(|| panic!("no report from {player}:\n{output}"));
+        assert!(report.contains("loaded 0 worlds from the room"), "{report}");
+    }
+}
+
 /// A library every system has, to load in the hook's place: `cargo test`
 /// does not build the hook as a library of its own. The hook's rules have
 /// their own tests; this one is about how the rig starts a game.

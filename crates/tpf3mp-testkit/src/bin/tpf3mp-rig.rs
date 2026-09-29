@@ -43,6 +43,9 @@ use tpf3mp_server::{Server, ServerConfig, SnapshotConfig};
 /// How long setting up the room may take: connecting, joining, getting
 /// ready.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a game may take from its start to its hook attaching, with
+/// --wait-for-games.
+const GAME_START_TIMEOUT: Duration = Duration::from_secs(300);
 /// How often the rig looks at its launchers' states.
 const POLL: Duration = Duration::from_millis(100);
 /// The environment the game's hook reads its link name, starter and data
@@ -95,6 +98,25 @@ struct Args {
     #[arg(long)]
     steps: Option<u64>,
 
+    /// Seconds to wait between starting one game and the next. Two
+    /// Transport Fever 3 games started at the same moment on one PC can
+    /// fail while setting up their graphics.
+    #[arg(long, default_value_t = 0)]
+    stagger: u64,
+
+    /// Start the room's game only once every player's game has attached,
+    /// so that none joins it late. A late joiner is handed the room's
+    /// world as a save.
+    #[arg(long)]
+    wait_for_games: bool,
+
+    /// Run the local server without a snapshot store. Every player then
+    /// loads the world it starts from itself, as on a server that keeps no
+    /// worlds, so every game must start from the same one: the fake games
+    /// all take seed 0, and real games must load the same save.
+    #[arg(long)]
+    no_snapshots: bool,
+
     /// Simulation steps per second of the room.
     #[arg(long, default_value_t = RoomSettings::DEFAULT.steps_per_second)]
     step_rate: u16,
@@ -115,6 +137,23 @@ struct Args {
     tunnel: TunnelArgs,
 }
 
+/// What starting a player's game needs of the player.
+#[derive(Clone)]
+struct Seat {
+    name: String,
+    link: String,
+    dir: PathBuf,
+}
+
+/// A game's task, aborted (which stops the game) when this is dropped.
+struct AbortOnDrop(JoinHandle<Result<GameEnd>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// One player: an agent and a game.
 struct Player {
     name: String,
@@ -123,6 +162,16 @@ struct Player {
     /// The agent, which stops when dropped.
     _launcher: Launcher,
     handle: LauncherHandle,
+}
+
+impl Player {
+    fn seat(&self) -> Seat {
+        Seat {
+            name: self.name.clone(),
+            link: self.link.clone(),
+            dir: self.dir.clone(),
+        }
+    }
 }
 
 /// What a game left behind when it exited.
@@ -162,7 +211,7 @@ async fn run(args: Args) -> Result<ExitCode> {
     let game = GameCommand::new(&args)?;
 
     let (server, trust, local) = if args.server.eq_ignore_ascii_case("local") {
-        let local = LocalServer::start(&root.join("server"), args.players)?;
+        let local = LocalServer::start(&root.join("server"), args.players, !args.no_snapshots)?;
         println!(
             "rig: local server on {}, certificate in {}",
             local.address,
@@ -224,9 +273,28 @@ async fn run(args: Args) -> Result<ExitCode> {
         });
     }
 
+    let game = Arc::new(game);
     let mut games = Vec::new();
     for (index, player) in players.iter().enumerate() {
-        games.push(game.spawn(player, index)?);
+        let delay = Duration::from_secs(args.stagger.saturating_mul(index as u64));
+        if delay.is_zero() {
+            games.push(game.spawn(&player.seat(), index)?);
+            continue;
+        }
+        // A later game starts on its own while the room is set up: the
+        // players' links must be there before any game's hook gives up on
+        // them.
+        println!(
+            "rig: starting {}'s game in {} s",
+            player.name,
+            delay.as_secs()
+        );
+        let (game, seat) = (Arc::clone(&game), player.seat());
+        games.push(tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let mut started = AbortOnDrop(game.spawn(&seat, index)?);
+            (&mut started.0).await.context("a game's task failed")?
+        }));
     }
 
     let outcome = tokio::select! {
@@ -267,12 +335,20 @@ async fn play(
             .map(|player| (player.name.clone(), player.handle.clone()))
             .collect(),
     ));
-    let setup = tokio::time::timeout(SETUP_TIMEOUT, set_up_room(args, server, players)).await;
+    // Waiting for the games takes as long as they take to start.
+    let setup_timeout = if args.wait_for_games {
+        SETUP_TIMEOUT
+            + GAME_START_TIMEOUT
+            + Duration::from_secs(args.stagger.saturating_mul(u64::from(args.players)))
+    } else {
+        SETUP_TIMEOUT
+    };
+    let setup = tokio::time::timeout(setup_timeout, set_up_room(args, server, players)).await;
     match setup {
         Ok(result) => result?,
         Err(_) => bail!(
             "the room was not set up within {} seconds",
-            SETUP_TIMEOUT.as_secs()
+            setup_timeout.as_secs()
         ),
     }
 
@@ -323,6 +399,15 @@ async fn set_up_room(args: &Args, server: &str, players: &[Player]) -> Result<()
             },
         )
         .await?;
+    }
+    if args.wait_for_games {
+        println!("rig: waiting for every game to attach");
+        while !players
+            .iter()
+            .all(|player| player.handle.state().game.attached.is_some())
+        {
+            tokio::time::sleep(POLL).await;
+        }
     }
     for player in players {
         act(player, Action::Ready { ready: true }).await?;
@@ -452,6 +537,8 @@ fn lane_line(line: &str) -> Option<&str> {
 struct GameCommand {
     program: PathBuf,
     steps: Option<u64>,
+    /// Every fake game takes seed 0, for a server that keeps no worlds.
+    same_world: bool,
     args: Vec<OsString>,
     /// Profiles copied into each player's folder for a real game's hook.
     profiles: Option<PathBuf>,
@@ -519,6 +606,7 @@ impl GameCommand {
         Ok(Self {
             program,
             steps: args.steps,
+            same_world: args.no_snapshots,
             args: args.game_args.clone(),
             profiles,
             hook,
@@ -527,7 +615,7 @@ impl GameCommand {
 
     /// Starts `player`'s game; the task ends with it, and kills it when
     /// dropped.
-    fn spawn(&self, player: &Player, index: usize) -> Result<JoinHandle<Result<GameEnd>>> {
+    fn spawn(&self, player: &Seat, index: usize) -> Result<JoinHandle<Result<GameEnd>>> {
         if let Some(profiles) = &self.profiles {
             copy_profiles(profiles, &player.dir.join("profiles"))?;
         }
@@ -536,10 +624,11 @@ impl GameCommand {
         }
         // The fake game, told its link, seed and steps on its command line.
         let mut command = Command::new(&self.program);
+        let seed = if self.same_world { 0 } else { index };
         command
             .arg(&player.link)
             .arg("--seed")
-            .arg(index.to_string());
+            .arg(seed.to_string());
         if let Some(steps) = self.steps {
             command.arg("--steps").arg(steps.to_string());
         }
@@ -580,7 +669,7 @@ impl GameCommand {
 
     /// Starts a real game as the launcher does, with the hook in it; the
     /// task ends with the game, and ends the game when dropped.
-    fn launch(&self, player: &Player, hook: &Path) -> Result<JoinHandle<Result<GameEnd>>> {
+    fn launch(&self, player: &Seat, hook: &Path) -> Result<JoinHandle<Result<GameEnd>>> {
         let dir = player
             .dir
             .to_str()
@@ -676,9 +765,9 @@ struct LocalServer {
 
 impl LocalServer {
     /// Listens on a free loopback port, keeping world snapshots in `dir` so
-    /// players can join running games, and writes its certificate there
-    /// for agents started by hand.
-    fn start(dir: &Path, players: u8) -> Result<Self> {
+    /// players can join running games (unless `snapshots` is false), and
+    /// writes its certificate there for agents started by hand.
+    fn start(dir: &Path, players: u8, snapshots: bool) -> Result<Self> {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1", "::1"])?;
         let cert = dir.join("dev-cert.der");
@@ -690,10 +779,12 @@ impl LocalServer {
         let players = usize::from(players);
         config.max_sessions_per_address = players + 8;
         config.max_handshakes_per_address = players + 8;
-        let mut snapshots = SnapshotConfig::new(dir.join("snapshots"));
-        snapshots.max_bytes = 4 << 30;
-        snapshots.min_gap = Duration::from_secs(5);
-        config.snapshots = Some(snapshots);
+        if snapshots {
+            let mut snapshots = SnapshotConfig::new(dir.join("snapshots"));
+            snapshots.max_bytes = 4 << 30;
+            snapshots.min_gap = Duration::from_secs(5);
+            config.snapshots = Some(snapshots);
+        }
         let server = Server::bind(config)?;
         let address = server.local_addr()?.to_string();
         let (stop, stopped) = oneshot::channel::<()>();

@@ -163,6 +163,7 @@ fn run_frames(lua: &Lua, steps: usize) {
 #[test]
 fn without_the_hook_the_mod_loads_and_does_nothing() {
     let lua = gui();
+    let before: Vec<String> = loaded_names(&lua);
     run_frames(&lua, 3);
     let log = log(&lua);
     assert_eq!(
@@ -172,30 +173,53 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
         "started once, however many frames"
     );
 
-    // Only the mod's own names were added to package.preload.
-    let preload: Table = lua.load("return package.preload").eval::<Table>().unwrap();
-    for pair in preload.pairs::<String, mlua::Value>() {
-        let (name, _) = pair.unwrap();
-        assert!(name.starts_with("tpf3mp."), "added {name}");
-    }
+    // Only the mod's own names were added to package.loaded.
+    let added: Vec<String> = loaded_names(&lua)
+        .into_iter()
+        .filter(|name| !before.contains(name))
+        .collect();
+    assert_eq!(
+        added,
+        [
+            "tpf3mp.bridge",
+            "tpf3mp.engine",
+            "tpf3mp.geom",
+            "tpf3mp.roads"
+        ]
+    );
+}
+
+/// The names in package.loaded, sorted.
+fn loaded_names(lua: &Lua) -> Vec<String> {
+    let loaded: Table = lua.load("return package.loaded").eval::<Table>().unwrap();
+    let mut names: Vec<String> = loaded
+        .pairs::<String, mlua::Value>()
+        .map(|pair| pair.unwrap().0)
+        .collect();
+    names.sort();
+    names
 }
 
 const FAKE_HOOK: &str = r#"
-HOOK = { logged = {}, commands = {} }
+HOOK = { logged = {}, commands = {}, batch = nil }
 tpf3mp_native = {
-    version = 2,
+    version = 3,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then HOOK.commands[#HOOK.commands + 1] = action end
         return ok, why
     end,
-    register = function(handlers) HOOK.handlers = handlers end,
+    take = function()
+        local batch = HOOK.batch
+        HOOK.batch = nil
+        return batch
+    end,
     log = function(line) HOOK.logged[#HOOK.logged + 1] = line end,
 }
 "#;
 
 #[test]
-fn with_the_hook_the_mod_links_and_refuses_what_it_cannot_apply() {
+fn with_the_hook_the_gui_links_once() {
     let lua = gui();
     lua.load(FAKE_HOOK).exec().unwrap();
     run_frames(&lua, 2);
@@ -203,19 +227,11 @@ fn with_the_hook_the_mod_links_and_refuses_what_it_cannot_apply() {
         log(&lua),
         "[tpf3mp] modules loaded\n[tpf3mp] linked to the hook"
     );
-    let (logged, ok, reason, noticed): (String, bool, String, bool) = lua
-        .load(
-            "local ok, reason = HOOK.handlers.apply({ SellVehicle = { vehicles = { 7 } } })
-             local noticed = HOOK.handlers.notice('Speed', '2x')
-             return table.concat(HOOK.logged, '|'), ok, reason, noticed",
-        )
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
         .eval()
         .unwrap();
-    assert_eq!(logged, "the mod is linked");
-    assert!(!ok, "an event this version cannot apply is refused");
-    assert_eq!(reason, "this version of the mod applies no actions yet");
-    assert!(noticed);
-    assert!(log(&lua).ends_with("[tpf3mp] notice Speed: 2x"));
+    assert_eq!(logged, "the GUI is linked");
 }
 
 #[test]
@@ -226,27 +242,20 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 2; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 3; this is the plain game"
         ),
         "{}",
         log(&lua)
     );
-    let registered: bool = lua.load("return HOOK.handlers ~= nil").eval().unwrap();
-    assert!(!registered);
+    let logged: usize = lua.load("return #HOOK.logged").eval().unwrap();
+    assert_eq!(logged, 0, "nothing was said to a hook of another version");
 }
 
-/// The bridge on its own, as the entry script's `require` finds it.
+/// The bridge on its own, loaded as the entry script loads it.
 fn bridge(lua: &Lua) -> Table {
-    lua.load(
-        "for _, name in ipairs({ 'bridge' }) do
-             package.preload['tpf3mp.' .. name] = function()
-                 return ug_require('tpf3mp_1::/scripts/tpf3mp/' .. name .. '.lua')
-             end
-         end
-         return require 'tpf3mp.bridge'",
-    )
-    .eval()
-    .unwrap()
+    lua.load("return ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')")
+        .eval()
+        .unwrap()
 }
 
 #[test]
@@ -293,7 +302,7 @@ fn the_bridge_hands_over_only_actions_the_schema_takes() {
 }
 
 #[test]
-fn a_handler_never_raises_into_the_hook() {
+fn take_is_a_list_or_nothing_and_never_raises() {
     let lua = gui();
     lua.load(FAKE_HOOK).exec().unwrap();
     let bridge = bridge(&lua);
@@ -302,27 +311,17 @@ fn a_handler_never_raises_into_the_hook() {
         .load(
             "local link = BRIDGE.attach(tpf3mp_native)
              local out = {}
-             local ok, why = link:register({})
-             out[#out + 1] = why
-             link:register({ apply = function() error('boom') end })
-             local a, b = HOOK.handlers.apply('x')
-             out[#out + 1] = tostring(a) .. ' ' .. b
-             link:register({ apply = function() end })
-             a, b = HOOK.handlers.apply('x')
-             out[#out + 1] = tostring(a) .. ' ' .. b
-             link:register({ apply = function() return true end })
-             out[#out + 1] = tostring(HOOK.handlers.apply('x'))
-             out[#out + 1] = tostring(HOOK.handlers.notice('End', ''))
+             out[#out + 1] = tostring(link:take())
+             HOOK.batch = { { SellVehicle = { vehicles = { 7 } } } }
+             out[#out + 1] = tostring(#link:take())
+             out[#out + 1] = tostring(link:take())
+             tpf3mp_native.take = function() error('boom') end
+             out[#out + 1] = tostring(link:take())
              return out",
         )
         .eval()
         .unwrap();
-    assert_eq!(results[0], "handlers need apply()");
-    assert!(results[1].starts_with("false apply failed: "));
-    assert!(results[1].ends_with("boom"));
-    assert_eq!(results[2], "false apply gave no answer");
-    assert_eq!(results[3], "true");
-    assert_eq!(results[4], "true", "a missing notice handler is fine");
+    assert_eq!(results, ["nil", "1", "nil", "nil"]);
 }
 
 #[test]
@@ -336,7 +335,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 2, command = print, register = print })
+             why({ version = 3, command = print, log = print })
              return out",
         )
         .eval()
@@ -346,7 +345,200 @@ fn attach_refuses_a_partial_hook() {
         [
             "no hook in this game",
             "tpf3mp_native is not a table",
-            "the hook has no log()",
+            "the hook has no take()",
         ]
+    );
+}
+
+#[test]
+fn every_game_script_names_a_script_the_mod_has() {
+    let files = content_files();
+    let scripts: Vec<&String> = files.iter().filter(|f| f.ends_with(".gs.lua")).collect();
+    assert!(
+        !scripts.is_empty(),
+        "no game script applies the room's actions"
+    );
+    for script in scripts {
+        let folder = script.rsplit_once('/').map_or("", |(folder, _)| folder);
+        let text = std::fs::read_to_string(mod_dir().join("content").join(script)).unwrap();
+        let mut named = 0;
+        for part in text.split("fileName = \"").skip(1) {
+            let target = &part[..part.find('"').unwrap()];
+            let (file, function) = target.split_once('@').unwrap();
+            assert!(
+                files.contains(&format!("{folder}/{file}.lua")),
+                "{script} names {file}.lua, which is not in {folder}/"
+            );
+            assert!(!function.is_empty());
+            named += 1;
+        }
+        assert!(named > 0, "{script} names no script");
+    }
+}
+
+/// A stand-in for an engine (game script) state: the commands it is sent
+/// run at once, as the game's do there.
+const FAKE_ENGINE: &str = r#"
+SENT = {}
+REFUSE = false
+local function vec4(x, y, z, w) return { x, y, z, w } end
+api = {
+    type = {
+        Vec4f = { new = vec4 },
+        Mat4f = { new = function(a, b, c, d) return { a, b, c, d } end },
+        SimpleProposal = {
+            new = function() return { constructionsToAdd = {} } end,
+            ConstructionEntity = { new = function() return {} end },
+        },
+    },
+    engine = { util = { getPlayer = function() return 25 end } },
+    cmd = {
+        makeWorldBuildProposalCmd = function(proposal, context, ignoreErrors, playerInitiated)
+            return { proposal = proposal, context = context, ignoreErrors = ignoreErrors,
+                     playerInitiated = playerInitiated }
+        end,
+        sendCommand = function(command, callback)
+            -- As the game in a game script's update.
+            if callback ~= nil then error('Callbacks are currently disallowed') end
+            if REFUSE then error('the proposal collides') end
+            SENT[#SENT + 1] = command
+        end,
+    },
+}
+STATE = {
+    subscribed = {},
+    hasEventSubscriptions = function(self) return next(self.subscribed) ~= nil end,
+    subscribeToEvent = function(self, name) self.subscribed[name] = true end,
+}
+"#;
+
+/// The mod's game script in a stand-in engine state with the fake hook:
+/// returns the state and the script's functions.
+fn engine() -> (Lua, Table) {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_ENGINE).exec().unwrap();
+    let source = std::fs::read_to_string(
+        mod_dir()
+            .join("content")
+            .join("tpf3mp_sim")
+            .join("tpf3mp_sim.script.lua"),
+    )
+    .unwrap();
+    lua.load(&source)
+        .set_name("@tpf3mp_sim.script.lua")
+        .exec()
+        .unwrap();
+    let script: Table = lua.load("return data()").eval().unwrap();
+    (lua, script)
+}
+
+const DEPOT: &str = "{ BuildConstruction = { \
+    file = 'depot/road_depot_era_a.con', \
+    transform = { basis = { 0, 1, 0, -1, 0, 0, 0, 0, 1 }, origin = { x = 1250.5, y = -300, z = 20 } }, \
+    params = { { key = 'seed', value = { Int = 1234 } }, \
+               { key = 'modules[3801].name', value = { Text = 'depot/module.module' } }, \
+               { key = 'paramX', value = { Fixed = 2.5 } }, \
+               { key = 'lit', value = { Bool = true } } }, \
+    name = 'Depot' } }";
+
+#[test]
+fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
+    let (lua, script) = engine();
+    let update: Function = script.get("update").unwrap();
+    lua.globals().set("UPDATE", update).unwrap();
+    // No action ordered: nothing sent.
+    lua.load("UPDATE({}, STATE, 0.2)").exec().unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+    lua.load(format!(
+        "HOOK.batch = {{ {DEPOT} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let built: String = lua
+        .load(
+            "local c = SENT[1] local e = c.proposal.constructionsToAdd[1]
+             local t = e.transf
+             return table.concat({ e.fileName, e.name, e.playerEntity,
+                 t[1][1], t[1][2], t[2][1], t[4][1], t[4][2], t[4][3], t[4][4],
+                 e.params.seed, e.params.modules[3801].name, e.params.paramX, tostring(e.params.lit),
+                 tostring(c.ignoreErrors), tostring(c.playerInitiated), tostring(c.context) }, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        built,
+        "depot/road_depot_era_a.con|Depot|25|0|1|-1|1250.5|-300|20|1|1234|depot/module.module|2.5|true|false|true|nil"
+    );
+    // Subscribed to its console event, linked once.
+    assert!(
+        lua.load("return STATE.subscribed.command")
+            .eval::<bool>()
+            .unwrap()
+    );
+    assert_eq!(
+        lua.load("return table.concat(HOOK.logged, '|')")
+            .eval::<String>()
+            .unwrap(),
+        "the game script is linked"
+    );
+}
+
+#[test]
+fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
+    let (lua, script) = engine();
+    let update: Function = script.get("update").unwrap();
+    lua.globals().set("UPDATE", update).unwrap();
+    lua.load(
+        "HOOK.batch = { { SellVehicle = { vehicles = { 7 } } } } UPDATE({}, STATE, 0.2) \
+         REFUSE = true",
+    )
+    .exec()
+    .unwrap();
+    lua.load(format!(
+        "HOOK.batch = {{ {DEPOT} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert_eq!(logged.len(), 3, "{logged:?}");
+    assert_eq!(logged[0], "the game script is linked");
+    assert_eq!(
+        logged[1],
+        "action 1 of this step was not applied: this version of the mod does not apply SellVehicle yet"
+    );
+    // The game's own refusal, as it raised it.
+    assert!(
+        logged[2].starts_with("action 1 of this step was not applied: ")
+            && logged[2].ends_with("the proposal collides"),
+        "{}",
+        logged[2]
+    );
+}
+
+#[test]
+fn the_console_event_hands_an_action_to_the_room() {
+    let (lua, script) = engine();
+    let handle: Function = script.get("handleEvent").unwrap();
+    lua.globals().set("HANDLE", handle).unwrap();
+    lua.load(format!(
+        "HANDLE({{}}, STATE, 'console', 'tpf3mp', 'command', {DEPOT}) \
+         HANDLE({{}}, STATE, 'console', 'other', 'command', {DEPOT}) \
+         HANDLE({{}}, STATE, 'console', 'tpf3mp', 'command', {{ Nope = 1 }})"
+    ))
+    .exec()
+    .unwrap();
+    assert_eq!(
+        lua.load("return #HOOK.commands").eval::<usize>().unwrap(),
+        1,
+        "only its own event, and only an action the schema takes"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert_eq!(logged[0], "the game script is linked");
+    assert_eq!(logged[1], "handed a test action to the room");
+    assert!(
+        logged[2].starts_with("refused a test action: "),
+        "{}",
+        logged[2]
     );
 }

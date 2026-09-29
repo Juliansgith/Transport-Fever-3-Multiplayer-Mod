@@ -217,9 +217,37 @@ It tells each game its link, data folder and starter through
 `TPF3MP_GAME_LINK`, `TPF3MP_DATA_DIR` and `TPF3MP_LAUNCHER_PID`, which the
 hook reads (see "Several games on one PC" in [docs/HOOKS.md](HOOKS.md)).
 It copies the build profiles in the user's data folder into each game's.
-That path is untested until Transport Fever 3 is out. A server started
-with `tpf3mp-server` lets 8 sessions in from one address by default: pass
-`--max-sessions-per-address` for bigger rigs.
+A server started with `tpf3mp-server` lets 8 sessions in from one address
+by default: pass `--max-sessions-per-address` for bigger rigs.
+
+With Transport Fever 3 itself (build 40408), two games run on one PC like
+this:
+
+```sh
+tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server local     --game "<Steam>/steamapps/common/Transport Fever 3/TransportFever3.exe" --game-build 40408
+```
+
+- `--stagger 75` starts each game 75 s after the one before: two started at
+  the same moment failed while setting up their graphics. The later games
+  start while the room is set up, so every hook finds its link.
+- `--wait-for-games` starts the room's game only once every game has
+  attached, so none joins it late: a late joiner gets the room's world as
+  a save, which the hook cannot load yet.
+- `--no-snapshots` runs the local server without a snapshot store, so every
+  player loads the world it starts from itself (`Load` without a file):
+  every game must load the same save. The fake games all take seed 0.
+- The games share the Steam user's folder, and so its `settings.lua` and
+  log. For tests, set `debugMode = true` (the console), `screenMode =
+  "WINDOWED"` with `windowSize = { 2560, 1440 }` (smaller, and the
+  console's input line falls off the window) and a long
+  `autosaveIntervalMinutes`, and put the player's own settings back after.
+- Load the world in each game from its console only after the rig says
+  `game started`; a game in its world before the room starts runs on its
+  own. What ran on release day: a fixture save made with
+  `app.startGame` (seed `tpf3mp`, 16 by 16 tiles, the tutorial off:
+  `guideSystemConfig.tutorial` 1) and `app.saveGame`, loaded in both with
+  `app.loadGame`. Both played the room's world from step 1 at its pace,
+  and the determinism probe's samples matched at every step.
 
 Load-test a server with bots:
 

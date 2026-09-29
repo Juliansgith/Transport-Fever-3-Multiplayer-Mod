@@ -1,7 +1,8 @@
 -- TPF3-MP in the game's GUI state: the plugin gui/tpf3mp/tpf3mp.res.lua
 -- names. On the first step of a game it loads the mod's modules and links
 -- to the hook (tpf3mp/bridge.lua). Without a hook, which is every game Steam
--- started, it logs one line and does nothing more.
+-- started, it logs one line and does nothing more. The room's actions are
+-- applied by the mod's game script (tpf3mp_sim/), not here.
 --
 -- It follows what mods made for Transport Fever 3 build 40391 rely on
 -- (investigation/TF3_MODS_2026-09-27.md): a .script.lua defines data();
@@ -23,28 +24,28 @@ function data()
 	end
 
 	-- The modules name each other `require "tpf3mp.<name>"`, as TPF2's
-	-- did; here each name loads its file through ug_require. Only names
+	-- did. The game's GUI state has `require` and package.loaded but no
+	-- package.preload (build 40408's dump,
+	-- investigation/dayone-2026-09-29/probe/script_api_dump_gui.txt), so
+	-- each module is loaded here through ug_require, in order, into
+	-- package.loaded, where the others' `require` finds it. Only names
 	-- under "tpf3mp." are added, so nothing else in the state changes.
 	local function installModules()
-		if type(package) ~= "table" or type(package.preload) ~= "table" then
-			return nil, "this Lua state has no package.preload"
+		if type(package) ~= "table" or type(package.loaded) ~= "table" then
+			return nil, "this Lua state has no package.loaded"
 		end
 		for _, name in ipairs(MODULES) do
-			local path = MOD .. "::/scripts/tpf3mp/" .. name .. ".lua"
-			package.preload["tpf3mp." .. name] = function()
-				return ug_require(path)
+			local key = "tpf3mp." .. name
+			if package.loaded[key] == nil then
+				local path = MOD .. "::/scripts/tpf3mp/" .. name .. ".lua"
+				local ok, module = pcall(ug_require, path)
+				if not ok or module == nil then
+					return nil, key .. " did not load: " .. tostring(module)
+				end
+				package.loaded[key] = module
 			end
 		end
 		return true
-	end
-
-	-- The hook's table (bridge.GLOBAL), if the hook registered one. Named
-	-- directly, since a state need not have _G, and read through pcall: a
-	-- state that refuses undeclared globals raises on a missing one.
-	local function nativeTable()
-		local ok, value = pcall(function() return tpf3mp_native end)
-		if ok then return value end
-		return nil
 	end
 
 	local function start()
@@ -53,37 +54,15 @@ function data()
 			say("not started: " .. why)
 			return
 		end
-		for _, name in ipairs(MODULES) do
-			local loaded, err = pcall(require, "tpf3mp." .. name)
-			if not loaded then
-				say("not started: tpf3mp." .. name .. " did not load: " .. tostring(err))
-				return
-			end
-		end
 		say("modules loaded")
 
 		local bridge = require "tpf3mp.bridge"
-		local link, reason = bridge.attach(nativeTable())
+		local link, reason = bridge.attach(bridge.find())
 		if not link then
 			say(reason .. "; this is the plain game")
 			return
 		end
-		-- Nothing is applied by this version yet, so every event is refused:
-		-- the hook then stops following the room rather than leave this
-		-- game behind the others (fail closed).
-		local registered, err = link:register({
-			apply = function(_action)
-				return false, "this version of the mod applies no actions yet"
-			end,
-			notice = function(kind, text)
-				say("notice " .. tostring(kind) .. ": " .. tostring(text))
-			end,
-		})
-		if not registered then
-			say("the hook is here, but " .. err)
-			return
-		end
-		link:log("the mod is linked")
+		link:log("the GUI is linked")
 		say("linked to the hook")
 	end
 
