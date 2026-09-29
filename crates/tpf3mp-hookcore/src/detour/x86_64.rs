@@ -222,6 +222,120 @@ fn rel_jmp_patch(after: usize, to: usize, steal_len: usize) -> Vec<u8> {
     bytes
 }
 
+/// `E8` + a signed 32-bit displacement: `call rel32`.
+const CALL_REL32_LEN: usize = 5;
+/// `mov rax, imm64` (`48 B8` + 8 bytes) then `jmp rax` (`FF E0`).
+const STUB_LEN: usize = 12;
+
+/// One `call rel32` instruction redirected to another function, through a
+/// stub near it: the rest of the calling function runs unchanged, and every
+/// other caller of the old callee still reaches it. Dropping it (or
+/// [`CallRedirect::detach`]) restores the original displacement.
+pub struct CallRedirect {
+    site: *mut u8,
+    original: [u8; 4],
+    _stub: sys::ExecBuffer,
+    active: bool,
+}
+
+impl CallRedirect {
+    /// Makes the `call` at `site` call `to` instead of `expected`.
+    ///
+    /// Refuses unless `site` holds a 5-byte `call rel32` whose target is
+    /// exactly `expected`: a build whose code moved is never patched wrong.
+    ///
+    /// # Safety
+    ///
+    /// - `site` must point at an instruction in this process's code.
+    /// - No thread may execute the instruction at `site` during this call.
+    /// - `to` must be ABI-compatible with `expected`.
+    pub unsafe fn install(
+        site: *mut u8,
+        expected: usize,
+        to: *const u8,
+    ) -> Result<Self, DetourError> {
+        let site_addr = site as usize;
+        if sys::readable(site_addr, CALL_REL32_LEN) < CALL_REL32_LEN {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: "the call site is not readable".to_owned(),
+            });
+        }
+        // SAFETY: five readable bytes at `site`.
+        let code = unsafe { std::slice::from_raw_parts(site, CALL_REL32_LEN) };
+        if code[0] != 0xE8 {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: format!("expected a call rel32 at the site, found {:#04x}", code[0]),
+            });
+        }
+        let mut original = [0u8; 4];
+        original.copy_from_slice(&code[1..5]);
+        let rel = i32::from_le_bytes(original);
+        let callee = (site_addr as i128) + CALL_REL32_LEN as i128 + i128::from(rel);
+        if callee != expected as i128 {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: format!("the call targets {callee:#x}, not the expected {expected:#x}"),
+            });
+        }
+
+        let stub = sys::alloc_near(site_addr, STUB_LEN)?;
+        let mut body = vec![0x48, 0xB8];
+        body.extend_from_slice(&(to as u64).to_le_bytes());
+        body.extend_from_slice(&[0xFF, 0xE0]);
+        // SAFETY: `stub` is a fresh writable buffer of at least STUB_LEN bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(body.as_ptr(), stub.as_mut_ptr(), body.len());
+        }
+        sys::make_executable(&stub)?;
+        // SAFETY: the stub is now executable code of `body.len()` bytes.
+        unsafe {
+            sys::flush_icache(stub.as_mut_ptr(), body.len());
+        }
+        let delta = (stub.as_ptr() as i128) - (site_addr as i128 + CALL_REL32_LEN as i128);
+        let Ok(delta) = i32::try_from(delta) else {
+            return Err(DetourError::Alloc(0));
+        };
+        // SAFETY: the caller guarantees the call at `site` is not executing;
+        // only its four displacement bytes change.
+        unsafe {
+            sys::write_code(site.add(1), &delta.to_le_bytes())?;
+        }
+        Ok(Self {
+            site,
+            original,
+            _stub: stub,
+            active: true,
+        })
+    }
+
+    /// Restores the original call.
+    ///
+    /// # Safety
+    ///
+    /// As with install, no thread may execute the call during this.
+    pub unsafe fn detach(mut self) -> Result<(), DetourError> {
+        // SAFETY: forwarded under the same contract.
+        unsafe { self.restore() }
+    }
+
+    unsafe fn restore(&mut self) -> Result<(), DetourError> {
+        if self.active {
+            // SAFETY: writing the saved displacement back.
+            unsafe {
+                sys::write_code(self.site.add(1), &self.original)?;
+            }
+            self.active = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CallRedirect {
+    fn drop(&mut self) {
+        // SAFETY: same contract as install.
+        let _ = unsafe { self.restore() };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +445,90 @@ mod tests {
             "moving the instruction rewrote its displacement"
         );
         assert_eq!(here[0..2], moved[0..2], "the opcode is unchanged");
+    }
+
+    #[inline(never)]
+    extern "C" fn callee_old() -> u32 {
+        std::hint::black_box(4)
+    }
+
+    #[inline(never)]
+    extern "C" fn callee_new() -> u32 {
+        std::hint::black_box(1)
+    }
+
+    /// Hand-assembles, near `callee_old`, a function that calls it:
+    ///
+    /// ```text
+    /// 0: 48 83 EC 28      sub rsp, 0x28
+    /// 4: E8 rel32         call callee_old
+    /// 9: 48 83 C4 28      add rsp, 0x28
+    /// d: C3               ret
+    /// ```
+    fn caller_of_old() -> sys::ExecBuffer {
+        let old = callee_old as *const () as usize;
+        let buffer = sys::alloc_near(old, 0x20).unwrap();
+        let base = buffer.as_ptr() as i128;
+        let rel = i32::try_from(old as i128 - (base + 9)).unwrap();
+        let mut code = vec![0x48, 0x83, 0xEC, 0x28, 0xE8];
+        code.extend_from_slice(&rel.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x28, 0xC3]);
+        // SAFETY: a fresh writable buffer of 0x20 bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(code.as_ptr(), buffer.as_mut_ptr(), code.len());
+        }
+        sys::make_executable(&buffer).unwrap();
+        // SAFETY: the buffer now holds executable code.
+        unsafe {
+            sys::flush_icache(buffer.as_mut_ptr(), code.len());
+        }
+        buffer
+    }
+
+    #[test]
+    fn redirects_one_call_and_restores_it() {
+        let buffer = caller_of_old();
+        // SAFETY: the buffer holds our hand-written extern "C" function.
+        let caller: Fun = unsafe { std::mem::transmute::<*const u8, Fun>(buffer.as_ptr()) };
+        assert_eq!(caller(), 4);
+        // SAFETY: nothing runs the buffer's code now; callee_new has the ABI.
+        let site = unsafe { buffer.as_mut_ptr().add(4) };
+        let redirect = unsafe {
+            CallRedirect::install(
+                site,
+                callee_old as *const () as usize,
+                callee_new as *const u8,
+            )
+        }
+        .unwrap();
+        assert_eq!(caller(), 1, "the site calls the new function");
+        assert_eq!(callee_old(), 4, "other callers still reach the old one");
+        // SAFETY: as above.
+        unsafe { redirect.detach() }.unwrap();
+        assert_eq!(caller(), 4, "restored");
+    }
+
+    #[test]
+    fn refuses_a_site_that_is_not_the_expected_call() {
+        let buffer = caller_of_old();
+        // SAFETY: nothing runs the buffer's code now.
+        let site = unsafe { buffer.as_mut_ptr().add(4) };
+        let wrong_callee = unsafe {
+            CallRedirect::install(
+                site,
+                callee_new as *const () as usize,
+                callee_new as *const u8,
+            )
+        };
+        assert!(wrong_callee.is_err(), "the call targets another function");
+        // SAFETY: as above.
+        let not_a_call = unsafe {
+            CallRedirect::install(
+                buffer.as_mut_ptr(),
+                callee_old as *const () as usize,
+                callee_new as *const u8,
+            )
+        };
+        assert!(not_a_call.is_err(), "the site is not a call");
     }
 }

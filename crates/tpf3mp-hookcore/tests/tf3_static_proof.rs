@@ -21,6 +21,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("GameSim::Step", 0x159390),
     ("CGame::Step", 0x11f3b0),
     ("CGameTime::GetSpeed", 0x2a95a0),
+    ("GameSim::Step/GetSpeed call", 0x1593ee),
     ("UI::CMenuUI::StartSavegame", 0x6a2880),
     ("UI::CMenuUI::CreatePage", 0x6a2ee0),
     ("CommandList::Add::lambda", 0x9d23c0),

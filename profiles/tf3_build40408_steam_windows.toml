@@ -10,7 +10,8 @@
 # .text. The prologue is the exact bytes the detour engine would relocate. Like
 # TPF2's, .text is not encrypted on disk (SteamStub's .bind section only).
 #
-# Not yet confirmed by running a hook: the addresses are static findings
+# GameSim::Step, CGameTime::GetSpeed and the step's call of it are used by the
+# hook and confirmed in the running game; the others are static findings
 # (investigation/TF3_OFFICIAL_API_2026-09-29.md, "Measured on the release build").
 # TF3 sets the speed through the script command makeGameSetSpeedCmd; the getter
 # the simulation step reads it through is CGameTime::GetSpeed below.
@@ -46,14 +47,27 @@ required = true
 # CGameTime::GetSpeed (TPF2 0x2877a0; here 0x2a95a0): the speed GameSim::Step
 # reads, in updates per call (GameSpeed.speedup). Not matched by name: it is
 # the getter GameSim::Step calls before its update loop, 27 bytes returning the
-# component's speedup, in gametime.cpp, as TPF2's. In a room's game the hook
-# makes it answer 1, so one call of the step is one update (HOOKS.md, "The step
-# gate in the game").
+# component's speedup, in gametime.cpp, as TPF2's. The hook only reads it here
+# (the speed row's value, the player's request to the room); the UI and the
+# particles read it too, so it is never changed for them.
 [[target]]
 name = "CGameTime::GetSpeed"
 signature = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 04"
 offset = 0
 prologue = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10"
+required = true
+
+# GameSim::Step's own call of CGameTime::GetSpeed (here 0x1593ee, step + 0x5e),
+# the only one of its seven callers inside the step: `mov rcx,[rbp+8]; mov
+# rcx,[rcx+0x28]; call GetSpeed; cmp eax,ebx; mov r12d,eax`. In a room's game
+# the hook redirects this one call to answer 1, so one call of the step is one
+# update (HOOKS.md, "The step gate in the game"), as TPF2MP patched the step's
+# calls and not the getter. The hook also checks the call targets GetSpeed.
+[[target]]
+name = "GameSim::Step/GetSpeed call"
+signature = "48 8B 4D 08 48 8B 49 28 E8 ?? ?? ?? ?? 3B C3 44 8B E0"
+offset = 8
+prologue = "E8"
 required = true
 
 # UI::CMenuUI::StartSavegame (TPF2 0x6785c0; here 0x6a2880): the in-process
