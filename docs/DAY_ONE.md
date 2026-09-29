@@ -84,6 +84,15 @@ tools/tpfre/Cargo.toml`.
    - the Epic/GOG build (40393) next to Steam's (40408): run steps 1 to 3 on
      both executables, since the hook needs a profile for each.
 
+   The manual's in-game tools page (marked as possibly TPF2's) names the
+   aids for this: debug mode (`debugMode` in `settings.lua`, or the
+   advanced settings), a Lua console on the key below Esc that runs
+   commands and prints to `stdout.txt` (the log `logs.rs` expects), and
+   simulation speed up to 32x in debug mode. Local mods go to
+   `<Steam>/userdata/<Steam ID>/3493540/local/staging_area/`, as the
+   installer does; a mod there wins over a manually installed or
+   subscribed one with the same modId.
+
 `python tools/dayone/test_dayone.py` tests the tool on made-up folders,
 executables and logs; `crates/tpf3mp-proto/tests/lua_probes.rs` runs the
 probes in a stand-in for the game's GUI state.
