@@ -64,11 +64,11 @@ tools/tpfre/Cargo.toml`.
    log's header; then any speed will do), else a step learned from the game
    time. Two logs labelled differently are refused. The release builds are
    40408 on Steam and 40393 on Epic and GOG
-   ([TF3_API_2026-09-29.md](../investigation/TF3_API_2026-09-29.md)).
+   ([TF3_OFFICIAL_API_2026-09-29.md](../investigation/TF3_OFFICIAL_API_2026-09-29.md)).
 
 7. **What the API reference says, confirmed** (documented on
    wiki.transportfever3.com/script-doc, never seen running;
-   [TF3_API_2026-09-29.md](../investigation/TF3_API_2026-09-29.md)). In the
+   [TF3_OFFICIAL_API_2026-09-29.md](../investigation/TF3_OFFICIAL_API_2026-09-29.md)). In the
    API dump from step 5, and in the game's console:
    - `GameTime.updateCount` counts simulation steps and stops while paused;
    - `api.type.RoadType.STREET` and `TRACK` exist, and a build proposal's
