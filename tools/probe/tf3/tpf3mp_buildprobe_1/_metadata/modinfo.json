@@ -1,0 +1,15 @@
+{
+    "authors": [
+        {
+            "name": "TPF3-MP recon",
+            "role": "CREATOR"
+        }
+    ],
+    "description": "Logs what Transport Fever 3's native build tools tell game scripts (builder.proposalCreate, builder.proposalPrepareForApply, builder.proposalApply, and the simulation's apply_command events), with the proposal's shape, and refuses the street builder's builds at proposalPrepareForApply, to find out whether a game script can stop a build and take it instead (docs/HOOKS.md). Writes to the TPF3-MP hook's log in a game its launcher started, else the game log. A test tool: it stops every street build while it is active.",
+    "name": "TPF3-MP probe: build events",
+    "summary": "Recon for TPF3-MP: logs the build tools' events and refuses street builds. A test tool.",
+    "tags": [
+        "Script Mod"
+    ],
+    "url": "https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod"
+}
