@@ -5,7 +5,7 @@
             "role": "CREATOR"
         }
     ],
-    "description": "Samples the world (vehicles, their positions, the road and track network, constructions, towns, money, people) every 100 simulation steps, labelled by the step, so two games from one save can be compared (tools/probe/compare_runs.py). Writes to %LOCALAPPDATA%/tpf3mp/probe or the game log. Changes nothing in the game.",
+    "description": "Samples the world (vehicles, their positions, the road and track network, constructions, towns, money, people) every 100 simulation steps, labelled by the step, so two games from one save can be compared (tools/probe/compare_runs.py). Writes to %LOCALAPPDATA%/tpf3mp/probe, or the TPF3-MP hook's log in a game its launcher started, or the game log. Changes nothing in the game.",
     "name": "TPF3-MP probe: determinism",
     "summary": "Recon for TPF3-MP: hashes the world every 100 simulation steps. Read only.",
     "tags": [
