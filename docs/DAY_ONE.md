@@ -77,9 +77,11 @@ tools/tpfre/Cargo.toml`.
    determinism probe, each log collected with its own `--label`, then
    `dayone.py compare A B`. The probe labels its samples by the simulation
    step, so frames need not line up: the game's own `GameTime.updateCount`
-   where the release API has it (documented, `stepTime=updateCount` in the
-   log's header; then any speed will do), else a step learned from the game
-   time. Two logs labelled differently are refused. The release builds are
+   where the release API has it (`stepTime=updateCount` in the log's
+   header), else a step learned from the game time. Run both games at
+   **1x**: the probe samples from GUI frames, and at 4x the game passes
+   several steps a frame, so most samples are skipped (seen on build 40408).
+   Load the same save for both runs, without saving over it. Two logs labelled differently are refused. The release builds are
    40408 on Steam and 40393 on Epic and GOG
    ([TF3_OFFICIAL_API_2026-09-29.md](../investigation/TF3_OFFICIAL_API_2026-09-29.md)).
 

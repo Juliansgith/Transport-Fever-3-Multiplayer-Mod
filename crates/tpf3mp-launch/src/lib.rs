@@ -246,7 +246,8 @@ fn folder_of(exe: &Path) -> &Path {
 /// The game's executable in its folder: the name it has on this system,
 /// or else the one executable there. `None` when that is not clear.
 pub fn find_executable(game_dir: &Path) -> Option<PathBuf> {
-    // TODO(TF3 release): confirm the executable's name on each system.
+    // TransportFever3.exe on Windows (build 40408). TODO(TF3 release):
+    // confirm the name on Linux and macOS.
     let names: &[&str] = if cfg!(windows) {
         &["TransportFever3.exe", "Transport Fever 3.exe"]
     } else {

@@ -1,0 +1,76 @@
+# Signature profile for Transport Fever 3, Steam build 40408 (Windows x64),
+# the release build of 2026-09-29.
+#
+# Made on release day from the installed executable with `tpfre` (docs/DAY_ONE.md
+# step 3): TF3 has no __FUNCSIG__ names, so each target was found by carrying
+# TPF2's names over with `tpfre match` (shared assert strings, RTTI slots, the
+# call graph, source-file order) and checked against the source file TF3's own
+# __FILE__ strings name for it. `tpfre q sig --toml` made each block: every
+# build-variable byte is wildcarded, and every signature matches exactly once in
+# .text. The prologue is the exact bytes the detour engine would relocate. Like
+# TPF2's, .text is not encrypted on disk (SteamStub's .bind section only).
+#
+# Not yet confirmed by running a hook: the addresses are static findings
+# (investigation/TF3_OFFICIAL_API_2026-09-29.md, "Measured on the release build").
+# TPF2's CGameTime::GetSpeed has no counterpart here: TF3 sets speed through the
+# script command makeGameSetSpeedCmd, which the room can take over in Lua.
+
+name = "Transport Fever 3 Build 40408 (Steam, Windows x64)"
+image_base = 0x140000000
+region = ".text"
+
+[build]
+sha256 = "de1daad3a13f3b7e9f79903361bb43769cf4f15e59271a263aefe1f075f23ef2"
+size = 69711288
+pe_timestamp = 0x6AB69FE5
+
+# GameSim::Step (TPF2 0x15aa00; here 0x159390): the per-batch simulation entry.
+# Matched by three assert strings it alone uses in both builds; TF3 names
+# game/gamesim.cpp for it.
+[[target]]
+name = "GameSim::Step"
+signature = "40 55 41 56 48 83 EC 48 4C 8B F2 48 8B E9"
+offset = 0
+prologue = "40 55 41 56 48 83 EC 48 4C 8B F2 48 8B E9"
+required = true
+
+# CGame::Step (TPF2 0x118e90; here 0x11f3b0): the main-thread pacing entry.
+# Two shared assert strings; game/game.cpp.
+[[target]]
+name = "CGame::Step"
+signature = "40 53 48 83 EC 20 48 8B 81 F0 01 00 00 48 8B D9"
+offset = 0
+prologue = "40 53 48 83 EC 20 48 8B 81 F0 01 00 00 48 8B D9"
+required = true
+
+# UI::CMenuUI::StartSavegame (TPF2 0x6785c0; here 0x6a2880): the in-process
+# load entry. Its lambdas keep the name in RTTI, and its log line (now "Game
+# initialization is already active!") is used by this function alone, with
+# "Preparing to load game"; game/ui/components/menuui.cpp. The weakest of the
+# four: confirm with its callers before relying on it.
+[[target]]
+name = "UI::CMenuUI::StartSavegame"
+signature = "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 48 8D 6C 24 A9 48 81 EC C0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 47 48 8B F1 C6 81 D0 04 00 00 00"
+offset = 0
+prologue = "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20"
+required = true
+
+# UI::CMenuUI::CreatePage (TPF2 0x663370; here 0x6a2ee0): rebuilds a menu page.
+# Matched by its log line "Mods changed, recreating data..."; menuui.cpp.
+[[target]]
+name = "UI::CMenuUI::CreatePage"
+signature = "48 89 5C 24 18 55 56 57 48 8D 6C 24 B9 48 81 EC B0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 37 0F B6 DA"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 48 8D 6C 24 B9 48 81 EC B0 00 00 00"
+required = true
+
+# The command queue's add (TPF2's CommandList::Add lambda, 0x9d2420; here
+# 0x9d23c0): where native commands, the street and track builders' among them,
+# are queued. One shared assert string; game/command/commandlist.cpp. Optional
+# until the capture design settles on this entry.
+[[target]]
+name = "CommandList::Add::lambda"
+signature = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 49 8B E8 4C 8B D2"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18"
+required = false

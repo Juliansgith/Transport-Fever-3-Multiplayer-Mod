@@ -12,8 +12,8 @@
 -- step advances (the smallest change it sees over its first frames), then
 -- samples only when the game time lands exactly on a multiple of STRIDE
 -- steps, and writes step=<steps since time 0>. Two games from one save then
--- sample the same steps whenever their frames see them (at 1x to 4x every
--- step is seen; a skipped one is logged as skipped), and
+-- sample the same steps whenever their frames see them (at 1x every step
+-- is seen; at 4x most are passed between frames and logged as skipped), and
 -- tools/probe/compare_runs.py compares the steps both logged.
 --
 -- Lanes, as the TPF2 probe: v vehicle count, p vehicle positions (1 m),

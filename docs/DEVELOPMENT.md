@@ -132,6 +132,7 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-testkit` | Toy game, bots, network emulator, load tester, regression harness. |
 | `mod/tpf3mp_1` | The game-side Lua mod, in Transport Fever 3's layout: captures builds as actions for the hook, linked to it by `tpf3mp/bridge.lua`. |
 | `mod/tpf3mp_bigmap_1` | Big maps' New Game side, prototype: the added size rows. Registers nothing with the game yet. |
+| `profiles/` | The hook's per-build signature profiles, built into the hook (Transport Fever 3 Steam build 40408, Windows). |
 | `packaging/` | The install scripts and their tests, and the macOS bundle's files. |
 | `tools/` | Release-day reverse-engineering and determinism probes. |
 | `deploy/` | Container image and compose file. |

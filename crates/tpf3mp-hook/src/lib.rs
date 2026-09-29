@@ -115,10 +115,13 @@ fn resolve_build(log: &mut Logger, data_dir: Option<&Path>) -> BuildOutcome {
     ));
 
     let profiles_dir = data_dir.map(|dir| dir.join("profiles"));
-    let profiles = profiles_dir
+    // The data folder's profiles first, so one placed there can stand in for
+    // a built-in one without a release; then the release's own.
+    let mut profiles = profiles_dir
         .as_deref()
         .map(load_profiles)
         .unwrap_or_default();
+    profiles.extend(built_in_profiles());
     for loaded in &profiles {
         if let Err(error) = &loaded.profile {
             log.line(&format!(
@@ -131,7 +134,7 @@ fn resolve_build(log: &mut Logger, data_dir: Option<&Path>) -> BuildOutcome {
     match select_profile(&profiles, &identity) {
         Some(profile) => BuildOutcome::Matched(profile.clone()),
         None => BuildOutcome::FailedClosed(format!(
-            "no profile in {:?} matches build {}",
+            "no profile in {:?} or built in matches build {}",
             profiles_dir, identity.sha256
         )),
     }
@@ -150,6 +153,26 @@ pub enum LoadError {
 pub struct LoadedProfile {
     pub path: PathBuf,
     pub profile: Result<Profile, LoadError>,
+}
+
+/// The profiles this release was built with, from the repository's
+/// `profiles/` folder: the game builds it can hook without a profile file.
+/// A new game build needs a new profile, and so a new release (DAY_ONE.md,
+/// patch duty).
+pub const BUILT_IN_PROFILES: &[(&str, &str)] = &[(
+    "tf3_build40408_steam_windows.toml",
+    include_str!("../../../profiles/tf3_build40408_steam_windows.toml"),
+)];
+
+/// [`BUILT_IN_PROFILES`], parsed, each under the path `built-in/<file>`.
+pub fn built_in_profiles() -> Vec<LoadedProfile> {
+    BUILT_IN_PROFILES
+        .iter()
+        .map(|(file, text)| LoadedProfile {
+            path: PathBuf::from("built-in").join(file),
+            profile: Profile::from_toml(text).map_err(LoadError::Parse),
+        })
+        .collect()
 }
 
 /// Reads and parses every `*.toml` in `dir`. Missing directory yields an empty
@@ -420,6 +443,41 @@ prologue = "40 53"
         assert!(
             select_profile(&profiles, &matches_none).is_none(),
             "an unknown build matches no profile (fail-closed)"
+        );
+    }
+
+    #[test]
+    fn the_built_in_profiles_parse_and_match_the_steam_release() {
+        let built_in = built_in_profiles();
+        assert_eq!(built_in.len(), BUILT_IN_PROFILES.len());
+        assert!(built_in.iter().all(|loaded| loaded.profile.is_ok()));
+        let steam_40408 = BuildIdentity {
+            sha256: "de1daad3a13f3b7e9f79903361bb43769cf4f15e59271a263aefe1f075f23ef2".into(),
+            size: Some(69_711_288),
+            pe_timestamp: Some(0x6AB6_9FE5),
+        };
+        let selected = select_profile(&built_in, &steam_40408).map(|p| p.name.as_str());
+        assert_eq!(
+            selected,
+            Some("Transport Fever 3 Build 40408 (Steam, Windows x64)")
+        );
+    }
+
+    #[test]
+    fn a_data_folder_profile_comes_before_a_built_in_one() {
+        let dir = TempDir::new("override");
+        let sha = "de1daad3a13f3b7e9f79903361bb43769cf4f15e59271a263aefe1f075f23ef2";
+        fs::write(dir.0.join("mine.toml"), profile_toml("Mine", sha)).unwrap();
+        let mut profiles = load_profiles(&dir.0);
+        profiles.extend(built_in_profiles());
+        let identity = BuildIdentity {
+            sha256: sha.into(),
+            size: None,
+            pe_timestamp: None,
+        };
+        assert_eq!(
+            select_profile(&profiles, &identity).map(|p| p.name.as_str()),
+            Some("Mine")
         );
     }
 
