@@ -51,12 +51,11 @@ const MAX_FILES_PER_PLACE: usize = 1000;
 
 /// The game's Steam app IDs whose folders are looked in: Transport Fever
 /// 3's ([`crate::steam::TRANSPORT_FEVER_3`]).
-// TODO(TF3 release): confirm the paths in its folder.
 pub const GAME_STEAM_APPS: &[&str] = &["3493540"];
 
-/// Marks a place taken from Transport Fever 2, until it is confirmed on
-/// Transport Fever 3.
-const TPF2_GUESS: &str = "TPF2 location, confirm on TF3";
+/// Marks a place taken from Transport Fever 2, not seen on Transport Fever 3
+/// (build 40408 on Windows writes its log into `crash_dump/`).
+const TPF2_GUESS: &str = "TPF2 location, not seen on TF3 Windows";
 
 /// A place a log or dump may be.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,9 +95,11 @@ pub fn game_candidates() -> Vec<Candidate> {
     game_candidates_in(&crate::steam::steam_roots())
 }
 
-/// The game's places under these Steam installations: per Steam account,
-/// `userdata/<account>/<app>/local/stdout.txt` and its `crash_dump/`
-/// folder, where Transport Fever 2 writes them.
+/// The game's places under these Steam installations, per Steam account:
+/// `userdata/<account>/<app>/local/crash_dump/`, where Transport Fever 3
+/// (build 40408, Windows) writes its log, `stdout.txt`, and its crash
+/// reports; and `local/stdout.txt`, where Transport Fever 2 wrote its log,
+/// in case another platform still does.
 pub fn game_candidates_in(steam_roots: &[PathBuf]) -> Vec<Candidate> {
     let mut locals = Vec::new();
     for root in steam_roots {
@@ -126,16 +127,16 @@ pub fn game_candidates_in(steam_roots: &[PathBuf]) -> Vec<Candidate> {
                 .collect()
         };
         candidates.push(Candidate {
+            what: "the game's log and crash reports".to_owned(),
+            shown: format!("<Steam>/userdata/<account>/{app}/local/crash_dump/"),
+            zip_dir: format!("game/steam-{app}/crash_dump"),
+            paths: local("crash_dump"),
+        });
+        candidates.push(Candidate {
             what: format!("the game's log, stdout.txt ({TPF2_GUESS})"),
             shown: format!("<Steam>/userdata/<account>/{app}/local/stdout.txt"),
             zip_dir: format!("game/steam-{app}"),
             paths: local("stdout.txt"),
-        });
-        candidates.push(Candidate {
-            what: format!("the game's crash dumps ({TPF2_GUESS})"),
-            shown: format!("<Steam>/userdata/<account>/{app}/local/crash_dump/"),
-            zip_dir: format!("game/steam-{app}/crash_dump"),
-            paths: local("crash_dump"),
         });
     }
     candidates
@@ -677,9 +678,9 @@ mod tests {
         write(&data.join("logs/invite.key"), b"INVITE KEY");
         write(&data.join("logs/server.pem"), b"CERTIFICATE");
         write(&data.join("logs/session-token.txt"), b"TOKEN");
-        // The game's stdout, under one Steam account; no crash dumps.
+        // The game's log, under one Steam account, where TF3 writes it.
         let local = steam.join("userdata/12345678/3493540/local");
-        write(&local.join("stdout.txt"), b"game output\n");
+        write(&local.join("crash_dump/stdout.txt"), b"game output\n");
 
         let bundle = collect(&data, &steam, now).write(&out).unwrap();
 
@@ -691,7 +692,7 @@ mod tests {
         );
         assert!(names.contains(&"tpf3mp/hook.log"), "{names:?}");
         assert!(
-            names.contains(&"game/steam-3493540/stdout.txt"),
+            names.contains(&"game/steam-3493540/crash_dump/stdout.txt"),
             "{names:?}"
         );
         assert!(names.contains(&"manifest.txt"), "{names:?}");
@@ -730,8 +731,17 @@ mod tests {
             "{manifest}"
         );
         assert!(manifest.contains("withheld, looked like keys, certificates or tokens: 3 files"));
-        assert!(manifest.contains("the game's crash dumps (TPF2 location, confirm on TF3)"));
-        assert!(manifest.contains("<Steam>/userdata/<account>/3493540/local/crash_dump/"));
+        assert!(
+            manifest.contains("game/steam-3493540/crash_dump/stdout.txt"),
+            "{manifest}"
+        );
+        // TPF2's place is looked in too, and named where nothing was there.
+        assert!(
+            manifest
+                .contains("the game's log, stdout.txt (TPF2 location, not seen on TF3 Windows)"),
+            "{manifest}"
+        );
+        assert!(manifest.contains("<Steam>/userdata/<account>/3493540/local/stdout.txt"));
         // No account ID or local path in the manifest.
         assert!(!manifest.contains("12345678"), "{manifest}");
         assert!(!manifest.contains(&*root.to_string_lossy()), "{manifest}");

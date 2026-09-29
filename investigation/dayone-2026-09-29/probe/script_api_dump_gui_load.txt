@@ -25,7 +25,7 @@ after randomseed(1): math.random() x5   = 0.41702199843712, 0.99718480813317, 0.
 after randomseed(1): math.random(6) x10 = 3, 6, 5, 6, 1, 1, 2, 6, 1, 2
 
 ## pairs() order for string keys
-order: mike,bravo,charlie,alpha,november,zebra,oscar,echo,delta,yankee
+order: echo,november,oscar,bravo,mike,delta,charlie,zebra,alpha,yankee
 stable across 5 constructions in this state: true
 
 ## The global table

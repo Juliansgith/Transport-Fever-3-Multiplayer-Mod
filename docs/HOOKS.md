@@ -303,7 +303,10 @@ the payload may wrap around the end of the buffer.
 
 The hook opens the link its launcher names, and keeps its log (`hook.log`)
 and build profiles (`profiles/*.toml`) in the per-user `TPF3-MP` data
-folder. The game's environment says which, so several games on one PC each
+folder. It also carries the release's own profiles, built in from the
+repository's `profiles/` folder (Transport Fever 3 Steam build 40408 on
+Windows, so far); a profile in the data folder for the same build comes
+first, so one can be tried there without a release. The game's environment says which, so several games on one PC each
 reach their own agent:
 
 | variable | effect |
