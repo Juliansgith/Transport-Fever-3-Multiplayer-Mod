@@ -18,8 +18,11 @@
 //! With a matched profile it installs the step gate (`install`, [`step`]):
 //! `GameSim::Step` is detoured so the game runs its simulation one step for
 //! each step the room releases (`docs/HOOKS.md`, "The step gate in the
-//! game"). Applying the room's events to the world, lanes and saving come
-//! next.
+//! game"), and Lua's `print`, which gives each of the game's Lua states the
+//! mod's link to the hook ([`lua`]): the player's actions go to the room
+//! from there, and the room's are applied by the mod's game script in the
+//! update they were ordered for ("Actions in the game"). Lanes, saving and
+//! loading come next.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -31,6 +34,7 @@ use std::{
 use tpf3mp_hookcore::profile::{BuildIdentity, Profile, ProfileError};
 
 mod install;
+pub mod lua;
 mod platform;
 pub mod step;
 

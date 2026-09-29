@@ -101,3 +101,164 @@ signature = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 49 8B E
 offset = 0
 prologue = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18"
 required = false
+
+# Lua 5.2's C API, which the hook calls to give each Lua state the
+# `tpf3mp_native` table (HOOKS.md, "The Lua side"). luaB_print is found by its
+# own string; its calls name gettop, getglobal, pushvalue, callk, tolstring and
+# settop. The linker laid lapi.c's functions out alphabetically (TPF2's are
+# too), so the rest follow from their places between those, each checked by
+# what it calls (build 40408, 0x2fbd5d0-0x2fbf0b3). Only luaB_print is
+# detoured; the others are only called, so their prologues are just the bytes
+# before their first call or branch.
+
+# luaB_print (0x2fccd10): Lua's `print` (lbaselib.c): the only function naming "'tostring' must return a string to 'print'". Detoured: the first `print` of a Lua state gives it `tpf3mp_native`. Its calls name six of the API functions below.
+[[target]]
+name = "luaB_print"
+signature = "48 89 5C 24 08 48 89 6C 24 18 56 57 41 56 48 83 EC 30 48 8B F9"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 6C 24 18 56 57 41 56"
+required = true
+
+# lua_checkstack (0x2fbd650): Compares the room left with LUAI_MAXSTACK (0xf4240).
+[[target]]
+name = "lua_checkstack"
+signature = "48 89 5C 24 18 89 54 24 10 57 48 83 EC 20 4C 8B 49 10"
+offset = 0
+prologue = "48 89 5C 24 18 89 54 24 10 57 48 83 EC 20"
+required = true
+
+# lua_createtable (0x2fbd880): luaC_step, luaH_new, the table tag 0x45, luaH_resize.
+[[target]]
+name = "lua_createtable"
+signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 41 18 41 8B F8"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
+required = true
+
+# lua_gettop (0x2fbdd10): luaB_print's first call; (L->top - (ci->func + 1)) / 16.
+[[target]]
+name = "lua_gettop"
+signature = "48 8B 41 20 48 8B 51 10 48 2B 10 48 8D 42 F0"
+offset = 0
+prologue = "48 8B 41 20 48 8B 51 10 48 2B 10 48 8D 42 F0"
+required = true
+
+# lua_next (0x2fbe080): index2addr, then luaH_next.
+[[target]]
+name = "lua_next"
+signature = "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 4C 8B 43 10 48 8B CB"
+offset = 0
+prologue = "40 53 48 83 EC 20 48 8B D9"
+required = true
+
+# lua_pushboolean (0x2fbe1d0): A leaf: the value `edx != 0`, tag 1.
+[[target]]
+name = "lua_pushboolean"
+signature = "4C 8B 41 10 33 C0 85 D2 0F 95 C0 41 89 00"
+offset = 0
+prologue = "4C 8B 41 10 33 C0 85 D2 0F 95 C0 41 89 00"
+required = true
+
+# lua_pushcclosure (0x2fbe1f0): Its prologue is TPF2's lua_pushcclosure's byte for byte.
+[[target]]
+name = "lua_pushcclosure"
+signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 49 63 F8"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
+required = true
+
+# lua_pushlstring (0x2fbe340): luaC_step, then luaS_newlstr.
+[[target]]
+name = "lua_pushlstring"
+signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 41 18 49 8B F8 48 8B F2 48 8B D9 48 83 78 18 00 7E ?? E8 ?? ?? ?? ?? 4C 8B C7 48 8B D6 48 8B CB E8 ?? ?? ?? ??"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
+required = true
+
+# lua_pushnil (0x2fbe3a0): A leaf: tag 0.
+[[target]]
+name = "lua_pushnil"
+signature = "48 8B 41 10 C7 40 08 00 00 00 00 48 83 41 10 10"
+offset = 0
+prologue = "48 8B 41 10 C7 40 08 00 00 00 00 48 83 41 10 10"
+required = true
+
+# lua_pushnumber (0x2fbe3c0): A leaf: the double in xmm1, tag 3.
+[[target]]
+name = "lua_pushnumber"
+signature = "48 8B 41 10 C5 FB 11 08 C7 40 08 03 00 00 00"
+offset = 0
+prologue = "48 8B 41 10 C5 FB 11 08 C7 40 08 03 00 00 00"
+required = true
+
+# lua_pushvalue (0x2fbe4b0): luaB_print's third and fourth calls.
+[[target]]
+name = "lua_pushvalue"
+signature = "48 83 EC 28 4C 8B D1 E8 ?? ?? ?? ?? 4D 8B 42 10 48 8B 10"
+offset = 0
+prologue = "48 83 EC 28 4C 8B D1"
+required = true
+
+# lua_rawget (0x2fbe590): index2addr, then luaH_get with the key at the top.
+[[target]]
+name = "lua_rawget"
+signature = "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B 53 10 48 83 EA 10"
+offset = 0
+prologue = "40 53 48 83 EC 20 48 8B D9"
+required = true
+
+# lua_rawgeti (0x2fbe5d0): Its prologue is TPF2's lua_rawgeti's byte for byte.
+[[target]]
+name = "lua_rawgeti"
+signature = "40 53 48 83 EC 20 45 8B D0 48 8B D9 E8 ?? ?? ?? ?? 41 8B D2 48 8B 08"
+offset = 0
+prologue = "40 53 48 83 EC 20 45 8B D0 48 8B D9"
+required = true
+
+# lua_rawset (0x2fbe6b0): index2addr, luaH_set, the barrier.
+[[target]]
+name = "lua_rawset"
+signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 48 8B 5F 10 48 8B CF"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
+required = true
+
+# lua_settop (0x2fbeaf0): luaB_print's `lua_pop`; a leaf.
+[[target]]
+name = "lua_settop"
+signature = "85 D2 78 ?? 48 8B 41 20"
+offset = 0
+prologue = "85 D2"
+required = true
+
+# lua_toboolean (0x2fbecb0): False only for nil and a false boolean.
+[[target]]
+name = "lua_toboolean"
+signature = "48 83 EC 28 E8 ?? ?? ?? ?? 8B 48 08 85 C9"
+offset = 0
+prologue = "48 83 EC 28"
+required = true
+
+# lua_tolstring (0x2fbed30): luaB_print's fifth call; its prologue is TPF2's lua_tolstring's.
+[[target]]
+name = "lua_tolstring"
+signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 49 8B D8 8B F2 48 8B F9 E8 ?? ?? ?? ??"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
+required = true
+
+# lua_tonumberx (0x2fbedd0): A number (tag 3) as it is, else luaV_tonumber; `isnum` in r8.
+[[target]]
+name = "lua_tonumberx"
+signature = "40 53 48 83 EC 30 49 8B D8 E8 ?? ?? ?? ?? 83 78 08 03 74 ?? 48 8D 54 24 20 48 8B C8 E8 ?? ?? ?? ?? 48 85 C0 75 ?? 48 85 DB 74 ?? 89 03 C5 F9 57 C0"
+offset = 0
+prologue = "40 53 48 83 EC 30 49 8B D8"
+required = true
+
+# lua_type (0x2fbef90): LUA_TNONE for luaO_nilobject, else the tag's low nibble.
+[[target]]
+name = "lua_type"
+signature = "48 83 EC 28 E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 48 3B C1 74 ?? 8B 40 08 83 E0 0F 48 83 C4 28"
+offset = 0
+prologue = "48 83 EC 28"
+required = true

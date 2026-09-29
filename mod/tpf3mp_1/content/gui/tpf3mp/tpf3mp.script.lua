@@ -1,7 +1,8 @@
 -- TPF3-MP in the game's GUI state: the plugin gui/tpf3mp/tpf3mp.res.lua
 -- names. On the first step of a game it loads the mod's modules and links
 -- to the hook (tpf3mp/bridge.lua). Without a hook, which is every game Steam
--- started, it logs one line and does nothing more.
+-- started, it logs one line and does nothing more. The room's actions are
+-- applied by the mod's game script (tpf3mp_sim/), not here.
 --
 -- It follows what mods made for Transport Fever 3 build 40391 rely on
 -- (investigation/TF3_MODS_2026-09-27.md): a .script.lua defines data();
@@ -47,15 +48,6 @@ function data()
 		return true
 	end
 
-	-- The hook's table (bridge.GLOBAL), if the hook registered one. Named
-	-- directly, since a state need not have _G, and read through pcall: a
-	-- state that refuses undeclared globals raises on a missing one.
-	local function nativeTable()
-		local ok, value = pcall(function() return tpf3mp_native end)
-		if ok then return value end
-		return nil
-	end
-
 	local function start()
 		local ok, why = installModules()
 		if not ok then
@@ -65,27 +57,12 @@ function data()
 		say("modules loaded")
 
 		local bridge = require "tpf3mp.bridge"
-		local link, reason = bridge.attach(nativeTable())
+		local link, reason = bridge.attach(bridge.find())
 		if not link then
 			say(reason .. "; this is the plain game")
 			return
 		end
-		-- Nothing is applied by this version yet, so every event is refused:
-		-- the hook then stops following the room rather than leave this
-		-- game behind the others (fail closed).
-		local registered, err = link:register({
-			apply = function(_action)
-				return false, "this version of the mod applies no actions yet"
-			end,
-			notice = function(kind, text)
-				say("notice " .. tostring(kind) .. ": " .. tostring(text))
-			end,
-		})
-		if not registered then
-			say("the hook is here, but " .. err)
-			return
-		end
-		link:log("the mod is linked")
+		link:log("the GUI is linked")
 		say("linked to the hook")
 	end
 

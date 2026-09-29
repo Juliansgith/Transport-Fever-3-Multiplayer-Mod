@@ -519,31 +519,96 @@ untouched; `session::tests` read releases ahead over a real link;
 
 ### The Lua side
 
-The Lua mod runs in the game's GUI state, started by a game bar plugin on
-the first frame of a game (`mod/tpf3mp_1/content/gui/tpf3mp/`). The hook
-and the mod meet through one global table, which the hook registers in
-that state before the mod starts. Its contract is in
-`mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`:
+The mod runs in two kinds of Lua state: the game's GUI state, started by a
+game bar plugin on the first frame of a game
+(`mod/tpf3mp_1/content/gui/tpf3mp/`), and the engine states the game runs
+game scripts in (`mod/tpf3mp_1/content/tpf3mp_sim/`, "Actions in the
+game" below). The hook and the mod meet through one global table,
+`tpf3mp_native`, which the hook gives every Lua state that calls `print`:
+it detours Lua's `luaB_print` (profile target `luaB_print`) and, after the
+game's print, adds the table to that state's globals, once, set raw past
+any metatable a strict state gives them. The mod prints before it looks
+for the table (`bridge.find`). Its contract is in
+`mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
+`crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 2. The mod refuses any other.
+- `tpf3mp_native.version`: 3. The mod refuses any other.
 - `tpf3mp_native.command(action)`: an action table, in the game's units.
   The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
-  `MAX_DEPTH` and `MAX_NODES`, converts it with `action_from_lua`, and
-  passes `Action::to_payload` to `Session::command`. It returns `true`, or
-  `false` and the conversion's error. `false` or an error means refused,
-  and the mod then does not apply the action locally either.
-- `tpf3mp_native.register(handlers)`: the mod's handlers, which the hook
-  keeps with the Lua state they came from.
-  - `handlers.apply(action)`, with the table `action_to_lua` makes of the
-    event's action, returns `(ok, reason)`; it is
-    `Game::apply`. This version refuses every event, so a hook that
-    receives one stops following the room.
-  - `handlers.notice(kind, text)` is `Game::notice`.
-  - Neither raises: an error becomes a refusal.
-- `tpf3mp_native.log(line)`: a line for `hook.log`.
+  `MAX_DEPTH` and `MAX_NODES` (a function, userdata or a table as a key is
+  refused), converts it with `action_from_lua` and queues
+  `Action::to_payload`; the step gate hands it to `Session::command`, in
+  the room's game only. It returns `true`, or `false` and why. `false` or
+  an error means refused, and the mod does not apply the action locally
+  either: every game applies it when the room orders it.
+- `tpf3mp_native.take()`: the actions the room ordered for this simulation
+  update, as `action_to_lua` tables, or `nil` (below).
+- `tpf3mp_native.log(line)`: a line for `hook.log`, marked `mod:`.
+
+The table's functions run on whichever thread runs their state (the GUI's
+the main thread, the game scripts' a pool of simulation threads) and share
+nothing but the hook's queues. They reach Lua through Lua 5.2's C API as
+the build profile names it: 18 functions besides `luaB_print`, found from
+`luaB_print`'s own calls and their places in lapi.c, which the linker laid
+out alphabetically (TPF2's were too; several prologues match TPF2's byte
+for byte). They are only called, never detoured. Everything that crosses
+into Lua is `C-unwind`: a Lua error, which TF3 raises as a C++ exception,
+passes through as the game raised it.
 
 Without the table, the mod logs "no hook in this game" and does nothing.
 That is every game Steam started (D11).
+
+### Actions in the game
+
+A player's action happens in no game until the room orders it, and then in
+every game in the same simulation update:
+
+1. The mod hands the action to `tpf3mp_native.command`. The step gate
+   sends it to the room.
+2. The room orders it as an event for a step `s`. The session ends a
+   batch before every step with events (`Session::batch`), so `s` is
+   always the first update of a batch; the driver hands that batch its
+   actions (`lua::begin_batch`), and runs it.
+3. The mod's game script asks the hook in every `update`
+   (`tpf3mp_native.take`); the first update of the batch gets the actions
+   and applies them through `api.cmd` (`mod/tpf3mp_1/content/scripts/tpf3mp/apply.lua`).
+4. After the batch, the driver checks the actions were taken
+   (`lua::end_batch`). If they were not, the world ran step `s` without
+   them: none of those steps is reported and the world stands still
+   (fail closed).
+
+Measured on build 40408:
+
+- A mod's game script (`*.gs.lua`, discovered by the game) has its
+  `update` called once per simulation update: `GameTime.updateCount` goes
+  up by one from call to call, and `dt` is 0.2. Its script file defines
+  `data()` returning the functions, as the GUI's do.
+- The game runs game scripts on a pool of Lua states ("Sim Pool" threads),
+  so a script's locals are kept per state, not per game.
+- In an engine state a command runs at once (the game's
+  `api/tealdef/api/cmd.d.tl`), but the game takes no callback in `update`
+  ("Callbacks are currently disallowed"): `apply.lua` sends without one,
+  and a refused command raises. In the GUI and console states commands
+  run "in the next simulation step", which is a different update on each
+  game: the reason the game script applies them, not the GUI.
+- The console has a Lua state of its own. For tests, its
+  `api.cmd.makeScriptingSendEventCmd("", "tpf3mp", "command", action)`
+  reaches the game script's `handleEvent` in that game only, which hands
+  the action to the room.
+
+Seen in two hooked games in one room (the rig, the fixture save): a road
+depot sent from the first game's console was handed to the room, and both
+games applied it in the same update; the determinism probe's construction
+lane changed between steps 500 and 600 in both, to the same value, and
+matched at every sample after.
+
+`apply.lua` applies `BuildConstruction` so far: a `SimpleProposal` with
+one `ConstructionEntity` (the file, the matrix from the transform, the
+parameters from their flattened paths, the name, the player), sent with
+`ignoreErrors` false and `playerInitiated` true, as the player's own
+build. Every other action is refused with a line in `hook.log`, the same
+on every game, so the worlds stay alike. What the GUI captures from the
+player, and the native build tools, come next.
 
 ## Release-day procedure: adding a target for a new build
 

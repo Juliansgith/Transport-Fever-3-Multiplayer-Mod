@@ -1,6 +1,8 @@
 //! Installs the step gate in the running game: finds `GameSim::Step` with
 //! the matched profile in the game's own mapped image, attaches the session
-//! to the agent, and detours the step to [`crate::step::StepDriver`].
+//! to the agent, and detours the step to [`crate::step::StepDriver`]. It
+//! also detours Lua's `print`, which gives each of the game's Lua states the
+//! mod's link to the hook ([`crate::lua`]).
 //!
 //! Windows only for now: the one profile so far is Steam build 40408 on
 //! Windows, and on other systems the hook installs nothing (fail closed).
@@ -9,14 +11,20 @@
 // Elsewhere install_inner installs nothing, so the detours are unused there.
 #![cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
 
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+use std::{
+    ffi::c_int,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
 use tpf3mp_hookcore::profile::Profile;
 
-use crate::step::{StepHandler, Updates};
+use crate::{
+    lua,
+    step::{StepHandler, Updates},
+};
 
 /// The profile's name for the simulation step.
 pub const STEP_TARGET: &str = "GameSim::Step";
@@ -24,6 +32,34 @@ pub const STEP_TARGET: &str = "GameSim::Step";
 pub const SPEED_TARGET: &str = "CGameTime::GetSpeed";
 /// The profile's name for the step's own call of the speed getter.
 pub const SPEED_CALL_TARGET: &str = "GameSim::Step/GetSpeed call";
+/// The profile's name for Lua's `print`.
+pub const PRINT_TARGET: &str = "luaB_print";
+
+/// Lua's `print`, reached through its detour's trampoline.
+static PRINT_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Lua's `print`, in any of the game's Lua states: prints as the game's
+/// does, then gives the state `tpf3mp_native` (the mod prints before it
+/// looks for the table). `C-unwind`: a Lua error in `print` itself passes
+/// through as the game raised it.
+unsafe extern "C-unwind" fn print_detour(l: lua::State) -> c_int {
+    let original = PRINT_ORIGINAL.load(Ordering::Acquire);
+    let printed = if original == 0 {
+        0
+    } else {
+        // SAFETY: the trampoline of Lua's print, a C function of the game's
+        // Lua, called with the state the game called it with.
+        unsafe { std::mem::transmute::<usize, lua::CFunction>(original)(l) }
+    };
+    if let Some(api) = lua::api() {
+        // SAFETY: the state `print` was called in, on its own thread, inside
+        // that call.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            lua::register(api, l);
+        }));
+    }
+    printed
+}
 
 /// The game's own step, reached through the detour's trampoline.
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -132,17 +168,28 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             unsafe { run_step(original, Updates::Own, this, a, b, c) };
             return;
         };
-        // SAFETY: as above, once per call, with the updates the driver chose.
-        driver.on_step(&mut |updates| {
+        // SAFETY: as above, once per call, with the updates the driver chose;
+        // the batch's first update hands the mod the room's actions for it.
+        driver.on_step(lua::take_commands(), &mut |updates, actions| {
             ran = true;
-            unsafe { run_step(original, updates, this, a, b, c) }
+            match lua::begin_batch(actions) {
+                Ok(()) => {
+                    unsafe { run_step(original, updates, this, a, b, c) };
+                    lua::end_batch()
+                }
+                Err(reason) => {
+                    unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+                    Err(reason)
+                }
+            }
         });
         IN_ROOM.store(driver.in_room(), Ordering::Release);
         let chosen = CHOSEN.load(Ordering::Acquire);
         if chosen != NO_SPEED {
             driver.chosen_speed(chosen);
         }
-        let lines = driver.take_log();
+        let mut lines = driver.take_log();
+        lines.extend(lua::take_log());
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
         {
@@ -235,9 +282,23 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         .get(SPEED_CALL_TARGET)
         .ok_or_else(|| format!("the profile has no {SPEED_CALL_TARGET}"))?
         .address;
+    // Without the link to the mod, the room's actions could not be applied
+    // and the player's not handed over: no room's game without it.
+    let at = |name: &str| -> Result<usize, String> {
+        resolved
+            .get(name)
+            .map(|target| base + target.address as usize)
+            .ok_or_else(|| format!("the profile has no {name}"))
+    };
+    let print_at = at(PRINT_TARGET)?;
+    // SAFETY: each address is the function of Lua 5.2's C API the profile
+    // names, found by its signature and checked by its prologue in this very
+    // build; the types are that API's.
+    let api = unsafe { lua_api(&at)? };
 
     let session = tpf3mp_bridge::Session::attach(link_name, &profile.name, Duration::from_secs(30))
         .map_err(|error| format!("the agent's link: {error}"))?;
+    lua::install_api(api);
     *DRIVER.lock().unwrap_or_else(|p| p.into_inner()) =
         Some(Box::new(crate::step::StepDriver::new(session)));
 
@@ -267,6 +328,12 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     }
     .map_err(|error| format!("redirecting {SPEED_CALL_TARGET}: {error:?}"))?;
     std::mem::forget(redirect);
+    // SAFETY: Lua's print, which the profile resolved; no Lua state runs
+    // before the game's loading screen, long after the hook installs;
+    // print_detour has the ABI of a Lua C function.
+    let print = unsafe { detour_forever(print_at as *mut u8, print_detour as *const u8) }
+        .map_err(|error| format!("detouring {PRINT_TARGET}: {error}"))?;
+    PRINT_ORIGINAL.store(print, Ordering::Release);
     // SAFETY: as above.
     let step = unsafe {
         detour_forever(
@@ -277,6 +344,47 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     .map_err(|error| format!("detouring {STEP_TARGET}: {error}"))?;
     ORIGINAL.store(step, Ordering::Release);
     Ok(step_rva)
+}
+
+/// Lua 5.2's C API, from the addresses `at` gives for the profile's names.
+///
+/// # Safety
+///
+/// Every address `at` gives is the named function of Lua 5.2's C API.
+#[cfg(all(windows, target_arch = "x86_64"))]
+// Each transmute's type is the one of the field it fills: the API's
+// signature, spelled once, in `lua::LuaApi`.
+#[allow(clippy::missing_transmute_annotations)]
+unsafe fn lua_api(at: &dyn Fn(&str) -> Result<usize, String>) -> Result<lua::LuaApi, String> {
+    macro_rules! function {
+        ($name:literal) => {{
+            let address = at($name)?;
+            // SAFETY: the caller's: `address` is this function of the API,
+            // with the type the field it goes to has.
+            unsafe { std::mem::transmute::<usize, _>(address) }
+        }};
+    }
+    Ok(lua::LuaApi {
+        gettop: function!("lua_gettop"),
+        settop: function!("lua_settop"),
+        checkstack: function!("lua_checkstack"),
+        pushvalue: function!("lua_pushvalue"),
+        type_of: function!("lua_type"),
+        toboolean: function!("lua_toboolean"),
+        tonumberx: function!("lua_tonumberx"),
+        tolstring: function!("lua_tolstring"),
+        next: function!("lua_next"),
+        pushnil: function!("lua_pushnil"),
+        pushnumber: function!("lua_pushnumber"),
+        pushboolean: function!("lua_pushboolean"),
+        pushlstring: function!("lua_pushlstring"),
+        pushcclosure: function!("lua_pushcclosure"),
+        createtable: function!("lua_createtable"),
+        rawget: function!("lua_rawget"),
+        rawset: function!("lua_rawset"),
+        rawgeti: function!("lua_rawgeti"),
+        globals: lua::LUA52_GLOBALS,
+    })
 }
 
 #[cfg(not(all(windows, target_arch = "x86_64")))]
@@ -291,13 +399,16 @@ mod tests {
     use tpf3mp_hookcore::detour::InlineDetour;
 
     use super::*;
-    use crate::step::{
-        StepDriver,
-        tests::{Script, begin},
+    use crate::{
+        lua::tests::{Lua, SERIAL, depot_build, lua51, run_in},
+        step::{
+            StepDriver,
+            tests::{Script, begin, command_event},
+        },
     };
 
-    /// The tests share the hook's statics: one at a time.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    /// A Lua state the fake step's "game script" runs in, while one is set.
+    static SCRIPT_STATE: AtomicUsize = AtomicUsize::new(0);
 
     /// What each call of the fake step was told to run.
     static CALLS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
@@ -317,6 +428,17 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(updates);
+        // The mod's game script, in each update: take the room's actions.
+        let state = SCRIPT_STATE.load(Ordering::SeqCst);
+        if state != 0 && updates != OWN_SPEED {
+            for _ in 0..updates {
+                let taken = run_in(
+                    state as lua::State,
+                    "local t = tpf3mp_native.take() if t then TAKEN = (TAKEN or 0) + #t end",
+                );
+                assert!(taken.is_ok(), "the game script failed: {taken:?}");
+            }
+        }
     }
 
     static SPEED: AtomicU64 = AtomicU64::new(4);
@@ -436,5 +558,116 @@ mod tests {
             4,
             "detached, the step is the game's own again"
         );
+    }
+
+    #[test]
+    fn the_rooms_actions_reach_the_game_script_in_the_first_update_of_their_step() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        lua51();
+        lua::take_commands();
+        let _ = lua::end_batch();
+        let game_script = Lua::new();
+        game_script.register();
+        SCRIPT_STATE.store(game_script.state() as usize, Ordering::SeqCst);
+        CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        script
+            .events
+            .extend([vec![], vec![command_event(1, 1, &depot_build())]]);
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(script)));
+        let target = fake_step as *mut u8;
+        // SAFETY: fake_step is this binary's own function, not running now,
+        // and step_detour has its signature.
+        let detour = unsafe { InlineDetour::install(target, step_detour as *const u8) }.unwrap();
+        ORIGINAL.store(detour.trampoline() as usize, Ordering::Release);
+        let step: extern "C" fn(usize, usize, usize, usize) = std::hint::black_box(fake_step);
+
+        // One call runs steps 1 and 2; step 1's first update takes the depot.
+        step(0x1111, 0x2222, 0x3333, 0x4444);
+        assert_eq!(game_script.run("return TAKEN"), Ok("1".into()));
+        assert!(!BROKEN.load(Ordering::SeqCst));
+        // The player's action goes to the room from the step as well.
+        game_script
+            .run("tpf3mp_native.command({ SellVehicle = { vehicles = { 7 } } })")
+            .unwrap();
+        step(0x1111, 0x2222, 0x3333, 0x4444);
+        assert!(lua::take_commands().is_empty(), "handed to the room");
+        assert_eq!(*CALLS.lock().unwrap(), vec![2, 0]);
+
+        ORIGINAL.store(0, Ordering::Release);
+        // SAFETY: nothing runs fake_step now.
+        unsafe { detour.detach() }.unwrap();
+        *DRIVER.lock().unwrap() = None;
+        SCRIPT_STATE.store(0, Ordering::SeqCst);
+        IN_ROOM.store(false, Ordering::Release);
+        CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+
+    #[test]
+    fn a_step_whose_game_script_took_nothing_holds_the_world() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        lua51();
+        let _ = lua::end_batch();
+        SCRIPT_STATE.store(0, Ordering::SeqCst);
+        CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([StepGate::Run, StepGate::Run]);
+        script
+            .events
+            .push_back(vec![command_event(1, 1, &depot_build())]);
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(script)));
+        let target = fake_step as *mut u8;
+        // SAFETY: as above.
+        let detour = unsafe { InlineDetour::install(target, step_detour as *const u8) }.unwrap();
+        ORIGINAL.store(detour.trampoline() as usize, Ordering::Release);
+        let step: extern "C" fn(usize, usize, usize, usize) = std::hint::black_box(fake_step);
+        step(0x1111, 0x2222, 0x3333, 0x4444);
+        step(0x1111, 0x2222, 0x3333, 0x4444);
+        assert_eq!(
+            *CALLS.lock().unwrap(),
+            vec![2, 0],
+            "the steps ran once without the action, then the world stood still"
+        );
+        let driver = DRIVER.lock().unwrap().take().unwrap();
+        assert!(driver.in_room(), "held, not left");
+
+        ORIGINAL.store(0, Ordering::Release);
+        // SAFETY: nothing runs fake_step now.
+        unsafe { detour.detach() }.unwrap();
+        IN_ROOM.store(false, Ordering::Release);
+        CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+
+    static PRINTED: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C-unwind" fn fake_print(_l: lua::State) -> c_int {
+        PRINTED.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    #[test]
+    fn a_state_that_prints_gets_the_link_after_its_print() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        lua51();
+        let state = Lua::new();
+        PRINT_ORIGINAL.store(fake_print as *const () as usize, Ordering::Release);
+        // SAFETY: a live state, on this thread.
+        let results = unsafe { print_detour(state.state()) };
+        assert_eq!(results, 0);
+        assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
+        assert_eq!(state.run("return tpf3mp_native.version"), Ok("3".into()));
+        PRINT_ORIGINAL.store(0, Ordering::Release);
     }
 }
