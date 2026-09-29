@@ -8,6 +8,10 @@
 -- Defines the globals the game has, plus LOG (every debugPrint line) and
 -- mount(recipe), which renders a plugin and runs its steps.
 
+-- The game's package table has no preload (build 40408's dump,
+-- investigation/dayone-2026-09-29/probe/script_api_dump_gui.txt).
+package.preload = nil
+
 LOG = {}
 function debugPrint(line)
 	LOG[#LOG + 1] = tostring(line)

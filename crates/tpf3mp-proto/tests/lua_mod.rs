@@ -163,6 +163,7 @@ fn run_frames(lua: &Lua, steps: usize) {
 #[test]
 fn without_the_hook_the_mod_loads_and_does_nothing() {
     let lua = gui();
+    let before: Vec<String> = loaded_names(&lua);
     run_frames(&lua, 3);
     let log = log(&lua);
     assert_eq!(
@@ -172,12 +173,31 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
         "started once, however many frames"
     );
 
-    // Only the mod's own names were added to package.preload.
-    let preload: Table = lua.load("return package.preload").eval::<Table>().unwrap();
-    for pair in preload.pairs::<String, mlua::Value>() {
-        let (name, _) = pair.unwrap();
-        assert!(name.starts_with("tpf3mp."), "added {name}");
-    }
+    // Only the mod's own names were added to package.loaded.
+    let added: Vec<String> = loaded_names(&lua)
+        .into_iter()
+        .filter(|name| !before.contains(name))
+        .collect();
+    assert_eq!(
+        added,
+        [
+            "tpf3mp.bridge",
+            "tpf3mp.engine",
+            "tpf3mp.geom",
+            "tpf3mp.roads"
+        ]
+    );
+}
+
+/// The names in package.loaded, sorted.
+fn loaded_names(lua: &Lua) -> Vec<String> {
+    let loaded: Table = lua.load("return package.loaded").eval::<Table>().unwrap();
+    let mut names: Vec<String> = loaded
+        .pairs::<String, mlua::Value>()
+        .map(|pair| pair.unwrap().0)
+        .collect();
+    names.sort();
+    names
 }
 
 const FAKE_HOOK: &str = r#"
@@ -235,18 +255,11 @@ fn a_hook_of_another_version_is_not_used() {
     assert!(!registered);
 }
 
-/// The bridge on its own, as the entry script's `require` finds it.
+/// The bridge on its own, loaded as the entry script loads it.
 fn bridge(lua: &Lua) -> Table {
-    lua.load(
-        "for _, name in ipairs({ 'bridge' }) do
-             package.preload['tpf3mp.' .. name] = function()
-                 return ug_require('tpf3mp_1::/scripts/tpf3mp/' .. name .. '.lua')
-             end
-         end
-         return require 'tpf3mp.bridge'",
-    )
-    .eval()
-    .unwrap()
+    lua.load("return ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')")
+        .eval()
+        .unwrap()
 }
 
 #[test]

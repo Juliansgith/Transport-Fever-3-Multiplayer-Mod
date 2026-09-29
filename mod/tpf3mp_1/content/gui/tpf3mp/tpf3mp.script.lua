@@ -23,16 +23,25 @@ function data()
 	end
 
 	-- The modules name each other `require "tpf3mp.<name>"`, as TPF2's
-	-- did; here each name loads its file through ug_require. Only names
+	-- did. The game's GUI state has `require` and package.loaded but no
+	-- package.preload (build 40408's dump,
+	-- investigation/dayone-2026-09-29/probe/script_api_dump_gui.txt), so
+	-- each module is loaded here through ug_require, in order, into
+	-- package.loaded, where the others' `require` finds it. Only names
 	-- under "tpf3mp." are added, so nothing else in the state changes.
 	local function installModules()
-		if type(package) ~= "table" or type(package.preload) ~= "table" then
-			return nil, "this Lua state has no package.preload"
+		if type(package) ~= "table" or type(package.loaded) ~= "table" then
+			return nil, "this Lua state has no package.loaded"
 		end
 		for _, name in ipairs(MODULES) do
-			local path = MOD .. "::/scripts/tpf3mp/" .. name .. ".lua"
-			package.preload["tpf3mp." .. name] = function()
-				return ug_require(path)
+			local key = "tpf3mp." .. name
+			if package.loaded[key] == nil then
+				local path = MOD .. "::/scripts/tpf3mp/" .. name .. ".lua"
+				local ok, module = pcall(ug_require, path)
+				if not ok or module == nil then
+					return nil, key .. " did not load: " .. tostring(module)
+				end
+				package.loaded[key] = module
 			end
 		end
 		return true
@@ -52,13 +61,6 @@ function data()
 		if not ok then
 			say("not started: " .. why)
 			return
-		end
-		for _, name in ipairs(MODULES) do
-			local loaded, err = pcall(require, "tpf3mp." .. name)
-			if not loaded then
-				say("not started: tpf3mp." .. name .. " did not load: " .. tostring(err))
-				return
-			end
 		end
 		say("modules loaded")
 
