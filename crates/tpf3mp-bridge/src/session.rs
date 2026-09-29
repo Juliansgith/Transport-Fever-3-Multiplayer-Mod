@@ -174,7 +174,20 @@ impl Session {
     /// says is which world to load ([`StepGate::Load`]).
     pub fn wait_for_begin(&mut self) -> Result<Begin, SessionError> {
         loop {
-            match self.recv_blocking()? {
+            if let Some(begin) = self.try_begin()? {
+                return Ok(begin);
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    /// Without blocking: the game the room began, if the agent has said so
+    /// yet. For a hook that asks from the game's own thread, which must not
+    /// wait.
+    pub fn try_begin(&mut self) -> Result<Option<Begin>, SessionError> {
+        self.link.heartbeat();
+        while let Some(message) = self.try_recv()? {
+            match message {
                 ToHook::Begin {
                     rules,
                     steps_per_second,
@@ -183,18 +196,20 @@ impl Session {
                 } => {
                     self.checkpoint_interval = u64::from(checkpoint_interval).max(1);
                     self.saves = PathBuf::from(saves.as_str());
-                    return Ok(Begin {
+                    return Ok(Some(Begin {
                         rules,
                         steps_per_second,
                         checkpoint_interval,
                         saves: self.saves.clone(),
-                    });
+                    }));
                 }
                 // Talk in the lobby is for the front end.
                 ToHook::Chat { .. } => {}
                 _ => return Err(SessionError::Unexpected("something before the game began")),
             }
         }
+        self.check_agent()?;
+        Ok(None)
     }
 
     /// The world the gate ordered ([`StepGate::Load`]) is loaded, and

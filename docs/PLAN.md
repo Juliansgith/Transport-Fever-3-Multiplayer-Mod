@@ -116,7 +116,12 @@ Dev A where it can):
   names for them).
 - [ ] Detour the step: `Session::before_step` before each step,
   `after_step` after. Done when the game holds while the agent withholds
-  a turn and goes on when it releases it.
+  a turn and goes on when it releases it. *Changed:* built and tested
+  against a stand-in step (`crates/tpf3mp-hook`, HOOKS.md "The step gate
+  in the game"): a `GameSim::Step` call runs one update per step at the
+  game's 1x, so the detour runs it once per released step and not at all
+  while one is withheld. Still to see in the real game, and to add: the
+  mod holding the game at 1x, and loading a room's save.
 - [ ] Detour the command queue's add: a road build is cancelled locally
   and its payload goes to `Session::command`. Done when a click builds
   nothing locally and the command shows in the agent's log.

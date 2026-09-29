@@ -15,10 +15,11 @@
 //! - connect to the agent's shared-memory link if it is present;
 //! - log every step to a file under the per-user data directory.
 //!
-//! There are no game-specific targets yet: locating and detouring TPF3 functions
-//! comes with the release-day profile (see `docs/DAY_ONE.md`). The pieces that
-//! do that - [`tpf3mp_hookcore`] scanning/resolution and the detour engine - are
-//! ready and tested; this crate wires them to the process.
+//! With a matched profile it installs the step gate (`install`, [`step`]):
+//! `GameSim::Step` is detoured so the game runs its simulation one step for
+//! each step the room releases (`docs/HOOKS.md`, "The step gate in the
+//! game"). Applying the room's events to the world, lanes and saving come
+//! next.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -28,9 +29,10 @@ use std::{
 };
 
 use tpf3mp_hookcore::profile::{BuildIdentity, Profile, ProfileError};
-use tpf3mp_ipc::{Link, Role};
 
+mod install;
 mod platform;
+pub mod step;
 
 /// Names the link to the launcher that started this game, and that
 /// launcher's process. The launcher always sets both; without them, the hook
@@ -62,27 +64,25 @@ pub fn bootstrap() {
     log.line("hook bootstrap starting");
 
     match resolve_build(&mut log, data_dir.as_deref()) {
-        BuildOutcome::Matched { name, targets } => {
+        BuildOutcome::Matched(profile) => {
             log.line(&format!(
-                "matched profile {name:?} ({targets} targets); target installation lands with the release-day profile"
+                "matched profile {:?} ({} targets)",
+                profile.name,
+                profile.targets.len()
             ));
+            match install::install(&profile, &link_name, Logger::open(data_dir.as_deref())) {
+                install::Installed::Yes { step_rva } => log.line(&format!(
+                    "step gate installed on {} at {step_rva:#x}; the session is attached to {link_name:?}",
+                    install::STEP_TARGET
+                )),
+                install::Installed::No(reason) => {
+                    log.line(&format!("multiplayer disabled (fail-closed): {reason}"));
+                }
+            }
         }
         BuildOutcome::FailedClosed(reason) => {
             log.line(&format!("multiplayer disabled (fail-closed): {reason}"));
         }
-    }
-
-    match Link::open(&link_name, Role::Hook) {
-        Ok(link) => {
-            link.heartbeat();
-            log.line(&format!(
-                "connected to agent IPC {link_name:?} (abi {}, session {:#010x}, agent pid {})",
-                link.abi_version(),
-                link.session(),
-                link.peer_pid()
-            ));
-        }
-        Err(error) => log.line(&format!("agent IPC {link_name:?} not present: {error}")),
     }
 
     log.line("hook bootstrap complete");
@@ -90,7 +90,7 @@ pub fn bootstrap() {
 
 /// The result of trying to match the running build to a profile.
 enum BuildOutcome {
-    Matched { name: String, targets: usize },
+    Matched(Profile),
     FailedClosed(String),
 }
 
@@ -129,10 +129,7 @@ fn resolve_build(log: &mut Logger, data_dir: Option<&Path>) -> BuildOutcome {
     }
 
     match select_profile(&profiles, &identity) {
-        Some(profile) => BuildOutcome::Matched {
-            name: profile.name.clone(),
-            targets: profile.targets.len(),
-        },
+        Some(profile) => BuildOutcome::Matched(profile.clone()),
         None => BuildOutcome::FailedClosed(format!(
             "no profile in {:?} matches build {}",
             profiles_dir, identity.sha256
@@ -256,12 +253,12 @@ fn data_dir_from(get: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
 
 /// A tiny append-only line logger. When no data directory is available it drops
 /// messages rather than failing the hook.
-struct Logger {
+pub(crate) struct Logger {
     file: Option<File>,
 }
 
 impl Logger {
-    fn open(dir: Option<&Path>) -> Self {
+    pub(crate) fn open(dir: Option<&Path>) -> Self {
         let file = dir.and_then(|dir| {
             OpenOptions::new()
                 .create(true)
@@ -272,7 +269,7 @@ impl Logger {
         Self { file }
     }
 
-    fn line(&mut self, message: &str) {
+    pub(crate) fn line(&mut self, message: &str) {
         if let Some(file) = &mut self.file {
             let seconds = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
