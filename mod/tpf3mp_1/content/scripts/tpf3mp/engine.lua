@@ -7,11 +7,15 @@
 -- mp/roads.lua) and from TPF2's builder GUI events. Each is marked
 -- "TPF2 name" and must be confirmed against Transport Fever 3's script API
 -- on release day (docs/DAY_ONE.md, "Script API recon"); nothing here has run
--- in TPF3. Mods for TF3 build 40391 use api.engine.getComponent and
--- api.type.ComponentType as TPF2 does; the street system, BASE_NODE,
--- BASE_EDGE, api.res and the builder's proposal event are not seen there
--- (investigation/TF3_MODS_2026-09-27.md). Every call is guarded: a name that is gone makes the capture
--- fail, and a failed capture leaves the build to run natively.
+-- in TPF3. Release-day Mod Hub mods use most of them as TPF2 did
+-- (investigation/TF3_MODHUB_SCRIPT_MODS_2026-09-29.md, REPORTED):
+-- BASE_NODE.position; BASE_EDGE.node0, node1, tangent0, tangent1, type and
+-- typeIndex; a proposal segment's .comp, .type (0 street, 1 track) and
+-- .streetEdge; bridgeTypeRep and tunnelTypeRep. Not seen in any mod:
+-- streetSystem.getNode2StreetEdgeMap / getNode2TrackEdgeMap (mods use
+-- streetSystem.getNodeSegments) and the builder's proposal event. Every
+-- call is guarded: a name that is gone makes the capture fail, and a
+-- failed capture leaves the build to run natively.
 
 local geom = require "tpf3mp.geom"
 local roads = require "tpf3mp.roads"

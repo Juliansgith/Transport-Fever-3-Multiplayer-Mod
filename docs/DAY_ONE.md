@@ -172,6 +172,9 @@ changes.
 
 - `_VERSION`; availability of `io`, `os`, `require`, `package`, `debug`,
   `load`/`loadstring` in both the game-script and GUI states.
+  *Added:* Mod Hub's mods use `os.clock`, `os.time`, `os.date` and
+  `require`, and none `io` or `load`
+  ([TF3_MODHUB_SCRIPT_MODS_2026-09-29.md](../investigation/TF3_MODHUB_SCRIPT_MODS_2026-09-29.md), REPORTED).
 - Dump `api.*` and `game.interface.*`; list `api.cmd.make.*` factories.
 - Number formatting (`%.17g`), `math.random` behaviour, `pairs` order
   stability for string keys across runs.
@@ -179,7 +182,13 @@ changes.
   `_metadata/modinfo.json`, with scripts in `content/`. Confirm it, and
   what a Mod Hub script mod may contain.
 - Whether game scripts (`res/config/game_script`, `update()` per step)
-  still exist. No mod made for build 40391 uses one.
+  still exist. *Changed:* they do, as `*.gs.lua` files the game finds by
+  itself, with `update`, `postUpdate`, `handleEvent` and `guiUpdate`, and
+  their state in a `GAME_SCRIPT` component (REPORTED by five Mod Hub mods,
+  TF3_MODHUB_SCRIPT_MODS_2026-09-29.md). Confirm it with the probe, and
+  measure whether a command a game script sends is queued like a
+  player's: every game in a room runs the same game script, so its
+  commands must run on each game and never be sent to the room.
 - Other people's script mods, once Mod Hub is open: it runs on mod.io
   (`transportfever3` there, hidden until release; tags include
   `Script Mod`). `tools/modio/fetch.py --tag "Script Mod" --limit 100`
