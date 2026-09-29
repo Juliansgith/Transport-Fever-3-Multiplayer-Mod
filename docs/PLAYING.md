@@ -93,7 +93,12 @@ your own machine, in the tab the launcher opened.
    TPF3-MP in it, for this room; once the game has loaded, the Game part
    says it is connected. Only a game started here joins the room: started
    from Steam, it is the plain game. Press it once; the launcher refuses to
-   start a second game while the first still runs.
+   start a second game while the first still runs. If the game closes or
+   crashes once it has connected, the launcher notices within a second:
+   the Session log says "the game session failed: Transport Fever 3
+   closed", and you are back on the server, out of the room. Join it again
+   with its invite and start the game again. A game that closes before it
+   connected leaves you in the room; just start it again.
 5. **Ready.** Everyone presses **Ready**. The room's owner then presses
    **Start game**. Everyone's game starts from the owner's world.
 

@@ -385,7 +385,16 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   progress to the server from that, at most every 20 ms.
 - **Liveness.** The hook must beat its heartbeat from a thread of its own,
   since the game thread blocks while loading. The agent gives up on a hook
-  whose heartbeat stands still for 60 s.
+  whose heartbeat stands still for 60 s, or 10 minutes while the world
+  loads (`BridgeOptions::hook_timeout`, `load_timeout`), and ends the
+  session with "the hook stopped responding". A game the launcher started
+  is also watched as a process: once its hook attached, the launcher tells
+  the bridge within half a second of the process exiting
+  (`Control::GameClosed`), and the session ends the same way with
+  "Transport Fever 3 closed", without waiting out those limits, so the
+  player can start the game again at once. The heartbeat limits remain for
+  games the launcher did not start and for a hook whose game still runs
+  but hangs.
 
 ### The hook's session
 

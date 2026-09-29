@@ -52,6 +52,8 @@ use crate::{
 const REJOIN_PATIENCE: Duration = Duration::from_secs(300);
 /// Actions queued from the page before it waits.
 const ACTION_QUEUE: usize = 32;
+/// How often the launcher looks whether the game it started still runs.
+const GAME_POLL: Duration = Duration::from_millis(500);
 
 /// What a launcher needs.
 #[derive(Debug, Clone)]
@@ -273,7 +275,12 @@ async fn control(shared: Arc<Shared>, config: LauncherConfig, mut actions: Actio
                     Err(fault) => format!("the game session failed: {fault}"),
                 };
                 info!(%message);
-                shared.status().notice(message);
+                {
+                    // No game plays through a session that ended.
+                    let mut status = shared.status();
+                    status.notice(message);
+                    status.game = None;
+                }
                 {
                     let mut view = shared.view();
                     view.invite = None;
@@ -283,6 +290,16 @@ async fn control(shared: Arc<Shared>, config: LauncherConfig, mut actions: Actio
                 if let Some(finished) = finished {
                     connected =
                         reconnect(&shared, finished.options, config.content.clone()).await;
+                }
+            }
+            () = game_exit(&mut game) => {
+                // Its session cannot go on without it: end it now rather
+                // than when the hook's heartbeat limit runs out, so the
+                // player can start the game again at once.
+                game = None;
+                info!("Transport Fever 3 closed");
+                if let Some(session) = &session {
+                    let _ = session.controls.send(Control::GameClosed).await;
                 }
             }
             event = next_event(&mut connected) => match event {
@@ -885,6 +902,21 @@ async fn session_end(session: &mut Option<Session>) -> Result<BridgeEnd, bridge:
     }
 }
 
+/// When the game started from here has exited, or never without one.
+async fn game_exit(game: &mut Option<tpf3mp_launch::Started>) {
+    match game {
+        Some(started) => exited(|| started.is_running()).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Returns once `running` says no, asking every [`GAME_POLL`].
+async fn exited(mut running: impl FnMut() -> bool) {
+    while running() {
+        tokio::time::sleep(GAME_POLL).await;
+    }
+}
+
 /// The next event of a connection not in a room, or never without one.
 async fn next_event(connected: &mut Option<Connected>) -> Option<ClientEvent> {
     match connected {
@@ -1001,6 +1033,22 @@ mod tests {
         assert_eq!(passed("thanks for STREET".into()), None);
         // A cut-off invite is none.
         assert_eq!(passed(code[..code.len() - 1].to_owned()), None);
+    }
+
+    #[tokio::test]
+    async fn a_game_that_exits_is_noticed_within_a_poll() {
+        let mut asked = 0;
+        let started = std::time::Instant::now();
+        exited(|| {
+            asked += 1;
+            asked < 3
+        })
+        .await;
+        assert_eq!(asked, 3, "asked until the game had gone");
+        assert!(started.elapsed() < GAME_POLL * 3, "{:?}", started.elapsed());
+        // A launcher that started no game waits on none.
+        let none = tokio::time::timeout(Duration::from_millis(50), game_exit(&mut None)).await;
+        assert!(none.is_err());
     }
 
     #[test]

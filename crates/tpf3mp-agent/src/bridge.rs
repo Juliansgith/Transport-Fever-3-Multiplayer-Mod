@@ -128,6 +128,12 @@ pub enum Control {
     Chat(ChatText),
     /// Leave the room, which ends the session.
     Leave,
+    /// The game the front end started has exited. Once its hook attached,
+    /// this ends the session as a hook that stopped responding does
+    /// ([`BridgeFault::GameClosed`]), without waiting out the heartbeat
+    /// limits, so the player can start the game again at once. Before
+    /// then the game never joined, and the session waits for the next one.
+    GameClosed,
 }
 
 /// Chat lines and notices a status keeps.
@@ -226,6 +232,8 @@ pub enum BridgeFault {
     Unexpected(&'static str),
     #[error("the hook stopped responding")]
     HookGone,
+    #[error("Transport Fever 3 closed")]
+    GameClosed,
     #[error(transparent)]
     Client(#[from] ClientError),
     #[error("the server broke a turn invariant: {0}")]
@@ -427,7 +435,7 @@ impl<L: HookLink> Bridge<L> {
                     }
                 }
                 Some(control) = next_control(&mut self.controls) => {
-                    if let Some(end) = self.on_control(control, client).await {
+                    if let Some(end) = self.on_control(control, client).await? {
                         return Ok(end);
                     }
                 }
@@ -848,8 +856,13 @@ impl<L: HookLink> Bridge<L> {
 
     /// Carries out a front end's request. Requests go out on a task of their
     /// own, so a round trip never holds up the game; leaving ends the
-    /// session once the room has let the player go.
-    async fn on_control(&mut self, control: Control, client: &Client) -> Option<BridgeEnd> {
+    /// session once the room has let the player go, and the game closing
+    /// ends it as a fault.
+    async fn on_control(
+        &mut self,
+        control: Control,
+        client: &Client,
+    ) -> Result<Option<BridgeEnd>, BridgeFault> {
         let request = match control {
             Control::Ready(ready) => Request::SetReady(ready),
             Control::Start => Request::StartGame,
@@ -860,11 +873,19 @@ impl<L: HookLink> Bridge<L> {
                 if let Err(error) = client.leave_room().await {
                     debug!(%error, "leaving the room failed; ending the session anyway");
                 }
-                return Some(BridgeEnd::Left);
+                return Ok(Some(BridgeEnd::Left));
+            }
+            // A game whose hook attached is the one this session plays
+            // through: without it the session cannot go on, and a new game's
+            // hook could not attach to it.
+            Control::GameClosed if self.hook_ready => return Err(BridgeFault::GameClosed),
+            Control::GameClosed => {
+                info!("the game closed before its hook attached; waiting for the next one");
+                return Ok(None);
             }
         };
         self.request(client, request);
-        None
+        Ok(None)
     }
 
     /// Sends a request on a task of its own; a refusal becomes a notice.
