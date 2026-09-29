@@ -599,6 +599,8 @@ pub(crate) mod tests {
             Self(l.cast())
         }
 
+        // The detour tests, Windows x64 only, run their game script in it.
+        #[cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
         pub(crate) fn state(&self) -> State {
             self.0
         }
