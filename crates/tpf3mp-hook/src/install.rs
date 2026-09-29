@@ -6,6 +6,8 @@
 //! Windows, and on other systems the hook installs nothing (fail closed).
 
 #![allow(unsafe_code)]
+// Elsewhere install_inner installs nothing, so the detours are unused there.
+#![cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
 
 use std::sync::{
     Mutex,
