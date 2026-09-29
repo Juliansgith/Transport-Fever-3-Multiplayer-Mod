@@ -462,6 +462,16 @@ That is every game Steam started (D11).
 
 ## Release-day procedure: adding a target for a new build
 
+The first TF3 build's targets are already located (RVAs, RTTI/source
+names) in
+[investigation/TPF3_RECON_2026-09-29.md](../investigation/TPF3_RECON_2026-09-29.md):
+the command queue (`CommandList::Add`), the sim step (`GameSim::Step`,
+`CGame::RunGameSimLoop`), `CGameTime`, the two-`GameState` swap, the
+player/company commands, and a lockstep step-budget global. This procedure
+turns each into a verified profile target; the recon page also lists the
+reconciliations to settle in-game first (e.g. `CommandList` vs
+`DeferredCommandBuffer`).
+
 1. **Archive the build.** Record the executable SHA-256, file size and PE
    timestamp (`BuildIdentity::of_file`), plus the Steam build/manifest ids. Keep
    a private copy (see [DAY_ONE.md](DAY_ONE.md)).

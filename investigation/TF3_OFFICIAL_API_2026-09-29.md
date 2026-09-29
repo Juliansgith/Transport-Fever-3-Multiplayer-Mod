@@ -74,7 +74,8 @@ makeEntitySetPlayerCmd(entity: Engine.Entity, player: Engine.Entity)
 **World building and terrain**
 ```
 makeWorldBuildProposalCmd(proposal: Proposal, context: any,
-    ignoreErrors: boolean, doDust: boolean, playerInitiated: boolean)
+    ignoreErrors: boolean, playerInitiated: boolean, doDust?: boolean)
+    -- overloaded: a second signature takes a SimpleProposal in place of Proposal
 makeWorldReplaceTerrainCmd(map: GameMap, terrainConfig: BaseConfig.Terrain,
     seedText: string, worldEntity: Engine.Entity, keepAssets: boolean)
 makeWorldSetBulldozableCmd(entity: Engine.Entity, bulldozable: boolean)
@@ -188,10 +189,12 @@ makeAnimalSetStateCmd(animalEntity: Engine.Entity, movementType: integer,
 
 ## What it confirms, corrects and adds
 
-- **`makeWorldBuildProposalCmd` has a fifth argument, `playerInitiated`**
-  (`proposal, context, ignoreErrors, doDust, playerInitiated`). The Mod
-  Hub tools call it `(proposal, nil, true, true)`
-  (TF3_MODHUB_SCRIPT_MODS_2026-09-29.md), so the fifth defaults or is
+- **`makeWorldBuildProposalCmd` takes a `playerInitiated` argument**
+  (`proposal, context, ignoreErrors, playerInitiated, doDust?`; corrected
+  from the on-disk `.d.tl` in TPF3_RECON_2026-09-29.md -- the web
+  reference's order was wrong). It is overloaded: a second signature takes
+  a `SimpleProposal`. The Mod Hub tools call it `(proposal, nil, true, true)`
+  (TF3_MODHUB_SCRIPT_MODS_2026-09-29.md), so the last defaults or is
   omitted. It may be the flag that tells a player's build from a script's
   replay -- the distinction the capture needs (HOOKS.md, "The command
   pipeline"). Measure it: whether a value there marks the build, and

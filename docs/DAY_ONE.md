@@ -6,6 +6,16 @@ questions in [ARCHITECTURE.md](ARCHITECTURE.md), in order of how much they can
 change the design. Results go into `investigation/TPF3_RECON_<date>.md`, and
 each finding carries one label:
 
+> **The static part is done** (2026-09-29):
+> [investigation/TPF3_RECON_2026-09-29.md](../investigation/TPF3_RECON_2026-09-29.md).
+> The build is a go (SteamStub only, `.text` readable, no Denuvo); the
+> command queue, sim clock, a ready-made lockstep step-budget primitive,
+> and the player/company commands are all located (RVAs). What remains is
+> the in-game measurement (§4-§7 here) and the reconciliations that page
+> lists. Note: TF3's release build has almost no `__FUNCSIG__` names, so
+> naming leans on RTTI, source-file asserts and luabridge, not the TPF2
+> funcsig pipeline (§2, §3 below).
+
 - **CONFIRMED**: decompiled or named by the binary's own strings, and
   consistent with live behaviour.
 - **MEASURED**: observed in the running game.
