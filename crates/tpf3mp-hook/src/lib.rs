@@ -30,6 +30,7 @@ use std::{
 use tpf3mp_hookcore::profile::{BuildIdentity, Profile, ProfileError};
 use tpf3mp_ipc::{Link, Role};
 
+pub mod commands;
 mod platform;
 
 /// Names the link to the launcher that started this game, and that

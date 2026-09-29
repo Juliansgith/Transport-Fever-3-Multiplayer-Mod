@@ -545,6 +545,73 @@ Not yet measured in-game: which targets the hook detours, the
 (40393), which needs its own profile. The RVAs move on any patch (patch
 duty).
 
+### The TF3 hook wiring (the detour contract)
+
+What the hook installs once its profile resolves, and what each detour
+calls. The session and gate it calls into are the platform-independent
+`tpf3mp-bridge` (`Session`, `Gate`, the `Game` trait); the capture policy
+is `tpf3mp-hook`'s `commands` module. Only the detour installation and the
+native reads below live in the game process; everything they call is pure
+and tested. Fail closed throughout: an unknown build installs nothing (the
+resolver refuses), and a command that cannot be decoded is refused, never
+sent unchecked.
+
+**The step gate.** The room decides when a simulation step may run. Two
+ways, cheapest first:
+
+1. **No code patch (preferred).** Hold the game at speed 0 (its own pause
+   path: `CGameTime::GetSpeed` returns 0, `GameSim::Step` runs no
+   sub-steps) and release steps by feeding `GamePerformSimulationSteps`,
+   whose apply adds to the step-budget global the sim drains at most 64 a
+   frame (the recon). The hook grants exactly the steps the room releases;
+   no detour on the step path. Measure that this advances deterministically
+   before relying on it.
+2. **Detour `GameSim::Step`** (`0x159390`, sim thread) if (1) does not hold:
+   call `Session::before_step(&mut game)` on entry, which blocks until the
+   room releases the step (or hands back a world to load), then run the
+   original; call `Session::after_step` after. Mind the two `GameState`
+   buffers (`GameState::Replicate`): read and act on the state whose engine
+   the step used, never "this frame's".
+
+**Command capture.** Detour `CommandList::Add` (`0x9d29c0`) -- the confirmed
+world-command enqueue and the only cancel point (it returns a `Connection`;
+~40 callers, plus the Lua path through the CGame send functor). For each
+command:
+
+1. Read the kind: the selector byte at `payload+0x9b8` of the `Command`
+   (`Command` is 0x38 bytes; its affected-entity vector is at `+0x08`, its
+   callback/`CmdProgress` at `+0x20/+0x28`, its result byte at `+0x30`).
+   Map the build's jump-table index to a `commands::CommandKind`.
+2. Consult `commands::disposition(kind)`:
+   - **`Capture(action_kind)`**: decode the command's fields into the
+     `tpf3mp_proto::Action` (the per-command decode is native and reads the
+     live payload; a build proposal's shape picks road/track/bulldoze/
+     construction/terraform, docs/BUILDING.md), then
+     `Session::command(action.to_payload())` and **cancel** the native
+     command so the room replays it in order.
+     - The mod's own replays go back in through `api.cmd`, so they must not
+       be captured again: tell the replay apart from a player's command
+       (by the caller, or `makeWorldBuildProposalCmd`'s `playerInitiated`
+       -- measure which, TF3_RECON_2026-09-29.md). A replay is passed
+       through, not captured.
+   - **`Refuse`**: cancel the command and show the player a `Notice`
+     (fail-closed: not a handled multiplayer action). The conservative
+     default for everything not modelled yet.
+   - **`Pass`**: let it run natively (none yet).
+3. **Honour the callback of any command you cancel** (the load-bearing TPF2
+   lesson, "The command pipeline" above): a cancelled command whose UI
+   waits on its result must have its completion callback fired with a
+   zeroed result, or the tool hangs; a fire-and-forget one must not; one
+   that asserts on an empty result is moved and fired later. The result and
+   status travel in the `Command` itself (`+0x08` vector, `+0x30` byte).
+
+**Widening what is captured** is the owner's call (docs/DECISIONS.md): move
+a kind from `Refuse` to `Capture` in `commands::disposition` with its
+`ActionKind` and decode, or to `Pass`. The clock commands, the
+player/company commands (companies mode is undecided) and every town,
+industry, stock, journal, naming, scripting and entity command refuse for
+now.
+
 ## What was verified on the TPF2 binary
 
 Against `TransportFever2.exe`, Steam build 35924 (SHA-256
