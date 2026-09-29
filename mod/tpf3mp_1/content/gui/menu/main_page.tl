@@ -1,10 +1,9 @@
--- TPF3-MP: the game's gui/menu/main_page.tl (TransportFever3.exe sha256
--- de1daad3..., 2026-09-29) with a Multiplayer entry added to the main menu.
--- The mod's copy replaces the game's through the mod filesystem, the way a
--- TPF2 mod replaced a base file. Every change is marked "TPF3-MP:" so a game
--- patch can be re-applied: take the new game file, re-apply the marked
--- blocks (tools: see docs/LOBBY.md). Relative requires are made absolute so
--- the copy resolves the game's files from the mod's folder.
+-- TPF3-MP: the game's gui/menu/main_page.tl with a Multiplayer entry added to
+-- the main menu. The hook serves this copy in place of the game's file
+-- (docs/LOBBY.md). Every change is marked "TPF3-MP:" so a game patch can be
+-- re-applied: tools/lobby/make_main_page.py takes the new game file and
+-- re-applies the marked blocks. Relative and leading-slash paths are made
+-- absolute ("::/") so the copy resolves the game's files from the mod's folder.
 local react = ug_require "::/gui/main/react.lua" as React
 local builtin = ug_require "::/gui/main/builtin.lua" as Builtin
 local button_react_util = ug_require "::/gui/main/button_react_util.tl" as ButtonReactUtil
@@ -20,7 +19,7 @@ local ReleaseNotesWindowContent = ug_require "::/gui/menu/releasenotes_window.tl
 local savegame_react_util = ug_require "::/gui/menu/savegame_react_util.tl" as SavegameReactUtil
 local table_util = ug_require "::/scripts/table_util.tl" as TableUtil
 
--- TPF3-MP: the game log shows the override loaded, even if nothing is clicked.
+-- TPF3-MP: the game log shows the copy is in effect, even if nothing is clicked.
 pcall(debugPrint, "[tpf3mp] main menu: TPF3-MP main_page.tl is in effect")
 
 local ModManagementStatusMainPage = react.RegisterRecipe("ModManagementStatusMainPage", function() : TreeNodeId
@@ -74,9 +73,13 @@ local DeluxeContentWindow = react.RegisterWrapperRecipe("DeluxeContentWindow", b
 end)
 
 -- TPF3-MP: the Multiplayer window, opened from the main menu into the menu's
--- own window container (as DeluxeContentWindow is). This first version is a
--- placeholder that proves the route; the lobby (connect, rooms, chat) lands
--- here.
+-- own window container (as DeluxeContentWindow is). Its content is the mod's
+-- gui/menu/lobby.lua: the lobby, talking to the hook.
+local record LobbyModule
+	content : function(onClose : function()) : TreeNodeId
+end
+local lobby = ug_require "tpf3mp_1::/gui/menu/lobby.lua" as LobbyModule
+
 local record Tpf3mpLobbyWindowParam
 	onClose : function()
 	pos : Vec2f
@@ -94,24 +97,7 @@ local Tpf3mpLobbyWindow = react.RegisterWrapperRecipe("Tpf3mpLobbyWindow", built
 		movable = false,
 		closable = true,
 		onClose = param.onClose,
-		content = builtin.BoxLayout{
-			orientation = builtin.type.Orientation.Vertical,
-			children = {
-				builtin.TextView{
-					meta = { class = "font-scale-title-4" },
-					text = _("TPF3-MP"),
-				},
-				builtin.TextView{
-					meta = { class = "font-scale-body" },
-					text = _("The lobby lands here: connect to a server, create or join a room, and chat."),
-				},
-				builtin.Button{
-					meta = { class = "secondary" },
-					content = builtin.TextView{ text = _("Close") },
-					onClick = param.onClose,
-				},
-			},
-		},
+		content = lobby.content(param.onClose),
 	}
 end)
 

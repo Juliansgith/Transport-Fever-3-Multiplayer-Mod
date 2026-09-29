@@ -51,3 +51,21 @@ name = "lua_settop"
 signature = "85 D2 78 35 48 8B 41 20 4C 63 CA 49 FF C1 49 C1 E1 04 4C 03 08 48 8B 41 10"
 prologue = "85 D2 78 35 48 8B 41 20"
 required = true
+
+# Lua 5.2 lua_pushlstring(L, s, len): the GC-debt check, luaS_newlstr, set the
+# top and increment it. Called, never detoured; the lobby's request channel
+# answers Lua with it (docs/LOBBY.md).
+[[target]]
+name = "lua_pushlstring"
+signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 41 18 49 8B F8 48 8B F2 48 8B D9 48 83 78 18 00 7E ?? E8 ?? ?? ?? ?? 4C 8B C7 48 8B D6 48 8B CB E8 ?? ?? ?? ??"
+prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
+required = true
+
+# Lua 5.2 lua_tolstring(L, idx, len): index2addr, the string-tag check,
+# luaV_tostring for a number, `*len = 0; return NULL` otherwise. Called, never
+# detoured; the lobby's request channel reads an action's JSON with it.
+[[target]]
+name = "lua_tolstring"
+signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 49 8B D8 8B F2 48 8B F9 E8 ?? ?? ?? ??"
+prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
+required = true

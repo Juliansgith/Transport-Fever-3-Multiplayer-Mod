@@ -32,6 +32,8 @@ use tpf3mp_ipc::{Link, Role};
 
 mod platform;
 
+/// The lobby as the in-game menu sees it (docs/LOBBY.md).
+pub mod lobby;
 /// The main-menu Multiplayer entry (docs/LOBBY.md): Windows x86-64 only.
 #[cfg(all(windows, target_arch = "x86_64"))]
 pub mod menu;
