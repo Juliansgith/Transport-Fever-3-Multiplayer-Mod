@@ -27,6 +27,9 @@
 //! - `saved(name, ok, why)`: the GUI's answer to a save ([`take_save_answer`]).
 //! - `world()`: a world's GUI started. Once the GUI has taken a load, the
 //!   next world to start is the one it loaded ([`load_done`]).
+//! - `room()`: whether the room's game runs ([`set_in_room`]): the GUI then
+//!   refuses the player's commands the room cannot carry yet (docs/HOOKS.md,
+//!   "The player's commands").
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -40,7 +43,10 @@ use std::{
     collections::VecDeque,
     ffi::{CStr, c_char, c_int, c_void},
     panic::AssertUnwindSafe,
-    sync::{Mutex, MutexGuard, OnceLock, PoisonError},
+    sync::{
+        Mutex, MutexGuard, OnceLock, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use tpf3mp_proto::{
@@ -61,7 +67,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 4.0;
+pub const VERSION: f64 = 5.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -162,6 +168,15 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
 
 fn shared() -> MutexGuard<'static, Shared> {
     SHARED.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether the room's game runs, as `room()` tells the GUI.
+static IN_ROOM: AtomicBool = AtomicBool::new(false);
+
+/// The step gate says whether the room's game runs (held included: the
+/// world then stands still, and a command would still change it).
+pub fn set_in_room(in_room: bool) {
+    IN_ROOM.store(in_room, Ordering::Release);
 }
 
 /// The actions handed over since the last call, oldest first.
@@ -275,6 +290,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"poll", native_poll),
                 (b"saved", native_saved),
                 (b"world", native_world),
+                (b"room", native_room),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -607,6 +623,16 @@ unsafe extern "C-unwind" fn native_world(_l: State) -> c_int {
     0
 }
 
+/// `room()`: `true` while the room's game runs.
+unsafe extern "C-unwind" fn native_room(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe { (api.pushboolean)(l, c_int::from(IN_ROOM.load(Ordering::Acquire))) };
+    1
+}
+
 /// `log(line)`.
 unsafe extern "C-unwind" fn native_log(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -864,9 +890,9 @@ pub(crate) mod tests {
             lua.run(
                 "return tpf3mp_native.version, type(tpf3mp_native.command), \
                  type(tpf3mp_native.take), type(tpf3mp_native.log), type(tpf3mp_native.poll), \
-                 type(tpf3mp_native.saved), type(tpf3mp_native.world)"
+                 type(tpf3mp_native.saved), type(tpf3mp_native.world), type(tpf3mp_native.room)"
             ),
-            Ok("4|function|function|function|function|function|function".into())
+            Ok("5|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -1006,5 +1032,17 @@ pub(crate) mod tests {
         lua.run("tpf3mp_native.world()").unwrap();
         assert!(load_done(), "the next world is the loaded one");
         assert!(!load_done(), "once");
+    }
+
+    #[test]
+    fn room_says_whether_the_rooms_game_runs() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        set_in_room(false);
+        assert_eq!(lua.run("return tpf3mp_native.room()"), Ok("false".into()));
+        set_in_room(true);
+        assert_eq!(lua.run("return tpf3mp_native.room()"), Ok("true".into()));
+        set_in_room(false);
     }
 }

@@ -16,6 +16,7 @@
 --                                   -- (the game's own save folder), or nil
 --     saved   = function(name, ok, why), -- the GUI's answer to a save
 --     world   = function(),         -- a world's GUI started
+--     room    = function(),         -- whether the room's game runs -> boolean
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -39,10 +40,11 @@
 
 local bridge = {}
 
+-- 5: the GUI asks whether the room's game runs (`room`), for the guard;
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 4
+bridge.VERSION = 5
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -56,7 +58,7 @@ function bridge.attach(native)
 		return nil, "the hook speaks bridge version " .. tostring(native.version)
 			.. ", the mod " .. bridge.VERSION
 	end
-	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world" }) do
+	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world", "room" }) do
 		if type(native[name]) ~= "function" then
 			return nil, "the hook has no " .. name .. "()"
 		end
@@ -113,6 +115,14 @@ end
 -- A world's GUI started: after a load the hook asked for, the world loaded.
 function Link:world()
 	pcall(self.native.world)
+end
+
+-- Whether the room's game runs. A hook that cannot say is taken to say yes:
+-- the guard then refuses rather than lets a command through unchecked.
+function Link:room()
+	local ok, inRoom = pcall(self.native.room)
+	if not ok then return true end
+	return inRoom == true
 end
 
 return bridge

@@ -36,6 +36,12 @@ function react.useRef(initial)
 	end
 	return ref
 end
+function react.useState(initial)
+	-- A ref whose value the next render reads, as the game's state does.
+	local state = react.useRef(initial)
+	function state:old() return self.value end
+	return state
+end
 function react.onStep(fn)
 	current.onStep = fn
 end
@@ -43,6 +49,9 @@ end
 local builtin = { type = { Orientation = { Horizontal = "Horizontal", Vertical = "Vertical" } } }
 function builtin.BoxLayout(params)
 	return { layout = "BoxLayout", params = params }
+end
+function builtin.TextView(params)
+	return { view = "TextView", params = params }
 end
 
 local game_bar_widgets = { GameBarInfoDisplayExtension = "GameBarInfoDisplayExtension" }

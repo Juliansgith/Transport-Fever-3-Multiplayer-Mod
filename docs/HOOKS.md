@@ -533,7 +533,7 @@ for the table (`bridge.find`). Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
 `crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 4. The mod refuses any other.
+- `tpf3mp_native.version`: 5. The mod refuses any other.
 - `tpf3mp_native.command(action)`: an action table, in the game's units.
   The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
   `MAX_DEPTH` and `MAX_NODES` (a function, userdata or a table as a key is
@@ -550,6 +550,8 @@ for the table (`bridge.find`). Its contract is in
   world" below).
 - `tpf3mp_native.saved(name, ok, why)`: the GUI's answer to a save.
 - `tpf3mp_native.world()`: a world's GUI started.
+- `tpf3mp_native.room()`: whether the room's game runs (the step gate's
+  phase, held included), for the guard ("The player's commands" below).
 
 The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
@@ -667,6 +669,51 @@ from step 500 to 1900 matched in every lane it reads, the construction and
 money lanes changing alike after the build
 (`investigation/dayone-2026-09-29/6-determinism.md`; the edge lane is
 still unread there).
+
+### The player's commands
+
+In the room's game a player's command runs in every game at the same
+update, or in none. Transport Fever 3's GUI sends most of what a player
+does from its own Lua state, through `api.cmd.sendCommand` (build 40408's
+scripts): buying, selling, replacing and assigning vehicles and making and
+editing lines (`gui/line_vehicle_mgmt/`, `gui/entity_window/`), a
+construction's parameters and bridges and tunnels
+(`makeWorldBuildProposalCmd`, from `gui/construction/construction.tl` and
+the entity windows), loans and other game mechanics as script events
+(`makeScriptingSendEventCmd`), and the speed row (`makeGameSetSpeedCmd`).
+The street and track tools, and placing a construction, are native
+builders that reach the command queue (`CommandList::Add`) without Lua.
+
+So the stock windows do send through `api.cmd.sendCommand`, as the mod's
+replays do (the question in PLAN.md, Part 2). What tells them apart is the
+Lua state, not a caller's address: the player's commands come from the
+GUI's state, the room's replays from the game script's states, whose
+`api.cmd` the mod leaves alone.
+
+The mod guards the GUI's commands
+(`mod/tpf3mp_1/content/scripts/tpf3mp/guard.lua`). `api.cmd` is a plain
+table whose factories and `sendCommand` (a callable table) can be replaced,
+as the console's state showed, and none of the game's 6,041 scripts keeps a
+reference of its own to either. Once linked, the GUI wraps every
+`make*Cmd` factory, to note which one made each command, and
+`sendCommand`. While the room's game runs (`tpf3mp_native.room()`):
+
+- a command of a kind in `guard.PASS` is sent, its arguments untouched. So
+  far that is the speed row's `makeGameSetSpeedCmd`, which the step gate
+  reads as the player's request to the room;
+- any other kind, and a command no wrapped factory made, is refused, as
+  PLAN.md (Part 3) says of every action whose strict flag is off. It is
+  not sent. Its callback, if it has one, is called on the next frame with
+  `(command, false, {})`, as the game answers a command that failed. The
+  game bar shows "Not in multiplayer yet: …" for a few seconds, and
+  `hook.log` gets a line for the first refusal of each kind and every
+  hundredth after.
+
+Before the room begins, and after it ends, every command is sent as it
+would be. A kind the room comes to carry is captured into an action
+instead of refused, and applied by every game ("Actions in the game").
+The native tools are not guarded yet: a road built in the room's game still
+changes that game alone, until the hook cancels it at `CommandList::Add`.
 
 ## Release-day procedure: adding a target for a new build
 

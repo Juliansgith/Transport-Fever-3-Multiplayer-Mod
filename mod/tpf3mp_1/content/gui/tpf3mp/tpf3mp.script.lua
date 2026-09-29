@@ -9,6 +9,11 @@
 -- the room's world from the game's save folder. It tells the hook each time
 -- a world's GUI starts, which is how the hook sees a load finish.
 --
+-- Once linked, it puts the guard in front of the GUI's commands
+-- (tpf3mp/guard.lua; docs/HOOKS.md, "The player's commands"): in the room's
+-- game a command the room cannot carry yet is refused, and the game bar says
+-- so for a few seconds.
+--
 -- It follows what mods made for Transport Fever 3 build 40391 rely on
 -- (investigation/TF3_MODS_2026-09-27.md): a .script.lua defines data();
 -- ug_require loads the game's files ("::/...") and a mod's own
@@ -17,12 +22,14 @@
 -- game's log. Each step logs "[tpf3mp]" lines, so the log shows how far a
 -- game got on release day.
 --
--- The plugin draws nothing yet. The Multiplayer panel (docs/PLAN.md) goes
--- here.
+-- The plugin draws nothing but that notice yet. The Multiplayer panel
+-- (docs/PLAN.md) goes here.
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "geom", "roads", "engine", "bridge" }
+	local MODULES = { "geom", "roads", "engine", "bridge", "guard" }
+	-- Frames a refusal's notice stays in the game bar.
+	local NOTICE_FRAMES = 360
 
 	local function say(line)
 		pcall(debugPrint, "[tpf3mp] " .. line)
@@ -30,6 +37,51 @@ function data()
 
 	-- The link to the hook, once a world's GUI has found it.
 	local link = nil
+
+	-- Callbacks of refused commands, for the next frame, as the game would
+	-- call them.
+	local pending = {}
+	-- The notice of the last refusal, until the plugin shows it.
+	local notice = nil
+	-- Refusals so far, by kind, for the hook's log.
+	local refusals = {}
+
+	local function refused(kind)
+		local name = kind or "command no factory made"
+		local count = (refusals[name] or 0) + 1
+		refusals[name] = count
+		if count == 1 or count % 100 == 0 then
+			link:log("refused the player's " .. name .. " in the room's game ("
+				.. count .. " so far)")
+		end
+		notice = require("tpf3mp.guard").notice(kind)
+	end
+
+	local function runPending()
+		if #pending == 0 then return end
+		local due = pending
+		pending = {}
+		for _, fn in ipairs(due) do
+			local ok, err = pcall(fn)
+			if not ok then say("a refused command's callback failed: " .. tostring(err)) end
+		end
+	end
+
+	-- Puts the guard in front of the GUI's commands.
+	local function guardCommands()
+		local ok, cmd = pcall(function() return api.cmd end)
+		local wrapped, why = require("tpf3mp.guard").install(ok and cmd or nil, {
+			inRoom = function() return link:room() end,
+			refused = refused,
+			later = function(fn) pending[#pending + 1] = fn end,
+		})
+		if wrapped then
+			link:log("the guard is on " .. wrapped .. " command factories")
+		else
+			link:log("the guard is not on: " .. tostring(why)
+				.. "; the player's commands are not checked")
+		end
+	end
 
 	-- The modules name each other `require "tpf3mp.<name>"`, as TPF2's
 	-- did. The game's GUI state has `require` and package.loaded but no
@@ -74,6 +126,7 @@ function data()
 		link:world()
 		link:log("the GUI is linked")
 		say("linked to the hook")
+		guardCommands()
 	end
 
 	-- Does what the hook asks: saving the world under the name it gives, or
@@ -111,6 +164,9 @@ function data()
 	local Tpf3mpPlugin = react.RegisterPluginRecipe(game_bar_widgets.GameBarInfoDisplayExtension, "Tpf3mpPlugin", function()
 		-- Once per game: the ref lives as long as this plugin is mounted.
 		local started = react.useRef(false)
+		-- The refusal notice shown, or false, and the frames it has left.
+		local shown = react.useState(false)
+		local frames = react.useRef(0)
 		react.onStep(function()
 			if not started:get() then
 				started:set(true)
@@ -119,11 +175,25 @@ function data()
 			end
 			local ok, err = pcall(serve)
 			if not ok then say("serving the hook failed: " .. tostring(err)) end
+			runPending()
+			if notice then
+				shown:set(notice)
+				frames:set(NOTICE_FRAMES)
+				notice = nil
+			elseif frames:get() > 0 then
+				frames:set(frames:get() - 1)
+				if frames:get() == 0 then shown:set(false) end
+			end
 		end)
-		-- An empty layout keeps the plugin mounted, so onStep keeps running.
+		-- Even empty, the layout keeps the plugin mounted, so onStep keeps
+		-- running.
+		local children = {}
+		if shown:old() then
+			children[1] = builtin.TextView{ text = shown:old() }
+		end
 		return builtin.BoxLayout{
 			orientation = builtin.type.Orientation.Horizontal,
-			children = {},
+			children = children,
 		}
 	end)
 
