@@ -357,6 +357,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     directory `Begin` named; the agent takes in no other.
   - `Chat { text }`: the player says something to the room
     (`Session::chat`).
+  - `Speed { speed }`: the player picked this speed in the game's speed
+    row (`Session::request_speed`); the agent asks the room, which takes it
+    from the owner only. Bridge version 4.
   - `Log`: a line for the agent's log.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
@@ -467,11 +470,17 @@ nothing pending, one call is exactly one update, the unit the room orders:
   reads) answers 1, whatever the speed row, a key or a script set, so one
   call is always one update and the game's own pause stops nothing (the
   room's pause is the only pause). A correction after the fact would not
-  do: one call at 4x would already have run four updates as one step. The
-  mod keeps what the player sees at 1x too (`tpf3mp/speed.lua`: in a game
-  the launcher started, it sends `makeGameSetSpeedCmd(1)` whenever the
-  speed is anything else). Nothing may send the debug step command during
-  a room: its pending count would add updates to a call.
+  do: one call at 4x would already have run four updates as one step.
+  Nothing may send the debug step command during a room: its pending count
+  would add updates to a call.
+- **The speed row asks the room.** The getter's detour still reads the
+  game's own speed, the speed row's value, every time the game asks
+  (`CGame::Sync` and the game UI ask every frame, paused or not). When it
+  changes in the room's game, the hook sends `ToAgent::Speed` and the agent
+  asks the room (`Request::SetSpeed`): the owner's choice sets the room's
+  speed for everyone, and anyone else's is refused, shown as a notice. The
+  value found on entering the room's game is not sent, so joining never
+  resets a room's speed.
 
 The hook installs the detour from its bootstrap thread while the game
 starts, before any world is loaded, so no thread is inside the step when

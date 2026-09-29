@@ -16,7 +16,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "geom", "roads", "engine", "bridge", "speed" }
+	local MODULES = { "geom", "roads", "engine", "bridge" }
 
 	local function say(line)
 		pcall(debugPrint, "[tpf3mp] " .. line)
@@ -47,9 +47,6 @@ function data()
 		return nil
 	end
 
-	-- Keeps the game's speed at 1x in a room's game (tpf3mp/speed.lua).
-	local speedKeeper = nil
-
 	local function start()
 		local ok, why = installModules()
 		if not ok then
@@ -64,7 +61,6 @@ function data()
 			end
 		end
 		say("modules loaded")
-		speedKeeper = require("tpf3mp.speed").forGame(say)
 
 		local bridge = require "tpf3mp.bridge"
 		local link, reason = bridge.attach(nativeTable())
@@ -104,7 +100,6 @@ function data()
 				local ok, err = pcall(start)
 				if not ok then say("start failed: " .. tostring(err)) end
 			end
-			if speedKeeper then pcall(speedKeeper.step) end
 		end)
 		-- An empty layout keeps the plugin mounted, so onStep keeps running.
 		return builtin.BoxLayout{

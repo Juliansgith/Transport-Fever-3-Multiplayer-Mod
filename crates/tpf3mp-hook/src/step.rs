@@ -22,7 +22,7 @@
 //! real [`Session`] in the game and a script in the tests.
 
 use tpf3mp_bridge::{Begin, Game, Notice, Session, SessionError, StepGate};
-use tpf3mp_proto::{Event, LaneDigest};
+use tpf3mp_proto::{Event, LaneDigest, Speed};
 
 /// Most steps one call of the game's step runs, catching up with the room:
 /// at the game's 1x (5 calls a second), rooms up to 16x keep up.
@@ -34,6 +34,7 @@ pub trait RoomGate {
     fn poll_step(&mut self, game: &mut HookGame) -> Result<StepGate, SessionError>;
     fn after_step(&mut self, game: &mut HookGame) -> Result<u64, SessionError>;
     fn loaded(&mut self, next_step: u64) -> Result<(), SessionError>;
+    fn request_speed(&mut self, speed: Speed) -> Result<(), SessionError>;
 }
 
 impl RoomGate for Session {
@@ -48,6 +49,9 @@ impl RoomGate for Session {
     }
     fn loaded(&mut self, next_step: u64) -> Result<(), SessionError> {
         Session::loaded(self, next_step)
+    }
+    fn request_speed(&mut self, speed: Speed) -> Result<(), SessionError> {
+        Session::request_speed(self, speed)
     }
 }
 
@@ -86,6 +90,9 @@ pub trait StepHandler: Send {
     /// In the room's game: the game's speed is then the room's, and one call
     /// of the game's step must be one update.
     fn in_room(&self) -> bool;
+    /// The speed the player picked in the game's speed row (the game's own
+    /// speed: 0 paused, 1 for 1x, ...).
+    fn chosen_speed(&mut self, speedup: u64);
 }
 
 impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
@@ -97,6 +104,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn in_room(&self) -> bool {
         matches!(self.phase, Phase::Running | Phase::Holding(_))
+    }
+    fn chosen_speed(&mut self, speedup: u64) {
+        StepDriver::chosen_speed(self, speedup);
     }
 }
 
@@ -124,6 +134,8 @@ pub struct StepDriver<G> {
     gate: G,
     game: HookGame,
     phase: Phase,
+    /// The speed row's last value in the room's game, once seen.
+    chosen: Option<u64>,
     /// Lines for the hook's log.
     log: Vec<String>,
 }
@@ -134,7 +146,39 @@ impl<G: RoomGate> StepDriver<G> {
             gate,
             game: HookGame::default(),
             phase: Phase::BeforeBegin,
+            chosen: None,
             log: Vec::new(),
+        }
+    }
+
+    /// The game's speed row says `speedup` (0 paused, 1 for 1x, ...). In the
+    /// room's game, a change the player makes there asks the room for that
+    /// speed; the value found on entering the room's game is taken as it is,
+    /// so joining never resets a room's speed.
+    pub fn chosen_speed(&mut self, speedup: u64) {
+        if self.phase != Phase::Running {
+            self.chosen = None;
+            return;
+        }
+        match self.chosen {
+            None => self.chosen = Some(speedup),
+            Some(before) if before == speedup => {}
+            Some(_) => {
+                self.chosen = Some(speedup);
+                let percent = u16::try_from(speedup.saturating_mul(100)).unwrap_or(u16::MAX);
+                let speed = Speed(percent.min(Speed::MAX.0));
+                match self.gate.request_speed(speed) {
+                    Ok(()) => self.log.push(format!(
+                        "the speed row asks the room for speed {}%",
+                        speed.0
+                    )),
+                    // A speed the room did not hear is not a reason to stop
+                    // following it: the room's speed simply stays.
+                    Err(error) => self
+                        .log
+                        .push(format!("asking the room for a speed failed: {error}")),
+                }
+            }
         }
     }
 
@@ -255,6 +299,7 @@ pub(crate) mod tests {
         pub(crate) ran: u64,
         pub(crate) loaded: Vec<u64>,
         pub(crate) fail_after: bool,
+        pub(crate) speeds: Vec<Speed>,
     }
 
     impl RoomGate for Script {
@@ -273,6 +318,10 @@ pub(crate) mod tests {
         }
         fn loaded(&mut self, next_step: u64) -> Result<(), SessionError> {
             self.loaded.push(next_step);
+            Ok(())
+        }
+        fn request_speed(&mut self, speed: Speed) -> Result<(), SessionError> {
+            self.speeds.push(speed);
             Ok(())
         }
     }
@@ -383,6 +432,33 @@ pub(crate) mod tests {
         assert!(d.in_room());
         call(&mut d, &mut ran);
         assert!(!d.in_room(), "after it ends, the game's own speed again");
+    }
+
+    #[test]
+    fn a_change_in_the_speed_row_asks_the_room_and_joining_asks_nothing() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        let (mut d, mut ran) = driver(script);
+        d.chosen_speed(4);
+        assert!(
+            d.gate.speeds.is_empty(),
+            "before the room's game, nothing is asked"
+        );
+        call(&mut d, &mut ran);
+        // Entering the room's game at 2x: taken as it is.
+        d.chosen_speed(2);
+        d.chosen_speed(2);
+        assert!(d.gate.speeds.is_empty());
+        d.chosen_speed(4);
+        d.chosen_speed(0);
+        d.chosen_speed(0);
+        assert_eq!(d.gate.speeds, vec![Speed(400), Speed::PAUSED]);
+        d.chosen_speed(1000);
+        assert_eq!(
+            d.gate.speeds.last(),
+            Some(&Speed::MAX),
+            "capped at the room's fastest"
+        );
     }
 
     #[test]

@@ -535,6 +535,9 @@ impl<L: HookLink> Bridge<L> {
                 }
                 ToAgent::Ran { .. } | ToAgent::Checkpoint { .. } | ToAgent::Saved { .. } => {}
                 ToAgent::Chat { text } => self.request(client, Request::Chat(text)),
+                // The game's speed row: the room's owner sets the room's
+                // speed from it; anyone else's is refused, as a notice.
+                ToAgent::Speed { speed } => self.request(client, Request::SetSpeed(speed)),
                 ToAgent::Log { message } => info!(hook = %message),
             }
         }

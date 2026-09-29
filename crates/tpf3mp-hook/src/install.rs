@@ -9,7 +9,7 @@
 
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use tpf3mp_hookcore::profile::Profile;
@@ -34,6 +34,10 @@ static LOG: Mutex<Option<crate::Logger>> = Mutex::new(None);
 static SPEED_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 /// In the room's game: the speed getter answers 1.
 static IN_ROOM: AtomicBool = AtomicBool::new(false);
+/// The game's own speed (the speed row) as the getter last read it in the
+/// room's game; `NO_SPEED` until then.
+static CHOSEN: AtomicU64 = AtomicU64::new(NO_SPEED);
+const NO_SPEED: u64 = u64::MAX;
 
 /// The speed getter's signature, passed through as the step's is.
 type SpeedFn = unsafe extern "C" fn(usize, usize, usize, usize) -> u64;
@@ -44,9 +48,6 @@ type SpeedFn = unsafe extern "C" fn(usize, usize, usize, usize) -> u64;
 /// paused included: the room's pause is the only pause. Otherwise the game's
 /// own answer.
 unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> u64 {
-    if IN_ROOM.load(Ordering::Acquire) {
-        return 1;
-    }
     let original = SPEED_ORIGINAL.load(Ordering::Acquire);
     if original == 0 {
         return 1;
@@ -55,7 +56,15 @@ unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> 
     // which keeps the game's own ABI.
     let original: SpeedFn = unsafe { std::mem::transmute::<usize, SpeedFn>(original) };
     // SAFETY: the game's own getter, called as the game called it.
-    unsafe { original(this, a, b, c) }
+    let own = unsafe { original(this, a, b, c) };
+    if IN_ROOM.load(Ordering::Acquire) {
+        // The speed row's value is the player's request to the room (the
+        // step detour passes it on); the game runs one update a call. The
+        // getter returns an int: its low 32 bits.
+        CHOSEN.store(u64::from(own as u32), Ordering::Release);
+        return 1;
+    }
+    own
 }
 
 /// The step's signature: a member function, `this` and its arguments in
@@ -82,6 +91,10 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         // SAFETY: as above, once per step the room released.
         driver.on_step(&mut || unsafe { original(this, a, b, c) });
         IN_ROOM.store(driver.in_room(), Ordering::Release);
+        let chosen = CHOSEN.load(Ordering::Acquire);
+        if chosen != NO_SPEED {
+            driver.chosen_speed(chosen);
+        }
         let lines = driver.take_log();
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
@@ -258,12 +271,23 @@ mod tests {
             1,
             "in the room's game, one update a call"
         );
+        assert_eq!(
+            CHOSEN.load(Ordering::SeqCst),
+            4,
+            "the speed row's value is kept"
+        );
         SPEED.store(0, Ordering::SeqCst);
         assert_eq!(
             speed(1, 2, 3, 4),
             1,
             "the game's own pause does not stop the room"
         );
+        assert_eq!(
+            CHOSEN.load(Ordering::SeqCst),
+            0,
+            "but it asks the room to pause"
+        );
+        CHOSEN.store(NO_SPEED, Ordering::SeqCst);
         IN_ROOM.store(false, Ordering::Release);
         SPEED_ORIGINAL.store(0, Ordering::Release);
         // SAFETY: nothing runs fake_speed now.

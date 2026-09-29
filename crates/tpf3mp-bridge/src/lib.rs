@@ -34,7 +34,7 @@ pub use session::{Begin, Game, Load, Notice, Session, SessionError, StepGate};
 
 /// Version of these messages. Both sides send it first and refuse a peer
 /// that speaks another.
-pub const BRIDGE_VERSION: u32 = 3;
+pub const BRIDGE_VERSION: u32 = 4;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -117,6 +117,10 @@ pub enum ToAgent {
     },
     /// The player says something to the room.
     Chat { text: ChatText },
+    /// The player picked this speed in the game's speed row: ask the room
+    /// for it. Only the room's owner may change the room's speed; the server
+    /// refuses anyone else, and the agent shows the refusal.
+    Speed { speed: Speed },
 }
 
 #[derive(Debug, Error)]

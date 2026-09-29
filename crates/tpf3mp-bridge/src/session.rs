@@ -286,6 +286,11 @@ impl Session {
         Ok(number)
     }
 
+    /// Asks the room to run at the speed the player picked.
+    pub fn request_speed(&mut self, speed: Speed) -> Result<(), SessionError> {
+        self.send(&ToAgent::Speed { speed })
+    }
+
     /// Says something to the room for the player.
     pub fn chat(&mut self, text: ChatText) -> Result<(), SessionError> {
         self.send(&ToAgent::Chat { text })
