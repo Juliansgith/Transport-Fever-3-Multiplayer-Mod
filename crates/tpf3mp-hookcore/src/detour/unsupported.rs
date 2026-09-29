@@ -45,22 +45,6 @@ impl InlineDetour {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn install_reports_unsupported_architecture() {
-        // SAFETY: on this architecture `install` returns before touching either
-        // pointer, so dangling pointers are fine.
-        let result = unsafe { InlineDetour::install(core::ptr::null_mut(), core::ptr::null()) };
-        assert!(matches!(
-            result,
-            Err(DetourError::UnsupportedArchitecture { .. })
-        ));
-    }
-}
-
 /// A placeholder that can never be constructed on this architecture.
 pub enum CallRedirect {}
 
@@ -88,5 +72,21 @@ impl CallRedirect {
     /// Never constructed.
     pub unsafe fn detach(self) -> Result<(), DetourError> {
         match self {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_reports_unsupported_architecture() {
+        // SAFETY: on this architecture `install` returns before touching either
+        // pointer, so dangling pointers are fine.
+        let result = unsafe { InlineDetour::install(core::ptr::null_mut(), core::ptr::null()) };
+        assert!(matches!(
+            result,
+            Err(DetourError::UnsupportedArchitecture { .. })
+        ));
     }
 }
