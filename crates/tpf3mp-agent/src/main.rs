@@ -117,9 +117,15 @@ struct Game {
 
     /// A file listing the game's active mods in load order, one per line:
     /// the mod's name, then its version. Every player in a room must run
-    /// the same; the room says which differ.
+    /// the same shared mods; the room says which differ. Personal ones (GUI
+    /// mods) may differ (docs/MODS.md).
     #[arg(long)]
     mods: Option<PathBuf>,
+
+    /// Count game-script mods whose commands the room carries as personal
+    /// too (docs/MODS.md, proposed D22).
+    #[arg(long)]
+    personal_game_scripts: bool,
 
     /// Where worlds are kept: saves the room agreed on, and worlds received
     /// to join running games. Defaults to a directory per game link in the
@@ -143,7 +149,12 @@ impl Game {
     fn split(&self) -> Result<content::Split> {
         let installed = tpf3mp_agent::steam::find(tpf3mp_agent::steam::TRANSPORT_FEVER_3);
         let build = launcher::setup::game_build(self.game_build.as_deref(), installed.as_ref());
-        launcher::setup::split_mods(&build, self.mods.as_deref(), installed.as_ref())
+        launcher::setup::split_mods(
+            &build,
+            self.mods.as_deref(),
+            installed.as_ref(),
+            self.personal_game_scripts,
+        )
     }
 
     fn open_worlds(&self, link: &str) -> Result<Worlds> {

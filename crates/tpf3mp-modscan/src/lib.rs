@@ -46,6 +46,11 @@ pub enum Class {
     /// Only this player's view: may be active in one player's game and not
     /// in another's.
     Personal,
+    /// Decides in a game script, but acts only through commands the room
+    /// carries from a personal mod's game script (`tpf3mp/modguard.lua`):
+    /// may be personal once the room lets game-script mods be (docs/MODS.md;
+    /// until then it is treated as shared unless the player asks).
+    Carried,
     /// Must be active, in the same version, in every game of the room.
     Shared,
 }
@@ -54,10 +59,35 @@ impl fmt::Display for Class {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Personal => "personal",
+            Self::Carried => "carried (personal once game-script mods may be)",
             Self::Shared => "shared",
         })
     }
 }
+
+/// The commands the room carries from a personal mod: those the GUI's guard
+/// makes actions of (`guard.lua`'s CARRY and PASS, less builds, which it
+/// carries from construction windows only) and those the personal mods'
+/// guard hands on or drops (`modguard.lua`'s CARRY and DROP). A game-script
+/// mod that makes anything else is shared.
+pub const ROOM_CARRIED: &[&str] = &[
+    "makeEntitySetColorCmd",
+    "makeEntitySetNameCmd",
+    "makeGameSetSpeedCmd",
+    "makeLineCreateCmd",
+    "makeLineDestroyCmd",
+    "makeLineUpdateCmd",
+    "makeScriptingSendEventCmd",
+    "makeVehicleBuyCmd",
+    "makeVehicleReplaceCmd",
+    "makeVehicleReverseCmd",
+    "makeVehicleSellCmd",
+    "makeVehicleSendToDepotCmd",
+    "makeVehicleSetLineCmd",
+    "makeVehicleSetManualDepartureCmd",
+    "makeVehicleSetStoppedByUserCmd",
+    "makeVehicleTryToDepartCmd",
+];
 
 /// What a reason is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -83,6 +113,8 @@ pub enum Kind {
     ResourceWrite,
     /// `game.interface`, TPF2's way to change the world outside `api.cmd`.
     GameInterface,
+    /// Sets the game's configuration (`game.config`), as a run script can.
+    ConfigWrite,
     /// Code built or reached at run time (`load`, `_G[...]`, `setfenv`,
     /// `rawset`, the `debug` library's setters): what it does cannot be read.
     Dynamic,
@@ -128,6 +160,7 @@ impl Kind {
                 | Self::UnknownResource
                 | Self::ResourceWrite
                 | Self::GameInterface
+                | Self::ConfigWrite
                 | Self::Dynamic
                 | Self::CommandBypass
                 | Self::UnknownFile
@@ -145,6 +178,7 @@ impl Kind {
             Self::UnknownResource => "unknown resource type",
             Self::ResourceWrite => "resource write",
             Self::GameInterface => "game.interface",
+            Self::ConfigWrite => "configuration",
             Self::Dynamic => "dynamic code",
             Self::CommandBypass => "command bypass",
             Self::UnknownFile => "unknown file",
@@ -195,6 +229,8 @@ pub struct Report {
     pub class: Class,
     /// Every reason, those that make the mod shared first.
     pub reasons: Vec<Reason>,
+    /// Every command factory its loaded scripts name.
+    pub commands: Vec<String>,
 }
 
 impl Report {
@@ -371,23 +407,45 @@ pub fn scan(dir: &Path) -> Report {
         add(&mut reasons, Kind::Unreadable, "", None, why);
     }
     let has_content = dir.join("content").is_dir();
+    let mut commands = BTreeSet::new();
     for file in &files {
-        scan_file(dir, file, has_content, &mut reasons);
+        scan_file(dir, file, has_content, &mut reasons, &mut commands);
     }
 
     let mut reasons: Vec<Reason> = reasons.into_iter().collect();
     reasons.sort_by_key(|r| (!r.kind.shares(), r.kind, r.file.clone(), r.line));
-    let class = if reasons.iter().any(|r| r.kind.shares()) {
-        Class::Shared
-    } else {
-        Class::Personal
-    };
+    let class = classify(&reasons, &commands);
     Report {
         id,
         revision,
         path: dir.to_path_buf(),
         class,
         reasons,
+        commands: commands.into_iter().collect(),
+    }
+}
+
+/// Personal when nothing makes the mod shared; carried when all that does
+/// is its game scripts (and run scripts that change nothing), and every
+/// command it makes is one the room carries; else shared.
+fn classify(reasons: &[Reason], commands: &BTreeSet<String>) -> Class {
+    let sharing: Vec<Kind> = reasons
+        .iter()
+        .filter(|r| r.kind.shares())
+        .map(|r| r.kind)
+        .collect();
+    if sharing.is_empty() {
+        return Class::Personal;
+    }
+    let only_scripts = sharing
+        .iter()
+        .all(|k| matches!(k, Kind::GameScript | Kind::RunScript));
+    let has_game_script = sharing.contains(&Kind::GameScript);
+    let carried = commands.iter().all(|c| ROOM_CARRIED.contains(&c.as_str()));
+    if only_scripts && has_game_script && carried {
+        Class::Carried
+    } else {
+        Class::Shared
     }
 }
 
@@ -558,7 +616,13 @@ fn role(rel: &str) -> Role {
     Role::Unknown
 }
 
-fn scan_file(root: &Path, path: &Path, has_content: bool, reasons: &mut BTreeSet<Reason>) {
+fn scan_file(
+    root: &Path,
+    path: &Path,
+    has_content: bool,
+    reasons: &mut BTreeSet<Reason>,
+    commands: &mut BTreeSet<String>,
+) {
     let rel = relative(root, path);
     let role = role(&rel);
     let loaded = !has_content || rel.starts_with("content/");
@@ -628,7 +692,7 @@ fn scan_file(root: &Path, path: &Path, has_content: bool, reasons: &mut BTreeSet
         // Sources beside content/ (Teal before compiling, say) are not
         // loaded, but what they call is still worth knowing: noted only.
         let mut found = BTreeSet::new();
-        calls(&rel, &tokens, &mut found);
+        calls(&rel, &tokens, &mut found, &mut BTreeSet::new());
         if found.iter().any(|r| r.kind.shares()) {
             add(
                 reasons,
@@ -640,7 +704,7 @@ fn scan_file(root: &Path, path: &Path, has_content: bool, reasons: &mut BTreeSet
         }
         return;
     }
-    calls(&rel, &tokens, reasons);
+    calls(&rel, &tokens, reasons, commands);
 }
 
 fn read_text(path: &Path) -> Result<String, String> {
@@ -737,8 +801,46 @@ fn path_before(tokens: &[Located], i: usize, path: &[&str]) -> bool {
     true
 }
 
+/// Whether the path starting at the name at `i` (`name.a.b[...]`) is
+/// assigned to: followed by `=`, not `==`.
+fn assigns_after(tokens: &[Located], i: usize) -> bool {
+    let mut at = i + 1;
+    loop {
+        match tokens.get(at).map(|t| &t.token) {
+            // `.name`
+            Some(Token::Punct('.')) if name_at(tokens, at + 1).is_some() => at += 2,
+            // `[...]`, nested brackets included
+            Some(Token::Punct('[')) => {
+                let mut depth = 0usize;
+                loop {
+                    match tokens.get(at).map(|t| &t.token) {
+                        Some(Token::Punct('[')) => depth += 1,
+                        Some(Token::Punct(']')) => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        None => return false,
+                        _ => {}
+                    }
+                    at += 1;
+                }
+                at += 1;
+            }
+            Some(Token::Punct('=')) => return !punct_at(tokens, at + 1, '='),
+            _ => return false,
+        }
+    }
+}
+
 /// What a loaded script calls.
-fn calls(rel: &str, tokens: &[Located], reasons: &mut BTreeSet<Reason>) {
+fn calls(
+    rel: &str,
+    tokens: &[Located],
+    reasons: &mut BTreeSet<Reason>,
+    commands: &mut BTreeSet<String>,
+) {
     let mut factories = BTreeSet::new();
     let mut first_command = None;
     for (i, located) in tokens.iter().enumerate() {
@@ -787,6 +889,20 @@ fn calls(rel: &str, tokens: &[Located], reasons: &mut BTreeSet<Reason>) {
                     rel,
                     line,
                     "uses game.interface".into(),
+                );
+            }
+            "config"
+                if is_field(tokens, i)
+                    && i >= 2
+                    && name_at(tokens, i - 2) == Some("game")
+                    && assigns_after(tokens, i) =>
+            {
+                add(
+                    reasons,
+                    Kind::ConfigWrite,
+                    rel,
+                    line,
+                    "sets game.config".into(),
                 );
             }
             "addModifier" if !is_field(tokens, i) => {
@@ -883,6 +999,7 @@ fn calls(rel: &str, tokens: &[Located], reasons: &mut BTreeSet<Reason>) {
             _ => {}
         }
     }
+    commands.extend(factories.iter().cloned());
     if let Some(line) = first_command {
         let detail = if factories.is_empty() {
             "sends commands".to_owned()

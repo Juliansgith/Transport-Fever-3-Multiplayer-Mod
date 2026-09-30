@@ -77,11 +77,15 @@ pub struct Verdict {
 /// the personal ones left out of it: each listed mod is looked for among
 /// `installed` (`tpf3mp_modscan::roots::installed`) and scanned. A mod the
 /// scan calls personal is the player's own; one it calls shared, one it
-/// cannot find, and TPF3-MP itself are the room's (fail closed).
+/// cannot find, and TPF3-MP itself are the room's (fail closed). One it
+/// calls carried (a game-script mod whose commands the room carries,
+/// `tpf3mp/modguard.lua`) is the player's own only with `carried_personal`,
+/// an opt-in until the room lets game-script mods differ (docs/MODS.md).
 pub fn split(
     game_build: &str,
     mods: Option<&Path>,
     installed: &[roots::Found],
+    carried_personal: bool,
 ) -> Result<Split, ContentError> {
     let game = Text::new(game_build.trim()).map_err(|_| ContentError::Build)?;
     let Some(path) = mods else {
@@ -114,7 +118,12 @@ pub fn split(
                 }
             }
         };
-        if class == Class::Shared {
+        let own = match class {
+            Class::Personal => true,
+            Class::Carried => carried_personal,
+            Class::Shared => false,
+        };
+        if !own {
             shared.push(listed.clone());
         } else {
             personal.push(listed.clone());
@@ -254,7 +263,7 @@ mod tests {
         .unwrap();
         let found = roots::installed(std::slice::from_ref(&root));
 
-        let split = split("40408", Some(&list), &found).unwrap();
+        let split = split("40408", Some(&list), &found, false).unwrap();
         let declared: Vec<&str> = split.manifest.mods.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(declared, ["timetables", "tpf3mp_1", "not_installed"]);
         let lists = split.lists.unwrap();
@@ -278,7 +287,7 @@ mod tests {
         assert_eq!(
             whys,
             [
-                ("timetables", Class::Shared),
+                ("timetables", Class::Carried),
                 ("overlay_1", Class::Personal),
                 ("tpf3mp_1", Class::Shared),
                 ("not_installed", Class::Shared),
@@ -287,12 +296,25 @@ mod tests {
         assert!(split.verdicts[0].why.contains("game script"));
         assert!(split.verdicts[3].why.contains("not found"));
 
+        // With game-script mods let differ, the timetable mod is this
+        // player's own too.
+        let opted = super::split("40408", Some(&list), &found, true).unwrap();
+        let opted: Vec<&str> = opted
+            .lists
+            .as_ref()
+            .unwrap()
+            .personal
+            .iter()
+            .map(|m| m.as_str())
+            .collect();
+        assert_eq!(opted, ["timetables", "overlay_1"]);
+
         // Two players who differ only in personal mods declare the same.
         fs::write(&list, "timetables 8\ntpf3mp_1 1\nnot_installed 2\n").unwrap();
-        let other = super::split("40408", Some(&list), &found).unwrap();
+        let other = super::split("40408", Some(&list), &found, false).unwrap();
         assert_eq!(other.manifest.fingerprint(), split.manifest.fingerprint());
         // Without a list, no lists: worlds load with their saves' mods.
-        let bare = super::split("40408", None, &found).unwrap();
+        let bare = super::split("40408", None, &found, false).unwrap();
         assert_eq!(bare.lists, None);
         assert_eq!(bare.manifest, manifest("40408", None).unwrap());
     }

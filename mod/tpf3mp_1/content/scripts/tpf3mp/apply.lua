@@ -933,6 +933,8 @@ function HANDLERS.VehicleOp(op, ctx)
 		return run(api.cmd.makeVehicleReverseCmd(vehicle))
 	elseif change == "Depart" then
 		return run(api.cmd.makeVehicleTryToDepartCmd(vehicle))
+	elseif type(change) == "table" and change.ManualDeparture ~= nil then
+		return run(api.cmd.makeVehicleSetManualDepartureCmd(vehicle, change.ManualDeparture == true))
 	end
 	return false, "a vehicle change of no kind"
 end

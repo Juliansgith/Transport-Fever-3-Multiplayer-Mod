@@ -23,7 +23,15 @@
 -- begins, after it ends) every command is sent as it would be.
 --
 -- Only the GUI state's api.cmd is wrapped. The mod's game script applies the
--- room's actions through its own state's api.cmd, which is left alone.
+-- room's actions through its own state's api.cmd, which is left alone, but
+-- for commands a player's personal mods' game scripts send there
+-- (tpf3mp/modguard.lua).
+--
+-- Personal mods (docs/MODS.md): a mod only one player may run goes through
+-- this guard like the player's own clicks. The one thing it may send past
+-- the room is an event to game scripts (makeScriptingSendEventCmd), which
+-- reaches this game's scripts only: its own game script, which runs in this
+-- game alone. A refusal names the mod the command came from (guard.caller).
 --
 -- Pure Lua; the tests hand install() a fake api.cmd.
 
@@ -77,6 +85,7 @@ guard.CARRY = {
 	makeVehicleSendToDepotCmd = by("vehicleToDepot"),
 	makeVehicleReverseCmd = by("vehicleReverse"),
 	makeVehicleTryToDepartCmd = by("vehicleDepart"),
+	makeVehicleSetManualDepartureCmd = by("vehicleManualDeparture"),
 	makeLineCreateCmd = by("lineCreate"),
 	makeLineUpdateCmd = by("lineUpdate"),
 	makeLineDestroyCmd = by("lineDestroy"),
@@ -155,6 +164,36 @@ guard.FACTORIES = {
 	"makeWorldSetBulldozableCmd",
 }
 
+-- TPF3-MP's own mod, whose files are never "a mod's" to the guards.
+guard.OWN = "tpf3mp_1"
+
+-- The mods whose scripts are on the stack of a call, nearest first, each
+-- once: every function whose source names a mod's file ("<modId>::/...", as
+-- the game names a mod's files) other than TPF3-MP's own. The game's own
+-- files ("::/...") name no mod, so a click in the game's own windows gives
+-- none. `getinfo` is debug.getinfo (the tests hand a fake one).
+function guard.callers(getinfo)
+	local mods, seen = {}, {}
+	if getinfo == nil and type(debug) == "table" then getinfo = debug.getinfo end
+	if type(getinfo) ~= "function" then return mods end
+	for level = 1, 64 do
+		local ok, info = pcall(getinfo, level, "S")
+		if not ok or type(info) ~= "table" then break end
+		local source = info.source
+		local mod = type(source) == "string" and source:match("^@?([%w_%.%-]+)::/") or nil
+		if mod and mod ~= guard.OWN and not seen[mod] then
+			seen[mod] = true
+			mods[#mods + 1] = mod
+		end
+	end
+	return mods
+end
+
+-- The mod whose script made a call, the nearest (guard.callers), or nil.
+function guard.caller(getinfo)
+	return guard.callers(getinfo)[1]
+end
+
 -- What the player is told when a command of `kind` is refused.
 function guard.notice(kind)
 	return "Not in multiplayer yet: " .. (guard.WHAT[kind] or "this action")
@@ -178,7 +217,11 @@ guard.HOLD = 240
 --   refused(kind, why) -> a command of `kind` (nil: made by no factory the
 --                    guard knows) was refused;
 --   later(fn)     -> runs fn on the next frame;
---   context       -> names what commands name (tpf3mp/capture.lua).
+--   context       -> names what commands name (tpf3mp/capture.lua);
+--   personal(mod) -> optional: whether `mod` is one of this player's
+--                    personal mods (docs/MODS.md);
+--   caller()      -> optional: the mod a command came from (guard.caller).
+-- refused() is also given the mod the command came from, if one did.
 -- Returns the number of factories wrapped, or nil and why the guard could
 -- not be put there.
 function guard.install(cmd, env)
@@ -224,6 +267,12 @@ function guard.install(cmd, env)
 		if kind ~= nil and guard.PASS[kind] then
 			return send(command, ...)
 		end
+		local from = (env.caller or guard.caller)()
+		-- A personal mod's event to game scripts reaches this game's alone,
+		-- where its own game script runs (docs/MODS.md).
+		if kind == "makeScriptingSendEventCmd" and from and env.personal and env.personal(from) then
+			return send(command, ...)
+		end
 		local callback = ...
 		local carry, args = kind and guard.CARRY[kind], calls[command]
 		local made, action = false, nil
@@ -242,12 +291,12 @@ function guard.install(cmd, env)
 				end
 				return
 			end
-			env.refused(kind, ticket)
+			env.refused(kind, ticket, from)
 		elseif carry and args and not made then
 			-- Why the room cannot carry it: what the capture raised.
-			env.refused(kind, tostring(action))
+			env.refused(kind, tostring(action), from)
 		else
-			env.refused(kind)
+			env.refused(kind, nil, from)
 		end
 		if callback ~= nil then
 			env.later(function() callback(command, false, {}) end)

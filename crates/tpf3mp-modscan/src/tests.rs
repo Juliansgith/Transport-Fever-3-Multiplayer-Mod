@@ -97,7 +97,7 @@ fn a_gui_overlay_is_personal_and_says_what_it_does() {
 }
 
 #[test]
-fn a_game_script_makes_a_mod_shared_whatever_it_calls() {
+fn a_game_script_that_sends_only_what_the_room_carries_is_carried() {
     // Shaped like Auto Line Namer: a game script renaming lines on a timer,
     // and a rename scheme for the line manager's button.
     let dir = mod_with(&[
@@ -116,11 +116,12 @@ fn a_game_script_makes_a_mod_shared_whatever_it_calls() {
         ),
     ]);
     let report = scan(dir.path());
-    assert_eq!(report.class, Class::Shared, "{report}");
+    assert_eq!(report.class, Class::Carried, "{report}");
     assert_eq!(
         sharing(&report),
         [(Kind::GameScript, "content/namer/namer.gs.lua".into(), None)]
     );
+    assert_eq!(report.commands, ["makeEntitySetNameCmd"]);
     // The rename scheme alone is the GUI's.
     assert!(
         report
@@ -190,9 +191,85 @@ fn a_cosmetic_flag_decides_nothing() {
         ),
     ]);
     let report = scan(dir.path());
-    assert_eq!(report.class, Class::Shared);
+    assert_eq!(report.class, Class::Carried);
     assert!(report.reasons.iter().any(|r| r.kind == Kind::CosmeticFlag));
     assert_eq!(sharing(&report).len(), 1);
+}
+
+#[test]
+fn a_game_script_that_sends_what_the_room_does_not_carry_is_shared() {
+    // Shaped like the pre-release Big City mod, moved into a game script.
+    let dir = mod_with(&[
+        ("mod.json", MANIFEST),
+        ("content/c/c.gs.lua", "function data() return {} end"),
+        (
+            "content/c/c.script.lua",
+            "api.cmd.sendCommand(api.cmd.makeTownCreateCmd({}))",
+        ),
+    ]);
+    let report = scan(dir.path());
+    assert_eq!(report.class, Class::Shared);
+    assert_eq!(report.commands, ["makeTownCreateCmd"]);
+}
+
+#[test]
+fn a_run_script_that_sets_the_game_config_is_shared() {
+    let run = "function data() return { runFn = function(p, s)\n\
+               local keep = game.config.x == 1\n\
+               local read = game.config.economy\n\
+               other = 2\n\
+               game.config.economy.inflation[1] = 0\n\
+               end } end";
+    let dir = mod_with(&[
+        (
+            "mod.json",
+            r#"{"modId": "t", "runScript": {"fileName": "t::/mod.script@runFn"}}"#,
+        ),
+        ("content/mod.script.lua", run),
+        ("content/t.gs.lua", "function data() return {} end"),
+    ]);
+    let report = scan(dir.path());
+    assert_eq!(report.class, Class::Shared);
+    let config: Vec<Option<usize>> = report
+        .reasons
+        .iter()
+        .filter(|r| r.kind == Kind::ConfigWrite)
+        .map(|r| r.line)
+        .collect();
+    assert_eq!(config, [Some(5)], "a comparison and a read are not writes");
+}
+
+/// The scan's list of what the room carries is the guards' own.
+#[test]
+fn the_room_carried_list_is_the_guards() {
+    let scripts =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mod/tpf3mp_1/content/scripts/tpf3mp");
+    let guard = std::fs::read_to_string(scripts.join("guard.lua")).unwrap();
+    let modguard = std::fs::read_to_string(scripts.join("modguard.lua")).unwrap();
+    // Each table's keys: `name = ...` lines between its `X = {` and `}`.
+    let keys = |text: &str, table: &str| -> Vec<String> {
+        let start = text.find(&format!("{table} = {{")).unwrap();
+        let body = &text[start..];
+        let body = &body[..body.find("\n}").unwrap()];
+        body.lines()
+            .skip(1)
+            .filter_map(|l| {
+                let l = l.trim();
+                let name = l.split(['=', ' ']).next()?;
+                (name.starts_with("make") && name.ends_with("Cmd")).then(|| name.to_owned())
+            })
+            .collect()
+    };
+    let mut carried: Vec<String> = keys(&guard, "guard.CARRY");
+    carried.extend(keys(&guard, "guard.PASS"));
+    carried.extend(keys(&modguard, "modguard.CARRY"));
+    carried.extend(keys(&modguard, "modguard.DROP"));
+    // The GUI's guard carries a build only as a construction window's
+    // edit; every other build, a mod's included, is refused.
+    carried.retain(|c| c != "makeWorldBuildProposalCmd");
+    carried.sort();
+    carried.dedup();
+    assert_eq!(carried, ROOM_CARRIED);
 }
 
 #[test]
@@ -306,7 +383,7 @@ fn text_that_is_not_utf8_is_unreadable() {
 fn reasons_serialize_for_other_tools() {
     let dir = mod_with(&[("mod.json", MANIFEST), ("content/a.gs.lua", "")]);
     let json = serde_json::to_value(scan(dir.path())).unwrap();
-    assert_eq!(json["class"], "shared");
+    assert_eq!(json["class"], "carried");
     assert_eq!(json["reasons"][0]["kind"], "game_script");
     assert_eq!(json["reasons"][0]["file"], "content/a.gs.lua");
 }

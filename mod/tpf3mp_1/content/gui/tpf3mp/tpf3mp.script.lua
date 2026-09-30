@@ -73,7 +73,7 @@ function data()
 	-- hook's log.
 	local refusals, reasons = {}, {}
 
-	local function refused(kind, why)
+	local function refused(kind, why, from)
 		local name = kind or "command no factory made"
 		local count = (refusals[name] or 0) + 1
 		refusals[name] = count
@@ -81,7 +81,8 @@ function data()
 		if changed then reasons[name] = why end
 		if count == 1 or count % 100 == 0 or changed then
 			link:log("refused the player's " .. name .. " in the room's game ("
-				.. count .. " so far)" .. (why and (": " .. tostring(why)) or ""))
+				.. count .. " so far)" .. (why and (": " .. tostring(why)) or "")
+				.. (from and (", from the mod " .. tostring(from)) or ""))
 		end
 		notice = require("tpf3mp.guard").notice(kind)
 	end
@@ -174,6 +175,7 @@ function data()
 			refused = refused,
 			later = function(fn) pending[#pending + 1] = fn end,
 			context = context,
+			personal = function(mod) return link:personal()[mod] == true end,
 		})
 		if wrapped then
 			link:log("the guard is on " .. wrapped .. " command factories")

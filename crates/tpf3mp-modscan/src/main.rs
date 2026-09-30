@@ -96,14 +96,13 @@ fn main() -> ExitCode {
         }
     }
     if !args.json {
-        let personal = reports
-            .iter()
-            .filter(|r| r.class == Class::Personal)
-            .count();
+        let count = |class: Class| reports.iter().filter(|r| r.class == class).count();
         println!(
-            "{} mods: {personal} personal, {} shared",
+            "{} mods: {} personal, {} carried, {} shared",
             reports.len(),
-            reports.len() - personal
+            count(Class::Personal),
+            count(Class::Carried),
+            count(Class::Shared)
         );
     }
     ExitCode::SUCCESS

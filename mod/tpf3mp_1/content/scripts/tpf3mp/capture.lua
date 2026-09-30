@@ -484,6 +484,12 @@ function capture.vehicleDepart(ctx, vehicle)
 	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = "Depart" } }
 end
 
+-- Held at its stops until told to leave, or not: what a timetable mod's
+-- game script sends (tpf3mp/modguard.lua).
+function capture.vehicleManualDeparture(ctx, vehicle, manual)
+	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ManualDeparture = manual == true } } }
+end
+
 -- The game's load modes (Line.LoadMode), numbers to the schema's names.
 local LOAD_MODES = { [0] = "LoadIfAvailable", [1] = "FullLoadAny", [2] = "FullLoadAll", [3] = "LegacyUnloadOnly" }
 

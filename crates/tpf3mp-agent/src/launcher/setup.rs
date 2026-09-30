@@ -182,9 +182,16 @@ pub struct LauncherArgs {
     pub game_exe: Option<PathBuf>,
 
     /// A file listing the game's active mods in load order, one per line:
-    /// the mod's name, then its version.
+    /// the mod's name, then its version. Each is scanned: personal ones
+    /// (GUI mods) may differ between the room's players (docs/MODS.md).
     #[arg(long)]
     pub mods: Option<PathBuf>,
+
+    /// Count game-script mods whose commands the room carries (a timetable
+    /// mod, a line namer) as personal too. For playtests until the room
+    /// lets them differ (docs/MODS.md, proposed D22).
+    #[arg(long)]
+    pub personal_game_scripts: bool,
 
     /// Where worlds are kept. Defaults to the per-user data directory.
     #[arg(long)]
@@ -207,11 +214,13 @@ pub fn package_hook() -> Option<PathBuf> {
 /// This player's mods, sorted for the room (`content::split`): each listed
 /// mod looked for among those installed (Mod Hub's, the Steam accounts'
 /// local ones, the game's own) and scanned. What each mod was taken for
-/// goes to the log.
+/// goes to the log. `carried_personal`: game-script mods whose commands the
+/// room carries count as personal (`--personal-game-scripts`).
 pub fn split_mods(
     game_build: &str,
     mods: Option<&std::path::Path>,
     installed: Option<&steam::Installed>,
+    carried_personal: bool,
 ) -> Result<content::Split> {
     let found = if mods.is_some() {
         tpf3mp_modscan::roots::installed(&tpf3mp_modscan::roots::default_roots(
@@ -221,7 +230,7 @@ pub fn split_mods(
     } else {
         Vec::new()
     };
-    let split = content::split(game_build, mods, &found)?;
+    let split = content::split(game_build, mods, &found, carried_personal)?;
     for verdict in &split.verdicts {
         tracing::info!(
             "mod {} {} is {}: {}",
@@ -264,6 +273,7 @@ impl LauncherArgs {
             &game_build(self.game_build.as_deref(), installed.as_ref()),
             self.mods.as_deref(),
             installed.as_ref(),
+            self.personal_game_scripts,
         )?;
         Ok(LauncherConfig {
             // The launcher window sets it: it records the player's log.
