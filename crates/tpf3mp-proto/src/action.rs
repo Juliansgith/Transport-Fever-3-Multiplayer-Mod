@@ -548,8 +548,17 @@ pub struct AssignLine {
     pub vehicles: BoundedVec<VehicleId, MAX_VEHICLES>,
     /// The line, or none to take the vehicles off their line.
     pub line: Option<LineId>,
-    /// Index of the stop the vehicles head for first.
+    /// Index of the stop the vehicles head for first, or
+    /// [`AssignLine::NEAREST_STOP`].
     pub first_stop: u16,
+}
+
+impl AssignLine {
+    /// `first_stop` for "the stop nearest each vehicle": what the game's
+    /// line window asks for (its -1), and every game picks the same stop
+    /// from the same world. A value no line reaches, so the wire format is
+    /// unchanged.
+    pub const NEAREST_STOP: u16 = u16::MAX;
 }
 
 /// What the vehicle window does to one vehicle.

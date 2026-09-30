@@ -2155,7 +2155,7 @@ fn the_game_script_buys_the_vehicle_and_tells_the_buyer_which() {
     // vehicle put on line 0.
     lua.load(format!(
         "HOOK.room = true UPDATE({{}}, STATE, 0.2) \
-         HOOK.batch = {{ {BUY_BUS}, {{ AssignLine = {{ vehicles = {{ 2 }}, line = 0, first_stop = 1 }} }} }} \
+         HOOK.batch = {{ {BUY_BUS}, {{ AssignLine = {{ vehicles = {{ 2 }}, line = 0, first_stop = 1 }} }},              {{ AssignLine = {{ vehicles = {{ 2 }}, line = 0, first_stop = 65535 }} }} }} \
          UPDATE({{}}, STATE, 0.2)"
     ))
     .exec()
@@ -2184,7 +2184,15 @@ fn the_game_script_buys_the_vehicle_and_tells_the_buyer_which() {
         )
         .eval()
         .unwrap();
-    assert_eq!(applied, "1:true:500 2:true:nil", "the buyer hears which");
+    assert_eq!(
+        applied, "1:true:500 2:true:nil 3:true:nil",
+        "the buyer hears which"
+    );
+    let nearest: String = lua
+        .load("local s = SENT[3].setLine return table.concat({ s.vehicle, s.line, s.stop }, '|')")
+        .eval()
+        .unwrap();
+    assert_eq!(nearest, "500|301|-1", "NEAREST_STOP is the game's -1 again");
     // The registry the GUI reads is in the script's state, saved with the
     // world.
     let saved: u32 = lua
@@ -2235,7 +2243,7 @@ fn a_bought_vehicle_goes_to_the_room_and_the_store_hears_which_it_is() {
          HEARD = nil \
          api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(25, 202, CONFIG), function(data, ok, entities) \
              HEARD = { vehicle = data.resultVehicleEntity, ok = ok, entity = entities[1] and entities[1][1] } \
-             api.cmd.sendCommand(api.cmd.makeVehicleSetLineCmd(data.resultVehicleEntity, 600, 0)) \
+             api.cmd.sendCommand(api.cmd.makeVehicleSetLineCmd(data.resultVehicleEntity, 600, -1)) \
          end) \
          M.step()",
     )
@@ -2272,7 +2280,8 @@ fn a_bought_vehicle_goes_to_the_room_and_the_store_hears_which_it_is() {
         )
         .eval()
         .unwrap();
-    assert_eq!(assigned, "500|true|500|3|1|0");
+    // The line window's -1, the stop nearest the vehicle, as NEAREST_STOP.
+    assert_eq!(assigned, "500|true|500|3|1|65535");
 }
 
 #[test]

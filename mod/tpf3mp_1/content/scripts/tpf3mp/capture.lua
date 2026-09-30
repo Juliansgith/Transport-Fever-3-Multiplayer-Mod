@@ -265,7 +265,12 @@ function capture.vehicleBuy(ctx, _player, depot, config)
 	} }
 end
 
+-- AssignLine.first_stop for "the stop nearest the vehicle", which the line
+-- window asks for with -1 (tpf3mp_proto AssignLine::NEAREST_STOP).
+capture.NEAREST_STOP = 65535
+
 function capture.vehicleSetLine(ctx, vehicle, line, stopIndex)
+	if type(stopIndex) == "number" and stopIndex < 0 then stopIndex = capture.NEAREST_STOP end
 	return { AssignLine = {
 		vehicles = { vehicleOf(ctx, vehicle) }, line = lineOf(ctx, line), first_stop = stopIndex,
 	} }

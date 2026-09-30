@@ -429,7 +429,7 @@ appended.
 | `SellVehicle` | vehicles |
 | `CreateLine` | name, colour, the line as the game keeps it: stops (station group, terminal, other terminals, load mode, waiting times, loading rules per cargo), transport modes, settings |
 | `EditLine` | a line and one change: rename, recolour, the whole line anew, or delete |
-| `AssignLine` | vehicles, the line or none, the first stop |
+| `AssignLine` | vehicles, the line or none, the first stop, or `NEAREST_STOP` (65535) for the stop nearest each vehicle: the line window's -1, which every game resolves the same from the same world |
 | `PlaceStop` | the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, the model |
 | `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
 | `CompanyOp` | create, join, rename or delete a company |
