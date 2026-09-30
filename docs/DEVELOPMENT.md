@@ -237,7 +237,12 @@ starts it with no Start Game to press. The launcher passes the name in
 `TPF3MP_AUTO_LOAD`, and the hook loads it the way it loads the room's world
 for a guest, logging `auto-load: ...` lines. A guest leaves the flag out:
 it waits at the menu, is marked ready there, and gets the room's world when
-the room starts. So a whole two-player playtest starts from two commands:
+the room starts. Several games run on one PC without a sandbox when each
+launcher has its own `--game-link`, `--listen`, `--identity`, `--worlds` and
+`--game-data-dir` (the hook's log and profiles, passed in
+`TPF3MP_DATA_DIR`): the launcher already starts each game with `SteamAppId`,
+so Steam lets it run beside the others. So a whole two-player playtest
+starts from two commands:
 
 ```sh
 tpf3mp-launcher --server 127.0.0.1:29470 --name james --auto-create playtest --auto-start 2 --invite-file invite.txt --auto-play --auto-load mptest
