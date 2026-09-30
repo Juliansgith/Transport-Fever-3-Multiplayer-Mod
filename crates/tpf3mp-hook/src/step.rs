@@ -112,6 +112,11 @@ pub trait GameControl: Send {
     fn request_load(&mut self, file: &Path) -> Result<(), String>;
     /// Whether the world the last load asked for is up. Once.
     fn load_done(&mut self) -> bool;
+    /// Tells the game's Multiplayer window what the room said: the room,
+    /// its speed, its chat, a divergence, the game's end.
+    fn room_notice(&mut self, notice: &Notice);
+    /// Tells the game's Multiplayer window which player is this game's.
+    fn set_me(&mut self, player: PlayerId);
 }
 
 /// A save the game is making for the room.
@@ -186,6 +191,9 @@ pub struct HookGame {
     /// The world's lanes after the batch that ran last, when it ended at a
     /// checkpoint step: what the session reports for that step.
     pub lanes: Option<Vec<LaneDigest>>,
+    /// What the room said for the game's Multiplayer window, which the
+    /// driver hands on (`GameControl::room_notice`).
+    pub window: Vec<Notice>,
 }
 
 impl Game for HookGame {
@@ -224,7 +232,7 @@ impl Game for HookGame {
         if let Notice::Refused { command, reason } = &notice {
             self.refused.push((*command, format!("{reason:?}")));
         }
-        crate::lua::notice(&notice);
+        self.window.push(notice.clone());
         // The room and its chat are for the Multiplayer window, not the log.
         if !matches!(notice, Notice::Room(_) | Notice::Chat { .. }) {
             self.notices.push(format!("{notice:?}"));
@@ -463,6 +471,10 @@ impl<G: RoomGate> StepDriver<G> {
         for notice in self.game.notices.drain(..) {
             self.log.push(format!("the room says: {notice}"));
         }
+        // The session hears the room only in the gate's calls above.
+        for notice in std::mem::take(&mut self.game.window) {
+            self.control.room_notice(&notice);
+        }
         // The actions wait until a batch runs: a batch that starts at their
         // step, since the session ends the one before there.
         let runs = matches!(updates, Updates::Exactly(steps) if steps > 0);
@@ -575,7 +587,7 @@ impl<G: RoomGate> StepDriver<G> {
                     ));
                     self.checkpoint_interval = u64::from(begin.checkpoint_interval).max(1);
                     self.game.me = Some(begin.player);
-                    crate::lua::set_me(begin.player);
+                    self.control.set_me(begin.player);
                     self.phase = Phase::Running;
                 }
                 Ok(None) => return Updates::Own,
@@ -782,6 +794,9 @@ pub(crate) mod tests {
         pub(crate) checkpoints: Vec<(u64, Vec<LaneDigest>)>,
         /// What the player said to the room.
         pub(crate) said: Vec<ChatText>,
+        /// What the room says, handed to the game by each poll, one list a
+        /// poll.
+        pub(crate) notices: VecDeque<Vec<Notice>>,
     }
 
     impl RoomGate for Script {
@@ -798,6 +813,9 @@ pub(crate) mod tests {
         fn poll_step(&mut self, game: &mut HookGame) -> Result<StepGate, SessionError> {
             for event in self.events.pop_front().unwrap_or_default() {
                 game.apply(&event);
+            }
+            for notice in self.notices.pop_front().unwrap_or_default() {
+                game.notice(notice);
             }
             match self.gates.front() {
                 // A Run stays until the step ran, a Save until it is
@@ -888,6 +906,8 @@ pub(crate) mod tests {
         pub(crate) save_answer: Option<Result<PathBuf, String>>,
         pub(crate) load_requests: Vec<PathBuf>,
         pub(crate) load_done: bool,
+        pub(crate) room_notices: Vec<Notice>,
+        pub(crate) me: Option<PlayerId>,
     }
 
     impl GameControl for FakeControl {
@@ -911,6 +931,12 @@ pub(crate) mod tests {
         }
         fn load_done(&mut self) -> bool {
             std::mem::take(&mut self.state.lock().unwrap().load_done)
+        }
+        fn room_notice(&mut self, notice: &Notice) {
+            self.state.lock().unwrap().room_notices.push(notice.clone());
+        }
+        fn set_me(&mut self, player: PlayerId) {
+            self.state.lock().unwrap().me = Some(player);
         }
     }
 
@@ -1373,10 +1399,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_multiplayer_window_hears_the_room_through_the_game_control() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        let heard = vec![
+            Notice::Speed(Speed(200)),
+            Notice::Diverged {
+                step: 50,
+                lanes: vec![3],
+            },
+        ];
+        script.notices.push_back(heard.clone());
+        let (mut d, state) = driver_with(script);
+        let mut calls = Vec::new();
+        call(&mut d, &mut calls);
+        let state = state.lock().unwrap();
+        assert_eq!(state.me, Some(begin().player), "the game's own player");
+        assert_eq!(state.room_notices, heard, "what the room said, in order");
+    }
+
+    #[test]
     fn what_the_player_says_reaches_the_room_in_its_game_only() {
-        let _serial = crate::lua::tests::SERIAL
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut script = Script::default();
         script.begin.push_back(Some(begin()));
         let (mut d, mut calls) = driver(script);
