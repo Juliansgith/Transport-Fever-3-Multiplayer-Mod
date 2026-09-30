@@ -749,6 +749,7 @@ end
 local registry = module("registry")
 local companiesModule = module("companies")
 require_companies = function() return companiesModule end
+local progressionModule = module("progression")
 
 local function entityOf(ctx, kind, id)
 	local e = registry.entity(ctx and ctx.registry, kind, id)
@@ -1076,10 +1077,45 @@ function HANDLERS.CompanyOp(op, ctx)
 	return true
 end
 
+-- Taking a company rank (tpf3mp/progression.lua). With one company in the
+-- room, the company growth script's own event, as the company window sends
+-- it: the game keeps that company's rank, and checks the rank is reached.
+-- With more, the acting company's rank in the mod's state, when it reached
+-- it; the save's own player also takes it in the game's own state, so its
+-- rank stays when the room is one company again.
+function HANDLERS.ApplyRank(r, ctx)
+	local level = tonumber(r.level)
+	if level == nil then return false, "a rank is a number" end
+	local roster = ctx and ctx.roster
+	local event = function()
+		return api.cmd.makeScriptingSendEventCmd("", "Companies", "applyLevel", { level = level })
+	end
+	if progressionModule.multi(roster) then
+		local ok, why = progressionModule.take(ctx.progression, roster, company(), level)
+		if not ok then return false, why end
+		if company() == api.engine.util.getPlayer() then send(event()) end
+		return true
+	end
+	if company() ~= api.engine.util.getPlayer() then
+		return false, "only the room's first company has the game's own rank"
+	end
+	-- The game ignores a rank not reached; this says why, where it can read it.
+	local game = progressionModule.game(api)
+	local read, own = pcall(function() return game and game.own(company()) end)
+	if read and type(own) == "table" and type(own.level) == "number" and type(own.potentialLevel) == "number" then
+		if level <= own.level then return false, "the company has rank " .. own.level .. " already" end
+		if level > own.potentialLevel then
+			return false, "the company has reached rank " .. own.potentialLevel .. ", not " .. level
+		end
+	end
+	return run(event())
+end
+
 -- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the
 -- actions that name vehicles, lines and station groups; with companies, also
 -- `roster`, `player` (who sent it) and `company` (their company's player
--- entity), which the action is booked to. Returns true, nil
+-- entity), which the action is booked to, and `progression`, the companies'
+-- ranks (tpf3mp/progression.lua). Returns true, nil
 -- and the entity it made or changed (for the kinds in CREATES and KEEPS,
 -- where the game said), or false and why not; never raises.
 function apply.run(action, ctx)

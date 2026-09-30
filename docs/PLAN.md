@@ -278,6 +278,15 @@ Dev B:
   and no money is created in the switch. *Added (D21):* any split of the
   room's players, loans for every company, colours, and the GUI showing
   the player's own company.
+- [ ] *Proposed (D23), for the owner to approve:* company ranks. With one
+  company the game's own, a rank the company window takes carried to every
+  game (`ApplyRank`); with more, each company's score its share of each
+  town's population by what it carried there, times its rating there over
+  100, at the same game time in every game. Built on `feat/progression`;
+  open: whether the game's thresholds scale with the number of companies,
+  and prospecting's outcome for companies other than the room's first,
+  which the game's company script never runs (it looks at the save's
+  player alone).
 - [ ] Roadside stops and signals, the side included, never rebuilding an
   edge a line runs on.
 - [ ] The room's required mods from Mod Hub IDs; a missing mod is

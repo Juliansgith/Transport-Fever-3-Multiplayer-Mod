@@ -40,6 +40,7 @@
         "scripts/tpf3mp/geom.lua",
         "scripts/tpf3mp/guard.lua",
         "scripts/tpf3mp/lanes.lua",
+        "scripts/tpf3mp/progression.lua",
         "scripts/tpf3mp/registry.lua",
         "scripts/tpf3mp/roads.lua",
         "tpf3mp_sim/tpf3mp_sim.gs.lua",

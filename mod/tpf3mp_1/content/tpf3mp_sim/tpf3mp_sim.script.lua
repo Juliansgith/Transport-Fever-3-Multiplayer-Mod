@@ -57,6 +57,11 @@
 -- reaches this game's scripts only, so only this game hands the action over;
 -- the room then orders it for every game.
 --
+-- With more than one company in the room, it samples the companies'
+-- scores four times a game month, the same game time in every game, and
+-- keeps their ranks (tpf3mp/progression.lua, docs/HOOKS.md "Company
+-- ranks"), each town's parts and each score said in the hook's log.
+--
 -- It also hears the company script's `startProspection` and
 -- `endProspection` (game_mechanics/company/company.script.tl), which every
 -- game's company script sends at the same update, and says in the hook's
@@ -66,7 +71,8 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes, capture, registry, companies = false, nil, nil, nil, nil, nil, nil
+	local tried, link, apply, lanes, capture, registry, companies, progression =
+		false, nil, nil, nil, nil, nil, nil, nil
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
 	local told, toldRegistry = false, false
@@ -142,8 +148,9 @@ function data()
 			local okCapture, captureModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/capture.lua")
 			local okRegistry, registryModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/registry.lua")
 			local okCompanies, companiesModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/companies.lua")
-			if okBridge and okApply and okLanes and okCapture and okRegistry and okCompanies
-				and type(companiesModule) == "table" and type(bridge) == "table"
+			local okProgression, progressionModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/progression.lua")
+			if okBridge and okApply and okLanes and okCapture and okRegistry and okCompanies and okProgression
+				and type(companiesModule) == "table" and type(progressionModule) == "table" and type(bridge) == "table"
 				and type(applyModule) == "table" and type(lanesModule) == "table"
 				and type(captureModule) == "table" and type(registryModule) == "table" then
 				link = bridge.attach(bridge.find())
@@ -156,6 +163,7 @@ function data()
 				capture = captureModule
 				registry = registryModule
 				companies = companiesModule
+				progression = progressionModule
 				if link then link:log("the game script is linked") end
 			end
 		end
@@ -239,21 +247,27 @@ function data()
 			-- A month begun since the companies' loans were last charged.
 			local month = companies.monthNow(api)
 			local monthly = l:room() and type(saved) == "table" and companies.due(saved.companies, month)
-			if not actions and not checkpoint and not begin and not monthly then return nil end
+			-- A quarter of a month begun since the companies' scores were
+			-- last sampled, with more than one company (tpf3mp/progression.lua).
+			local quarter = progression.quarterNow(api)
+			local sample = l:room() and progression.due(saved, quarter)
+			if not actions and not checkpoint and not begin and not monthly and not sample then return nil end
 			return { actions = actions, origins = origins, checkpoint = checkpoint, begin = begin,
-				monthly = monthly and month or nil }
+				monthly = monthly and month or nil, sample = sample and quarter or nil }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
 			local l = linked()
 			if not l or type(work) ~= "table" then return end
-			if work.actions or work.begin or work.monthly then
+			if work.actions or work.begin or work.monthly or work.sample then
 				local saved = state:get()
 				if type(saved) ~= "table" then saved = {} end
 				local reg, _, failed = registry.sync(saved.registry)
 				-- The room's companies: begun at its first update, as the
 				-- registry, the same in every game (tpf3mp/companies.lua).
 				local roster = companies.ensure(saved.companies, api)
+				-- The companies' ranks (tpf3mp/progression.lua).
+				local prog = progression.ensure(saved.progression)
 				if #failed > 0 and not toldRegistry then
 					toldRegistry = true
 					l:log("the registry could not list " .. table.concat(failed, "; "))
@@ -270,6 +284,7 @@ function data()
 						roster = roster,
 						player = player,
 						company = company and company.entity,
+						progression = prog,
 					})
 					local name = next(action)
 					-- What it changed keeps its id on whatever entity it is
@@ -307,8 +322,14 @@ function data()
 					local ok, why = pcall(companies.chargeMonths, roster, work.monthly, apply.send, api)
 					if not ok then l:log("the companies' loans were not charged: " .. tostring(why)) end
 				end
+				if work.sample then
+					local ok, why = progression.sample(prog, roster, api, work.sample,
+						function(line) l:log(line) end, reg, registry)
+					if not ok then l:log("the companies' scores were not sampled: " .. tostring(why)) end
+				end
 				saved.registry = reg
 				saved.companies = roster
+				saved.progression = prog
 				state:set(saved)
 			end
 			if work.checkpoint then

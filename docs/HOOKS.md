@@ -1026,8 +1026,11 @@ reference of its own to either. Once linked, the GUI wraps every
     event;
   - prospecting, the construction menu's `makeScriptingSendEventCmd("",
     "Companies", "spawnIndustry", …)`, as a `Prospect` action ("Prospecting"
-    below). The company's other events (taking a rank, `applyLevel`;
-    greening an industry, `MakeGreen`; a marketing campaign) stay refused;
+    below);
+  - taking a rank, the company window's `makeScriptingSendEventCmd("",
+    "Companies", "applyLevel", { level })`, as an `ApplyRank` action
+    ("Company ranks" below). The company's other events (greening an
+    industry, `MakeGreen`; a marketing campaign) stay refused;
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
     file and position, the consist part by part, as the store configured
     it), selling, putting on a line, and the vehicle window's stop, start,
@@ -1228,6 +1231,62 @@ prospecting ended: ::/cargos/coal/coal.cargo near town-3, begun at game time 540
 or `..., found nothing`. The entity in brackets on the first line is each
 game's own; the rest, the industry's id, file and place included, is the
 same in every game.
+
+The game's company script runs the prospections of the save's own player
+alone (`company.script.tl`, its update looks at `getPlayer()` only, in the
+engine state): a prospection of another company is kept and its permit
+used, but its outcome is never drawn (seen in the scripts; not carried yet,
+docs/PLAN.md).
+
+### Company ranks
+
+A company's rank gives it the game's permits: headquarters, marketing,
+prospecting and the rest
+([investigation/TPF3_PROGRESSION_2026-09-30.md](../investigation/TPF3_PROGRESSION_2026-09-30.md)).
+The game's growth script keeps one company, the save's player: its
+experience is the highest world population it has seen, the rank that
+reaches is its potential, and the company window takes a rank reached with
+`Companies` `applyLevel`.
+
+- **One company in the room**: the game's own score. The company window's
+  `applyLevel` goes to the room as an `ApplyRank` action, and every game
+  applies it at the same update through the growth script's own event. A
+  rank not reached, or taken already, is refused with why in `hook.log`.
+- **More than one** (D23, proposed): the mod's game script scores every
+  company four times a game month, at the same game time in every game
+  (`tpf3mp/progression.lua`): for each town, the town's population times
+  the company's share of what was carried for it (cargo delivered to it in
+  the last half year, passengers travelling to and from it on lines, from
+  the game's statistics per line and the lines' owners) times its rating
+  there over 100 (the town's rating, with the happiness of its own
+  passengers and the punctuality of its own cargo, by the game's formulas).
+  Experience is the highest score, the rank it reaches the game's own
+  thresholds. The records are the mod's game script's state, saved with
+  the world. `ApplyRank` takes a rank reached in that record; the room's
+  first company also takes it in the game's own state. In the GUI the
+  mod answers the game's windows' `getCompanyProgressionState` from the
+  record, so the company window and the permits show the player's
+  company's own rank (`the company window shows each company's own rank`
+  in `hook.log`; INFERRED that the game's windows share the module the mod
+  changes, to check in the game).
+
+Nothing is guessed: a sample whose statistics or game modules do not read
+is left out (`the companies' scores were not sampled: ...`), and a town
+with no rating counts for nobody.
+
+In `hook.log`, every game of a room of two companies writes at each
+sample, at the same game time and with the same numbers:
+
+```
+progression at game time 5400000: 12 towns, weights cargo 1 passengers 1
+progression at game time 5400000: town-3 population 1240: company-0 share 0.5500 rating 80.0000 part 545.6000, company-1 share 0.4500 rating 64.2859 part 358.7153
+progression at game time 5400000: company-0 score 3120.4000, experience 20514, rank 3 reached, 2 taken
+progression at game time 5400000: company-1 score 812.9000, experience 812, rank 0 reached, 1 taken
+```
+
+one line per town someone carried for, then one per company. Compare the
+lines of the same game time across the games: any difference is a
+divergence.
 
 ### The build tools
 

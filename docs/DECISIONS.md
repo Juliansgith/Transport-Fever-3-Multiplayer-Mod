@@ -668,3 +668,77 @@ Rejected:
 - **A company chosen only in the lobby, before the game** (TpF2
   Multiplayer's chips): choosing in the game lets a player change their
   mind, and a player who joins late chooses when they arrive.
+
+## D23 (proposed, 2026-09-30): a company's progression is its share of each town, by deliveries and rating
+
+**Proposed, not decided: the owner (Juliansgith) approves or changes it.**
+
+Asked for on 2026-09-30: "we need to split the population to rank up
+mechanic based on two factors, company rating and cargo + passengers
+delivered per town then after the split add it up and that is the
+company's score for progression", made precise the same day: "it should be
+more on company rating per town when summing them all up, after the split
+multiply by company rating/100".
+
+What the game does (investigation/TPF3_PROGRESSION_2026-09-30.md): its
+growth script keeps one company, the save's player. Its experience is the
+highest world population it has seen, every town's residents whoever
+serves them; its rank is the game's thresholds on that. There is no rating
+of a company: the rating is the town's (its authority score, the lowest of
+six parts), one for everyone.
+
+Proposed:
+
+- **One company, the game's own.** With one company in the room (co-op)
+  nothing changes: the game keeps its own score and rank, and a rank the
+  company window takes goes to the game's growth script as its own event,
+  in every game at the same update.
+- **More than one: each town split.** Each company's score is the sum over
+  the towns of
+
+  `population x share x rating / 100`
+
+  - *population*: the town's residents, as the game counts them for its
+    own score;
+  - *share*: the company's share of the cargo delivered to the town in the
+    last half year and of the passengers travelling to and from it on
+    lines (averaged over the same half year), both from the game's own
+    statistics per line, each line the company's that owns it. The two
+    shares are weighed cargo 1 : passengers 1 (`progression.WEIGHTS`), a
+    kind nobody carries there left out;
+  - *rating*: the company's rating in that town, 0 to 100: the game's town
+    rating with the two parts a company earns itself taken from its own
+    lines by the game's own formulas (its passengers' happiness, its
+    cargo on time), and the town's other parts (reputation, traffic,
+    noise, pollution) as they are, the same for every company.
+- **As the game's.** The score is taken four times a game month; the
+  experience is the highest score reached and never falls; the rank it
+  reaches is the game's own thresholds, and a company takes a rank it
+  reached through the company window, which then gives it the game's
+  permits (prospecting among them). The room's first company begins from
+  the rank it earned before there were two.
+- **The same in every game.** It is computed in the mod's game script
+  from the simulation's state only, at the same game time in every game,
+  and each town's parts and each score are written to `hook.log`.
+
+Open for the owner:
+
+- Split this way, the companies' scores add up to at most the world's
+  population times the ratings, while the game's thresholds are set for
+  one company holding the whole world: with two even companies each needs
+  roughly twice the world's growth for a rank. Scaling the thresholds by
+  the number of companies, or not, is the owner's call; nothing is scaled
+  now.
+- The room's first company keeps the experience the game gave it, which
+  is the whole world's; the others begin at nothing.
+- The game's own rank-up notices and its ticket price bonus follow the
+  save's player alone (the growth script's); the others' are not shown.
+
+Rejected:
+
+- **Two splits added up** (by rating, and by deliveries, each a share of
+  the population): the request's second wording multiplies by the rating
+  instead, so a well-served town that rates a company badly gives it
+  little.
+- **One rating per company over all towns**: the game has none, and the
+  request is for the rating in each town.

@@ -218,9 +218,15 @@ protected folder such as Program Files.
   construction menu as usual: every player's game starts the prospection
   together, a moment after your click, and uses your company's permit.
   When it ends, months later, every game finds the same industry at the
-  same place, or nothing, and says so in the same notification. Taking a
-  new company rank, greening an industry and marketing campaigns are not
-  in multiplayer yet.
+  same place, or nothing, and says so in the same notification. Greening
+  an industry and marketing campaigns are not in multiplayer yet.
+- **Company ranks.** Take a new rank in the company window as usual: every
+  player's game takes it together, a moment after your click. With one
+  company in the room the rank grows as in single player. With more (a
+  proposal awaiting the owner, D23), each company's progress is its share
+  of each town it serves: the town's people, split by the cargo and
+  passengers each company carries for it, times the company's rating
+  there. The company window shows your company's own rank and permits.
 - **Roads, tracks, stations and depots.** Build them with the game's own
   street, track and construction tools: every player's game builds them
   together, a moment after your click, and your company pays as usual. A

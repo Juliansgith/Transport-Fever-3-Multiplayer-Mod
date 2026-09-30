@@ -203,6 +203,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.engine",
             "tpf3mp.geom",
             "tpf3mp.guard",
+            "tpf3mp.progression",
             "tpf3mp.registry",
             "tpf3mp.roads",
             "tpf3mp.ui"
@@ -538,7 +539,10 @@ fn with_the_hook_the_gui_links_once() {
     assert_eq!(
         logged,
         "the GUI is linked|the guard is on 4 command factories|\
-         the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)"
+         the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)|\
+         the company window shows the game's own rank only: the game's company progression did \
+         not load: fake_gui.lua:134: ug_require of an unknown path \
+         /game_mechanics/company/company_progression_util.tl"
     );
     let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
     assert_eq!(worlds, 1, "the world's GUI started once");
@@ -3850,14 +3854,23 @@ fn a_prospection_goes_to_the_room_by_its_towns_id_and_its_types_in_order() {
             "{why}: {logged:?}"
         );
     }
-    // The company's other events stay refused.
+    // Taking a rank goes to the room too (tpf3mp/progression.lua); the
+    // company's other events stay refused.
     lua.load(
-        "api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'applyLevel', { level = 2 }))",
+        "api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'applyLevel', { level = 2 }))          api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'applyLevel', { level = 2.5 }))          api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'MakeGreen', {}))",
     )
     .exec()
     .unwrap();
-    let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
-    assert_eq!(handed, 1);
+    let (handed, level): (usize, u32) = lua
+        .load("return #HOOK.commands, HOOK.commands[2].ApplyRank.level")
+        .eval()
+        .unwrap();
+    assert_eq!((handed, level), (2, 2));
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.ends_with("a rank of 2.5")),
+        "{logged:?}"
+    );
 }
 
 /// Towns and industries for the prospecting tests, over the stand-in engine
@@ -4510,4 +4523,390 @@ fn a_vehicles_marker_wears_its_companys_colour() {
             "{classes}"
         );
     }
+}
+
+/// A world for the companies' progression (tpf3mp/progression.lua), over the
+/// stand-in engine state: towns 5, 7 and 9 of 400, 1000 and 50 people; lines
+/// 301 of the save's player (25), 302 and 303 of the company founded next
+/// (901), 304 of a player the room has not; the game's delivery and
+/// passenger statistics per line, the towns' ratings, and the game's own
+/// modules. A game month is 4000 ms of game time: a sample every 1000.
+/// REVERSED lists everything the other way round, as another game's hash
+/// tables might.
+const FAKE_PROGRESSION: &str = r#"
+GAME_T = 0
+local CT = api.type.ComponentType
+CT.GAME_TIME, CT.PLAYER_OWNED, CT.TOWN = 99, 98, 12
+api.engine.util.getWorld = function() return 1 end
+OWNERS = { [301] = 25, [302] = 901, [303] = 901, [304] = 555 }
+api.engine.getComponent = function(e, kind)
+    if kind == CT.GAME_TIME then return { gameTime = GAME_T } end
+    if kind == CT.PLAYER_OWNED then
+        local o = OWNERS[e]
+        if o then return { player = o } end
+        return nil
+    end
+    if kind == CT.TOWN and (e == 5 or e == 7 or e == 9) then return {} end
+end
+api.engine.getEntitiesWithComponent = function(kind)
+    if kind == CT.TOWN then return { 5, 7, 9 } end
+    return {}
+end
+api.util = { getDefaultMonthDuration = function() return 4000 end,
+             getDefaultYearDuration = function() return 48000 end }
+local function keyed(pairsList)
+    local t = {}
+    local from, to, by = 1, #pairsList, 1
+    if REVERSED then from, to, by = #pairsList, 1, -1 end
+    for i = from, to, by do t[pairsList[i][1]] = pairsList[i][2] end
+    return t
+end
+local function listed(list)
+    if not REVERSED then return list end
+    local out = {}
+    for i = #list, 1, -1 do out[#out + 1] = list[i] end
+    return out
+end
+api.engine.system.townBuildingSystem = { getTown2personCapacitiesMap = function()
+    return keyed({ { 7, { 1000, 0 } }, { 5, { 400, 0 } }, { 9, { 50, 0 } } })
+end }
+DELIVERIES = function(town)
+    if town == 7 then return keyed({ { 301, { [-1] = { 2, 60 } } }, { 302, { [-1] = { 0, 40 } } } }) end
+    if town == 5 then return keyed({ { 302, { [-1] = { 0, 10 } } }, { 304, { [-1] = { 0, 99 } } } }) end
+    return {}
+end
+HAPPY = function(town)
+    if town == 7 then
+        return listed({ { 301, { resident = { 1, 20 }, nonResident = { 0, 0 } } },
+                        { 303, { resident = { 0, 10 }, nonResident = { 5, 10 } } } })
+    end
+    return {}
+end
+api.engine.util.town = {
+    getTownDeliveriesStats = function(town, interval, perLine, perCargo)
+        ASKED = { interval, perLine, perCargo }
+        return DELIVERIES(town)
+    end,
+    getTownHappinessStats = function(town, lines) return { byLine = HAPPY(town) } end,
+}
+TOWN_STATES = { townStates = listed({
+    { townEntity = { entity = 7 }, authorityScore = 0.7, cachedRatings = {
+        urban_care = { value = 0.9 }, traffic_congestion = { value = 0.8 },
+        noise = { value = 1 }, pollution = { value = 1 }, people_happiness = { value = 0.1 } } },
+    { townEntity = { entity = 5 }, authorityScore = 0.5 },
+    { townEntity = { entity = 9 }, authorityScore = 1 },
+}) }
+OWN = { [25] = { experience = 1500, level = 1, potentialLevel = 7 } }
+GAME_MODULES = {
+    ['/game_mechanics/company/company_progression_util.tl'] = {
+        getLevelAndFraction = function(base, exp) return math.floor(exp / base), 0 end,
+        getCompanyProgressionState = function(e) return OWN[e] end,
+    },
+    ['/game_mechanics/towns/town_util.tl'] = {
+        getRatingSensitivity = function(state, key) return 1 end,
+        externalGetTownsState = function() return TOWN_STATES end,
+    },
+    ['/game_mechanics/company/company_util.tl'] = { getBasePopulation = function() return 200 end },
+}
+A, B = string.rep('a', 64), string.rep('b', 64)
+"#;
+
+/// The progression lines of the hook's log.
+fn progression_log(lua: &Lua) -> Vec<String> {
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    logged
+        .into_iter()
+        .filter(|l| l.starts_with("progression"))
+        .collect()
+}
+
+/// A room of two companies after its first sample: A founded Rival (901),
+/// B plays for the room's first company (25).
+fn two_companies(reversed: bool) -> Lua {
+    let (lua, _script) = engine();
+    lua.load(FAKE_PROGRESSION).exec().unwrap();
+    lua.globals().set("REVERSED", reversed).unwrap();
+    lua.load(
+        "HOOK.room = true \
+         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+         UPDATE({}, STATE, 0.2) \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    lua
+}
+
+#[test]
+fn with_two_companies_each_takes_its_share_of_every_town_by_its_deliveries_and_rating() {
+    let lua = two_companies(false);
+    let records: String = lua
+        .load(
+            "local out = {} for _, r in ipairs(STATE.value.progression.records) do \
+                 out[#out + 1] = r.company .. ':' .. r.entity .. ':' .. r.experience .. ':' \
+                     .. r.potential .. ':' .. r.level end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    // Town 5: Rival carried all its cargo; rating the town's 50 (its own
+    // parts are perfect): 400 x 1 x 50 / 100 = 200. Town 7: cargo 60 to 40,
+    // passengers 20 to 20, so shares 0.55 and 0.45; the first company's
+    // rating is the town's 80 (its passengers' happiness 93, its cargo on
+    // time 95): 440; Rival's is its unhappy passengers' 64.29: 289.29.
+    // Rival: 489. The first company keeps the game's own 1500, which it
+    // earned before the room had two companies. Ranks: experience / 200.
+    assert_eq!(records, "0:25:1500:7:1 1:901:489:2:1");
+    let log = progression_log(&lua);
+    assert_eq!(log.len(), 5, "{log:?}");
+    assert_eq!(
+        log[0],
+        "progression at game time 0: 3 towns, weights cargo 1 passengers 1"
+    );
+    assert_eq!(
+        log[1],
+        "progression at game time 0: town-0 population 400: company-1 share 1.0000 \
+         rating 50.0000 part 200.0000"
+    );
+    assert!(
+        log[2].starts_with(
+            "progression at game time 0: town-1 population 1000: company-0 share 0.5500 \
+             rating 80.0000 part 440.0000, company-1 share 0.4500 rating 64.28"
+        ),
+        "{log:?}"
+    );
+    assert_eq!(
+        log[3],
+        "progression at game time 0: company-0 score 440.0000, experience 1500, rank 7 reached, 1 taken"
+    );
+    assert!(
+        log[4].starts_with("progression at game time 0: company-1 score 489.28")
+            && log[4].ends_with(", experience 489, rank 2 reached, 1 taken"),
+        "{log:?}"
+    );
+    // The game's delivery statistics per line, over half a year.
+    let asked: String = lua
+        .load(
+            "return table.concat({ tostring(ASKED[1]), tostring(ASKED[2]), tostring(ASKED[3]) }, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(asked, "24000 true false");
+    // The next sample waits for the next quarter of a month.
+    lua.load("UPDATE({}, STATE, 0.2) GAME_T = 999 UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    assert_eq!(progression_log(&lua).len(), 5);
+    lua.load("GAME_T = 1000 UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    assert_eq!(progression_log(&lua).len(), 10);
+}
+
+#[test]
+fn every_game_scores_the_companies_alike_however_its_tables_are_ordered() {
+    let run = |reversed: bool| {
+        let lua = two_companies(reversed);
+        lua.load("for _ = 1, 5 do GAME_T = GAME_T + 1000 UPDATE({}, STATE, 0.2) end")
+            .exec()
+            .unwrap();
+        let records: String = lua
+            .load(
+                "local out = {} for _, r in ipairs(STATE.value.progression.records) do \
+                     out[#out + 1] = r.company .. ':' .. r.experience .. ':' .. r.potential end \
+                 for _, p in ipairs(STATE.value.progression.passengers) do \
+                     out[#out + 1] = p.company .. '@' .. p.town .. '=' .. string.format('%.17g', p.value) end \
+                 return table.concat(out, ' ')",
+            )
+            .eval()
+            .unwrap();
+        (records, progression_log(&lua))
+    };
+    let (a, log_a) = run(false);
+    let (b, log_b) = run(true);
+    assert_eq!(a, b);
+    assert_eq!(log_a, log_b);
+    assert_eq!(log_a.len(), 30, "six samples of five lines");
+}
+
+#[test]
+fn with_two_companies_a_company_takes_the_ranks_it_reached() {
+    let lua = two_companies(false);
+    lua.load(
+        "SENT = {} HOOK.applied = {} \
+         HOOK.batch = { { ApplyRank = { level = 2 } }, { ApplyRank = { level = 3 } }, \
+                        { ApplyRank = { level = 2 } }, { ApplyRank = { level = 5 } } } \
+         HOOK.origins = { A, A, B, B } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = a.i .. ':' .. tostring(a.ok) .. ':' .. tostring(a.why) end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied, "1:true:nil 2:false:Rival has reached rank 2, not 3 3:true:nil 4:true:nil",
+        "Rival takes rank 2 and not 3; the first company takes 2, then 5"
+    );
+    let levels: String = lua
+        .load(
+            "local out = {} for _, r in ipairs(STATE.value.progression.records) do \
+                 out[#out + 1] = r.company .. ':' .. r.level end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(levels, "0:5 1:2");
+    // The room's first company takes its ranks in the game's own state too,
+    // for when the room is one company again; Rival's are the room's alone.
+    let events: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do if c.event then \
+                 out[#out + 1] = c.event.id .. '.' .. c.event.name .. '=' .. c.event.param.level end end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(events, "Companies.applyLevel=2 Companies.applyLevel=5");
+}
+
+#[test]
+fn with_one_company_the_game_keeps_its_own_score_and_takes_its_own_ranks() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_PROGRESSION).exec().unwrap();
+    lua.load(
+        "HOOK.room = true UPDATE({}, STATE, 0.2) \
+         for _ = 1, 3 do GAME_T = GAME_T + 1000 UPDATE({}, STATE, 0.2) end \
+         OWN[25] = { experience = 1500, level = 2, potentialLevel = 4 } \
+         SENT = {} HOOK.applied = {} \
+         HOOK.batch = { { ApplyRank = { level = 3 } }, { ApplyRank = { level = 5 } }, \
+                        { ApplyRank = { level = 2 } } } \
+         HOOK.origins = { A, A, B } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    assert!(
+        progression_log(&lua).is_empty(),
+        "no score of the room's own"
+    );
+    let none: bool = lua
+        .load("return STATE.value.progression.records[1] == nil")
+        .eval()
+        .unwrap();
+    assert!(none);
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = a.i .. ':' .. tostring(a.ok) .. ':' .. tostring(a.why) end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied,
+        "1:true:nil 2:false:the company has reached rank 4, not 5 \
+         3:false:the company has rank 2 already"
+    );
+    let events: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do \
+                 out[#out + 1] = c.event.src .. '|' .. c.event.id .. '|' .. c.event.name .. '|' .. c.event.param.level end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        events, "|Companies|applyLevel|3",
+        "the growth script's own event, as the company window sends it"
+    );
+}
+
+#[test]
+fn a_sample_the_game_cannot_measure_changes_no_rank() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_PROGRESSION).exec().unwrap();
+    lua.load(
+        "GAME_MODULES['/game_mechanics/towns/town_util.tl'] = nil \
+         HOOK.room = true \
+         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+         UPDATE({}, STATE, 0.2) UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.starts_with(
+            "the companies' scores were not sampled: /game_mechanics/towns/town_util.tl did not load"
+        )),
+        "{logged:?}"
+    );
+    let none: bool = lua
+        .load("return STATE.value.progression.records[1] == nil")
+        .eval()
+        .unwrap();
+    assert!(none, "nothing guessed");
+}
+
+#[test]
+fn the_rules_formulas_are_the_games() {
+    let lua = gui();
+    let out: String = lua
+        .load(
+            "local p = ug_require('tpf3mp_1::/scripts/tpf3mp/progression.lua') \
+             local w = { cargo = 1, passengers = 1 } \
+             return table.concat({ \
+                 string.format('%.4f', p.happiness(1, 20, 1)), \
+                 string.format('%.4f', p.happiness(0, 0, 1)), \
+                 string.format('%.4f', p.happiness(9, 10, 0)), \
+                 string.format('%.4f', p.onTime(5, 10, 1)), \
+                 string.format('%.4f', p.onTime(1, 2, 1)), \
+                 string.format('%.4f', p.share(60, 100, 1, 2, w)), \
+                 string.format('%.4f', p.share(0, 0, 1, 4, w)), \
+                 tostring(p.share(5, 0, 0, 0, w)), \
+                 string.format('%.4f', p.share(60, 100, 1, 2, { cargo = 3, passengers = 1 })), \
+                 string.format('%.1f', p.part(1000, 0.5, 80)) }, ' ')",
+        )
+        .eval()
+        .unwrap();
+    // The game's own: happiness and on-time cargo map 0.3..1 to 0..1 at
+    // sensitivity 1, and fewer than 15 people or 10 items count as that many.
+    assert_eq!(
+        out,
+        "0.9286 1.0000 1.0000 0.2857 0.8571 0.5500 0.2500 nil 0.5750 400.0"
+    );
+}
+
+#[test]
+fn the_company_window_reads_each_companys_own_rank_with_two_companies() {
+    let lua = gui();
+    let out: String = lua
+        .load(
+            "GAME_MODULES = { ['/game_mechanics/company/company_progression_util.tl'] = { \
+                 getCompanyProgressionState = function(e) return { level = 9, potentialLevel = 9, experience = e } end } } \
+             local p = ug_require('tpf3mp_1::/scripts/tpf3mp/progression.lua') \
+             local roster = { next = 2, members = {}, list = { { id = 0, entity = 25, name = 'First' }, \
+                 { id = 1, entity = 901, name = 'Rival' } } } \
+             STATEV = { companies = roster, progression = { records = { \
+                 { company = 0, entity = 25, experience = 1500, potential = 7, level = 3 }, \
+                 { company = 1, entity = 901, experience = 489, potential = 2, level = 1 } } } } \
+             assert(p.follow(function() return STATEV end)) \
+             local util = GAME_MODULES['/game_mechanics/company/company_progression_util.tl'] \
+             local function show(e) local s = util.getCompanyProgressionState(e) \
+                 return s.level .. '/' .. s.potentialLevel .. '/' .. s.experience end \
+             local two = show(25) .. ' ' .. show(901) .. ' ' .. show(555) \
+             roster.list[2].gone = true \
+             return two .. ' | ' .. show(25) .. ' ' .. show(901)",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        out, "3/7/1500 1/2/489 9/9/555 | 9/9/25 9/9/901",
+        "each company's own with two; the game's own with one"
+    );
 }

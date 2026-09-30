@@ -55,7 +55,8 @@ guard.CARRY = {
 	-- The finance window's loans (finances_loan_gui.tl): the loan script's
 	-- events, with the loans as the script keeps them. The construction
 	-- menu's prospecting: the company script's spawnIndustry
-	-- (capture.prospect).
+	-- (capture.prospect). The company window's ranks: the growth script's
+	-- applyLevel.
 	makeScriptingSendEventCmd = function(ctx, _src, id, name, param)
 		if id == "Loan" and type(param) == "table" then
 			if name == "Obtain" and type(param[1]) == "table" and type(param[2]) == "table" then
@@ -65,6 +66,14 @@ guard.CARRY = {
 			end
 		elseif id == "Companies" and name == "spawnIndustry" then
 			return capture().prospect(ctx, param)
+		elseif id == "Companies" and name == "applyLevel" then
+			-- The company window taking a rank (company.tl): the acting
+			-- player's company takes it in every game (tpf3mp/progression.lua).
+			local level = type(param) == "table" and param.level or nil
+			if type(level) ~= "number" or level ~= math.floor(level) or level < 1 or level > 255 then
+				error("a rank of " .. tostring(level), 0)
+			end
+			return { ApplyRank = { level = level } }
 		end
 		-- Which event, for the log.
 		error("the " .. tostring(id) .. " script's " .. tostring(name) .. " event", 0)

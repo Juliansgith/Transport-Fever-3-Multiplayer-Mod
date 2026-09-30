@@ -57,6 +57,23 @@ pub const PROSPECTION_STEPS: u64 = 300;
 /// In hundredths: how often a prospection finds an industry.
 pub const PROSPECTION_CHANCE: u64 = 60;
 
+/// Company progression, the model's stand-in for the mod's rule
+/// (`mod/tpf3mp_1/content/scripts/tpf3mp/progression.lua`, D23 proposed):
+/// each station is a town of [`TOWN_POPULATION`] people, a company's share
+/// of a town is its share of the passengers delivered there, its rating in
+/// every town is [`TOWN_RATING`] (the model keeps no ratings), and its score
+/// is the sum over the towns of population x share x rating / 100. With one
+/// company its score is the world's population, as TF3's own. Recomputed
+/// every [`PROGRESSION_EVERY`] steps; experience never falls.
+pub const TOWN_POPULATION: u64 = 1_000;
+pub const TOWN_RATING: u64 = 100;
+pub const PROGRESSION_EVERY: u64 = 100;
+/// Experience a rank needs above the one before, the model's stand-in for
+/// TF3's thresholds.
+pub const RANK_EXPERIENCE: u64 = 1_000;
+/// TF3's highest rank (`company_progression_util.getMaxRank`).
+pub const MAX_RANK: u8 = 15;
+
 /// Tolerances of `docs/BUILDING.md`, in millimetres.
 const NODE_TOLERANCE: i64 = 1_500;
 const EDGE_TOLERANCE: i64 = 1_000;
@@ -126,6 +143,34 @@ fn metres(a: P, b: P) -> i64 {
 struct Company {
     name: String,
     money: i64,
+    /// TF3's company progression: the highest score it reached, the rank
+    /// that reaches and the rank it took.
+    progress: Progress,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct Progress {
+    experience: u64,
+    potential: u8,
+    level: u8,
+}
+
+impl Progress {
+    /// As TF3's company growth script (`company_growth.script.tl`): a
+    /// company begins at rank 1, and its experience never falls.
+    const fn new() -> Self {
+        Self {
+            experience: 0,
+            potential: 1,
+            level: 1,
+        }
+    }
+}
+
+fn rank_for(experience: u64) -> u8 {
+    u8::try_from(experience / RANK_EXPERIENCE)
+        .unwrap_or(MAX_RANK)
+        .min(MAX_RANK)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,6 +275,9 @@ struct State {
     next_line: u32,
     next_vehicle: u32,
     delivered: u64,
+    /// Passengers each company delivered at each station, by (company,
+    /// station): its deliveries for its share of the station's town.
+    served: BTreeMap<(u32, u32), u64>,
     /// Actions that changed nothing.
     ignored: u64,
     rng: u64,
@@ -262,6 +310,7 @@ impl State {
             Company {
                 name,
                 money: START_MONEY,
+                progress: Progress::new(),
             },
         );
         id
@@ -484,7 +533,63 @@ impl State {
                 LoanOp::Repay { loan } => self.charge(company, loan.amount.max(0)),
             },
             Action::Prospect(prospect) => self.prospect(prospect, company),
+            Action::ApplyRank { level } => self.apply_rank(company, *level),
             Action::CompanyOp(_) => unreachable!("handled above"),
+        }
+    }
+
+    /// As TF3's company growth script's `applyLevel`: a rank above the one
+    /// taken, and reached.
+    fn apply_rank(&mut self, company: u32, level: u8) -> Result<(), Refusal> {
+        let Some(entry) = self.companies.get_mut(&company) else {
+            refuse!("company-{company} is gone");
+        };
+        let progress = &mut entry.progress;
+        if level <= progress.level || level > progress.potential {
+            refuse!(
+                "company-{company} has rank {} of {} reached, not {level}",
+                progress.level,
+                progress.potential
+            );
+        }
+        progress.level = level;
+        Ok(())
+    }
+
+    /// The companies' scores, as the mod's rule (see [`TOWN_POPULATION`]):
+    /// with one company the world's population, as TF3's own; with more,
+    /// each town's population split by the passengers each delivered
+    /// there, times its rating there over 100.
+    fn progress(&mut self) {
+        let towns: Vec<u32> = self.stations.keys().copied().collect();
+        let world = TOWN_POPULATION.saturating_mul(u64::try_from(towns.len()).unwrap_or(0));
+        let single = self.companies.len() <= 1;
+        let mut scores: BTreeMap<u32, u64> = BTreeMap::new();
+        if !single {
+            for town in towns {
+                let here = || self.served.iter().filter(move |((_, at), _)| *at == town);
+                let all: u64 = here().map(|(_, n)| *n).sum();
+                if all == 0 {
+                    continue;
+                }
+                for ((company, _), n) in here() {
+                    let part =
+                        u128::from(TOWN_POPULATION) * u128::from(*n) * u128::from(TOWN_RATING)
+                            / (u128::from(all) * 100);
+                    let entry = scores.entry(*company).or_default();
+                    *entry = entry.saturating_add(u64::try_from(part).unwrap_or(u64::MAX));
+                }
+            }
+        }
+        for (id, company) in &mut self.companies {
+            let score = if single {
+                world
+            } else {
+                scores.get(id).copied().unwrap_or(0)
+            };
+            let progress = &mut company.progress;
+            progress.experience = progress.experience.max(score);
+            progress.potential = progress.potential.max(rank_for(progress.experience));
         }
     }
 
@@ -1062,6 +1167,7 @@ impl State {
             vehicles,
             companies,
             delivered,
+            served,
             ..
         } = self;
         for vehicle in vehicles.values_mut() {
@@ -1089,6 +1195,11 @@ impl State {
             }
             vehicle.progress = 0;
             *delivered += u64::from(vehicle.load);
+            if vehicle.load > 0 {
+                *served
+                    .entry((vehicle.owner, line.stops[next].0))
+                    .or_default() += u64::from(vehicle.load);
+            }
             if let Some(owner) = companies.get_mut(&vehicle.owner) {
                 owner.money += i64::from(vehicle.load) * FARE;
             }
@@ -1107,6 +1218,9 @@ impl State {
                     owner.money -= UPKEEP;
                 }
             }
+        }
+        if step.is_multiple_of(PROGRESSION_EVERY) {
+            self.progress();
         }
         self.rng = rng.state();
     }
@@ -1148,6 +1262,9 @@ pub struct Observation {
     pub prospections: usize,
     /// Industries prospecting found.
     pub industries: usize,
+    /// Each player's company's rank, taken and reached, in the order they
+    /// joined.
+    pub ranks: Vec<Option<(u8, u8)>>,
 }
 
 /// One replica of the model.
@@ -1266,6 +1383,7 @@ impl ModelWorld {
                     &s.companies,
                     s.next_company,
                     s.delivered,
+                    &s.served,
                     s.ignored,
                     s.rng,
                 ),
@@ -1324,6 +1442,14 @@ impl ModelWorld {
             terrain_cells: s.terrain.len(),
             prospections: s.prospections.len(),
             industries: s.industries.len(),
+            ranks: s
+                .players
+                .iter()
+                .map(|player| {
+                    let progress = s.companies.get(s.member_of.get(player)?)?.progress;
+                    Some((progress.level, progress.potential))
+                })
+                .collect(),
         }
     }
 }
@@ -1376,6 +1502,74 @@ mod tests {
                 payload: action.to_payload().unwrap(),
             },
         ));
+    }
+
+    fn joined(players: &[PlayerId]) -> ModelWorld {
+        let mut world = ModelWorld::new(1);
+        for (seq, player) in players.iter().enumerate() {
+            world.apply(&event(
+                seq as u64 + 1,
+                EventBody::PlayerJoined {
+                    player: *player,
+                    name: Text::new("p").unwrap(),
+                    platform: Platform::current(),
+                },
+            ));
+        }
+        world
+    }
+
+    fn stations(world: &mut ModelWorld, count: u32) {
+        for id in 0..count {
+            world.state.stations.insert(
+                id,
+                Station {
+                    at: [i32::try_from(id).unwrap() * 1_000_000, 0, 0],
+                    waiting: 0,
+                },
+            );
+        }
+    }
+
+    /// With one company its score is the world's population, as TF3's own,
+    /// and it takes the ranks that reaches, one above another.
+    #[test]
+    fn one_company_ranks_by_the_worlds_population() {
+        let player = PlayerId(FixedBytes([1; 32]));
+        let mut world = joined(&[player]);
+        stations(&mut world, 2);
+        world.step(PROGRESSION_EVERY);
+        assert_eq!(world.observe().ranks, [Some((1, 2))]);
+        act(&mut world, 3, player, &Action::ApplyRank { level: 3 });
+        act(&mut world, 4, player, &Action::ApplyRank { level: 2 });
+        act(&mut world, 5, player, &Action::ApplyRank { level: 2 });
+        assert_eq!(world.observe().ranks, [Some((2, 2))]);
+        assert_eq!(world.ignored().len(), 2, "{:?}", world.ignored());
+    }
+
+    /// With two, each town's population is split by what each delivered
+    /// there, and each company's score is its parts' sum.
+    #[test]
+    fn two_companies_split_each_towns_population_by_their_deliveries() {
+        let (one, two) = (PlayerId(FixedBytes([1; 32])), PlayerId(FixedBytes([2; 32])));
+        let mut world = joined(&[one, two]);
+        stations(&mut world, 3);
+        // Town 0: 30 to 10; towns 1 and 2 the second company's alone.
+        for (key, n) in [((0, 0), 30), ((1, 0), 10), ((1, 1), 5), ((1, 2), 7)] {
+            world.state.served.insert(key, n);
+        }
+        world.step(PROGRESSION_EVERY);
+        let s = &world.state;
+        assert_eq!(s.companies[&0].progress.experience, 750);
+        assert_eq!(s.companies[&1].progress.experience, 2_250);
+        assert_eq!(world.observe().ranks, [Some((1, 1)), Some((1, 2))]);
+        // Experience never falls.
+        world.state.served.clear();
+        world.step(2 * PROGRESSION_EVERY);
+        assert_eq!(world.state.companies[&1].progress.experience, 2_250);
+        act(&mut world, 3, two, &Action::ApplyRank { level: 2 });
+        act(&mut world, 4, one, &Action::ApplyRank { level: 2 });
+        assert_eq!(world.observe().ranks, [Some((1, 1)), Some((2, 2))]);
     }
 
     #[test]

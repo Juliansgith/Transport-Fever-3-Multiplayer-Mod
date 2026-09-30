@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 8;
+pub const ACTION_SCHEMA_VERSION: u32 = 9;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -789,6 +789,15 @@ pub enum Action {
     VehicleOp(VehicleOp),
     ReplaceVehicle(ReplaceVehicle),
     Prospect(Prospect),
+    /// Taking a company rank the company has reached: what TF3's company
+    /// window sends the company growth script (`Companies` `applyLevel`,
+    /// `game_mechanics/company/company.tl`), the rank being `level` there.
+    /// The acting player's company takes it. Appended under schema version
+    /// 9: the variants before it keep their bytes.
+    ApplyRank {
+        /// The rank to take, 1 to 15 in the game.
+        level: u8,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -930,7 +939,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                8, // schema version
+                9, // schema version
                 5, // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -973,7 +982,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                8, // schema version
+                9, // schema version
                 1, // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1006,7 +1015,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                8,  // schema version
+                9,  // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1024,7 +1033,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                8,  // schema version
+                9,  // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1039,11 +1048,20 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                8,  // schema version
+                9,  // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
                 2, 0, 0, // the colour, zigzag
+            ]
+        );
+        let rank = Action::ApplyRank { level: 6 };
+        assert_eq!(
+            rank.to_payload().unwrap().as_bytes(),
+            [
+                9,  // schema version
+                16, // Action::ApplyRank, appended under schema version 9
+                6,  // the rank
             ]
         );
     }

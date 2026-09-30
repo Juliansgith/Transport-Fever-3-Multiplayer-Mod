@@ -39,7 +39,8 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "geom", "roads", "engine", "registry", "companies", "capture", "bridge", "guard" }
+	local MODULES = { "geom", "roads", "engine", "registry", "companies", "progression", "capture", "bridge",
+		"guard" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -259,6 +260,16 @@ function data()
 				.. ") keeps its getPlayer" .. (why and (": " .. tostring(why)) or "")))
 	end
 
+	-- The company window's ranks and the permits they give, with more than
+	-- one company in the room: each company's own, as the room's rule keeps
+	-- them (tpf3mp/progression.lua), read from the mod's game script's
+	-- state. With one company the game's own.
+	local function showRanks()
+		local ok, why = require("tpf3mp.progression").follow(scriptState)
+		link:log(ok and "the company window shows each company's own rank"
+			or ("the company window shows the game's own rank only: " .. tostring(why)))
+	end
+
 	local function start()
 		local ok, why = installModules()
 		if not ok then
@@ -280,6 +291,7 @@ function data()
 		say("linked to the hook")
 		guardCommands()
 		followMyCompany()
+		showRanks()
 	end
 
 	-- Does what the hook asks: saving the world under the name it gives, or

@@ -128,6 +128,8 @@ UG_REQUIRED = {}
 function ug_require(path)
 	UG_REQUIRED[#UG_REQUIRED + 1] = path
 	if GAME[path] then return GAME[path] end
+	-- A test's stand-ins for more of the game's modules, by their path.
+	if GAME_MODULES and GAME_MODULES[path] then return GAME_MODULES[path] end
 	if loaded[path] then return loaded[path] end
 	assert(path:sub(1, #MOD) == MOD, "ug_require of an unknown path " .. path)
 	local rel = path:sub(#MOD + 1)
