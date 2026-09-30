@@ -21,6 +21,11 @@
 --                                   -- to read the world's lanes now
 --     lanes   = function(t),        -- those lanes, { [lane] = text }
 --                                   -- -> true | false, why
+--     clicks  = function(),         -- in the GUI: the player's builds queued
+--                                   -- in the room's game so far, or nil where
+--                                   -- the hook cannot take them to the room
+--     replaying = function(on),     -- the game script applies the room's
+--                                   -- actions (true) or is done (false)
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -44,13 +49,14 @@
 
 local bridge = {}
 
+-- 7: the build tools through the room (`clicks`, `replaying`);
 -- 6: the game script reads the world's lanes at checkpoints (`checkpoint`,
 -- `lanes`);
 -- 5: the GUI asks whether the room's game runs (`room`), for the guard;
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 6
+bridge.VERSION = 7
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -65,7 +71,7 @@ function bridge.attach(native)
 			.. ", the mod " .. bridge.VERSION
 	end
 	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world", "room",
-			"checkpoint", "lanes" }) do
+			"checkpoint", "lanes", "clicks", "replaying" }) do
 		if type(native[name]) ~= "function" then
 			return nil, "the hook has no " .. name .. "()"
 		end
@@ -138,6 +144,19 @@ function Link:lanes(lanes)
 	if not ok then return nil, "the hook refused: " .. tostring(taken) end
 	if taken ~= true then return nil, tostring(why or "the hook refused the lanes") end
 	return true
+end
+
+-- The player's builds queued in the room's game so far, or nil where the
+-- hook cannot take them to the room (the tools then stay refused).
+function Link:clicks()
+	local ok, clicks = pcall(self.native.clicks)
+	if ok and type(clicks) == "number" then return clicks end
+	return nil
+end
+
+-- The game script begins (true) or ends applying the room's actions.
+function Link:replaying(on)
+	pcall(self.native.replaying, on == true)
 end
 
 -- Whether the room's game runs. A hook that cannot say is taken to say yes:

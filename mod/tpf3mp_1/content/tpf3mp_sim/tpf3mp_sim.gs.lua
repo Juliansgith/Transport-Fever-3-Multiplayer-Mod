@@ -15,5 +15,8 @@ function data()
 		guiHandleEventScript = {
 			fileName = "tpf3mp_sim.script@guiHandleEvent",
 		},
+		guiUpdateScript = {
+			fileName = "tpf3mp_sim.script@guiUpdate",
+		},
 	}
 end

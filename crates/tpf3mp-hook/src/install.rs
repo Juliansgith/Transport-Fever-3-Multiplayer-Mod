@@ -34,6 +34,10 @@ pub const SPEED_TARGET: &str = "CGameTime::GetSpeed";
 pub const SPEED_CALL_TARGET: &str = "GameSim::Step/GetSpeed call";
 /// The profile's name for Lua's `print`.
 pub const PRINT_TARGET: &str = "luaB_print";
+/// The command queue's add and the simulation's apply of a build: without
+/// them the tools stay refused in the room's game (crate::builds).
+pub const ADD_TARGET: &str = "CommandList::Add";
+pub const BUILD_APPLY_TARGET: &str = "WorldBuildProposal apply";
 
 /// Lua's `print`, reached through its detour's trampoline.
 static PRINT_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -351,6 +355,20 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     }
     .map_err(|error| format!("detouring {STEP_TARGET}: {error}"))?;
     ORIGINAL.store(step, Ordering::Release);
+
+    // The build tools through the room, where the profile has what they
+    // need; without it they stay refused in the room's game.
+    let builds = match (at(ADD_TARGET), at(BUILD_APPLY_TARGET)) {
+        // SAFETY: both are the functions the profile resolved, which no
+        // thread runs yet; detour_forever installs each for good.
+        (Ok(add), Ok(apply)) => unsafe { crate::builds::install(add, apply, detour_forever) }
+            .map(|()| "the build tools build through the room".to_owned())
+            .unwrap_or_else(|error| format!("the build tools stay refused: {error}")),
+        _ => "the build tools stay refused: the profile has no build targets".to_owned(),
+    };
+    if let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+        log.line(&builds);
+    }
     Ok(step_rva)
 }
 
@@ -684,7 +702,7 @@ mod tests {
         let results = unsafe { print_detour(state.state()) };
         assert_eq!(results, 0);
         assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
-        assert_eq!(state.run("return tpf3mp_native.version"), Ok("6".into()));
+        assert_eq!(state.run("return tpf3mp_native.version"), Ok("7".into()));
         PRINT_ORIGINAL.store(0, Ordering::Release);
     }
 }

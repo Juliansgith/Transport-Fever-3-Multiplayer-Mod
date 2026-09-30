@@ -975,7 +975,7 @@ impl ser::SerializeStructVariant for Record {
 mod tests {
     use super::*;
     use crate::action::{
-        EdgeEnds, Link, ParamValue, Polyline, Pos, Resolve, RoadBuild, Structure, Tangent, Tram,
+        EdgeRef, Link, ParamValue, Polyline, Pos, Resolve, RoadBuild, Structure, Tangent, Tram,
         Vertex,
     };
     use crate::{BoundedVec, Text};
@@ -1024,6 +1024,7 @@ mod tests {
                             ])]),
                         ),
                         ("removals", seq(vec![])),
+                        ("removed_nodes", seq(vec![])),
                     ]),
                 ),
             ]),
@@ -1078,9 +1079,10 @@ mod tests {
                     tangent0: tangent,
                     tangent1: tangent,
                     structure: Structure::Bridge(Text::new("bridge/cement.lua").unwrap()),
+                    kind: None,
                 }])
                 .unwrap(),
-                BoundedVec::<EdgeEnds, 256>::empty(),
+                BoundedVec::<EdgeRef, 256>::empty(),
             )
             .unwrap(),
         });

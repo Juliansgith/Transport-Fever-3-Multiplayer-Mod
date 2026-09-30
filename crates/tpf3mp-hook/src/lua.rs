@@ -37,6 +37,11 @@
 //! - `lanes(t)`: the lanes read there, a table from lane numbers to strings,
 //!   which the step gate reports as digests ([`end_batch`]). Returns `true`,
 //!   or `false` and why.
+//! - `clicks()`: in the GUI: the player's builds queued in the room's game
+//!   so far, or `nil` where the hook cannot take them to the room
+//!   ([`crate::builds`]).
+//! - `replaying(on)`: the game script begins or ends applying the room's
+//!   actions, whose builds the hook lets through ([`crate::builds`]).
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -74,7 +79,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 6.0;
+pub const VERSION: f64 = 7.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -209,6 +214,11 @@ pub fn set_in_room(in_room: bool) {
     IN_ROOM.store(in_room, Ordering::Release);
 }
 
+/// Whether the room's game runs.
+pub fn in_room() -> bool {
+    IN_ROOM.load(Ordering::Acquire)
+}
+
 /// The actions handed over since the last call, oldest first.
 pub fn take_commands() -> Vec<Payload> {
     shared().commands.drain(..).collect()
@@ -339,6 +349,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"room", native_room),
                 (b"checkpoint", native_checkpoint),
                 (b"lanes", native_lanes),
+                (b"clicks", native_clicks),
+                (b"replaying", native_replaying),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -772,6 +784,36 @@ unsafe extern "C-unwind" fn native_lanes(l: State) -> c_int {
     }
 }
 
+/// `clicks()`: the player's builds queued in the room's game so far, or nil
+/// without the build detours.
+unsafe extern "C-unwind" fn native_clicks(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        if crate::builds::installed() {
+            #[allow(clippy::cast_precision_loss)]
+            (api.pushnumber)(l, crate::builds::clicks() as f64);
+        } else {
+            (api.pushnil)(l);
+        }
+    }
+    1
+}
+
+/// `replaying(on)`: the game script begins (true) or ends applying the
+/// room's actions.
+unsafe extern "C-unwind" fn native_replaying(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; index 1 is the argument.
+    let on = unsafe { (api.gettop)(l) >= 1 && (api.toboolean)(l, 1) != 0 };
+    crate::builds::set_replaying(on);
+    0
+}
+
 /// `room()`: `true` while the room's game runs.
 unsafe extern "C-unwind" fn native_room(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -1115,9 +1157,10 @@ pub(crate) mod tests {
                 "return tpf3mp_native.version, type(tpf3mp_native.command), \
                  type(tpf3mp_native.take), type(tpf3mp_native.log), type(tpf3mp_native.poll), \
                  type(tpf3mp_native.saved), type(tpf3mp_native.world), type(tpf3mp_native.room), \
-                 type(tpf3mp_native.checkpoint), type(tpf3mp_native.lanes)"
+                 type(tpf3mp_native.checkpoint), type(tpf3mp_native.lanes), \
+                 type(tpf3mp_native.clicks), type(tpf3mp_native.replaying)"
             ),
-            Ok("6|function|function|function|function|function|function|function|function|function".into())
+            Ok("7|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -1257,6 +1300,17 @@ pub(crate) mod tests {
         lua.run("tpf3mp_native.world()").unwrap();
         assert!(load_done(), "the next world is the loaded one");
         assert!(!load_done(), "once");
+    }
+
+    #[test]
+    fn clicks_is_nil_without_the_build_detours_and_replaying_sets_the_flag() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(lua.run("return tpf3mp_native.clicks()"), Ok("nil".into()));
+        lua.run("tpf3mp_native.replaying(true)").unwrap();
+        lua.run("tpf3mp_native.replaying(false)").unwrap();
+        lua.run("tpf3mp_native.replaying()").unwrap();
     }
 
     #[test]

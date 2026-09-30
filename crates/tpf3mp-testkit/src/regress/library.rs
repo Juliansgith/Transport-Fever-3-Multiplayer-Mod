@@ -94,6 +94,7 @@ pub fn polyline(vertices: Vec<Vertex>, structure: &Structure) -> Polyline {
                 tangent0: tangent,
                 tangent1: tangent,
                 structure: structure.clone(),
+                kind: None,
             }
         })
         .collect();

@@ -26,6 +26,7 @@
         "gui/tpf3mp/tpf3mp.script.lua",
         "scripts/tpf3mp/apply.lua",
         "scripts/tpf3mp/bridge.lua",
+        "scripts/tpf3mp/capture.lua",
         "scripts/tpf3mp/engine.lua",
         "scripts/tpf3mp/geom.lua",
         "scripts/tpf3mp/guard.lua",

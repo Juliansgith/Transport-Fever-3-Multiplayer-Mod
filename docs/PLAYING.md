@@ -152,11 +152,16 @@ protected folder such as Program Files.
   which you notice as a short pause, like an autosave.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
+- **Roads, tracks, stations and depots.** Build them with the game's own
+  street, track and construction tools: every player's game builds them
+  together, a moment after your click, and your company pays as usual.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
   does not happen in your game either. The game bar says "Not in
   multiplayer yet: …" for what the game's windows do (buying vehicles,
-  lines, …), and the road, track, station and bulldozer tools show "Not in
-  multiplayer yet: building with this tool" and build nothing.
+  lines, …). The stop, bulldozer, upgrade, bus lane and tram track tools
+  show "Not in multiplayer yet: building with this tool" and build
+  nothing, and so does a road or track that would move a stop or signal:
+  the tool says why.
 
 ## Playtesting before the game is out
 
