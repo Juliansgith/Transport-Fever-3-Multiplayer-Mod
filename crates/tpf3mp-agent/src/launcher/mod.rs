@@ -350,9 +350,7 @@ async fn control(
                 if session.is_none() && game.as_mut().is_some_and(|started| !started.is_running()) {
                     game = None;
                     shared.status().game = None;
-                    if let Some(link) = idle.take() {
-                        idle = Some(IdleLink::new(link.into_parts().0));
-                    }
+                    idle = idle.take().map(IdleLink::forget_game);
                 }
                 let asked = match &mut idle {
                     Some(link) => {
@@ -377,7 +375,10 @@ async fn control(
             ended = session_end(&mut session) => {
                 let finished = session.take();
                 let (ended, link) = match ended {
-                    Ok((ended, link, build)) => (ended, Some(IdleLink::resumed(link, build))),
+                    Ok((ended, link, build)) => (
+                        ended,
+                        Some(IdleLink::given_back(link, build, game.is_some())),
+                    ),
                     Err(error) => (Err(bridge::BridgeFault::Rejoin(error)), None),
                 };
                 // The game keeps its link for the next room; a session that
@@ -411,8 +412,15 @@ async fn control(
                 // player can start the game again at once.
                 game = None;
                 info!("Transport Fever 3 closed");
-                if let Some(session) = &session {
-                    let _ = session.controls.send(Control::GameClosed).await;
+                match &session {
+                    Some(session) => {
+                        let _ = session.controls.send(Control::GameClosed).await;
+                    }
+                    // Outside a room the launcher's own link held its hook.
+                    None => {
+                        shared.status().game = None;
+                        idle = idle.take().map(IdleLink::forget_game);
+                    }
                 }
             }
             event = next_event(&mut connected) => match event {

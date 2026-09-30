@@ -153,6 +153,20 @@ impl<L: HookLink> IdleLink<L> {
         self.build.as_deref()
     }
 
+    /// A link a room session gave back when it ended. A game that no
+    /// longer runs left no hook on it, so its build does not come back:
+    /// otherwise the launcher would go on showing a game attached, and its
+    /// window would never offer to start the game again.
+    pub(crate) fn given_back(link: L, build: Option<String>, game_runs: bool) -> Self {
+        Self::resumed(link, build.filter(|_| game_runs))
+    }
+
+    /// The game that said hello on this link closed: the link waits for
+    /// the next one.
+    pub(crate) fn forget_game(self) -> Self {
+        Self::new(self.link)
+    }
+
     /// The link and the game's build, for a room session to take over.
     pub(crate) fn into_parts(self) -> (L, Option<String>) {
         (self.link, self.build)
@@ -429,5 +443,18 @@ pub(crate) mod tests {
         );
         assert_eq!(action(LobbyAction::Start, &state), Action::Start);
         assert_eq!(action(LobbyAction::Leave, &state), Action::Leave);
+    }
+
+    #[test]
+    fn a_closed_game_leaves_no_build_behind_so_it_can_be_started_again() {
+        let running = IdleLink::given_back(FakeLink::default(), Some("40408".into()), true);
+        assert_eq!(
+            running.build(),
+            Some("40408"),
+            "a running game stays attached"
+        );
+        let closed = IdleLink::given_back(FakeLink::default(), Some("40408".into()), false);
+        assert_eq!(closed.build(), None, "a closed game does not");
+        assert_eq!(running.forget_game().build(), None);
     }
 }
