@@ -246,6 +246,7 @@ function data()
 	local builtin = ug_require "::/gui/main/builtin.lua"
 	local game_bar_widgets = ug_require "::/gui/game_bar/game_bar_widgets.tl"
 	local mod_entry_point = ug_require "::/gui/main/mod_entry_point.tl"
+	local main_mod_button_area = ug_require "::/gui/main/main_mod_button_area.tl"
 
 	-- Chat lines the window keeps, newest last.
 	local CHAT_LINES = 50
@@ -346,7 +347,8 @@ function data()
 			if shared.unread > 0 then label = label .. " · " .. shared.unread .. " new" end
 			children[#children + 1] = builtin.Button{
 				meta = { tooltip = "Open the Multiplayer window" },
-				content = builtin.TextView{ text = label },
+				-- The game bar is low: the small font keeps the button in it.
+				content = builtin.TextView{ meta = { class = "font-scale-annotation" }, text = label },
 				onClick = function()
 					shared.open = not shared.open
 					shared.unread = 0
@@ -435,24 +437,58 @@ function data()
 				},
 			},
 		}
-		return builtin.Window{
-			title = "Multiplayer",
-			closable = true,
-			movable = true,
-			initialX = 360,
-			initialY = 140,
-			onClose = function()
-				shared.open = false
-				shared.version = shared.version + 1
-			end,
-			content = builtin.Component{
-				layout = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical, children = rows },
+		-- The entry point takes a layout, not a window ("Recipe child must be
+		-- a layout", build 40408): the window goes in one.
+		return builtin.BoxLayout{
+			orientation = builtin.type.Orientation.Vertical,
+			children = {
+				builtin.Window{
+					title = "Multiplayer",
+					closable = true,
+					movable = true,
+					initialX = 360,
+					initialY = 140,
+					onClose = function()
+						shared.open = false
+						shared.version = shared.version + 1
+					end,
+					content = builtin.Component{
+						layout = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical, children = rows },
+					},
+				},
 			},
 		}
+	end)
+
+	-- The Multiplayer button in the game's area for mods' buttons, in the
+	-- room's game.
+	local Tpf3mpButton = react.RegisterPluginRecipe(main_mod_button_area.MainModButtonAreaExtension, "Tpf3mpButton", function()
+		local drawn = react.useState(0)
+		react.onStep(function()
+			local version = ui().version
+			if version ~= drawn:old() then drawn:set(version) end
+		end)
+		local shared = ui()
+		local children = {}
+		if shared.status then
+			children[1] = builtin.Button{
+				meta = { tooltip = "Multiplayer: the room, its players and its chat" },
+				content = builtin.TextView{
+					text = "Multiplayer" .. (shared.unread > 0 and (" (" .. shared.unread .. ")") or ""),
+				},
+				onClick = function()
+					shared.open = not shared.open
+					shared.unread = 0
+					shared.version = shared.version + 1
+				end,
+			}
+		end
+		return builtin.BoxLayout{ orientation = builtin.type.Orientation.Horizontal, children = children }
 	end)
 
 	return {
 		Tpf3mpPlugin = Tpf3mpPlugin,
 		Tpf3mpWindow = Tpf3mpWindow,
+		Tpf3mpButton = Tpf3mpButton,
 	}
 end

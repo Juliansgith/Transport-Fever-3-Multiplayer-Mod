@@ -213,6 +213,15 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
         .unwrap();
     assert_eq!(label, "Multiplayer: Sunday line · 2/2 playing · 2x · 1 new");
     assert_eq!(window, 0, "closed until the button is pressed");
+    // The button in the mods' button area says the same new line.
+    let button: String = lua
+        .load(
+            "MODS = mount(loadPlugin(nil, 'Tpf3mpButton', 'MainModButtonAreaExtension')) \
+             return views(MODS.layout)[1].params.content.params.text",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(button, "Multiplayer (1)");
     // The button opens the window: the room, its players, the chat.
     let texts: Vec<String> = lua
         .load(

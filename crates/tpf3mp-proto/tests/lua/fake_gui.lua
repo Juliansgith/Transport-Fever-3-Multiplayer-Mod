@@ -59,12 +59,14 @@ end
 
 local game_bar_widgets = { GameBarInfoDisplayExtension = "GameBarInfoDisplayExtension" }
 local mod_entry_point = { ModEntryPointExtension = "ModEntryPointExtension" }
+local main_mod_button_area = { MainModButtonAreaExtension = "MainModButtonAreaExtension" }
 
 local GAME = {
 	["::/gui/main/react.lua"] = react,
 	["::/gui/main/builtin.lua"] = builtin,
 	["::/gui/game_bar/game_bar_widgets.tl"] = game_bar_widgets,
 	["::/gui/main/mod_entry_point.tl"] = mod_entry_point,
+	["::/gui/main/main_mod_button_area.tl"] = main_mod_button_area,
 }
 
 -- The mod whose files mod_source reads: ours, or the one MOD_ID names.
@@ -91,6 +93,11 @@ function mount(recipe)
 		current, m.refIndex = m, 0
 		m.layout = recipe.fn()
 		current = nil
+		-- As the game: what a plugin on the mod entry point renders goes in
+		-- a floating layout's child, which takes a layout only (build 40408).
+		if recipe.extension == "ModEntryPointExtension" then
+			assert(type(m.layout) == "table" and m.layout.layout, "Recipe child must be a layout")
+		end
 		return m.layout
 	end
 	function m.step()

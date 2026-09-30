@@ -24,6 +24,7 @@
         "gui/tpf3mp/icons/marker_truck.tga",
         "gui/tpf3mp/tpf3mp.res.lua",
         "gui/tpf3mp/tpf3mp.script.lua",
+        "gui/tpf3mp/tpf3mp_button.res.lua",
         "gui/tpf3mp/tpf3mp_window.res.lua",
         "scripts/tpf3mp/apply.lua",
         "scripts/tpf3mp/bridge.lua",
