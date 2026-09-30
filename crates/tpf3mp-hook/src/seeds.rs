@@ -70,7 +70,6 @@
 
 use std::{
     ffi::{c_char, c_int, c_void},
-    panic::catch_unwind,
     sync::{
         Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -785,6 +784,8 @@ fn seed_api(resolved: &ResolvedProfile) -> Result<SeedApi, &'static str> {
 
 #[cfg(all(windows, target_arch = "x86_64"))]
 mod native {
+    use std::panic::catch_unwind;
+
     use super::*;
 
     /// The trampolines to the originals; 0 until installed. The thunks
