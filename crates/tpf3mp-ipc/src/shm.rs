@@ -236,13 +236,14 @@ mod imp {
         }
         // A link re-created over one still open (the launcher's next room)
         // finds the object already sized. macOS refuses a second ftruncate
-        // of a shared memory object with EINVAL, even to the same size, so
-        // one already `len` long is left as it is; Linux takes either.
+        // of a shared memory object with EINVAL, even to the same size, and
+        // reports its size rounded up to whole pages, so one at least `len`
+        // long is left as it is; Linux takes either.
         // SAFETY: `fd` is open; `stat` is plain data the call fills.
         let sized = unsafe {
             let mut stat: libc::stat = std::mem::zeroed();
             libc::fstat(fd, &raw mut stat) == 0
-                && usize::try_from(stat.st_size).is_ok_and(|size| size == len)
+                && usize::try_from(stat.st_size).is_ok_and(|size| size >= len)
         };
         // SAFETY: size the object to `len`.
         if !sized && unsafe { libc::ftruncate(fd, len as libc::off_t) } != 0 {
