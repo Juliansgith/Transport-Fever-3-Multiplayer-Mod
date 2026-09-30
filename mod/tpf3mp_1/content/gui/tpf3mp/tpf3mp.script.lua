@@ -138,6 +138,20 @@ function data()
 			if ok and type(name) == "string" and name ~= "" then return name end
 			return nil
 		end,
+		-- A vehicle's parts as its TRANSPORT_VEHICLE component has them.
+		parts = function(vehicle)
+			local ok, parts = pcall(function()
+				local tv = api.engine.getComponent(vehicle, api.type.ComponentType.TRANSPORT_VEHICLE)
+				local list = tv.transportVehicleConfig.vehicles
+				local out = {}
+				for i = 1, #list do
+					out[i] = { model = list[i].part.modelId, purchased = list[i].purchaseTime }
+				end
+				return out
+			end)
+			if ok then return parts end
+			return nil
+		end,
 	}
 
 	-- The GUI state's api.cmd, which the guard is on.

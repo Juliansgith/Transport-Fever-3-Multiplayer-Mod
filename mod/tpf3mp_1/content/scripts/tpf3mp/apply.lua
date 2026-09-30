@@ -749,38 +749,113 @@ end
 
 local function tint(c) return api.type.Vec3f.new(c.r, c.g, c.b) end
 
+-- The game's time here, the same in every game: when a part is bought.
+local function now()
+	return api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME).gameTime
+end
+
+-- A ConsistPart as the game's TransportVehiclePart, bought at `time`. Every
+-- compartment loads automatically, as the store sends it
+-- (vehicle_react_util.tl).
+local function vehiclePart(p, time)
+	local model = api.res.modelRep.find(p.model)
+	if type(model) ~= "number" or model < 0 then error("no vehicle model " .. tostring(p.model), 0) end
+	local part = api.type.TransportVehiclePart.new()
+	part.part.modelId = model
+	part.part.reversed = p.reversed == true
+	local loads, auto = {}, {}
+	for k, l in ipairs(p.loads) do
+		local lc = api.type.LoadConfig.new()
+		lc.loadConfigIndex = l.config
+		lc.cargoTypeId = l.cargo
+		loads[k], auto[k] = lc, true
+	end
+	part.part.compartment2loadConfig = loads
+	part.part.color = tint(p.color)
+	part.purchaseTime = time
+	part.autoLoadConfig = auto
+	return part
+end
+
+-- A TransportVehicleConfig of these parts, groups and multiple units.
+local function vehicleConfig(vehicles, groups, units)
+	local config = api.type.TransportVehicleConfig.new()
+	config.vehicles = vehicles
+	config.vehicleGroups = seq(groups)
+	config.muFileNames = seq(units)
+	return config
+end
+
 function HANDLERS.BuyVehicle(buy)
 	local _, construction = constructionAt(buy.depot)
 	local depot = construction.depots and construction.depots[1]
 	if depot == nil then error("the construction there has no depot", 0) end
-	-- Bought now: the game's time here, the same in every game.
-	local time = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME).gameTime
+	local time = now()
 	local vehicles = {}
-	for i, p in ipairs(buy.consist) do
-		local model = api.res.modelRep.find(p.model)
-		if type(model) ~= "number" or model < 0 then error("no vehicle model " .. tostring(p.model), 0) end
-		local part = api.type.TransportVehiclePart.new()
-		part.part.modelId = model
-		part.part.reversed = p.reversed == true
-		local loads, auto = {}, {}
-		for k, l in ipairs(p.loads) do
-			local lc = api.type.LoadConfig.new()
-			lc.loadConfigIndex = l.config
-			lc.cargoTypeId = l.cargo
-			loads[k], auto[k] = lc, true
-		end
-		part.part.compartment2loadConfig = loads
-		part.part.color = tint(p.color)
-		part.purchaseTime = time
-		part.autoLoadConfig = auto
-		vehicles[i] = part
-	end
-	local config = api.type.TransportVehicleConfig.new()
-	config.vehicles = vehicles
-	config.vehicleGroups = seq(buy.groups)
-	config.muFileNames = seq(buy.multiple_units)
+	for i, p in ipairs(buy.consist) do vehicles[i] = vehiclePart(p, time) end
+	local config = vehicleConfig(vehicles, buy.groups, buy.multiple_units)
 	local data, entities = send(api.cmd.makeVehicleBuyCmd(api.engine.util.getPlayer(), depot, config))
 	return true, madeBy("resultVehicleEntity", data, entities)
+end
+
+-- Whether `e` is a vehicle in this world.
+local function isVehicle(e)
+	if type(e) ~= "number" or e < 0 then return false end
+	local ok, c = pcall(api.engine.getComponent, e, api.type.ComponentType.TRANSPORT_VEHICLE)
+	return ok and c ~= nil
+end
+
+-- A vehicle's consist replaced, as the store's HandleVehicleChanges sends it
+-- (vehicle_react_util.tl): a part the vehicle keeps is its own part, its
+-- purchase time and wear as this game has them now, with the facing, loads
+-- and colour the player chose; a new part is bought now. The vehicle is
+-- then the entity the game names (its command data, its result entities)
+-- that is a vehicle, else the vehicle itself: TF3's API says the vehicle is
+-- replaced (cmd.d.tl), and its command data has no result field. Returns
+-- that entity, for the registry to keep the vehicle's id on.
+function HANDLERS.ReplaceVehicle(replace, ctx)
+	local vehicle = entityOf(ctx, "vehicles", replace.vehicle)
+	local tv = api.engine.getComponent(vehicle, api.type.ComponentType.TRANSPORT_VEHICLE)
+	local own = tv and tv.transportVehicleConfig and tv.transportVehicleConfig.vehicles
+	if own == nil then error("vehicle " .. tostring(replace.vehicle) .. " has no parts to read", 0) end
+	local time = now()
+	local vehicles, kept = {}, {}
+	for i, r in ipairs(replace.consist) do
+		local part = vehiclePart(r.part, time)
+		if r.kept ~= nil then
+			local old = own[r.kept + 1]
+			if old == nil then error("part " .. i .. " keeps a part the vehicle does not have", 0) end
+			if old.part.modelId ~= part.part.modelId then
+				error("part " .. i .. " keeps a part of another model", 0)
+			end
+			if kept[r.kept] then error("part " .. i .. " keeps a part kept already", 0) end
+			kept[r.kept] = true
+			part.purchaseTime = old.purchaseTime
+			part.maintenanceState = old.maintenanceState
+			part.maintenanceChange = old.maintenanceChange
+		end
+		vehicles[i] = part
+	end
+	local config = vehicleConfig(vehicles, replace.groups, replace.multiple_units)
+	local count = 0
+	for _ in pairs(kept) do count = count + 1 end
+	log("replacing vehicle " .. tostring(replace.vehicle) .. " (entity " .. tostring(vehicle) .. "): "
+		.. #vehicles .. " part(s), " .. count .. " kept")
+	local data, entities = send(api.cmd.makeVehicleReplaceCmd(vehicle, config))
+	local candidates = {}
+	for _, pair in ipairs(type(entities) == "table" and entities or {}) do
+		if type(pair) == "table" then candidates[#candidates + 1] = pair[1] end
+	end
+	local ok, named = pcall(function() return data.vehicleEntity end)
+	if ok then candidates[#candidates + 1] = named end
+	candidates[#candidates + 1] = vehicle
+	for _, e in ipairs(candidates) do
+		if isVehicle(e) then
+			if e ~= vehicle then log("vehicle " .. tostring(replace.vehicle) .. " is entity " .. e .. " now, was " .. vehicle) end
+			return true, e
+		end
+	end
+	return true, nil
 end
 
 function HANDLERS.SellVehicle(sell, ctx)
@@ -884,6 +959,12 @@ end
 -- handler returns the entity, where the game said which.
 apply.CREATES = { BuyVehicle = "vehicles", CreateLine = "lines" }
 
+-- What an action changes and names by canonical id, which keeps its id
+-- whatever entity it is after: the replaced vehicle. Its kind in the
+-- registry and the field of the action naming it; its handler returns the
+-- entity it is now, where this game could name it.
+apply.KEEPS = { ReplaceVehicle = { kind = "vehicles", field = "vehicle" } }
+
 -- A loan's terms as the loan script keeps them (loan.d.tl): the action's
 -- table has the script's own field names and fractions.
 local function loanTerms(terms)
@@ -909,8 +990,8 @@ end
 
 -- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the
 -- actions that name vehicles, lines and station groups. Returns true, nil
--- and the entity it made (for the kinds in CREATES, where the game said),
--- or false and why not; never raises.
+-- and the entity it made or changed (for the kinds in CREATES and KEEPS,
+-- where the game said), or false and why not; never raises.
 function apply.run(action, ctx)
 	if type(action) ~= "table" then return false, "an action is a table" end
 	local kind, body = next(action)

@@ -355,6 +355,8 @@ end
 --   ctx.depot(e) -> { file =, at = { x, y, z } } of the depot's
 --                   construction, or nil
 --   ctx.model(id) -> a vehicle model's file name, or nil
+--   ctx.parts(e) -> a vehicle's parts, front to back, each
+--                   { model = modelId, purchased = purchaseTime }, or nil
 --
 -- Each returns the action table, or raises why the room cannot carry it.
 
@@ -386,21 +388,63 @@ local function lineOf(ctx, entity)
 	return named("a line the room cannot name", ctx.line(entity))
 end
 
+-- One TransportVehiclePart of a vehicle config as the schema's ConsistPart.
+-- Each part's reversed flag rides along: a turned wagon (an ICE's tail head,
+-- a cab car) stays turned (TPF2-MP learned it the hard way, release
+-- 0.6.1.12, from tearded's fork).
+local function consistPart(ctx, tvp)
+	local part = get(tvp, "part")
+	return {
+		model = named("a vehicle model the room cannot name", ctx.model(get(part, "modelId"))),
+		reversed = get(part, "reversed") == true,
+		loads = each(get(part, "compartment2loadConfig"), function(lc)
+			return { config = get(lc, "loadConfigIndex"), cargo = get(lc, "cargoTypeId") }
+		end),
+		color = tintOf(get(part, "color")),
+	}
+end
+
 -- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
 function capture.vehicleBuy(ctx, _player, depot, config)
-	local consist = each(get(config, "vehicles"), function(tvp)
-		local part = get(tvp, "part")
-		return {
-			model = named("a vehicle model the room cannot name", ctx.model(get(part, "modelId"))),
-			reversed = get(part, "reversed") == true,
-			loads = each(get(part, "compartment2loadConfig"), function(lc)
-				return { config = get(lc, "loadConfigIndex"), cargo = get(lc, "cargoTypeId") }
-			end),
-			color = tintOf(get(part, "color")),
-		}
-	end)
 	return { BuyVehicle = {
 		depot = named("a depot the room cannot name", ctx.depot(depot)),
+		consist = each(get(config, "vehicles"), function(tvp) return consistPart(ctx, tvp) end),
+		groups = each(get(config, "vehicleGroups"), function(n) return n end),
+		multiple_units = each(get(config, "muFileNames"), function(name) return name end),
+	} }
+end
+
+-- The vehicle window's "modify" and the store's "replace" (build 40408,
+-- gui/line_vehicle_mgmt/vehicle_react_util.tl HandleVehicleChanges): one
+-- makeVehicleReplaceCmd per vehicle, a group's vehicles one by one, with the
+-- config the store built. A part the player left in the consist is the
+-- vehicle's own, its purchase time kept; the store bought the rest, with
+-- purchase time 0, which HandleVehicleChanges sets to the GUI's game time
+-- before it sends. So a part is kept when it is one of the vehicle's own
+-- parts, of the same model and purchase time, each own part matched once,
+-- front to back. `ctx.parts(e)` lists the vehicle's parts now, each
+-- { model = modelId, purchased = purchaseTime }.
+function capture.vehicleReplace(ctx, vehicle, config)
+	local id = vehicleOf(ctx, vehicle)
+	local own = ctx.parts and ctx.parts(vehicle)
+	if type(own) ~= "table" then error("a vehicle whose parts the room cannot read", 0) end
+	local taken = {}
+	local consist = each(get(config, "vehicles"), function(tvp)
+		local out = { part = consistPart(ctx, tvp) }
+		local model, purchased = get(get(tvp, "part"), "modelId"), get(tvp, "purchaseTime")
+		if type(purchased) == "number" and purchased > 0 then
+			for i, p in ipairs(own) do
+				if not taken[i] and p.model == model and p.purchased == purchased then
+					taken[i], out.kept = true, i - 1
+					break
+				end
+			end
+		end
+		return out
+	end)
+	if #consist == 0 then error("a replacement of no vehicles", 0) end
+	return { ReplaceVehicle = {
+		vehicle = id,
 		consist = consist,
 		groups = each(get(config, "vehicleGroups"), function(n) return n end),
 		multiple_units = each(get(config, "muFileNames"), function(name) return name end),

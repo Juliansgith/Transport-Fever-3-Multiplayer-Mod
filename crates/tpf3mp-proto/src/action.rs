@@ -464,6 +464,32 @@ pub struct BuyVehicle {
     pub multiple_units: BoundedVec<Text<128>, MAX_CONSIST>,
 }
 
+/// One vehicle of a replacement consist: the part as a purchase carries it,
+/// and whether it is one the vehicle has already.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplacedPart {
+    pub part: ConsistPart,
+    /// The index, from 0, of the vehicle's own part this one keeps, with its
+    /// age and wear, of the same model; none for a part bought new. TF3's
+    /// store keeps a part the player left in the consist as it was (its
+    /// purchase time), and buys the rest.
+    pub kept: Option<u8>,
+}
+
+/// The vehicle window's "modify" and "replace" (`makeVehicleReplaceCmd`):
+/// one vehicle's consist swapped for another, the vehicle staying the one
+/// its line and orders name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplaceVehicle {
+    pub vehicle: VehicleId,
+    /// The new consist, front to back.
+    pub consist: BoundedVec<ReplacedPart, MAX_CONSIST>,
+    /// Its groups, as [`BuyVehicle::groups`].
+    pub groups: BoundedVec<u8, MAX_CONSIST>,
+    /// For each group, the multiple unit's file, or empty.
+    pub multiple_units: BoundedVec<Text<128>, MAX_CONSIST>,
+}
+
 /// How long vehicles load at a stop (the game's `Line.LoadMode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LoadMode {
@@ -727,6 +753,7 @@ pub enum Action {
     /// Boxed: its terms are larger than every other action.
     Loan(Box<LoanOp>),
     VehicleOp(VehicleOp),
+    ReplaceVehicle(ReplaceVehicle),
 }
 
 #[derive(Debug, Error)]
@@ -922,6 +949,34 @@ mod tests {
                 0, // the build's own kind
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
+            ]
+        );
+        // Appended: the variants before it keep their bytes, so the schema
+        // version stays.
+        let replace = Action::ReplaceVehicle(ReplaceVehicle {
+            vehicle: VehicleId(3),
+            consist: BoundedVec::new(vec![ReplacedPart {
+                part: ConsistPart {
+                    model: Text::new("m").unwrap(),
+                    reversed: true,
+                    loads: BoundedVec::empty(),
+                    color: Tint { r: 1, g: 0, b: 0 },
+                },
+                kept: Some(2),
+            }])
+            .unwrap(),
+            groups: BoundedVec::new(vec![1]).unwrap(),
+            multiple_units: BoundedVec::new(vec![Text::new("").unwrap()]).unwrap(),
+        });
+        assert_eq!(
+            replace.to_payload().unwrap().as_bytes(),
+            [
+                6,  // schema version
+                14, // Action::ReplaceVehicle
+                3,  // vehicle-3
+                1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
+                1, 2, // kept: Some(2)
+                1, 1, 1, 0, // groups { 1 }, multiple units { "" }
             ]
         );
     }

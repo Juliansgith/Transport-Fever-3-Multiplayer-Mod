@@ -106,6 +106,31 @@ function registry.sync(reg, made)
 	return reg, fresh, failed
 end
 
+-- Binds the id `id` of `kind` to `entity`, which the thing it names is now
+-- (a replaced vehicle, should the game give it a new entity), before the
+-- next sync would retire the id with its old entity and give the new one a
+-- new id. Any other id bound to `entity` goes. Returns whether `id` was
+-- bound, and so is now.
+function registry.rebind(reg, kind, id, entity)
+	local r = reg and reg[kind]
+	if r == nil then return false end
+	local found = false
+	for _, pair in ipairs(r.bound) do
+		if pair[1] == id then found = true end
+	end
+	if not found then return false end
+	local kept = {}
+	for _, pair in ipairs(r.bound) do
+		if pair[1] == id then
+			kept[#kept + 1] = { id, entity }
+		elseif pair[2] ~= entity then
+			kept[#kept + 1] = pair
+		end
+	end
+	r.bound = kept
+	return true
+end
+
 -- The canonical id of `entity`, of `kind`, or nil.
 function registry.id(reg, kind, entity)
 	local r = reg and reg[kind]

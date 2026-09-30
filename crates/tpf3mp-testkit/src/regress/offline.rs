@@ -208,6 +208,7 @@ mod tests {
             "no Street node",
             "no station-4",
             "no vehicle-7",
+            "no vehicle-7",
             "is not a depot",
             "needs 20000000",
             "an unnamed construction",
