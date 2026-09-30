@@ -79,7 +79,11 @@ between.
    where a vehicle leaving a depot takes its first place on its path
    (`tools/tpfre`, D14). The spread, one update's drive, points at
    something timed by frames rather than by the simulation. The effort is
-   unknown until it is found.
+   unknown until it is found. A start: build 40408 keeps the assertion
+   paths of `Game/ecs/VehicleDepotSystem.cpp` and
+   `Game/ecs/LandVehicleMoveSystem.cpp`, cited by 3 and 9 functions in its
+   index (`investigation/dayone-2026-09-29/TransportFever3.tpfdb`, the
+   `xrefs` to those strings).
 2. **Resync every guest after each departure**, before the checkpoint
    notices: correct, but a load per departure per guest.
 3. **Tolerate small vehicle differences** in the vehicles lane and let the
