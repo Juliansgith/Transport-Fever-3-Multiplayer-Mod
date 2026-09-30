@@ -100,11 +100,12 @@ function data()
     return list
   end
 
-  -- A vehicle's position: TF3's documented api.engine.util.transport
-  -- .getPosition first, then TPF2's game.interface.getEntity.
+  -- A vehicle's position: TF3's api.engine.util.vehicle.getPosition
+  -- (engine/util.d.tl's UtilVehicle) first, then TPF2's
+  -- game.interface.getEntity.
   local function position(id)
     local p = nil
-    pcall(function() p = api().engine.util.transport.getPosition(id) end)
+    pcall(function() p = api().engine.util.vehicle.getPosition(id) end)
     if p then return p end
     pcall(function() p = global("game").interface.getEntity(id).position end)
     return p

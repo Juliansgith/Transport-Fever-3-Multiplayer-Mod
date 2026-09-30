@@ -193,7 +193,11 @@ fn field_scale(owner: &str, field: &str) -> Scale {
     match (owner, field) {
         ("Pos" | "Pos2" | "Tangent" | "TerrainCell", _) => Scale::Milli,
         ("Terraform" | "TerraformFields", "cell") => Scale::Milli,
-        ("UnitDir", _) | ("Transform", "basis") | ("LoanTerms", "percentage") => Scale::Micro,
+        ("UnitDir" | "Tint", _)
+        | ("Transform", "basis")
+        | ("LoanTerms", "percentage")
+        | ("LineStop", "min_wait" | "max_wait" | "max_extra_wait")
+        | ("LineData", "reservation_priority") => Scale::Micro,
         _ => Scale::One,
     }
 }
@@ -386,10 +390,16 @@ impl<'de> de::Deserializer<'de> for De<'_> {
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
         self,
-        _: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, LuaError> {
-        visitor.visit_newtype_struct(self)
+        // A Fraction is in millionths wherever it stands.
+        let scale = if name == "Fraction" {
+            Scale::Micro
+        } else {
+            self.scale
+        };
+        visitor.visit_newtype_struct(De { scale, ..self })
     }
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, LuaError> {
@@ -761,9 +771,14 @@ impl ser::Serializer for Ser {
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
         self,
-        _: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<LuaValue, LuaError> {
+        if name == "Fraction" {
+            return value.serialize(Ser {
+                scale: Scale::Micro,
+            });
+        }
         value.serialize(self)
     }
 
@@ -1264,7 +1279,7 @@ mod tests {
             refusal(s("Nonsense")),
             "unknown variant `Nonsense`, expected one of `BuildRoad`, `BuildTrack`, \
              `Bulldoze`, `BuildConstruction`, `BuyVehicle`, `SellVehicle`, `CreateLine`, \
-             `EditLine`, `AssignLine`, `PlaceStop`, `Terraform`, `CompanyOp`, `Loan`"
+             `EditLine`, `AssignLine`, `PlaceStop`, `Terraform`, `CompanyOp`, `Loan`, `VehicleOp`"
         );
     }
 

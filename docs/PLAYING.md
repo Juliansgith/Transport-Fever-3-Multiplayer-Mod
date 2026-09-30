@@ -155,10 +155,14 @@ protected folder such as Program Files.
 - **Roads, tracks, stations and depots.** Build them with the game's own
   street, track and construction tools: every player's game builds them
   together, a moment after your click, and your company pays as usual.
+- **Vehicles and lines.** Buy vehicles in a depot's store, make and change
+  lines in the line manager, and send vehicles out, stop them or sell
+  them, as usual: every player's game does it together, and your window
+  hears it a moment after your click.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
   does not happen in your game either. The game bar says "Not in
-  multiplayer yet: …" for what the game's windows do (buying vehicles,
-  lines, …). The stop, bulldozer, upgrade, bus lane and tram track tools
+  multiplayer yet: …" for what the game's windows do that the room does
+  not carry yet. The stop, bulldozer, upgrade, bus lane and tram track tools
   show "Not in multiplayer yet: building with this tool" and build
   nothing, and so does a road or track that would move a stop or signal:
   the tool says why.

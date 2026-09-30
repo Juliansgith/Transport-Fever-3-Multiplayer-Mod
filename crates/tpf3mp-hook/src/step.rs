@@ -47,13 +47,16 @@
 //! real [`Session`] in the game and a script in the tests.
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use ring::digest::{SHA256, digest};
 use tpf3mp_bridge::{Begin, Game, Notice, SaveOrder, Session, SessionError, StepGate};
-use tpf3mp_proto::{Event, EventBody, FixedBytes, LaneDigest, Payload, Speed, action::Action};
+use tpf3mp_proto::{
+    Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Speed, action::Action,
+};
 
 /// Most steps one call of the game's step runs, catching up with the room:
 /// at the game's 1x (5 calls a second), rooms up to 16x keep up. The game
@@ -164,8 +167,15 @@ impl RoomGate for Session {
 pub struct HookGame {
     pub events: u64,
     pub notices: Vec<String>,
-    /// The actions the room ordered for the next step to run, in order.
-    pub actions: Vec<Action>,
+    /// The local player, from the room's `Begin`: the room's events name it
+    /// as the actor of the player's own commands.
+    pub me: Option<PlayerId>,
+    /// The actions the room ordered for the next step to run, in order,
+    /// each with its client sequence number when the local player sent it.
+    pub actions: Vec<(Action, Option<u64>)>,
+    /// The player's commands the room refused: their sequence numbers, and
+    /// why.
+    pub refused: Vec<(u64, String)>,
     /// An event the game cannot follow.
     pub fault: Option<String>,
     /// The world's lanes after the batch that ran last, when it ended at a
@@ -176,9 +186,15 @@ pub struct HookGame {
 impl Game for HookGame {
     fn apply(&mut self, event: &Event) {
         self.events += 1;
-        if let EventBody::Command { payload, .. } = &event.body {
+        if let EventBody::Command {
+            player,
+            client_seq,
+            payload,
+        } = &event.body
+        {
+            let own = (self.me == Some(*player)).then_some(*client_seq);
             match Action::from_payload(payload) {
-                Ok(action) => self.actions.push(action),
+                Ok(action) => self.actions.push((action, own)),
                 Err(error) => {
                     self.fault.get_or_insert(format!(
                         "the room ordered an action this game cannot read (event {}): {error}",
@@ -200,15 +216,28 @@ impl Game for HookGame {
     }
 
     fn notice(&mut self, notice: Notice) {
+        if let Notice::Refused { command, reason } = &notice {
+            self.refused.push((*command, format!("{reason:?}")));
+        }
         self.notices.push(format!("{notice:?}"));
     }
+}
+
+/// An action the room ordered, and, for one of the player's own, the ticket
+/// the mod was given when it handed the action over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ordered {
+    pub action: Action,
+    pub ticket: Option<u64>,
 }
 
 /// What the detour hands each call to: a [`StepDriver`] over any room.
 pub trait StepHandler: Send {
     /// See [`StepDriver::on_step`].
-    fn on_step(&mut self, commands: Vec<Payload>, run: &mut RunStep<'_>) -> Outcome;
+    fn on_step(&mut self, commands: Vec<(u64, Payload)>, run: &mut RunStep<'_>) -> Outcome;
     fn take_log(&mut self) -> Vec<String>;
+    /// See [`StepDriver::take_refused`].
+    fn take_refused(&mut self) -> Vec<(u64, String)>;
     /// In the room's game: the game's speed is then the room's, and one call
     /// of the game's step must be one update.
     fn in_room(&self) -> bool;
@@ -218,11 +247,14 @@ pub trait StepHandler: Send {
 }
 
 impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
-    fn on_step(&mut self, commands: Vec<Payload>, run: &mut RunStep<'_>) -> Outcome {
+    fn on_step(&mut self, commands: Vec<(u64, Payload)>, run: &mut RunStep<'_>) -> Outcome {
         StepDriver::on_step(self, commands, run)
     }
     fn take_log(&mut self) -> Vec<String> {
         StepDriver::take_log(self)
+    }
+    fn take_refused(&mut self) -> Vec<(u64, String)> {
+        StepDriver::take_refused(self)
     }
     fn in_room(&self) -> bool {
         matches!(self.phase, Phase::Running | Phase::Holding(_))
@@ -256,7 +288,7 @@ pub struct Outcome {
 pub struct Batch<'a> {
     pub updates: Updates,
     /// The room's actions, for the batch's first update.
-    pub actions: &'a [Action],
+    pub actions: &'a [Ordered],
     /// The batch ends at a checkpoint step: after its last update the game
     /// reads the world's lanes.
     pub lanes: bool,
@@ -302,6 +334,11 @@ pub struct StepDriver<G> {
     checkpoint_interval: u64,
     /// The batch chosen last ends at a checkpoint step.
     lanes_due: bool,
+    /// The player's actions handed to the room and not yet ordered back:
+    /// the ticket the mod was given for each, by its client sequence number.
+    tickets: HashMap<u64, u64>,
+    /// The tickets of the player's actions that will never happen, and why.
+    refused: Vec<(u64, String)>,
     /// Lines for the hook's log.
     log: Vec<String>,
 }
@@ -319,8 +356,23 @@ impl<G: RoomGate> StepDriver<G> {
             chosen: None,
             checkpoint_interval: u64::MAX,
             lanes_due: false,
+            tickets: HashMap::new(),
+            refused: Vec::new(),
             log: Vec::new(),
         }
+    }
+
+    /// The tickets of the player's actions that will never happen (the room
+    /// refused them, or there was no room's game to hand them to), and why:
+    /// the mod tells the window that sent each one.
+    pub fn take_refused(&mut self) -> Vec<(u64, String)> {
+        for (seq, why) in std::mem::take(&mut self.game.refused) {
+            if let Some(ticket) = self.tickets.remove(&seq) {
+                self.refused
+                    .push((ticket, format!("the room refused it: {why}")));
+            }
+        }
+        std::mem::take(&mut self.refused)
     }
 
     /// The game's speed row says `speedup` (0 paused, 1 for 1x, ...). In the
@@ -371,7 +423,7 @@ impl<G: RoomGate> StepDriver<G> {
     /// the player handed over since the last call, for the room; `run` runs
     /// the game's own step, exactly once, with the updates given and the
     /// room's actions for the step the batch starts at.
-    pub fn on_step(&mut self, commands: Vec<Payload>, run: &mut RunStep<'_>) -> Outcome {
+    pub fn on_step(&mut self, commands: Vec<(u64, Payload)>, run: &mut RunStep<'_>) -> Outcome {
         let mut updates = self.updates();
         if let Some(fault) = self.game.fault.take() {
             self.hold(fault);
@@ -386,8 +438,14 @@ impl<G: RoomGate> StepDriver<G> {
         // The actions wait until a batch runs: a batch that starts at their
         // step, since the session ends the one before there.
         let runs = matches!(updates, Updates::Exactly(steps) if steps > 0);
-        let actions = if runs {
+        let actions: Vec<Ordered> = if runs {
             std::mem::take(&mut self.game.actions)
+                .into_iter()
+                .map(|(action, own)| Ordered {
+                    action,
+                    ticket: own.and_then(|seq| self.tickets.remove(&seq)),
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -440,7 +498,7 @@ impl<G: RoomGate> StepDriver<G> {
     /// Hands the player's actions to the room, in the room's game only: an
     /// action handed over nowhere never happens, which is what the mod
     /// expects of one it could not hand over.
-    fn hand_over(&mut self, commands: Vec<Payload>) {
+    fn hand_over(&mut self, commands: Vec<(u64, Payload)>) {
         if commands.is_empty() {
             return;
         }
@@ -449,18 +507,30 @@ impl<G: RoomGate> StepDriver<G> {
                 "refused {} action(s) of the player: the game is not following a room's game",
                 commands.len()
             ));
+            for (ticket, _) in commands {
+                self.refused
+                    .push((ticket, "the game is not following a room's game".into()));
+            }
             return;
         }
-        for payload in commands {
+        let mut commands = commands.into_iter();
+        for (ticket, payload) in commands.by_ref() {
             match self.gate.command(payload) {
-                Ok(number) => self
-                    .log
-                    .push(format!("handed the player's action {number} to the room")),
+                Ok(number) => {
+                    self.tickets.insert(number, ticket);
+                    self.log
+                        .push(format!("handed the player's action {number} to the room"));
+                }
                 Err(error) => {
+                    self.refused.push((ticket, format!("{error}")));
                     self.hold(format!("handing an action to the room: {error}"));
-                    return;
+                    break;
                 }
             }
+        }
+        for (ticket, _) in commands {
+            self.refused
+                .push((ticket, "the game stopped following the room".into()));
         }
     }
 
@@ -476,6 +546,7 @@ impl<G: RoomGate> StepDriver<G> {
                         begin.checkpoint_interval
                     ));
                     self.checkpoint_interval = u64::from(begin.checkpoint_interval).max(1);
+                    self.game.me = Some(begin.player);
                     self.phase = Phase::Running;
                 }
                 Ok(None) => return Updates::Own,
@@ -820,12 +891,17 @@ pub(crate) mod tests {
         }
     }
 
+    /// The local player of the tests' games: not the actor of
+    /// `command_event`'s events.
+    pub(crate) const ME: PlayerId = PlayerId(FixedBytes([9; 32]));
+
     pub(crate) fn begin() -> Begin {
         Begin {
             rules: RulesName::new("native").unwrap(),
             steps_per_second: 5,
             checkpoint_interval: 50,
             saves: PathBuf::from("saves"),
+            player: ME,
         }
     }
 
@@ -869,8 +945,12 @@ pub(crate) mod tests {
         applied: &mut Vec<(Updates, Vec<Action>)>,
         applies: bool,
     ) -> Updates {
+        let commands = commands.into_iter().map(|payload| (0, payload)).collect();
         let outcome = driver.on_step(commands, &mut |batch| {
-            applied.push((batch.updates, batch.actions.to_vec()));
+            applied.push((
+                batch.updates,
+                batch.actions.iter().map(|o| o.action.clone()).collect(),
+            ));
             if applies {
                 Ok(batch.lanes.then(Vec::new))
             } else {
@@ -1061,6 +1141,74 @@ pub(crate) mod tests {
         assert_eq!(d.phase(), &Phase::Ended);
         call_applying(&mut d, vec![payload], &mut applied, true);
         assert_eq!(d.gate.commands.len(), 1, "the room's game is over");
+    }
+
+    #[test]
+    fn the_players_own_actions_come_back_with_their_tickets() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        // The room orders, for step 2, another player's action and then this
+        // player's first command (the gate numbers it 0).
+        let mut own = command_event(2, 2, &depot_build());
+        if let EventBody::Command {
+            player, client_seq, ..
+        } = &mut own.body
+        {
+            *player = ME;
+            *client_seq = 0;
+        }
+        script
+            .events
+            .extend([vec![], vec![command_event(1, 2, &depot_build()), own]]);
+        let (mut d, _) = driver(script);
+        let payload = depot_build().to_payload().unwrap();
+        let mut tickets = Vec::new();
+        for commands in [vec![(7, payload)], Vec::new()] {
+            d.on_step(commands, &mut |batch| {
+                tickets.extend(batch.actions.iter().map(|o| o.ticket));
+                Ok(batch.lanes.then(Vec::new))
+            });
+        }
+        assert_eq!(tickets, [None, Some(7)], "the ticket the mod was given");
+        assert!(d.take_refused().is_empty());
+    }
+
+    #[test]
+    fn a_command_the_room_refuses_fails_its_ticket() {
+        let mut script = Script::default();
+        script.begin.push_back(None);
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([StepGate::Run, StepGate::Run]);
+        let (mut d, _) = driver(script);
+        let payload = depot_build().to_payload().unwrap();
+        // Before the room's game: refused at once.
+        d.on_step(vec![(3, payload.clone())], &mut |_| Ok(None));
+        assert_eq!(
+            d.take_refused(),
+            [(3, "the game is not following a room's game".to_owned())]
+        );
+        // Handed over as the gate's command 0, then refused by the room.
+        d.on_step(vec![(4, payload)], &mut |_| Ok(None));
+        d.game.notice(Notice::Refused {
+            command: 0,
+            reason: tpf3mp_proto::IntentRejection::RateLimited,
+        });
+        let refused = d.take_refused();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].0, 4);
+        assert!(
+            refused[0].1.starts_with("the room refused it"),
+            "{refused:?}"
+        );
     }
 
     const PAUSED: Updates = Updates::Exactly(0);

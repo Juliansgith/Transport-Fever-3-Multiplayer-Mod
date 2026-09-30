@@ -15,7 +15,8 @@ use std::{
 use thiserror::Error;
 use tpf3mp_ipc::{IpcError, Link, Role, SendError};
 use tpf3mp_proto::{
-    ChatText, Event, EventBody, IntentRejection, LaneDigest, Payload, RulesName, Speed, Text,
+    ChatText, Event, EventBody, IntentRejection, LaneDigest, Payload, PlayerId, RulesName, Speed,
+    Text,
 };
 
 use crate::{
@@ -112,6 +113,8 @@ pub struct Begin {
     pub checkpoint_interval: u32,
     /// Where the game's saves go.
     pub saves: PathBuf,
+    /// The local player, as the room's events name the actor.
+    pub player: PlayerId,
 }
 
 #[derive(Debug, Error)]
@@ -215,6 +218,7 @@ impl Session {
                     steps_per_second,
                     checkpoint_interval,
                     saves,
+                    player,
                 } => {
                     self.checkpoint_interval = u64::from(checkpoint_interval).max(1);
                     self.saves = PathBuf::from(saves.as_str());
@@ -223,6 +227,7 @@ impl Session {
                         steps_per_second,
                         checkpoint_interval,
                         saves: self.saves.clone(),
+                        player,
                     }));
                 }
                 // Talk in the lobby is for the front end.
@@ -541,6 +546,7 @@ mod tests {
             steps_per_second: 5,
             checkpoint_interval,
             saves: Text::lossy("saves"),
+            player: PlayerId(FixedBytes([1; 32])),
         });
         say(&ToHook::Load {
             file: None,

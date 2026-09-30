@@ -628,6 +628,7 @@ impl<L: HookLink> Bridge<L> {
                         steps_per_second: start.steps_per_second,
                         checkpoint_interval: start.checkpoint_interval,
                         saves: path_text(&saves)?,
+                        player: client.player(),
                     });
                 }
                 let next_step = start.sealed_through.saturating_add(1);

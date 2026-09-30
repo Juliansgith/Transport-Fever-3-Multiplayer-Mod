@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 3;
+pub const ACTION_SCHEMA_VERSION: u32 = 5;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -53,6 +53,14 @@ pub const MAX_LINE_STOPS: usize = 256;
 /// Most cells in one terraform stroke. TPF2's largest measured, a smooth, was
 /// 83 by 59.
 pub const MAX_TERRAIN_CELLS: usize = 8192;
+/// Most compartments of one vehicle.
+pub const MAX_COMPARTMENTS: usize = 16;
+/// Most cargo types a stop's loading rules list.
+pub const MAX_CARGOS: usize = 64;
+/// Most other terminals one line stop may use.
+pub const MAX_ALTERNATIVES: usize = 32;
+/// Most transport modes a line lists.
+pub const MAX_MODES: usize = 32;
 
 /// A resource file name as the game lists it, such as
 /// `street/standard/town_medium_new.lua` or a vehicle's `.mdl`.
@@ -400,42 +408,132 @@ pub struct ConstructionBuild {
     pub name: ObjectName,
     /// The construction this one replaces: a module edit or an upgrade.
     pub replaces: Option<ConstructionRef>,
+    /// The street and track changes the tool made with it, built in the same
+    /// proposal: a station placed by a road joins it through a junction the
+    /// road is rebuilt around, and an entrance edge to the station's own
+    /// street node, which the construction then meets at the same place.
+    /// Every link names its kind: a construction has no street of its own.
+    pub connection: Option<Box<Polyline>>,
+}
+
+/// A fraction, in millionths: in Lua a plain number (0.25 is 250,000),
+/// wherever it stands, a list included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Fraction(pub i32);
+
+/// A colour as the game keeps one (a `Vec3f`): red, green and blue, each a
+/// fraction in millionths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Tint {
+    pub r: i32,
+    pub g: i32,
+    pub b: i32,
+}
+
+/// What one compartment of a vehicle loads (the game's `LoadConfig`): which
+/// of its model's load configurations, and the cargo type, by the game's
+/// numbering of its content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Load {
+    pub config: i32,
+    pub cargo: i32,
+}
+
+/// One vehicle of a consist, as the depot's store configures it (the game's
+/// `VehiclePart`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsistPart {
+    /// Its model, as the game lists it (`api.res.modelRep`).
+    pub model: ResName,
+    /// It faces backwards.
+    pub reversed: bool,
+    /// Each compartment's load, in order.
+    pub loads: BoundedVec<Load, MAX_COMPARTMENTS>,
+    pub color: Tint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuyVehicle {
     pub depot: ConstructionRef,
-    /// The models of the consist, front to back.
-    pub consist: BoundedVec<ResName, MAX_CONSIST>,
+    /// The consist, front to back.
+    pub consist: BoundedVec<ConsistPart, MAX_CONSIST>,
+    /// Its groups, front to back: each the number of its vehicles (a multiple
+    /// unit is one group).
+    pub groups: BoundedVec<u8, MAX_CONSIST>,
+    /// For each group, the multiple unit's file, or empty.
+    pub multiple_units: BoundedVec<Text<128>, MAX_CONSIST>,
 }
 
+/// How long vehicles load at a stop (the game's `Line.LoadMode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Rgb {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
+pub enum LoadMode {
+    LoadIfAvailable,
+    FullLoadAny,
+    FullLoadAll,
+    LegacyUnloadOnly,
 }
 
+/// What vehicles load and unload at a stop (the game's `Line.StopConfig`),
+/// cargo type by cargo type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopRules {
+    pub load: BoundedVec<bool, MAX_CARGOS>,
+    /// The most of a vehicle's capacity each cargo type may take.
+    pub max_load: BoundedVec<Fraction, MAX_CARGOS>,
+    pub force_unload: bool,
+    pub destroy_for_config_change: bool,
+    pub destroy_for_refresh: bool,
+}
+
+/// A terminal of a station group: the station's place in the group, and the
+/// terminal's in the station, both from 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Terminal {
+    pub station: u16,
+    pub terminal: u16,
+}
+
+/// One stop of a line, as the game keeps it (`Line.Stop`), its station group
+/// by canonical id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineStop {
-    pub station: StationId,
-    /// The terminal the line uses there, or any.
-    pub terminal: Option<u16>,
+    pub group: StationId,
+    /// The terminal the line uses.
+    pub terminal: Terminal,
+    /// Other terminals it may use.
+    pub alternatives: BoundedVec<Terminal, MAX_ALTERNATIVES>,
+    pub load_mode: LoadMode,
+    /// Waiting times, in the game's seconds, in millionths.
+    pub min_wait: i64,
+    pub max_wait: i64,
+    pub max_extra_wait: i64,
+    pub rules: StopRules,
+}
+
+/// A line as the game keeps it (`Line`): its stops, the transport modes that
+/// may run it (by the game's numbering), and its settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineData {
+    pub stops: BoundedVec<LineStop, MAX_LINE_STOPS>,
+    pub modes: BoundedVec<u16, MAX_MODES>,
+    pub custom_filters: bool,
+    /// In millionths.
+    pub reservation_priority: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateLine {
     pub name: ObjectName,
-    pub color: Rgb,
-    pub stops: BoundedVec<LineStop, MAX_LINE_STOPS>,
+    pub color: Tint,
+    pub line: LineData,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LineChange {
     Rename(ObjectName),
-    Recolor(Rgb),
-    /// The whole new stop list, as the line editor built it.
-    SetStops(BoundedVec<LineStop, MAX_LINE_STOPS>),
+    Recolor(Tint),
+    /// The whole line anew, as the line editor built it.
+    Update(LineData),
     Delete,
 }
 
@@ -452,6 +550,26 @@ pub struct AssignLine {
     pub line: Option<LineId>,
     /// Index of the stop the vehicles head for first.
     pub first_stop: u16,
+}
+
+/// What the vehicle window does to one vehicle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VehicleChange {
+    /// Stopped by the player (true), or running again (false).
+    Stop(bool),
+    /// To the nearest depot, sold on arrival if `sell`.
+    ToDepot {
+        sell: bool,
+    },
+    Reverse,
+    /// Leaves its terminal now.
+    Depart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VehicleOp {
+    pub vehicle: VehicleId,
+    pub change: VehicleChange,
 }
 
 /// A stop placed on an existing edge.
@@ -606,6 +724,7 @@ pub enum Action {
     CompanyOp(CompanyOp),
     /// Boxed: its terms are larger than every other action.
     Loan(Box<LoanOp>),
+    VehicleOp(VehicleOp),
 }
 
 #[derive(Debug, Error)]
@@ -747,7 +866,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                3, // schema version
+                5, // schema version
                 5, // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -790,7 +909,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                3, // schema version
+                5, // schema version
                 1, // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices

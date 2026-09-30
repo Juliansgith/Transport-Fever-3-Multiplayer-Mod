@@ -25,6 +25,9 @@
 -- players). Each lane is read on its own: one that cannot be read is
 -- "err" on every game alike, and the others still count.
 --
+-- A vehicle's position comes from api.engine.util.vehicle.getPosition
+-- (engine/util.d.tl's UtilVehicle; util.transport has none on build 40408).
+--
 -- The engine lists the entities of some components only
 -- (getEntitiesWithComponent refuses BASE_EDGE, LINE and PLAYER on build
 -- 40408: "Cannot loop over this component type"), so edges come from the
@@ -126,7 +129,7 @@ end
 readers[lanes.VEHICLES] = function(api)
 	local rows = {}
 	for _, e in ipairs(entities(api, "TRANSPORT_VEHICLE")) do
-		local p = api.engine.util.transport.getPosition(e)
+		local p = api.engine.util.vehicle.getPosition(e)
 		if p then
 			rows[#rows + 1] = string.format("%d,%d,%d", q1(p.x or p[1]), q1(p.y or p[2]), q1(p.z or p[3]))
 		else

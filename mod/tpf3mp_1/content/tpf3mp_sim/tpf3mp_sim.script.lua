@@ -47,9 +47,10 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes, capture = false, nil, nil, nil, nil
-	-- Lanes that could not be read, logged once per state.
-	local told = false
+	local tried, link, apply, lanes, capture, registry = false, nil, nil, nil, nil, nil
+	-- Lanes that could not be read, and kinds the registry could not list,
+	-- logged once per state.
+	local told, toldRegistry = false, false
 	-- Events subscribed to from this state.
 	local subscribed = false
 
@@ -77,9 +78,10 @@ function data()
 			local okApply, applyModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/apply.lua")
 			local okLanes, lanesModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/lanes.lua")
 			local okCapture, captureModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/capture.lua")
-			if okBridge and okApply and okLanes and okCapture and type(bridge) == "table"
+			local okRegistry, registryModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/registry.lua")
+			if okBridge and okApply and okLanes and okCapture and okRegistry and type(bridge) == "table"
 				and type(applyModule) == "table" and type(lanesModule) == "table"
-				and type(captureModule) == "table" then
+				and type(captureModule) == "table" and type(registryModule) == "table" then
 				link = bridge.attach(bridge.find())
 				apply = applyModule
 				if link then
@@ -88,6 +90,7 @@ function data()
 				end
 				lanes = lanesModule
 				capture = captureModule
+				registry = registryModule
 				if link then link:log("the game script is linked") end
 			end
 		end
@@ -104,22 +107,52 @@ function data()
 			end
 			local actions = l:take()
 			local checkpoint = l:checkpoint()
-			if not actions and not checkpoint then return nil end
-			return { actions = actions, checkpoint = checkpoint }
+			-- The registry begins at the room's first update, the same in
+			-- every game (tpf3mp/registry.lua).
+			local saved = state and state.get and state:get()
+			local begin = l:room() and (type(saved) ~= "table" or saved.registry == nil)
+			if not actions and not checkpoint and not begin then return nil end
+			return { actions = actions, checkpoint = checkpoint, begin = begin }
 		end,
 
-		postUpdate = function(_params, _state, _dt, work)
+		postUpdate = function(_params, state, _dt, work)
 			local l = linked()
 			if not l or type(work) ~= "table" then return end
-			-- The room's builds go through; the player's own the hook stops.
-			if work.actions then l:replaying(true) end
-			for i, action in ipairs(work.actions or {}) do
-				local ok, why = apply.run(action)
-				if not ok then
-					l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
+			if work.actions or work.begin then
+				local saved = state:get()
+				if type(saved) ~= "table" then saved = {} end
+				local reg, _, failed = registry.sync(saved.registry)
+				if #failed > 0 and not toldRegistry then
+					toldRegistry = true
+					l:log("the registry could not list " .. table.concat(failed, "; "))
 				end
+				-- The room's builds go through; the player's own the hook
+				-- stops.
+				if work.actions then l:replaying(true) end
+				for i, action in ipairs(work.actions or {}) do
+					local ok, why, made = apply.run(action, { registry = reg })
+					-- What it made, bound at once, for the player who ordered
+					-- it: as the game answered the command, else as the
+					-- registry found it.
+					local kind = ok and apply.CREATES[next(action)] or nil
+					local fresh
+					reg, fresh = registry.sync(reg, (kind and made) and { [kind] = { made } } or nil)
+					local entity = kind and made or nil
+					for _, f in ipairs((kind and not entity) and fresh or {}) do
+						if f[1] == kind then entity = f[3] break end
+					end
+					if kind and not entity then
+						l:log("action " .. i .. " of this step made no " .. kind .. " this game could name")
+					end
+					l:applied(i, ok, entity, why)
+					if not ok then
+						l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
+					end
+				end
+				if work.actions then l:replaying(false) end
+				saved.registry = reg
+				state:set(saved)
 			end
-			if work.actions then l:replaying(false) end
 			if work.checkpoint then
 				local read, failed = lanes.read(api)
 				if #failed > 0 and not told then
@@ -148,9 +181,11 @@ function data()
 					return nil
 				end
 				local shape
-				if not action then
+				do
 					local described, text = pcall(capture.describe, param[1])
 					if described and text ~= "" then shape = text end
+				end
+				if not action then
 					-- The tool refuses it at once, so no click follows: the log
 					-- has it when the reason changes, a few dozen times at most.
 					if why ~= refusedWhy and refusals < 40 then
@@ -187,7 +222,8 @@ function data()
 				if seen and seen.action then
 					local ok, why = l:command(seen.action)
 					if ok then
-						l:log("handed the player's build to the room")
+						l:log("handed the player's build to the room"
+							.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
 					end

@@ -2,9 +2,12 @@
 -- script's postUpdate (docs/HOOKS.md, "Actions in the game").
 --
 -- A game script runs in an engine state, where a command runs at once (the
--- game's own api/tealdef/api/cmd.d.tl). A command is sent without a
--- callback, which the game refused in update ("Callbacks are currently
--- disallowed", build 40408); one the game refuses raises.
+-- game's own api/tealdef/api/cmd.d.tl). The game takes no callback in
+-- update ("Callbacks are currently disallowed", build 40408), but in
+-- postUpdate, where this runs, it calls one at once, with the command's
+-- result: the game's mission scripts read the line they made from it right
+-- after sendCommand (mission_vehicle_util.tl). A command the game refuses
+-- raises, or its callback hears that it failed.
 -- Every game applies the room's action in the same simulation update, so
 -- what this makes of an action may depend on nothing but the action and the
 -- world, which every game has alike: no time of day, no camera, no GUI.
@@ -75,11 +78,59 @@ local function log(line)
 	if apply.log then pcall(apply.log, line) end
 end
 
--- Sends `command`, which runs at once; a refusal raises, and apply.run
--- reports it.
-local function run(command)
+-- A list of the action, afresh, for the game to copy. The game copies a
+-- list it is handed into its own vector in the order `next` walks it, and
+-- the actions reach postUpdate as the game's own copy of what update
+-- returned, whose lists `next` walks in hash order (build 40408: a bus
+-- line's stops set to load grain, one cargo over from passengers). A table
+-- filled 1, 2, 3... walks in order.
+local function seq(list)
+	local out = {}
+	for i = 1, #list do out[i] = list[i] end
+	return out
+end
+
+-- Whether this Lua state's game takes a command's callback here; the game
+-- runs game scripts on a pool of states, so each learns on its own.
+local callbacks = true
+
+-- Sends `command`, which runs at once, and returns what the game answered,
+-- its command data and result entities (nil, where it answers nothing
+-- here). A command the game refuses raises, and apply.run reports it.
+local function send(command)
+	if callbacks then
+		local heard, went, data, entities = false, nil, nil, nil
+		local sent, err = pcall(api.cmd.sendCommand, command, function(d, success, e)
+			heard, went, data, entities = true, success, d, e
+		end)
+		if sent then
+			if heard and went ~= true then error("the game refused it", 0) end
+			return data, entities
+		end
+		-- The game refuses a callback before it runs anything: sent again
+		-- without one, the command runs once.
+		if not tostring(err):find("allbacks are currently disallowed", 1, true) then error(err, 0) end
+		callbacks = false
+		log("the game takes no command callbacks in this state: what an action makes is found by the registry alone")
+	end
 	api.cmd.sendCommand(command)
+	return nil, nil
+end
+
+local function run(command)
+	send(command)
 	return true
+end
+
+-- The entity a command made: its data's field `field`, else the first of
+-- its result entities; nil when the game did not say.
+local function madeBy(field, data, entities)
+	local ok, e = pcall(function() return data[field] end)
+	if ok and type(e) == "number" and e >= 0 then return e end
+	local first = type(entities) == "table" and entities[1]
+	e = type(first) == "table" and first[1] or nil
+	if type(e) == "number" and e >= 0 then return e end
+	return nil
 end
 
 -- Builds `proposal` as the player's own build. The game's verdict first, as
@@ -106,6 +157,11 @@ end
 
 local HANDLERS = {}
 
+-- Fills a SimpleProposal's street proposal from a polyline ("roads", below).
+local networkInto
+-- The construction of a file at a place ("vehicles and lines", below).
+local constructionAt
+
 function HANDLERS.BuildConstruction(build)
 	if build.replaces ~= nil then
 		return false, "this version of the mod does not replace constructions yet"
@@ -118,6 +174,12 @@ function HANDLERS.BuildConstruction(build)
 	entity.name = build.name
 	entity.playerEntity = api.engine.util.getPlayer()
 	proposal.constructionsToAdd = { entity }
+	-- The streets the tool built around it, in the same proposal: the
+	-- street it joins rebuilt through a junction. Not the construction's own
+	-- entrance edge, which the tool snapped onto that junction: the
+	-- construction makes its entrance again itself, unsnapped, ending a few
+	-- metres short (build 40408).
+	if build.connection ~= nil then networkInto(proposal, nil, nil, nil, build.connection, true) end
 	-- Paid by the player, and clearing town buildings in its way, as the
 	-- construction tool builds (the game's bridge and tunnel window names the
 	-- player so, gui/entity_window/bridge_and_tunnel.tl); without a context
@@ -127,7 +189,26 @@ function HANDLERS.BuildConstruction(build)
 	context.player = api.engine.util.getPlayer()
 	context.gatherBuildings = true
 	context.gatherFields = true
-	return buildProposal(proposal, context)
+	local built = buildProposal(proposal, context)
+	if build.connection == nil then return built end
+	-- A scripted build does not snap; the game's refresh of a construction
+	-- does, as its tool does: the entrance then ends at the street node
+	-- beside it, the junction built above (refreshConstruction, build 40408:
+	-- the same edge the tool proposed). So every game refreshes it at once,
+	-- for free, as part of this action.
+	local con = constructionAt({ file = build.file, at = build.transform.origin })
+	local refresh = api.engine.util.proposal.refreshConstruction(con)
+	local street, shape = refresh.proposal, {}
+	for i = 1, #street.addedSegments do
+		local s = street.addedSegments[i]
+		shape[#shape + 1] = "+e" .. s.entity .. ":" .. tostring(s.comp.node0) .. ">" .. tostring(s.comp.node1)
+	end
+	for i = 1, #street.removedSegments do shape[#shape + 1] = "-e" .. tostring(street.removedSegments[i].entity) end
+	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " "))
+	-- The game's verdict takes simple proposals only ("SimpleProposal
+	-- expected, got Proposal", build 40408): a refresh the game refuses
+	-- fails in the command's own answer instead (run).
+	return run(api.cmd.makeWorldBuildProposalCmd(refresh, nil, true, false))
 end
 
 -- ---------------------------------------------------------------- roads
@@ -237,7 +318,29 @@ end
 
 local STRUCTURE = { Ground = "NORMAL", Bridge = "BRIDGE", Tunnel = "TUNNEL" }
 
-local function buildNetwork(network, templateName, style, polyline)
+-- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
+-- street proposal. `network`, `templateName` and `style` are the build's
+-- own kind, for the links that name none; nil for a construction's
+-- streets, whose every link names its kind. With `dangling` false, a new
+-- vertex at the end of a single link, and that link, are left out: in a
+-- construction's streets, the construction's own entrance.
+function networkInto(proposal, network, templateName, style, polyline, dangling)
+	local degree = {}
+	for _, link in ipairs(polyline.links) do
+		degree[link.from] = (degree[link.from] or 0) + 1
+		degree[link.to] = (degree[link.to] or 0) + 1
+	end
+	local function loose(i) return polyline.vertices[i + 1].resolve == "New" and degree[i] == 1 end
+	local links = {}
+	for _, link in ipairs(polyline.links) do
+		if not (dangling and (loose(link.from) or loose(link.to))) then links[#links + 1] = link end
+	end
+	local skipped = {}
+	if dangling then
+		for i = 0, #polyline.vertices - 1 do skipped[i + 1] = loose(i) end
+	end
+	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
+		removed_nodes = polyline.removed_nodes }
 	local nodesOf = {}
 	local function nodes(n)
 		if nodesOf[n] == nil then nodesOf[n] = readNodes(n) end
@@ -301,13 +404,16 @@ local function buildNetwork(network, templateName, style, polyline)
 	for i, v in ipairs(polyline.vertices) do at[i] = arr(v.pos) end
 	for k, link in ipairs(polyline.links) do
 		local own = link.kind and link.kind.network or network
+		if own == nil then error("link " .. k .. " names no kind", 0) end
 		links[k] = addEdge(kindOf(own), 0, 0, at[link.from + 1], at[link.to + 1],
 			arr(link.tangent0), arr(link.tangent1))
 	end
 
 	for i, v in ipairs(polyline.vertices) do
 		local p, r = at[i], v.resolve
-		if r == "New" then
+		if skipped[i] then
+			-- Left out, with its link.
+		elseif r == "New" then
 			ids[i] = addNode(p)
 		elseif type(r) == "table" and r.Node then
 			local n = nearest(nodes(r.Node), p, NODE_TOLERANCE)
@@ -397,15 +503,11 @@ local function buildNetwork(network, templateName, style, polyline)
 		end
 	end
 
-	local proposal = api.type.SimpleProposal.new()
 	proposal.streetProposal.nodesToAdd = nodesToAdd
 	proposal.streetProposal.edgesToAdd = edgesToAdd
 	proposal.streetProposal.edgesToRemove = edgesToRemove
 	if #nodesToRemove > 0 then proposal.streetProposal.nodesToRemove = nodesToRemove end
 	if #configsToRemove > 0 then proposal.streetProposal.nodeConfigsToRemove = configsToRemove end
-	-- Paid by the player, as the tool builds.
-	local context = api.type.Context.new()
-	context.player = api.engine.util.getPlayer()
 
 	-- What is sent, in the log before it goes: an exception from the game
 	-- does not always come back through pcall.
@@ -421,7 +523,14 @@ local function buildNetwork(network, templateName, style, polyline)
 	shape[#shape + 1] = "-e" .. table.concat(edgesToRemove, ",") .. " -n" .. table.concat(nodesToRemove, ",")
 		.. " -c" .. table.concat(configsToRemove, ",")
 	log("building " .. table.concat(shape, " "))
+end
 
+local function buildNetwork(network, templateName, style, polyline)
+	local proposal = api.type.SimpleProposal.new()
+	networkInto(proposal, network, templateName, style, polyline)
+	-- Paid by the player, as the tool builds.
+	local context = api.type.Context.new()
+	context.player = api.engine.util.getPlayer()
 	return buildProposal(proposal, context)
 end
 
@@ -432,6 +541,174 @@ end
 function HANDLERS.BuildTrack(track)
 	return buildNetwork("Track", track.track, track.style, track.polyline)
 end
+
+-- ------------------------------------------------------ vehicles and lines
+--
+-- Vehicles, lines and station groups are named by canonical id
+-- (tpf3mp/registry.lua): `ctx.registry` is the game script's, up to date.
+-- A depot is named by its construction's file and position.
+
+local registry = module("registry")
+
+local function entityOf(ctx, kind, id)
+	local e = registry.entity(ctx and ctx.registry, kind, id)
+	if e == nil then error("no " .. kind .. " " .. tostring(id) .. " in this world", 0) end
+	return e
+end
+
+-- The construction of `ref.file` whose origin is within 2 m of `ref.at`, the
+-- nearest, the lower entity on a tie.
+function constructionAt(ref)
+	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
+	local list = api.engine.getEntitiesWithComponent(CONSTRUCTION)
+	local best, bestD
+	for i = 1, #list do
+		local e = list[i]
+		local c = api.engine.getComponent(e, CONSTRUCTION)
+		if c and c.fileName == ref.file then
+			local t = c.transf
+			local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
+			local d = dx * dx + dy * dy + dz * dz
+			if d <= 4 and (bestD == nil or d < bestD or (d == bestD and e < best)) then best, bestD = e, d end
+		end
+	end
+	if best == nil then error("no " .. tostring(ref.file) .. " there", 0) end
+	return best, api.engine.getComponent(best, CONSTRUCTION)
+end
+
+local function tint(c) return api.type.Vec3f.new(c.r, c.g, c.b) end
+
+function HANDLERS.BuyVehicle(buy)
+	local _, construction = constructionAt(buy.depot)
+	local depot = construction.depots and construction.depots[1]
+	if depot == nil then error("the construction there has no depot", 0) end
+	-- Bought now: the game's time here, the same in every game.
+	local time = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME).gameTime
+	local vehicles = {}
+	for i, p in ipairs(buy.consist) do
+		local model = api.res.modelRep.find(p.model)
+		if type(model) ~= "number" or model < 0 then error("no vehicle model " .. tostring(p.model), 0) end
+		local part = api.type.TransportVehiclePart.new()
+		part.part.modelId = model
+		part.part.reversed = p.reversed == true
+		local loads, auto = {}, {}
+		for k, l in ipairs(p.loads) do
+			local lc = api.type.LoadConfig.new()
+			lc.loadConfigIndex = l.config
+			lc.cargoTypeId = l.cargo
+			loads[k], auto[k] = lc, true
+		end
+		part.part.compartment2loadConfig = loads
+		part.part.color = tint(p.color)
+		part.purchaseTime = time
+		part.autoLoadConfig = auto
+		vehicles[i] = part
+	end
+	local config = api.type.TransportVehicleConfig.new()
+	config.vehicles = vehicles
+	config.vehicleGroups = seq(buy.groups)
+	config.muFileNames = seq(buy.multiple_units)
+	local data, entities = send(api.cmd.makeVehicleBuyCmd(api.engine.util.getPlayer(), depot, config))
+	return true, madeBy("resultVehicleEntity", data, entities)
+end
+
+function HANDLERS.SellVehicle(sell, ctx)
+	local vehicles = {}
+	for i, v in ipairs(sell.vehicles) do vehicles[i] = entityOf(ctx, "vehicles", v) end
+	return run(api.cmd.makeVehicleSellCmd(vehicles))
+end
+
+function HANDLERS.AssignLine(assign, ctx)
+	if assign.line == nil then
+		return false, "this version of the mod does not take vehicles off their line yet"
+	end
+	local line = entityOf(ctx, "lines", assign.line)
+	for _, v in ipairs(assign.vehicles) do
+		run(api.cmd.makeVehicleSetLineCmd(entityOf(ctx, "vehicles", v), line, assign.first_stop))
+	end
+	return true
+end
+
+function HANDLERS.VehicleOp(op, ctx)
+	local vehicle = entityOf(ctx, "vehicles", op.vehicle)
+	local change = op.change
+	if type(change) == "table" and change.Stop ~= nil then
+		return run(api.cmd.makeVehicleSetStoppedByUserCmd(vehicle, change.Stop == true))
+	elseif type(change) == "table" and change.ToDepot then
+		return run(api.cmd.makeVehicleSendToDepotCmd(vehicle, change.ToDepot.sell == true))
+	elseif change == "Reverse" then
+		return run(api.cmd.makeVehicleReverseCmd(vehicle))
+	elseif change == "Depart" then
+		return run(api.cmd.makeVehicleTryToDepartCmd(vehicle))
+	end
+	return false, "a vehicle change of no kind"
+end
+
+-- The game's load modes, by the schema's names, as numbers.
+local LOAD_MODES = { LoadIfAvailable = 0, FullLoadAny = 1, FullLoadAll = 2, LegacyUnloadOnly = 3 }
+
+-- A LineData as the game's Line component.
+local function lineComponent(data, ctx)
+	local line = api.type.Line.new()
+	local stops = {}
+	for i, s in ipairs(data.stops) do
+		local stop = api.type.Line.Stop.new()
+		stop.stationGroup = entityOf(ctx, "groups", s.group)
+		stop.station = s.terminal.station
+		stop.terminal = s.terminal.terminal
+		local alternatives = {}
+		for k, a in ipairs(s.alternatives) do
+			alternatives[k] = api.type.StationTerminal.new(a.station, a.terminal)
+		end
+		stop.alternativeTerminals = alternatives
+		stop.loadMode = LOAD_MODES[s.load_mode] or error("a load mode " .. tostring(s.load_mode), 0)
+		stop.minWaitingTime = s.min_wait
+		stop.maxWaitingTime = s.max_wait
+		stop.maxAdditionalWaitingTime = s.max_extra_wait
+		local config = api.type.Line.StopConfig.new()
+		config.load = seq(s.rules.load)
+		config.maxLoad = seq(s.rules.max_load)
+		config.forceUnload = s.rules.force_unload == true
+		config.destroyForConfigChange = s.rules.destroy_for_config_change == true
+		config.destroyForRefresh = s.rules.destroy_for_refresh == true
+		stop.stopConfig = config
+		stops[i] = stop
+	end
+	line.stops = stops
+	local modes = {}
+	for _, m in ipairs(data.modes) do modes[m] = true end
+	line.vehicleInfo.transportModes = modes
+	line.customFilters = data.custom_filters == true
+	line.reservationPriority = data.reservation_priority
+	return line
+end
+
+function HANDLERS.CreateLine(create, ctx)
+	local line = lineComponent(create.line, ctx)
+	local data, entities = send(api.cmd.makeLineCreateCmd(create.name, tint(create.color),
+		api.engine.util.getPlayer(), line))
+	return true, madeBy("resultEntity", data, entities)
+end
+
+function HANDLERS.EditLine(edit, ctx)
+	local line = entityOf(ctx, "lines", edit.line)
+	local change = edit.change
+	if change == "Delete" then
+		return run(api.cmd.makeLineDestroyCmd(line))
+	elseif type(change) == "table" and change.Update then
+		return run(api.cmd.makeLineUpdateCmd(line, lineComponent(change.Update, ctx)))
+	elseif type(change) == "table" and change.Rename then
+		return run(api.cmd.makeEntitySetNameCmd(line, change.Rename))
+	elseif type(change) == "table" and change.Recolor then
+		return run(api.cmd.makeEntitySetColorCmd(line, tint(change.Recolor)))
+	end
+	return false, "a line change of no kind"
+end
+
+-- What an action makes (the new vehicle, the new line): its kind in the
+-- registry, which the game script binds it in after the action. Its
+-- handler returns the entity, where the game said which.
+apply.CREATES = { BuyVehicle = "vehicles", CreateLine = "lines" }
 
 -- A loan's terms as the loan script keeps them (loan.d.tl): the action's
 -- table has the script's own field names and fractions.
@@ -456,8 +733,11 @@ function HANDLERS.Loan(op)
 	return false, "a loan is taken or paid back"
 end
 
--- Runs one action. Returns true, or false and why not; never raises.
-function apply.run(action)
+-- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the
+-- actions that name vehicles, lines and station groups. Returns true, nil
+-- and the entity it made (for the kinds in CREATES, where the game said),
+-- or false and why not; never raises.
+function apply.run(action, ctx)
 	if type(action) ~= "table" then return false, "an action is a table" end
 	local kind, body = next(action)
 	if kind == nil or next(action, kind) ~= nil then
@@ -467,9 +747,10 @@ function apply.run(action)
 	if handler == nil then
 		return false, "this version of the mod does not apply " .. tostring(kind) .. " yet"
 	end
-	local ok, applied, why = pcall(handler, body)
+	local ok, applied, detail = pcall(handler, body, ctx)
 	if not ok then return false, tostring(applied) end
-	return applied == true, why
+	if applied == true then return true, nil, detail end
+	return false, detail
 end
 
 -- The actions this version applies, for tests and the log.

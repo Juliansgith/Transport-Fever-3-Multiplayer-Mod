@@ -34,6 +34,7 @@
 --                   template =, style = }, ... },         -- the proposal's new edges
 --     removed = { { node0 =, node1 =, network = }, ... }, -- the existing edges it removes
 --     removedNodes = { { id =, pos = {x, y, z} }, ... },   -- the existing nodes it removes
+--     explicit = true | nil,               -- every link names its kind (a construction's streets)
 --   }
 --   world = {
 --     nodePos(id)     -> {x, y, z} of an existing node, or nil
@@ -124,7 +125,7 @@ function roads.convert(capture, world)
 		local t1, errT1 = vec3(e.tangent1)
 		if not (t0 and t1) then return nil, "edge " .. k .. " tangent: " .. tostring(errT0 or errT1) end
 		local link = { from = i1, to = i2, tangent0 = t0, tangent1 = t1, structure = e.structure or "Ground" }
-		if e.network ~= own or e.template ~= ownTemplate or e.style ~= capture.style then
+		if capture.explicit or e.network ~= own or e.template ~= ownTemplate or e.style ~= capture.style then
 			if e.network ~= "Street" and e.network ~= "Track" then
 				return nil, "edge " .. k .. " is in no network"
 			end

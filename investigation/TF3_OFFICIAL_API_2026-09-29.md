@@ -243,8 +243,11 @@ names against the reference:
   `api.type.transformator` numbers road types the other way round
   (`0 track, 1 street`), so compare against the `RoadType` values, never a
   number.
-- **Vehicle positions:** `api.engine.util.transport.getPosition(vehicle)`;
-  the determinism probe reads it first.
+- **Vehicle positions:** `api.engine.util.vehicle.getPosition(vehicle)`
+  (`UtilVehicle` in `engine/util.d.tl`); the determinism probe reads it
+  first. *Corrected:* this said `util.transport`, which has no
+  `getPosition` on build 40408: the mod's vehicles lane failed in both
+  games alike until it read `util.vehicle`.
 
 ## More from the reference and the release download
 

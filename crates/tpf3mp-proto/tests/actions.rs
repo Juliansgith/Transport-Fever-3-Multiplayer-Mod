@@ -10,10 +10,12 @@ use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
         ACTION_SCHEMA_VERSION, Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
-        ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeKind, EdgeRef, EditLine,
-        LineChange, LineId, LineStop, Link, MAX_EDGES, MAX_VERTICES, Network, NodeRef, Param,
-        ParamValue, PlaceStop, Polyline, Pos, Pos2, Resolve, Rgb, RoadBuild, StationId, Structure,
-        Tangent, Terraform, TerrainCell, TrackBuild, Tram, Transform, UnitDir, VehicleId, Vertex,
+        ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeKind, EdgeRef,
+        EditLine, Fraction, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp,
+        LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeRef, Param, ParamValue, PlaceStop,
+        Polyline, Pos, Pos2, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
+        Terminal, Terraform, TerrainCell, Tint, TrackBuild, Tram, Transform, UnitDir,
+        VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -113,24 +115,73 @@ fn depot() -> ConstructionRef {
     }
 }
 
-fn stops() -> BoundedVec<LineStop, 256> {
-    list(vec![
-        LineStop {
-            station: StationId(4),
-            terminal: Some(1),
+fn line_data() -> LineData {
+    let stop = |group, load_mode, rules| LineStop {
+        group: StationId(group),
+        terminal: Terminal {
+            station: 0,
+            terminal: 1,
         },
-        LineStop {
-            station: StationId(9),
-            terminal: None,
-        },
-    ])
+        alternatives: list(vec![Terminal {
+            station: 1,
+            terminal: 0,
+        }]),
+        load_mode,
+        min_wait: 0,
+        max_wait: 180_000_000,
+        max_extra_wait: 30_500_000,
+        rules,
+    };
+    LineData {
+        stops: list(vec![
+            stop(
+                4,
+                LoadMode::LoadIfAvailable,
+                StopRules {
+                    load: list(vec![true, false, true]),
+                    max_load: list(vec![Fraction(1_000_000), Fraction(0), Fraction(250_000)]),
+                    force_unload: false,
+                    destroy_for_config_change: true,
+                    destroy_for_refresh: false,
+                },
+            ),
+            stop(
+                9,
+                LoadMode::FullLoadAll,
+                StopRules {
+                    load: BoundedVec::empty(),
+                    max_load: BoundedVec::empty(),
+                    force_unload: true,
+                    destroy_for_config_change: false,
+                    destroy_for_refresh: true,
+                },
+            ),
+        ]),
+        modes: list(vec![0, 3]),
+        custom_filters: true,
+        reservation_priority: 500_000,
+    }
+}
+
+fn loan(amount: i64) -> LoanTerms {
+    LoanTerms {
+        kind: text("Small"),
+        amount,
+        duration: 1_095_000,
+        percentage: 30_000,
+        birth_day: Some(400_000),
+        cooldown_until: None,
+        last_pay_day: None,
+        times_paid: Some(2),
+        id: Some(7),
+    }
 }
 
 /// One of every variant, and of every inner variant.
 fn samples() -> Vec<Action> {
-    let color = Rgb {
-        r: 200,
-        g: 30,
+    let color = Tint {
+        r: 784_314,
+        g: 117_647,
         b: 0,
     };
     vec![
@@ -186,13 +237,29 @@ fn samples() -> Vec<Action> {
             ]),
             name: text("Hauptbahnhof"),
             replaces: Some(depot()),
+            connection: Some(Box::new(polyline())),
         }),
         Action::BuyVehicle(BuyVehicle {
             depot: depot(),
             consist: list(vec![
-                text("vehicle/train/br_101.mdl"),
-                text("vehicle/waggon/ic_2nd.mdl"),
+                ConsistPart {
+                    model: text("vehicle/train/br_101.mdl"),
+                    reversed: false,
+                    loads: BoundedVec::empty(),
+                    color,
+                },
+                ConsistPart {
+                    model: text("vehicle/waggon/ic_2nd.mdl"),
+                    reversed: true,
+                    loads: list(vec![Load {
+                        config: 0,
+                        cargo: 12,
+                    }]),
+                    color,
+                },
             ]),
+            groups: list(vec![1, 1]),
+            multiple_units: list(vec![text(""), text("")]),
         }),
         Action::SellVehicle {
             vehicles: list(vec![VehicleId(1), VehicleId(70_000)]),
@@ -200,7 +267,7 @@ fn samples() -> Vec<Action> {
         Action::CreateLine(CreateLine {
             name: text("Line 1"),
             color,
-            stops: stops(),
+            line: line_data(),
         }),
         Action::EditLine(EditLine {
             line: LineId(3),
@@ -212,7 +279,7 @@ fn samples() -> Vec<Action> {
         }),
         Action::EditLine(EditLine {
             line: LineId(3),
-            change: LineChange::SetStops(stops()),
+            change: LineChange::Update(line_data()),
         }),
         Action::EditLine(EditLine {
             line: LineId(3),
@@ -280,6 +347,29 @@ fn samples() -> Vec<Action> {
             name: text("Rail & Daughters"),
         }),
         Action::CompanyOp(CompanyOp::Delete(CompanyId(2))),
+        Action::Loan(Box::new(LoanOp::Take {
+            next: loan(7_000_000),
+            offer: loan(5_000_000),
+        })),
+        Action::Loan(Box::new(LoanOp::Repay {
+            loan: loan(5_000_000),
+        })),
+        Action::VehicleOp(VehicleOp {
+            vehicle: VehicleId(1),
+            change: VehicleChange::Stop(true),
+        }),
+        Action::VehicleOp(VehicleOp {
+            vehicle: VehicleId(2),
+            change: VehicleChange::ToDepot { sell: true },
+        }),
+        Action::VehicleOp(VehicleOp {
+            vehicle: VehicleId(2),
+            change: VehicleChange::Reverse,
+        }),
+        Action::VehicleOp(VehicleOp {
+            vehicle: VehicleId(2),
+            change: VehicleChange::Depart,
+        }),
     ]
 }
 
@@ -298,13 +388,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=11.
+    // Every top-level variant is sampled: postcard tags them 0..=13.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=11).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=13).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

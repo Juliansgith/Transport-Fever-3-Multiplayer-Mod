@@ -43,6 +43,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             steps_per_second: 10,
             checkpoint_interval: 50,
             saves: Text::new("C:/Users/player/TPF3-MP/worlds/saves").unwrap(),
+            player: PlayerId(FixedBytes([7; 32])),
         },
         ToHook::Apply(Event {
             seq: 12,
