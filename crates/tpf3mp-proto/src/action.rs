@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 2;
+pub const ACTION_SCHEMA_VERSION: u32 = 3;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -156,6 +156,14 @@ pub struct EdgeRef {
     pub ends: EdgeEnds,
 }
 
+/// An existing node, named by its position, in a given network: matched
+/// within 1.5 m horizontally, the nearest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NodeRef {
+    pub network: Network,
+    pub at: Pos,
+}
+
 /// An existing construction, named by its file and its position (the
 /// transform's origin). Matched within 2 m.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -194,6 +202,18 @@ pub enum Structure {
     Tunnel(ResName),
 }
 
+/// What an edge is built as when it is not the build's own street or track:
+/// a piece of an existing street or track that the tool rebuilds around a new
+/// junction or crossing keeps that road's kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeKind {
+    pub network: Network,
+    /// Its road template (TF3's `BaseEdge.roadTemplate`).
+    pub template: ResName,
+    /// Its road style; none for the template's own.
+    pub style: Option<ResName>,
+}
+
 /// One new edge between two vertices of its polyline, by index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
@@ -202,12 +222,16 @@ pub struct Link {
     pub tangent0: Tangent,
     pub tangent1: Tangent,
     pub structure: Structure,
+    /// None for the build's own street or track, in the build's style.
+    pub kind: Option<EdgeKind>,
 }
 
-/// The geometry of one road or track build: new edges between vertices, and
-/// the existing edges it replaces in place (an upgrade, or a span the build
-/// passes under). Split parents are not removals: each split vertex names
-/// its edge, and the receiver removes that edge as it splits it.
+/// The geometry of one road or track build, as the tool proposed it: new
+/// edges between vertices, and the existing edges and nodes it removes (an
+/// upgrade's, a span the build passes under, the stretch of road TF3's tools
+/// rebuild around a new junction or crossing). A split vertex names the edge
+/// it splits, which is then no removal: the receiver removes it as it splits
+/// it.
 ///
 /// Decoding checks that there is at least one link and that every link joins
 /// two different vertices of this polyline.
@@ -216,15 +240,19 @@ pub struct Link {
 pub struct Polyline {
     pub vertices: BoundedVec<Vertex, MAX_VERTICES>,
     pub links: BoundedVec<Link, MAX_LINKS>,
-    /// Edges of the build's own network removed and replaced.
-    pub removals: BoundedVec<EdgeEnds, MAX_EDGES>,
+    /// Existing edges removed, of either network.
+    pub removals: BoundedVec<EdgeRef, MAX_EDGES>,
+    /// Existing nodes removed: TF3's tools move a junction that was near the
+    /// new one onto it.
+    pub removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
 }
 
 #[derive(Deserialize)]
 struct PolylineFields {
     vertices: BoundedVec<Vertex, MAX_VERTICES>,
     links: BoundedVec<Link, MAX_LINKS>,
-    removals: BoundedVec<EdgeEnds, MAX_EDGES>,
+    removals: BoundedVec<EdgeRef, MAX_EDGES>,
+    removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -238,10 +266,11 @@ pub enum PolylineError {
 }
 
 impl Polyline {
+    /// A polyline that removes no nodes; see [`Polyline::with_removed_nodes`].
     pub fn new(
         vertices: BoundedVec<Vertex, MAX_VERTICES>,
         links: BoundedVec<Link, MAX_LINKS>,
-        removals: BoundedVec<EdgeEnds, MAX_EDGES>,
+        removals: BoundedVec<EdgeRef, MAX_EDGES>,
     ) -> Result<Self, PolylineError> {
         if links.is_empty() {
             return Err(PolylineError::NoLinks);
@@ -259,7 +288,15 @@ impl Polyline {
             vertices,
             links,
             removals,
+            removed_nodes: BoundedVec::empty(),
         })
+    }
+
+    /// This polyline, removing these existing nodes too.
+    #[must_use]
+    pub fn with_removed_nodes(mut self, nodes: BoundedVec<NodeRef, MAX_EDGES>) -> Self {
+        self.removed_nodes = nodes;
+        self
     }
 }
 
@@ -267,7 +304,8 @@ impl TryFrom<PolylineFields> for Polyline {
     type Error = PolylineError;
 
     fn try_from(fields: PolylineFields) -> Result<Self, PolylineError> {
-        Self::new(fields.vertices, fields.links, fields.removals)
+        Ok(Self::new(fields.vertices, fields.links, fields.removals)?
+            .with_removed_nodes(fields.removed_nodes))
     }
 }
 
@@ -621,6 +659,7 @@ mod tests {
             tangent0: Tangent { x: 1, y: 0, z: 0 },
             tangent1: Tangent { x: 1, y: 0, z: 0 },
             structure: Structure::Ground,
+            kind: None,
         }
     }
 
@@ -664,12 +703,14 @@ mod tests {
         struct Raw {
             vertices: BoundedVec<Vertex, MAX_VERTICES>,
             links: BoundedVec<Link, MAX_LINKS>,
-            removals: BoundedVec<EdgeEnds, MAX_EDGES>,
+            removals: BoundedVec<EdgeRef, MAX_EDGES>,
+            removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
         }
         let raw = Raw {
             vertices: vertices(1),
             links: BoundedVec::new(vec![link(0, 1)]).unwrap(),
             removals: BoundedVec::empty(),
+            removed_nodes: BoundedVec::empty(),
         };
         let bytes = postcard::to_stdvec(&raw).unwrap();
         assert!(postcard::from_bytes::<Polyline>(&bytes).is_err());
@@ -706,7 +747,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                2, // schema version
+                3, // schema version
                 5, // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -728,14 +769,28 @@ mod tests {
                 ])
                 .unwrap(),
                 BoundedVec::new(vec![link(0, 1)]).unwrap(),
-                BoundedVec::empty(),
+                BoundedVec::new(vec![EdgeRef {
+                    network: Network::Street,
+                    ends: EdgeEnds {
+                        a: pos(1, 0, 0),
+                        b: pos(0, 1, 0),
+                    },
+                }])
+                .unwrap(),
             )
-            .unwrap(),
+            .unwrap()
+            .with_removed_nodes(
+                BoundedVec::new(vec![NodeRef {
+                    network: Network::Track,
+                    at: pos(0, 0, 1),
+                }])
+                .unwrap(),
+            ),
         });
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                2, // schema version
+                3, // schema version
                 1, // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -743,7 +798,9 @@ mod tests {
                 0, 0, 0, 0, // (0, 0, 0), Resolve::New
                 1, // one link
                 0, 1, 2, 0, 0, 2, 0, 0, 0, // 0 -> 1, tangents, Structure::Ground
-                0, // no removals
+                0, // the build's own kind
+                1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
+                1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
             ]
         );
     }

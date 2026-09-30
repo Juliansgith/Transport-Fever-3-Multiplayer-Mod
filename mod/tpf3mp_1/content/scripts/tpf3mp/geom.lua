@@ -91,4 +91,34 @@ function geom.edgeContaining(edges, x, y, tol, skip)
 	return best, u
 end
 
+-- The parameter u of the point of the curve (a, ta) to (b, tb) nearest (x, y)
+-- horizontally, and its horizontal distance. For the room's replays, which
+-- every game must compute alike, whatever its platform: nothing but + - * /
+-- and sqrt, which IEEE 754 fixes exactly (no ^, which is the C library's pow),
+-- and a fixed number of steps: 64 samples, then 48 steps of a ternary search
+-- about the best, to within 1e-9.
+function geom.parameterAt(a, ta, b, tb, x, y)
+	local function d2(u)
+		local q = geom.hermitePos(a, ta, b, tb, u)
+		local dx, dy = q[1] - x, q[2] - y
+		return dx * dx + dy * dy
+	end
+	local STEPS = 64
+	local best, bestD = 0, d2(0)
+	for i = 1, STEPS do
+		local u = i / STEPS
+		local d = d2(u)
+		if d < bestD then best, bestD = u, d end
+	end
+	local lo, hi = best - 1 / STEPS, best + 1 / STEPS
+	if lo < 0 then lo = 0 end
+	if hi > 1 then hi = 1 end
+	for _ = 1, 48 do
+		local u1, u2 = lo + (hi - lo) / 3, hi - (hi - lo) / 3
+		if d2(u1) < d2(u2) then hi = u2 else lo = u1 end
+	end
+	local u = (lo + hi) / 2
+	return u, math.sqrt(d2(u))
+end
+
 return geom

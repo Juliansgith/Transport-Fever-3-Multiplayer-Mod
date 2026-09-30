@@ -480,41 +480,85 @@ impl State {
         cost_per_m: i64,
     ) -> Result<(), Refusal> {
         let n = net(network);
-        for ends in polyline.removals.iter() {
-            let key = self.find_edge(n, ends)?;
+        // Existing nodes are found before anything is removed: within one
+        // build a node outlives its edges, as in the game's proposal.
+        let mut at: Vec<Option<P>> = Vec::with_capacity(polyline.vertices.len());
+        for vertex in polyline.vertices.iter() {
+            let pos = p(&vertex.pos);
+            at.push(match &vertex.resolve {
+                Resolve::New => Some(pos),
+                Resolve::Node(of) => match self.find_node(net(*of), pos) {
+                    Some(node) => Some(node),
+                    None => refuse!("no {of:?} node at {pos:?}"),
+                },
+                Resolve::Split(_) => None,
+            });
+        }
+        // The nodes it removes, found before anything is.
+        let mut gone = Vec::with_capacity(polyline.removed_nodes.len());
+        for node in polyline.removed_nodes.iter() {
+            let pos = p(&node.at);
+            let Some(found) = self.find_node(net(node.network), pos) else {
+                refuse!("no {:?} node to remove at {pos:?}", node.network);
+            };
+            let joined = polyline
+                .vertices
+                .iter()
+                .zip(&at)
+                .any(|(v, r)| matches!(v.resolve, Resolve::Node(_)) && *r == Some(found));
+            if joined {
+                refuse!("the build removes a node it joins");
+            }
+            gone.push((net(node.network), found));
+        }
+        for removal in polyline.removals.iter() {
+            let key = self.find_edge(net(removal.network), &removal.ends)?;
             self.unobstructed(&key)?;
             self.edges.remove(&key);
         }
-        let mut at = Vec::with_capacity(polyline.vertices.len());
-        for vertex in polyline.vertices.iter() {
-            let pos = p(&vertex.pos);
-            match &vertex.resolve {
-                Resolve::New => at.push(pos),
-                Resolve::Node(of) => match self.find_node(net(*of), pos) {
-                    Some(node) => at.push(node),
-                    None => refuse!("no {of:?} node at {pos:?}"),
-                },
-                Resolve::Split(edge) => {
-                    let key = self.find_edge(net(edge.network), &edge.ends)?;
-                    self.unobstructed(&key)?;
-                    if pos == key.1 || pos == key.2 {
-                        refuse!("a split at the end of an edge");
-                    }
-                    let split = self.edges.remove(&key).expect("found above");
-                    self.edges
-                        .insert(edge_key(key.0, key.1, pos), split.clone());
-                    self.edges.insert(edge_key(key.0, pos, key.2), split);
-                    at.push(pos);
-                }
+        // A node goes with its last edge; the game refuses to remove one
+        // that still has any.
+        for (network, node) in gone {
+            let kept = self
+                .edges
+                .keys()
+                .any(|(n, a, b)| *n == network && (*a == node || *b == node));
+            if kept {
+                refuse!("the node at {node:?} still has edges");
             }
         }
+        for (vertex, slot) in polyline.vertices.iter().zip(at.iter_mut()) {
+            if let Resolve::Split(edge) = &vertex.resolve {
+                let pos = p(&vertex.pos);
+                let key = self.find_edge(net(edge.network), &edge.ends)?;
+                self.unobstructed(&key)?;
+                if pos == key.1 || pos == key.2 {
+                    refuse!("a split at the end of an edge");
+                }
+                let split = self.edges.remove(&key).expect("found above");
+                self.edges
+                    .insert(edge_key(key.0, key.1, pos), split.clone());
+                self.edges.insert(edge_key(key.0, pos, key.2), split);
+                *slot = Some(pos);
+            }
+        }
+        let at: Vec<P> = at
+            .into_iter()
+            .map(|pos| pos.expect("every vertex resolved above"))
+            .collect();
         let mut cost: i64 = 0;
         for link in polyline.links.iter() {
             let (a, b) = (at[usize::from(link.from)], at[usize::from(link.to)]);
             if a == b {
                 refuse!("an edge from a point to itself");
             }
-            let key = edge_key(n, a, b);
+            // The build's own kind, or the kind the link keeps: a piece of
+            // the street it joins, rebuilt through the new junction.
+            let (ln, own) = match &link.kind {
+                Some(other) => (net(other.network), other.template.as_str()),
+                None => (n, kind),
+            };
+            let key = edge_key(ln, a, b);
             if self.edges.contains_key(&key) {
                 refuse!("the edge {a:?}-{b:?} is already built");
             }
@@ -526,7 +570,7 @@ impl State {
             self.edges.insert(
                 key,
                 Edge {
-                    kind: kind.to_owned(),
+                    kind: own.to_owned(),
                     structure,
                     owner: Some(company),
                 },
@@ -1145,5 +1189,134 @@ mod tests {
         );
         assert_eq!(world.observe().money[0], Some(START_MONEY));
         assert_eq!(world.ignored().len(), 1);
+    }
+
+    /// A street drawn onto another's middle, as TF3's street tool proposes
+    /// it: the old street's node there goes with its two edges, and the old
+    /// street is rebuilt through the new junction in its own kind.
+    #[test]
+    fn a_junction_rebuilds_the_street_it_joins_in_its_own_kind() {
+        use tpf3mp_proto::{
+            BoundedVec,
+            action::{EdgeKind, EdgeRef, Link, NodeRef, RoadBuild, Tram},
+        };
+
+        use crate::regress::library::{at, new, node, polyline, road};
+
+        let player = PlayerId(FixedBytes([1; 32]));
+        let mut world = ModelWorld::new(1);
+        world.apply(&event(
+            1,
+            EventBody::PlayerJoined {
+                player,
+                name: Text::new("p1").unwrap(),
+                platform: Platform::current(),
+            },
+        ));
+        // The street A-M-B.
+        act(
+            &mut world,
+            2,
+            player,
+            &road(vec![new(at(400, 0)), new(at(450, 0)), new(at(500, 0))]),
+        );
+        assert_eq!(world.observe().street_edges, 2);
+        let street_edge = |a, b| EdgeRef {
+            network: Network::Street,
+            ends: EdgeEnds { a, b },
+        };
+        let junction = |removals: Vec<EdgeRef>, removed_nodes: Vec<NodeRef>| {
+            let mut lines = polyline(
+                vec![
+                    new(at(450, 100)),
+                    new(at(452, 0)),
+                    node(at(400, 0), Network::Street),
+                    node(at(500, 0), Network::Street),
+                ],
+                &Structure::Ground,
+            );
+            // The new street's one link, then the old street rebuilt.
+            let mut links = vec![lines.links.to_vec()[0].clone()];
+            for (from, to) in [(2, 1), (1, 3)] {
+                links.push(Link {
+                    from,
+                    to,
+                    kind: Some(EdgeKind {
+                        network: Network::Street,
+                        template: Text::new("street/country.street_template").unwrap(),
+                        style: None,
+                    }),
+                    ..links[0].clone()
+                });
+            }
+            lines = Polyline::new(
+                lines.vertices,
+                BoundedVec::new(links).unwrap(),
+                BoundedVec::new(removals).unwrap(),
+            )
+            .unwrap()
+            .with_removed_nodes(BoundedVec::new(removed_nodes).unwrap());
+            Action::BuildRoad(RoadBuild {
+                street: Text::new("street/town.street_template").unwrap(),
+                style: None,
+                bus_lane: false,
+                tram: Tram::None,
+                polyline: lines,
+            })
+        };
+        let both = || {
+            vec![
+                street_edge(at(400, 0), at(450, 0)),
+                street_edge(at(450, 0), at(500, 0)),
+            ]
+        };
+        let street_node = |pos| NodeRef {
+            network: Network::Street,
+            at: pos,
+        };
+        // Removing a node the build joins, or one that keeps an edge, is
+        // refused and changes nothing.
+        act(
+            &mut world,
+            3,
+            player,
+            &junction(both(), vec![street_node(at(400, 0))]),
+        );
+        act(
+            &mut world,
+            4,
+            player,
+            &junction(
+                vec![street_edge(at(400, 0), at(450, 0))],
+                vec![street_node(at(450, 0))],
+            ),
+        );
+        assert_eq!(world.observe().street_edges, 2);
+        let why: Vec<&str> = world.ignored().iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!(why[0], "the build removes a node it joins");
+        assert!(why[1].ends_with("still has edges"), "{why:?}");
+        // The tool's own: the old junction's node goes.
+        act(
+            &mut world,
+            5,
+            player,
+            &junction(both(), vec![street_node(at(450, 0))]),
+        );
+        assert_eq!(world.ignored().len(), 2, "{:?}", world.ignored());
+        assert_eq!(world.observe().street_edges, 3);
+        let kinds: Vec<&str> = world
+            .state
+            .edges
+            .values()
+            .map(|e| e.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|k| **k == "street/country.street_template")
+                .count(),
+            2,
+            "{kinds:?}"
+        );
     }
 }

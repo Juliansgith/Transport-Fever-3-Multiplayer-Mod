@@ -1087,7 +1087,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
              elsewhere.toAdd[1].transf[13] = 99 \
              out[#out + 1] = ask('constructionBuilder', elsewhere) \
              out[#out + 1] = ask('constructionBuilder', {CONSTRUCTION_PROPOSAL}) \
-             out[#out + 1] = ask('streetBuilder', {CONSTRUCTION_PROPOSAL}) \
+             out[#out + 1] = ask('bulldozer', {CONSTRUCTION_PROPOSAL}) \
              local unnamed = {CONSTRUCTION_PROPOSAL} unnamed.toAdd[1].name = '' \
              HOOK.clicks = 1 \
              out[#out + 1] = ask('constructionBuilder', unnamed) \
@@ -1248,5 +1248,370 @@ fn the_console_event_hands_an_action_to_the_room() {
         logged[2].starts_with("refused a test action: "),
         "{}",
         logged[2]
+    );
+}
+
+/// A street network for the road tests, over the stand-in engine state: the
+/// street 8-9 (edge 100) running north through (50, 0), and node 7 at the
+/// origin with a street of its own (edge 101).
+const FAKE_NETWORK: &str = r#"
+local CT = { BASE_NODE = 11, BASE_EDGE = 12, BASE_NODE_CONFIG = 13 }
+api.type.ComponentType = CT
+api.type.enum = { BaseEdgeType = { NORMAL = 0, BRIDGE = 1, TUNNEL = 2 },
+                  RoadType = { STREET = 0, TRACK = 1 } }
+api.type.Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end }
+api.type.NodeAndEntity = { new = function() return { comp = {} } end }
+api.type.SegmentAndEntity = { new = function() return { comp = {} } end }
+api.type.SimpleProposal.new = function() return { constructionsToAdd = {}, streetProposal = {} } end
+local TEMPLATES = { ['::/street/town_small.street_template'] = 4, ['::/street/country.street_template'] = 5 }
+api.res = {
+    streetTemplateRep = {
+        find = function(name) return TEMPLATES[name] or -1 end,
+        get = function(id)
+            if id == 4 then return { laneConfigs = { 'town lanes' }, streetStyle = '::/style/town.street_style' } end
+            if id == 5 then return { laneConfigs = { 'country lanes' }, streetStyle = '::/style/country.street_style' } end
+        end,
+    },
+    bridgeTypeRep = {
+        find = function(name) if name == '::/bridge/stone.lua' then return 3 end return -1 end,
+        getName = function(id) if id == 3 then return '::/bridge/stone.lua' end end,
+    },
+    tunnelTypeRep = { find = function() return -1 end, getName = function() end },
+}
+NODES = { [7] = { x = 0, y = 0, z = 0 }, [8] = { x = 50, y = -40, z = 0 }, [9] = { x = 50, y = 40, z = 0 },
+          [10] = { x = -60, y = 0, z = 0 } }
+EDGES = {
+    [100] = { node0 = 8, node1 = 9, tangent0 = { x = 0, y = 80, z = 0 }, tangent1 = { x = 0, y = 80, z = 0 },
+              objects = {}, roadTemplate = '::/street/country.street_template', laneConfigs = { 'country lanes' } },
+    [101] = { node0 = 10, node1 = 7, tangent0 = { x = 60, y = 0, z = 0 }, tangent1 = { x = 60, y = 0, z = 0 },
+              objects = {}, roadTemplate = '::/street/town_small.street_template' },
+}
+STREETS = { [7] = { 101 }, [8] = { 100 }, [9] = { 100 }, [10] = { 101 } }
+-- The nodes with a lane configuration.
+CONFIGS = { [8] = true, [9] = true, [11] = true }
+api.engine.getComponent = function(id, kind)
+    if kind == CT.BASE_NODE and NODES[id] then return { position = NODES[id] } end
+    if kind == CT.BASE_NODE_CONFIG and CONFIGS[id] then return { laneConnections = {} } end
+    if kind == CT.BASE_EDGE and EDGES[id] then
+        -- A copy, as the game hands out.
+        local c = {}
+        for k, v in pairs(EDGES[id]) do c[k] = v end
+        return c
+    end
+end
+api.engine.system = { streetSystem = {
+    getNode2StreetEdgeMap = function()
+        local m = {}
+        for node, edges in pairs(STREETS) do m[node] = edges end
+        return m
+    end,
+    getNode2TrackEdgeMap = function() return {} end,
+    getNodeStreetSegments = function(node) return STREETS[node] or {} end,
+    getNodeTrackSegments = function() return {} end,
+} }
+"#;
+
+/// A road the room ordered, as the hook hands it (metres): from node 7, onto
+/// the middle of the street 8-9, and on over a bridge to open ground.
+const ROAD: &str = "{ BuildRoad = { street = '::/street/town_small.street_template', \
+    bus_lane = false, tram = 'None', polyline = { \
+    vertices = { \
+        { pos = { x = 0.0004, y = 0.001, z = 0 }, resolve = { Node = 'Street' } }, \
+        { pos = { x = 50, y = 0, z = 0 }, resolve = { Split = { network = 'Street', \
+            ends = { a = { x = 50, y = 40, z = 0 }, b = { x = 50, y = -40, z = 0 } } } } }, \
+        { pos = { x = 120, y = 0, z = 12 }, resolve = 'New' } }, \
+    links = { \
+        { from = 0, to = 1, tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+          structure = 'Ground' }, \
+        { from = 1, to = 2, tangent0 = { x = 70, y = 0, z = 12 }, tangent1 = { x = 70, y = 0, z = 12 }, \
+          structure = { Bridge = '::/bridge/stone.lua' } } }, \
+    removals = {} } } }";
+
+#[test]
+fn the_game_script_builds_a_road_as_the_players_tool_would() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(format!(
+        "HOOK.batch = {{ {ROAD} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        lua.load("return table.concat(HOOK.logged, '|')")
+            .eval::<String>()
+            .unwrap(),
+        "the game script is linked|building +n-5(50.0,0.0,0.0) +n-6(120.0,0.0,12.0) \
+         +e-1/0:7>-5 ::/street/town_small.street_template \
+         +e-2/0:-5>-6 ::/street/town_small.street_template \
+         +e-3/0:8>-5 ::/street/country.street_template \
+         +e-4/0:-5>9 ::/street/country.street_template -e100 -n -c8,9",
+        "applied, and what was sent in the log: the split street's ends lose their lane \
+         configurations with it"
+    );
+    let built: String = lua
+        .load(
+            "local c = SENT[1] local p = c.proposal.streetProposal
+             local out = { #p.nodesToAdd, #p.edgesToAdd, table.concat(p.edgesToRemove, ','),
+                           tostring(c.context.player), tostring(c.ignoreErrors), tostring(c.playerInitiated) }
+             for _, n in ipairs(p.nodesToAdd) do
+                 out[#out + 1] = n.entity .. '@' .. n.comp.position.x .. ',' .. n.comp.position.y .. ',' .. n.comp.position.z
+             end
+             for _, e in ipairs(p.edgesToAdd) do
+                 local c = e.comp
+                 out[#out + 1] = string.format('%d:%d>%d t%d/%s %s %s %.3f,%.3f %.3f,%.3f', e.entity, c.node0, c.node1,
+                     e.type, tostring(c.type), tostring(c.typeIndex), tostring(c.roadTemplate),
+                     c.tangent0.x, c.tangent0.y, c.tangent1.x, c.tangent1.y)
+             end
+             return table.concat(out, ' | ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        built,
+        "2 | 4 | 100 | 25 | false | true \
+         | -5@50,0,0 | -6@120,0,12 \
+         | -1:7>-5 t0/0 -1 ::/street/town_small.street_template 50.000,0.000 50.000,0.000 \
+         | -2:-5>-6 t0/1 3 ::/street/town_small.street_template 70.000,0.000 70.000,0.000 \
+         | -3:8>-5 t0/nil nil ::/street/country.street_template 0.000,40.000 0.000,40.000 \
+         | -4:-5>9 t0/nil nil ::/street/country.street_template 0.000,40.000 0.000,40.000",
+        "the links from -1, then the split's halves keeping the street's own template; \
+         the new nodes after the edges"
+    );
+    // The links take the template's lanes and style; the halves keep theirs.
+    let lanes: String = lua
+        .load(
+            "local e = SENT[1].proposal.streetProposal.edgesToAdd
+             return e[1].comp.laneConfigs[1] .. '|' .. e[1].comp.roadStyle .. '|' .. e[3].comp.laneConfigs[1]",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(lanes, "town lanes|::/style/town.street_style|country lanes");
+}
+
+#[test]
+fn a_road_that_resolves_to_nothing_is_built_nowhere() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    // Node 7 has moved 3 m: nothing is within 1.5 m of the vertex.
+    lua.load(format!(
+        "NODES[7] = {{ x = 3, y = 0, z = 0 }} HOOK.batch = {{ {ROAD} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    // A stop on the street it splits.
+    lua.load(format!(
+        "NODES[7] = {{ x = 0, y = 0, z = 0 }} EDGES[100].objects = {{ {{ 555, 1 }} }} \
+         HOOK.batch = {{ {ROAD} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged[1].ends_with("no Street node at vertex 1"),
+        "{logged:?}"
+    );
+    assert!(
+        logged[2].ends_with("vertex 2 splits an edge with a stop or signal on it"),
+        "{logged:?}"
+    );
+}
+
+/// The street tool's proposal for the road of ROAD, as build 40408 hands it
+/// to game scripts: the split of 8-9 is the removed edge and its two halves.
+const STREET_PROPOSAL: &str = "{ toAdd = {}, toRemove = {}, proposal = { \
+    addedNodes = { { entity = -1, comp = { position = { x = 50, y = 0, z = 0 } } }, \
+                   { entity = -2, comp = { position = { x = 120, y = 0, z = 12 } } } }, \
+    addedSegments = { \
+        { entity = -3, type = 0, comp = { node0 = 7, node1 = -1, type = 0, typeIndex = -1, \
+          tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+          roadTemplate = '::/street/town_small.street_template', roadStyle = '' } }, \
+        { entity = -4, type = 0, comp = { node0 = 9, node1 = -1, type = 0, typeIndex = -1, \
+          tangent0 = { x = 0, y = -40, z = 0 }, tangent1 = { x = 0, y = -40, z = 0 }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } }, \
+        { entity = -5, type = 0, comp = { node0 = -1, node1 = 8, type = 0, typeIndex = -1, \
+          tangent0 = { x = 0, y = -40, z = 0 }, tangent1 = { x = 0, y = -40, z = 0 }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } }, \
+        { entity = -6, type = 0, comp = { node0 = -1, node1 = -2, type = 1, typeIndex = 3, \
+          tangent0 = { x = 70, y = 0, z = 12 }, tangent1 = { x = 70, y = 0, z = 12 }, \
+          roadTemplate = '::/street/town_small.street_template', roadStyle = '' } } }, \
+    removedSegments = { { entity = 100, type = 0, comp = { node0 = 9, node1 = 8 } } }, \
+    removedNodes = {}, edgeObjectsToAdd = {} } }";
+
+#[test]
+fn a_road_the_street_tool_proposed_goes_to_the_room() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let asked: Vec<String> = lua
+        .load(format!(
+            "HOOK.room = true HOOK.clicks = 0 \
+             local out = {{}} \
+             local function ask(proposal) \
+                 local r = SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetBuilder', 'builder.proposalCreate', {{ proposal }}) \
+                 if r == nil then return 'nil' end \
+                 for text in pairs(r.errorMessages) do return text end \
+             end \
+             SCRIPT.guiUpdate({{}}, nil, nil) \
+             out[#out + 1] = ask({{ toAdd = {{}}, toRemove = {{}}, proposal = {{ addedNodes = {{}}, \
+                 addedSegments = {{}}, removedSegments = {{}} }} }}) \
+             out[#out + 1] = ask({STREET_PROPOSAL}) \
+             return out"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        asked,
+        ["nil", "nil"],
+        "the tool builds through the room, and a proposal of nothing is not refused"
+    );
+    lua.load("HOOK.clicks = 1 SCRIPT.guiUpdate({}, nil, nil)")
+        .exec()
+        .unwrap();
+    let handed: String = lua
+        .load(
+            "local b = HOOK.commands[1].BuildRoad local p = b.polyline
+             return table.concat({ #HOOK.commands, b.street, tostring(b.style), #p.vertices, #p.links,
+                 #p.removals, #p.removed_nodes, p.vertices[1].resolve.Node, tostring(p.vertices[2].resolve),
+                 p.links[2].kind.template, p.links[4].structure.Bridge, p.removals[1].ends.a.y,
+                 p.removals[1].ends.b.y }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        handed,
+        "1|::/street/town_small.street_template|nil|5|4|1|0|Street|New\
+         |::/street/country.street_template|::/bridge/stone.lua|40|-40",
+        "the proposal as the tool made it: the street it joins rebuilt in its own kind"
+    );
+    // What the room orders, every game builds.
+    lua.load("HOOK.batch = { HOOK.commands[1] } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let (edges, removed): (usize, String) = lua
+        .load(
+            "local p = SENT[1].proposal.streetProposal \
+             return #p.edgesToAdd, table.concat(p.edgesToRemove, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!((edges, removed.as_str()), (4, "100"));
+}
+
+/// The street tool's build as the room orders it (metres): from node 7 onto
+/// the country street 8-11-9, whose node 11 the new junction replaces, the
+/// street rebuilt through it in its own kind.
+const JUNCTION: &str = "{ BuildRoad = { street = '::/street/town_small.street_template', \
+    bus_lane = false, tram = 'None', polyline = { \
+    vertices = { \
+        { pos = { x = 0, y = 0, z = 0 }, resolve = { Node = 'Street' } }, \
+        { pos = { x = 50, y = 2, z = 0 }, resolve = 'New' }, \
+        { pos = { x = 50, y = -40, z = 0 }, resolve = { Node = 'Street' } }, \
+        { pos = { x = 50, y = 40, z = 0 }, resolve = { Node = 'Street' } } }, \
+    links = { \
+        { from = 0, to = 1, tangent0 = { x = 50, y = 2, z = 0 }, tangent1 = { x = 50, y = 2, z = 0 }, \
+          structure = 'Ground' }, \
+        { from = 2, to = 1, tangent0 = { x = 0, y = 42, z = 0 }, tangent1 = { x = 0, y = 42, z = 0 }, \
+          structure = 'Ground', kind = { network = 'Street', template = '::/street/country.street_template' } }, \
+        { from = 1, to = 3, tangent0 = { x = 0, y = 38, z = 0 }, tangent1 = { x = 0, y = 38, z = 0 }, \
+          structure = 'Ground', kind = { network = 'Street', template = '::/street/country.street_template' } } }, \
+    removals = { \
+        { network = 'Street', ends = { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 0, z = 0 } } }, \
+        { network = 'Street', ends = { a = { x = 50, y = 0, z = 0 }, b = { x = 50, y = 40, z = 0 } } } }, \
+    removed_nodes = { { network = 'Street', at = { x = 50, y = 0, z = 0 } } } } } }";
+
+#[test]
+fn the_game_script_rebuilds_a_street_through_a_new_junction() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    // The country street through node 11: edges 100 (8-11) and 102 (11-9).
+    lua.load(
+        "NODES[11] = { x = 50, y = 0, z = 0 } \
+         EDGES[100].node1 = 11 \
+         EDGES[102] = { node0 = 11, node1 = 9, tangent0 = { x = 0, y = 40, z = 0 }, \
+                        tangent1 = { x = 0, y = 40, z = 0 }, objects = {} } \
+         STREETS[8], STREETS[11], STREETS[9] = { 100 }, { 100, 102 }, { 102 }",
+    )
+    .exec()
+    .unwrap();
+    lua.load(format!(
+        "HOOK.batch = {{ {JUNCTION} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let built: String = lua
+        .load(
+            "local p = SENT[1].proposal.streetProposal
+             local out = { #p.nodesToAdd, table.concat(p.edgesToRemove, ','), table.concat(p.nodesToRemove, ','),
+                           table.concat(p.nodeConfigsToRemove, ',') }
+             for _, e in ipairs(p.edgesToAdd) do
+                 out[#out + 1] = e.entity .. ':' .. e.comp.node0 .. '>' .. e.comp.node1 .. ' '
+                     .. e.comp.roadTemplate .. ' ' .. e.comp.laneConfigs[1] .. ' ' .. e.comp.roadStyle
+             end
+             return table.concat(out, ' | ')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        built,
+        "1 | 100,102 | 11 | 8,9 \
+         | -1:7>-4 ::/street/town_small.street_template town lanes ::/style/town.street_style \
+         | -2:8>-4 ::/street/country.street_template country lanes ::/style/country.street_style \
+         | -3:-4>9 ::/street/country.street_template country lanes ::/style/country.street_style",
+        "the old junction's node and edges removed, the street rebuilt in its own kind"
+    );
+    // A stop on an edge it removes: built nowhere.
+    lua.load(format!(
+        "SENT = {{}} EDGES[102].objects = {{ {{ 555, 1 }} }} HOOK.batch = {{ {JUNCTION} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .last()
+            .unwrap()
+            .ends_with("removal 2 has a stop or signal on it"),
+        "{logged:?}"
+    );
+}
+
+#[test]
+fn a_street_build_the_room_cannot_carry_says_why() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let asked: Vec<String> = lua
+        .load(format!(
+            "HOOK.room = true HOOK.clicks = 0 \
+             local out = {{}} \
+             local function ask(proposal) \
+                 local r = SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetBuilder', 'builder.proposalCreate', {{ proposal }}) \
+                 if r == nil then return 'nil' end \
+                 for text in pairs(r.errorMessages) do return text end \
+             end \
+             local stop = {STREET_PROPOSAL} stop.proposal.edgeObjectsToAdd = {{ {{}} }} \
+             out[#out + 1] = ask(stop) \
+             local nowhere = {STREET_PROPOSAL} nowhere.proposal.addedSegments[1].comp.node0 = 12345 \
+             out[#out + 1] = ask(nowhere) \
+             return out"
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(
+        asked,
+        [
+            "Not in multiplayer yet: a build with a stop or signal",
+            "Not in multiplayer yet: node 12345 has no position"
+        ]
     );
 }

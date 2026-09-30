@@ -63,10 +63,12 @@ function data()
 
 	-- The tools whose builds the room carries, by the tool's id: the
 	-- capture that makes each one's action.
-	local CAPTURE = { constructionBuilder = "construction" }
+	local CAPTURE = { constructionBuilder = "construction", streetBuilder = "street", trackBuilder = "track" }
 	-- In the GUI: the last proposal seen at each count of the player's builds
 	-- ({ action = t } or { why = text }), and the builds handed on so far.
 	local snapshots, handled = {}, nil
+	-- The last reason a proposal was refused for, and how many were logged.
+	local refusedWhy, refusals = nil, 0
 
 	local function linked()
 		if not tried then
@@ -80,6 +82,10 @@ function data()
 				and type(captureModule) == "table" then
 				link = bridge.attach(bridge.find())
 				apply = applyModule
+				if link then
+					local linked = link
+					apply.log = function(line) linked:log(line) end
+				end
 				lanes = lanesModule
 				capture = captureModule
 				if link then link:log("the game script is linked") end
@@ -136,7 +142,24 @@ function data()
 			if clicks ~= nil and kind ~= nil and type(param) == "table" then
 				local ok, action, why = pcall(capture[kind], param[1])
 				if not ok then action, why = nil, tostring(action) end
-				snapshots[clicks] = { action = action, why = why }
+				if action == false then
+					-- Nothing proposed yet: nothing to refuse, nothing to hand on.
+					snapshots[clicks] = nil
+					return nil
+				end
+				local shape
+				if not action then
+					local described, text = pcall(capture.describe, param[1])
+					if described and text ~= "" then shape = text end
+					-- The tool refuses it at once, so no click follows: the log
+					-- has it when the reason changes, a few dozen times at most.
+					if why ~= refusedWhy and refusals < 40 then
+						refusedWhy, refusals = why, refusals + 1
+						l:log("the room cannot carry this " .. id .. " build: " .. tostring(why)
+							.. (shape and (" [" .. shape .. "]") or ""))
+					end
+				end
+				snapshots[clicks] = { action = action, why = why, shape = shape }
 				if action then return nil end
 				return { errorMessages = { ["Not in multiplayer yet: " .. tostring(why)] = true } }
 			end
@@ -160,7 +183,8 @@ function data()
 					end
 				else
 					l:log("stopped a build the room cannot carry: "
-						.. tostring(seen and seen.why or "no proposal seen"))
+						.. tostring(seen and seen.why or "no proposal seen")
+						.. ((seen and seen.shape) and (" [" .. seen.shape .. "]") or ""))
 				end
 				snapshots[handled] = nil
 				handled = handled + 1

@@ -126,4 +126,29 @@ function capture.construction(proposal)
 	return { BuildConstruction = { file = file, transform = transform, params = list, name = name } }
 end
 
+local function module(name)
+	local loaded = package and package.loaded and package.loaded["tpf3mp." .. name]
+	if loaded then return loaded end
+	if ug_require then return ug_require("tpf3mp_1::/scripts/tpf3mp/" .. name .. ".lua") end
+	return require("tpf3mp." .. name)
+end
+
+-- A street or track tool's build (tpf3mp_proto action::RoadBuild,
+-- TrackBuild), read off its proposal by tpf3mp/engine.lua and made an action
+-- by tpf3mp/roads.lua. Returns the action table; false for a proposal of
+-- nothing (the tool before its first point); or nil and why.
+function capture.street(proposal)
+	return module("engine").captureBuild(proposal, "Street")
+end
+
+function capture.track(proposal)
+	return module("engine").captureBuild(proposal, "Track")
+end
+
+-- A proposal's street part in one line, for the log (tpf3mp/engine.lua);
+-- "" when it has none.
+function capture.describe(proposal)
+	return module("engine").describe(proposal)
+end
+
 return capture

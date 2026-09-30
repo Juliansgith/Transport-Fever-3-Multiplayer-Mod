@@ -1,48 +1,68 @@
--- tpf3mp/engine.lua -- the game's script API, behind the plain interfaces
--- tpf3mp/roads.lua takes.
+-- tpf3mp/engine.lua -- Transport Fever 3's street and track tools and its
+-- network, behind the plain interfaces tpf3mp/roads.lua takes.
 --
--- EVERY api.* NAME IN THIS FILE IS TRANSPORT FEVER 2'S, taken from TpF2
--- Multiplayer (MIT, tpf2-multiplayer by silver2127,
--- github.com/silver2127/tpf2-multiplayer, 0.6.1.12: mp/geom.lua,
--- mp/roads.lua) and from TPF2's builder GUI events. Each is marked
--- "TPF2 name" and must be confirmed against Transport Fever 3's script API
--- on release day (docs/DAY_ONE.md, "Script API recon"); nothing here has run
--- in TPF3. Release-day Mod Hub mods use most of them as TPF2 did
--- (investigation/TF3_MODHUB_SCRIPT_MODS_2026-09-29.md, REPORTED):
--- BASE_NODE.position; BASE_EDGE.node0, node1, tangent0, tangent1, type and
--- typeIndex; a proposal segment's .comp, .type (0 street, 1 track) and
--- .streetEdge; bridgeTypeRep and tunnelTypeRep. Not seen in any mod:
--- streetSystem.getNode2StreetEdgeMap / getNode2TrackEdgeMap (mods use
--- streetSystem.getNodeSegments) and the builder's proposal event. Every
--- call is guarded: a name that is gone makes the capture fail, and a
--- failed capture leaves the build to run natively.
+-- What it reads, as build 40408 has it (the game's api/tealdef and the build
+-- probe, tools/probe/tf3/tpf3mp_buildprobe_1): the street and track tools
+-- hand game scripts a proposal (builder.proposalCreate's first parameter)
+-- whose .proposal is a StreetProposal:
+--
+-- - addedNodes: the new nodes, entity < 0, comp.position;
+-- - addedSegments: the new edges, entity < 0, type 0 street / 1 track, comp a
+--   BaseEdge (node0, node1, tangent0, tangent1, type NORMAL / BRIDGE /
+--   TUNNEL, typeIndex, roadTemplate and roadStyle, resource names, and the
+--   stops and signals on it, objects);
+-- - removedSegments and removedNodes: the existing edges and nodes it
+--   removes.
+--
+-- A street drawn onto another's middle (seen): the old street's node nearest
+-- the new junction is removed with its two edges, and the old street is
+-- rebuilt from its neighbours through the junction, in its own template.
+--
+-- The lists are the game's vectors: read by index, never with pairs().
 
-local geom = require "tpf3mp.geom"
-local roads = require "tpf3mp.roads"
+local function module(name)
+	local loaded = package and package.loaded and package.loaded["tpf3mp." .. name]
+	if loaded then return loaded end
+	if ug_require then return ug_require("tpf3mp_1::/scripts/tpf3mp/" .. name .. ".lua") end
+	return require("tpf3mp." .. name)
+end
+
+local roads = module("roads")
 
 local engine = {}
 
+local function get(value, key)
+	local ok, v = pcall(function() return value[key] end)
+	if ok then return v end
+	return nil
+end
+
+-- The game's vector (or a table) as a Lua array.
+local function list(v)
+	if v == nil then return {} end
+	local ok, n = pcall(function() return #v end)
+	if not ok or type(n) ~= "number" then error("a list it cannot read", 0) end
+	local out = {}
+	for i = 1, n do out[i] = v[i] end
+	return out
+end
+
 local function vec3(v)
-	if not v then return nil end
-	return { v.x or v[1], v.y or v[2], v.z or v[3] }
+	if v == nil then return nil end
+	local x, y, z = get(v, "x"), get(v, "y"), get(v, "z")
+	if x == nil then x, y, z = get(v, 1), get(v, 2), get(v, 3) end
+	return { x, y, z }
 end
 
--- TPF2 name: api.engine.system.streetSystem.getNode2StreetEdgeMap /
--- getNode2TrackEdgeMap, node id -> the ids of its edges. Hold the map in a
--- local for as long as it is iterated: on TPF2 a pairs() straight off the
--- call let the GC free the C++ map mid-loop, a native crash no pcall
--- catches.
-local function netMap(network)
-	local m
-	pcall(function()
-		local streets = api.engine.system.streetSystem
-		if network == "Track" then m = streets.getNode2TrackEdgeMap() else m = streets.getNode2StreetEdgeMap() end
-	end)
-	return m
+-- The game's enums, under api.type.enum ("enum" is a word in Teal, which
+-- writes api.type["enum"]).
+local function enum(name)
+	local enums = api.type.enum
+	local e = enums and enums[name]
+	if e == nil then error("no api.type.enum." .. name, 0) end
+	return e
 end
 
--- TPF2 names: api.engine.getComponent, api.type.ComponentType.BASE_NODE
--- (.position) and BASE_EDGE (.node0, .node1, .tangent0, .tangent1).
 local function nodePos(id)
 	local p
 	pcall(function()
@@ -52,166 +72,182 @@ local function nodePos(id)
 	return p
 end
 
-local function edgeGeom(id)
-	local e
+-- A node's edges in one network, from the street system.
+local function nodeEdges(id, network)
+	local edges
 	pcall(function()
-		local c = api.engine.getComponent(id, api.type.ComponentType.BASE_EDGE)
-		if not c then return end
-		local a, b = nodePos(c.node0), nodePos(c.node1)
-		if a and b then
-			e = { id = id, node0 = c.node0, node1 = c.node1, a = a, b = b,
-			      ta = vec3(c.tangent0), tb = vec3(c.tangent1) }
-		end
+		local streets = api.engine.system.streetSystem
+		if network == "Track" then edges = streets.getNodeTrackSegments(id) else edges = streets.getNodeStreetSegments(id) end
 	end)
-	return e
+	return edges
 end
 
--- The world as tpf3mp/roads.lua asks it. One instance per capture: each
--- network's edges are read once and answer every lookup, since nothing
--- changes the world inside one capture (TPF2 measured 0.4 to 2.6 s per
--- track build when every lookup walked the whole map again).
+-- The world as tpf3mp/roads.lua asks it. Only the nodes a proposal names
+-- are read: no edge of the map is walked.
 function engine.world()
-	local edgeLists = {}
-	local function edges(network)
-		if edgeLists[network] then return edgeLists[network] end
-		local list, seen = {}, {}
-		local m = netMap(network)   -- held for the loop: see netMap
-		for _, ids in pairs(m or {}) do
-			for _, id in pairs(ids) do
-				if not seen[id] then
-					seen[id] = true
-					list[#list + 1] = edgeGeom(id)
-				end
-			end
-		end
-		edgeLists[network] = list
-		return list
-	end
 	local world = {}
 	world.nodePos = nodePos
 	function world.nodeNetwork(id)
 		for _, network in ipairs({ "Street", "Track" }) do
-			local m = netMap(network)
-			if m and m[id] ~= nil then return network end
+			local edges = nodeEdges(id, network)
+			if edges ~= nil and #list(edges) > 0 then return network end
 		end
-		return nil
-	end
-	function world.edgeUnder(network, x, y)
-		local tol = network == "Track" and geom.SPLIT_EPS_TRACK or geom.SPLIT_EPS
-		local e = geom.edgeContaining(edges(network), x, y, tol)
-		if e then return e.node0, e.node1 end
 		return nil
 	end
 	return world
 end
 
--- TPF2 names: api.res.streetTypeRep, trackTypeRep, bridgeTypeRep and
--- tunnelTypeRep, each with getName(index) giving the resource's file name.
-local function resName(rep, index)
-	local name
-	pcall(function() name = api.res[rep].getName(index) end)
-	return name
+local function networkOf(seg)
+	local kind = get(seg, "type")
+	if kind == 0 then return "Street" end
+	if kind == 1 then return "Track" end
+	error("an edge of type " .. tostring(kind), 0)
 end
 
--- TF3 (documented, wiki.transportfever3.com/script-doc, api.type and
--- api.engine): streets and tracks are one kind of edge. A proposal's
--- segment has .comp, a BaseEdge with roadType (api.type.RoadType.STREET or
--- TRACK), roadTemplate and roadStyle (resource names), besides TPF2's
--- node0, node1, tangents, type and typeIndex; its .streetEdge holds only
--- precedence. Whether roadTemplate is a plain string is not documented: a
--- name that is not one fails the capture.
-local function isTf3(seg)
-	return seg.comp ~= nil and seg.comp.roadTemplate ~= nil
-end
-
-local function tf3Network(c)
-	local track
-	pcall(function() track = api.type.RoadType.TRACK end)
-	if track == nil then error("a TF3 edge, but no api.type.RoadType.TRACK") end
-	return c.roadType == track and "Track" or "Street"
-end
-
-local function tf3Name(v, what)
-	if type(v) ~= "string" or v == "" then error(what .. " is not a resource name: " .. tostring(v)) end
+local function resName(v, what)
+	if type(v) ~= "string" or v == "" then error(what .. " is not a resource name: " .. tostring(v), 0) end
 	return v
 end
 
--- TPF2 names: a builder proposal's segment has .comp (BaseEdge: node0,
--- node1, tangent0, tangent1, type 0 ground / 1 bridge / 2 tunnel,
--- typeIndex), .type (0 street, 1 track), .streetEdge (streetType, hasBus,
--- tramTrackType 0 none / 1 plain / 2 electric) and .trackEdge (trackType,
--- catenary).
+-- A bridge's or tunnel's type, by its name.
+local function typeName(rep, index)
+	local name
+	pcall(function() name = api.res[rep].getName(index) end)
+	if type(name) ~= "string" or name == "" then error("no " .. rep .. " type " .. tostring(index), 0) end
+	return name
+end
+
+-- A road style: "" is none.
+local function styleName(v)
+	if v == "" or v == nil then return nil end
+	return resName(v, "roadStyle")
+end
+
+-- Refuses an edge that carries stops or signals: the room does not carry
+-- them yet, and an edge replaced without them leaves them pointing nowhere
+-- (on TPF2 that crashed every game at the same step; docs/BUILDING.md).
+local function noObjects(c, what)
+	local objects = get(c, "objects")
+	if objects ~= nil and #list(objects) > 0 then error(what .. " with a stop or signal on it", 0) end
+end
+
 local function segment(seg)
-	local c = seg.comp
-	local network
-	if isTf3(seg) then network = tf3Network(c) else network = seg.type == 1 and "Track" or "Street" end
+	local c = get(seg, "comp")
+	if c == nil then error("an edge with no component", 0) end
+	noObjects(c, "a build that moves an edge")
 	local e = {
 		node0 = c.node0, node1 = c.node1,
-		network = network,
+		network = networkOf(seg),
 		tangent0 = vec3(c.tangent0), tangent1 = vec3(c.tangent1),
 		structure = "Ground",
+		template = resName(c.roadTemplate, "roadTemplate"),
+		style = styleName(c.roadStyle),
 	}
-	if c.type == 1 then
-		e.structure = { Bridge = resName("bridgeTypeRep", c.typeIndex) }
-	elseif c.type == 2 then
-		e.structure = { Tunnel = resName("tunnelTypeRep", c.typeIndex) }
+	local types = enum("BaseEdgeType")
+	if c.type == types.BRIDGE then
+		e.structure = { Bridge = typeName("bridgeTypeRep", c.typeIndex) }
+	elseif c.type == types.TUNNEL then
+		e.structure = { Tunnel = typeName("tunnelTypeRep", c.typeIndex) }
+	elseif c.type ~= types.NORMAL then
+		error("an edge of structure " .. tostring(c.type), 0)
 	end
 	return e
 end
 
-local TRAM = { [0] = "None", [1] = "Plain", [2] = "Electric" }
-
--- A captured proposal as tpf3mp/roads.lua takes it, from TPF2's
--- `builder.apply` GUI event of the street or track builder:
--- param.proposal.proposal with addedNodes (.entity, .comp.position),
--- addedSegments and removedSegments (TPF2 names). `network` is the tool's.
+-- A tool's proposal as tpf3mp/roads.lua takes it, or raises. `network` is
+-- the tool's. Returns nil for a proposal of nothing (the tool before its
+-- first point).
 function engine.fromProposal(proposal, network)
-	local capture = { network = network, nodes = {}, edges = {}, removed = {} }
-	for _, n in pairs(proposal.addedNodes) do
+	local street = get(proposal, "proposal")
+	if street == nil then error("a proposal with no street proposal", 0) end
+	for _, name in ipairs({ "toAdd", "toRemove" }) do
+		if #list(get(proposal, name)) > 0 then error("a build with constructions", 0) end
+	end
+	for _, name in ipairs({ "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
+		local v = get(street, name)
+		if v ~= nil and #list(v) > 0 then error("a build with a stop or signal", 0) end
+	end
+	local added, segments, removed = list(get(street, "addedNodes")), list(get(street, "addedSegments")),
+		list(get(street, "removedSegments"))
+	local removedNodes = list(get(street, "removedNodes"))
+	if #added == 0 and #segments == 0 and #removed == 0 and #removedNodes == 0 then return nil end
+
+	local capture = { network = network, nodes = {}, edges = {}, removed = {}, removedNodes = {} }
+	for _, n in ipairs(added) do
 		capture.nodes[#capture.nodes + 1] = { id = n.entity, pos = vec3(n.comp.position) }
 	end
 	local first
-	for _, seg in pairs(proposal.addedSegments) do
+	for _, seg in ipairs(segments) do
 		local e = segment(seg)
 		capture.edges[#capture.edges + 1] = e
-		if not first and e.network == network then first = seg end
+		if not first and e.network == network then first = e end
 	end
-	for _, seg in pairs(proposal.removedSegments) do
-		capture.removed[#capture.removed + 1] = { node0 = seg.comp.node0, node1 = seg.comp.node1 }
+	for _, seg in ipairs(removed) do
+		noObjects(seg.comp, "a build that removes an edge")
+		capture.removed[#capture.removed + 1] = { node0 = seg.comp.node0, node1 = seg.comp.node1,
+			network = networkOf(seg) }
 	end
-	if first and isTf3(first) then
-		-- The template and style name the edge whole on TF3; its bus lane
-		-- and tram track, if TF3 still has them apart from the template,
-		-- are not documented, and are recorded as none. To confirm on
-		-- release day (DAY_ONE.md).
-		local name = tf3Name(first.comp.roadTemplate, "roadTemplate")
-		local style = first.comp.roadStyle
-		if style ~= nil then style = tf3Name(style, "roadStyle") end
+	for _, n in ipairs(removedNodes) do
+		capture.removedNodes[#capture.removedNodes + 1] = { id = n.entity, pos = vec3(get(n.comp, "position")) }
+	end
+
+	-- The build's own kind: its first edge of the tool's network. The
+	-- template names the edge whole on TF3: its lanes, bus lanes and tram
+	-- tracks. The schema's bus lane and tram are TPF2's, none here.
+	if first then
 		if network == "Street" then
-			capture.street, capture.bus_lane, capture.tram = name, false, "None"
+			capture.street, capture.bus_lane, capture.tram = first.template, false, "None"
 		else
-			capture.track, capture.catenary = name, false
+			capture.track, capture.catenary = first.template, false
 		end
-		capture.style = style
-	elseif first and network == "Street" then
-		capture.street = resName("streetTypeRep", first.streetEdge.streetType)
-		capture.bus_lane = first.streetEdge.hasBus == true
-		capture.tram = TRAM[first.streetEdge.tramTrackType or 0]
-	elseif first then
-		capture.track = resName("trackTypeRep", first.trackEdge.trackType)
-		capture.catenary = first.trackEdge.catenary == true
+		capture.style = first.style
 	end
 	return capture
 end
 
--- The action table of a street or track builder's proposal, or nil and why
--- not. The caller hands it to the hook (tpf3mp/bridge.lua), which checks it
--- against the schema and sends it as an intent; on nil, or when the hook
--- refuses it, the build must run natively.
+-- A tool's proposal in one line, for the log when the room cannot carry it:
+-- nodes added (+n) and removed (-n), edges added (+e) and removed (-e) with
+-- their ends, existing nodes with their positions.
+function engine.describe(proposal)
+	local ok, text = pcall(function()
+		local street = get(proposal, "proposal")
+		local out = {}
+		local function at(p)
+			p = vec3(p)
+			if p == nil or type(p[1]) ~= "number" then return "(?)" end
+			return string.format("(%.1f,%.1f,%.1f)", p[1], p[2], p[3])
+		end
+		local function node(id)
+			if type(id) == "number" and id >= 0 then return tostring(id) .. at(nodePos(id)) end
+			return tostring(id)
+		end
+		for _, n in ipairs(list(get(street, "addedNodes"))) do
+			out[#out + 1] = "+n" .. tostring(n.entity) .. at(n.comp.position)
+		end
+		for _, n in ipairs(list(get(street, "removedNodes"))) do
+			out[#out + 1] = "-n" .. tostring(n.entity) .. at(n.comp and n.comp.position)
+		end
+		for _, s in ipairs(list(get(street, "addedSegments"))) do
+			out[#out + 1] = "+e" .. tostring(s.entity) .. "/" .. tostring(s.type) .. ":"
+				.. node(s.comp.node0) .. ">" .. node(s.comp.node1)
+		end
+		for _, s in ipairs(list(get(street, "removedSegments"))) do
+			out[#out + 1] = "-e" .. tostring(s.entity) .. ":" .. node(s.comp.node0) .. ">" .. node(s.comp.node1)
+		end
+		return table.concat(out, " ")
+	end)
+	if ok then return text end
+	return "unreadable: " .. tostring(text)
+end
+
+-- The action table of a street or track tool's proposal; false for a
+-- proposal of nothing; or nil and why the room cannot carry it.
 function engine.captureBuild(proposal, network)
 	local ok, capture = pcall(engine.fromProposal, proposal, network)
-	if not ok then return nil, "unreadable proposal: " .. tostring(capture) end
+	if not ok then return nil, tostring(capture) end
+	if capture == nil then return false end
 	return roads.capture(capture, engine.world())
 end
+
 
 return engine

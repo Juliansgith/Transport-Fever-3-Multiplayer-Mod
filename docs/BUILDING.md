@@ -386,7 +386,8 @@ lossless from Lua. Rules:
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (2; 1 had no road style). The Lua mod builds an action from a captured
+`ACTION_SCHEMA_VERSION` (3; 2 had no edge kinds or removed nodes, 1 no road
+style). The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
 command carried as text travels here as typed, bounded fields.
@@ -427,20 +428,34 @@ appended.
 | `CompanyOp` | create, join, rename or delete a company |
 | `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
 
-**Polylines.** A road or track build is a polyline, the capture's decisions
-included:
+**Polylines.** A road or track build is a polyline: the tool's proposal by
+positions, the originator's decisions included:
 
-- `vertices`: each a position and how the originator's engine resolved it:
-  `New` (a node attached to nothing), `Node(network)` (the existing node of
-  that network there; a track vertex on a street node is a level crossing),
-  or `Split(edge)` (a new node splitting that edge, named by network and
-  ends; the halves keep the split edge's own type and flags);
-- `links`: the new edges, each two vertex indices, both Hermite tangents and
-  the structure (`Ground`, `Bridge(type)`, `Tunnel(type)`). The split halves
-  the engine emitted are not links: the receiver regenerates them;
-- `removals`: edges of the build's own network replaced in place, an
-  upgrade's or a span the build passes under, by their ends. Split parents
-  are not removals; the split vertex names them.
+- `vertices`: each a position and how the originator's tool resolved it:
+  `New` (a node the build adds), `Node(network)` (the existing node of that
+  network there; a track vertex on a street node is a level crossing), or
+  `Split(edge)` (a new node splitting that edge, named by network and ends;
+  the halves keep the split edge's own component);
+- `links`: the new edges, each two vertex indices, both Hermite tangents,
+  the structure (`Ground`, `Bridge(type)`, `Tunnel(type)`) and, for an edge
+  that is not the build's own street or track, its kind: network, road
+  template and style. A piece of a street the build joins, rebuilt through
+  the new junction, keeps that street's kind; so does a street a track
+  crosses;
+- `removals`: existing edges the build removes, of either network, by their
+  ends: an upgrade's, a span the build passes under, the stretch the tool
+  rebuilds around a new junction or crossing. A split parent is no removal;
+  the split vertex names it;
+- `removed_nodes`: existing nodes the build removes, by network and
+  position.
+
+TF3's street and track tools state every edge and node they add and remove
+(seen on build 40408: a street drawn onto another's middle removes the old
+street's nearest node and its two edges, and adds the junction, the new
+street and the old street rebuilt through the junction in its own
+template), so the capture ships exactly that and the receiver re-derives
+nothing from geometry. The TF3 capture makes no `Split`; the variant stays,
+and the receivers apply it.
 
 **Bounds.** Decoding refuses anything out of bounds before it allocates:
 at most 512 vertices and 512 links per build, 256 edges per removal list or
@@ -479,17 +494,31 @@ out of range, text too long. Its errors name the path to the bad value
 (`polyline.vertices[2].pos.x`). So the schema, its bounds and its rounding
 are defined once, in Rust (D15).
 
-`tpf3mp/roads.lua` makes the road or track action from a captured
-proposal, ported from TpF2 Multiplayer's capture: split halves are dropped,
-a new node on an existing edge of either network becomes a `Split` of
-that edge, an existing node a `Node` of its network, split parents are not
-removals, and any node, tangent or removal it cannot place fails the whole
-capture, so the build runs natively instead of travelling wrong.
-`tpf3mp/engine.lua` reads the proposal and the world through TPF2's script
-API names, each marked for confirmation against TPF3's. The test
-`tpf3mp-proto/tests/lua_capture.rs` runs the capture on a road and a
-track (a level crossing, a bridge, a tunnel, a split, an upgrade) in Lua
-and decodes the bytes with the Rust schema.
+`tpf3mp/engine.lua` reads a street or track tool's proposal as build 40408
+hands it to game scripts (docs/HOOKS.md, "The build tools"), and
+`tpf3mp/roads.lua` makes it the action: every node an edge names a vertex
+(`New` for the proposal's own, `Node` for an existing one), every added edge
+a link, every removed edge and node a removal. A node, tangent or removal it
+cannot place, a stop or signal on an edge it moves or removes, or a
+construction in the proposal fails the whole capture, and the tool shows
+why. The replay (`tpf3mp/apply.lua`) finds existing nodes within 1.5 m
+horizontally, the nearest, and edges and removed nodes by their ends within
+0.5 m, in the world before the build; one that is not there, or an edge to
+remove with a stop or signal on it, fails the build in every game alike.
+A node's lane configuration (`BASE_NODE_CONFIG`) names the edges at it, and
+on build 40408 the game cannot read a script proposal that removes an edge
+a configuration still names (`makeProposalData` raises "Unknown exception"
+from its worker threads): the replay removes the configurations at the ends
+of the edges it removes (`nodeConfigsToRemove`), except at a node it removes,
+which takes its own along and may not be named for both, and the game makes
+new ones. A node's own settings (traffic lights, lane connections set by
+hand) go back to the game's defaults there. Before sending, the replay asks
+the game's verdict (`makeProposalData`) and refuses a build it calls
+critical, with its reasons.
+The tests `tpf3mp-proto/tests/lua_capture.rs` (a junction rebuilt around a
+new street, a level crossing, a bridge, a tunnel, an upgrade, the TF3
+proposal's shape) and `lua_mod.rs` (the replay) run it in Lua and decode
+the bytes with the Rust schema.
 
 Not in version 1: companion spans (an unchanged bridge span the engine
 re-adds), construction street pieces (`ROADC`), paint and the asset brush,

@@ -802,20 +802,37 @@ builds it, paid by the player (`Context.player`) and clearing town
 buildings in its way (`gatherBuildings`), as the tool builds; without a
 context the game builds for free.
 
-So far the construction tool builds through the room: a proposal of one
-construction and nothing else (a station, a depot, any construction placed
-on its own) becomes a `BuildConstruction`, with the file, the transform,
-the parameters flattened and the game's name for it. A construction built
-with roads, several at once, or one replacing another is refused, the
-reason shown in the tool. The street, track, stop and bulldozer tools stay
-refused until their builds are captured. Where the profile lacks the two
-targets, `clicks()` is nil and every tool stays refused.
+Three tools build through the room so far:
+
+- **The construction tool** (`constructionBuilder`): a proposal of one
+  construction and nothing else (a station, a depot, any construction
+  placed on its own) becomes a `BuildConstruction`, with the file, the
+  transform, the parameters flattened and the game's name for it. A
+  construction built with roads, several at once, or one replacing another
+  is refused.
+- **The street and track tools** (`streetBuilder`, `trackBuilder`): the
+  proposal becomes a `BuildRoad` or `BuildTrack`, as the tool made it, by
+  positions (docs/BUILDING.md, "The action schema"): the nodes and edges it
+  adds, each edge in its own kind (the street it joins is rebuilt through
+  the new junction in that street's template), and the edges and nodes it
+  removes. The replay builds it as the game's own scripted track builder
+  does, `nodesToRemove` included. A build that moves or removes an edge
+  with a stop or signal on it, or that places stops, signals or
+  constructions, is refused.
+
+A refusal shows its reason in the tool, and the log has each new reason
+with the proposal's shape (`the room cannot carry this ... build`). The
+stop and bulldozer tools, and the upgrade, bus lane and tram track tools,
+stay refused until their builds are captured. Where the profile lacks the
+two targets, `clicks()` is nil and every tool stays refused.
 
 Seen on build 40408, through the deployed server with two games on one PC:
 a maintenance building placed with the construction tool in the guest's
 game was stopped there, handed to the room, and built in both games in the
 same update; both accounts paid its $180,336, and the room found no
-divergence.
+divergence. The same for a street across open ground ($71,820), a street
+onto an existing junction ($94,231) and a track across open ground
+($22,054).
 
 ### The world's lanes
 

@@ -10,10 +10,10 @@ use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
         ACTION_SCHEMA_VERSION, Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
-        ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeRef, EditLine, LineChange,
-        LineId, LineStop, Link, MAX_EDGES, MAX_VERTICES, Network, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, Resolve, Rgb, RoadBuild, StationId, Structure, Tangent, Terraform,
-        TerrainCell, TrackBuild, Tram, Transform, UnitDir, VehicleId, Vertex,
+        ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeKind, EdgeRef, EditLine,
+        LineChange, LineId, LineStop, Link, MAX_EDGES, MAX_VERTICES, Network, NodeRef, Param,
+        ParamValue, PlaceStop, Polyline, Pos, Pos2, Resolve, Rgb, RoadBuild, StationId, Structure,
+        Tangent, Terraform, TerrainCell, TrackBuild, Tram, Transform, UnitDir, VehicleId, Vertex,
     },
     lua,
 };
@@ -71,6 +71,7 @@ fn polyline() -> Polyline {
                     z: 1_700,
                 },
                 structure: Structure::Ground,
+                kind: None,
             },
             Link {
                 from: 1,
@@ -86,11 +87,23 @@ fn polyline() -> Polyline {
                     z: -2_000,
                 },
                 structure: Structure::Bridge(text("bridge/cement.lua")),
+                kind: Some(EdgeKind {
+                    network: Network::Street,
+                    template: text("street/country.street_template"),
+                    style: None,
+                }),
             },
         ]),
-        list(vec![ends(pos(0, 0, 0), pos(-5_000, 12_000, 300))]),
+        list(vec![EdgeRef {
+            network: Network::Street,
+            ends: ends(pos(0, 0, 0), pos(-5_000, 12_000, 300)),
+        }]),
     )
     .unwrap()
+    .with_removed_nodes(list(vec![NodeRef {
+        network: Network::Street,
+        at: pos(-2_500, 6_000, 150),
+    }]))
 }
 
 fn depot() -> ConstructionRef {
@@ -376,7 +389,8 @@ fn a_link_to_a_missing_vertex_is_refused() {
         catenary: bool,
         vertices: Vec<Vertex>,
         links: Vec<Link>,
-        removals: Vec<EdgeEnds>,
+        removals: Vec<EdgeRef>,
+        removed_nodes: Vec<NodeRef>,
     }
     let good = polyline();
     let mut vertices = good.vertices.to_vec();
@@ -396,6 +410,7 @@ fn a_link_to_a_missing_vertex_is_refused() {
         vertices,
         links: good.links.to_vec(),
         removals: Vec::new(),
+        removed_nodes: Vec::new(),
     };
     // The schema version, then Action::BuildTrack.
     let bytes = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, 1u32, &track)).unwrap();
