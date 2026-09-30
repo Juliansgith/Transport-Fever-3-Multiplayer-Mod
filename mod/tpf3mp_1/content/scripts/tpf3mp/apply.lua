@@ -164,10 +164,32 @@ local constructionAt
 -- Removes a stop from its edge ("stops", below).
 local removeEdgeObject
 
+-- An edit of a construction (its modules or parameters, an upgrade): the
+-- construction the action names removed and the new one built in one
+-- proposal, the old mapped to the new (old2new), as the game's own upgrade
+-- makes one (mission_framework_util_entity.tl, upgradeConstruction), so
+-- what stood on the old one (its stations, their station groups and the
+-- lines that stop there) passes to the new. The game's verdict first, and
+-- built as the player's own build, paid by the player (buildProposal). The
+-- new one stands where the old one stood, so the next edit, a depot or a
+-- line finds it by the same file and place.
+local function replaceConstruction(build, proposal, entity)
+	if build.connection ~= nil then error("an edit that builds streets around the construction", 0) end
+	local old = constructionAt(build.replaces)
+	proposal.constructionsToAdd = { entity }
+	proposal.constructionsToRemove = { old }
+	proposal.old2new = { [old] = 0 }
+	log("replacing " .. tostring(old) .. " " .. tostring(build.replaces.file) .. " with " .. tostring(build.file))
+	local context = api.type.Context.new()
+	context.player = api.engine.util.getPlayer()
+	context.gatherBuildings = true
+	context.gatherFields = true
+	buildProposal(proposal, context)
+	-- What it made, where the action says: this game could name it.
+	return true, constructionAt({ file = build.file, at = build.transform.origin })
+end
+
 function HANDLERS.BuildConstruction(build)
-	if build.replaces ~= nil then
-		return false, "this version of the mod does not replace constructions yet"
-	end
 	local proposal = api.type.SimpleProposal.new()
 	local entity = api.type.SimpleProposal.ConstructionEntity.new()
 	entity.fileName = build.file
@@ -175,6 +197,7 @@ function HANDLERS.BuildConstruction(build)
 	entity.params = params(build.params)
 	entity.name = build.name
 	entity.playerEntity = api.engine.util.getPlayer()
+	if build.replaces ~= nil then return replaceConstruction(build, proposal, entity) end
 	proposal.constructionsToAdd = { entity }
 	-- The streets the tool built around it, in the same proposal: the
 	-- street it joins rebuilt through a junction. Not the construction's own

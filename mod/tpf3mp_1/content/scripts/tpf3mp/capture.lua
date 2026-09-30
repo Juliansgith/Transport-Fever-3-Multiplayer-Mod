@@ -103,6 +103,11 @@ end
 -- the rest (tpf3mp_proto action::ConstructionBuild). Returns the action
 -- table, or nil and why the room cannot carry it yet.
 --
+-- A proposal that replaces one construction of the player's with a new one
+-- (an edit of its modules or parameters, an upgrade) is carried with
+-- `replaces`, the old one by its file and place; every game removes it and
+-- builds the new one in one proposal (tpf3mp/apply.lua).
+--
 -- The construction's own streets its script makes again wherever it is
 -- built. The proposal's street part is what the tool built around it, and
 -- travels with it (capture.connection): built without it, a station by a
@@ -115,15 +120,22 @@ function capture.construction(proposal)
 		if length(street and get(street, list)) == nil then return nil, "a proposal it cannot read" end
 	end
 	-- Constructions in the way: town buildings the placement clears, which
-	-- the replay clears again (gatherBuildings), or a construction replaced
-	-- (a module edit), which the room does not carry yet.
+	-- the replay clears again (gatherBuildings), and at most one other
+	-- construction the new one replaces: a module edit or an upgrade,
+	-- named by its file and where it stands (capture.replaced).
 	local toRemove = get(proposal, "toRemove")
 	local removed = length(toRemove)
 	if removed == nil then return nil, "a proposal it cannot read" end
+	local replaced, replaces
 	for i = 1, removed do
-		local c = api.engine.getComponent(get(toRemove, i), api.type.ComponentType.CONSTRUCTION)
+		local entity = get(toRemove, i)
+		local c = api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
 		if (length(c and get(c, "townBuildings")) or 0) == 0 then
-			return nil, "a construction that replaces another"
+			if replaced ~= nil then return nil, "a construction that replaces more than one" end
+			local why
+			replaces, why = capture.replaced(c)
+			if not replaces then return nil, why end
+			replaced = { entity = entity, component = c }
 		end
 	end
 	local toAdd = get(proposal, "toAdd")
@@ -132,6 +144,12 @@ function capture.construction(proposal)
 	local file = get(con, "fileName")
 	if type(file) ~= "string" or file == "" then return nil, "a construction of no file" end
 	local name = get(con, "name")
+	if replaced and (type(name) ~= "string" or name == "") then
+		-- An edit keeps the construction's name, as the game's own
+		-- upgrade does (mission_framework_util_entity.tl, upgradeConstruction).
+		local ok, old = pcall(function() return api.engine.util.getEntityName(replaced.entity) end)
+		if ok then name = old end
+	end
 	if type(name) ~= "string" or name == "" then return nil, "an unnamed construction" end
 	local params = get(con, "params")
 	if type(params) ~= "table" then
@@ -143,10 +161,58 @@ function capture.construction(proposal)
 	if not list then return nil, why end
 	local ok, transform = pcall(capture.transform, get(con, "transf"))
 	if not ok then return nil, tostring(transform) end
+	if replaced then
+		-- The street part of an edit is the construction's own: every game
+		-- makes the new one's again as it builds it. One that removes a
+		-- street or track not its own changes the streets around it, which
+		-- an edit does not carry.
+		local own, why = capture.ownStreets(street, replaced.component)
+		if not own then return nil, why end
+		return { BuildConstruction = { file = file, transform = transform, params = list, name = name,
+			replaces = replaces } }
+	end
 	local connection, whyNot = capture.connection(proposal)
 	if connection == nil then return nil, whyNot end
 	return { BuildConstruction = { file = file, transform = transform, params = list, name = name,
 		connection = connection or nil } }
+end
+
+-- The construction an edit replaces, as actions name one (tpf3mp_proto
+-- action::ConstructionRef): its file and where it stands. Every game finds
+-- it there (tpf3mp/apply.lua, constructionAt), and finds the new one there
+-- again for the next edit: an edit keeps the file and the place, and entity
+-- ids are no name (docs/BUILDING.md, "Module edits and upgrades"). Returns
+-- the reference, or nil and why the room cannot name it.
+function capture.replaced(component)
+	if component == nil then return nil, "removing something that is no construction" end
+	local file = get(component, "fileName")
+	local t = get(component, "transf")
+	local x, y, z = get(t, 13), get(t, 14), get(t, 15)
+	if type(file) ~= "string" or file == "" or type(x) ~= "number" or type(y) ~= "number"
+		or type(z) ~= "number" then
+		return nil, "a construction the room cannot name"
+	end
+	return { file = file, at = { x = x, y = y, z = z } }
+end
+
+-- Whether an edit's street part removes only the old construction's own
+-- nodes and edges (its CONSTRUCTION component's frozenNodes and
+-- frozenEdges). true, or nil and why not.
+function capture.ownStreets(street, component)
+	local own = {}
+	for _, key in ipairs({ "frozenNodes", "frozenEdges" }) do
+		local list = get(component, key)
+		for i = 1, (length(list) or 0) do own[get(list, i)] = true end
+	end
+	for _, key in ipairs({ "removedSegments", "removedNodes" }) do
+		local list = get(street, key)
+		for i = 1, (length(list) or 0) do
+			if not own[get(get(list, i), "entity")] then
+				return nil, "a construction edit that changes the streets around it"
+			end
+		end
+	end
+	return true
 end
 
 -- The street and track changes a construction tool's proposal makes with its
@@ -192,8 +258,35 @@ end
 -- The bulldozer's removal (tpf3mp_proto action::Bulldoze), read off its
 -- proposal by tpf3mp/engine.lua: a construction, edges, or a stop. Returns the action table; false for a
 -- proposal of nothing; or nil and why.
+--
+-- A proposal that removes a construction and adds one is an edit: a module
+-- taken off with the module bulldozer, if that reaches game scripts as the
+-- bulldozer's (INFERRED, not seen in the game), is carried as the edit it is
+-- (capture.construction), or refused.
 function capture.bulldoze(proposal)
+	local toRemove = get(proposal, "toRemove")
+	if (length(get(proposal, "toAdd")) or 0) > 0 and (length(toRemove) or 0) > 0 then
+		for i = 1, length(toRemove) do
+			local c = api.engine.getComponent(get(toRemove, i), api.type.ComponentType.CONSTRUCTION)
+			if (length(c and get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
+		end
+		return nil, "a bulldozer proposal that builds"
+	end
 	return module("engine").bulldoze(proposal)
+end
+
+-- A build a window sends itself (api.cmd.makeWorldBuildProposalCmd, as
+-- tpf3mp/guard.lua's CARRY takes it): the room carries an edit of one
+-- construction, as the construction menu's parameters and the station's
+-- cargo buttons make one (api.engine.util.proposal
+-- .createProposalReplaceConstruction, gui/construction/construction.tl and
+-- gui/entity_window/entity_window_util.tl, build 40408). Every other build
+-- from a window stays refused. Returns the action table, or raises why not.
+function capture.windowBuild(_ctx, proposal)
+	local action, why = capture.construction(proposal)
+	if not action then error(why, 0) end
+	if action.BuildConstruction.replaces == nil then error("building from this window", 0) end
+	return action
 end
 
 -- A proposal's street part in one line, for the log (tpf3mp/engine.lua);
