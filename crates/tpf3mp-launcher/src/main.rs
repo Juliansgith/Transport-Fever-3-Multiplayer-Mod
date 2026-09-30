@@ -76,6 +76,13 @@ struct AutoRoom {
     /// menu and gets the room's world.
     #[arg(long, value_name = "SAVE")]
     auto_load: Option<String>,
+
+    /// The folder the game's hook keeps its log and profiles in, instead of
+    /// the per-user one. With --game-link, --listen, --identity and
+    /// --worlds, several games run on one PC without a sandbox, each with
+    /// its own hook.log.
+    #[arg(long, value_name = "DIR")]
+    game_data_dir: Option<std::path::PathBuf>,
 }
 
 /// The server a package plays on, set when it is built.
@@ -128,6 +135,13 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         config
             .game_env
             .push((tpf3mp_ipc::AUTO_LOAD_ENV.to_owned(), save.clone()));
+    }
+    if let Some(dir) = &args.auto.game_data_dir {
+        std::fs::create_dir_all(dir).context("making the game's data folder")?;
+        config.game_env.push((
+            tpf3mp_ipc::DATA_DIR_ENV.to_owned(),
+            dir.to_string_lossy().into_owned(),
+        ));
     }
     // On unless the player switched them off.
     if let Some(file) = &config.remember {
@@ -459,6 +473,11 @@ mod tests {
         assert!(guest.auto.auto_play && guest.auto.auto_load.is_none());
         let plain = parse(&[]).unwrap();
         assert!(!plain.auto.auto_play && plain.auto.auto_load.is_none());
+        let apart = parse(&["--game-data-dir", "games/cat"]).unwrap();
+        assert_eq!(
+            apart.auto.game_data_dir.as_deref(),
+            Some(std::path::Path::new("games/cat"))
+        );
     }
 
     fn room(ready: &[bool], phase: Phase) -> Room {

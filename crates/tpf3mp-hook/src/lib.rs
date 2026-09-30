@@ -61,7 +61,7 @@ pub use tpf3mp_ipc::{LAUNCHER_PID_ENV, LINK_ENV};
 
 /// Puts the hook's data directory (its log and profiles) here instead of
 /// the per-user one, for several games on one PC.
-pub const DATA_DIR_ENV: &str = "TPF3MP_DATA_DIR";
+pub const DATA_DIR_ENV: &str = tpf3mp_ipc::DATA_DIR_ENV;
 
 /// Application name used for the per-user data directory.
 const APP_DIR: &str = "TPF3-MP";
