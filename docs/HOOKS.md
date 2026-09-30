@@ -658,7 +658,7 @@ for the table (`bridge.find`). Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
 `crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 8. The mod refuses any other.
+- `tpf3mp_native.version`: 10. The mod refuses any other.
 - `tpf3mp_native.command(action)`: an action table, in the game's units.
   The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
   `MAX_DEPTH` and `MAX_NODES` (a function, userdata or a table as a key is
@@ -669,7 +669,9 @@ for the table (`bridge.find`). Its contract is in
   locally either: every game applies it when the room orders it. The
   ticket comes back in `results()`.
 - `tpf3mp_native.take()`: the actions the room ordered for this simulation
-  update, as `action_to_lua` tables, or `nil` (below). A list's items are
+  update, as `action_to_lua` tables, or `nil` (below), and second, who
+  sent each, a list of player ids (64 hex digits) beside it ("Companies"
+  below). A list's items are
   in its table's array part, so `next` walks them in order. The game
   copies a list it is handed (a stop's loading flags, a consist's groups)
   into its own vector in the order `next` gives, and what a game script's
@@ -1085,6 +1087,81 @@ Before the room begins, and after it ends, every command is sent as it
 would be, and every tool builds. A kind the room comes to carry is
 captured into an action instead of refused, and applied by every game
 ("Actions in the game").
+
+### Companies
+
+A room holds up to eight companies (DECISIONS.md, D21). It starts as one,
+the save's own player, which every player plays for; a player founds a
+company of their own, joins another, renames or recolours theirs, or
+dissolves it as its last player once it owns nothing, through the room
+(`CompanyOp`), and every game applies it at the same update, as any
+action. `tpf3mp/companies.lua` keeps the roster in the mod's game script's
+state, which the game saves with the world:
+
+- *A company is a TF3 player entity*, `makeGameAddPlayerCmd(name,
+  colour)`: every game makes it at the same update of the same world, so it
+  is the same entity in every game (seen on build 40408: entity 7595 in all
+  three games of a room). Its money is that entity's `ACCOUNT`, and what it
+  builds and buys is owned by it (`PLAYER_OWNED`), as the game keeps
+  ownership.
+- *Who acted.* The hook hands each ordered action to the game script with
+  the player who sent it (the Lua link's version 10, `tpf3mp_native.version`:
+  `take()` answers the actions
+  and, second, each one's sender as 64 hex digits; `status()` names each
+  player's `id` and the local one's `me_id`). The game script books the
+  action to that player's company: `apply.lua` puts the company's player
+  entity where it put the save's player before (a build's `Context.player`
+  and its constructions' and stops' `playerEntity`, `makeVehicleBuyCmd`'s
+  and `makeLineCreateCmd`'s player, prospecting's `companyEntity`).
+- *What another company owns* is refused, the same in every game, naming
+  its owner: an edited, bulldozed or removed construction, road or track
+  edge, or stop, and the vehicles and lines an action names, when their
+  `PLAYER_OWNED` player is another company's. What no company owns (the
+  towns' roads) stays everyone's.
+- *Loans.* The game's loan script (`::/game_mechanics/finance/loan.gs`)
+  keeps the save's own player's loans only. Another company borrows on the
+  terms the loan script offers (its `availableLoans`), and the room keeps
+  that loan: booked to the company as the game books one (a `LOAN` journal
+  entry, `makeJournalBookAssetCmd`, which raises the account's balance and
+  loan alike, seen on build 40408), and paid back each month of the game's
+  calendar as an annuity, the interest as `INTEREST` and the rest as
+  `LOAN`, or all at once. The game script books the months since the last
+  on the first update of a new month, in every game alike.
+- *Colours.* With more than one company, a vehicle bought is painted in its
+  company's colour (`makeEntitySetColorCmd`), and a new colour repaints the
+  company's vehicles, in the engine's own order. With one company the
+  game's colours stay, as in single player.
+- *Markers.* Painting colours a vehicle's body and its pictures in the
+  game's windows, not its marker on the map: build 40408 draws every
+  vehicle's marker alike, a white glyph on a dark tile
+  (`HudIconManager.cpp`, `gui/main/internal_hud.css.lua`), where TPF2's
+  followed the vehicle's paint. `gui/tpf3mp/company_markers.res.lua`, a
+  `react-replacement-config`, replaces the game's marker recipe
+  (`hud_icon_toolbox.HudIconMasterGame`) with one that calls it and, while
+  the room has more than one company, puts the marker of a vehicle painted
+  in a company colour in that colour's class; `gui/tpf3mp/tpf3mp.css.lua`
+  colours the tile of each class. Seen on build 40408: the HUD renders
+  markers on its worker threads ("Main Pool" in the log), each with a Lua
+  state of its own where the Multiplayer plugin does not run and a
+  vehicle's `PLAYER_OWNED` reads empty; so each reads the roster from the
+  game script's state (every 2 seconds) and the vehicle's first part's
+  colour, and the HUD takes only a layout from the recipe ("Recipe child
+  must be a layout"). The game's log says what became of the markers
+  (`[tpf3mp] company markers: ...`).
+- *The GUI's company.* TF3's windows ask `api.engine.util.getPlayer()`
+  whose money to show and what is the player's own ("Foreign" otherwise).
+  In the GUI state the mod replaces it (a callable table on build 40408,
+  which takes the assignment) with one that answers the player entity of
+  the company this player plays for, or the game's own answer for the
+  room's first; `hook.log` says `the GUI's company follows the player's`.
+  The game scripts' states keep the game's own answer, so the simulation
+  is the same in every game. Seen on build 40408: the game bar's account
+  showed the new company's money, and another company's depot opened
+  without its vehicle management.
+- *The Multiplayer window* lists the companies with their money and
+  players, the one the player plays for first with its colour to choose,
+  a name to change, loans to take and pay back, and each other company to
+  join.
 
 ### Prospecting
 

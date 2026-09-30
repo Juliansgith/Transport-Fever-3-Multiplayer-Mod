@@ -243,7 +243,7 @@ pub struct HookGame {
     pub me: Option<PlayerId>,
     /// The actions the room ordered for the next step to run, in order,
     /// each with its client sequence number when the local player sent it.
-    pub actions: Vec<(Action, Option<u64>)>,
+    pub actions: Vec<(Action, Option<u64>, PlayerId)>,
     /// The player's commands the room refused: their sequence numbers, and
     /// why.
     pub refused: Vec<(u64, String)>,
@@ -268,7 +268,7 @@ impl Game for HookGame {
         {
             let own = (self.me == Some(*player)).then_some(*client_seq);
             match Action::from_payload(payload) {
-                Ok(action) => self.actions.push((action, own)),
+                Ok(action) => self.actions.push((action, own, *player)),
                 Err(error) => {
                     self.fault.get_or_insert(format!(
                         "the room ordered an action this game cannot read (event {}): {error}",
@@ -307,6 +307,8 @@ impl Game for HookGame {
 pub struct Ordered {
     pub action: Action,
     pub ticket: Option<u64>,
+    /// The player who sent it: the mod books it to that player's company.
+    pub player: PlayerId,
 }
 
 /// What the detour hands each call to: a [`StepDriver`] over any room.
@@ -640,9 +642,10 @@ impl<G: RoomGate> StepDriver<G> {
         let actions: Vec<Ordered> = if runs {
             std::mem::take(&mut self.game.actions)
                 .into_iter()
-                .map(|(action, own)| Ordered {
+                .map(|(action, own, player)| Ordered {
                     action,
                     ticket: own.and_then(|seq| self.tickets.remove(&seq)),
+                    player,
                 })
                 .collect()
         } else {

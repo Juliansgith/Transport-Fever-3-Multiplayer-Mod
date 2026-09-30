@@ -641,3 +641,30 @@ Rejected:
   as well.
 - **egui's own look** (as before D16): the players' launcher looks as
   the team agreed it should.
+
+## D21 (2026-09-30): a room's players choose their companies
+
+The owner, on 2026-09-30: "In a game we should also allow for example 2
+people 1 company and 1 person in another company."
+
+- A room starts as one company, the save's own player, which every player
+  plays for: co-op, as before.
+- In the room's game a player founds a company of their own, joins
+  another, renames or recolours theirs, or dissolves it as its last player
+  once it owns nothing. Any split of the players is allowed, up to eight
+  companies a room.
+- A company is a Transport Fever 3 player entity. What a player does is
+  booked to their company and paid by it; what another company owns cannot
+  be changed or removed.
+- A company other than the room's first borrows on the terms the game
+  offers, and the room keeps those loans; the game's own loan script keeps
+  the first company's.
+- With more than one company, vehicles wear their company's colour.
+
+Rejected:
+
+- **One company a player, fixed** (TPF2MP's two rival companies): the owner
+  asked for any split.
+- **A company chosen only in the lobby, before the game** (TpF2
+  Multiplayer's chips): choosing in the game lets a player change their
+  mind, and a player who joins late chooses when they arrive.

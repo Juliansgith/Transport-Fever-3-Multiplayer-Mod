@@ -122,6 +122,29 @@ local function run(command)
 	return true
 end
 
+-- For the game script's own commands (tpf3mp/companies.lua's monthly loan
+-- payments): the same send, which answers what the game made.
+apply.send = send
+
+local require_companies
+
+-- The action running now: `ctx` as apply.run was given it. Its `company` is
+-- the player entity of the acting player's company (tpf3mp/companies.lua);
+-- without one, the save's own player, as before companies.
+local acting = nil
+
+local function company()
+	return (acting and acting.company) or api.engine.util.getPlayer()
+end
+
+-- Refuses changing `entity` when another company owns it, naming the owner,
+-- the same in every game (tpf3mp/companies.lua).
+local function mine(entity, what)
+	local companies = require_companies()
+	local ok, why = companies.mayTouch(acting and acting.roster, company(), entity, api, what)
+	if not ok then error(why, 0) end
+end
+
 -- The entity a command made: its data's field `field`, else the first of
 -- its result entities; nil when the game did not say.
 local function madeBy(field, data, entities)
@@ -176,12 +199,13 @@ local removeEdgeObject
 local function replaceConstruction(build, proposal, entity)
 	if build.connection ~= nil then error("an edit that builds streets around the construction", 0) end
 	local old = constructionAt(build.replaces)
+	mine(old, "construction")
 	proposal.constructionsToAdd = { entity }
 	proposal.constructionsToRemove = { old }
 	proposal.old2new = { [old] = 0 }
 	log("replacing " .. tostring(old) .. " " .. tostring(build.replaces.file) .. " with " .. tostring(build.file))
 	local context = api.type.Context.new()
-	context.player = api.engine.util.getPlayer()
+	context.player = company()
 	context.gatherBuildings = true
 	context.gatherFields = true
 	buildProposal(proposal, context)
@@ -196,7 +220,7 @@ function HANDLERS.BuildConstruction(build)
 	entity.transf = matrix(build.transform)
 	entity.params = params(build.params)
 	entity.name = build.name
-	entity.playerEntity = api.engine.util.getPlayer()
+	entity.playerEntity = company()
 	if build.replaces ~= nil then return replaceConstruction(build, proposal, entity) end
 	proposal.constructionsToAdd = { entity }
 	-- The streets the tool built around it, in the same proposal: the
@@ -211,7 +235,7 @@ function HANDLERS.BuildConstruction(build)
 	-- the game builds for free. playerInitiated true: as the player's own
 	-- build (buildProposal).
 	local context = api.type.Context.new()
-	context.player = api.engine.util.getPlayer()
+	context.player = company()
 	context.gatherBuildings = true
 	context.gatherFields = true
 	local built = buildProposal(proposal, context)
@@ -555,7 +579,7 @@ local function buildNetwork(network, templateName, style, polyline)
 	networkInto(proposal, network, templateName, style, polyline)
 	-- Paid by the player, as the tool builds.
 	local context = api.type.Context.new()
-	context.player = api.engine.util.getPlayer()
+	context.player = company()
 	return buildProposal(proposal, context)
 end
 
@@ -570,11 +594,12 @@ end
 -- the tool removes.
 function HANDLERS.Bulldoze(b)
 	local context = api.type.Context.new()
-	context.player = api.engine.util.getPlayer()
+	context.player = company()
 	local proposals = api.engine.util.proposal
 	local proposal
 	if b.Construction then
 		local con = constructionAt(b.Construction)
+		mine(con, "construction")
 		proposal = proposals.createProposalRemove(con, context)
 		if proposal == nil then error("the game will not remove the " .. tostring(b.Construction.file), 0) end
 		log("removing " .. tostring(con) .. " " .. tostring(b.Construction.file))
@@ -586,6 +611,7 @@ function HANDLERS.Bulldoze(b)
 			local e = edgeBetween(nodes, network, arr(ends.a), arr(ends.b))
 			if e == nil then error("no " .. network .. " edge to remove (" .. k .. ")", 0) end
 			if #(e.comp.objects or {}) > 0 then error("edge " .. k .. " has a stop or signal on it", 0) end
+			mine(e.id, "road or track")
 			ids[#ids + 1] = e.id
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
@@ -674,14 +700,14 @@ function HANDLERS.PlaceStop(stop)
 	eo.left = left
 	eo.oneWay = false
 	eo.model = stop.model
-	eo.playerEntity = api.engine.util.getPlayer()
+	eo.playerEntity = company()
 	eo.name = ""
 	proposal.streetProposal.edgeObjectsToAdd = { eo }
 	log(string.format("placing %s on %s edge %d at %.4f, %s", tostring(stop.model), network, e.id, u,
 		left and "left" or "right"))
 	-- Paid by the player, as the tool builds.
 	local context = api.type.Context.new()
-	context.player = api.engine.util.getPlayer()
+	context.player = company()
 	return buildProposal(proposal, context)
 end
 
@@ -703,6 +729,7 @@ function removeEdgeObject(ref, context)
 		end
 	end
 	if best == nil then error("no " .. tostring(ref.model) .. " there", 0) end
+	mine(best, "stop")
 	local objects = {}
 	for _, o in ipairs(e.comp.objects) do
 		if o[1] ~= best then objects[#objects + 1] = { o[1], o[2] } end
@@ -720,10 +747,21 @@ end
 -- A depot is named by its construction's file and position.
 
 local registry = module("registry")
+local companiesModule = module("companies")
+require_companies = function() return companiesModule end
 
 local function entityOf(ctx, kind, id)
 	local e = registry.entity(ctx and ctx.registry, kind, id)
 	if e == nil then error("no " .. kind .. " " .. tostring(id) .. " in this world", 0) end
+	return e
+end
+
+-- As entityOf, for one the acting company must own: its own vehicles and
+-- lines, never another company's.
+local OWNED_WHAT = { vehicles = "vehicle", lines = "line" }
+local function ownOf(ctx, kind, id)
+	local e = entityOf(ctx, kind, id)
+	mine(e, OWNED_WHAT[kind] or kind)
 	return e
 end
 
@@ -794,8 +832,14 @@ function HANDLERS.BuyVehicle(buy)
 	local vehicles = {}
 	for i, p in ipairs(buy.consist) do vehicles[i] = vehiclePart(p, time) end
 	local config = vehicleConfig(vehicles, buy.groups, buy.multiple_units)
-	local data, entities = send(api.cmd.makeVehicleBuyCmd(api.engine.util.getPlayer(), depot, config))
-	return true, madeBy("resultVehicleEntity", data, entities)
+	local data, entities = send(api.cmd.makeVehicleBuyCmd(company(), depot, config))
+	local vehicle = madeBy("resultVehicleEntity", data, entities)
+	-- With more than one company, in its company's colour.
+	local roster = acting and acting.roster
+	if vehicle and companiesModule.painting(roster) then
+		companiesModule.paintVehicle(companiesModule.byEntity(roster, company()), vehicle, send, api)
+	end
+	return true, vehicle
 end
 
 -- Whether `e` is a vehicle in this world.
@@ -814,7 +858,7 @@ end
 -- replaced (cmd.d.tl), and its command data has no result field. Returns
 -- that entity, for the registry to keep the vehicle's id on.
 function HANDLERS.ReplaceVehicle(replace, ctx)
-	local vehicle = entityOf(ctx, "vehicles", replace.vehicle)
+	local vehicle = ownOf(ctx, "vehicles", replace.vehicle)
 	local tv = api.engine.getComponent(vehicle, api.type.ComponentType.TRANSPORT_VEHICLE)
 	local own = tv and tv.transportVehicleConfig and tv.transportVehicleConfig.vehicles
 	if own == nil then error("vehicle " .. tostring(replace.vehicle) .. " has no parts to read", 0) end
@@ -860,7 +904,7 @@ end
 
 function HANDLERS.SellVehicle(sell, ctx)
 	local vehicles = {}
-	for i, v in ipairs(sell.vehicles) do vehicles[i] = entityOf(ctx, "vehicles", v) end
+	for i, v in ipairs(sell.vehicles) do vehicles[i] = ownOf(ctx, "vehicles", v) end
 	return run(api.cmd.makeVehicleSellCmd(vehicles))
 end
 
@@ -868,18 +912,18 @@ function HANDLERS.AssignLine(assign, ctx)
 	if assign.line == nil then
 		return false, "this version of the mod does not take vehicles off their line yet"
 	end
-	local line = entityOf(ctx, "lines", assign.line)
+	local line = ownOf(ctx, "lines", assign.line)
 	-- No first stop: the game's choice, the next stop each can reach (-1).
 	local first = assign.first_stop
 	if first == nil then first = -1 end
 	for _, v in ipairs(assign.vehicles) do
-		run(api.cmd.makeVehicleSetLineCmd(entityOf(ctx, "vehicles", v), line, first))
+		run(api.cmd.makeVehicleSetLineCmd(ownOf(ctx, "vehicles", v), line, first))
 	end
 	return true
 end
 
 function HANDLERS.VehicleOp(op, ctx)
-	local vehicle = entityOf(ctx, "vehicles", op.vehicle)
+	local vehicle = ownOf(ctx, "vehicles", op.vehicle)
 	local change = op.change
 	if type(change) == "table" and change.Stop ~= nil then
 		return run(api.cmd.makeVehicleSetStoppedByUserCmd(vehicle, change.Stop == true))
@@ -935,12 +979,12 @@ end
 function HANDLERS.CreateLine(create, ctx)
 	local line = lineComponent(create.line, ctx)
 	local data, entities = send(api.cmd.makeLineCreateCmd(create.name, tint(create.color),
-		api.engine.util.getPlayer(), line))
+		company(), line))
 	return true, madeBy("resultEntity", data, entities)
 end
 
 function HANDLERS.EditLine(edit, ctx)
-	local line = entityOf(ctx, "lines", edit.line)
+	local line = ownOf(ctx, "lines", edit.line)
 	local change = edit.change
 	if change == "Delete" then
 		return run(api.cmd.makeLineDestroyCmd(line))
@@ -976,7 +1020,17 @@ end
 -- Loans go through the loan script's own events, with the parameters the
 -- game's finance window sends (game_mechanics/finance/finances_loan_gui.tl):
 -- here they run at once, in every game at the same update.
-function HANDLERS.Loan(op)
+function HANDLERS.Loan(op, ctx)
+	-- Another company's loans are the room's (tpf3mp/companies.lua): on the
+	-- terms the game offers, booked to that company.
+	if company() ~= api.engine.util.getPlayer() then
+		local roster = ctx and ctx.roster
+		local mine = roster and companiesModule.byEntity(roster, company())
+		if not mine then return false, "the acting company is not in the room's roster" end
+		if op.Take then return companiesModule.borrow(roster, mine.id, op.Take.offer, send, api) end
+		if op.Repay then return companiesModule.repay(roster, mine.id, op.Repay.loan and op.Repay.loan.id, send, api) end
+		return false, "a loan is taken or paid back"
+	end
 	if op.Take then
 		return run(api.cmd.makeScriptingSendEventCmd("", "Loan", "Obtain",
 			{ loanTerms(op.Take.next), loanTerms(op.Take.offer) }))
@@ -1005,7 +1059,7 @@ function HANDLERS.Prospect(p, ctx)
 	log("prospecting for " .. tostring(p.cargo) .. " near town-" .. tostring(p.town) .. " (" .. tostring(town)
 		.. "): " .. table.concat(types, ", "))
 	return run(api.cmd.makeScriptingSendEventCmd("", "Companies", "spawnIndustry", {
-		companyEntity = api.engine.util.getPlayer(),
+		companyEntity = company(),
 		townEntity = town,
 		types = types,
 		permitKey = p.permit,
@@ -1013,8 +1067,19 @@ function HANDLERS.Prospect(p, ctx)
 	}))
 end
 
+-- The room's companies (tpf3mp/companies.lua): the acting player founds,
+-- joins, renames, recolours or dissolves one, in `ctx.roster`.
+function HANDLERS.CompanyOp(op, ctx)
+	if not (ctx and ctx.roster and ctx.player) then return false, "no roster to change" end
+	local ok, why = companiesModule.run(ctx.roster, ctx.player, op, send, api)
+	if not ok then return false, why end
+	return true
+end
+
 -- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the
--- actions that name vehicles, lines and station groups. Returns true, nil
+-- actions that name vehicles, lines and station groups; with companies, also
+-- `roster`, `player` (who sent it) and `company` (their company's player
+-- entity), which the action is booked to. Returns true, nil
 -- and the entity it made or changed (for the kinds in CREATES and KEEPS,
 -- where the game said), or false and why not; never raises.
 function apply.run(action, ctx)
@@ -1027,7 +1092,9 @@ function apply.run(action, ctx)
 	if handler == nil then
 		return false, "this version of the mod does not apply " .. tostring(kind) .. " yet"
 	end
+	acting = ctx
 	local ok, applied, detail = pcall(handler, body, ctx)
+	acting = nil
 	if not ok then return false, tostring(applied) end
 	if applied == true then return true, nil, detail end
 	return false, detail

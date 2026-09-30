@@ -66,7 +66,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes, capture, registry = false, nil, nil, nil, nil, nil
+	local tried, link, apply, lanes, capture, registry, companies = false, nil, nil, nil, nil, nil, nil
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
 	local told, toldRegistry = false, false
@@ -141,7 +141,9 @@ function data()
 			local okLanes, lanesModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/lanes.lua")
 			local okCapture, captureModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/capture.lua")
 			local okRegistry, registryModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/registry.lua")
-			if okBridge and okApply and okLanes and okCapture and okRegistry and type(bridge) == "table"
+			local okCompanies, companiesModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/companies.lua")
+			if okBridge and okApply and okLanes and okCapture and okRegistry and okCompanies
+				and type(companiesModule) == "table" and type(bridge) == "table"
 				and type(applyModule) == "table" and type(lanesModule) == "table"
 				and type(captureModule) == "table" and type(registryModule) == "table" then
 				link = bridge.attach(bridge.find())
@@ -153,6 +155,7 @@ function data()
 				lanes = lanesModule
 				capture = captureModule
 				registry = registryModule
+				companies = companiesModule
 				if link then link:log("the game script is linked") end
 			end
 		end
@@ -226,24 +229,31 @@ function data()
 				subscribed = true
 				for _, event in ipairs(EVENTS) do state:subscribeToEvent(event) end
 			end
-			local actions = l:take()
+			local actions, origins = l:take()
 			local checkpoint = l:checkpoint()
 			-- The registry begins at the room's first update, the same in
 			-- every game (tpf3mp/registry.lua), or at the first update since
 			-- the registry gained a kind.
 			local saved = state and state.get and state:get()
 			local begin = l:room() and (type(saved) ~= "table" or registry.incomplete(saved.registry))
-			if not actions and not checkpoint and not begin then return nil end
-			return { actions = actions, checkpoint = checkpoint, begin = begin }
+			-- A month begun since the companies' loans were last charged.
+			local month = companies.monthNow(api)
+			local monthly = l:room() and type(saved) == "table" and companies.due(saved.companies, month)
+			if not actions and not checkpoint and not begin and not monthly then return nil end
+			return { actions = actions, origins = origins, checkpoint = checkpoint, begin = begin,
+				monthly = monthly and month or nil }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
 			local l = linked()
 			if not l or type(work) ~= "table" then return end
-			if work.actions or work.begin then
+			if work.actions or work.begin or work.monthly then
 				local saved = state:get()
 				if type(saved) ~= "table" then saved = {} end
 				local reg, _, failed = registry.sync(saved.registry)
+				-- The room's companies: begun at its first update, as the
+				-- registry, the same in every game (tpf3mp/companies.lua).
+				local roster = companies.ensure(saved.companies, api)
 				if #failed > 0 and not toldRegistry then
 					toldRegistry = true
 					l:log("the registry could not list " .. table.concat(failed, "; "))
@@ -252,7 +262,15 @@ function data()
 				-- stops.
 				if work.actions then l:replaying(true) end
 				for i, action in ipairs(work.actions or {}) do
-					local ok, why, made = apply.run(action, { registry = reg })
+					-- Booked to the sender's company.
+					local player = work.origins and work.origins[i]
+					local company = player and companies.of(roster, player)
+					local ok, why, made = apply.run(action, {
+						registry = reg,
+						roster = roster,
+						player = player,
+						company = company and company.entity,
+					})
 					local name = next(action)
 					-- What it changed keeps its id on whatever entity it is
 					-- now, bound before the sync would retire it.
@@ -285,7 +303,12 @@ function data()
 					end
 				end
 				if work.actions then l:replaying(false) end
+				if work.monthly then
+					local ok, why = pcall(companies.chargeMonths, roster, work.monthly, apply.send, api)
+					if not ok then l:log("the companies' loans were not charged: " .. tostring(why)) end
+				end
 				saved.registry = reg
+				saved.companies = roster
 				state:set(saved)
 			end
 			if work.checkpoint then

@@ -174,7 +174,8 @@ fn player(hex: &str) -> Option<PlayerId> {
     Some(PlayerId(FixedBytes(bytes)))
 }
 
-fn hex(player: &PlayerId) -> String {
+/// A player's id as the mod names it: 64 lowercase hex digits.
+pub(crate) fn hex(player: &PlayerId) -> String {
     player
         .as_bytes()
         .iter()

@@ -568,6 +568,14 @@ impl State {
                 self.companies.get_mut(company).expect("a member's").name =
                     name.as_str().to_owned();
             }
+            CompanyOp::Recolor {
+                company: CompanyId(company),
+                ..
+            } => {
+                if current != Some(*company) {
+                    refuse!("the player is not in company-{company}");
+                }
+            }
             CompanyOp::Delete(CompanyId(company)) => {
                 if current != Some(*company) {
                     refuse!("the player is not in company-{company}");

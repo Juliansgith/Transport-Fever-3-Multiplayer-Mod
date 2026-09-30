@@ -5,12 +5,13 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 9,                  -- bridge.VERSION; anything else is refused
+--     version = 10,                 -- bridge.VERSION; anything else is refused
 --     command = function(action),   -- the player acted: an action table, for
 --                                   -- the room to order -> true, ticket |
 --                                   -- false, why
 --     take    = function(),         -- in a game script's update: the actions
---                                   -- the room ordered for this update, or nil
+--                                   -- the room ordered for this update, or nil,
+--                                   -- and who sent each (64 hex digits)
 --     log     = function(line),     -- a line for hook.log
 --     poll    = function(),         -- in the GUI, every frame: what the hook
 --                                   -- asks, { save = name } or { load = name }
@@ -38,8 +39,9 @@
 --                                   -- { { ticket =, ok =, entity =, why = } }
 --     status  = function(),         -- the room, for the Multiplayer window, or
 --                                   -- nil before its game: { room =, speed =,
---                                   -- diverged =, players = { { name =,
---                                   -- connected =, owner =, me = } } }
+--                                   -- diverged =, me_id =, players = { {
+--                                   -- name =, connected =, owner =, me =,
+--                                   -- id = } } }
 --     chat    = function(),         -- what the room's members said since the
 --                                   -- last call, { { from =, text = } }
 --     say     = function(text),     -- says text to the room -> true |
@@ -74,6 +76,8 @@
 
 local bridge = {}
 
+-- 10: companies: `take` also names who sent each action, `status` each
+-- player's id (`id`, `me_id`);
 -- 9: the Multiplayer window: the room, its chat (`status`, `chat`, `say`);
 -- 8: the player hears what became of their actions (`command`'s ticket,
 -- `applied`, `results`);
@@ -84,7 +88,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 9
+bridge.VERSION = 10
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -171,11 +175,13 @@ function Link:say(text)
 	return true
 end
 
--- The actions the room ordered for this update, as a list, or nil.
+-- The actions the room ordered for this update, as a list, or nil; and who
+-- sent each, a list of player ids (64 hex digits) beside it.
 function Link:take()
-	local ok, actions = pcall(self.native.take)
+	local ok, actions, origins = pcall(self.native.take)
 	if not ok or type(actions) ~= "table" then return nil end
-	return actions
+	if type(origins) ~= "table" then origins = {} end
+	return actions, origins
 end
 
 function Link:log(line)

@@ -112,7 +112,19 @@ fn every_resource_names_a_script_the_mod_has() {
             + prefix.len();
         let target = &text[start..];
         let target = &target[..target.find('"').unwrap()];
-        let (script, recipe) = target.split_once('@').unwrap();
+        // A plugin names "script@recipe"; a replacement config names its
+        // script and, apart, the function the game calls (doReplaceFn).
+        let (script, recipe) = match target.split_once('@') {
+            Some(named) => named,
+            None => {
+                let key = "doReplaceFn = \"";
+                let at = text
+                    .find(key)
+                    .unwrap_or_else(|| panic!("{resource} names no recipe or doReplaceFn"))
+                    + key.len();
+                (target, &text[at..at + text[at..].find('"').unwrap()])
+            }
+        };
         assert!(
             files.contains(&format!("{script}.lua")),
             "{resource} names {script}.lua, which is not in content/"
@@ -187,6 +199,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
         [
             "tpf3mp.bridge",
             "tpf3mp.capture",
+            "tpf3mp.companies",
             "tpf3mp.engine",
             "tpf3mp.geom",
             "tpf3mp.guard",
@@ -394,7 +407,7 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {},
          dump = nil, dumped = {} }
 tpf3mp_native = {
-    version = 9,
+    version = 10,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then
@@ -404,9 +417,9 @@ tpf3mp_native = {
         return ok, why
     end,
     take = function()
-        local batch = HOOK.batch
-        HOOK.batch = nil
-        return batch
+        local batch, origins = HOOK.batch, HOOK.origins
+        HOOK.batch, HOOK.origins = nil, nil
+        return batch, origins
     end,
     log = function(line) HOOK.logged[#HOOK.logged + 1] = line end,
     poll = function()
@@ -524,7 +537,8 @@ fn with_the_hook_the_gui_links_once() {
         .unwrap();
     assert_eq!(
         logged,
-        "the GUI is linked|the guard is on 4 command factories"
+        "the GUI is linked|the guard is on 4 command factories|\
+         the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)"
     );
     let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
     assert_eq!(worlds, 1, "the world's GUI started once");
@@ -594,7 +608,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 9; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 10; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -687,7 +701,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 9, command = print, log = print })
+             why({ version = 10, command = print, log = print })
              return out",
         )
         .eval()
@@ -890,7 +904,7 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 9 }
+             local native = { version = 10 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
                                   'status', 'chat', 'say' }) do
@@ -962,6 +976,7 @@ api = {
             ConstructionEntity = { new = function() return {} end },
         },
         Context = { new = function() return {} end },
+        Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
     },
     engine = {
         util = { getPlayer = function() return 25 end },
@@ -977,6 +992,11 @@ api = {
         makeScriptingSendEventCmd = function(src, id, name, param)
             return { event = { src = src, id = id, name = name, param = param } }
         end,
+        makeGameAddPlayerCmd = function(name, color)
+            NEXT_PLAYER = (NEXT_PLAYER or 900) + 1
+            return { addPlayer = name, color = color, resultEntity = NEXT_PLAYER }
+        end,
+        makeEntitySetNameCmd = function(entity, name) return { setName = name, entity = entity } end,
         sendCommand = function(command, callback)
             -- As the game in a game script: no callback in update; in
             -- postUpdate one is called at once, with the command's data (the
@@ -2145,7 +2165,7 @@ fn in_the_rooms_game_the_build_tools_are_refused() {
 fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
     let (lua, _script) = engine();
     lua.load(
-        "HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } UPDATE({}, STATE, 0.2) \
+        "HOOK.batch = { { Terraform = {} } } UPDATE({}, STATE, 0.2) \
          REFUSE = true",
     )
     .exec()
@@ -2167,7 +2187,7 @@ fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
     assert_eq!(logged[0], "the game script is linked");
     assert_eq!(
         logged[1],
-        "action 1 of this step was not applied: this version of the mod does not apply CompanyOp yet"
+        "action 1 of this step was not applied: this version of the mod does not apply Terraform yet"
     );
     // The game's own refusal, as it raised it.
     assert!(
@@ -4018,4 +4038,476 @@ fn the_game_script_seeds_math_random_with_the_room_steps_seed_each_update() {
         .unwrap();
     assert_eq!(draws.0, draws.1, "the same step's seed, the same draws");
     assert_eq!(draws.2, 0.0, "no seed: the state's own sequence goes on");
+}
+
+/// Pure: the roster of companies (tpf3mp/companies.lua).
+#[test]
+fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
+    let lua = gui();
+    lua.load(
+        r#"
+        COMP = { [2] = { [700] = { player = 901 }, [701] = { player = 25 }, [702] = { player = -1 } } }
+        api = {
+            engine = {
+                util = { getPlayer = function() return 25 end },
+                getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+                -- The entity only, as build 40408 calls the function (seen
+                -- in its console: the second argument is nil).
+                forEachEntityWithComponent = function(fn, kind)
+                    for e in pairs(COMP[kind] or {}) do fn(e) end
+                end,
+            },
+            type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2 },
+                     Vec3f = { new = function(x, y, z) return { x, y, z } end } },
+            cmd = {
+                makeGameAddPlayerCmd = function(name, color) return { add = name, color = color } end,
+                makeEntitySetNameCmd = function(e, name) return { rename = e, name = name } end,
+            },
+        }
+        SENT, NEXT = {}, 900
+        function send(cmd)
+            SENT[#SENT + 1] = cmd
+            if cmd.add then NEXT = NEXT + 1 return { resultEntity = NEXT } end
+        end
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        A, B, D = string.rep("a", 64), string.rep("b", 64), string.rep("d", 64)
+        R = C.ensure(nil, api)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    // Everyone plays for the save's own company until they choose.
+    assert_eq!(
+        eval("return C.of(R, A).id .. ' ' .. C.of(R, A).entity"),
+        "0 25"
+    );
+    // A founds Rival: a new player entity, the next colour, and A plays for it.
+    assert_eq!(
+        eval(
+            "local ok, why, id = C.run(R, A, { Create = { name = ' Rival ' } }, send, api) \
+             return tostring(ok) .. ' ' .. tostring(id)"
+        ),
+        "true 1"
+    );
+    assert_eq!(
+        eval(
+            "local c = C.of(R, A) \
+             return c.name .. ' ' .. c.entity .. ' ' .. SENT[1].add .. ' ' .. SENT[1].color[3]"
+        ),
+        "Rival 901 Rival 0.85"
+    );
+    assert_eq!(
+        eval("return tostring(C.of(R, B).id)"),
+        "0",
+        "B still plays for the first"
+    );
+    // B joins Rival: two players in one company, D alone in the first.
+    assert_eq!(
+        eval("return tostring(C.run(R, B, { Join = 1 }, send, api))"),
+        "true"
+    );
+    assert_eq!(eval("return C.of(R, B).id .. ' ' .. C.of(R, D).id"), "1 0");
+    // Only its players rename or recolour a company; names stay unique.
+    assert_eq!(
+        eval(
+            "local ok, why = C.run(R, D, { Rename = { company = 1, name = 'Mine' } }, send, api) \
+             return why"
+        ),
+        "only its players rename a company"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, A, { Create = { name = 'rival' } }, send, api) return why"),
+        "a company is called rival already"
+    );
+    assert_eq!(
+        eval(
+            "C.run(R, B, { Rename = { company = 1, name = 'Blue Line' } }, send, api) \
+             return C.find(R, 1).name .. ' ' .. SENT[#SENT].rename"
+        ),
+        "Blue Line 901"
+    );
+    assert_eq!(
+        eval(
+            "C.run(R, A, { Recolor = { company = 1, color = { r = 0.1, g = 0.2, b = 0.3 } } }, send, api) \
+             return tostring(C.find(R, 1).color[2])"
+        ),
+        "0.2"
+    );
+    // What another company owns is refused, naming it; its own and no
+    // one's are not.
+    assert_eq!(
+        eval(
+            "local ok, why = C.mayTouch(R, 25, 700, api, 'vehicle') \
+             return tostring(ok) .. ' ' .. why"
+        ),
+        "false the vehicle belongs to Blue Line"
+    );
+    assert_eq!(
+        eval(
+            "return tostring(C.mayTouch(R, 25, 701, api)) .. tostring(C.mayTouch(R, 25, 702, api)) \
+             .. tostring(C.mayTouch(R, 25, 703, api))"
+        ),
+        "truetruetrue"
+    );
+    // Its last player dissolves a company that owns nothing, and plays for
+    // the first again; nobody dissolves the first.
+    assert_eq!(
+        eval("local ok, why = C.run(R, D, { Delete = 1 }, send, api) return why"),
+        "only its players dissolve a company"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, A, { Delete = 1 }, send, api) return why"),
+        "others still play for Blue Line"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, D, { Delete = 0 }, send, api) return why"),
+        "the room's first company stays"
+    );
+    assert_eq!(
+        eval(
+            "C.run(R, B, { Join = 0 }, send, api) \
+             local ok, why = C.run(R, A, { Delete = 1 }, send, api) return why"
+        ),
+        "Blue Line still owns something"
+    );
+    assert_eq!(
+        eval(
+            "COMP[2][700] = nil \
+             return tostring(C.run(R, A, { Delete = 1 }, send, api)) .. ' ' .. #C.live(R) \
+             .. ' ' .. C.of(R, A).id"
+        ),
+        "true 1 0"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, A, { Join = 1 }, send, api) return why"),
+        "there is no company 1"
+    );
+    // At most MAX companies.
+    assert_eq!(
+        eval(
+            "for i = 1, C.MAX do C.run(R, A, { Create = { name = 'C' .. i } }, send, api) end \
+             return #C.live(R) .. ' ' .. select(2, C.run(R, A, { Create = { name = 'X' } }, send, api))"
+        ),
+        "8 the room has 8 companies already"
+    );
+}
+
+/// Through the game script: a player founds a company, and what they do is
+/// booked to it; the roster is kept in the script's state.
+#[test]
+fn what_a_player_does_is_booked_to_their_company() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        -- A month is 1000 ms of game time here.
+        GAME_T = 0
+        api.type.ComponentType.GAME_TIME = 99
+        api.engine.util.getWorld = function() return 1 end
+        api.engine.getComponent = function(e, kind)
+            if kind == 99 then return { gameTime = GAME_T } end
+        end
+        api.util = { getDefaultMonthDuration = function() return 1000 end }
+        api.type.JournalEntry = { new = function() return { category = {} } end,
+                                  Type = { LOAN = 'LOAN', INTEREST = 'INTEREST' } }
+        api.cmd.makeJournalBookAssetCmd = function(e, entry) return { journal = entry, entity = e } end
+        A, B = string.rep("a", 64), string.rep("b", 64)
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A }
+        UPDATE({}, STATE, 0.2)
+        -- A's loan, for Rival: 1200 over 12 months at 12 % a year; and B's,
+        -- who plays for the first company, through the game's loan script.
+        OFFER = { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }
+        HOOK.batch = { { Loan = { Take = { next = OFFER, offer = OFFER } } },
+                       { Loan = { Take = { next = OFFER, offer = OFFER } } } }
+        HOOK.origins = { A, B }
+        UPDATE({}, STATE, 0.2)
+        -- A month later, Rival pays its first instalment, with no action,
+        -- in the room's game.
+        HOOK.room = true
+        GAME_T = 1000
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let roster: String = lua
+        .load(
+            "local r = STATE.value.companies local c = r.list[2] \
+             return #r.list .. ' ' .. c.name .. ' ' .. c.entity .. ' ' .. r.members[1].company",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        roster, "2 Rival 901 1",
+        "the roster is saved with the world"
+    );
+    let sent: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do \
+                 out[#out + 1] = c.addPlayer or (c.event and c.event.name) \
+                     or (c.journal and (c.journal.category.type .. c.journal.amount .. '@' .. c.entity)) or '?' end \
+             return table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        sent, "Rival,LOAN1200@901,Obtain,INTEREST-12@901,LOAN-95@901",
+        "the company; Rival's loan booked to it, B's through the loan script; \
+         a month later Rival's instalment of 107: 12 interest, 95 paid down"
+    );
+    let loan: String = lua
+        .load("local l = STATE.value.companies.loans[1] return l.remaining .. ' ' .. l.paid .. '/' .. l.months")
+        .eval()
+        .unwrap();
+    assert_eq!(loan, "1105 1/12");
+}
+
+/// The GUI's "my company" is the player's: api.engine.util.getPlayer answers
+/// the company they play for, in the GUI state only, and the game's own
+/// answer for the room's first company.
+#[test]
+fn the_guis_company_is_the_one_the_player_plays_for() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        ME = string.rep("b", 64)
+        ROSTER = { next = 2, list = { { id = 0, entity = 25, name = "First", color = { 1, 0, 0 } },
+                                      { id = 1, entity = 901, name = "Rival", color = { 0, 0, 1 } } },
+                   members = {} }
+        -- The game's binding is a callable table (build 40408).
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = api.type.ComponentType or {}
+        api.type.ComponentType.GAME_SCRIPT = 7
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+        end
+        HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
+        "#,
+    )
+    .exec()
+    .unwrap();
+    run_frames(&lua, 20);
+    let first: i64 = lua
+        .load("return api.engine.util.getPlayer()")
+        .eval()
+        .unwrap();
+    assert_eq!(first, 25, "playing for the first company: the game's own");
+    lua.load("ROSTER.members = { { player = ME, company = 1 } }")
+        .exec()
+        .unwrap();
+    run_frames(&lua, 20);
+    let mine: i64 = lua
+        .load("return api.engine.util.getPlayer()")
+        .eval()
+        .unwrap();
+    assert_eq!(mine, 901, "playing for Rival: Rival");
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains("the GUI's company follows the player's"),
+        "{logged}"
+    );
+}
+
+/// With more than one company, vehicles wear their company's colour: a new
+/// colour repaints the company's fleet, and only its own.
+#[test]
+fn a_companys_colour_repaints_its_vehicles() {
+    let lua = gui();
+    lua.load(
+        r#"
+        COMP = { [2] = { [500] = { player = 901 }, [501] = { player = 25 }, [502] = { player = 901 } },
+                 [4] = { [500] = {}, [501] = {}, [502] = {} } }
+        api = {
+            engine = {
+                util = { getPlayer = function() return 25 end },
+                getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+                forEachEntityWithComponent = function(fn, kind)
+                    local keys = {}
+                    for e in pairs(COMP[kind] or {}) do keys[#keys + 1] = e end
+                    table.sort(keys)
+                    for _, e in ipairs(keys) do fn(e) end
+                end,
+            },
+            type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2, TRANSPORT_VEHICLE = 4 },
+                     Vec3f = { new = function(x, y, z) return { x, y, z } end } },
+            cmd = {
+                makeGameAddPlayerCmd = function(name, color) return { add = name } end,
+                makeEntitySetColorCmd = function(e, color) return { paint = e, color = color } end,
+            },
+        }
+        SENT, NEXT = {}, 900
+        function send(cmd)
+            SENT[#SENT + 1] = cmd
+            if cmd.add then NEXT = NEXT + 1 return { resultEntity = NEXT } end
+        end
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        A = string.rep("a", 64)
+        R = C.ensure(nil, api)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let painting: bool = lua.load("return C.painting(R)").eval().unwrap();
+    assert!(!painting, "one company: the game's own colours");
+    let painted: String = lua
+        .load(
+            "C.run(R, A, { Create = { name = 'Rival' } }, send, api) \
+             SENT = {} \
+             C.run(R, A, { Recolor = { company = 1, color = { r = 0, g = 0.5, b = 1 } } }, send, api) \
+             local out = {} for _, c in ipairs(SENT) do out[#out + 1] = c.paint .. ':' .. c.color[2] end \
+             return tostring(C.painting(R)) .. ' ' .. table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        painted, "true 500:0.5,502:0.5",
+        "Rival's two vehicles, not the first company's"
+    );
+}
+
+/// A vehicle's marker on the map wears its company's colour: the mod
+/// replaces the game's marker recipe with one that, while the room has more
+/// than one company, puts the marker of a vehicle painted in a company
+/// colour in that colour's class (the room paints a company's vehicles so),
+/// as TPF2's vehicle icons followed the vehicle's paint, and leaves every
+/// other marker as the game made it.
+#[test]
+fn a_vehicles_marker_wears_its_companys_colour() {
+    let lua = gui();
+    lua.load(
+        r#"
+        -- Vehicles by their first part's colour, as build 40408 gives it (a
+        -- float's digits; -1 for the model's own colours).
+        local function painted(x, y, z)
+            return { transportVehicleConfig = { vehicles = { { part = { color = { x = x, y = y, z = z } } } } } }
+        end
+        COMP = { [4] = {
+            [500] = painted(0.12999999523163, 0.41999998688698, 0.85000002384186), -- blue
+            [501] = painted(0.80000001192093, 0.15999999642372, 0.11999999731779), -- red
+            [502] = painted(0.9, 0.9, 0.9),                                        -- a player's own
+            [503] = painted(-1, -1, -1),                                           -- unpainted
+        } }
+        -- The roster is in the mod's game script's state (entity 77).
+        ROSTER = nil
+        api = {
+            engine = {
+                getComponent = function(e, kind)
+                    if kind == 7 then return e == 77 and { state = { companies = ROSTER } } or nil end
+                    return COMP[kind] and COMP[kind][e]
+                end,
+                system = { gameScriptSystem = { getEntityForGameScript = function(name)
+                    return name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" and 77 or -1
+                end } },
+            },
+            type = { ComponentType = { TRANSPORT_VEHICLE = 4, GAME_SCRIPT = 7 } },
+        }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        local script = "gui/tpf3mp/company_markers.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        local exported = data()
+        local toolbox = ug_require("::/gui/main/hud_icon_toolbox.tl")
+        exported.replace({ ReplaceRecipe = function(original, replacement)
+            assert(original == toolbox.HudIconMasterGame, "replaces the game's marker")
+            MARKER = replacement
+        end })
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        -- The game script's companies, a while later (the game gives a new
+        -- table on each read).
+        function companies(list) ROSTER = { list = list, members = {} } CLOCK = CLOCK + 5 end
+        -- The HUD takes only a layout from a marker's recipe (build 40408:
+        -- "Recipe child must be a layout"), so the game's marker is always
+        -- inside one.
+        function marker(entity)
+            local node = mount(MARKER, { entity = entity }).layout
+            assert(node.layout == "BoxLayout", "a marker's recipe gives a layout")
+            local inner = node.params.children[1]
+            assert(#node.params.children == 1 and inner.view == "Marker", "around the game's marker")
+            local class = node.params.meta and node.params.meta.class
+            return (class and (class .. " around ") or "") .. "game's " .. inner.params.entity
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let marker = |entity: i64| -> String {
+        lua.load(format!("return marker({entity})"))
+            .eval()
+            .unwrap_or_else(|error| panic!("{entity}: {error}"))
+    };
+    // No roster yet, and one company: the game's markers.
+    assert_eq!(marker(500), "game's 500");
+    lua.load("companies({ { id = 0, entity = 25, color = C.PALETTE[1] } })")
+        .exec()
+        .unwrap();
+    assert_eq!(
+        marker(500),
+        "game's 500",
+        "one company: as in single player"
+    );
+    // Two companies: a vehicle in a company colour wears it.
+    lua.load(
+        "companies({ { id = 0, entity = 25, color = C.PALETTE[1] },                      { id = 1, entity = 901, color = C.PALETTE[2] } })",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(marker(500), "tpf3mp-company-2 around game's 500");
+    assert_eq!(marker(501), "tpf3mp-company-1 around game's 501");
+    // Any other paint, no paint, and what is no vehicle: the game's.
+    assert_eq!(marker(502), "game's 502");
+    assert_eq!(marker(503), "game's 503");
+    assert_eq!(marker(600), "game's 600");
+    // The roster is read again only every two seconds: a company dissolved
+    // shows once it is read, back to the game's markers.
+    lua.load(
+        "ROSTER = { members = {}, list = { ROSTER.list[1],                     { id = 1, entity = 901, color = C.PALETTE[2], gone = true } } }",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(marker(500), "tpf3mp-company-2 around game's 500");
+    lua.load("CLOCK = CLOCK + 2").exec().unwrap();
+    assert_eq!(marker(500), "game's 500");
+
+    // The style sheet has a class for every colour of the palette.
+    let classes: String = lua
+        .load(
+            r#"
+            local rules = {}
+            local ssu = { makeAdder = function(result)
+                return function(selector, style) result[#result + 1] = selector end
+            end }
+            local real = require
+            require = function(path)
+                if path == "::/gui/main/stylesheetutil.lua" then return ssu end
+                return ug_require(path)
+            end
+            local css = "gui/tpf3mp/tpf3mp.css.lua"
+            assert(loadstring(mod_source(css), "@" .. css))()
+            local result = data()
+            require = real
+            return table.concat(result, "|")
+            "#,
+        )
+        .eval()
+        .unwrap();
+    for i in 1..=8 {
+        assert!(
+            classes.contains(&format!("!tpf3mp-company-{i} VehicleItem::Icon")),
+            "{classes}"
+        );
+    }
 }

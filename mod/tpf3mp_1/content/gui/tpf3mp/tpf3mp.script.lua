@@ -39,7 +39,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "geom", "roads", "engine", "registry", "capture", "bridge", "guard" }
+	local MODULES = { "geom", "roads", "engine", "registry", "companies", "capture", "bridge", "guard" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -96,21 +96,15 @@ function data()
 		end
 	end
 
-	-- The mod's game script's registry (tpf3mp/registry.lua), read from the
-	-- script's state as the game keeps it: game scripts are entities, named
-	-- by their file (the loan window reads the loan script so).
-	local SCRIPT_NAMES = { MOD .. "::/tpf3mp_sim/tpf3mp_sim.gs", MOD .. "::/tpf3mp_sim.gs" }
+	-- The mod's game script's state as the game keeps it
+	-- (tpf3mp/companies.lua), which holds its registry (tpf3mp/registry.lua)
+	-- and its companies. Read once the modules are loaded.
+	local function scriptState()
+		return require("tpf3mp.companies").scriptState(api)
+	end
 	local function registryNow()
-		for _, name in ipairs(SCRIPT_NAMES) do
-			local ok, state = pcall(function()
-				local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(name)
-				if type(entity) ~= "number" or entity < 0 then return nil end
-				local c = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
-				return c and c.state
-			end)
-			if ok and type(state) == "table" then return state.registry end
-		end
-		return nil
+		local state = scriptState()
+		return state and state.registry
 	end
 
 	-- What the guard names things by (tpf3mp/capture.lua).
@@ -214,6 +208,57 @@ function data()
 		return true
 	end
 
+	-- The player entity of the company this player plays for, in the room's
+	-- game (tpf3mp/companies.lua), or nil: outside the room, before the
+	-- roster is read, and for the room's first company, which is the save's
+	-- own player anyway.
+	local function myCompany()
+		local shared = ui()
+		local status, roster = shared.status, shared.companies
+		if not status or not roster or not status.me_id then return nil end
+		for _, m in ipairs(roster.members or {}) do
+			if m.player == status.me_id then
+				for _, c in ipairs(roster.list or {}) do
+					if c.id == m.company then return c.entity end
+				end
+			end
+		end
+		return nil
+	end
+
+	-- The GUI's "my company": TF3's windows ask api.engine.util.getPlayer()
+	-- whose money to show, what is the player's own and what is "Foreign"
+	-- (entity_window/eow_extension_util.tl), and every GUI script looks it up
+	-- when it runs. In this GUI state it answers the company this player
+	-- plays for; the game scripts' states keep the game's own answer, the
+	-- save's player, so the simulation is the same in every game. What the
+	-- player then does goes to the room as ever and is booked to their
+	-- company there (tpf3mp/apply.lua), whatever the GUI named.
+	local function followMyCompany()
+		local ok, util = pcall(function() return api.engine.util end)
+		if not ok then util = nil end
+		-- A function, or a callable table, as the game's bindings are
+		-- (build 40408: a table with a metatable).
+		local original = ok and util ~= nil and select(2, pcall(function() return util.getPlayer end)) or nil
+		if type(original) ~= "function" and type(original) ~= "table" and type(original) ~= "userdata" then
+			link:log("the GUI's company cannot follow the player's: no api.engine.util.getPlayer ("
+				.. type(util) .. ", " .. type(original) .. ")")
+			return
+		end
+		local replaced, why = pcall(function()
+			util.getPlayer = function(...)
+				local mine = myCompany()
+				if mine then return mine end
+				return original(...)
+			end
+		end)
+		-- A binding may take the assignment and keep its own function.
+		local took = replaced and select(2, pcall(function() return util.getPlayer ~= original end))
+		link:log(took == true and "the GUI's company follows the player's"
+			or ("the GUI's company cannot follow the player's: api.engine.util (" .. type(util)
+				.. ") keeps its getPlayer" .. (why and (": " .. tostring(why)) or "")))
+	end
+
 	local function start()
 		local ok, why = installModules()
 		if not ok then
@@ -234,6 +279,7 @@ function data()
 		link:log("the GUI is linked")
 		say("linked to the hook")
 		guardCommands()
+		followMyCompany()
 	end
 
 	-- Does what the hook asks: saving the world under the name it gives, or
@@ -264,6 +310,7 @@ function data()
 		end
 	end
 
+	local readCompanies
 	local react = ug_require "::/gui/main/react.lua"
 	local builtin = ug_require "::/gui/main/builtin.lua"
 	local game_bar_widgets = ug_require "::/gui/game_bar/game_bar_widgets.tl"
@@ -296,6 +343,49 @@ function data()
 		return table.concat(parts, " · ")
 	end
 
+	-- The room's companies as the game script keeps them (tpf3mp/companies.lua),
+	-- each with its money now, and a text that changes when anything shown
+	-- does. Nil before the room's first company exists.
+	readCompanies = function()
+		local state = scriptState()
+		local roster = state and state.companies
+		if type(roster) ~= "table" or type(roster.list) ~= "table" then return nil, "" end
+		local out, sign = { list = {}, members = roster.members or {}, loans = roster.loans or {} }, {}
+		-- The loans the game offers now (its loan script's), which another
+		-- company takes on the same terms.
+		pcall(function()
+			local e = api.engine.system.gameScriptSystem.getEntityForGameScript("::/game_mechanics/finance/loan.gs")
+			local c = type(e) == "number" and e >= 0 and api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT)
+			local offers = c and c.state and c.state.availableLoans
+			if type(offers) == "table" then out.offers = offers end
+		end)
+		for _, offer in ipairs(out.offers or {}) do sign[#sign + 1] = tostring(offer.type) .. tostring(offer.amount) end
+		for _, loan in ipairs(out.loans) do sign[#sign + 1] = loan.id .. ":" .. loan.remaining end
+		for _, c in ipairs(roster.list) do
+			if not c.gone then
+				local balance, owed, name
+				pcall(function()
+					local account = api.engine.getComponent(c.entity, api.type.ComponentType.ACCOUNT)
+					balance = account and account.balance
+					owed = account and account.loan
+				end)
+				-- The name the game shows (the player entity's NAME, which a
+				-- rename sets), else the roster's.
+				pcall(function()
+					local n = api.engine.getComponent(c.entity, api.type.ComponentType.NAME)
+					if n and type(n.name) == "string" and n.name ~= "" then name = n.name end
+				end)
+				out.list[#out.list + 1] = { id = c.id, entity = c.entity, name = name or c.name, color = c.color,
+					balance = balance, owed = owed }
+				local color = type(c.color) == "table" and c.color or {}
+				sign[#sign + 1] = table.concat({ c.id, name or c.name, tostring(balance), tostring(owed),
+					tostring(color[1]), tostring(color[2]), tostring(color[3]) }, ":")
+			end
+		end
+		for _, m in ipairs(out.members) do sign[#sign + 1] = tostring(m.player) .. "=" .. tostring(m.company) end
+		return out, table.concat(sign, "|")
+	end
+
 	-- Reads the room and its chat from the hook into ui(): the room every
 	-- STATUS_FRAMES frames, the chat every frame.
 	local statusFrames = 0
@@ -311,6 +401,12 @@ function data()
 			local after = status and summary(status) .. tostring(#(status.players or {}))
 			shared.status = status
 			if before ~= after then changed = true end
+			local companies, sign = readCompanies()
+			shared.companies = companies
+			if sign ~= shared.companiesSign then
+				shared.companiesSign = sign
+				changed = true
+			end
 		end
 		-- A new world's GUI gets the chat so far again, as old lines: they
 		-- fill the window without counting as new.
@@ -326,7 +422,181 @@ function data()
 	-- What the Multiplayer window shows: the room, its speed, whether this
 	-- world matches the room's, its players, and the chat with a field to
 	-- write to it.
-	local function windowRows(status, draft)
+	-- Money as the game bar writes it, near enough.
+	local function money(balance)
+		if type(balance) ~= "number" then return "" end
+		local sign, whole = balance < 0 and "-" or "", tostring(math.floor(math.abs(balance) + 0.5))
+		whole = whole:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+		return sign .. "$" .. whole
+	end
+
+	local function vec3(color)
+		if type(color) ~= "table" then return nil end
+		return api.type.Vec3f.new(color[1] or 0, color[2] or 0, color[3] or 0)
+	end
+
+	-- A company operation for the room, from the window. What became of it
+	-- comes back with the player's other actions (follow the ticket).
+	local function companyOp(shared, op, doing, action)
+		local l = shared.link
+		if not l then return end
+		local ok, ticket = l:command(action or { CompanyOp = op })
+		if ok then
+			shared.asked = shared.asked or {}
+			shared.asked[ticket] = doing
+			shared.companyNote = doing .. "..."
+		else
+			shared.companyNote = "Not sent: " .. tostring(ticket)
+		end
+		shared.version = shared.version + 1
+	end
+
+	-- The companies: each with its money and players, the one you play for
+	-- first, with its colour and name to change; the others to join; a
+	-- company of your own to found.
+	local function companyRows(rows, status, shared, drafts)
+		local roster = shared.companies
+		if not roster then return end
+		local function line(text) rows[#rows + 1] = builtin.TextView{ text = text } end
+		local names, companyOf, mine = {}, {}, nil
+		for _, m in ipairs(roster.members) do companyOf[m.player] = m.company end
+		for _, p in ipairs(status.players or {}) do
+			local id = companyOf[p.id] or 0
+			names[id] = names[id] or {}
+			names[id][#names[id] + 1] = tostring(p.name) .. (p.me and " (you)" or "")
+			if p.me then mine = id end
+		end
+		if mine == nil then mine = companyOf[status.me_id] or 0 end
+		local ordered = {}
+		for _, c in ipairs(roster.list) do if c.id == mine then ordered[#ordered + 1] = c end end
+		for _, c in ipairs(roster.list) do if c.id ~= mine then ordered[#ordered + 1] = c end end
+		line("")
+		line("Companies")
+		for _, c in ipairs(ordered) do
+			local who = names[c.id] and table.concat(names[c.id], ", ") or "nobody"
+			local children = {}
+			if c.id == mine then
+				children[#children + 1] = builtin.ColorChooserButton{
+					meta = { tooltip = "Your company's colour" },
+					colors = (function()
+						local palette = {}
+						for i, color in ipairs(require("tpf3mp.companies").PALETTE) do palette[i] = vec3(color) end
+						return palette
+					end)(),
+					color = vec3(c.color),
+					onValueChange = function(v)
+						local r, g, b = v.x or v[1], v.y or v[2], v.z or v[3]
+						companyOp(shared, { Recolor = { company = c.id, color = { r = r, g = g, b = b } } },
+							"Recolouring " .. c.name)
+					end,
+					resetButton = false,
+				}
+			end
+			children[#children + 1] = builtin.TextView{
+				text = "  " .. tostring(c.name) .. "  " .. money(c.balance)
+					.. ((type(c.owed) == "number" and c.owed > 0) and (" (owes " .. money(c.owed) .. ")") or "")
+					.. "  " .. who .. (c.id == mine and "  (yours)" or ""),
+			}
+			if c.id ~= mine then
+				children[#children + 1] = builtin.Button{
+					meta = { tooltip = "Play for " .. tostring(c.name) .. " from now on" },
+					content = builtin.TextView{ text = "Join" },
+					onClick = function() companyOp(shared, { Join = c.id }, "Joining " .. c.name) end,
+				}
+			elseif c.id ~= 0 and #(names[c.id] or {}) <= 1 then
+				-- Its last player dissolves it, once it owns nothing.
+				children[#children + 1] = builtin.Button{
+					meta = { tooltip = "Dissolve " .. tostring(c.name) .. " once it owns nothing,"
+						.. " and play for the room's first company again" },
+					content = builtin.TextView{ text = "Dissolve" },
+					onClick = function() companyOp(shared, { Delete = c.id }, "Dissolving " .. c.name) end,
+				}
+			end
+			rows[#rows + 1] = builtin.BoxLayout{ orientation = builtin.type.Orientation.Horizontal, children = children }
+		end
+		local function field(draft, placeholder, label, tooltip, act)
+			rows[#rows + 1] = builtin.BoxLayout{
+				orientation = builtin.type.Orientation.Horizontal,
+				children = {
+					builtin.TextInputField{
+						placeholderText = placeholder,
+						value = draft:get(),
+						maxLength = 64,
+						acceptOnFocusLoss = false,
+						resetValueOnCancel = false,
+						onTyping = function(text) draft:set(text) end,
+						onCancel = function() shared.version = shared.version + 1 end,
+						onValueChange = function(text) act(text) end,
+					},
+					builtin.Button{
+						meta = { tooltip = tooltip },
+						content = builtin.TextView{ text = label },
+						onClick = function() act(draft:get()) end,
+					},
+				},
+			}
+		end
+		local myName
+		for _, c in ipairs(roster.list) do if c.id == mine then myName = c.name end end
+		field(drafts.rename, "A new name for " .. tostring(myName), "Rename", "Rename the company you play for",
+			function(text)
+				if type(text) ~= "string" or text:match("^%s*$") then return end
+				companyOp(shared, { Rename = { company = mine, name = text } }, "Renaming " .. tostring(myName))
+				drafts.rename:set("")
+			end)
+		field(drafts.found, "A company of your own", "Found", "Found a company and play for it",
+			function(text)
+				if type(text) ~= "string" or text:match("^%s*$") then return end
+				companyOp(shared, { Create = { name = text } }, "Founding " .. text)
+				drafts.found:set("")
+			end)
+		-- Another company's loans are the room's (tpf3mp/companies.lua), on
+		-- the terms the game offers; the first company's are in the game's
+		-- own finance window.
+		if mine ~= 0 then
+			local loans = {}
+			for _, loan in ipairs(roster.loans or {}) do if loan.company == mine then loans[#loans + 1] = loan end end
+			for _, loan in ipairs(loans) do
+				rows[#rows + 1] = builtin.BoxLayout{
+					orientation = builtin.type.Orientation.Horizontal,
+					children = {
+						builtin.TextView{ text = "  Loan: " .. money(loan.remaining) .. " owed of " .. money(loan.amount)
+							.. ", " .. money(loan.payment) .. " a month, " .. (loan.months - loan.paid) .. " months left" },
+						builtin.Button{
+							meta = { tooltip = "Pay back what is still owed now" },
+							content = builtin.TextView{ text = "Repay" },
+							onClick = function()
+								companyOp(shared, nil, "Repaying " .. money(loan.remaining), { Loan = { Repay = { loan = {
+									type = "Custom", amount = loan.amount, duration = 1, percentage = 0, id = loan.id } } } })
+							end,
+						},
+					},
+				}
+			end
+			local offers = {}
+			for _, offer in ipairs(roster.offers or {}) do
+				if type(offer) == "table" and type(offer.amount) == "number" then
+					offers[#offers + 1] = builtin.Button{
+						meta = { tooltip = string.format("Borrow %s at %g%% a year", money(offer.amount),
+							(offer.percentage or 0) * 100) },
+						content = builtin.TextView{ text = "Borrow " .. money(offer.amount) },
+						onClick = function()
+							local terms = { type = offer.type, amount = offer.amount, duration = offer.duration,
+								percentage = offer.percentage }
+							companyOp(shared, nil, "Borrowing " .. money(offer.amount),
+								{ Loan = { Take = { next = terms, offer = terms } } })
+						end,
+					}
+				end
+			end
+			if #offers > 0 then
+				rows[#rows + 1] = builtin.BoxLayout{ orientation = builtin.type.Orientation.Horizontal, children = offers }
+			end
+		end
+		if shared.companyNote then line(shared.companyNote) end
+	end
+
+	local function windowRows(status, draft, drafts)
 		local shared = ui()
 		local function send(text)
 			local l = shared.link
@@ -358,6 +628,7 @@ function data()
 			if not p.connected then tags[#tags + 1] = "away" end
 			line("  " .. tostring(p.name) .. (#tags > 0 and (" (" .. table.concat(tags, ", ") .. ")") or ""))
 		end
+		companyRows(rows, status, shared, drafts)
 		line("")
 		line("Chat")
 		-- The newest lines only: the window sizes itself to what it holds.
@@ -400,6 +671,7 @@ function data()
 			shared.window = react.RegisterWrapperRecipe("Tpf3mpWindow", builtin.Window, function(params)
 				local drawn = react.useState(0)
 				local draft = react.useRef("")
+				local drafts = { rename = react.useRef(""), found = react.useRef("") }
 				react.onStep(function()
 					local version = ui().version
 					if version ~= drawn:old() then drawn:set(version) end
@@ -408,7 +680,7 @@ function data()
 				local status = ui().status
 				local rows
 				if status then
-					rows = windowRows(status, draft)
+					rows = windowRows(status, draft, drafts)
 				else
 					rows = { builtin.TextView{ text = "Not in a room." } }
 				end
@@ -487,7 +759,18 @@ function data()
 			runPending()
 			if link and guardedCmd then
 				local delivered, why = pcall(function()
-					require("tpf3mp.guard").deliver(guardedCmd, link:results(), sees)
+					local results = link:results()
+					require("tpf3mp.guard").deliver(guardedCmd, results, sees)
+					local shared = ui()
+					for _, r in ipairs(results or {}) do
+						local doing = shared.asked and r.ticket and shared.asked[r.ticket]
+						if doing then
+							shared.asked[r.ticket] = nil
+							shared.companyNote = r.ok and (doing .. ": done")
+								or (doing .. ": not done, " .. tostring(r.why))
+							shared.version = shared.version + 1
+						end
+					end
 				end)
 				if not delivered then say("answering the player's commands failed: " .. tostring(why)) end
 			end
