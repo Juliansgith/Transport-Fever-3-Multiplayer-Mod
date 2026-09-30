@@ -135,13 +135,35 @@ type LuaSettop = unsafe extern "C" fn(*mut c_void, c_int);
 type LuaPushlstring = unsafe extern "C" fn(*mut c_void, *const c_char, usize) -> *const c_char;
 type LuaTolstring = unsafe extern "C" fn(*mut c_void, c_int, *mut usize) -> *const c_char;
 
+/// The profile targets the entry uses, none of which another part of the
+/// hook detours.
+pub const TARGETS: [&str; 6] = [
+    "lua_loadfile",
+    "lua_load",
+    "lua_pcallk",
+    "lua_settop",
+    "lua_pushlstring",
+    "lua_tolstring",
+];
+
+/// `profile` with only the entry's own targets ([`TARGETS`]). The hook's
+/// other detours (the step gate first) are installed before the entry, so
+/// their signatures no longer match the running code, and a required one
+/// would refuse the whole profile (seen in the game, 2026-09-30).
+pub fn own_targets(profile: &Profile) -> Profile {
+    let mut own = profile.clone();
+    own.targets
+        .retain(|target| TARGETS.contains(&target.name.as_str()));
+    own
+}
+
 /// Resolves the targets against the running image's `.text`.
 pub fn resolve_targets(profile: &Profile) -> Result<Targets, String> {
     let (text_addr, text_len) =
         main_module_text().ok_or_else(|| "cannot find the main module's .text".to_owned())?;
     // SAFETY: `text_addr..+text_len` is the mapped, readable code section.
     let image = unsafe { std::slice::from_raw_parts(text_addr as *const u8, text_len) };
-    let resolved = profile::resolve(profile, image, text_addr as u64)
+    let resolved = profile::resolve(&own_targets(profile), image, text_addr as u64)
         .map_err(|refusal| refusal.to_string())?;
     let address = |name: &str| -> Result<usize, String> {
         resolved
@@ -546,6 +568,25 @@ unsafe extern "C" fn entry_thunk() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_entry_resolves_its_own_targets_only() {
+        let built_in = crate::built_in_profiles();
+        let profile = built_in[0].profile.as_ref().unwrap();
+        assert!(
+            profile
+                .targets
+                .iter()
+                .any(|target| target.name == "GameSim::Step"),
+            "the step gate's target is in the profile"
+        );
+        let own = own_targets(profile);
+        let mut names: Vec<&str> = own.targets.iter().map(|t| t.name.as_str()).collect();
+        names.sort_unstable();
+        let mut wanted = TARGETS.to_vec();
+        wanted.sort_unstable();
+        assert_eq!(names, wanted, "every one of the entry's, and nothing else");
+    }
 
     #[test]
     fn the_reader_hands_the_chunk_over_whole_and_once() {
