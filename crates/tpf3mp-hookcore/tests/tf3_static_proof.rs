@@ -78,7 +78,12 @@ const TARGETS: &[(&str, u64)] = &[
     ("transport::EdgeUseManager::Add", 0x255e940),
     ("transport::EdgeUseManager::AddRange", 0x255cc70),
     ("ecs::Engine::Update", 0x2bb8a50),
-    ("CGame::CGame::lambda_3", 0x11c6c0),
+    ("game_script_util::Update/lambda_1::_Do_call", 0xf45450),
+    ("game_script_util::PostUpdate/lambda_1::_Do_call", 0xf449b0),
+    (
+        "game_script_util::HandleEvent/lambda_1/lambda_1::operator()",
+        0xf41770,
+    ),
     ("TownDevelopAt::Apply", 0x9dedf0),
     ("lua_getfield", 0x2fbdb90),
     ("lua_loadfile", 0x2fa1d50),
