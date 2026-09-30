@@ -230,6 +230,19 @@ protected folder such as Program Files.
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window
   hears it a moment after your click.
+- **Companies.** Everyone starts in the save's own company, together. In
+  the Multiplayer window you can found a company of your own, join
+  another, rename or recolour yours, and dissolve it once you are its last
+  player and it owns nothing; any split works, two players in one company
+  and one in another included. What you build and buy is your company's
+  and paid by it, and what another company owns (its vehicles, lines,
+  depots, stations and roads) is theirs: you cannot change or remove it.
+  The game's own windows show your company: its money in the corner, and
+  your things as yours. A new company starts with no money: borrow on the
+  terms the game offers in the Multiplayer window, which also shows its
+  loans and pays them back (the game's finance window keeps the room's
+  first company's loans). With more than one company, vehicles wear their
+  company's colour, and a new colour repaints them.
 - **Achievements.** A game with TPF3-MP active still earns achievements:
   the mod keeps them on, as the game lets a mod do. This holds even when
   the save has other mods that would switch them off.

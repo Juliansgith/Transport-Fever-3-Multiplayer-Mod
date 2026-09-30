@@ -347,6 +347,14 @@ fn samples() -> Vec<Action> {
             name: text("Rail & Daughters"),
         }),
         Action::CompanyOp(CompanyOp::Delete(CompanyId(2))),
+        Action::CompanyOp(CompanyOp::Recolor {
+            company: CompanyId(2),
+            color: Tint {
+                r: 130_000,
+                g: 420_000,
+                b: 850_000,
+            },
+        }),
         Action::Loan(Box::new(LoanOp::Take {
             next: loan(7_000_000),
             offer: loan(5_000_000),

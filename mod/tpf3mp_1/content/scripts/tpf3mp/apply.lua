@@ -833,7 +833,13 @@ function HANDLERS.BuyVehicle(buy)
 	for i, p in ipairs(buy.consist) do vehicles[i] = vehiclePart(p, time) end
 	local config = vehicleConfig(vehicles, buy.groups, buy.multiple_units)
 	local data, entities = send(api.cmd.makeVehicleBuyCmd(company(), depot, config))
-	return true, madeBy("resultVehicleEntity", data, entities)
+	local vehicle = madeBy("resultVehicleEntity", data, entities)
+	-- With more than one company, in its company's colour.
+	local roster = acting and acting.roster
+	if vehicle and companiesModule.painting(roster) then
+		companiesModule.paintVehicle(companiesModule.byEntity(roster, company()), vehicle, send, api)
+	end
+	return true, vehicle
 end
 
 -- Whether `e` is a vehicle in this world.

@@ -54,6 +54,8 @@ companies.PALETTE = {
 
 local function copy(color) return { color[1], color[2], color[3] } end
 
+local function vec(api, color) return api.type.Vec3f.new(color[1], color[2], color[3]) end
+
 local function sameColor(a, b)
 	return math.abs(a[1] - b[1]) < 1e-3 and math.abs(a[2] - b[2]) < 1e-3 and math.abs(a[3] - b[3]) < 1e-3
 end
@@ -194,7 +196,6 @@ local function freeColor(roster)
 	return copy(companies.PALETTE[#companies.PALETTE])
 end
 
-local function vec(api, color) return api.type.Vec3f.new(color[1], color[2], color[3]) end
 
 local function memberOf(roster, player, id)
 	return companies.of(roster, player).id == id
@@ -208,6 +209,37 @@ local function made(data, entities, field)
 	e = type(first) == "table" and first[1] or nil
 	if type(e) == "number" and e >= 0 then return e end
 	return nil
+end
+
+-- ------------------------------------------------------------- colours
+--
+-- A company's colour is its vehicles': with more than one company in the
+-- room, a vehicle it buys is painted in it (tpf3mp/apply.lua), and a new
+-- colour repaints all of them, so a glance tells whose a bus is. With one
+-- company the game's own colours stay, as in single player.
+
+-- Whether vehicles take their company's colour: more than one company.
+function companies.painting(roster)
+	return type(roster) == "table" and #companies.live(roster) > 1
+end
+
+-- Paints `vehicle` in company `c`'s colour.
+function companies.paintVehicle(c, vehicle, send, api)
+	local color = c and c.color
+	if type(color) ~= "table" or type(vehicle) ~= "number" then return end
+	send(api.cmd.makeEntitySetColorCmd(vehicle, vec(api, color)))
+end
+
+-- Repaints every vehicle company `c` owns, in the engine's own order (the
+-- same entities in the same order in every game). Returns how many.
+function companies.paintFleet(c, send, api)
+	local vehicles = {}
+	pcall(api.engine.forEachEntityWithComponent, function(e)
+		local owner = companies.ownerOf(api, e)
+		if owner == c.entity then vehicles[#vehicles + 1] = e end
+	end, api.type.ComponentType.TRANSPORT_VEHICLE)
+	for _, e in ipairs(vehicles) do companies.paintVehicle(c, e, send, api) end
+	return #vehicles
 end
 
 -- ------------------------------------------------------------- loans
@@ -388,6 +420,7 @@ function companies.run(roster, player, op, send, api)
 			return false, "a colour is { r, g, b }"
 		end
 		c.color = color
+		companies.paintFleet(c, send, api)
 		return true, nil, c.id
 	elseif kind == "Delete" then
 		-- Its last player dissolves it, when it owns nothing, and plays for

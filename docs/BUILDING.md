@@ -408,7 +408,7 @@ two-sided stop, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (7; 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
+`ACTION_SCHEMA_VERSION` (8; 7 had no company colour (`CompanyOp::Recolor`), 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
 vehicles and lines, 2 no edge kinds or removed nodes, 1 no road style). The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2

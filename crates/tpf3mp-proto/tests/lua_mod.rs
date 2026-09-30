@@ -526,7 +526,7 @@ fn with_the_hook_the_gui_links_once() {
     assert_eq!(
         logged,
         "the GUI is linked|the guard is on 4 command factories|\
-         the GUI's company cannot follow the player's: no api.engine.util.getPlayer"
+         the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)"
     );
     let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
     assert_eq!(worlds, 1, "the world's GUI started once");
@@ -4250,4 +4250,117 @@ fn what_a_player_does_is_booked_to_their_company() {
         .eval()
         .unwrap();
     assert_eq!(loan, "1105 1/12");
+}
+
+/// The GUI's "my company" is the player's: api.engine.util.getPlayer answers
+/// the company they play for, in the GUI state only, and the game's own
+/// answer for the room's first company.
+#[test]
+fn the_guis_company_is_the_one_the_player_plays_for() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        ME = string.rep("b", 64)
+        ROSTER = { next = 2, list = { { id = 0, entity = 25, name = "First", color = { 1, 0, 0 } },
+                                      { id = 1, entity = 901, name = "Rival", color = { 0, 0, 1 } } },
+                   members = {} }
+        -- The game's binding is a callable table (build 40408).
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = api.type.ComponentType or {}
+        api.type.ComponentType.GAME_SCRIPT = 7
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+        end
+        HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
+        "#,
+    )
+    .exec()
+    .unwrap();
+    run_frames(&lua, 20);
+    let first: i64 = lua
+        .load("return api.engine.util.getPlayer()")
+        .eval()
+        .unwrap();
+    assert_eq!(first, 25, "playing for the first company: the game's own");
+    lua.load("ROSTER.members = { { player = ME, company = 1 } }")
+        .exec()
+        .unwrap();
+    run_frames(&lua, 20);
+    let mine: i64 = lua
+        .load("return api.engine.util.getPlayer()")
+        .eval()
+        .unwrap();
+    assert_eq!(mine, 901, "playing for Rival: Rival");
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains("the GUI's company follows the player's"),
+        "{logged}"
+    );
+}
+
+/// With more than one company, vehicles wear their company's colour: a new
+/// colour repaints the company's fleet, and only its own.
+#[test]
+fn a_companys_colour_repaints_its_vehicles() {
+    let lua = gui();
+    lua.load(
+        r#"
+        COMP = { [2] = { [500] = { player = 901 }, [501] = { player = 25 }, [502] = { player = 901 } },
+                 [4] = { [500] = {}, [501] = {}, [502] = {} } }
+        api = {
+            engine = {
+                util = { getPlayer = function() return 25 end },
+                getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+                forEachEntityWithComponent = function(fn, kind)
+                    local keys = {}
+                    for e in pairs(COMP[kind] or {}) do keys[#keys + 1] = e end
+                    table.sort(keys)
+                    for _, e in ipairs(keys) do fn(e, COMP[kind][e]) end
+                end,
+            },
+            type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2, TRANSPORT_VEHICLE = 4 },
+                     Vec3f = { new = function(x, y, z) return { x, y, z } end } },
+            cmd = {
+                makeGameAddPlayerCmd = function(name, color) return { add = name } end,
+                makeEntitySetColorCmd = function(e, color) return { paint = e, color = color } end,
+            },
+        }
+        SENT, NEXT = {}, 900
+        function send(cmd)
+            SENT[#SENT + 1] = cmd
+            if cmd.add then NEXT = NEXT + 1 return { resultEntity = NEXT } end
+        end
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        A = string.rep("a", 64)
+        R = C.ensure(nil, api)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let painting: bool = lua.load("return C.painting(R)").eval().unwrap();
+    assert!(!painting, "one company: the game's own colours");
+    let painted: String = lua
+        .load(
+            "C.run(R, A, { Create = { name = 'Rival' } }, send, api) \
+             SENT = {} \
+             C.run(R, A, { Recolor = { company = 1, color = { r = 0, g = 0.5, b = 1 } } }, send, api) \
+             local out = {} for _, c in ipairs(SENT) do out[#out + 1] = c.paint .. ':' .. c.color[2] end \
+             return tostring(C.painting(R)) .. ' ' .. table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        painted, "true 500:0.5,502:0.5",
+        "Rival's two vehicles, not the first company's"
+    );
 }

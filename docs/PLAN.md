@@ -274,8 +274,10 @@ Dev B:
   with the same ID, on every game); boosting industry.
 - [ ] Greening and other new brushes, terraforming, terrain paint, the
   asset brush.
-- [ ] Companies: create, switch, dissolve; owners move with the company,
-  and no money is created in the switch.
+- [x] Companies: create, switch, dissolve; owners move with the company,
+  and no money is created in the switch. *Added (D21):* any split of the
+  room's players, loans for every company, colours, and the GUI showing
+  the player's own company.
 - [ ] Roadside stops and signals, the side included, never rebuilding an
   edge a line runs on.
 - [ ] The room's required mods from Mod Hub IDs; a missing mod is

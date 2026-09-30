@@ -246,20 +246,27 @@ function data()
 	-- company there (tpf3mp/apply.lua), whatever the GUI named.
 	local function followMyCompany()
 		local ok, util = pcall(function() return api.engine.util end)
-		if not ok or type(util) ~= "table" or type(util.getPlayer) ~= "function" then
-			link:log("the GUI's company cannot follow the player's: no api.engine.util.getPlayer")
+		if not ok then util = nil end
+		-- A function, or a callable table, as the game's bindings are
+		-- (build 40408: a table with a metatable).
+		local original = ok and util ~= nil and select(2, pcall(function() return util.getPlayer end)) or nil
+		if type(original) ~= "function" and type(original) ~= "table" and type(original) ~= "userdata" then
+			link:log("the GUI's company cannot follow the player's: no api.engine.util.getPlayer ("
+				.. type(util) .. ", " .. type(original) .. ")")
 			return
 		end
-		local original = util.getPlayer
-		local replaced = pcall(function()
+		local replaced, why = pcall(function()
 			util.getPlayer = function(...)
 				local mine = myCompany()
 				if mine then return mine end
 				return original(...)
 			end
 		end)
-		link:log(replaced and "the GUI's company follows the player's"
-			or "the GUI's company cannot follow the player's: api.engine.util is read-only")
+		-- A binding may take the assignment and keep its own function.
+		local took = replaced and select(2, pcall(function() return util.getPlayer ~= original end))
+		link:log(took == true and "the GUI's company follows the player's"
+			or ("the GUI's company cannot follow the player's: api.engine.util (" .. type(util)
+				.. ") keeps its getPlayer" .. (why and (": " .. tostring(why)) or "")))
 	end
 
 	local function start()
