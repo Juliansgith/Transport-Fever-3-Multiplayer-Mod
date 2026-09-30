@@ -1144,6 +1144,298 @@ and the room resynced a game whose simulation had not diverged.
 Seen on build 40408, two games through the deployed server: every lane
 read, and the room found no divergence over several checkpoints.
 
+### Seeds, as built
+
+Ported onto dev from `feat/steam-hook-on-dev` (971c48c, as merged in
+87f6b05). The targets are resolved by dev's profile resolution and handed
+over at their addresses in the process. **None of it has run in the game
+yet**: what follows marks what is tested only off the game.
+
+`crates/tpf3mp-hook/src/seeds.rs` is TF3's counterpart for the seeds the
+survey (`investigation/TPF3_RNG_2026-09-29.md`, items 5 to 7) found are
+not functions of the room's state. Three independent pieces, each failing
+closed on its own with its reason in `hook.log` (every line starts with
+`seeds:`), installed by `install.rs::install_inner` after the step gate,
+the build tools and the main menu's load.
+All three are Windows x64 only, like the step gate.
+
+**1. The game scripts' `math.random`, reseeded per step (live).** The
+engine's `math.random` is a `boost::mt19937` per `lua::State`, seeded 5489
+at creation and never saved, so a replica that joined draws a different
+stream from one that ran since the start (`reforestation.script.tl:54`
+draws its proposal seed from it). The hook reseeds every **game-script
+state** from the room's step before each update:
+
+- *Which states.* TF3 registers its `api.*` in three kinds of state
+  through one master registrar (`scripting::RegisterApi`): the GUI state (from `UI::CMenuUI::SwitchToGameUI`, main
+  thread; the mod's own), the react UI roots (main thread), and the
+  **game-script states**, two per `CGame` (one per engine), each through
+  `CGame::CGame lambda_3::operator()(this, TypeRegistry&, lua::State& r8,
+  bool r9b, weak_ptr<bool const>)` at `0x11c6c0`, the new profile target
+  `CGame::CGame::lambda_3`. The hook detours that lambda and marks the
+  state it registers (`lua_State*` at `lua::State+0`, read through a
+  readable check; its `bool` is logged, it tells the two apart); only
+  marked states are reseeded. The GUI state is never marked, and its
+  scripts draw nothing anyway (survey section 6: no `math.random` under
+  `content/gui/**`). The react roots are never touched. A third mark, or a pointer marked twice,
+  starts a new game's group and retires the old one for good (a torn-down
+  game's state is a dangling pointer), `GAME_SCRIPT_STATES_PER_GAME`.
+- *Which thread, when.* `GameSim::Step`'s update loop applies the
+  update's commands and then calls `ecs::Engine::Update(engine, float dt)`
+  (`0x2bb8a50`, its only caller, at `0x15955c`), which runs every system's
+  `Update` (vtable slot 11, `dt` in `xmm3`), `ecs::GameScriptSystem::Update`
+  among them. The hook detours `ecs::Engine::Update` and reseeds there: on
+  the simulation thread, inside the game's own step, before that update's
+  scripts run, while the states are idle. It is **per update, not per call
+  of the step**: one call runs a batch of released steps, batch sizes
+  differ per machine, and a reseed per batch would itself diverge the
+  replicas. The driver arms the batch (`step::StepDriver::on_step` calls
+  `seeds::before_updates(next_step, updates)` right before running the
+  game's step; `next_step` is the loaded world's step, then one past each
+  step reported), and the detour takes one step per call while the batch
+  lasts. An update beyond the batch, or one before any batch is armed
+  (before the room's world, at the game's own speed, on the paused path),
+  reseeds nothing; the next arm logs a mismatch between the calls seen and
+  the updates released, once, as the sign the "one `Engine::Update` per
+  update" reading is wrong.
+- *The seed.* `seeds::seed_for(step, salt)`: `splitmix64(step ^ (salt <<
+  32))` folded to `1..=0x7fff_ffff`, `salt` 0 for the game-script states.
+  Both states get the same seed (they run the same scripts on the two
+  engines, and their registration order is not proven equal on every
+  replica). Pinned in a test: step 1 gives 1216681719, step 50 gives
+  1568932195.
+- *The call.* `math.randomseed(seed)` through Lua C API pointers the
+  seeds module resolves from the profile itself (`seeds::SeedApi`: the
+  link to the mod calls no Lua code, so its API has no `pcall`):
+  `lua_rawgeti(REGISTRY, LUA_RIDX_GLOBALS)` for the globals table in 5.2,
+  `lua_getfield` for `math` and `randomseed`, `lua_pushnumber`,
+  `lua_pcallk`, stack restored after; a profile without one of them leaves
+  the reseed off, and `hook.log` names it; not the native `lua::math_randomseed`
+  lambda, whose calling convention is the engine's binding layer's. A state
+  where `math.randomseed` is missing or raises is logged and never reseeded
+  again (the same failure on every replica, from the same game code).
+- *The detours* are assembly thunks (`#[unsafe(naked)]`): they save the
+  four argument registers and `xmm0`-`xmm3`, call the Rust side, restore
+  and jump to the trampoline with the stack untouched, so no target's
+  signature is assumed; before the trampoline is published a thunk returns
+  to the caller without running the original.
+
+**2. `TownDevelopAt` (gated off).** The applier (`TownDevelopAt::Apply`,
+`0x9dedf0`) seeds its town developer's `minstd_rand` from the CRT `rand()`,
+which the game seeds from the wall clock. The player's
+`makeTownDevelopAtCmd` is refused in a room already (the mod's `guard.lua`,
+"The player's commands"). The alternative for
+later is a thunk on the applier that calls the CRT's `srand` (resolved
+with `GetProcAddress` from `api-ms-win-crt-utility-l1-1-0.dll`, then
+`ucrtbase.dll`: the UCRT keeps `rand()`'s state per thread, and the
+applier's thread is the caller's) with `seed_for(step, "town" + n)`, `n`
+the command's number within the step, right before the original. It is
+behind `seeds::TOWN_DEVELOP_RESEED = false`: flip it once a room has
+shown in the `t` lane that a reseeded `TownDevelopAt` develops the same
+town everywhere. Whether `srand` resolved is logged either way.
+
+**3. The CRT math dispatch (measurement).** The UCRT picks FMA3 or SSE2
+bodies for `sinf`, `cosf`, `tanf`, `asinf`, `acosf`, `atan2f`, `expf`,
+`logf`, `powf`, `fmodf` and the double `sin`, `cos`, `tan`, `exp`, `log`,
+`pow`, `atan2`, `fmod` at start-up from `__isa_available` (`sqrtf`,
+`floorf`, `ceilf` are exact either way). At bootstrap the hook logs one
+`cpu:` line: vendor, family/model/stepping, the `cpuid` bits the CRT's rule
+reads (SSE4.2, FMA, MOVBE, AVX, F16C, BMI1, AVX2, BMI2, AVX-512 F/CD/BW/DQ/
+VL), `XCR0`, the `__isa_available` level those bits imply by the published
+rule (an estimate, not a read of the variable: it is not exported and the
+survey named no target for it), and whether the FMA3 bodies are expected
+(level 4, AVX2, and up). **The plan:** run the two-replica determinism
+probe (DAY_ONE section 4, `tools/probe/tf3`) once on an Intel and an AMD
+machine whose `cpu:` lines differ in the FMA3 answer, and once on two
+machines whose lines agree. A split that appears only in the first pair,
+in the `p` (vehicle positions) and `e` (edge geometry) lanes first (the
+movement and path code is where `sinf`/`cosf`/`atan2f` run every step)
+and later in `n` and `t`, is the CRT; the same split in the second pair is
+not. If it is the CRT, the fix is a detour of those imports to one body
+(the survey's known technique, not built).
+
+**Tested without the game** (`seeds::tests`): the
+seed derivation (range, purity, the pinned values), the batch arithmetic
+(one step per update, the mismatch report, disarming), the state grouping
+and retirement, the CRT level rule on synthetic CPUs and the running CPU's
+report, the driver's step counter, and the reseed's call sequence against
+the embedded Lua 5.1: the exact seed reaches `math.randomseed`, and a
+missing `math` or a raising `randomseed` refuses with the stack restored. **Not tested without the game:** the
+three thunks against the real targets (that `CGame::CGame::lambda_3` runs
+twice with `lua::State&` in `r8`, that one `ecs::Engine::Update` is one
+released update, that nothing else runs a game-script state while the
+simulation thread is between updates), the 5.2 globals path, and whether
+`srand` resolves in the game's process. The first room's `hook.log` says:
+the two `seeds: game-script Lua state ... registered` lines, the roster
+line at the first armed batch, `seeds: step n: math.randomseed(...)` for
+the first three steps and every thousandth, and no mismatch line.
+
+### The order fixes, as built
+
+Ported with the seeds, from the same commits; **not run in the game yet**
+either.
+
+`crates/tpf3mp-hook/src/order.rs` ports the four order dependencies to
+TF3 Steam build 40408, from the static survey
+[investigation/TPF3_RNG_2026-09-29.md](../investigation/TPF3_RNG_2026-09-29.md)
+("What must change for lockstep"). `install.rs::install_inner` calls
+`order::install` once the step gate is in; each site is its own fix,
+installed on its own and failing closed on its own: its profile targets
+must resolve (all `required = false`, so a build that lacks one loses the
+fix, not the profile), the bytes at the site must be exactly what the fix
+expects (the resolver checks the target's `prologue`, and the splice
+reads and compares them again before it writes), and every read the hook
+makes on the game's thread goes through `image::readable`. A shape the
+hook does not recognise is refused for that step, said once per reason in
+hook.log, and the engine's own order stands; a panic on the game's thread
+switches that fix off for the rest of the game. hook.log carries one
+`order fix <name>: installed (...)` or `order fix <name>: off, <why>`
+line per fix. Nothing here has run in the game yet: the sites were read
+statically with `tools/tpfre`, the sort and stub logic is unit-tested, and
+the two mid-function hooks are exercised through their real stolen bytes
+on hand-written functions in the test binary.
+
+| survey item | fix | site (RVA) | what it does |
+|---|---|---|---|
+| 1, land-vehicle reservation order | `land-vehicle-order` | `ecs::LandVehicleMoveSystem::Update2/shuffle` (`0xac1b70`) | sorts the vector of vehicles that want track by entity id before the engine's seeded shuffle |
+| 2, ship and aircraft claim order | `order-measure` | `EdgeReservationManager::Reserve` (`0x255c2e0`), `Reserve_simple` (`0x255c160`) | measured only, when `TPF3MP_HOOK_MEASURE_ORDER` is set |
+| 3, road edge entries | `order-measure` | `EdgeUseManager::Add` (`0x255e940`), `AddRange` (`0x255cc70`) | measured only; the fix waits for a clean site (plan below) |
+| 4, vehicles at a stop | `vehicles-at-stop-order` | `ecs::SimEntityAtTerminalSystem::Update/vehicles at stop` (`0xb0e35c`) | sorts the vehicles at a line stop by entity id before the boarding loop |
+
+**The mid-function splice** (`tpf3mp_hookcore::detour::Splice`) is what
+the two fixes hook with. A whole-function detour cannot reach a point in
+the middle of `Update2`, so the splice replaces `steal` bytes at the site
+(whole instructions, at least five) with a `jmp rel32` into a stub
+allocated near it (`alloc_near`, as `CallRedirect`'s). The stub is
+hand-assembled and pure (`splice_stub`, checked byte for byte in a test):
+it pushes every general-purpose register and the flags, which form a
+`SavedRegs` block on the game's stack, aligns the stack, saves the
+volatile `xmm0`-`xmm5`, calls the fix's `extern "system" fn(*mut
+SavedRegs)` with the block, restores everything, runs the stolen bytes
+verbatim and jumps back to the instruction after them with an absolute
+jump. The register contract is therefore: the hook sees the site's every
+register, may change one through the block (the tests do), and the
+function sees nothing else changed but memory. The stolen bytes are
+decoded with iced-x86 and refused if they branch, call, return, end inside
+an instruction or address memory relative to `rip` (they run at another
+address). The caller states the bytes it expects at the site, and nothing
+may branch into the stolen bytes past their first (established with
+`tpfre q xrefs` and noted in the profile). `xmm6`-`xmm15` are callee-saved,
+so the hook keeps them as any function would; the upper `ymm` halves are
+volatile at every call, and both sites follow a `call` with no vector
+instruction between (the disassembly), so nothing lives in them there.
+
+**Land-vehicle reservation order** (the survey's item 1, CONFIRMED). In
+`ecs::LandVehicleMoveSystem::Update2` (`0xac0f90`) the engine walks its
+family's node list (20-byte records: the entity id, then four component
+indices) and pushes an 8-byte `{int32 nodeIndex, float priority}` entry
+for each vehicle that wants track into a vector at `[rbp-0x20]..[rbp-0x18]`
+(`0xac1a50..0xac1abe`), reads `GameTime+0x3c` and folds it into a
+`minstd_rand` seed (`0xac1b15..0xac1b4c`), Fisher-Yates-shuffles the
+vector (`0xac1b70..0xac1c63`), **stable-sorts it by the float**
+(`0xac1c6c..0xac1d62`: an insertion sort under 33 entries, otherwise
+`std::stable_sort` with a temporary buffer; the survey had not seen this
+step), and then reserves track in that order (`Reserve` at `0xac1f20`).
+So the shuffle only decides the order among equal priorities, and it is
+applied to positions in node-list order, which two replicas can hold
+differently. The fix splices in at `0xac1b70`, the first instruction of
+the shuffle (`mov r13, [rbp-0x20]; mov rsi, [rbp-0x18]; cmp r13, rsi`;
+the first two, 8 bytes, are stolen), reads the vector through `rbp`,
+reads each entry's entity id the way the engine's own reservation loop
+does at `0xac1d72` (`this` at `[rbp-0x80]`, the node-list holder at
+`this+8`, the records at `[holder]..[holder+8]`, the record at
+`records + nodeIndex*20`, the id at its first dword; that walk is the
+profile target `.../records`, and the fix refuses unless it resolves a
+few hundred bytes after the site), and sorts the entries in place by that
+id, each entry whole. The engine's seed, shuffle and priority sort then
+run unchanged on a vector whose order is a pure function of the entity set,
+so every replica shuffles the same sequence with the same seed. TPF2's
+name key and seeded jitter (`trainorder.h`) are left out: the engine's own
+shuffle already keeps a fixed priority from starving anyone, and TF3's ids
+are lockstep state (the free-id queue is saved, HOTJOIN_ORDER.md). A
+duplicate id, an index past the records, or bounds that are not whole
+entries is a refusal. With `TPF3MP_HOOK_MEASURE_ORDER` set the ids in the
+engine's order are hashed into the `land` lane, so two replicas' logs
+show whether their node lists agreed before the sort (`reordered` counts
+how often they were out of order).
+
+**Vehicles at a stop** (item 4, TPF2's `vehstop`, TERMINAL_WAIT_ORDER.md).
+`ecs::SimEntityAtTerminalSystem::Update` (`0xb0db00`) asks
+`TransportVehicleSystem` for the vector of vehicles standing at each
+`(line, stopIndex)` (`0xb86510`, name ours: it hashes the pair into the
+system data's phmap at `+0x90` and returns `&slot.vector`, or a static
+empty vector) and hands the waiting cargo and people to those vehicles in
+the vector's order with one running index, exactly TPF2's shape. The
+vector is append order while the game runs (its owner's `EntityAdded`
+adds after a `std::find`, the assert string at `0xb8433a`) and load order
+after a load, so a retained and a loaded replica load two trucks at one
+stop differently. The fix splices in at `0xb0e35c`, the `mov
+[rsp+0x248], rax` right after the getter's call (the profile target
+resolves the site by the call and the two instructions after it; the fix
+also checks that the `call rel32` before the site reaches the getter
+target), and sorts the `std::vector<Entity>` `rax` names by id in place.
+Its `vehstop` lane hashes the order found. What is **not** ported: the
+unload deques (TPF2's `unload` in `SimEntityAtVehicleSystem`), which were
+not located in TF3 in this pass; measure the `vehstop` lane first.
+
+**Ship and aircraft claim order** (item 2) is measured, not changed, for
+the reason TPF2's `moveorder.inl` gives: `ShipMoveSystem::Update2`
+(`0xaf6120`) and `AircraftMoveSystem::Update2` (`0xa83a40`) index the
+family's node vector directly, and permuting an engine-owned list blind is
+not safe. With `TPF3MP_HOOK_MEASURE_ORDER` set, both overloads of
+`transport::EdgeReservationManager::Reserve(this, engine, typeIndex,
+entity, &path, from, to)` (assert-named; every land, ship and aircraft
+claim goes through them) are detoured whole, and each claim's entity and
+the twelve bytes of each edge of `path[from..to)` go into the `claims`
+lane. That lane is the direct proof for items 1 and 2 together: two
+replicas whose `claims` hashes agree at every line let the same vehicles
+through in the same order. If it splits with the land-vehicle fix on,
+the ships and aircraft are next, and the fix is the node-list canon
+(TPF2's `step` site, `family_canon.h`: every family's node list in entity
+order at each `ecs::Engine::Update`, `0x2bb8a50`).
+
+**Road edge entries** (item 3) is measured, not changed. TF3's
+`EdgeUseManager` keeps 20-byte entries per edge (`{int32 vehicleEntity,
+int32 component, float back, float front, bool forward}`), appended by
+`Add` (`0x255e940`, persons: its one caller is `PersonMoveSystem`) and by
+`AddRange` (`0x255cc70`, vehicles: 2.3 KB, with its own inlined push), and
+consumed by two first-minimum searches (`0x255f340`, `0x255ef60`: `vcomiss;
+jbe`, the first entry wins an exact tie) and `GetNext`. TPF2's patch
+re-sorted the entries after its single `Add`; here there are two appenders
+and the range one's inlined push is not a clean site, and whether anything
+holds a position into `entries` (`GetPos01sDEBUG`, `RemoveRange` walk
+them) was not established. So the `appends` lane hashes every `Add`
+(edge id, entity, component, bounds) and every `AddRange` (its raw
+integer arguments and the edges vector's bytes) per update. **Plan**: if
+the `p` lane or the `appends` lane splits with vehicles queued at stops,
+splice in after each appender's push (`Add`'s at `0x255ea6d`, the `add
+qword ptr [rcx+8], 0x14`; `AddRange`'s to be located) or detour
+`GetOrAddEdgeData`'s callers, and keep each edge's entries in entity
+order, after reading `0x25605b0`..`0x2561950` for held positions.
+
+**The measurement** (`order::measure`). Off, nothing is hooked. With
+`TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
+inherits it; a number above 1 is the interval, default 100 updates), five
+whole-function detours install: `ecs::Engine::Update` (`0x2bb8a50`, the
+per-step engine advance, one caller: `GameSim::Step`'s iteration loop;
+its `dt` rides in `xmm1`, which the detour's float parameter forwards)
+counts updates and closes each one's lanes, and the four functions above
+feed them. Every `interval` updates one line goes to hook.log:
+
+```
+order measure: updates 201..=300: claims=<fnv64>/<n> appends=<fnv64>/<n> land=<fnv64>/<calls> reordered <n> vehstop=<fnv64>/<calls> reordered <n>
+```
+
+Updates are numbered from the room's step once the step driver has
+loaded the room's world (`step.rs` tells `measure::room_step` the next
+step; before that, from the hook's start), on the survey's reading that
+one `Engine::Update` call is one update (INFERRED, to be confirmed by
+the numbers agreeing with the room's). Two replicas' lines can be diffed
+directly; a lane that differs names the container. The hashes are FNV-1a
+64 over the raw values, so an entity id that legitimately differs shows
+too; TF3's ids are expected equal (the survey), and the `reordered`
+counts say whether the sorts changed anything.
+
 ## Release-day procedure: adding a target for a new build
 
 The first TF3 build's targets are already located (RVAs, RTTI/source

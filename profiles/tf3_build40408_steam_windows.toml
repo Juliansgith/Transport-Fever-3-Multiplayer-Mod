@@ -345,3 +345,131 @@ signature = "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 50 FB F
 offset = 0
 prologue = "48 89 5C 24 20 55 56 57 41 54 41 55 41 56"
 required = false
+
+# The seeds and the order fixes (crates/tpf3mp-hook/src/seeds.rs, order.rs;
+# docs/HOOKS.md, "Seeds, as built" and "The order fixes, as built"). All
+# optional: a build without one loses that piece, not the profile.
+
+# The land-vehicle order fix's site (crates/tpf3mp-hook/src/order.rs, docs/HOOKS.md
+# "The order fixes, as built"): inside Update2, right after the minstd seed is
+# fixed up (`cmove r8d, r12d` ... the mask loop) and right before the engine's
+# Fisher-Yates reads the vector it shuffles: `mov r13, [rbp-0x20]` (begin),
+# `mov rsi, [rbp-0x18]` (end), `cmp r13, rsi`. The hook sorts that vector by
+# entity id here. Site 0xac1b70 = signature start + 40; nothing branches into
+# 0xac1b71..0xac1b7b (tpfre xrefs).
+[[target]]
+name = "ecs::LandVehicleMoveSystem::Update2/shuffle"
+signature = "45 0F 44 C4 41 BE 40 00 00 00 49 C7 C3 FF FF FF FF 0F 1F 80 00 00 00 00 4D 8D 76 FF 49 D1 EB 49 81 FB FD FF FF 7F 77 F0 4C 8B 6D E0 48 8B 75 E8 4C 3B EE"
+offset = 40
+prologue = "4C 8B 6D E0 48 8B 75 E8 4C 3B EE"
+required = false
+
+# The engine's own walk from an entry of that vector to its node record, at the
+# head of the reservation loop (0xac1d72): `mov r8, [rbp-0x80]` (this), `mov
+# rdx, [r8+8]` (the node-list holder), `movsxd rax, [r13]` (the entry's node
+# index), `lea rcx, [rax+rax*4]`, `mov rax, [rdx]` (the records), `lea r12,
+# [rax+rcx*4]` (record = records + index*20). The order fix reads the entity id
+# the same way and refuses unless this shape is present.
+[[target]]
+name = "ecs::LandVehicleMoveSystem::Update2/records"
+signature = "4C 8B 45 80 49 8B 50 08 49 63 45 00 48 8D 0C 80 48 8B 02 4C 8D 24 88 49 8B 50 18"
+offset = 0
+prologue = "4C 8B 45 80 49 8B 50 08 49 63 45 00 48 8D 0C 80 48 8B 02 4C 8D 24 88"
+required = false
+
+# The vehicles-at-a-stop order fix's site (order.rs): inside Update, right after
+# the call of TransportVehicleSystem's (line, stopIndex) -> &vector<Entity>
+# getter (below), `mov [rsp+0x248], rax` keeps the vector for the boarding
+# loop; the hook sorts it by entity id here. Site 0xb0e35c = signature start +
+# 9; nothing branches into 0xb0e35d..0xb0e363 (tpfre xrefs). TPF2's `vehstop`
+# site (0xa820f4) had the same shape.
+[[target]]
+name = "ecs::SimEntityAtTerminalSystem::Update/vehicles at stop"
+signature = "49 8B 4F 28 E8 ?? ?? ?? ?? 48 89 84 24 48 02 00 00 41 8B 7F 50 48 8B 4C 24 58"
+offset = 9
+prologue = "48 89 84 24 48 02 00 00 41 8B 7F 50"
+required = false
+
+# The getter that call reaches (name ours): hashes (line, stopIndex) into the
+# system data's phmap (+0x90) and returns &slot.vector, or a static empty
+# vector when the key is missing. The fix checks the call before its site
+# targets this. 0xb86510
+[[target]]
+name = "ecs::TransportVehicleSystem::GetVehiclesAtLineStop"
+signature = "48 89 5C 24 10 57 48 83 EC 30 48 8B F9 89 54 24 40"
+offset = 0
+prologue = "48 89 5C 24 10 57 48 83 EC 30 48 8B F9 89 54 24 40"
+required = false
+
+# transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
+[[target]]
+name = "transport::EdgeReservationManager::Reserve"
+signature = "44 89 4C 24 20 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 58 FF FF FF"
+offset = 0
+prologue = "44 89 4C 24 20 55 53 56 57 41 54 41 55 41 56"
+required = false
+
+# The shorter Reserve overload, called from the move systems' vf4/vf9 (assert-named). 0x255c160
+[[target]]
+name = "transport::EdgeReservationManager::Reserve_simple"
+signature = "48 89 5C 24 18 55 57 41 54 41 55 41 57 48 83 EC 60"
+offset = 0
+prologue = "48 89 5C 24 18 55 57 41 54 41 55 41 57 48 83 EC 60"
+required = false
+
+# transport::EdgeUseManager::Add (assert-named): a person's entry on a road edge
+# (rcx = this, rdx = &EdgeId, r8d = entity, r9d = component index, then the
+# bounds); its one caller is PersonMoveSystem. Measured, not changed (survey
+# item 3; order.rs). 0x255e940
+[[target]]
+name = "transport::EdgeUseManager::Add"
+signature = "48 89 5C 24 18 48 89 74 24 20 55 57 41 56 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 38"
+offset = 0
+prologue = "48 89 5C 24 18 48 89 74 24 20 55 57 41 56"
+required = false
+
+# transport::EdgeUseManager::AddRange (assert-named): a vehicle's entries on the
+# edges of its move path (rcx = this, r9 = &edges vector, one caller). Measured,
+# not changed (survey item 3). 0x255cc70
+[[target]]
+name = "transport::EdgeUseManager::AddRange"
+signature = "48 8B C4 48 89 58 10 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 08 FF FF FF 48 81 EC C0 01 00 00 C5 F8 29 70 B8 C5 F8 29 78 A8 C5 78 29 40 98 C5 78 29 48 88 C5 78 29 90 78 FF FF FF C5 78 29 98 68 FF FF FF 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 58"
+offset = 0
+prologue = "48 8B C4 48 89 58 10 55 56 57 41 54 41 55"
+required = false
+
+# The per-step engine advance GameSim::Step calls for each sub-step (recon: sub_2bb8a50(engine, dt); name ours). 0x2bb8a50
+[[target]]
+name = "ecs::Engine::Update"
+signature = "40 56 57 41 56 48 83 EC 40 48 8B 79 30 48 8B F1"
+offset = 0
+prologue = "40 56 57 41 56 48 83 EC 40 48 8B 79 30 48 8B F1"
+required = false
+
+# CGame::CGame lambda_3::operator()(this, TypeRegistry& rdx, lua::State& r8, bool r9b, weak_ptr<bool const>):
+# the per-game-script-state registrar, called twice per CGame (once per game-script
+# state), each call passing its lua::State& (lua_State* at +0) on to scripting::RegisterApi.
+# The one caller of RegisterApi that is a game-script state's: the seeds module marks
+# the states it sees here as the ones the per-step math.random reseed covers. (rva 0x11c6c0)
+[[target]]
+name = "CGame::CGame::lambda_3"
+signature = "48 89 5C 24 08 48 89 7C 24 20 55 48 8D AC 24 E0 FD FF FF"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 7C 24 20 55 48 8D AC 24 E0 FD FF FF"
+required = false
+
+# The TownDevelopAt command applier seeds its minstd from the CRT rand() (wall clock): refuse or reseed (item 5). 0x9dedf0
+[[target]]
+name = "TownDevelopAt::Apply"
+signature = "48 8B C4 48 89 58 18 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 48 FC FF FF 48 81 EC 80 04 00 00 C5 F8 29 70 B8 C5 F8 29 78 A8 C5 78 29 40 98"
+offset = 0
+prologue = "48 8B C4 48 89 58 18 55 56 57 41 54 41 55"
+required = false
+
+# Lua 5.2 C API, address only (never detoured). (rva 0x2fbdb90)
+[[target]]
+name = "lua_getfield"
+signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 4D 8B D0 48 8B F1 E8 ?? ?? ?? ?? 48 8B 5E 10 49 8B D2"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
+required = false

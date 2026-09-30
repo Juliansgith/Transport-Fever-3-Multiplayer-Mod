@@ -52,6 +52,28 @@ const TARGETS: &[(&str, u64)] = &[
     ("luaL_ref", 0x2fb40b0),
     ("lua_load", 0x2fbdf70),
     ("RegisterAppUsertypes", 0xdc5fa0),
+    // The seeds and the order fixes (crates/tpf3mp-hook/src/seeds.rs, order.rs).
+    ("ecs::LandVehicleMoveSystem::Update2/shuffle", 0xac1b70),
+    ("ecs::LandVehicleMoveSystem::Update2/records", 0xac1d72),
+    (
+        "ecs::SimEntityAtTerminalSystem::Update/vehicles at stop",
+        0xb0e35c,
+    ),
+    (
+        "ecs::TransportVehicleSystem::GetVehiclesAtLineStop",
+        0xb86510,
+    ),
+    ("transport::EdgeReservationManager::Reserve", 0x255c2e0),
+    (
+        "transport::EdgeReservationManager::Reserve_simple",
+        0x255c160,
+    ),
+    ("transport::EdgeUseManager::Add", 0x255e940),
+    ("transport::EdgeUseManager::AddRange", 0x255cc70),
+    ("ecs::Engine::Update", 0x2bb8a50),
+    ("CGame::CGame::lambda_3", 0x11c6c0),
+    ("TownDevelopAt::Apply", 0x9dedf0),
+    ("lua_getfield", 0x2fbdb90),
 ];
 
 #[test]

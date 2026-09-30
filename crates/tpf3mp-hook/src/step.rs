@@ -407,6 +407,9 @@ pub struct StepDriver<G> {
     at_menu: bool,
     /// What the menu last said it cannot do, so it is logged once.
     menu_said: Option<&'static str>,
+    /// The room's step the next update runs, once a world is loaded: what
+    /// the per-update reseed ([`crate::seeds`]) numbers updates by.
+    next_step: Option<u64>,
     /// Lines for the hook's log.
     log: Vec<String>,
 }
@@ -429,6 +432,7 @@ impl<G: RoomGate> StepDriver<G> {
             menus: 0,
             at_menu: false,
             menu_said: None,
+            next_step: None,
             log: Vec::new(),
         }
     }
@@ -491,6 +495,11 @@ impl<G: RoomGate> StepDriver<G> {
         }
     }
 
+    /// The room's step the next update runs, once a world is loaded.
+    pub fn next_step(&self) -> Option<u64> {
+        self.next_step
+    }
+
     pub fn phase(&self) -> &Phase {
         &self.phase
     }
@@ -547,6 +556,13 @@ impl<G: RoomGate> StepDriver<G> {
             actions: &actions,
             lanes: runs && self.lanes_due,
         };
+        // The per-update reseed numbers exactly the updates this call runs
+        // for the room; anything else disarms it.
+        let released = match (self.phase == Phase::Running, updates) {
+            (true, Updates::Exactly(steps)) if steps > 0 => self.next_step,
+            _ => None,
+        };
+        crate::seeds::before_updates(released, updates);
         match run(&batch) {
             Ok(lanes) => {
                 if batch.lanes {
@@ -574,9 +590,12 @@ impl<G: RoomGate> StepDriver<G> {
                 }
                 if let Updates::Exactly(steps) = updates {
                     for _ in 0..steps {
-                        if let Err(error) = self.gate.after_step(&mut self.game) {
-                            self.hold(format!("reporting a step: {error}"));
-                            break;
+                        match self.gate.after_step(&mut self.game) {
+                            Ok(step) => self.next_step = Some(step + 1),
+                            Err(error) => {
+                                self.hold(format!("reporting a step: {error}"));
+                                break;
+                            }
                         }
                     }
                 }
@@ -683,6 +702,7 @@ impl<G: RoomGate> StepDriver<G> {
                             "playing the room's world from step {}",
                             load.next_step
                         ));
+                        self.world_loaded(load.next_step);
                     }
                     Some(file) => {
                         if !self.load(&file, load.next_step, LoadFrom::Gui) {
@@ -836,7 +856,15 @@ impl<G: RoomGate> StepDriver<G> {
         self.log.push(format!(
             "playing the room's world from its save, from step {next_step}"
         ));
+        self.world_loaded(next_step);
         true
+    }
+
+    /// The room's world is loaded and runs `next_step` next: the reseed and
+    /// the order measurement number updates by the room's steps from here.
+    fn world_loaded(&mut self, next_step: u64) {
+        self.next_step = Some(next_step);
+        crate::order::measure::room_step(next_step);
     }
 
     /// At the game's main menu, with no world up, on each of the menu's
@@ -1766,6 +1794,31 @@ pub(crate) mod tests {
                 .iter()
                 .any(|line| line.contains("from its save, from step 101"))
         );
+    }
+
+    /// The driver knows the room's step the next update runs, from the
+    /// loaded world on: what the per-update reseed numbers updates by.
+    #[test]
+    fn the_driver_counts_the_rooms_steps_from_the_loaded_world() {
+        let mut script = Script::default();
+        script.begin.push_back(None);
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        let (mut d, mut calls) = driver(script);
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert_eq!(d.next_step(), None, "no world of the room's yet");
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(2));
+        assert_eq!(d.next_step(), Some(3), "loaded at 1, two steps ran");
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert_eq!(d.next_step(), Some(3), "a paused call runs no step");
     }
 
     #[test]

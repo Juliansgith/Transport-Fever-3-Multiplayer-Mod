@@ -45,14 +45,53 @@ pub enum DetourError {
     Alloc(i32),
 }
 
+/// The registers a [`Splice`] hands its hook: every general-purpose
+/// register and the flags as they were at the spliced site, in the order the
+/// stub pushed them (the last push is first in memory). The hook may change
+/// a field; the stub restores the registers from this block, so the change
+/// reaches the code after the site. The block lies on the game's own stack:
+/// the site's `rsp` is [`SavedRegs::rsp`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SavedRegs {
+    pub rflags: u64,
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rbp: u64,
+    pub rbx: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rax: u64,
+}
+
+impl SavedRegs {
+    /// The stack pointer the spliced code had: the block sits right below it.
+    pub fn rsp(this: *const Self) -> u64 {
+        this as u64 + core::mem::size_of::<Self>() as u64
+    }
+}
+
+/// What a [`Splice`] calls at its site, with the site's registers. It runs
+/// on the thread that reached the site, with a 16-byte-aligned stack and
+/// the platform's C calling convention; it must not unwind.
+pub type SpliceHook = unsafe extern "system" fn(regs: *mut SavedRegs);
+
 #[cfg(target_arch = "x86_64")]
 mod sys;
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 #[cfg(target_arch = "x86_64")]
-pub use x86_64::{CallRedirect, InlineDetour};
+pub use x86_64::{CallRedirect, InlineDetour, Splice};
 
 #[cfg(not(target_arch = "x86_64"))]
 mod unsupported;
 #[cfg(not(target_arch = "x86_64"))]
-pub use unsupported::{CallRedirect, InlineDetour};
+pub use unsupported::{CallRedirect, InlineDetour, Splice};

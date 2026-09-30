@@ -462,6 +462,18 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     match unsafe { crate::menu::install(&at, detour_forever) } {
         Ok(line) | Err(line) => log_line(&line),
     }
+    // The seeds and the order fixes (docs/HOOKS.md, "Seeds, as built" and
+    // "The order fixes, as built") take the targets at their addresses in
+    // this process; each piece installs, and fails closed, on its own, and
+    // logs its own outcome.
+    let mut absolute = resolved.clone();
+    for target in &mut absolute.targets {
+        target.address = target.address.saturating_add(base as u64);
+    }
+    crate::seeds::install(&absolute);
+    for outcome in crate::order::install(&absolute) {
+        log_line(&outcome.to_string());
+    }
     Ok(step_rva)
 }
 

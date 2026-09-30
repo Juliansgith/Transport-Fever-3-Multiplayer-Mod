@@ -7,7 +7,7 @@ use iced_x86::{
     InstructionBlock,
 };
 
-use super::{DetourError, sys};
+use super::{DetourError, SpliceHook, sys};
 
 /// `FF 25 00000000` + an absolute 8-byte target: `jmp [rip+0]`, reachable
 /// anywhere in the address space.
@@ -336,8 +336,261 @@ impl Drop for CallRedirect {
     }
 }
 
+/// The most bytes a splice steals: whole instructions, verified byte for
+/// byte, none of which may be relocated.
+const SPLICE_MAX_STEAL: usize = 32;
+
+/// A hook in the middle of a function: at `site`, a `jmp rel32` into a stub
+/// near it that saves every general-purpose register and the flags, calls
+/// a [`SpliceHook`] with them (as a [`SavedRegs`] block on the stack), puts
+/// them back, runs the stolen instructions verbatim and jumps back to the
+/// instruction after them. The volatile `xmm0`-`xmm5` are saved too, so the
+/// only thing the function can see is what the hook did to memory, or to
+/// the block. Dropping it (or [`Splice::detach`]) restores the site.
+///
+/// The stolen instructions run unchanged at another address, so they must
+/// not depend on their own: a RIP-relative operand, a branch, a call or a
+/// return in them is refused. The caller knows the site's register and
+/// frame state (that is the point of a mid-function hook) and states the
+/// bytes it expects there; a site whose bytes differ is refused and left
+/// alone. Nothing may branch into the stolen bytes past their first, which
+/// the caller establishes from the disassembly.
+pub struct Splice {
+    site: *mut u8,
+    original: Vec<u8>,
+    _stub: sys::ExecBuffer,
+    active: bool,
+}
+
+impl Splice {
+    /// Splices `hook` in at `site`, whose next `expected.len()` bytes must
+    /// be exactly `expected`; the first `steal` of them (at least 5, whole
+    /// instructions) are replaced by the jump and run from the stub.
+    ///
+    /// # Safety
+    ///
+    /// - `site` must point at an instruction boundary in this process's
+    ///   code, and no thread may execute the site's bytes during this call.
+    /// - `hook` must uphold [`SpliceHook`]'s contract: it never unwinds, and
+    ///   what it changes through the block is what the code after the site
+    ///   can bear.
+    /// - Nothing branches into `site+1..site+steal`.
+    pub unsafe fn install(
+        site: *mut u8,
+        expected: &[u8],
+        steal: usize,
+        hook: SpliceHook,
+    ) -> Result<Self, DetourError> {
+        let site_addr = site as usize;
+        if !(REL_JMP_LEN..=SPLICE_MAX_STEAL).contains(&steal) || steal > expected.len() {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: format!(
+                    "a splice steals between {REL_JMP_LEN} and {SPLICE_MAX_STEAL} of the bytes it expects, not {steal} of {}",
+                    expected.len()
+                ),
+            });
+        }
+        if sys::readable(site_addr, expected.len()) < expected.len() {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: "the site is not readable".to_owned(),
+            });
+        }
+        // SAFETY: `expected.len()` readable bytes at `site`.
+        let found = unsafe { std::slice::from_raw_parts(site, expected.len()) };
+        if found != expected {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: format!(
+                    "the site holds {} where {} was expected",
+                    hex(found),
+                    hex(expected)
+                ),
+            });
+        }
+        let stolen = &expected[..steal];
+        check_splice_stolen(stolen, site_addr as u64)?;
+
+        let body = splice_stub(hook as usize as u64, stolen, (site_addr + steal) as u64);
+        let stub = sys::alloc_near(site_addr, body.len())?;
+        // SAFETY: `stub` is a fresh writable buffer of at least `body.len()`
+        // bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(body.as_ptr(), stub.as_mut_ptr(), body.len());
+        }
+        sys::make_executable(&stub)?;
+        // SAFETY: the stub is now executable code of `body.len()` bytes.
+        unsafe {
+            sys::flush_icache(stub.as_mut_ptr(), body.len());
+        }
+        let delta = (stub.as_ptr() as i128) - (site_addr as i128 + REL_JMP_LEN as i128);
+        if i32::try_from(delta).is_err() {
+            return Err(DetourError::Alloc(0));
+        }
+        let patch = rel_jmp_patch(site_addr + REL_JMP_LEN, stub.as_ptr() as usize, steal);
+        // SAFETY: the caller guarantees the site is quiescent for `steal`
+        // bytes, which equals `patch.len()`.
+        unsafe {
+            sys::write_code(site, &patch)?;
+        }
+        Ok(Self {
+            site,
+            original: stolen.to_vec(),
+            _stub: stub,
+            active: true,
+        })
+    }
+
+    /// Restores the site's bytes.
+    ///
+    /// # Safety
+    ///
+    /// As with install, no thread may execute the site during this.
+    pub unsafe fn detach(mut self) -> Result<(), DetourError> {
+        // SAFETY: forwarded under the same contract.
+        unsafe { self.restore() }
+    }
+
+    unsafe fn restore(&mut self) -> Result<(), DetourError> {
+        if self.active {
+            // SAFETY: writing the saved original bytes back over the patch.
+            unsafe {
+                sys::write_code(self.site, &self.original)?;
+            }
+            self.active = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Splice {
+    fn drop(&mut self) {
+        // SAFETY: same contract as install.
+        let _ = unsafe { self.restore() };
+    }
+}
+
+// SAFETY: as for `InlineDetour`: owned addresses of this process's memory.
+unsafe impl Send for Splice {}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The stolen bytes must be whole instructions that run the same anywhere:
+/// straight-line, and without a RIP-relative operand.
+fn check_splice_stolen(stolen: &[u8], ip: u64) -> Result<(), DetourError> {
+    let mut decoder = Decoder::with_ip(64, stolen, ip, DecoderOptions::NONE);
+    let mut covered = 0usize;
+    while covered < stolen.len() {
+        if !decoder.can_decode() {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: format!("the stolen bytes end inside an instruction at offset {covered}"),
+            });
+        }
+        let insn = decoder.decode();
+        if insn.is_invalid() {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: format!("undecodable byte at offset {covered}"),
+            });
+        }
+        if insn.flow_control() != FlowControl::Next {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: format!(
+                    "the stolen bytes branch at offset {covered} ({:?}, {:?})",
+                    insn.mnemonic(),
+                    insn.flow_control()
+                ),
+            });
+        }
+        if insn.is_ip_rel_memory_operand() {
+            return Err(DetourError::UnsupportedPrologue {
+                reason: format!(
+                    "the stolen bytes address memory relative to rip at offset {covered} ({:?})",
+                    insn.mnemonic()
+                ),
+            });
+        }
+        covered = (decoder.ip() - ip) as usize;
+    }
+    if covered != stolen.len() {
+        return Err(DetourError::UnsupportedPrologue {
+            reason: format!(
+                "the stolen bytes end inside an instruction ({covered} decode, {} stolen)",
+                stolen.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The stub a [`Splice`] runs at its site, byte for byte:
+///
+/// ```text
+/// push rax; push rcx; push rdx; push rbx; push rbp; push rsi; push rdi
+/// push r8 .. push r15; pushfq            ; the SavedRegs block, rsp -> rflags
+/// mov rbx, rsp                           ; rbx keeps the block's address
+/// and rsp, -16; sub rsp, 0x80            ; aligned: 6 xmm slots + shadow space
+/// vmovups [rsp+0x20+16*i], xmm_i         ; i = 0..5, the volatile xmm
+/// mov rcx, rbx  (unix: mov rdi, rbx)     ; the hook's one argument
+/// mov rax, hook; call rax
+/// vmovups xmm_i, [rsp+0x20+16*i]
+/// mov rsp, rbx; popfq; pop r15 .. pop rax
+/// <the stolen instructions, verbatim>
+/// jmp [rip+0]; dq resume
+/// ```
+///
+/// Pure, so the bytes can be checked in a test.
+pub fn splice_stub(hook: u64, stolen: &[u8], resume: u64) -> Vec<u8> {
+    let mut code = Vec::with_capacity(160 + stolen.len());
+    // push rax, rcx, rdx, rbx, rbp, rsi, rdi
+    code.extend_from_slice(&[0x50, 0x51, 0x52, 0x53, 0x55, 0x56, 0x57]);
+    // push r8 .. r15
+    for low in 0x50u8..=0x57 {
+        code.extend_from_slice(&[0x41, low]);
+    }
+    code.push(0x9C); // pushfq
+    code.extend_from_slice(&[0x48, 0x89, 0xE3]); // mov rbx, rsp
+    code.extend_from_slice(&[0x48, 0x83, 0xE4, 0xF0]); // and rsp, -16
+    // sub rsp, 0x80: the imm32 form, since imm8 0x80 would be -128.
+    code.extend_from_slice(&[0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00]);
+    // vmovups [rsp+0x20+16*i], xmm_i
+    for i in 0..6u8 {
+        code.extend_from_slice(&[0xC5, 0xF8, 0x11, 0x44 | (i << 3), 0x24, 0x20 + 16 * i]);
+    }
+    // The hook's argument register: rcx on Windows, rdi elsewhere.
+    if cfg!(windows) {
+        code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    } else {
+        code.extend_from_slice(&[0x48, 0x89, 0xDF]); // mov rdi, rbx
+    }
+    code.extend_from_slice(&[0x48, 0xB8]); // mov rax, imm64
+    code.extend_from_slice(&hook.to_le_bytes());
+    code.extend_from_slice(&[0xFF, 0xD0]); // call rax
+    // vmovups xmm_i, [rsp+0x20+16*i]
+    for i in 0..6u8 {
+        code.extend_from_slice(&[0xC5, 0xF8, 0x10, 0x44 | (i << 3), 0x24, 0x20 + 16 * i]);
+    }
+    code.extend_from_slice(&[0x48, 0x89, 0xDC]); // mov rsp, rbx
+    code.push(0x9D); // popfq
+    // pop r15 .. r8
+    for low in (0x58u8..=0x5F).rev() {
+        code.extend_from_slice(&[0x41, low]);
+    }
+    // pop rdi, rsi, rbp, rbx, rdx, rcx, rax
+    code.extend_from_slice(&[0x5F, 0x5E, 0x5D, 0x5B, 0x5A, 0x59, 0x58]);
+    code.extend_from_slice(stolen);
+    code.extend_from_slice(&abs_jmp(resume));
+    code
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use super::super::SavedRegs;
     use super::*;
 
     type Fun = extern "C" fn() -> u32;
@@ -506,6 +759,191 @@ mod tests {
         // SAFETY: as above.
         unsafe { redirect.detach() }.unwrap();
         assert_eq!(caller(), 4, "restored");
+    }
+
+    /// What the splice hook saw and did: the site's registers, recorded
+    /// once, and `rcx` rewritten.
+    static SEEN: Mutex<Option<SavedRegs>> = Mutex::new(None);
+
+    unsafe extern "system" fn splice_hook(regs: *mut SavedRegs) {
+        // SAFETY: the stub hands a block it just pushed on this thread's
+        // stack, and holds it until the hook returns.
+        let block = unsafe { &mut *regs };
+        *SEEN.lock().unwrap() = Some(*block);
+        block.rcx = 0x100;
+    }
+
+    /// Hand-assembles a function that sets the volatile registers to known
+    /// values, then runs the site (a 7-byte `mov rax, 0x1234`), then sums:
+    ///
+    /// ```text
+    /// 00: 48 C7 C1 11 00 00 00   mov rcx, 0x11
+    /// 07: 48 C7 C2 22 00 00 00   mov rdx, 0x22
+    /// 0e: 49 C7 C0 33 00 00 00   mov r8, 0x33
+    /// 15: 49 C7 C3 44 00 00 00   mov r11, 0x44
+    /// 1c: 48 C7 C0 34 12 00 00   mov rax, 0x1234        <- the site
+    /// 23: 48 01 C8               add rax, rcx
+    /// 26: 4C 01 C0               add rax, r8
+    /// 29: C3                     ret
+    /// ```
+    fn splice_fixture() -> sys::ExecBuffer {
+        let code: [u8; 0x2A] = [
+            0x48, 0xC7, 0xC1, 0x11, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC2, 0x22, 0x00, 0x00, 0x00,
+            0x49, 0xC7, 0xC0, 0x33, 0x00, 0x00, 0x00, 0x49, 0xC7, 0xC3, 0x44, 0x00, 0x00, 0x00,
+            0x48, 0xC7, 0xC0, 0x34, 0x12, 0x00, 0x00, 0x48, 0x01, 0xC8, 0x4C, 0x01, 0xC0, 0xC3,
+        ];
+        let buffer = sys::alloc(code.len()).unwrap();
+        // SAFETY: a fresh writable buffer of exactly `code.len()` bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(code.as_ptr(), buffer.as_mut_ptr(), code.len());
+        }
+        sys::make_executable(&buffer).unwrap();
+        // SAFETY: the buffer now holds executable code.
+        unsafe {
+            sys::flush_icache(buffer.as_mut_ptr(), code.len());
+        }
+        buffer
+    }
+
+    const SITE_BYTES: [u8; 14] = [
+        0x48, 0xC7, 0xC0, 0x34, 0x12, 0x00, 0x00, 0x48, 0x01, 0xC8, 0x4C, 0x01, 0xC0, 0xC3,
+    ];
+
+    #[test]
+    fn a_splice_hands_the_hook_the_sites_registers_and_takes_its_changes_back() {
+        let buffer = splice_fixture();
+        // SAFETY: the buffer holds our hand-written function of no arguments.
+        let fun: Fun = unsafe { std::mem::transmute::<*const u8, Fun>(buffer.as_ptr()) };
+        assert_eq!(fun(), 0x1234 + 0x11 + 0x33, "the fixture on its own");
+
+        // SAFETY: nothing runs the buffer now; the hook keeps the contract.
+        let site = unsafe { buffer.as_mut_ptr().add(0x1C) };
+        let splice = unsafe { Splice::install(site, &SITE_BYTES, 7, splice_hook) }.unwrap();
+        assert_eq!(
+            fun(),
+            0x1234 + 0x100 + 0x33,
+            "the stolen mov ran after the hook, and the hook's rcx reached the add"
+        );
+        let seen = SEEN.lock().unwrap().expect("the hook ran");
+        assert_eq!(seen.rcx, 0x11);
+        assert_eq!(seen.rdx, 0x22);
+        assert_eq!(seen.r8, 0x33);
+        assert_eq!(seen.r11, 0x44);
+        assert_eq!(seen.rflags & 2, 2, "bit 1 of rflags always reads as set");
+
+        // SAFETY: as above.
+        unsafe { splice.detach() }.unwrap();
+        assert_eq!(
+            fun(),
+            0x1234 + 0x11 + 0x33,
+            "detached, the site is its own again"
+        );
+    }
+
+    #[test]
+    fn a_splice_refuses_bytes_it_did_not_expect_and_steals_that_cannot_move() {
+        let buffer = splice_fixture();
+        // SAFETY: nothing runs the buffer; every refusal happens before a write.
+        let site = unsafe { buffer.as_mut_ptr().add(0x1C) };
+        let mut wrong = SITE_BYTES;
+        wrong[3] = 0x35;
+        let mismatch = unsafe { Splice::install(site, &wrong, 7, splice_hook) };
+        assert!(matches!(
+            mismatch,
+            Err(DetourError::UnsupportedPrologue { ref reason }) if reason.contains("expected")
+        ));
+        // A steal that ends inside an instruction.
+        let split = unsafe { Splice::install(site, &SITE_BYTES, 6, splice_hook) };
+        assert!(matches!(
+            split,
+            Err(DetourError::UnsupportedPrologue { .. })
+        ));
+        // A steal that includes the ret.
+        let branch = unsafe { Splice::install(site, &SITE_BYTES, 14, splice_hook) };
+        assert!(matches!(
+            branch,
+            Err(DetourError::UnsupportedPrologue { ref reason }) if reason.contains("branch")
+        ));
+        // Fewer than five bytes cannot hold the jump.
+        let short = unsafe { Splice::install(site, &SITE_BYTES, 4, splice_hook) };
+        assert!(matches!(
+            short,
+            Err(DetourError::UnsupportedPrologue { .. })
+        ));
+        // SAFETY: the fixture is untouched.
+        let fun: Fun = unsafe { std::mem::transmute::<*const u8, Fun>(buffer.as_ptr()) };
+        assert_eq!(fun(), 0x1234 + 0x11 + 0x33, "nothing was written");
+    }
+
+    #[test]
+    fn a_rip_relative_steal_is_refused() {
+        // `mov eax, [rip+0x3a]` then `nop`s: moving it would read elsewhere.
+        let code = [0x8B, 0x05, 0x3A, 0x00, 0x00, 0x00, 0x90, 0x90];
+        let refused = check_splice_stolen(&code, 0x1000);
+        assert!(matches!(
+            refused,
+            Err(DetourError::UnsupportedPrologue { ref reason }) if reason.contains("rip")
+        ));
+        // Plain instructions pass.
+        check_splice_stolen(&SITE_BYTES[..7], 0x1000).unwrap();
+        check_splice_stolen(&SITE_BYTES[..13], 0x1000).unwrap();
+    }
+
+    #[test]
+    fn the_splice_stub_is_the_documented_bytes() {
+        let stub = splice_stub(
+            0x1122_3344_5566_7788,
+            &[0x90, 0x90, 0x90, 0x90, 0x90],
+            0xAABB_CCDD,
+        );
+        // 7 + 16 pushes, pushfq, the frame set-up.
+        let head: &[u8] = &[
+            0x50, 0x51, 0x52, 0x53, 0x55, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41,
+            0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x9C, 0x48, 0x89, 0xE3, 0x48,
+            0x83, 0xE4, 0xF0, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(&stub[..head.len()], head);
+        let mut at = head.len();
+        for i in 0..6u8 {
+            assert_eq!(
+                &stub[at..at + 6],
+                &[0xC5, 0xF8, 0x11, 0x44 | (i << 3), 0x24, 0x20 + 16 * i],
+                "vmovups [rsp+{:#x}], xmm{i}",
+                0x20 + 16 * i
+            );
+            at += 6;
+        }
+        let arg: &[u8] = if cfg!(windows) {
+            &[0x48, 0x89, 0xD9]
+        } else {
+            &[0x48, 0x89, 0xDF]
+        };
+        assert_eq!(&stub[at..at + 3], arg);
+        at += 3;
+        assert_eq!(&stub[at..at + 2], &[0x48, 0xB8]);
+        assert_eq!(
+            &stub[at + 2..at + 10],
+            &0x1122_3344_5566_7788u64.to_le_bytes()
+        );
+        assert_eq!(&stub[at + 10..at + 12], &[0xFF, 0xD0]);
+        at += 12;
+        for i in 0..6u8 {
+            assert_eq!(
+                &stub[at..at + 6],
+                &[0xC5, 0xF8, 0x10, 0x44 | (i << 3), 0x24, 0x20 + 16 * i]
+            );
+            at += 6;
+        }
+        let tail: &[u8] = &[
+            0x48, 0x89, 0xDC, 0x9D, 0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x41, 0x5B,
+            0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5F, 0x5E, 0x5D, 0x5B, 0x5A, 0x59, 0x58, 0x90,
+            0x90, 0x90, 0x90, 0x90, 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(&stub[at..at + tail.len()], tail);
+        at += tail.len();
+        assert_eq!(&stub[at..], &0xAABB_CCDDu64.to_le_bytes());
+        // The block's size is what SavedRegs::rsp adds.
+        assert_eq!(std::mem::size_of::<SavedRegs>(), 16 * 8);
     }
 
     #[test]

@@ -34,10 +34,14 @@ use std::{
 use tpf3mp_hookcore::profile::{BuildIdentity, Profile, ProfileError};
 
 pub mod builds;
+pub mod image;
 mod install;
+pub mod log;
 pub mod lua;
 pub mod menu;
+pub mod order;
 mod platform;
+pub mod seeds;
 pub mod step;
 pub mod worlds;
 
