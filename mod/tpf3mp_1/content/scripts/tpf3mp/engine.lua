@@ -234,6 +234,27 @@ function engine.describe(proposal)
 		for _, s in ipairs(list(get(street, "removedSegments"))) do
 			out[#out + 1] = "-e" .. tostring(s.entity) .. ":" .. node(s.comp.node0) .. ">" .. node(s.comp.node1)
 		end
+		-- Stops, signals and waypoints: whatever of their fields reads.
+		for _, o in ipairs(list(get(street, "edgeObjectsToAdd"))) do
+			local fields = {}
+			for _, key in ipairs({ "resultEntity", "category", "left", "playerEntity", "edgeEntity", "param", "model" }) do
+				local v = get(o, key)
+				if v ~= nil then fields[#fields + 1] = key .. "=" .. tostring(v) end
+			end
+			local mi = get(o, "modelInstance")
+			if mi ~= nil then
+				local t = get(mi, "transf")
+				fields[#fields + 1] = "modelId=" .. tostring(get(mi, "modelId"))
+				if t ~= nil then fields[#fields + 1] = "at=" .. at({ get(t, 13), get(t, 14), get(t, 15) }) end
+			end
+			out[#out + 1] = "+o{" .. table.concat(fields, " ") .. "}"
+		end
+		for _, c in ipairs(list(get(proposal, "toAdd"))) do
+			out[#out + 1] = "+c" .. tostring(get(c, "fileName"))
+		end
+		for _, c in ipairs(list(get(proposal, "toRemove"))) do
+			out[#out + 1] = "-c" .. tostring(c)
+		end
 		return table.concat(out, " ")
 	end)
 	if ok then return text end

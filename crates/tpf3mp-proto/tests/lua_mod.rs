@@ -1125,9 +1125,20 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
     assert!(logged.contains(&"handed the player's build to the room".to_owned()));
     assert!(
-        logged
-            .contains(&"stopped a build the room cannot carry: an unnamed construction".to_owned()),
+        logged.contains(
+            &"stopped a build the room cannot carry: an unnamed construction \
+              [+c::/depots/road/road_maint_station.con]"
+                .to_owned()
+        ),
         "{logged:?}"
+    );
+    assert!(
+        logged.contains(
+            &"the room does not carry the bulldozer tool yet \
+              [+c::/depots/road/road_maint_station.con]"
+                .to_owned()
+        ),
+        "a tool the room does not carry logs what it proposed: {logged:?}"
     );
     // Where the hook cannot stop the player's builds, every tool is refused.
     let without: String = lua

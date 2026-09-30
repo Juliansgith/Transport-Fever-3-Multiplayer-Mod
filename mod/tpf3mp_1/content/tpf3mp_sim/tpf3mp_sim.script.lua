@@ -163,6 +163,16 @@ function data()
 				if action then return nil end
 				return { errorMessages = { ["Not in multiplayer yet: " .. tostring(why)] = true } }
 			end
+			-- A tool the room does not carry: its proposals' shapes, for the
+			-- log, when they change, a few dozen times at most.
+			if refusals < 40 and type(param) == "table" and capture then
+				local described, text = pcall(capture.describe, param[1])
+				local key = tostring(id) .. " " .. (described and text or "")
+				if described and text ~= "" and key ~= refusedWhy then
+					refusedWhy, refusals = key, refusals + 1
+					l:log("the room does not carry the " .. tostring(id) .. " tool yet [" .. text .. "]")
+				end
+			end
 			return { errorMessages = { [REFUSED] = true } }
 		end,
 
