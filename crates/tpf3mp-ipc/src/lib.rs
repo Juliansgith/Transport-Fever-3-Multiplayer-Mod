@@ -58,6 +58,16 @@ pub const AUTO_LOAD_ENV: &str = "TPF3MP_AUTO_LOAD";
 /// per-user one: one per game when several run on one PC.
 pub const DATA_DIR_ENV: &str = "TPF3MP_DATA_DIR";
 
+/// The name of the Windows event the hook in the game with process id `pid`
+/// sets once it has armed what must be in place before the game runs its
+/// first line, the main menu's Multiplayer entry above all. The launcher
+/// creates it before it loads the hook into the suspended game and waits
+/// for it before it lets the game run: otherwise the game can load its main
+/// menu before the entry is armed, and the menu is the game's own.
+pub fn hook_ready_event(pid: u32) -> String {
+    format!(r"Local\tpf3mp.hook-ready.{pid}")
+}
+
 /// Default size of each ring's data area (1 MiB).
 pub const DEFAULT_RING_CAPACITY: u32 = 1 << 20;
 /// Default maximum payload per message (60 KiB), leaving headroom in the ring.

@@ -4482,6 +4482,7 @@ version = "0.1.0"
 dependencies = [
  "tempfile",
  "thiserror 2.0.20",
+ "tpf3mp-ipc",
  "windows-sys 0.61.2",
 ]
 

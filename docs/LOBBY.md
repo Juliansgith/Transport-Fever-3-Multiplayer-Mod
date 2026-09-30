@@ -43,11 +43,22 @@ into the suspended game before any of its code runs (D11), detours that body
    additions (below), and a `Tpf3mpLobbyWindow` opened through the menu's
    own window container (as the Deluxe Edition window is).
 
+**Before the game runs.** The game loads its main menu within seconds of
+starting, so the entry must be armed first. The launcher starts the game
+suspended, loads the hook, and keeps it suspended until the hook sets the
+event `tpf3mp_ipc::hook_ready_event` names for the game's process: the
+hook arms the entry first in its bootstrap, sets the event, and only then
+installs the step gate and the rest. A hook that never sets it lets the
+game run after 30 seconds. Without this the entry was sometimes missing
+(2026-09-30): the slower installs came first, and the game had loaded its
+own main page before the patch was in.
+
 The game log shows each step: `[tpf3mp] main menu: resolveutil.loadfile is
 wrapped`, `... ::/gui/menu/main_page.tl is served from
 tpf3mp_1::/gui/menu/main_page.tl`, `... TPF3-MP main_page.tl is in effect`.
 The hook's `hook.log` shows the profile match, `main-menu Multiplayer entry
-armed`, and `menu patch installed in Lua state ...`.
+armed`, and `menu patch installed in Lua state ...`. Then `main_page.tl SERVED: ...` when the menu's page came from the mod,
+or `main_page.tl MISSED: ...` when the game's own loaded first.
 
 A game Steam started has no hook and keeps the plain menu.
 
