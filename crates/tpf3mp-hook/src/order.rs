@@ -244,7 +244,7 @@ pub mod land_vehicle {
         // (`guarded`) and only rewrites the vector's entries in place.
         match unsafe { Splice::install(site.address as usize as *mut u8, &EXPECTED, STEAL, hook) } {
             Ok(splice) => {
-                std::mem::forget(splice);
+                let _kept = std::mem::ManuallyDrop::new(splice);
                 Outcome {
                     fix: FIX,
                     installed: true,
@@ -459,7 +459,7 @@ pub mod terminal {
         // the vector `rax` names, in place.
         match unsafe { Splice::install(site.address as usize as *mut u8, &EXPECTED, STEAL, hook) } {
             Ok(splice) => {
-                std::mem::forget(splice);
+                let _kept = std::mem::ManuallyDrop::new(splice);
                 Outcome {
                     fix: FIX,
                     installed: true,
@@ -977,7 +977,7 @@ pub mod measure {
             match unsafe { InlineDetour::install(target.address as usize as *mut u8, detour) } {
                 Ok(installed) => {
                     original.store(installed.trampoline() as usize, Ordering::Release);
-                    std::mem::forget(installed);
+                    let _kept = std::mem::ManuallyDrop::new(installed);
                     outcomes.push(Outcome {
                         fix: FIX,
                         installed: true,

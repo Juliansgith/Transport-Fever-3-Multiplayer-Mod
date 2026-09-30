@@ -466,8 +466,9 @@ pub fn any_world_started() -> bool {
     shared().worlds > 0
 }
 
-/// Forgets every world's GUI start (tests).
-#[cfg(test)]
+/// Forgets every world's GUI start (the menu frame's tests, which run
+/// only where the hook installs).
+#[cfg(all(test, windows, target_arch = "x86_64"))]
 pub(crate) fn forget_worlds() {
     let mut shared = shared();
     shared.worlds = 0;

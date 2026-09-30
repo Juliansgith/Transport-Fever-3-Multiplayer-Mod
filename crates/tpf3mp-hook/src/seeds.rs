@@ -59,6 +59,8 @@
 //! registers exactly as its caller left them.
 
 #![allow(unsafe_code)]
+// Elsewhere the detours are not installed, so their code is unused there.
+#![cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
 
 use std::{
     ffi::{c_char, c_int, c_void},
