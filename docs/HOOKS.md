@@ -875,7 +875,7 @@ builds it, paid by the player (`Context.player`) and clearing town
 buildings in its way (`gatherBuildings`), as the tool builds; without a
 context the game builds for free.
 
-Three tools build through the room so far:
+Four tools build through the room so far:
 
 - **The construction tool** (`constructionBuilder`): a proposal of one
   construction (a station, a depot, anything the tool places) becomes a
@@ -914,11 +914,21 @@ Three tools build through the room so far:
   does, `nodesToRemove` included. A build that moves or removes an edge
   with a stop or signal on it, or that places stops, signals or
   constructions, is refused.
+- **The bulldozer** (`bulldozer`): its proposal removes one construction
+  (with the construction's own entrance edge and node) or edges of one
+  network (with the nodes they leave on their own). It becomes a
+  `Bulldoze`: the construction by its file and position, or the edges by
+  their ends. The replay removes them as the game makes such a removal
+  itself, `createProposalRemove` for the construction and
+  `makeSegmentsRemoveProposal` for the edges (on build 40408 the first
+  gave exactly the bulldozer's proposal), and the player pays. Removing a
+  stop or signal, or an edge with one on it, is refused.
 
 A refusal shows its reason in the tool, and the log has each new reason
-with the proposal's shape (`the room cannot carry this ... build`). The
-stop and bulldozer tools, and the upgrade, bus lane and tram track tools,
-stay refused until their builds are captured. Where the profile lacks the
+with the proposal's shape (`the room cannot carry this ... build`); every
+build handed to the room is logged with its shape too. The stop tool, and
+the upgrade, bus lane and tram track tools, stay refused until their builds
+are captured. Where the profile lacks the
 two targets, `clicks()` is nil and every tool stays refused.
 
 Seen on build 40408, through the deployed server with two games on one PC:
@@ -964,7 +974,7 @@ matter:
 | 0 network | every street and track edge by its ends (0.1 m) and road template, from the street system's node map |
 | 1 constructions | every construction by its file and position (0.1 m) |
 | 2 lines | every line's number of stops |
-| 3 vehicles | the vehicles' positions (1 m) |
+| 3 vehicles | each vehicle's state, stop and place on its path: the path edge, the distance along it (1 cm) and the speed (1 cm/s), the simulation's own (`MOVE_PATH.dyn`) |
 | 4 economy | the player's balance |
 | 5 towns | each town's number of buildings |
 | 6 people | the number of people |
@@ -975,6 +985,15 @@ A lane the engine cannot read is `err` on every game alike and says why in
 `hook.log`, once per Lua state. On build 40408 `getEntitiesWithComponent`
 refuses `BASE_EDGE`, `LINE` and `PLAYER` ("Cannot loop over this component
 type"), hence the street and line systems.
+
+Vehicles are compared by their place on their paths, not in the world. On
+build 40408, with a bus running a line in two games in one room, the bus's
+world position (`api.engine.util.vehicle.getPosition`) and its path state
+as the frame began (`MOVE_PATH.dyn0`) differed between the games in the
+same simulation update, by millimetres to metres: they follow each game's
+own frames. Its path state (`MOVE_PATH.dyn`) was the same in every sample.
+Read to 1 m, the world position flipped at a rounding edge now and then,
+and the room resynced a game whose simulation had not diverged.
 
 Seen on build 40408, two games through the deployed server: every lane
 read, and the room found no divergence over several checkpoints.

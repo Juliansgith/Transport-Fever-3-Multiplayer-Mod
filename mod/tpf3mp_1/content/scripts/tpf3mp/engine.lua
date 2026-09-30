@@ -278,6 +278,56 @@ function engine.describe(proposal)
 	return "unreadable: " .. tostring(text)
 end
 
+-- The bulldozer's proposal as a Bulldoze action (tpf3mp_proto
+-- action::Bulldoze): one construction, by its file and position, whose own
+-- entrance edge and node the game removes with it; or edges of one network,
+-- by their ends, with the nodes they leave on their own (build 40408, the
+-- bulldozer hovered and clicked). false for a proposal of nothing; nil and
+-- why the room cannot carry it.
+function engine.bulldoze(proposal)
+	local ok, action = pcall(function()
+		local street = get(proposal, "proposal")
+		if street == nil then error("a proposal with no street proposal", 0) end
+		if #list(get(proposal, "toAdd")) > 0 or #list(get(street, "addedSegments")) > 0
+			or #list(get(street, "addedNodes")) > 0 then
+			error("a bulldozer proposal that builds", 0)
+		end
+		for _, name in ipairs({ "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
+			local v = get(street, name)
+			if v ~= nil and #list(v) > 0 then error("removing a stop or signal", 0) end
+		end
+		local toRemove = list(get(proposal, "toRemove"))
+		if #toRemove > 1 then error("removing more than one construction at once", 0) end
+		if #toRemove == 1 then
+			local c = api.engine.getComponent(toRemove[1], api.type.ComponentType.CONSTRUCTION)
+			if c == nil then error("removing something that is no construction", 0) end
+			local t = c.transf
+			return { Bulldoze = { Construction = {
+				file = resName(c.fileName, "a construction's file"),
+				at = { x = t[13], y = t[14], z = t[15] },
+			} } }
+		end
+		local segments = list(get(street, "removedSegments"))
+		if #segments == 0 then return false end
+		local network, edges = nil, {}
+		for k, seg in ipairs(segments) do
+			local n = networkOf(seg)
+			if network == nil then
+				network = n
+			elseif n ~= network then
+				error("removing streets and tracks at once", 0)
+			end
+			noObjects(seg.comp, "removing an edge")
+			local a, b = nodePos(seg.comp.node0), nodePos(seg.comp.node1)
+			if a == nil or b == nil then error("removed edge " .. k .. " has no position here", 0) end
+			edges[k] = { a = { x = a[1], y = a[2], z = a[3] }, b = { x = b[1], y = b[2], z = b[3] } }
+		end
+		return { Bulldoze = { Edges = { network = network, edges = edges } } }
+	end)
+	if not ok then return nil, tostring(action) end
+	return action
+end
+
 -- The action table of a street or track tool's proposal; false for a
 -- proposal of nothing; or nil and why the room cannot carry it.
 function engine.captureBuild(proposal, network)

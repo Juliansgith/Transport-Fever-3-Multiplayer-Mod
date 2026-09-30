@@ -821,7 +821,7 @@ fn engine() -> (Lua, Table) {
 /// two constructions, a line, two vehicles, a player, a town and people.
 const FAKE_WORLD: &str = r#"
 local CT = { BASE_EDGE = 1, CONSTRUCTION = 2, LINE = 3, TRANSPORT_VEHICLE = 4, PLAYER = 5,
-             ACCOUNT = 6, TOWN = 7, SIM_PERSON = 8 }
+             ACCOUNT = 6, TOWN = 7, SIM_PERSON = 8, MOVE_PATH = 9 }
 WORLD = {
     [CT.BASE_EDGE] = {
         [101] = { position0 = { x = 0, y = 0, z = 0 }, position1 = { x = 100.04, y = 0, z = 1 },
@@ -834,13 +834,19 @@ WORLD = {
         [202] = { fileName = 'station/bus_stop.con', transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 40,8,0,1 } },
     },
     [CT.LINE] = { [301] = { stops = { {}, {} } } },
-    [CT.TRANSPORT_VEHICLE] = { [401] = true, [402] = true },
+    [CT.TRANSPORT_VEHICLE] = { [401] = { state = 1, stopIndex = 0 }, [402] = { state = 2, stopIndex = 1 } },
+    -- The simulation's path state, and the state as a frame began, which
+    -- is each game's own.
+    [CT.MOVE_PATH] = {
+        [401] = { dyn = { pathPos = { edgeIndex = 3, pos = 10.2 }, speed = 5 },
+                  dyn0 = { pathPos = { edgeIndex = 3, pos = 9.7 }, speed = 5 } },
+        [402] = { dyn = { pathPos = { edgeIndex = 0, pos = 0 }, speed = 0 } },
+    },
     [CT.PLAYER] = { [25] = true },
     [CT.ACCOUNT] = { [25] = { balance = 1234567 } },
     [CT.TOWN] = { [7] = true },
     [CT.SIM_PERSON] = { [801] = true, [802] = true, [803] = true },
 }
-POSITIONS = { [401] = { x = 10.2, y = 5, z = 0 }, [402] = { x = 99.7, y = 1, z = 1 } }
 REVERSED = false
 api.type.ComponentType = CT
 api.engine.getEntitiesWithComponent = function(kind)
@@ -858,7 +864,6 @@ api.engine.getComponent = function(e, kind)
     if c == true then return {} end
     return c
 end
-api.engine.util.vehicle = { getPosition = function(e) return POSITIONS[e] end }
 local function sorted(kind)
     local list = {}
     for e in pairs(WORLD[kind]) do list[#list + 1] = e end
@@ -907,11 +912,15 @@ fn lanes_sum_up_the_world_part_by_part() {
     // The order the engine lists entities in changes nothing.
     lua.load("REVERSED = true").exec().unwrap();
     assert_eq!(read_lanes(&lua), lanes);
-    // A vehicle moved by 2 m changes the vehicles' lane alone; one moved by
-    // 0.2 m changes nothing, below the lane's metre.
-    lua.load("POSITIONS[401].x = 10.4").exec().unwrap();
+    // The state a frame began with, each game's own, changes nothing; a
+    // vehicle 2 cm on along its path changes the vehicles' lane alone.
+    lua.load("WORLD[9][401].dyn0.pathPos.pos = 10.1")
+        .exec()
+        .unwrap();
     assert_eq!(read_lanes(&lua), lanes);
-    lua.load("POSITIONS[401].x = 12.4").exec().unwrap();
+    lua.load("WORLD[9][401].dyn.pathPos.pos = 10.22")
+        .exec()
+        .unwrap();
     let moved = read_lanes(&lua);
     for (before, after) in lanes.iter().zip(&moved) {
         assert_eq!(before.0 == 3, before.1 != after.1, "lane {}", before.0);
@@ -1271,7 +1280,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
              elsewhere.toAdd[1].transf[13] = 99 \
              out[#out + 1] = ask('constructionBuilder', elsewhere) \
              out[#out + 1] = ask('constructionBuilder', {CONSTRUCTION_PROPOSAL}) \
-             out[#out + 1] = ask('bulldozer', {CONSTRUCTION_PROPOSAL}) \
+             out[#out + 1] = ask('streetTerminalBuilder', {CONSTRUCTION_PROPOSAL}) \
              local unnamed = {CONSTRUCTION_PROPOSAL} unnamed.toAdd[1].name = '' \
              HOOK.clicks = 1 \
              out[#out + 1] = ask('constructionBuilder', unnamed) \
@@ -1325,7 +1334,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     );
     assert!(
         logged.contains(
-            &"the room does not carry the bulldozer tool yet \
+            &"the room does not carry the streetTerminalBuilder tool yet \
               [+c::/depots/road/road_maint_station.con{frozen 0n 0e}]"
                 .to_owned()
         ),
@@ -2152,6 +2161,80 @@ fn a_line_travels_by_its_stations_ids_and_is_made_again_the_same() {
         .eval()
         .unwrap();
     assert_eq!(named, "1 1 600 1");
+}
+
+#[test]
+fn the_bulldozer_removes_a_construction_or_edges_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    // A depot, as the game has it; the game's own remove proposals.
+    lua.load(
+        "api.type.ComponentType.CONSTRUCTION = 2 \
+         CONSTRUCTIONS = { [5000] = { fileName = '::/depots/road/road_depot/road_depot.con', \
+             transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 80,0,0,1 } } } \
+         local get = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 2 then return CONSTRUCTIONS[e] end return get(e, kind) end \
+         api.engine.getEntitiesWithComponent = function(kind) \
+             local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
+         api.engine.util.proposal = { \
+             createProposalRemove = function(e, context) return { removes = e, player = context.player } end, \
+             makeSegmentsRemoveProposal = function(ids) return { removesEdges = table.concat(ids, ',') } end }",
+    )
+    .exec()
+    .unwrap();
+    // The bulldozer over the depot: the depot, its entrance edge and node;
+    // over the street 8-9: that edge.
+    let (depot, street): (String, String) = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local function part(t) t.addedNodes = t.addedNodes or {} t.addedSegments = t.addedSegments or {} \
+                 t.removedSegments = t.removedSegments or {} t.removedNodes = t.removedNodes or {} \
+                 t.edgeObjectsToAdd = {} return t end \
+             DEPOT = capture.bulldoze({ toAdd = {}, toRemove = { 5000 }, proposal = part({ \
+                 removedSegments = { { entity = 6967, type = 0, comp = { node0 = 7, node1 = 2066, objects = {} } } }, \
+                 removedNodes = { { entity = 2066, comp = { position = { x = 70, y = 0, z = 0 } } } } }) }) \
+             STREET = capture.bulldoze({ toAdd = {}, toRemove = {}, proposal = part({ \
+                 removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, objects = {} } } } }) }) \
+             local c, e = DEPOT.Bulldoze.Construction, STREET.Bulldoze.Edges \
+             return c.file .. '@' .. c.at.x .. ':' .. tostring(schema_check(DEPOT)), \
+                 e.network .. ':' .. e.edges[1].a.y .. '>' .. e.edges[1].b.y .. ':' .. tostring(schema_check(STREET))",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(depot, "::/depots/road/road_depot/road_depot.con@80:true");
+    assert_eq!(street, "Street:-40>40:true");
+    // Every game removes them as the game itself would: the depot with its
+    // own entrance, the edge with the nodes it leaves alone. The player pays.
+    lua.load("HOOK.batch = { DEPOT, STREET } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let removed: String = lua
+        .load(
+            "return SENT[1].proposal.removes .. '|' .. SENT[1].proposal.player .. '|' \
+                 .. SENT[2].proposal.removesEdges .. '|' .. tostring(SENT[2].context.player) \
+                 .. '|' .. tostring(SENT[2].ignoreErrors) .. '|' .. #HOOK.applied",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(removed, "5000|25|100|25|true|2");
+    // A removal the room cannot carry says why.
+    let why: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local _, why = capture.bulldoze({ toAdd = {}, toRemove = {}, proposal = { addedNodes = {}, \
+                 addedSegments = {}, removedNodes = {}, edgeObjectsToAdd = {}, removedSegments = { \
+                 { entity = 101, type = 0, comp = { node0 = 10, node1 = 7, objects = { { 1, 0 } } } } } } }) \
+             return why",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(why, "removing an edge with a stop or signal on it");
 }
 
 #[test]

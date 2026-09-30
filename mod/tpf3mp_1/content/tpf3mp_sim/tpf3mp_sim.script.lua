@@ -64,7 +64,8 @@ function data()
 
 	-- The tools whose builds the room carries, by the tool's id: the
 	-- capture that makes each one's action.
-	local CAPTURE = { constructionBuilder = "construction", streetBuilder = "street", trackBuilder = "track" }
+	local CAPTURE = { constructionBuilder = "construction", streetBuilder = "street", trackBuilder = "track",
+		bulldozer = "bulldoze" }
 	-- In the GUI: the last proposal seen at each count of the player's builds
 	-- ({ action = t } or { why = text }), and the builds handed on so far.
 	local snapshots, handled = {}, nil

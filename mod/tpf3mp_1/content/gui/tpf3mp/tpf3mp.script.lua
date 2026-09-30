@@ -46,14 +46,17 @@ function data()
 	local pending = {}
 	-- The notice of the last refusal, until the plugin shows it.
 	local notice = nil
-	-- Refusals so far, by kind, for the hook's log.
-	local refusals = {}
+	-- Refusals so far, by kind, and the last reason logged of each, for the
+	-- hook's log.
+	local refusals, reasons = {}, {}
 
 	local function refused(kind, why)
 		local name = kind or "command no factory made"
 		local count = (refusals[name] or 0) + 1
 		refusals[name] = count
-		if count == 1 or count % 100 == 0 or why then
+		local changed = why ~= nil and why ~= reasons[name]
+		if changed then reasons[name] = why end
+		if count == 1 or count % 100 == 0 or changed then
 			link:log("refused the player's " .. name .. " in the room's game ("
 				.. count .. " so far)" .. (why and (": " .. tostring(why)) or ""))
 		end
