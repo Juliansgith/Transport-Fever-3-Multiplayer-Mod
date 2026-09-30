@@ -305,6 +305,10 @@ type SessionEnded = (
     Option<String>,
 );
 
+/// What the launcher's window says once it started the game: for its own
+/// window only, not the game's (`lobby::view` leaves it out).
+pub(crate) const GAME_STARTED: &str = "started Transport Fever 3 with TPF3-MP; its main menu has a Multiplayer entry, and it joins the room once it has loaded";
+
 /// The game's link, served by the launcher while no room session holds it.
 type Idle = Option<IdleLink<tpf3mp_ipc::Link>>;
 
@@ -744,9 +748,7 @@ fn launch_game(
     .map_err(|error| error.to_string())?;
     info!(pid = started.pid, "started the game with the hook");
     *game = Some(started);
-    shared.status().notice(
-        "started Transport Fever 3 with TPF3-MP; its main menu has a Multiplayer entry, and it joins the room once it has loaded",
-    );
+    shared.status().notice(GAME_STARTED);
     Ok(())
 }
 

@@ -6,6 +6,16 @@
 -- which define LOBBY_SOURCE (the window's file) and set STATE (the hook's
 -- answer to a state request, a Lua table literal).
 --
+-- It holds the window to the rules the game enforces, which it learnt in
+-- the game on 2026-09-30:
+-- - a recipe returns a layout: the game refused a recipe returning a bare
+--   TextView among a layout's children ("Recipe child must be a layout");
+-- - a list of children has no holes: a nil in it cuts the Lua list short,
+--   and whatever came after is silently not drawn;
+-- - a size is -1 (left to the content) or more than 0: the game drew
+--   columns sized {w, 0} as thin bars, with everything in them hidden;
+-- - a text field or a combo box has a size, its own or its box's.
+--
 -- Defines LOG (debugPrint lines), SENT (the JSON of every action the
 -- window sent), REPLY (what the hook answers an action, "ok" unless set),
 -- and render(focus), tick(), texts(), find(text), click(text),
@@ -56,8 +66,14 @@ function react.useRef(initial)
 end
 react.useState = react.useRef
 function react.onStepTimer(fn) mount.timers[#mount.timers + 1] = fn end
+local LAYOUTS = { BoxLayout = true, FloatingLayout = true }
 function react.RegisterRecipe(name, fn)
-	return setmetatable({ name = name }, { __call = function(_, params) return fn(params) end })
+	return setmetatable({ name = name }, { __call = function(_, params)
+		local node = fn(params)
+		assert(type(node) == "table" and LAYOUTS[node.view],
+			"Recipe child must be a layout: " .. name .. " returned " .. tostring(node and node.view))
+		return node
+	end })
 end
 
 local builtin = { type = {
@@ -65,9 +81,59 @@ local builtin = { type = {
 	ScrollBarPolicy = { AlwaysOff = "AlwaysOff", AsNeeded = "AsNeeded" },
 	ImageViewScaling = { AutoFit = "AutoFit" },
 } }
+-- A list of children with no holes, every one a node.
+local function whole(list, what)
+	if list == nil then return end
+	local most = table.maxn(list)
+	assert(most == #list, what .. ": a nil among the children cuts the list at " .. #list .. " of " .. most)
+	for i = 1, most do
+		assert(type(list[i]) == "table", what .. ": child " .. i .. " is " .. type(list[i]))
+	end
+end
+
+local function sized(params, what)
+	local sheet = params and params.meta and params.meta.styleSheet
+	local size = sheet and sheet.size
+	if size then
+		for _i, side in ipairs({ size.x, size.y }) do
+			assert(side == -1 or side > 0, what .. ": a size of " .. tostring(side) .. " hides what is in it")
+		end
+	end
+	return size
+end
+
 for _i, view in ipairs({ "BoxLayout", "Component", "TextView", "Button", "ImageView", "TextInputField",
-		"ScrollArea", "ComboBox", "ComboBoxItem", "ProgressBar" }) do
-	builtin[view] = function(params) return { view = view, params = params } end
+		"ScrollArea", "ComboBox", "ComboBoxItem", "ProgressBar", "FloatingLayout" }) do
+	builtin[view] = function(params)
+		whole(params.children, view)
+		whole(params.items, view)
+		sized(params, view)
+		if view == "Component" and params.layout ~= nil then
+			assert(LAYOUTS[params.layout.view], "a Component's layout must be a layout, not " .. tostring(params.layout.view))
+		end
+		return { view = view, params = params }
+	end
+end
+
+-- Every text field and combo box has a width and a height, its own or its
+-- box's: the game gives an unsized one none.
+local function checkInputs(node, box)
+	if type(node) ~= "table" then return end
+	if node.view then
+		local size = node.params and sized(node.params, node.view)
+		local own = size and size.x > 0 and size.y > 0 and size or nil
+		if node.view == "TextInputField" or node.view == "ComboBox" then
+			assert(own or box, node.view .. " without a size")
+		elseif node.view == "Component" then
+			-- The box a Component's own layout lays its children out in.
+			box = own
+		elseif node.view ~= "BoxLayout" then
+			box = nil
+		end
+	end
+	for _k, value in pairs(node) do
+		if type(value) == "table" then checkInputs(value, box) end
+	end
 end
 
 local gui_react_util = {
@@ -101,6 +167,7 @@ function render(f)
 	mount.index = 0
 	mount.timers = {}
 	tree = lobby.content(function() CLOSED = CLOSED + 1 end, focus)
+	checkInputs(tree, nil)
 	return tree
 end
 

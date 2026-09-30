@@ -81,7 +81,15 @@ pub(crate) fn view(state: &State) -> LobbyView {
         ),
         name: Text::lossy(&state.name),
         error: state.error.as_deref().map(Text::lossy),
-        notice: state.notices.last().map(|notice| Text::lossy(notice)),
+        // The newest notice meant for the game: the one that says the
+        // launcher started it is for the launcher's window, and out of
+        // place in the game it started.
+        notice: state
+            .notices
+            .iter()
+            .rev()
+            .find(|notice| notice.as_str() != super::GAME_STARTED)
+            .map(|notice| Text::lossy(notice)),
         room,
         chat: BoundedVec::new(chat).unwrap_or_default(),
         rules: BoundedVec::new(
@@ -462,6 +470,13 @@ pub(crate) mod tests {
         assert_eq!(view.server.as_str(), "EU", "as players see it");
         assert_eq!(view.error.as_ref().unwrap().as_str(), "that room is full");
         assert_eq!(view.notice.as_ref().unwrap().as_str(), "new", "the newest");
+        let mut started = state();
+        started.notices.push(super::super::GAME_STARTED.into());
+        assert_eq!(
+            super::view(&started).notice.unwrap().as_str(),
+            "new",
+            "the launcher's own notice stays in the launcher"
+        );
         assert!(encode(&ToHook::Lobby(Box::new(view.clone()))).is_ok());
         let room = view.room.unwrap();
         assert!(!room.running && room.you_own);

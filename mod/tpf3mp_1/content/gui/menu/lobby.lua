@@ -45,8 +45,9 @@ local ICON = {
 	multiplayer = "tpf3mp_1::/gui/tpf3mp/icons/menu_multiplayer_50.tga",
 }
 
--- The window's content size and the two columns of each view.
-local WIDTH, HEIGHT = 940, 660
+-- The window's content size and the two columns of each view. The window
+-- itself is centred on the menu (main_page.tl's Tpf3mpLobbyWindow).
+local WIDTH, HEIGHT = 920, 600
 local LEFT, RIGHT = 470, 400
 local FIELD = 400
 -- Player counts a room can be created for, as the launcher offers them.
@@ -246,7 +247,11 @@ end
 
 -- An inline style sheet: size as {w, h}, padding as {top, right, bottom,
 -- left}. Those are what api.gui.StyleSheet offers (no margin, no minSize), so
--- spacing between elements is done with gap() below.
+-- spacing between elements is done with gap() below. A size of -1 leaves
+-- that side to the content, as the game's style sheets write it; a size of
+-- 0 is a size of nothing, and hides everything inside (the game drew the
+-- create and join columns, sized {w, 0}, as two thin bars).
+local AUTO = -1
 local function style(t)
 	local s = api.gui.StyleSheet.new()
 	if t.size then s.size = api.type.Vec2f.new(t.size[1], t.size[2]) end
@@ -255,8 +260,9 @@ local function style(t)
 end
 
 local function gap(px)
+	px = math.max(1, px or 12)
 	return builtin.Component{
-		meta = { styleSheet = style{ size = { px or 12, px or 12 } } },
+		meta = { styleSheet = style{ size = { px, px } } },
 		mouseTransparent = true,
 		layout = builtin.BoxLayout{ children = {} },
 	}
@@ -499,15 +505,14 @@ function lobby.content(onClose, focus)
 	-- view's buttons.
 	local function frame(status, body, footer)
 		local children = {
+			-- The window's title says Multiplayer already.
 			row({
-				icon(ICON.multiplayer, 32),
+				icon(ICON.multiplayer, 28),
 				gap(10),
-				label(_("Multiplayer"), "font-scale-title-2"),
+				steps(),
 				gui_react_util.makeHorizontalSpacer(),
 				status,
 			}),
-			gap(8),
-			steps(),
 			gap(10),
 		}
 		local problem = refusedS:old() or (state and state.error)
@@ -662,7 +667,7 @@ function lobby.content(onClose, focus)
 				function(value) rulesS:set(value) end, explainRules) or gap(0),
 			field(_("Password (optional)"), createPassword, "", { password = true, maxLength = 64 }),
 			row({ primary(_("Create room"), create, canAct and not busy) }),
-		}, style{ size = { LEFT, 0 } })
+		}, style{ size = { LEFT, AUTO } })
 
 		local joinColumn = column({
 			heading(_("Join a room"), _("Rooms are private: ask a friend for their invite.")),
@@ -671,7 +676,7 @@ function lobby.content(onClose, focus)
 			row({ primary(_("Join room"), join, canAct and not busy) }),
 			gap(16),
 			note(string.format(_("%s lists no rooms: an invite is the way in."), serverName(state))),
-		}, style{ size = { RIGHT, 0 } })
+		}, style{ size = { RIGHT, AUTO } })
 
 		local columns = focus == "join" and { joinColumn, gap(40), createColumn } or { createColumn, gap(40), joinColumn }
 		return frame(
@@ -747,7 +752,7 @@ function lobby.content(onClose, focus)
 		roomHeader,
 		heading(_("Players")),
 		column(memberRows),
-	}, style{ size = { LEFT, 0 } })
+	}, style{ size = { LEFT, AUTO } })
 
 	local lines = state.chat or {}
 	local chatRows = {}
@@ -786,7 +791,7 @@ function lobby.content(onClose, focus)
 			gap(8),
 			button(_("Send"), sendChat, nil, canAct),
 		}),
-	}, style{ size = { RIGHT, 0 } })
+	}, style{ size = { RIGHT, AUTO } })
 
 	local footer = {}
 	if confirm and confirm.kind == "leave" then

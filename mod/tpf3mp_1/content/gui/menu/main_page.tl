@@ -111,11 +111,17 @@ local function safeContent(onClose : function(), focus : string) : TreeNodeId
 end
 
 local Tpf3mpLobbyWindow = react.RegisterWrapperRecipe("Tpf3mpLobbyWindow", builtin.Window, function(param : Tpf3mpLobbyWindowParam) : TreeNodeId
+	-- Centred on the given point, as the game's style sheet centres the
+	-- Deluxe Edition window (anchorPoint 0.5, 0.5): without it the point
+	-- is the window's top-left corner, and it covered the menu's logo.
+	local sheet = api.gui.StyleSheet.new()
+	sheet.anchorPoint = api.type.Vec2f.new(0.5, 0.5)
 	return builtin.Window{
 		title = _("Multiplayer"),
 		id = "window.tpf3mp.lobby",
 		meta = {
-			class = "fade-in"
+			class = "fade-in",
+			styleSheet = sheet,
 		},
 		initialX = param.pos and param.pos.x or nil,
 		initialY = param.pos and param.pos.y or nil,
