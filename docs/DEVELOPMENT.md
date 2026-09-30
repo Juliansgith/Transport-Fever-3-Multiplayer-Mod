@@ -249,6 +249,25 @@ tpf3mp-launcher --server 127.0.0.1:29470 --name james --auto-create playtest --a
 tpf3mp-launcher --server 127.0.0.1:29470 --name bob --auto-join --invite-file invite.txt --auto-play
 ```
 
+`--start-save <save>` instead of `--auto-load` has every game, the owner's
+too, load the save from its main menu at the same moment, with no game
+loading it first or saving it for the room. It takes a save's name in the
+game's save folder (`<Steam>/userdata/<account>/3493540/local/save/<save>.sav`,
+of the account Steam names as playing, or the one account that has it) or
+a file's path. The owner's launcher reads the file when it starts, and
+when it creates a room hands it to the room in the lobby, as it uploads a
+save the room asks for ("The first world" in [PROTOCOL.md](PROTOCOL.md)).
+The owner's game then waits at its menu like a guest's, and is marked
+ready there once the room has the save; `--auto-start` starts the room
+once everyone is. It needs a server that keeps worlds; the old way, above,
+still works without one.
+
+```sh
+tpf3mp-launcher --server 127.0.0.1:29470 --name james --auto-create playtest --auto-start 3 --invite-file invite.txt --auto-play --start-save twomptest
+tpf3mp-launcher --server 127.0.0.1:29470 --name bob --auto-join --invite-file invite.txt --auto-play
+tpf3mp-launcher --server 127.0.0.1:29470 --name cat --auto-join --invite-file invite.txt --auto-play
+```
+
 With Transport Fever 3 itself (build 40408), two games run on one PC like
 this:
 
