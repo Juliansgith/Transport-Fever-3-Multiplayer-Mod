@@ -493,7 +493,9 @@ async fn a_player_joins_a_running_game_from_the_rooms_world() {
         input_delay_ms: 60,
         checkpoint_interval: 20,
     };
-    let mut players = saving_players(3, 700);
+    // Long enough that the starters still play when the newcomer's world
+    // is handed on (they reload it too), however slow the machine.
+    let mut players = saving_players(3, 2000);
     // The third player arrives two seconds in, after about 200 steps.
     players[2].join_after = Some(Duration::from_secs(2));
     let reports = play_bridged_room(BridgedPlan {
@@ -643,7 +645,9 @@ async fn a_diverged_replica_is_rebased_onto_the_agreed_world() {
         input_delay_ms: 60,
         checkpoint_interval: 50,
     };
-    let mut players = saving_players(3, 800);
+    // Long enough that every player still plays when the agreed world is
+    // handed on after the drift, however slow the machine.
+    let mut players = saving_players(3, 2000);
     players[2].drift_at = Some(120);
     let reports = play_bridged_room(BridgedPlan {
         server: server.address,
@@ -692,7 +696,9 @@ async fn a_restored_room_still_hands_on_its_world() {
         input_delay_ms: 60,
         checkpoint_interval: 25,
     };
-    let mut players = saving_players(3, 500);
+    // Long enough that the second player still plays when the last one's
+    // world is handed on (it reloads it too).
+    let mut players = saving_players(3, 1200);
     // One player joins early, so the room saves before the restart; the
     // last joins after it, from the world the restored room kept.
     players[1].join_after = Some(Duration::from_secs(1));
