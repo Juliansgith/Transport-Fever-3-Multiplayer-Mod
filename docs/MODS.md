@@ -135,9 +135,18 @@ remain, and the scan covers them:
   room's world in its own game only; the step gate and the lanes catch the
   game that left (not a desync of the others).
 
-A personal mod's event to game scripts (`makeScriptingSendEventCmd`) is sent
-as it is: it reaches this game's game scripts only, where the mod's own game
-script is. Every other game never hears it.
+A personal mod's event to its own game script (`makeScriptingSendEventCmd`)
+is sent as it is: it reaches this game's game scripts only, where the mod's
+own game script is, and every other game never hears it. Its own means
+(`guard.ownEvent`): the event's id names the mod (contains its id, or one of
+its words of four letters or more: Timetables' `TimetablesEdit` for
+`celmi_timetables`), the id is none the game's own game scripts or TPF3-MP
+listen to (`Companies`, `Loan`, `Notifications`, `Towns`, the empty id of
+init events, ...: `guard.RESERVED_IDS`, from build 40408's scripts), and the
+name is none they listen to under any id (`company.*`, `builder.*`,
+`init*`, `handleLegacy`). Any other event of a personal mod, a rank
+(`Companies applyLevel`), prospecting, a loan, goes the way a click's does:
+carried through the room, or refused.
 
 ### Game-script mods: the personal mods' guard
 

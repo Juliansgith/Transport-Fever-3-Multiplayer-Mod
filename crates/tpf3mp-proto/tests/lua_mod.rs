@@ -3821,6 +3821,64 @@ fn the_guard_names_the_mod_and_lets_a_personal_mods_events_reach_its_script() {
     );
 }
 
+/// A personal mod's events to the game's own scripts (a rank, prospecting,
+/// a loan) take the room's way, carried or refused, as a click's would; only
+/// an event addressed to the mod's own game script passes, here alone.
+#[test]
+fn a_personal_mods_events_to_the_games_scripts_take_the_rooms_way() {
+    let lua = gui();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (sent, handed, refused, own): (String, Vec<String>, Vec<String>, Vec<bool>) = lua
+        .load(
+            r#"
+            local guard = ug_require('tpf3mp_1::/scripts/tpf3mp/guard.lua')
+            HANDED, REFUSED = {}, {}
+            guard.install(api.cmd, {
+                inRoom = function() return true end,
+                command = function(action)
+                    local kind = next(action)
+                    HANDED[#HANDED + 1] = kind
+                    return true
+                end,
+                refused = function(kind, why) REFUSED[#REFUSED + 1] = tostring(why) end,
+                later = function() end,
+                context = { town = function() return nil end, player = function() return 1 end },
+                personal = function(mod) return mod == 'celmi_timetables' end,
+                caller = function() return 'celmi_timetables' end,
+            })
+            local ev = api.cmd.makeScriptingSendEventCmd
+            api.cmd.sendCommand(ev('', 'Companies', 'applyLevel', { level = 2 }))
+            api.cmd.sendCommand(ev('', 'Loan', 'Obtain', { { amount = 1 }, { amount = 2 } }))
+            api.cmd.sendCommand(ev('', 'Companies', 'spawnIndustry', { companyEntity = 1 }))
+            -- Under its own id, but a name the company script hears whatever
+            -- the id, and an id of the game's own: not its own.
+            api.cmd.sendCommand(ev('', 'TimetablesEdit', 'company.lockPermits', {}))
+            api.cmd.sendCommand(ev('', 'tpf3mp', 'command', {}))
+            -- Its own script's.
+            api.cmd.sendCommand(ev('', 'TimetablesEdit', 'setArrDep', {}))
+            local sent = {}
+            for _, s in ipairs(SENT) do sent[#sent + 1] = tostring(s.command.id) .. ':' .. tostring(s.command.name) end
+            local own = {
+                guard.ownEvent('celmi_timetables', 'TimetablesEdit', 'setArrDep'),
+                guard.ownEvent('celmi_timetables', 'celmi_timetables', 'x'),
+                guard.ownEvent('celmi_timetables', 'Notifications', 'add'),
+                guard.ownEvent('celmi_timetables', 'OtherModChannel', 'x'),
+                guard.ownEvent('gw_big_city_1', 'big', 'x'),
+            }
+            return table.concat(sent, ','), HANDED, REFUSED, own
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        sent, "TimetablesEdit:setArrDep",
+        "only its own event runs here"
+    );
+    assert_eq!(handed, ["ApplyRank", "Loan"], "carried as a click's are");
+    assert_eq!(refused.len(), 3, "{refused:?}");
+    assert_eq!(own, [true, true, false, false, false]);
+}
+
 #[test]
 fn a_window_hears_of_what_its_command_made_once_its_world_has_it() {
     let lua = gui();

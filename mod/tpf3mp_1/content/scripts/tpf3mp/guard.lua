@@ -29,9 +29,13 @@
 --
 -- Personal mods (docs/MODS.md): a mod only one player may run goes through
 -- this guard like the player's own clicks. The one thing it may send past
--- the room is an event to game scripts (makeScriptingSendEventCmd), which
--- reaches this game's scripts only: its own game script, which runs in this
--- game alone. A refusal names the mod the command came from (guard.caller).
+-- the room is an event to its own game script (makeScriptingSendEventCmd),
+-- which runs in this game alone: one whose id names the mod
+-- (guard.ownEvent), and neither an id nor a name the game's own scripts or
+-- TPF3-MP listen to (guard.RESERVED_IDS, guard.RESERVED_NAMES). Any other
+-- event of a personal mod goes the way a click's does: carried if the room
+-- carries it, refused if not. A refusal names the mod the command came from
+-- (guard.caller).
 --
 -- Pure Lua; the tests hand install() a fake api.cmd.
 
@@ -209,6 +213,52 @@ function guard.caller(getinfo)
 	return guard.callers(getinfo)[1]
 end
 
+-- Event ids the game's own game scripts and TPF3-MP listen to (build 40408,
+-- each base game script's handleEvent), and the empty id of the game's
+-- init events: a personal mod's event under one of them is never its own.
+guard.RESERVED_IDS = {
+	[""] = true, ArrivalTracker = true, CloudCoverage = true, Companies = true,
+	Company = true, Emissions = true, GameTime = true, Industries = true, Loan = true,
+	MissionEndWindow = true, MissionWindow = true, Notifications = true,
+	SimCargoSystem = true, SimEntityAtBuildingSystem = true,
+	SimEntityAtTerminalSystem = true, SimPersonAtVehicleSystem = true,
+	SimPersonSystem = true, StockListSystem = true, Subvention = true, Towns = true,
+	TransportVehicleSystem = true, VehicleModifier = true, apply_command = true,
+	fireworks = true, ["guide-system"] = true, ["mission-dialogue"] = true,
+	tpf3mp = true,
+}
+
+-- Name prefixes some of the game's scripts listen to whatever the id
+-- (company.script.tl: "company.lockPermits", "builder.proposalApply").
+guard.RESERVED_NAMES = { "company.", "builder.", "init", "handleLegacy" }
+
+-- The id's letters and digits, in lower case.
+local function squeeze(text)
+	return (tostring(text):lower():gsub("[^%w]", ""))
+end
+
+-- Whether an event from the personal mod `mod` (its modId) is addressed to
+-- the mod's own game script: its id is not one the game's scripts or
+-- TPF3-MP listen to, its name is none they listen to under any id, and the
+-- id names the mod: it contains the mod's id, or one of its words of four
+-- letters or more (Timetables' "TimetablesEdit" for celmi_timetables).
+function guard.ownEvent(mod, id, name)
+	if type(mod) ~= "string" or type(id) ~= "string" or type(name) ~= "string" then return false end
+	if guard.RESERVED_IDS[id] then return false end
+	for _, prefix in ipairs(guard.RESERVED_NAMES) do
+		if name:sub(1, #prefix) == prefix then return false end
+	end
+	local squeezed = squeeze(id)
+	if squeezed == "" then return false end
+	if squeezed:find(squeeze(mod), 1, true) then return true end
+	for word in mod:gmatch("[%w]+") do
+		if #word >= 4 and not word:match("^%d+$") and squeezed:find(word:lower(), 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
 -- What the player is told when a command of `kind` is refused.
 function guard.notice(kind)
 	return "Not in multiplayer yet: " .. (guard.WHAT[kind] or "this action")
@@ -270,7 +320,9 @@ function guard.install(cmd, env)
 			if t == "table" or t == "userdata" then
 				kinds[command] = name
 				makers[command] = (env.caller or guard.caller)()
-				if guard.CARRY[name] then calls[command] = { n = select("#", ...), ... } end
+				if guard.CARRY[name] or name == "makeScriptingSendEventCmd" then
+					calls[command] = { n = select("#", ...), ... }
+				end
 			end
 			return command
 		end
@@ -288,10 +340,14 @@ function guard.install(cmd, env)
 			return send(command, ...)
 		end
 		local from = makers[command] or (env.caller or guard.caller)()
-		-- A personal mod's event to game scripts reaches this game's alone,
-		-- where its own game script runs (docs/MODS.md).
+		-- A personal mod's event to its own game script reaches this game's
+		-- scripts alone, where that script runs (docs/MODS.md); any other of
+		-- its events is carried or refused below, as a click's.
 		if kind == "makeScriptingSendEventCmd" and from and env.personal and env.personal(from) then
-			return send(command, ...)
+			local args = calls[command]
+			if args and guard.ownEvent(from, args[2], args[3]) then
+				return send(command, ...)
+			end
 		end
 		local callback = ...
 		local carry, args = kind and guard.CARRY[kind], calls[command]

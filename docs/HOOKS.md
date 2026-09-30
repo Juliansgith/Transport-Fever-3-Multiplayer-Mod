@@ -1032,9 +1032,12 @@ through the same guard as the player's clicks: carried or refused alike.
 A refusal names the mod it came from, the nearest function on the stack
 whose source is a mod's file (`<modId>::/...`, `guard.callers`), so
 hook.log says `refused the player's makeTownCreateCmd in the room's game
-(1 so far), from the mod gw_big_city_1`. A personal mod's event to game
-scripts (`makeScriptingSendEventCmd`) is sent here as it is: it reaches this
-game's game scripts only, where the mod's own game script runs.
+(1 so far), from the mod gw_big_city_1`. A personal mod's event to its own
+game script (`makeScriptingSendEventCmd` with an id that names the mod and
+neither an id nor a name the game's scripts or TPF3-MP listen to,
+`guard.ownEvent`) is sent here as it is: it reaches this game's game scripts
+only, where the mod's own game script runs. Any other of its events is
+carried or refused as the player's own would be.
 
 A personal mod's game script runs in its player's game only, in the
 simulation's states, where a command runs at once. There
