@@ -15,8 +15,8 @@ use std::{
 use thiserror::Error;
 use tpf3mp_ipc::{IpcError, Link, Role, SendError};
 use tpf3mp_proto::{
-    ChatText, Event, EventBody, IntentRejection, LaneDigest, Payload, PlayerId, RulesName, Speed,
-    Text,
+    ChatText, Event, EventBody, IntentRejection, LaneDigest, Payload, PlayerId, RulesName, Secret,
+    Speed, Text,
 };
 
 use crate::{
@@ -536,8 +536,18 @@ impl Session {
     /// Hands a player's action to the room. Returns its number, which a
     /// refusal names.
     pub fn command(&mut self, payload: Payload) -> Result<u64, SessionError> {
+        self.command_with(payload, None)
+    }
+
+    /// Hands a player's action to the room with the password it needs (a
+    /// company's), which the room seals and never passes on.
+    pub fn command_with(
+        &mut self,
+        payload: Payload,
+        secret: Option<Secret>,
+    ) -> Result<u64, SessionError> {
         let number = self.commands;
-        self.send(&ToAgent::Command { payload })?;
+        self.send(&ToAgent::Command { payload, secret })?;
         self.commands += 1;
         Ok(number)
     }

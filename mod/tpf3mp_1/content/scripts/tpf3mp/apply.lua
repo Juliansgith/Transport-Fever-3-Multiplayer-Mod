@@ -940,13 +940,21 @@ end
 -- The game's load modes, by the schema's names, as numbers.
 local LOAD_MODES = { LoadIfAvailable = 0, FullLoadAny = 1, FullLoadAll = 2, LegacyUnloadOnly = 3 }
 
--- A LineData as the game's Line component.
+-- A LineData as the game's Line component. Each stop is at a station the
+-- acting company may use (tpf3mp/companies.lua, mayUse): no company's, its
+-- own, or another company's that keeps its stations open (DECISIONS.md, D22,
+-- proposed). The game itself stops a line anywhere (build 40408: no owner
+-- check on a line's stops); its line manager offers only the player's own
+-- stations, which the GUI lifts for open ones (gui/tpf3mp/tpf3mp.script.lua).
 local function lineComponent(data, ctx)
 	local line = api.type.Line.new()
 	local stops = {}
 	for i, s in ipairs(data.stops) do
 		local stop = api.type.Line.Stop.new()
-		stop.stationGroup = entityOf(ctx, "groups", s.group)
+		local group = entityOf(ctx, "groups", s.group)
+		local usable, why = companiesModule.mayUse(ctx and ctx.roster, company(), group, api)
+		if not usable then error("stop " .. i .. ": " .. why, 0) end
+		stop.stationGroup = group
 		stop.station = s.terminal.station
 		stop.terminal = s.terminal.terminal
 		local alternatives = {}
@@ -1068,10 +1076,12 @@ function HANDLERS.Prospect(p, ctx)
 end
 
 -- The room's companies (tpf3mp/companies.lua): the acting player founds,
--- joins, renames, recolours or dissolves one, in `ctx.roster`.
+-- joins, renames, recolours or dissolves one, and its head locks it, sends a
+-- player out or shares its stations, in `ctx.roster`; `ctx.seal` is the
+-- room's seal of a password sent with it.
 function HANDLERS.CompanyOp(op, ctx)
 	if not (ctx and ctx.roster and ctx.player) then return false, "no roster to change" end
-	local ok, why = companiesModule.run(ctx.roster, ctx.player, op, send, api)
+	local ok, why = companiesModule.run(ctx.roster, ctx.player, op, send, api, ctx.seal)
 	if not ok then return false, why end
 	return true
 end

@@ -685,11 +685,13 @@ impl Client {
             GameMessage::Intent {
                 client_seq,
                 payload,
+                secret,
             } => {
                 let queued = room.notify(RoomCommand::Intent {
                     player: self.player,
                     client_seq,
                     payload,
+                    secret,
                 });
                 if !queued {
                     self.reject_intent(client_seq, IntentRejection::RateLimited);

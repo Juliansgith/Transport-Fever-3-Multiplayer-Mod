@@ -56,6 +56,10 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 player: PlayerId(FixedBytes([1; 32])),
                 client_seq: 3,
                 payload: Payload::new(vec![9; 40]).unwrap(),
+                seal: Some(tpf3mp_proto::Seal {
+                    scope: 2,
+                    tag: FixedBytes([4; 32]),
+                }),
             },
         }),
         ToHook::Release { through: 410 },
@@ -137,6 +141,10 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         ToAgent::Loaded { next_step: 401 },
         ToAgent::Command {
             payload: Payload::new(vec![7; 64]).unwrap(),
+            secret: Some(tpf3mp_proto::Secret {
+                scope: 2,
+                password: Text::new("pw").unwrap(),
+            }),
         },
         ToAgent::Ran { step: 402 },
         ToAgent::Checkpoint {

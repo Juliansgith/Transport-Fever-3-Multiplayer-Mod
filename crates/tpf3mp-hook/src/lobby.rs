@@ -636,7 +636,7 @@ mod tests {
     impl StepHandler for Launcher {
         fn on_step(
             &mut self,
-            _commands: Vec<(u64, tpf3mp_proto::Payload)>,
+            _commands: Vec<crate::step::Handed>,
             _run: &mut crate::step::RunStep<'_>,
         ) -> crate::step::Outcome {
             unreachable!()

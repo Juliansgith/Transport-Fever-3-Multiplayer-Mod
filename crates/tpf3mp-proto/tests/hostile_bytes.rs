@@ -17,8 +17,8 @@ use tpf3mp_proto::{
     ContentManifest, CreateRoom, Event, EventBody, FixedBytes, GameMessage, Hello, IntentRejection,
     Invite, JoinRoom, LaneDigest, MemberView, ModRef, Os, Payload, Platform, PlayerId, Reject,
     RejectReason, Request, RequestError, Response, Resume, RoomId, RoomPhase, RoomSettings,
-    RoomView, RulesOffer, SavedWorld, ServerMessage, SessionId, Signature, SnapshotId, Speed, Text,
-    Turn, TurnMessage, TurnStart, Welcome, WorldOffer, decode_frame,
+    RoomView, RulesOffer, SavedWorld, Seal, Secret, ServerMessage, SessionId, Signature,
+    SnapshotId, Speed, Text, Turn, TurnMessage, TurnStart, Welcome, WorldOffer, decode_frame,
 };
 
 /// Decodes `bytes` as a `T`: an error, or a message that survives a round
@@ -158,6 +158,10 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         ClientMessage::Game(GameMessage::Intent {
             client_seq: 3,
             payload: Payload::new(vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap(),
+            secret: Some(Secret {
+                scope: 2,
+                password: Text::new("correct horse").unwrap(),
+            }),
         }),
         ClientMessage::Game(GameMessage::Checkpoint {
             step: 500,
@@ -251,6 +255,10 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                         player: player(1),
                         client_seq: 3,
                         payload: Payload::new(vec![9; 40]).unwrap(),
+                        seal: Some(Seal {
+                            scope: 2,
+                            tag: FixedBytes([5; 32]),
+                        }),
                     },
                 },
                 Event {

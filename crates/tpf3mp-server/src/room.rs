@@ -18,11 +18,11 @@ use tokio::{
 };
 use tpf3mp_net::{bulk, close};
 use tpf3mp_proto::{
-    ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN,
+    ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN, FixedBytes,
     IntentRejection, Invite, LaneDigest, MemberView, Payload, Platform, PlayerId, RequestError,
-    Resume, RoomId, RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, ServerMessage,
-    SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, WorldOffer,
-    decode_frame, encode_frame,
+    Resume, RoomId, RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, Seal, Secret,
+    ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
+    WorldOffer, decode_frame, encode_frame,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -204,6 +204,7 @@ pub(crate) enum RoomCommand {
         player: PlayerId,
         client_seq: u64,
         payload: Payload,
+        secret: Option<Secret>,
     },
     Progress {
         player: PlayerId,
@@ -322,6 +323,35 @@ impl RoomSecrets {
         .concat()
     }
 
+    /// What a company password's seal signs: the room, the scope the player
+    /// named (the company) and the password, so a seal fits one company of
+    /// one room.
+    pub(crate) fn seal_input(room: &RoomId, scope: u64, password: &Text<64>) -> Vec<u8> {
+        [
+            b"company password".as_slice(),
+            &room.0.0,
+            &scope.to_le_bytes(),
+            password.as_str().as_bytes(),
+        ]
+        .concat()
+    }
+
+    /// The seal the room orders an intent with in place of its password
+    /// (`Secret`). Every game compares seals; only this server's key makes
+    /// or checks one.
+    fn seal(&self, room: &RoomId, secret: &Secret) -> Seal {
+        let tag = hmac::sign(
+            &self.key,
+            &Self::seal_input(room, secret.scope, &secret.password),
+        );
+        let mut bytes = [0; 32];
+        bytes.copy_from_slice(tag.as_ref());
+        Seal {
+            scope: secret.scope,
+            tag: FixedBytes(bytes),
+        }
+    }
+
     /// Checks the invite and password in constant time. Both are always
     /// checked; which one failed stays inside the server, and the client
     /// learns only `BadInvite`.
@@ -395,6 +425,42 @@ impl PasswordGuard {
     }
 }
 
+/// Passwords one member may send with intents in [`SECRET_WINDOW`]. The room
+/// cannot tell a right company password from a wrong one (every game
+/// compares the seals), so it counts them all: enough to set a password
+/// and join a few companies, and at most about 2,900 guesses a day, as
+/// D13 holds a room's own password to.
+const SECRETS_PER_WINDOW: u32 = 20;
+const SECRET_WINDOW: Duration = Duration::from_secs(10 * 60);
+
+/// Counts one member's passwords in the current window.
+struct SecretGuard {
+    window_start: Instant,
+    used: u32,
+}
+
+impl SecretGuard {
+    fn new() -> Self {
+        Self {
+            window_start: Instant::now(),
+            used: 0,
+        }
+    }
+
+    /// Takes one, if the window has one left.
+    fn take(&mut self, now: Instant) -> bool {
+        if now.saturating_duration_since(self.window_start) >= SECRET_WINDOW {
+            self.window_start = now;
+            self.used = 0;
+        }
+        if self.used >= SECRETS_PER_WINDOW {
+            return false;
+        }
+        self.used += 1;
+        true
+    }
+}
+
 struct Member {
     player: PlayerId,
     name: Text<32>,
@@ -415,6 +481,8 @@ struct Member {
     intents: TokenBucket,
     payload_bytes: TokenBucket,
     chats: TokenBucket,
+    /// Passwords sent with intents.
+    secrets: SecretGuard,
     /// What this member must receive before it can follow the game.
     needs: Needs,
     /// The snapshot this member's connection may fetch.
@@ -865,6 +933,7 @@ impl Room {
                 intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
                 payload_bytes: TokenBucket::new(PAYLOAD_BYTES_PER_SECOND, PAYLOAD_BURST),
                 chats: TokenBucket::new(CHATS_PER_SECOND, CHAT_BURST),
+                secrets: SecretGuard::new(),
                 needs: Needs::Nothing,
                 offered: None,
                 loaded: None,
@@ -1099,7 +1168,8 @@ impl Room {
                 player,
                 client_seq,
                 payload,
-            } => self.intent(player, client_seq, payload),
+                secret,
+            } => self.intent(player, client_seq, payload, secret.as_ref()),
             RoomCommand::Progress { player, link, step } => self.progress(player, link, step),
             RoomCommand::Checkpoint {
                 player,
@@ -1738,7 +1808,16 @@ impl Room {
         Ok(())
     }
 
-    fn intent(&mut self, player: PlayerId, client_seq: u64, payload: Payload) {
+    /// Orders a member's intent. A password sent with it is sealed here
+    /// (`RoomSecrets::seal`) and goes no further: the event carries the seal,
+    /// never the password, and nothing logs either.
+    fn intent(
+        &mut self,
+        player: PlayerId,
+        client_seq: u64,
+        payload: Payload,
+        secret: Option<&Secret>,
+    ) {
         let now = Instant::now();
         let Some(index) = self.members.iter().position(|m| m.player == player) else {
             return;
@@ -1749,16 +1828,19 @@ impl Room {
                 let member = &mut self.members[index];
                 if !member.intents.take(now, 1)
                     || !member.payload_bytes.take(now, payload.len() as u64)
+                    || (secret.is_some() && !member.secrets.take(now))
                 {
                     Some(IntentRejection::RateLimited)
                 } else if let Err(code) = self.ruleset.validate(&player, &payload) {
                     Some(IntentRejection::Refused { code })
                 } else {
+                    let seal = secret.map(|secret| self.secrets.seal(&self.id, secret));
                     game.append(
                         EventBody::Command {
                             player,
                             client_seq,
                             payload,
+                            seal,
                         },
                         self.ruleset.as_mut(),
                     );
@@ -2772,6 +2854,7 @@ impl Member {
             intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
             payload_bytes: TokenBucket::new(PAYLOAD_BYTES_PER_SECOND, PAYLOAD_BURST),
             chats: TokenBucket::new(CHATS_PER_SECOND, CHAT_BURST),
+            secrets: SecretGuard::new(),
             needs: Needs::Nothing,
             offered: None,
             loaded: None,
@@ -3488,6 +3571,7 @@ mod tests {
             player: player(n),
             client_seq: u64::from(byte),
             payload: Payload::new(vec![byte]).unwrap(),
+            seal: None,
         }
     }
 
@@ -3971,6 +4055,7 @@ mod tests {
             intents: TokenBucket::new(1, 1),
             payload_bytes: TokenBucket::new(1, 1),
             chats: TokenBucket::new(1, 1),
+            secrets: SecretGuard::new(),
             needs: Needs::Nothing,
             offered: None,
             loaded: None,

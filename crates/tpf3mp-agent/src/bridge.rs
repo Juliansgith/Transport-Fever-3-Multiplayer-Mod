@@ -669,8 +669,10 @@ impl<L: HookLink> Bridge<L> {
                     self.reported = Some(progress);
                     self.loaded = true;
                 }
-                ToAgent::Command { payload } => {
-                    client.send_intent(self.commands, payload).await?;
+                ToAgent::Command { payload, secret } => {
+                    client
+                        .send_intent_with(self.commands, payload, secret)
+                        .await?;
                     self.commands += 1;
                 }
                 ToAgent::Ran { step } if current => {
@@ -1900,6 +1902,7 @@ mod tests {
                 player: PlayerId(FixedBytes([7; 32])),
                 client_seq: seq,
                 payload: Payload::new(vec![0; MAX_PAYLOAD]).unwrap(),
+                seal: None,
             },
         };
         // Far more than the outbox takes, all for the next step.
