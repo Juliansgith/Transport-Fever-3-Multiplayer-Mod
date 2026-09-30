@@ -14,6 +14,7 @@ use tpf3mp_agent::launcher::{
 use tpf3mp_launcher::{
     app::{Extras, LauncherApp, Shown},
     backend::Backend,
+    view::Place,
 };
 
 #[derive(Default)]
@@ -36,13 +37,24 @@ impl Backend for Recorder {
     }
 }
 
+/// The window with the lobby in it, as the page has it: most tests click
+/// through that lobby.
 fn window(state: State) -> Harness<'static, LauncherApp<Recorder>> {
-    window_sized(state, 690.0)
+    window_sized(state, 690.0, Place::Launcher)
+}
+
+/// The window as it opens: the lobby in the game's menu (D17).
+fn window_for_the_game(state: State) -> Harness<'static, LauncherApp<Recorder>> {
+    window_sized(state, 690.0, Place::Game)
 }
 
 /// A window this tall: tall enough, the room's players and chat are in
 /// view without scrolling.
-fn window_sized(state: State, height: f32) -> Harness<'static, LauncherApp<Recorder>> {
+fn window_sized(
+    state: State,
+    height: f32,
+    place: Place,
+) -> Harness<'static, LauncherApp<Recorder>> {
     let recorder = Recorder {
         state: RefCell::new(state),
         ..Recorder::default()
@@ -58,7 +70,8 @@ fn window_sized(state: State, height: f32) -> Harness<'static, LauncherApp<Recor
                 installed_mod: Some(None),
             },
         },
-    );
+    )
+    .with_place(place);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1100.0, height))
         .build_ui_state(|ui, app: &mut LauncherApp<Recorder>| app.show(ui), app);
@@ -237,6 +250,7 @@ fn removing_a_player_asks_first() {
             true,
         ),
         1200.0,
+        Place::Launcher,
     );
     window.get_by_label("Remove").click();
     window.run_steps(4);
@@ -317,6 +331,7 @@ fn chat_is_sent_to_the_room() {
     let mut window = window_sized(
         in_room(vec![member("Ann", true, true, false)], true),
         1200.0,
+        Place::Launcher,
     );
     let chat = window.get_by_role(Role::TextInput);
     chat.focus();
@@ -429,5 +444,87 @@ fn a_package_with_its_own_server_offers_no_other() {
             server: "K7QM2X".into(),
             name: "Ann".into(),
         }]
+    );
+}
+
+#[test]
+fn by_default_the_window_starts_the_game_and_the_lobby_is_in_its_menu() {
+    let state = State {
+        name: "Ann".into(),
+        server: Some("tpf3mp.example.org:29470".into()),
+        server_fixed: true,
+        server_name: Some("EU".into()),
+        installed: installed(),
+        ..State::default()
+    };
+    let mut window = window_for_the_game(state);
+    // No lobby forms here: the game's Multiplayer window has them.
+    assert!(window.query_by_label("Connect").is_none());
+    assert!(
+        window
+            .query_by_role_and_label(Role::TextInput, "YOUR NAME")
+            .is_none()
+    );
+    window.get_by_label("HOW TO PLAY: IN THE GAME");
+    window.get_by_label("Click Multiplayer on its main menu");
+    window.get_by_label("Start Transport Fever 3").click();
+    window.run_steps(2);
+    assert_eq!(actions(&window), [Action::LaunchGame]);
+
+    // The lobby comes back here with one click, and goes again.
+    window.get_by_label("Lobby in this window instead").click();
+    window.run_steps(4);
+    window.get_by_label("Connect");
+    window
+        .get_by_label("Lobby in the game's menu instead")
+        .click();
+    window.run_steps(4);
+    assert!(window.query_by_label("Connect").is_none());
+}
+
+#[test]
+fn in_a_room_the_window_shows_it_but_its_buttons_are_in_the_game() {
+    let mut state = in_room(
+        vec![
+            member("Ann", true, true, true),
+            member("Bob", false, false, false),
+        ],
+        true,
+    );
+    state.game = Game {
+        attached: Some("40408".into()),
+        ..Game::default()
+    };
+    // In the lobby here, the same room has them.
+    let here = window_sized(state.clone(), 1200.0, Place::Launcher);
+    for there in ["Remove", "Send", "Leave room", "Not ready", "Copy invite"] {
+        assert!(
+            here.query_by_role_and_label(Role::Button, there).is_some(),
+            "{there}"
+        );
+    }
+    let window = window_for_the_game(state);
+    window.get_by_label("Friday trains");
+    window.get_by_label("Bob");
+    window.get_by_label("Continue in the game");
+    window.get_by_label(
+        "Chat, Ready, Start and removing players are in the game's Multiplayer window.",
+    );
+    for gone in [
+        "Remove",
+        "Send",
+        "Leave room",
+        "Ready",
+        "Not ready",
+        "Copy invite",
+    ] {
+        assert!(
+            window.query_by_role_and_label(Role::Button, gone).is_none(),
+            "{gone}"
+        );
+    }
+    assert!(
+        window.query_by_role(Role::TextInput).is_none(),
+        "no chat field"
     );
 }

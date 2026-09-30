@@ -488,7 +488,7 @@ impl<L: HookLink> Bridge<L> {
         let view = lobby.views.borrow_and_update().clone();
         self.outbox
             .retain(|message| !matches!(message, ToHook::Lobby(_)));
-        self.outbox.push_back(ToHook::Lobby(view));
+        self.outbox.push_back(ToHook::Lobby(Box::new(view)));
     }
 
     /// The player acted in the game's main-menu window: the launcher does
@@ -1448,7 +1448,10 @@ impl Outbox {
             ToHook::Chat { from, text } => from.as_str().len() + text.as_str().len(),
             ToHook::Room(room) => room.members.len() * 64,
             ToHook::Lobby(view) => {
-                view.chat.len() * 320 + view.room.as_ref().map_or(0, |room| room.members.len() * 80)
+                view.chat.len() * 320
+                    + view.room.as_ref().map_or(0, |room| room.members.len() * 80)
+                    + view.rules.len() * 240
+                    + view.saves.len() * 72
             }
             ToHook::End { reason } => reason.as_str().len(),
             _ => 0,
@@ -1946,7 +1949,7 @@ mod tests {
         bridge.flush().unwrap();
         assert_eq!(
             fake.hook_hears(),
-            vec![ToHook::Lobby(lobby("B"))],
+            vec![ToHook::Lobby(Box::new(lobby("B")))],
             "the newest only, and no hello again"
         );
         bridge.lobby_news();

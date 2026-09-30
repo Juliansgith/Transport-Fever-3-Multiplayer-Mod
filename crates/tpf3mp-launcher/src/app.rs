@@ -5,6 +5,11 @@
 //! panel with one big button on the right; your game in a bar along the
 //! bottom. What it shows is worked out in [`view`], from the launcher's
 //! [`State`] on every frame.
+//!
+//! The room's lobby is in the game (D17): by default the panel starts the
+//! game and the left column shows where things stand, with the room's
+//! players but not its chat or buttons. "Lobby in this window" brings the
+//! page's lobby back, for a game whose menu the hook cannot reach.
 
 use std::{
     path::Path,
@@ -24,7 +29,7 @@ use crate::{
     probe::{Probe, Reach},
     theme::{self, Assets, Fill, Pill, Quiet},
     update::{UpdateState, Updater},
-    view::{self, Does, Form, Then, Tone, View},
+    view::{self, Does, Form, Place, Then, Tone, View},
 };
 
 /// How often the window rereads the launcher's state when nothing else
@@ -43,6 +48,9 @@ const TOAST: Duration = Duration::from_millis(6500);
 const SIDEBAR: f32 = 340.0;
 /// What the note under the panel says.
 const SESSION_NOTE: &str = "Everyone in a room needs the same game build and mods.";
+/// Where the room's chat and buttons are, when the lobby is in the game.
+const IN_GAME_NOTE: &str =
+    "Chat, Ready, Start and removing players are in the game's Multiplayer window.";
 
 /// What the window needs besides the launcher.
 pub struct Extras {
@@ -146,6 +154,9 @@ pub struct LauncherApp<B> {
     /// When TPF3-MP's data folder was last looked at, and the TPF3-MP
     /// version the installer recorded there.
     installed_mod: Option<(Instant, Option<String>)>,
+    /// Where the player uses the room's lobby: the game's Multiplayer
+    /// window, unless they asked for it here.
+    place: Place,
 }
 
 impl<B: Backend> LauncherApp<B> {
@@ -173,7 +184,15 @@ impl<B: Backend> LauncherApp<B> {
             toast: None,
             last_error: None,
             installed_mod: None,
+            place: Place::Game,
         }
+    }
+
+    /// The window with the room's lobby in `place` to begin with.
+    #[must_use]
+    pub fn with_place(mut self, place: Place) -> Self {
+        self.place = place;
+        self
     }
 
     pub fn backend(&self) -> &B {
@@ -226,7 +245,10 @@ impl<B: Backend> LauncherApp<B> {
             .as_ref()
             .map(Updater::state)
             .or_else(|| self.extras.shown.update.clone());
-        let view = view::present(&state, reach, update.as_ref());
+        let view = match self.place {
+            Place::Game => view::present_in_game(&state, reach, update.as_ref()),
+            Place::Launcher => view::present(&state, reach, update.as_ref()),
+        };
         let geometry = Geometry::of(ctx.content_rect());
         theme::scene(ui.painter(), geometry.window, &assets);
         self.header(ui, &geometry, &state, &view, reach, &assets);
@@ -363,7 +385,13 @@ impl<B: Backend> LauncherApp<B> {
             |ui| {
                 ui.add_space(7.0);
                 let Some(room) = &state.room else {
-                    theme::section_heading(ui, "How to play");
+                    theme::section_heading(
+                        ui,
+                        match self.place {
+                            Place::Game => "How to play: in the game",
+                            Place::Launcher => "How to play",
+                        },
+                    );
                     ui.add_space(20.0);
                     ui.spacing_mut().item_spacing.y = 11.5;
                     for (words, done) in &view.steps {
@@ -391,7 +419,12 @@ impl<B: Backend> LauncherApp<B> {
                     differences(ui, &view.differences);
                 }
                 ui.add_space(22.0);
-                self.chat(ui, state);
+                match self.place {
+                    Place::Launcher => self.chat(ui, state),
+                    Place::Game => {
+                        ui.label(theme::text(IN_GAME_NOTE, theme::body(13.0), theme::MUTED));
+                    }
+                }
                 if !state.notices.is_empty() {
                     ui.add_space(22.0);
                     theme::section_heading(ui, "Session log");
@@ -582,6 +615,7 @@ impl<B: Backend> LauncherApp<B> {
         }
         ui.add_space(14.0);
         let form = match view.main.does {
+            _ if self.place == Place::Game => None,
             Does::Submit(Form::Connect) => Some(Form::Connect),
             Does::Submit(form) => Some(self.open_form.unwrap_or(form)),
             _ => self
@@ -669,6 +703,22 @@ impl<B: Backend> LauncherApp<B> {
                     ));
                 },
             );
+        }
+        // The lobby in this window, or back in the game.
+        ui.add_space(12.0);
+        let (words, other) = match self.place {
+            Place::Game => ("Lobby in this window instead", Place::Launcher),
+            Place::Launcher => ("Lobby in the game's menu instead", Place::Game),
+        };
+        let look = Quiet {
+            font: 11.0,
+            height: 26.0,
+            ..Quiet::new()
+        }
+        .width(ui.available_width());
+        if theme::quiet_button(ui, true, None, words, look).clicked() {
+            self.place = other;
+            self.open_form = None;
         }
         ui.add_space(10.0);
         ui.vertical_centered(|ui| {

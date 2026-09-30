@@ -247,7 +247,7 @@ impl<L: HookLink> IdleLink<L> {
             }
         }
         if self.build.is_some() && self.told.as_ref() != Some(lobby) {
-            let bytes = encode(&ToHook::Lobby(lobby.clone()))?;
+            let bytes = encode(&ToHook::Lobby(Box::new(lobby.clone())))?;
             if self.link.send(&bytes)? {
                 self.told = Some(lobby.clone());
             }
@@ -347,20 +347,26 @@ pub(crate) mod tests {
                 ToHook::Hello {
                     version: BRIDGE_VERSION
                 },
-                ToHook::Lobby(lobby("Ann"))
+                ToHook::Lobby(Box::new(lobby("Ann")))
             ]
         );
         // Unchanged, it is not sent again; changed, it is.
         idle.pump(&lobby("Ann")).unwrap();
         assert!(fake.hook_hears().is_empty());
         idle.pump(&lobby("Ann B")).unwrap();
-        assert_eq!(fake.hook_hears(), vec![ToHook::Lobby(lobby("Ann B"))]);
+        assert_eq!(
+            fake.hook_hears(),
+            vec![ToHook::Lobby(Box::new(lobby("Ann B")))]
+        );
 
         // Given back by a session, the lobby goes out again at once.
         let (link, build) = idle.into_parts();
         let mut idle = IdleLink::resumed(link, build);
         idle.pump(&lobby("Ann B")).unwrap();
-        assert_eq!(fake.hook_hears(), vec![ToHook::Lobby(lobby("Ann B"))]);
+        assert_eq!(
+            fake.hook_hears(),
+            vec![ToHook::Lobby(Box::new(lobby("Ann B")))]
+        );
     }
 
     #[test]
@@ -456,7 +462,7 @@ pub(crate) mod tests {
         assert_eq!(view.server.as_str(), "EU", "as players see it");
         assert_eq!(view.error.as_ref().unwrap().as_str(), "that room is full");
         assert_eq!(view.notice.as_ref().unwrap().as_str(), "new", "the newest");
-        assert!(encode(&ToHook::Lobby(view.clone())).is_ok());
+        assert!(encode(&ToHook::Lobby(Box::new(view.clone()))).is_ok());
         let room = view.room.unwrap();
         assert!(!room.running && room.you_own);
         assert_eq!(room.invite.unwrap().as_str(), "K7QM2X");

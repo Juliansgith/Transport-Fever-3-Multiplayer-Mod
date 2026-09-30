@@ -345,7 +345,7 @@ impl Session {
                     self.lobby = Lobby::left();
                     return Ok(None);
                 }
-                ToHook::Lobby(view) => self.lobby_view = Some(view),
+                ToHook::Lobby(view) => self.lobby_view = Some(*view),
                 _ => return Err(SessionError::Unexpected("something before the game began")),
             }
         }
@@ -625,7 +625,7 @@ impl Session {
         }
         while let Some(message) = self.try_recv()? {
             match message {
-                ToHook::Lobby(view) => self.lobby_view = Some(view),
+                ToHook::Lobby(view) => self.lobby_view = Some(*view),
                 ToHook::Chat { .. } | ToHook::Room(_) => {}
                 _ if ended => {}
                 other => {
@@ -677,7 +677,7 @@ impl Session {
             Gated::Ended(reason) => game.notice(Notice::Ended(reason)),
             Gated::Chat { from, text } => game.notice(Notice::Chat { from, text }),
             Gated::Room(room) => game.notice(Notice::Room(room)),
-            Gated::Lobby(view) => self.lobby_view = Some(view),
+            Gated::Lobby(view) => self.lobby_view = Some(*view),
             Gated::Nothing => {}
         }
         Ok(())
@@ -1038,10 +1038,13 @@ mod tests {
     fn at_the_menu_the_lobby_is_read_and_the_rooms_game_waits_for_its_gate() {
         let (mut session, agent) = at_the_menu("menu-lobby");
         assert_eq!(session.take_lobby(), None);
-        say(&agent, &ToHook::Lobby(lobby_view("first")));
-        say(&agent, &ToHook::Lobby(lobby_view("second")));
+        say(&agent, &ToHook::Lobby(Box::new(lobby_view("first"))));
+        say(&agent, &ToHook::Lobby(Box::new(lobby_view("second"))));
         say(&agent, &begin(50));
-        say(&agent, &ToHook::Lobby(lobby_view("after the begin")));
+        say(
+            &agent,
+            &ToHook::Lobby(Box::new(lobby_view("after the begin"))),
+        );
         say(
             &agent,
             &ToHook::Load {
@@ -1068,7 +1071,7 @@ mod tests {
         ));
         assert_eq!(session.take_lobby(), Some(lobby_view("after the begin")));
         // Once the game began, only its gate reads the link.
-        say(&agent, &ToHook::Lobby(lobby_view("in the game")));
+        say(&agent, &ToHook::Lobby(Box::new(lobby_view("in the game"))));
         session.poll_lobby().unwrap();
         assert_eq!(session.take_lobby(), None);
         session.loaded(1).unwrap();
@@ -1089,7 +1092,7 @@ mod tests {
         );
         assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Ended);
         say(&agent, &begin(50));
-        say(&agent, &ToHook::Lobby(lobby_view("next room")));
+        say(&agent, &ToHook::Lobby(Box::new(lobby_view("next room"))));
         session.poll_lobby().unwrap();
         assert_eq!(session.take_lobby(), Some(lobby_view("next room")));
     }

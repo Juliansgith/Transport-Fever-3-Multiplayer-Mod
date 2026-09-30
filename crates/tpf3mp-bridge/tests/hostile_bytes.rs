@@ -96,7 +96,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             ])
             .unwrap(),
         }),
-        ToHook::Lobby(LobbyView {
+        ToHook::Lobby(Box::new(LobbyView {
             connection: LobbyConnection::Connected,
             server: Text::new("EU").unwrap(),
             name: Text::new("Ann").unwrap(),
@@ -139,7 +139,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 total: 1 << 24,
             },
             differences: Some(Text::new("you lack stations 3").unwrap()),
-        }),
+        })),
     ];
     let to_agent = [
         ToAgent::Hello {

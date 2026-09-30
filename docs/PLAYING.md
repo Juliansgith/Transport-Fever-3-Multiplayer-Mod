@@ -46,8 +46,8 @@ launcher connects out to the server, and everything goes through it.
    out, packages carry no mod yet, and the installer says so.
 
 The part of TPF3-MP that runs inside the game is not installed at all: the
-launcher loads it into the game it starts for your room, into that game
-alone, for as long as it runs (see "The launcher"). Started from Steam,
+launcher loads it into the game it starts, into that game alone, for as
+long as it runs (see "The launcher"). Started from Steam,
 Transport Fever 3 is the plain game, as if TPF3-MP were not there.
 
 ## The launcher
@@ -64,106 +64,113 @@ Start the launcher from the package:
 - **Linux:** `tpf3mp-launcher`. It needs a desktop with Vulkan or OpenGL
   drivers, as the game does.
 
-It opens the TPF3-MP window. Keep it open while you play: closing it ends
-your session, and during a game it asks first. On a system where the
-window cannot open, the launcher opens the same launcher as a page in your
-browser instead (`--browser` does so on purpose); that page works only on
-your own machine, in the tab the launcher opened.
+It opens the TPF3-MP window. Keep it open while you play: it holds your
+connection to the server, closing it ends your session, and during a game
+it asks first. On a system where the window cannot open, the launcher
+opens the same launcher as a page in your browser instead (`--browser`
+does so on purpose); that page works only on your own machine, in the tab
+the launcher opened, and has the whole lobby in it.
 
-1. **Connect.** Enter the name others will see, then **Connect**; the
-   launcher remembers it for next time. There is no server to type:
-   TPF3-MP plays on the project's server, which the Server panel names
-   (**EU**, in Germany), and on no other. Its dot is green while the
-   server is online. Got an invite code? Type it into **Invite** as well:
-   you are connected and in the room in one step.
-2. **Rooms.** Either create a room, with an optional password, or type
-   the invite code someone sent you, such as `K7QM2X`, and **Join
-   room**. Upper or lower case, both work. When the server offers more
-   than one set of rules, the host picks one when creating the room:
-   `native` is the game's own rules and economy, as in single player;
-   others are run by the server, which checks everyone's money and
-   actions. The room's title shows its rules, and they cannot change once
-   the room exists.
-3. **Invite.** Your room shows its **invite code**, six letters and
-   digits. Send it to your friends, for example on Discord (**Copy
-   invite** copies it), or read it out. Anyone with the code (and the
-   password, if you set one) can join; keep it within your group.
-4. **Start the game.** In your room, press **Start Transport Fever 3** in
-   the Game part, with Steam running. The launcher starts the game with
-   TPF3-MP in it, for this room; once the game has loaded, the Game part
-   says it is connected. Only a game started here joins the room: started
-   from Steam, it is the plain game. Press it once; the launcher refuses to
-   start a second game while the first still runs. If the game closes or
-   crashes once it has connected, the launcher notices within a second:
-   the Session log says "the game session failed: Transport Fever 3
-   closed", and you are back on the server, out of the room. Join it again
-   with its invite and start the game again. A game that closes before it
-   connected leaves you in the room; just start it again.
-   You can also start the game before you are in a room (**Start
-   Transport Fever 3** under the main button) and do the rest from the
-   game's main menu: see "The Multiplayer menu in the game".
-5. **Wait at the menu, or load your save.** A guest just waits at the
-   game's main menu: once the game is there, the launcher marks you
-   **ready** by itself, and when the room starts, your game loads the
-   room's world from the menu and starts it, with no **Start Game** to
-   press. The room's owner loads the save everyone will play; once its
-   world is up, the launcher marks the owner ready. (A guest who loads a
-   world instead is marked ready too, and the room's world replaces it.)
-   Nobody has to press **Ready**: the button stays, to get ready by hand,
-   and **Not ready** keeps you not ready until you come back to the menu
-   or load another world. When everyone is ready, the room's owner presses
-   **Start game**. Everyone's game starts from the owner's world.
+The window starts the game and shows where things stand; you play from the
+game's own **Multiplayer** button (next section).
 
-The window is tearded's TPF2 multiplayer launcher, for Transport Fever 3.
-On the left, under the game's name, a checklist ticks these steps off as
-you go: connect to a server, create or join a room, start the game from
-here, everyone ready, play together; below it, the release notes. In a
-room, the left side shows the room: its players, whose mods differ, the
-chat. The step at hand is on the right, on the big button, which also
-follows your game: started from here, receiving the room's world,
-loading it, and playing. The bar along the bottom, **Your
-game**, says where Steam has Transport Fever 3 and whether the TPF3-MP mod
-is installed (see "Installing"). **Chat**
-reaches everyone in the room. A message **From the server** is its
-operator's, such as a restart coming: when the server comes back, the
-launcher rejoins by itself. The **Session log** tells you what happened,
-such as your world being replaced by the room's, or your connection coming
-back.
+- **Start Transport Fever 3**, the big button, starts the game with
+  TPF3-MP in it, with Steam running. Only a game started here has the
+  Multiplayer button and joins rooms: started from Steam, it is the plain
+  game. Press it once; the launcher refuses to start a second game while
+  the first still runs. It is also the first step of **How to play: in the
+  game** on the left, which ticks the steps off as you go.
+- **Server** names the project's server (**EU**, in Germany), the only one
+  TPF3-MP plays on; its dot is green while the server is online. The pill
+  at the top of the panel says whether you are connected, in a room's
+  lobby, or playing.
+- **Your room.** Once you are in a room, the left side shows it: its
+  players, whose mods differ, and the **Session log**, which tells you
+  what happened, such as your world being replaced by the room's or your
+  connection coming back. Its chat and buttons are in the game.
+- **While the room's world comes**, the big button follows your game:
+  receiving the room's world, loading it, and playing, with the room's
+  speed.
+- **Your game**, the bar along the bottom, says where Steam has Transport
+  Fever 3 and whether the TPF3-MP mod is installed (see "Installing").
+  **Settings** has updates and diagnostics; the **support code** at the
+  bottom is what to quote to the server's operator.
+- If the game closes or crashes once it has connected, the launcher
+  notices within a second: the Session log says "the game session failed:
+  Transport Fever 3 closed", and you are back on the server, out of the
+  room. Join it again with its invite and start the game again.
 
-## The Multiplayer menu in the game
+**Lobby in this window instead**, under the big button, brings the whole
+lobby into the launcher, as it was before the game had its Multiplayer
+button: connect with your name (and an invite, to join in one step),
+create a room with its rules and password, join with an invite, the room's
+players with **Remove** for the owner, **Copy invite**, **Ready**,
+**Start game**, **Leave room** and the chat. Use it if the game's main menu
+has no Multiplayer button, for example after a game update the hook does
+not know yet (see "When something does not work"). **Lobby in the game's
+menu instead** puts it back.
 
-Connecting, rooms, the lobby and chat are in the game too. The launcher
-still starts the game and holds the connection, so keep it open; everything
-you do in the game shows in the launcher's window as well, and the other
-way round.
+## Playing from the game's Multiplayer button
 
-1. **Start the game from the launcher**, in a room or not: **Start
-   Transport Fever 3**. Started from Steam, the game has no Multiplayer
-   entry.
-2. **Open the Multiplayer window.** On the game's main menu, click
-   **Multiplayer**: the card in the top row, or the button in the top bar.
-   If the window says the game has no link to the launcher, the game was
-   not started from the launcher: close it and start it from there.
-3. **Connect.** Enter the name others will see and press **Connect**. The
-   server is the launcher's (**EU**); there is none to type.
-4. **Create or join.** Create a room (a name, and a password if you want
-   one), or type the invite code a friend sent you, such as `K7QM2X`, and
-   **Join**.
-5. **The room.** The window shows the room's invite code, its players (the
-   crown marks the host, the tick who is ready) and, on the right, the
-   room's chat, where you can write to everyone. A guest waiting at the
-   main menu is marked ready by itself; the owner is marked ready once
-   their world is up. **Ready** is still there to press by hand. The owner
-   presses **Start** once everyone is ready.
-6. **Play.** The room's game starts from the owner's world: the owner
-   loads it with **Load Game**, as in single player, and it becomes the
-   room's. Everyone else stays at the main menu: the game loads the room's
-   world from there by itself and starts it. (A guest who loads a save of
-   their own instead is fine too: the room's world replaces it.)
+Connecting, rooms, the lobby and chat are in the game. Everything you do
+there goes through the launcher, which you keep open, and shows in its
+window too.
 
-**Leave** gives up your seat; **Disconnect** leaves the server. After a
-room's game has ended, start the game again from the launcher to play the
-next room's game.
+1. **Start the game from the launcher**: **Start Transport Fever 3**.
+2. **Click Multiplayer.** The game's main menu has two TPF3-MP cards to
+   the right of its own: **Multiplayer**, which says under its title where
+   you are (not connected, online on EU, your room and how many are ready),
+   and **Join a friend**. The top bar has a **Multiplayer** button too,
+   next to Settings. Each opens the Multiplayer window; **Join a friend**
+   opens it with joining first. The window shows the steps along its top:
+   connect, create or join a room, get ready, start, play.
+3. **Connect.** Type the name others will see, or keep the one the
+   launcher remembers, and press **Connect to EU**. The server is the
+   launcher's; there is none to type.
+4. **Create a room**, on the left, or **join one**, on the right.
+   - To create one: a **room name** (your name's room if you leave it
+     empty); **Start from this save**, one of your saves, newest first, or
+     **None: I load a world myself**; **Players**, 2 to 16; the **Rules**,
+     when the server offers more than one (`native` is the game's own rules
+     and economy, as in single player; a description says what the others
+     are); and an optional **password**. Then **Create room**. You own the
+     room: you start its game and can remove players.
+   - To join one: the **invite code** a friend sent you, such as `K7QM2X`
+     (upper or lower case), the room's **password** if it has one, and
+     **Join room**. The server lists no rooms: an invite is the way in.
+5. **The room.** On the left, the room's name (a lock if it has a
+   password), its **invite code** to send your friends, and its players,
+   each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
+   and **Other mods** when their game differs from the owner's. On the
+   right, the room's chat: type and press Enter or **Send**.
+6. **Get ready.** At the main menu you are marked ready by yourself: a
+   guest at once, the owner once the room has the save picked in step 4.
+   **Ready** and **Not ready** set it by hand.
+7. **Start.** The owner presses **Start the game** once everyone is
+   ready (until then it says it is waiting for everyone). Every player's
+   game loads the room's world from the menu and starts it, with no Start
+   Game to press. Without a save picked, the owner loads the world to play
+   with **Load Game** instead, as in single player, and it becomes the
+   room's.
+8. **Play.** While the world comes, the window says how far it is
+   ("Receiving the room's world: 42% (48.0 MB of 112 MB)", then "Loading
+   the room's world..."), and the chat and **Leave room** still work. In
+   the game, the Multiplayer window on the game bar has the room (see
+   "While you play").
+
+What the window says:
+
+- A line under the steps says what is under way ("Creating the room...")
+  until the launcher answers, then what happened. Anything refused, such
+  as a wrong invite, a full room or a name that is too long, shows in red
+  there, and the button can be pressed again.
+- "Your game differs from the room's" names the mods to add, remove or
+  update.
+- "This game has no link to the TPF3-MP launcher": the game was not
+  started from the launcher. Close it and start it from there.
+- **Remove** (the bin, for the owner) and **Leave room** ask first.
+  **Disconnect** leaves the server. After a room's game has ended, start
+  the game again from the launcher to play the next room's game.
 
 ## Updates
 
@@ -190,8 +197,8 @@ protected folder such as Program Files.
   buttons, for the Multiplayer window: the room's players (the host, you,
   anyone away), its speed, whether your world matches the room's, and the
   room's newest chat, where you can write to everyone. Rooms and invites
-  are in the launcher and on the main menu's Multiplayer window (see "The
-  Multiplayer menu in the game").
+  are on the main menu's Multiplayer window (see "Playing from the game's
+  Multiplayer button").
 - **Speed and pause.** The room's owner sets the room's speed, pause
   included, with the game's own speed buttons, and everyone's game runs at
   it. Anyone else's speed buttons do not change the room's speed: the
@@ -298,6 +305,13 @@ send: while you are connected, the launcher sends its log to the server
 by itself (see "Diagnostics"), so the operator finds what happened to you
 from your support code alone. The launcher also keeps its log on your machine
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
+
+**No Multiplayer button on the game's main menu?** Only a game started
+from the launcher has it, and only when the TPF3-MP mod is installed and
+activated (see "Installing") and TPF3-MP knows where the game's menu is
+in its build. **Lobby in this window instead** in the launcher does
+everything the button's window does, with the game started from the
+launcher as before.
 
 ### Diagnostics
 

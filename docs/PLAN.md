@@ -334,6 +334,10 @@ Dev C:
   starts the room's game, through the launcher that started the game
   (docs/LOBBY.md). Built; tick once seen working in the real game
   (investigation/TPF3_INGAME_MENU_2026-09-30.md, section 6).
+  *Proposed* (D22, for the owner): the launcher's window opens with the
+  lobby in the game, starting the game and showing where things stand,
+  with its own lobby one click away; the window picks the save a room
+  starts from.
 - [ ] *Held* (D18, D19, D20): choosing versions and tracks, and a Dev
   track of untested builds. The owner decides after launch, once `dev`
   takes reviewed pull requests only.

@@ -106,8 +106,9 @@ pub enum ToHook {
     Room(RoomInfo),
     /// The launcher's lobby as it stands, for the main menu's Multiplayer
     /// window (D17): sent whenever it changes, before, during and after a
-    /// room's game. Only the latest counts.
-    Lobby(LobbyView),
+    /// room's game. Only the latest counts. Boxed: it is far larger than
+    /// the other messages.
+    Lobby(Box<LobbyView>),
 }
 
 /// Most chat lines a [`LobbyView`] carries: the newest.
@@ -467,7 +468,7 @@ mod tests {
             text: Text::new("z".repeat(280)).unwrap(),
             you: false,
         };
-        let view = ToHook::Lobby(LobbyView {
+        let view = ToHook::Lobby(Box::new(LobbyView {
             connection: LobbyConnection::Connected,
             server: Text::new("s".repeat(128)).unwrap(),
             name: Text::new("n".repeat(32)).unwrap(),
@@ -503,7 +504,7 @@ mod tests {
                 total: u64::MAX,
             },
             differences: Some(Text::new("d".repeat(256)).unwrap()),
-        });
+        }));
         let bytes = encode(&view).unwrap();
         assert_eq!(decode::<ToHook>(&bytes).unwrap(), view);
         let action = ToAgent::Lobby(LobbyAction::Create {

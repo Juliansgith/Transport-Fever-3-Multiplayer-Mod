@@ -668,3 +668,41 @@ Rejected:
 - **A company chosen only in the lobby, before the game** (TpF2
   Multiplayer's chips): choosing in the game lets a player change their
   mind, and a player who joins late chooses when they arrive.
+
+## D22 (2026-09-30, proposed): the launcher's window opens with the lobby in the game
+
+*Proposed for the owner (Juliansgith) to decide; not in force until
+approved.* The user asked on 2026-09-30 for "a nice ui multiplayer button in
+game, join a lobby from a multiplayer button in game, move away from having
+all the lobby stuff in the launcher".
+
+- **The game is where players play the lobby.** The main menu's
+  Multiplayer cards and button open the window that connects, creates and
+  joins rooms (with the save the room starts from, its rules, players and
+  password), shows the players, chats, gets ready and starts (D17 as
+  amended; LOBBY.md).
+- **The launcher's window starts the game and shows where things stand.**
+  Its big button starts Transport Fever 3 with the hook (D11 stays: the
+  launcher is still the only way the hook runs), then follows the room's
+  world; the rest shows the server, the room and its players read-only,
+  the session log, the support code, updates and settings. It holds the
+  connection, as before.
+- **The page's lobby stays one click away** ("Lobby in this window
+  instead"), and in the browser page (`--browser`) as it is, for a game
+  whose menu the hook cannot reach, so that costs the player nothing
+  (D17's amendment). The launcher's backend keeps every lobby action; the
+  auto-room flags and tests use it as before.
+
+This touches D20, which says the window shows in each state what the
+page's `view.js` shows: by default it now shows less than the page
+(`view::present_in_game`), and the page's states are what it shows with
+the lobby in the window (`view::present`, rendered by
+`tests/screenshots.rs` as before, next to the `g*` screens of the default).
+
+Rejected:
+
+- **Removing the lobby from the launcher**: a game update that moves the
+  menu's code would leave players unable to play until TPF3-MP catches up.
+- **A pause-menu Multiplayer entry**: in the room's game the game bar's
+  Multiplayer window has the room, and a copy of the pause menu is one
+  more game file to carry over on every patch.
