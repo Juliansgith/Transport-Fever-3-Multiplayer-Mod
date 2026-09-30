@@ -349,7 +349,13 @@ function data()
 					value = draft:get(),
 					maxLength = 280,
 					acceptOnFocusLoss = false,
+					-- Clicking away keeps what was typed, and a redraw shows
+					-- it: Send sends what the field shows, never a line the
+					-- field dropped (it emptied itself on a cancel, build
+					-- 40408, while Send still had the text).
+					resetValueOnCancel = false,
 					onTyping = function(text) draft:set(text) end,
+					onCancel = function() shared.version = shared.version + 1 end,
 					onValueChange = function(text) send(text) end,
 				},
 				builtin.Button{

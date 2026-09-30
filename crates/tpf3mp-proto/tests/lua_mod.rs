@@ -267,6 +267,25 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
         .eval()
         .unwrap();
     assert_eq!(said, ["on my way"]);
+    // A line typed and then left (a click elsewhere cancels the field) stays
+    // in the field as typed, so Send sends what the field shows.
+    let (kept, resets): (String, bool) = lua
+        .load(
+            "local function field() \
+                 for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.layout)) do \
+                     if v.view == 'TextInputField' then return v end \
+                 end \
+             end \
+             field().params.onTyping('half typed') \
+             field().params.onCancel() \
+             WINDOWS.Tpf3mpWindow.step() \
+             WINDOWS.Tpf3mpWindow.render() \
+             return field().params.value, field().params.resetValueOnCancel",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(kept, "half typed");
+    assert!(!resets, "the field keeps what was typed");
     // The other button closes it, and opens it again; so does the window's
     // own close button.
     let (closed, reopened, closed_by_itself): (bool, bool, bool) = lua
