@@ -538,6 +538,41 @@ function HANDLERS.BuildRoad(road)
 	return buildNetwork("Street", road.street, road.style, road.polyline)
 end
 
+-- The bulldozer's removals, as the game makes them itself: a construction
+-- with what is its own (createProposalRemove: its entrance edge and node, as
+-- the bulldozer proposed them on build 40408), or edges with the nodes they
+-- leave on their own (makeSegmentsRemoveProposal). Paid by the player, as
+-- the tool removes.
+function HANDLERS.Bulldoze(b)
+	local context = api.type.Context.new()
+	context.player = api.engine.util.getPlayer()
+	local proposals = api.engine.util.proposal
+	local proposal
+	if b.Construction then
+		local con = constructionAt(b.Construction)
+		proposal = proposals.createProposalRemove(con, context)
+		if proposal == nil then error("the game will not remove the " .. tostring(b.Construction.file), 0) end
+		log("removing " .. tostring(con) .. " " .. tostring(b.Construction.file))
+	elseif b.Edges then
+		local network = b.Edges.network
+		local nodes = readNodes(network)
+		local ids = {}
+		for k, ends in ipairs(b.Edges.edges) do
+			local e = edgeBetween(nodes, network, arr(ends.a), arr(ends.b))
+			if e == nil then error("no " .. network .. " edge to remove (" .. k .. ")", 0) end
+			if #(e.comp.objects or {}) > 0 then error("edge " .. k .. " has a stop or signal on it", 0) end
+			ids[#ids + 1] = e.id
+		end
+		proposal = proposals.makeSegmentsRemoveProposal(ids)
+		log("removing " .. network .. " edges " .. table.concat(ids, ","))
+	else
+		return false, "a bulldoze of no kind"
+	end
+	-- The game's verdict takes simple proposals only: a removal it refuses
+	-- fails in the command's own answer (run).
+	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+end
+
 function HANDLERS.BuildTrack(track)
 	return buildNetwork("Track", track.track, track.style, track.polyline)
 end

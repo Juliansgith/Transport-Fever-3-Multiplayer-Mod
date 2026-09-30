@@ -15,7 +15,12 @@
 --   template;
 -- - CONSTRUCTIONS: every construction, by its file and position to 0.1 m;
 -- - LINES: every line's number of stops;
--- - VEHICLES: the vehicles' positions to 1 m;
+-- - VEHICLES: each vehicle's state, stop, and place on its path (edge and
+--   distance to 1 cm, speed to 1 cm/s): the simulation's own state
+--   (MOVE_PATH.dyn). Not its position in the world: getPosition, and the
+--   path state as the frame began (dyn0), differed between two games in
+--   the same simulation update by millimetres (build 40408), the frames
+--   being their own; the simulation's state did not;
 -- - ECONOMY: each player's balance;
 -- - TOWNS: each town's number of buildings;
 -- - PEOPLE: the number of people.
@@ -24,9 +29,6 @@
 -- games that agree on the world, except where the save carries it (towns and
 -- players). Each lane is read on its own: one that cannot be read is
 -- "err" on every game alike, and the others still count.
---
--- A vehicle's position comes from api.engine.util.vehicle.getPosition
--- (engine/util.d.tl's UtilVehicle; util.transport has none on build 40408).
 --
 -- The engine lists the entities of some components only
 -- (getEntitiesWithComponent refuses BASE_EDGE, LINE and PLAYER on build
@@ -65,7 +67,6 @@ local function summary(rows)
 	return #rows .. ":" .. hashStr(table.concat(rows, "\30"))
 end
 
-local function q1(v) return math.floor((v or 0) + 0.5) end
 local function q01(v) return math.floor((v or 0) * 10 + 0.5) / 10 end
 
 local function vec01(p)
@@ -129,12 +130,14 @@ end
 readers[lanes.VEHICLES] = function(api)
 	local rows = {}
 	for _, e in ipairs(entities(api, "TRANSPORT_VEHICLE")) do
-		local p = api.engine.util.vehicle.getPosition(e)
-		if p then
-			rows[#rows + 1] = string.format("%d,%d,%d", q1(p.x or p[1]), q1(p.y or p[2]), q1(p.z or p[3]))
-		else
-			rows[#rows + 1] = "?"
+		local v = component(api, e, "TRANSPORT_VEHICLE")
+		local path = component(api, e, "MOVE_PATH")
+		local d = path and path.dyn
+		local where = "-"
+		if d and d.pathPos then
+			where = string.format("%d@%.2f v%.2f", d.pathPos.edgeIndex, d.pathPos.pos, d.speed)
 		end
+		rows[#rows + 1] = tostring(v and v.state) .. ":" .. tostring(v and v.stopIndex) .. ":" .. where
 	end
 	return summary(rows)
 end

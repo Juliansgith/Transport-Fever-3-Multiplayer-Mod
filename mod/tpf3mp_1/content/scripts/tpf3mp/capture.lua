@@ -182,6 +182,13 @@ function capture.track(proposal)
 	return module("engine").captureBuild(proposal, "Track")
 end
 
+-- The bulldozer's removal (tpf3mp_proto action::Bulldoze), read off its
+-- proposal by tpf3mp/engine.lua. Returns the action table; false for a
+-- proposal of nothing; or nil and why.
+function capture.bulldoze(proposal)
+	return module("engine").bulldoze(proposal)
+end
+
 -- A proposal's street part in one line, for the log (tpf3mp/engine.lua);
 -- "" when it has none.
 function capture.describe(proposal)
