@@ -27,6 +27,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("CommandList::Add::lambda", 0x9d23c0),
     ("CommandList::Add", 0x9d29c0),
     ("WorldBuildProposal apply", 0x9e1160),
+    ("ModuleBuilder::MousePressed/Add call", 0x543b25),
     ("luaB_print", 0x2fccd10),
     ("lua_checkstack", 0x2fbd650),
     ("lua_createtable", 0x2fbd880),

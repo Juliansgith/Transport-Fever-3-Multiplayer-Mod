@@ -46,6 +46,11 @@
 //! - `clicks()`: in the GUI: the player's builds queued in the room's game
 //!   so far, or `nil` where the hook cannot take them to the room
 //!   ([`crate::builds`]).
+//! - `built(n)`: in the GUI: the build the module editor queued at click
+//!   `n`, read natively, as game scripts see a proposal; `nil` and why when
+//!   it did not read; `nil` when click `n` was not the module editor's
+//!   ([`crate::modules`]). Optional in the contract: a mod that does not
+//!   call it keeps the module editor refused.
 //! - `replaying(on)`: the game script begins or ends applying the room's
 //!   actions, whose builds the hook lets through ([`crate::builds`]).
 //! - `applied(index, ok, entity, why)`: in a game script's `postUpdate`,
@@ -533,6 +538,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"checkpoint", native_checkpoint),
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
+                (b"built", native_built),
                 (b"replaying", native_replaying),
                 (b"applied", native_applied),
                 (b"results", native_results),
@@ -1229,6 +1235,35 @@ unsafe extern "C-unwind" fn native_clicks(l: State) -> c_int {
     1
 }
 
+/// `built(n)`: in the GUI: the build the module editor queued at click `n`
+/// (the count before it), as game scripts see a proposal, once; or nil and
+/// why it did not read; or nothing (nil) when click `n` was not the module
+/// editor's ([`crate::modules`]).
+unsafe extern "C-unwind" fn native_built(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread; a C
+    // function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        let click = number_arg(api, l, 1)
+            .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0)
+            .map(|n| n as u64);
+        match click.and_then(crate::modules::take) {
+            Some(Ok(proposal)) => push_or_nil(api, l, Some(&proposal)),
+            Some(Err(why)) => {
+                (api.pushnil)(l);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+            None => {
+                (api.pushnil)(l);
+                1
+            }
+        }
+    }
+}
+
 /// `replaying(on)`: the game script begins (true) or ends applying the
 /// room's actions.
 unsafe extern "C-unwind" fn native_replaying(l: State) -> c_int {
@@ -1732,10 +1767,11 @@ pub(crate) mod tests {
                  type(tpf3mp_native.take), type(tpf3mp_native.log), type(tpf3mp_native.poll), \
                  type(tpf3mp_native.saved), type(tpf3mp_native.world), type(tpf3mp_native.room), \
                  type(tpf3mp_native.checkpoint), type(tpf3mp_native.lanes), \
-                 type(tpf3mp_native.clicks), type(tpf3mp_native.replaying), \
+                 type(tpf3mp_native.clicks), type(tpf3mp_native.built), \
+                 type(tpf3mp_native.replaying), \
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say)"
             ),
-            Ok("9|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("9|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -2055,6 +2091,49 @@ pub(crate) mod tests {
         lua.run("tpf3mp_native.replaying(true)").unwrap();
         lua.run("tpf3mp_native.replaying(false)").unwrap();
         lua.run("tpf3mp_native.replaying()").unwrap();
+    }
+
+    #[test]
+    fn built_hands_the_gui_the_module_editors_build_once() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let _kept = crate::modules::TEST_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        let s = LuaValue::string;
+        let list = |items: Vec<LuaValue>| {
+            LuaValue::Table(
+                items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| (LuaValue::Integer(i as i64 + 1), v))
+                    .collect(),
+            )
+        };
+        let proposal = LuaValue::Table(vec![
+            (s("toRemove"), list(vec![LuaValue::Integer(77)])),
+            (
+                s("toAdd"),
+                list(vec![LuaValue::Table(vec![(
+                    s("fileName"),
+                    s("::/stations/street/modular_street_station/modular_terminal.con"),
+                )])]),
+            ),
+        ]);
+        crate::modules::keep(7, Ok(proposal));
+        crate::modules::keep(8, Err("the matrix does not read".into()));
+        assert_eq!(
+            lua.run("local p = tpf3mp_native.built(7) return p.toRemove[1], p.toAdd[1].fileName"),
+            Ok("77|::/stations/street/modular_street_station/modular_terminal.con".into())
+        );
+        assert_eq!(lua.run("return tpf3mp_native.built(7)"), Ok("nil".into()));
+        assert_eq!(
+            lua.run("return tpf3mp_native.built(8)"),
+            Ok("nil|the matrix does not read".into())
+        );
+        assert_eq!(lua.run("return tpf3mp_native.built(9)"), Ok("nil".into()));
+        assert_eq!(lua.run("return tpf3mp_native.built('x')"), Ok("nil".into()));
     }
 
     #[test]

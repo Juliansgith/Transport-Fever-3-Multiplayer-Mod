@@ -391,7 +391,7 @@ fn loaded_names(lua: &Lua) -> Vec<String> {
 const FAKE_HOOK: &str = r#"
 HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, worlds = 0,
          room = false, checkpoint = false, lanes = nil, clicks = nil, replaying = {},
-         applied = {}, results = {}, status = nil, heard = {}, said = {} }
+         applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {} }
 tpf3mp_native = {
     version = 9,
     command = function(action)
@@ -426,6 +426,15 @@ tpf3mp_native = {
         return true
     end,
     clicks = function() return HOOK.clicks end,
+    -- The module editor's builds the hook read, by click: { proposal = t }
+    -- or { why = text }, each taken once.
+    built = function(n)
+        local b = HOOK.built[n]
+        HOOK.built[n] = nil
+        if b == nil then return nil end
+        if b.why then return nil, b.why end
+        return b.proposal
+    end,
     replaying = function(on) HOOK.replaying[#HOOK.replaying + 1] = on end,
     applied = function(i, ok, entity, why)
         HOOK.applied[#HOOK.applied + 1] = { i = i, ok = ok, entity = entity, why = why }
@@ -1533,6 +1542,41 @@ fn a_station_edit_a_click_saw_goes_to_the_room_and_unhandled_events_are_logged()
         "an event the mod does not handle: id moduleThing, name builder.proposalCreate"
     );
     assert!(!logged.iter().any(|l| l.contains("elsewhere")));
+}
+
+#[test]
+fn a_module_editor_click_goes_to_the_room_as_the_hook_read_it() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    // A construction tool preview before the click, then the module
+    // editor's click, whose build only the hook saw: the hook's wins.
+    lua.load(format!(
+        "HOOK.room = true HOOK.clicks = 0          SCRIPT.guiUpdate({{}}, nil, nil)          SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate',              {{ {CONSTRUCTION_PROPOSAL} }})          local edit = {EDIT_PROPOSAL} edit.toAdd[1].name = ''          HOOK.built[0] = {{ proposal = edit }}          HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil)          HOOK.built[1] = {{ why = 'the matrix does not read' }}          HOOK.clicks = 2 SCRIPT.guiUpdate({{}}, nil, nil)          local nothing = {EDIT_PROPOSAL} nothing.toRemove = {{}}          nothing.proposal.removedSegments = {{}} nothing.proposal.removedNodes = {{}}          HOOK.built[2] = {{ proposal = nothing }}          HOOK.clicks = 3 SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let (handed, carried): (usize, String) = lua
+        .load(
+            "local b = HOOK.commands[1].BuildConstruction              return #HOOK.commands, table.concat({ b.file, b.name, b.replaces.file, b.replaces.at.x }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        handed, 1,
+        "the edit, not the stale preview, and nothing else"
+    );
+    assert_eq!(
+        carried,
+        "::/stations/street/modular_street_station/modular_terminal.con|Okehampton Station|::/stations/street/modular_street_station/modular_terminal.con|80"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for line in [
+        "handed the player's build to the room [module editor]",
+        "stopped a build the room cannot carry: the module editor's edit did not read: the matrix does not read [module editor]",
+        "stopped a build the room cannot carry: the module editor's edit: an edit that replaces no construction [module editor]",
+    ] {
+        assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
+    }
 }
 
 #[test]
