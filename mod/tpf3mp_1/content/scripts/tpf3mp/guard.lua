@@ -81,6 +81,10 @@ guard.CARRY = {
 	makeLineDestroyCmd = by("lineDestroy"),
 	makeEntitySetNameCmd = by("setName"),
 	makeEntitySetColorCmd = by("setColor"),
+	-- A construction's parameters changed in its window: an edit of that
+	-- construction, which every game replaces alike. Other builds a window
+	-- sends stay refused.
+	makeWorldBuildProposalCmd = by("windowBuild"),
 }
 
 -- What a window's callback reads of a command it made that went, by kind:

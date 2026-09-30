@@ -1,5 +1,6 @@
 {
     "dependencies": null,
+    "forceActivateAchievements": true,
     "incompatibilities": null,
     "modId": "tpf3mp_1",
     "options": null,
