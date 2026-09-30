@@ -60,6 +60,10 @@ fn the_mod_is_laid_out_as_tf3_mods_are() {
     assert_eq!(manifest["modId"], MOD_ID, "modId is the folder's name");
     assert_eq!(manifest["severityAdd"], "None");
     assert_eq!(manifest["severityRemove"], "None");
+    // Build 40408's ModRep::couldAchievementsBeEarned is true when any mod
+    // of the save has this flag (framework/mod/modrep.cpp, 0x2f929f0), so
+    // a game with TPF3-MP active still earns achievements.
+    assert_eq!(manifest["forceActivateAchievements"], true);
     assert!(manifest["revision"].is_u64());
     for script in ["preRunScript", "runScript", "postRunScript"] {
         let file = manifest[script]["fileName"].as_str().unwrap();
