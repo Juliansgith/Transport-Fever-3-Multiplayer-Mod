@@ -109,6 +109,7 @@ fn base() -> State {
         player: Some("7QM2".into()),
         server: Some("play.tpf3mp.example:29470".into()),
         server_fixed: true,
+        server_default: Some("play.tpf3mp.example:29470".into()),
         server_name: Some("EU".into()),
         rules: vec![
             RulesChoice {

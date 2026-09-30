@@ -81,6 +81,8 @@ pub(crate) fn view(state: &State) -> LobbyView {
                 .or(state.server.as_deref())
                 .unwrap_or_default(),
         ),
+        server_address: Text::lossy(state.server.as_deref().unwrap_or_default()),
+        server_default: Text::lossy(state.server_default.as_deref().unwrap_or_default()),
         name: Text::lossy(&state.name),
         error: state.error.as_deref().map(Text::lossy),
         // The newest notice meant for the game: the one that says the
@@ -208,6 +210,7 @@ fn save(name: &str) -> Option<SaveName> {
 
 /// The launcher action a button of the menu's window stands for. Connect
 /// goes to the server the launcher plays on (D12): the window names none.
+/// The server setting changes that server, as in the launcher's window.
 pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
     match action {
         LobbyAction::Connect { name } => Action::Connect {
@@ -250,6 +253,9 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
         LobbyAction::ChooseMod { id, chosen } => Action::ChooseMod {
             id: id.as_str().to_owned(),
             chosen,
+        },
+        LobbyAction::SetServer { server } => Action::SetServer {
+            server: server.as_str().to_owned(),
         },
     }
 }
@@ -475,6 +481,7 @@ pub(crate) mod tests {
             name: "Ann".into(),
             player: Some(ann.to_string()),
             server: Some("tpf3mp.example.org:29470".into()),
+            server_default: Some("tpf3mp.example.org:29470".into()),
             server_name: Some("EU".into()),
             connection: Connection::Connected,
             error: Some("that room is full".into()),
@@ -601,6 +608,8 @@ pub(crate) mod tests {
         let view = view(&state());
         assert_eq!(view.connection, LobbyConnection::Connected);
         assert_eq!(view.server.as_str(), "EU", "as players see it");
+        assert_eq!(view.server_address.as_str(), "tpf3mp.example.org:29470");
+        assert_eq!(view.server_default.as_str(), "tpf3mp.example.org:29470");
         assert_eq!(view.error.as_ref().unwrap().as_str(), "that room is full");
         assert_eq!(view.notice.as_ref().unwrap().as_str(), "new", "the newest");
         let mut started = state();
@@ -694,6 +703,17 @@ pub(crate) mod tests {
         );
         assert_eq!(action(LobbyAction::Start, &state), Action::Start);
         assert_eq!(action(LobbyAction::Leave, &state), Action::Leave);
+        assert_eq!(
+            action(
+                LobbyAction::SetServer {
+                    server: Text::lossy("play.example.net:29470")
+                },
+                &state
+            ),
+            Action::SetServer {
+                server: "play.example.net:29470".into()
+            }
+        );
     }
 
     #[test]

@@ -12,8 +12,12 @@ use crate::bridge::{Status, WorldStatus};
 #[derive(Debug, Default)]
 pub(crate) struct View {
     pub(crate) server: Option<String>,
-    /// The server is the only one this launcher plays on (D12).
+    /// The server is the one this launcher plays on: no invite goes
+    /// elsewhere (D12).
     pub(crate) server_fixed: bool,
+    /// The launcher's default server, which "Reset to default" goes back to.
+    pub(crate) server_default: Option<String>,
+    /// What players see of the default server, such as `EU`.
     pub(crate) server_name: Option<String>,
     pub(crate) name: String,
     pub(crate) player: Option<PlayerId>,
@@ -108,6 +112,12 @@ pub enum Action {
         id: String,
         chosen: bool,
     },
+    /// The player's server setting: play on `server`, a `host:port`, from
+    /// now on; empty goes back to the default ([`State::server_default`]).
+    /// Remembered; reconnects there if connected; refused in a room.
+    SetServer {
+        server: String,
+    },
 }
 
 /// What a public room's list entry says of its world, as the creating
@@ -179,11 +189,16 @@ pub struct State {
     /// This player's short ID, as others see it.
     pub player: Option<String>,
     pub server: Option<String>,
-    /// Whether `server` is the only server this launcher plays on (D12):
-    /// the front ends then offer no other, and invites join on it.
+    /// Whether `server` is the server this launcher plays on (D12, as
+    /// amended): Connect then asks for no server, invites join on it and an
+    /// invite to another is refused; the server setting
+    /// ([`Action::SetServer`]) changes it.
     pub server_fixed: bool,
+    /// The launcher's default server, `host:port`: the package's, or the
+    /// project's relay. "Reset to default" goes back to it.
+    pub server_default: Option<String>,
     /// What players see of the server, such as `EU`, in place of its
-    /// address; `None` shows the address.
+    /// address, while it is the default one; `None` shows the address.
     pub server_name: Option<String>,
     pub server_version: Option<String>,
     /// What the player quotes to the server's operator: the connection's
@@ -532,7 +547,15 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         player: you.map(|player| player.to_string()),
         server: view.server.clone(),
         server_fixed: view.server_fixed,
-        server_name: view.server_name.clone(),
+        server_default: view.server_default.clone(),
+        // The name is the default server's: another shows its address.
+        server_name: view.server_name.clone().filter(|_| {
+            match (&view.server_default, &view.server) {
+                (Some(default), Some(server)) => super::same_server(default, server),
+                (Some(_), None) => false,
+                (None, _) => true,
+            }
+        }),
         server_version: view.server_version.clone(),
         support_id: status
             .session
@@ -667,6 +690,14 @@ mod tests {
         ));
         let action: Action = serde_json::from_str(r#"{"action":"start"}"#).unwrap();
         assert_eq!(action, Action::Start);
+        let action: Action =
+            serde_json::from_str(r#"{"action":"set_server","server":"eu.example:29470"}"#).unwrap();
+        assert_eq!(
+            action,
+            Action::SetServer {
+                server: "eu.example:29470".into()
+            }
+        );
         assert!(serde_json::from_str::<Action>(r#"{"action":"format_disk"}"#).is_err());
     }
 
@@ -726,6 +757,32 @@ mod tests {
         assert_eq!(json["name"], "Ann");
         assert!(json["room"].is_null());
         assert_eq!(json["game"]["world"], "none");
+    }
+
+    #[test]
+    fn the_servers_name_is_shown_for_the_default_server_only() {
+        let mut view = View {
+            server: Some("tpf3mp.example.org:29470".into()),
+            server_fixed: true,
+            server_default: Some("TPF3MP.example.org:29470".into()),
+            server_name: Some("Relay".into()),
+            ..View::default()
+        };
+        let state = snapshot(&view, &Status::default());
+        assert_eq!(state.server_name.as_deref(), Some("Relay"));
+        assert_eq!(
+            state.server_default.as_deref(),
+            Some("TPF3MP.example.org:29470")
+        );
+        // The player chose another server: its address, not the name.
+        view.server = Some("play.example.net:29470".into());
+        assert_eq!(snapshot(&view, &Status::default()).server_name, None);
+        // Without a default, the name given is the server's.
+        view.server_default = None;
+        assert_eq!(
+            snapshot(&view, &Status::default()).server_name.as_deref(),
+            Some("Relay")
+        );
     }
 
     #[test]

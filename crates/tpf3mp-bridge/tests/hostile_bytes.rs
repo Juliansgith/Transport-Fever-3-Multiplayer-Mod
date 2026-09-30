@@ -107,6 +107,8 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         ToHook::Lobby(Box::new(LobbyView {
             connection: LobbyConnection::Connected,
             server: Text::new("EU").unwrap(),
+            server_address: Text::new("tpf3mp.example.org:29470").unwrap(),
+            server_default: Text::new("tpf3mp.example.org:29470").unwrap(),
             name: Text::new("Ann").unwrap(),
             error: None,
             notice: Some(Text::new("created the room").unwrap()),

@@ -311,6 +311,9 @@ Rejected:
 
 ## D12 (2026-09-27): the launcher plays on the project's server alone
 
+*A proposed amendment below, not decided, lets players change the server in
+the launcher's settings; invites still never switch servers.*
+
 A package's launcher plays on the one server it was built for, the
 project's own (D4), set when the release is built
 (`TPF3MP_DEFAULT_SERVER`). Players do not type a server and cannot choose
@@ -342,6 +345,43 @@ Rejected:
   name any server, and a typo ends in a lonely room.
 - **Following an invite to its server** (as until now): the fail-closed
   reason above.
+
+### D12 amendment (PROPOSED amendment, not decided, 2026-09-30): a default server players may change
+
+**Proposed, for the owner (Juliansgith) to approve or refuse in the pull
+request. D12 above stays in force until then.**
+
+Asked about D12, the user answered after talking with the mod's
+co-developer: "its supposed to be changable". The project's relay,
+`tpf3mp.213-133-98-90.sslip.io:29470`, is the server "everyone more or
+less should be using", so it becomes the default rather than the only one:
+
+- **The launcher defaults to the project's relay.** A package plays on the
+  server it was built for (`TPF3MP_DEFAULT_SERVER`, the release's choice);
+  a build without one, a developer's included, plays on the relay, shown
+  as **EU**. `--server` on the command line still overrides it for one run,
+  for playtests.
+- **Players may change the server in Settings.** The launcher's Settings
+  (and the browser page, and the game's Multiplayer window through
+  `LobbyAction::SetServer`) show the server played on, take another as
+  `host:port` only, and offer **Reset to default**. The choice is
+  remembered in `launcher.json` (`chosen_server`); changing it disconnects
+  and connects to the new server; it is refused while in a room.
+- **Invites still never switch servers.** D12's fail-closed reason stands:
+  an invite that names another server is refused, and Connect with an
+  invite joins on the player's own server. Only the player's own setting
+  changes where they play, so a message cannot send anyone to a server
+  they did not choose. Friends on another server all set it the same.
+- **Trust is unchanged** (D4): a server must have a certificate from a
+  public authority, as the relay does (Let's Encrypt, for its sslip.io
+  name); `--pin-cert` remains for development servers.
+
+This replaces "Players do not type a server and cannot choose another"
+and the rejection of "a server field players can change"; the rejection
+of following an invite to its server stays. The release workflow still
+drafts no release without `TPF3MP_DEFAULT_SERVER`, so each release names
+its server on purpose; the relay in the code is the fallback for builds
+without it.
 
 ## D13 (2026-09-27): invites and support codes are six letters and digits
 

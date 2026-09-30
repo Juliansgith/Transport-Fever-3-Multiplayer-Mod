@@ -167,6 +167,16 @@ version, have }`, have `yes`, `no` or `other_version`, 32 at most, and
 `{"action":"choose_mod","id":"<id>","chosen":true|false}`; the launcher
 refuses a mod that is not choosable, with why. Bridge version 13.
 
+**The server** (D12, proposed amendment). The lobby carries the server as
+players see it (`server`, its name or address), its address
+(`server_address`, `host:port`) and the launcher's default
+(`server_default`; empty without one). The window changes the server with
+`{"action":"set_server","server":"host:port"}`, or `"server":""` to go
+back to the default: the launcher refuses anything but a `host:port`, and
+any change while in a room, with why; otherwise it remembers the server,
+and if connected it disconnects and connects there under the same name.
+An invite never changes the server. Bridge version 15.
+
 **The start save.** The lobby lists the player's saves, newest first, by
 name: those `steam::find_save` finds by that name, in the save folder of
 the Steam account playing (`steam::list_saves`, looked at every 5

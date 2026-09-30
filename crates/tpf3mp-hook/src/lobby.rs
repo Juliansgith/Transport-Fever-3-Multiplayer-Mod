@@ -123,7 +123,13 @@ pub struct RoomMod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LobbyState {
     pub connection: Connection,
+    /// The server as players see it: its name, or its address.
     pub server: String,
+    /// The server's address, `host:port`, for the server setting.
+    pub server_address: String,
+    /// The launcher's default server, which `set_server` with an empty
+    /// server goes back to; empty without one.
+    pub server_default: String,
     pub name: String,
     /// The last thing that went wrong, for the window to show.
     pub error: Option<String>,
@@ -161,8 +167,9 @@ pub struct LobbyState {
 
 /// What the window sends, as JSON: the tag `action` plus the fields, e.g.
 /// `{"action":"create","room":"Alps","password":"","max_players":8}`. A
-/// server the window names is not taken: the launcher plays on its own
-/// (D12).
+/// server the window names with Connect is not taken: the launcher plays on
+/// its own (D12). Only `set_server`, the player's server setting, changes
+/// it.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum WindowAction {
@@ -215,6 +222,12 @@ enum WindowAction {
     ChooseMod {
         id: String,
         chosen: bool,
+    },
+    /// The server setting: a `host:port`, or empty for the default. The
+    /// launcher checks it.
+    SetServer {
+        #[serde(default)]
+        server: String,
     },
 }
 
@@ -314,6 +327,9 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
             id: ModName::new(id.trim()).map_err(|_| "that mod's id is too long".to_owned())?,
             chosen,
         },
+        WindowAction::SetServer { server } => LobbyAction::SetServer {
+            server: text(&server, "server")?,
+        },
     })
 }
 
@@ -332,6 +348,7 @@ pub fn kind(action: &LobbyAction) -> &'static str {
         LobbyAction::Leave => "leave",
         LobbyAction::ChooseMod { .. } => "choose_mod",
         LobbyAction::ListRooms { .. } => "list_rooms",
+        LobbyAction::SetServer { .. } => "set_server",
     }
 }
 
@@ -374,6 +391,8 @@ impl LobbyState {
         Self {
             connection: Connection::Disconnected,
             server: String::new(),
+            server_address: String::new(),
+            server_default: String::new(),
             name: String::new(),
             error: None,
             notice: None,
@@ -410,6 +429,8 @@ impl LobbyState {
                 LobbyConnection::Connected => Connection::Connected,
             },
             server: view.server.as_str().to_owned(),
+            server_address: view.server_address.as_str().to_owned(),
+            server_default: view.server_default.as_str().to_owned(),
             name: view.name.as_str().to_owned(),
             error: view.error.as_ref().map(|text| text.as_str().to_owned()),
             notice: view.notice.as_ref().map(|text| text.as_str().to_owned()),
@@ -530,6 +551,10 @@ impl LobbyState {
         out.push_str(lua_str(self.connection.as_str()).as_str());
         out.push_str(", server = ");
         out.push_str(&lua_str(&self.server));
+        out.push_str(", server_address = ");
+        out.push_str(&lua_str(&self.server_address));
+        out.push_str(", server_default = ");
+        out.push_str(&lua_str(&self.server_default));
         out.push_str(", name = ");
         out.push_str(&lua_str(&self.name));
         out.push_str(", error = ");
@@ -833,6 +858,21 @@ mod tests {
             parse_action(r#"{"action":"leave"}"#),
             Ok(LobbyAction::Leave)
         );
+        assert_eq!(
+            parse_action(r#"{"action":"set_server","server":" eu.example:29470 "}"#),
+            Ok(LobbyAction::SetServer {
+                server: Text::new("eu.example:29470").unwrap()
+            })
+        );
+        assert_eq!(
+            parse_action(r#"{"action":"set_server"}"#),
+            Ok(LobbyAction::SetServer {
+                server: Text::new("").unwrap()
+            }),
+            "none named: back to the default"
+        );
+        let long = "s".repeat(129);
+        assert!(parse_action(&format!(r#"{{"action":"set_server","server":"{long}"}}"#)).is_err());
         assert!(parse_action(r#"{"action":"fly"}"#).is_err());
         assert!(parse_action(r#"{"action":"kick","player":"7"}"#).is_err());
         let long = "x".repeat(300);
@@ -857,6 +897,8 @@ mod tests {
         LobbyView {
             connection: LobbyConnection::Connected,
             server: Text::new("EU").unwrap(),
+            server_address: Text::new("eu.example.org:29470").unwrap(),
+            server_default: Text::new("relay.example.org:29470").unwrap(),
             name: Text::new("Ann").unwrap(),
             error: None,
             notice: Some(Text::new("created the room").unwrap()),
@@ -965,6 +1007,14 @@ mod tests {
         let lua = mlua::Lua::new();
         let state: mlua::Table = lua.load(format!("return {literal}")).eval().unwrap();
         assert_eq!(state.get::<String>("connection").unwrap(), "connected");
+        assert_eq!(
+            state.get::<String>("server_address").unwrap(),
+            "eu.example.org:29470"
+        );
+        assert_eq!(
+            state.get::<String>("server_default").unwrap(),
+            "relay.example.org:29470"
+        );
         assert_eq!(state.get::<String>("name").unwrap(), "Ann \"the\" Bü\\");
         assert!(state.get::<bool>("linked").unwrap());
         let room: mlua::Table = state.get("room").unwrap();

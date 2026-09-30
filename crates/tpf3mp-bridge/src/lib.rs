@@ -50,8 +50,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// room's shared mods to [`LobbyView`], and [`LobbyAction::ChooseMod`]; 14
 /// the server's public rooms to [`LobbyView`] ([`LobbyView::rooms`]),
 /// [`LobbyAction::ListRooms`] and a room's listing to
-/// [`LobbyAction::Create`].
-pub const BRIDGE_VERSION: u32 = 14;
+/// [`LobbyAction::Create`]; 15 the server setting: the server's address
+/// and the launcher's default to [`LobbyView`], and
+/// [`LobbyAction::SetServer`].
+pub const BRIDGE_VERSION: u32 = 15;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -145,6 +147,12 @@ pub struct LobbyView {
     pub connection: LobbyConnection,
     /// The server the launcher plays on, as players see it.
     pub server: Text<128>,
+    /// That server's address, `host:port`, as the server setting shows it;
+    /// empty without one.
+    pub server_address: Text<128>,
+    /// The launcher's default server, `host:port`, which the setting's
+    /// "Reset to default" goes back to; empty without one.
+    pub server_default: Text<128>,
     /// The player's name.
     pub name: Text<32>,
     /// What went wrong last, until something succeeds.
@@ -293,6 +301,8 @@ impl Default for LobbyView {
         Self {
             connection: LobbyConnection::Disconnected,
             server: Text::lossy(""),
+            server_address: Text::lossy(""),
+            server_default: Text::lossy(""),
             name: Text::lossy(""),
             error: None,
             notice: None,
@@ -404,6 +414,13 @@ pub enum LobbyAction {
     ChooseMod {
         id: ModName,
         chosen: bool,
+    },
+    /// The player's server setting: play on `server`, a `host:port`, from
+    /// now on; empty goes back to the launcher's default. The launcher
+    /// checks it, remembers it, and reconnects there if connected. Refused
+    /// in a room. Invites never change the server: only this does (D12).
+    SetServer {
+        server: Text<128>,
     },
 }
 
@@ -611,6 +628,8 @@ mod tests {
         let view = ToHook::Lobby(Box::new(LobbyView {
             connection: LobbyConnection::Connected,
             server: Text::new("s".repeat(128)).unwrap(),
+            server_address: Text::new("a".repeat(128)).unwrap(),
+            server_default: Text::new("d".repeat(128)).unwrap(),
             name: Text::new("n".repeat(32)).unwrap(),
             error: Some(Text::new("e".repeat(256)).unwrap()),
             notice: Some(Text::new("o".repeat(256)).unwrap()),
@@ -712,6 +731,10 @@ mod tests {
             decode::<ToAgent>(&encode(&choose).unwrap()).unwrap(),
             choose
         );
+        let set = ToAgent::Lobby(LobbyAction::SetServer {
+            server: Text::new("s".repeat(128)).unwrap(),
+        });
+        assert_eq!(decode::<ToAgent>(&encode(&set).unwrap()).unwrap(), set);
     }
 
     #[test]

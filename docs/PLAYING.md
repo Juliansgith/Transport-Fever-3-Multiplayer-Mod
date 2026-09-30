@@ -90,8 +90,9 @@ game's own **Multiplayer** button (next section).
   game. Press it once; the launcher refuses to start a second game while
   the first still runs. It is also the first step of **How to play: in the
   game** on the left, which ticks the steps off as you go.
-- **Server** names the project's server (**EU**, in Germany), the only one
-  TPF3-MP plays on; its dot is green while the server is online. The pill
+- **Server** names the server you play on: by default the project's relay
+  (**EU**, in Germany), which nearly everyone uses; its dot is green while
+  the server is online. The pill
   at the top of the panel says whether you are connected, in a room's
   lobby, or playing.
 - **Your room.** Once you are in a room, the left side shows it: its
@@ -103,8 +104,9 @@ game's own **Multiplayer** button (next section).
   speed.
 - **Your game**, the bar along the bottom, says where Steam has Transport
   Fever 3 and whether the TPF3-MP mod is installed (see "Installing").
-  **Settings** has updates and diagnostics; the **support code** at the
-  bottom is what to quote to the server's operator.
+  **Settings** has the server, updates and diagnostics (see "Changing the
+  server" below); the **support code** at the bottom is what to quote to
+  the server's operator.
 - If the game closes or crashes once it has connected, the launcher
   notices within a second: the Session log says "the game session failed:
   Transport Fever 3 closed", and you are back on the server, out of the
@@ -119,6 +121,26 @@ players with **Remove** for the owner, **Copy invite**, **Ready**,
 has no Multiplayer button, for example after a game update the hook does
 not know yet (see "When something does not work"). **Lobby in the game's
 menu instead** puts it back.
+
+### Changing the server
+
+TPF3-MP plays on the project's relay (**EU**) unless you choose another
+server. *This follows a proposed change to the project's decisions (D12),
+which the owner has yet to approve.*
+
+1. Open **Settings** (top right). The **Server** card says which server you
+   play on, and whether it is the default.
+2. Type the other server's address as `host:port`, such as
+   `tpf3mp.example.org:29470`, and press **Use this server** (or Enter).
+   Anything else is refused and the card says why.
+3. If you were connected, the launcher disconnects and connects to the new
+   server under the same name. It remembers the server for next time.
+4. **Reset to default** goes back to the relay.
+
+You cannot change the server while in a room: leave it first. An invite
+never switches servers: an invite to a room on another server is refused,
+so friends who play elsewhere all set the same server here. The browser
+page (`--browser`) has the same setting, under **Settings: server**.
 
 ## Playing from the game's Multiplayer button
 
@@ -434,8 +456,10 @@ before sharing it publicly if you want to be sure.
   own list.
 - **"too many players are connected from this network"**: the server
   limits connections per network. Close another game, or ask the operator.
-- **"that invite is for another server"**: TPF3-MP plays on its own
-  server alone. Ask for an invite to a room there.
+- **"that invite is for another server"**: an invite never takes you to
+  another server. Ask for an invite to a room on yours, or, if your friends
+  play elsewhere, change the server in **Settings** (see "Changing the
+  server") and join again.
 - **"the invite or password is not valid"**: the room closed, the code
   is mistyped, or the password is wrong.
 - **"too many requests; try again in a moment"** when joining: too many

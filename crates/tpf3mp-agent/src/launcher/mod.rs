@@ -79,13 +79,20 @@ pub struct LauncherConfig {
     /// Where the server and name of each connection are remembered for the
     /// next run (see [`Remembered`]).
     pub remember: Option<PathBuf>,
-    /// The server the page offers first, as `host:port`.
+    /// The server the launcher plays on, as `host:port`: the one on its
+    /// command line, else the player's setting, else
+    /// [`Self::default_server`].
     pub server: Option<String>,
-    /// Whether [`Self::server`] is the only server this launcher plays on
-    /// (D12): the one its package was built for, or the one it was told
-    /// on its command line. Then neither the player nor an invite can
-    /// choose another.
+    /// Whether [`Self::server`] is the server this launcher plays on (D12,
+    /// as amended): an invite then never takes the player to another, and
+    /// only the player's server setting ([`Action::SetServer`]) changes it.
+    /// Without, as in a test or a build with no server at all, the player
+    /// types one and an invite may name its own.
     pub server_fixed: bool,
+    /// The launcher's default server, `host:port`: the one its package was
+    /// built for, or the project's relay. The server setting's "Reset to
+    /// default" goes back to it.
+    pub default_server: Option<String>,
     /// What players see of that server, such as `EU`, in place of its
     /// address.
     pub server_name: Option<String>,
@@ -263,6 +270,7 @@ impl Shared {
             view: Mutex::new(View {
                 server: config.server.clone(),
                 server_fixed: config.server_fixed,
+                server_default: config.default_server.clone(),
                 server_name: config.server_name.clone(),
                 name: config.name.clone(),
                 player: Some(config.identity.player()),
@@ -582,6 +590,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Diagnostics { .. } => "diagnostics",
         Action::LaunchGame => "launch_game",
         Action::ListRooms { .. } => "list_rooms",
+        Action::SetServer { .. } => "set_server",
     }
 }
 
@@ -600,7 +609,7 @@ async fn act(
             // A whole invite, as "Copy invite" gives it, connects and joins;
             // one to another server is refused, in a room or not.
             let passed = passed_invite(&server);
-            let server = server_for(fixed_server(config), &server, passed.as_ref())?;
+            let server = server_for(fixed_server(shared).as_deref(), &server, passed.as_ref())?;
             if session.is_some() {
                 return Err("leave the room first".into());
             }
@@ -712,10 +721,10 @@ async fn act(
         Action::Join { invite, password } => {
             let passed = passed_invite(&invite).ok_or("that is not an invite")?;
             // An invite to another server is refused, connected or not.
-            if let (Some(fixed), Some(other)) = (fixed_server(config), &passed.server)
-                && !same_server(fixed, other)
+            if let (Some(fixed), Some(other)) = (fixed_server(shared), &passed.server)
+                && !same_server(&fixed, other)
             {
-                return Err(elsewhere(fixed, other));
+                return Err(elsewhere(&fixed, other));
             }
             let current = connected.as_ref().ok_or("connect to a server first")?;
             let password = password_text(password)?;
@@ -787,6 +796,9 @@ async fn act(
                 .map_err(|error| error.to_string())?;
             shared.view().rooms = Some(api::RoomList::of(&page));
             Ok(())
+        }
+        Action::SetServer { server } => {
+            set_server(shared, config, &server, connected, session).await
         }
         Action::Diagnostics { on } => {
             let recorder = config
@@ -982,7 +994,7 @@ fn begin_session(
         // With a server of its own, the code is all friends need; otherwise
         // they need the server too, and "Copy invite" gives both.
         view.invite = Some(match &view.server {
-            Some(server) if fixed_server(config).is_none() => format!("{server} {invite}"),
+            Some(server) if !view.server_fixed => format!("{server} {invite}"),
             _ => invite.to_string(),
         });
         view.in_room = true;
@@ -1132,12 +1144,102 @@ fn own_start(shared: &Shared, save: Option<&Path>) -> Option<ContentManifest> {
     Some(manifest)
 }
 
+/// The player's server setting (D12, as amended): play on `typed`, or on
+/// the launcher's default when it is empty. Refused in a room, and for
+/// anything but a `host:port`. Remembered for the next run; a connected
+/// launcher leaves its server and connects to the new one, under the same
+/// name.
+async fn set_server(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    typed: &str,
+    connected: &mut Option<Connected>,
+    session: &Option<Session>,
+) -> Result<(), String> {
+    if session.is_some() {
+        return Err("leave the room first: the server changes between rooms".into());
+    }
+    let default = config.default_server.clone();
+    // The default typed out is the default: the setting then follows it.
+    let chosen = match typed.trim() {
+        "" => None,
+        typed => Some(server_address(typed)?)
+            .filter(|chosen| !default.as_deref().is_some_and(|d| same_server(d, chosen))),
+    };
+    let server = chosen
+        .clone()
+        .or(default)
+        .ok_or("this launcher has no default server: type one")?;
+    if let Some(file) = &config.remember {
+        let mut remembered = Remembered::load(file);
+        remembered.chosen_server.clone_from(&chosen);
+        if let Err(error) = remembered.save(file) {
+            warn!(%error, "cannot remember the server for next time");
+        }
+    }
+    let was_connected = connected.is_some();
+    if let Some(connected) = connected.take() {
+        connected.client.close().await;
+    }
+    let name = {
+        let mut view = shared.view();
+        view.server = Some(server.clone());
+        view.server_fixed = true;
+        view.connected = false;
+        view.rooms = None;
+        view.server_version = None;
+        view.session = None;
+        view.name.clone()
+    };
+    info!(%server, chosen = chosen.is_some(), "the player set the server");
+    if was_connected {
+        let name = Text::new(name.trim()).map_err(|_| "that name is too long".to_owned())?;
+        connect_to(shared, config, connected, &server, name).await?;
+    }
+    Ok(())
+}
+
+/// A server as the player typed it for the setting, as `host:port`: the
+/// host a name or an IPv4 address, or an IPv6 address in brackets, and a
+/// port from 1. Trimmed; or why it is not one.
+pub fn server_address(typed: &str) -> Result<String, String> {
+    const HOW: &str = "the server must be host:port, such as tpf3mp.example.org:29470";
+    let typed = typed.trim();
+    let (host, port) = typed.rsplit_once(':').ok_or(HOW)?;
+    let port_ok = !port.starts_with('+') && port.parse::<u16>().is_ok_and(|port| port > 0);
+    let host_ok = match host.strip_prefix('[') {
+        Some(inner) => inner
+            .strip_suffix(']')
+            .is_some_and(|ip| ip.parse::<std::net::Ipv6Addr>().is_ok()),
+        None => {
+            host.len() <= 253
+                && host.split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && !label.starts_with('-')
+                        && !label.ends_with('-')
+                        && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                })
+        }
+    };
+    if typed.len() > 128 || !port_ok || !host_ok {
+        return Err(HOW.into());
+    }
+    Ok(typed.to_owned())
+}
+
 /// What the launcher remembers between runs: the server and the name the
-/// player last connected with, which the page then offers first.
+/// player last connected with, which the page then offers first, and the
+/// player's settings.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Remembered {
+    /// The server last connected to.
     pub server: Option<String>,
     pub name: Option<String>,
+    /// The player's server setting, when they chose one other than the
+    /// default ([`Action::SetServer`]).
+    #[serde(default)]
+    pub chosen_server: Option<String>,
     /// Whether the player's diagnostics go to the server; on unless they
     /// switched them off.
     #[serde(default)]
@@ -1271,9 +1373,11 @@ async fn content_diff(events: &mut Events) -> Option<ContentDiff> {
     .flatten()
 }
 
-/// The server this launcher plays on alone, when it has one (D12).
-fn fixed_server(config: &LauncherConfig) -> Option<&str> {
-    config.server.as_deref().filter(|_| config.server_fixed)
+/// The server this launcher plays on, when it has one (D12): no invite
+/// takes the player elsewhere.
+fn fixed_server(shared: &Shared) -> Option<String> {
+    let view = shared.view();
+    view.server.clone().filter(|_| view.server_fixed)
 }
 
 /// The server to connect to for what the player gave to Connect: `typed`,
@@ -1313,7 +1417,9 @@ fn same_server(a: &str, b: &str) -> bool {
 
 /// Why an invite to `other` is refused by a launcher fixed to `fixed`.
 fn elsewhere(fixed: &str, other: &str) -> String {
-    format!("that invite is for another server, {other}: TPF3-MP plays on {fixed} alone")
+    format!(
+        "that invite is for another server, {other}: you play on {fixed}. To play there, change the server in Settings"
+    )
 }
 
 /// An invite as players pass it on: the room's invite, perhaps with the
@@ -1460,6 +1566,7 @@ mod tests {
         let remembered = Remembered {
             server: Some("tpf3mp.example.org:29470".into()),
             name: Some("Ann".into()),
+            chosen_server: Some("play.example.net:29470".into()),
             diagnostics: Some(false),
             mods: Some(vec!["schbrongx_minimap".into()]),
         };
@@ -1474,6 +1581,7 @@ mod tests {
         assert_eq!(
             Remembered::load(&file),
             Remembered {
+                chosen_server: None,
                 diagnostics: None,
                 mods: None,
                 ..remembered
@@ -1583,6 +1691,45 @@ mod tests {
         assert_eq!(
             save_name(Path::new("/x/y/twomptest.sav")).as_deref(),
             Some("twomptest")
+        );
+    }
+
+    #[test]
+    fn the_server_setting_takes_host_and_port_only() {
+        for good in [
+            "tpf3mp.213-133-98-90.sslip.io:29470",
+            " localhost:29470 ",
+            "127.0.0.1:29470",
+            "[2001:db8::1]:29470",
+            "EU.Example.org:1",
+        ] {
+            assert_eq!(server_address(good), Ok(good.trim().to_owned()), "{good}");
+        }
+        for bad in [
+            "",
+            "tpf3mp.example.org",
+            "tpf3mp.example.org:",
+            "tpf3mp.example.org:0",
+            "tpf3mp.example.org:65536",
+            "tpf3mp.example.org:+80",
+            ":29470",
+            "two words:29470",
+            "https://tpf3mp.example.org:29470",
+            "evil.example:29470 K7QM2X",
+            "-bad.example:29470",
+            "a..b:29470",
+            "2001:db8::1:29470",
+            "[not-ip]:29470",
+            "\u{e9}.example:29470",
+        ] {
+            assert!(server_address(bad).is_err(), "{bad:?}");
+        }
+        let long = format!("{}.{}.example:29470", "a".repeat(55), "b".repeat(55));
+        assert!(server_address(&long).is_ok());
+        let too_long = format!("{}:29470", vec!["a".repeat(60); 3].join("."));
+        assert!(
+            server_address(&too_long).is_err(),
+            "past the lobby's 128 bytes"
         );
     }
 

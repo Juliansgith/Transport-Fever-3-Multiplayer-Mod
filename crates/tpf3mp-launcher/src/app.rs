@@ -21,7 +21,7 @@ use eframe::egui::{
     ScrollArea, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
     pos2, vec2,
 };
-use tpf3mp_agent::launcher::{Action, Connection, State};
+use tpf3mp_agent::launcher::{Action, Connection, State, server_address};
 
 use crate::{
     backend::Backend,
@@ -57,7 +57,8 @@ pub struct Extras {
     /// Checks for and installs new versions; `None` in tests.
     pub updater: Option<Updater>,
     /// Whether the launcher's own server is up; `None` in tests and
-    /// without a server of its own.
+    /// without a server of its own. A new one asks when the player changes
+    /// the server.
     pub probe: Option<Probe>,
     /// The latest release's notes; `None` in tests.
     pub notes: Option<ReleaseNotes>,
@@ -148,6 +149,10 @@ pub struct LauncherApp<B> {
     /// The look is set on the first frame.
     styled: bool,
     settings: bool,
+    /// The server setting's field, as the player types it, and the server
+    /// it was last filled from.
+    server_setting: String,
+    server_setting_for: Option<String>,
     toast: Option<(String, Instant)>,
     /// The error last shown as a toast.
     last_error: Option<String>,
@@ -181,6 +186,8 @@ impl<B: Backend> LauncherApp<B> {
             looked_for_update: false,
             styled: false,
             settings: false,
+            server_setting: String::new(),
+            server_setting_for: None,
             toast: None,
             last_error: None,
             installed_mod: None,
@@ -234,6 +241,21 @@ impl<B: Backend> LauncherApp<B> {
             }
         }
         self.guard_quit(&ctx, &state);
+        // The server changed (the player's setting): the field shows it, and
+        // the probe asks the new one.
+        if self.server_setting_for != state.server {
+            self.server_setting = state.server.clone().unwrap_or_default();
+            self.server_setting_for.clone_from(&state.server);
+        }
+        if let Some(server) = state.server.as_deref().filter(|_| state.server_fixed)
+            && self
+                .extras
+                .probe
+                .as_ref()
+                .is_some_and(|probe| !probe.tells_of(server))
+        {
+            self.extras.probe = Probe::start(server);
+        }
         let reach = self
             .extras
             .probe
@@ -1092,6 +1114,10 @@ impl<B: Backend> LauncherApp<B> {
     }
 
     fn settings_body(&mut self, ui: &mut Ui, state: &State, view: &View) {
+        if state.server_fixed || state.server_default.is_some() {
+            self.server_settings(ui, state);
+            ui.add_space(14.0);
+        }
         group(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
@@ -1236,6 +1262,70 @@ impl<B: Backend> LauncherApp<B> {
                 theme::body(12.0),
                 theme::MUTED,
             ));
+        });
+    }
+
+    /// The server setting (D12, as amended): the server played on, a field
+    /// to change it, and a way back to the default. Changing it leaves the
+    /// server and connects to the new one; invites stay on it.
+    fn server_settings(&mut self, ui: &mut Ui, state: &State) {
+        group(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                icon(ui, "link", 19.0, theme::TEXT);
+                ui.label(theme::text("Server", theme::semibold(14.0), theme::TEXT));
+            });
+            ui.add_space(8.0);
+            ui.label(theme::text(
+                server_setting_line(state),
+                theme::body(12.0),
+                theme::MUTED,
+            ));
+            ui.add_space(14.0);
+            let hint = state.server_default.as_deref().unwrap_or("host:port");
+            let entered = labelled_field(
+                ui,
+                "Server address",
+                Some("host:port"),
+                theme::text_field(&mut self.server_setting, hint, false).char_limit(128),
+            );
+            let setting = ServerSetting::of(&self.server_setting, state);
+            if let Some(problem) = &setting.problem {
+                ui.add_space(6.0);
+                status_line(ui, problem, Tone::Error);
+            }
+            ui.add_space(14.0);
+            let mut chosen = None;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let apply =
+                    theme::primary_small(ui, setting.can_apply, None, "Use this server", false);
+                if apply.clicked() || (entered && setting.can_apply) {
+                    chosen = Some(self.server_setting.trim().to_owned());
+                }
+                let reset = theme::quiet_button(
+                    ui,
+                    setting.can_reset,
+                    Some("refresh"),
+                    "Reset to default",
+                    Quiet::new(),
+                );
+                if reset.clicked() {
+                    chosen = Some(String::new());
+                }
+            });
+            if let Some(server) = chosen {
+                self.backend.act(Action::SetServer { server });
+            }
+            ui.add_space(10.0);
+            let note = if state.room.is_some() {
+                "Leave the room to change the server."
+            } else {
+                "Changing the server disconnects you and connects to the new one. Invites join \
+                 rooms on your server only: to play with friends on another server, all of you \
+                 set the same one here."
+            };
+            ui.label(theme::text(note, theme::body(12.0), theme::MUTED));
         });
     }
 
@@ -1669,6 +1759,58 @@ fn server_chip(ui: &mut Ui, window: Rect, assets: &Assets, name: &str, dot: Opti
         theme::CAPTION,
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, name));
+}
+
+/// What the server setting's field allows, for what the player typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerSetting {
+    /// Why what was typed is no server, if it is not one.
+    pub problem: Option<String>,
+    /// "Use this server": a server other than the current, outside a room.
+    pub can_apply: bool,
+    /// "Reset to default": the default is not the current, outside a room.
+    pub can_reset: bool,
+}
+
+impl ServerSetting {
+    pub fn of(typed: &str, state: &State) -> Self {
+        let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+        let typed = typed.trim();
+        let problem = (!typed.is_empty())
+            .then(|| server_address(typed).err())
+            .flatten();
+        let free = state.room.is_none();
+        Self {
+            can_apply: free
+                && !typed.is_empty()
+                && problem.is_none()
+                && !state.server.as_deref().is_some_and(|now| same(now, typed)),
+            can_reset: free
+                && state.server_default.as_deref().is_some_and(|default| {
+                    !state
+                        .server
+                        .as_deref()
+                        .is_some_and(|now| same(now, default))
+                }),
+            problem,
+        }
+    }
+}
+
+/// What the server setting says of the server played on.
+pub fn server_setting_line(state: &State) -> String {
+    let Some(server) = &state.server else {
+        return "No server is set: type one below.".to_owned();
+    };
+    let default = state
+        .server_default
+        .as_deref()
+        .is_some_and(|default| default.trim().eq_ignore_ascii_case(server.trim()));
+    match (&state.server_name, default) {
+        (Some(name), true) => format!("You play on {name} ({server}), the default server."),
+        (None, true) => format!("You play on {server}, the default server."),
+        (_, false) => format!("You play on {server}."),
+    }
 }
 
 /// A group of settings: a faint card.

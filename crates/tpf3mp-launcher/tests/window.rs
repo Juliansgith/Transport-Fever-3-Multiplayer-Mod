@@ -6,7 +6,10 @@
 use std::cell::RefCell;
 
 use eframe::egui::{self, accesskit::Role};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use tpf3mp_agent::launcher::{
     Action, Connection, Differences, Game, InstalledGame, Member, MemberContent, Phase, Room,
     RulesChoice, State,
@@ -528,4 +531,144 @@ fn in_a_room_the_window_shows_it_but_its_buttons_are_in_the_game() {
         window.query_by_role(Role::TextInput).is_none(),
         "no chat field"
     );
+}
+
+fn on_the_relay() -> State {
+    State {
+        name: "Ann".into(),
+        server: Some("relay.example.org:29470".into()),
+        server_fixed: true,
+        server_default: Some("relay.example.org:29470".into()),
+        server_name: Some("Relay".into()),
+        connection: Connection::Connected,
+        ..State::default()
+    }
+}
+
+/// Replaces what the field holds with `text`, as a player selecting it all
+/// and typing would.
+fn retyped(window: &mut Harness<'static, LauncherApp<Recorder>>, field: &str, text: &str) {
+    let input = window.get_by_role_and_label(Role::TextInput, field);
+    input.focus();
+    window.run_steps(1);
+    window.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    window.run_steps(1);
+    window
+        .get_by_role_and_label(Role::TextInput, field)
+        .type_text(text);
+    window.run_steps(4);
+}
+
+/// The server setting (D12, as amended): Settings shows the server played
+/// on, takes another as host:port only, and goes back to the default.
+#[test]
+fn the_server_is_changed_in_settings() {
+    let mut window = window(on_the_relay());
+    window.get_by_label("Settings").click();
+    window.run_steps(4);
+    window.get_by_label("You play on Relay (relay.example.org:29470), the default server.");
+    let reset = window.get_by_role_and_label(Role::Button, "Reset to default");
+    assert!(
+        reset.accesskit_node().is_disabled(),
+        "already on the default"
+    );
+    assert!(
+        window
+            .get_by_role_and_label(Role::Button, "Use this server")
+            .accesskit_node()
+            .is_disabled(),
+        "the field holds the server played on"
+    );
+
+    // Not a host:port: said, and not taken.
+    retyped(&mut window, "SERVER ADDRESS", "eu.example.org");
+    window.get_by_label("the server must be host:port, such as tpf3mp.example.org:29470");
+    window.get_by_label("Use this server").click();
+    window.run_steps(2);
+    assert!(actions(&window).is_empty());
+
+    retyped(&mut window, "SERVER ADDRESS", "eu.example.org:29470");
+    assert!(
+        window
+            .query_by_label("the server must be host:port, such as tpf3mp.example.org:29470")
+            .is_none()
+    );
+    window.get_by_label("Use this server").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [Action::SetServer {
+            server: "eu.example.org:29470".into()
+        }]
+    );
+
+    // On another server: its address, and a way back.
+    let mut window = self::window(State {
+        server: Some("eu.example.org:29470".into()),
+        server_name: None,
+        ..on_the_relay()
+    });
+    window.get_by_label("Settings").click();
+    window.run_steps(4);
+    window.get_by_label("You play on eu.example.org:29470.");
+    let reset = window.get_by_role_and_label(Role::Button, "Reset to default");
+    assert!(!reset.accesskit_node().is_disabled());
+    reset.hover();
+    window.run_steps(2);
+    window.get_by_label("Reset to default").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [Action::SetServer {
+            server: String::new()
+        }]
+    );
+}
+
+#[test]
+fn the_server_stays_while_in_a_room() {
+    let mut state = in_room(vec![member("Ann", true, true, true)], true);
+    state.server = Some("eu.example.org:29470".into());
+    state.server_fixed = true;
+    state.server_default = Some("relay.example.org:29470".into());
+    let mut window = window_sized(state, 1200.0, Place::Launcher);
+    window.get_by_label("Settings").click();
+    window.run_steps(4);
+    window.get_by_label("Leave the room to change the server.");
+    assert!(
+        window
+            .get_by_role_and_label(Role::Button, "Reset to default")
+            .accesskit_node()
+            .is_disabled()
+    );
+    retyped(&mut window, "SERVER ADDRESS", "us.example.org:29470");
+    assert!(
+        window
+            .get_by_role_and_label(Role::Button, "Use this server")
+            .accesskit_node()
+            .is_disabled()
+    );
+    window.get_by_label("Use this server").click();
+    window.run_steps(2);
+    assert!(actions(&window).is_empty());
+}
+
+#[test]
+fn the_server_setting_checks_what_was_typed() {
+    use tpf3mp_launcher::app::ServerSetting;
+    let state = on_the_relay();
+    let setting = |typed: &str| ServerSetting::of(typed, &state);
+    assert!(setting("eu.example.org:29470").can_apply);
+    assert!(
+        !setting(" RELAY.example.org:29470 ").can_apply,
+        "the same server"
+    );
+    assert!(!setting("").can_apply && setting("").problem.is_none());
+    assert!(setting("eu.example.org").problem.is_some());
+    assert!(!setting("anything").can_reset, "already the default");
+    let elsewhere = State {
+        server: Some("eu.example.org:29470".into()),
+        ..on_the_relay()
+    };
+    assert!(ServerSetting::of("", &elsewhere).can_reset);
 }

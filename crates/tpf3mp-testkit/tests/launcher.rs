@@ -136,6 +136,7 @@ fn launcher_config(
         listen: "127.0.0.1:0".parse().unwrap(),
         server: None,
         server_fixed: false,
+        default_server: None,
         server_name: None,
         tunnel: TunnelChoice::Off,
         remember: None,
@@ -567,8 +568,10 @@ async fn a_room_made_after_leaving_one_can_start() {
     let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
 }
 
-/// A launcher built for a server plays on it alone (D12): Connect takes
-/// no server, and an invite to another is refused, not followed.
+/// A launcher plays on its server (D12): Connect takes no server, and an
+/// invite to another is refused, not followed. Only the player's server
+/// setting changes the server (D12, as amended): it reconnects there, is
+/// remembered, and goes back to the default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_launcher_with_its_own_server_plays_there_alone() {
     use tpf3mp_agent::launcher::{Action, Connection};
@@ -595,6 +598,9 @@ async fn a_launcher_with_its_own_server_plays_there_alone() {
     );
     config.server = Some(server_address.clone());
     config.server_fixed = true;
+    config.default_server = Some(server_address.clone());
+    let remember = root.path().join("launcher.json");
+    config.remember = Some(remember.clone());
     let launcher = Launcher::start_local(config);
     let handle = launcher.handle();
     let state = handle.state();
@@ -657,6 +663,71 @@ async fn a_launcher_with_its_own_server_plays_there_alone() {
         .await
         .unwrap_err();
     assert!(refused.contains("another server"), "{refused}");
+
+    // Back on the server once the room is left.
+    let back = tokio::time::timeout(WAIT, async {
+        while handle.state().room.is_some() || handle.state().connection != Connection::Connected {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(back.is_ok(), "never back on the server after leaving");
+
+    // The server setting takes a host:port only.
+    let refused = handle
+        .act(Action::SetServer {
+            server: "elsewhere.example".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(refused.contains("host:port"), "{refused}");
+    assert_eq!(
+        handle.state().server.as_deref(),
+        Some(server_address.as_str())
+    );
+
+    // Another server (the same one by name): the launcher leaves and
+    // connects there, and remembers it.
+    let port = server_address.rsplit_once(':').unwrap().1;
+    let other = format!("localhost:{port}");
+    handle
+        .act(Action::SetServer {
+            server: other.clone(),
+        })
+        .await
+        .unwrap();
+    let state = handle.state();
+    assert_eq!(state.server.as_deref(), Some(other.as_str()));
+    assert_eq!(state.connection, Connection::Connected, "reconnected there");
+    assert_eq!(
+        state.server_default.as_deref(),
+        Some(server_address.as_str())
+    );
+    let remembered = tpf3mp_agent::launcher::Remembered::load(&remember);
+    assert_eq!(remembered.chosen_server.as_deref(), Some(other.as_str()));
+    // Invites still never switch servers: one naming the default is refused
+    // now.
+    let refused = handle
+        .act(Action::Join {
+            invite: format!("{server_address} {code}"),
+            password: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(refused.contains("another server"), "{refused}");
+
+    // Reset to default.
+    handle
+        .act(Action::SetServer {
+            server: String::new(),
+        })
+        .await
+        .unwrap();
+    let state = handle.state();
+    assert_eq!(state.server.as_deref(), Some(server_address.as_str()));
+    assert_eq!(state.connection, Connection::Connected);
+    let remembered = tpf3mp_agent::launcher::Remembered::load(&remember);
+    assert_eq!(remembered.chosen_server, None);
 
     drop(launcher);
     let _ = stop.send(());

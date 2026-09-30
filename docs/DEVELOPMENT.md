@@ -170,6 +170,12 @@ Or use the launcher window:
 cargo run -p tpf3mp-launcher -- --server 127.0.0.1:29470 --pin-cert runtime/dev-cert.der --name ann
 ```
 
+Without `--server`, every build of the launcher, a developer's too, plays
+on the player's server setting (Settings, **Server**), else on its default:
+`TPF3MP_DEFAULT_SERVER` when it was built with one, otherwise the project's
+relay (`setup::RELAY`). `--server` wins over both for the run, so playtests
+stay on the local server whatever the setting says.
+
 (`tpf3mp-agent launcher` with the same options serves it as a page in the
 browser instead.)
 
