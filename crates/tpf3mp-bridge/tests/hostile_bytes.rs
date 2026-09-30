@@ -10,8 +10,8 @@ use std::fmt::Debug;
 use proptest::{collection::vec, prelude::*, sample::Index};
 use serde::{Serialize, de::DeserializeOwned};
 use tpf3mp_bridge::{
-    LobbyAction, LobbyConnection, LobbyLine, LobbyMember, LobbyRoom, LobbyView, RoomInfo,
-    RoomMember, ToAgent, ToHook, decode, encode,
+    LobbyAction, LobbyConnection, LobbyLine, LobbyMember, LobbyRoom, LobbyRules, LobbyView,
+    LobbyWorld, RoomInfo, RoomMember, ToAgent, ToHook, decode, encode,
 };
 use tpf3mp_proto::{
     BoundedVec, Event, EventBody, FixedBytes, IntentRejection, LaneDigest, Payload, PlayerId,
@@ -127,6 +127,18 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 you: true,
             }])
             .unwrap(),
+            rules: BoundedVec::new(vec![LobbyRules {
+                name: Text::new("native").unwrap(),
+                description: Text::new("The game's own economy").unwrap(),
+            }])
+            .unwrap(),
+            saves: BoundedVec::new(vec![Text::new("mptest").unwrap()]).unwrap(),
+            start_save: Some(Text::new("mptest").unwrap()),
+            world: LobbyWorld::Fetching {
+                bytes: 1 << 20,
+                total: 1 << 24,
+            },
+            differences: Some(Text::new("you lack stations 3").unwrap()),
         }),
     ];
     let to_agent = [

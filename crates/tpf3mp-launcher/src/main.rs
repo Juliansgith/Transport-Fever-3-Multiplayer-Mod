@@ -282,6 +282,7 @@ fn auto_room(
                     max_players: 8,
                     password: None,
                     rules: None,
+                    start_save: None,
                 })
                 .await
             {

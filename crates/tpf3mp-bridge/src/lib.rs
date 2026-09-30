@@ -38,8 +38,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// Version of these messages. Both sides send it first and refuse a peer
 /// that speaks another. 7 added [`ToAgent::WorldUp`]; 8 added
 /// [`ToAgent::MenuUp`]; 9 added the main menu's Multiplayer window's
-/// [`ToHook::Lobby`] and [`ToAgent::Lobby`].
-pub const BRIDGE_VERSION: u32 = 9;
+/// [`ToHook::Lobby`] and [`ToAgent::Lobby`]; 10 added the rules, saves,
+/// world and differences to [`LobbyView`], and the rules and start save to
+/// [`LobbyAction::Create`].
+pub const BRIDGE_VERSION: u32 = 10;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -110,6 +112,15 @@ pub enum ToHook {
 
 /// Most chat lines a [`LobbyView`] carries: the newest.
 pub const MAX_LOBBY_CHAT: usize = 40;
+/// Most rules a [`LobbyView`] offers.
+pub const MAX_LOBBY_RULES: usize = 8;
+/// Most saves a [`LobbyView`] lists: the newest.
+pub const MAX_LOBBY_SAVES: usize = 40;
+/// Longest save name a [`LobbyView`] lists or a [`LobbyAction::Create`]
+/// names, in UTF-8 bytes.
+pub const MAX_SAVE_NAME: usize = 64;
+/// A save in the game's save folder, by its name without `.sav`.
+pub type SaveName = Text<MAX_SAVE_NAME>;
 
 /// What the main menu's Multiplayer window shows: the launcher's connection,
 /// room and chat, as the launcher window shows them (D17).
@@ -127,6 +138,39 @@ pub struct LobbyView {
     pub room: Option<LobbyRoom>,
     /// The room's chat, oldest first.
     pub chat: BoundedVec<LobbyLine, MAX_LOBBY_CHAT>,
+    /// The rules the server offers new rooms, its default first.
+    pub rules: BoundedVec<LobbyRules, MAX_LOBBY_RULES>,
+    /// The player's saves, newest first: what a room they create can start
+    /// from.
+    pub saves: BoundedVec<SaveName, MAX_LOBBY_SAVES>,
+    /// The save rooms this player creates start from unless they pick
+    /// another (the launcher's `--start-save`).
+    pub start_save: Option<SaveName>,
+    /// The room's world in this player's game.
+    pub world: LobbyWorld,
+    /// How this player's game differs from the room's, while it does.
+    pub differences: Option<Text<256>>,
+}
+
+/// Rules a room can be played by, as the server offers them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyRules {
+    pub name: RulesName,
+    pub description: Text<200>,
+}
+
+/// Where the room's world is in this player's game.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LobbyWorld {
+    /// No world of the room's yet.
+    #[default]
+    None,
+    /// Coming from the room: `bytes` of `total` so far.
+    Fetching { bytes: u64, total: u64 },
+    /// The game loads it.
+    Loading,
+    /// The game plays it.
+    Playing,
 }
 
 impl Default for LobbyView {
@@ -140,6 +184,11 @@ impl Default for LobbyView {
             notice: None,
             room: None,
             chat: BoundedVec::empty(),
+            rules: BoundedVec::empty(),
+            saves: BoundedVec::empty(),
+            start_save: None,
+            world: LobbyWorld::None,
+            differences: None,
         }
     }
 }
@@ -203,6 +252,11 @@ pub enum LobbyAction {
         room: Text<48>,
         max_players: u8,
         password: Option<Text<64>>,
+        /// One of the server's rules; its default without.
+        rules: Option<RulesName>,
+        /// The save the room starts from, which every game loads from its
+        /// menu; without, the launcher's own (`--start-save`), if any.
+        start_save: Option<SaveName>,
     },
     Join {
         invite: Text<128>,
@@ -430,6 +484,25 @@ mod tests {
                 members: BoundedVec::new((0..MAX_ROOM_MEMBERS).map(member).collect()).unwrap(),
             }),
             chat: BoundedVec::new(vec![line; MAX_LOBBY_CHAT]).unwrap(),
+            rules: BoundedVec::new(vec![
+                LobbyRules {
+                    name: Text::new("r".repeat(32)).unwrap(),
+                    description: Text::new("d".repeat(200)).unwrap(),
+                };
+                MAX_LOBBY_RULES
+            ])
+            .unwrap(),
+            saves: BoundedVec::new(vec![
+                Text::new("s".repeat(MAX_SAVE_NAME)).unwrap();
+                MAX_LOBBY_SAVES
+            ])
+            .unwrap(),
+            start_save: Some(Text::new("s".repeat(MAX_SAVE_NAME)).unwrap()),
+            world: LobbyWorld::Fetching {
+                bytes: u64::MAX,
+                total: u64::MAX,
+            },
+            differences: Some(Text::new("d".repeat(256)).unwrap()),
         });
         let bytes = encode(&view).unwrap();
         assert_eq!(decode::<ToHook>(&bytes).unwrap(), view);
@@ -437,6 +510,8 @@ mod tests {
             room: Text::new("Alps").unwrap(),
             max_players: 4,
             password: None,
+            rules: Some(Text::new("native").unwrap()),
+            start_save: Some(Text::new("mptest").unwrap()),
         });
         assert_eq!(
             decode::<ToAgent>(&encode(&action).unwrap()).unwrap(),

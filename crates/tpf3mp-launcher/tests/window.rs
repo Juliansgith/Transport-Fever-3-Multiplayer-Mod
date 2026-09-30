@@ -180,6 +180,7 @@ fn a_room_is_created_with_the_rules_the_host_picks() {
             max_players: 4,
             password: None,
             rules: Some("native".into()),
+            start_save: None,
         }]
     );
 }

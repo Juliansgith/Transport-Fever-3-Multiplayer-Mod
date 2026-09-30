@@ -843,6 +843,7 @@ impl<B: Backend> LauncherApp<B> {
                     max_players: self.max_players,
                     password: non_empty(&self.create_password),
                     rules: self.rules.clone(),
+                    start_save: None,
                 });
             }
             Form::Join => {

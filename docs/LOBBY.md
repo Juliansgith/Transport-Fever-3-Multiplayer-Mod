@@ -80,7 +80,7 @@ The window asks the hook for the lobby through the request channel above
 way (`tpf3mp/act.lua`). The hook does not answer on its own: an action is
 queued for the launcher that started the game and handed to its agent over
 the link (`ToAgent::Lobby`), and the state is the launcher's lobby as the
-agent last sent it (`ToHook::Lobby`, bridge version 9). Every request also
+agent last sent it (`ToHook::Lobby`, bridge version 10). Every request also
 reads the link, since at the main menu no step of the game does
 (`crates/tpf3mp-hook/src/lobby.rs`; `docs/HOOKS.md`, "The main menu's
 Multiplayer window"). The launcher carries the actions out as if its own

@@ -366,7 +366,11 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     members, ready marks and owner, the newest 40 chat lines, the last
     error and notice), for the Multiplayer window on the game's main menu
     (D17): sent whenever it changes, before, during and after a room's
-    game; only the newest counts (bridge version 9).
+    game; only the newest counts (bridge version 9). Since bridge version
+    10 it also carries the rules the server offers, the player's saves
+    (newest 40, by name) and the one offered first (`start_save`), where
+    the room's world is in this game (`world`: none, fetching with its
+    bytes, loading, playing) and how the game differs from the room's.
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.
@@ -409,7 +413,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     Multiplayer window: connect (a name; the server is the launcher's,
     D12), disconnect, create, join, ready, start, kick, chat or leave. The
     launcher carries it out as if its own window had asked (bridge
-    version 9).
+    version 9). Since version 10, create also names the rules and the save
+    the room starts from: one of the saves the window was offered, by name
+    only (never a path); absent for the launcher's own `--start-save`,
+    empty for none.
   - `Log`: a line for the agent's log.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
