@@ -128,6 +128,8 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   a larger one (`InvalidContent`). The server derives the **content
   fingerprint** from the manifest, a SHA-256 that is equal only for the
   same build and the same mods in the same order, and rooms compare those.
+  The agent declares a player's shared mods only: those it scanned as
+  personal, which may differ between players, stay out ([MODS.md](MODS.md)).
   A room tells each member whose content differs from its own (the owner's
   in the lobby, the game's once it runs) how, with `ContentDiff`: the
   builds if they differ, the mods the member lacks, the mods the room

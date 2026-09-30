@@ -285,7 +285,14 @@ Dev B:
 - [ ] *Added, open for the team:* a rule for mods that send commands from
   the GUI (GW Big City and Startup Fortune do, once per save). Every
   player's game sends them: forwarded, the room gets one city per player;
-  dropped, the worlds differ.
+  dropped, the worlds differ. *Proposed (D22, for the owner):* such a mod is
+  personal; the guard carries what the room carries and refuses the rest,
+  in every game alike ([MODS.md](MODS.md)).
+- [ ] *Added (D22, proposed):* personal mods ([MODS.md](MODS.md)). Built:
+  the scan (`tpf3mp-modscan`), the content check on shared mods only, the
+  room's world loaded with the room's mods and the player's own, and the
+  personal mods' guard for game-script mods. Tick once the two-player test
+  in MODS.md passes in the real game, and its measurements are made.
 
 Dev C:
 

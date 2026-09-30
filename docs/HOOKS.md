@@ -340,7 +340,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     with canonical rules, the Lua mod shows the server's values instead. And
     the local player, as the room's events name the actor: the hook knows
     the player's own commands by it when the room orders them (bridge
-    version 5).
+    version 5). And the mods the room's worlds load with in this game:
+    the room's shared mods and this player's personal ones, or none when
+    the agent does not know this player's mods ([MODS.md](MODS.md);
+    bridge version 10).
   - `Load { file, next_step }`: load a world, then run `next_step`.
     Without a file, the game loads the world the player chose to start
     from: the owner's, or everyone's on a server that keeps no snapshots.
@@ -738,6 +741,15 @@ for the table (`bridge.find`). Its contract is in
   game script's `postUpdate` at a checkpoint: the lanes the hook wants
   written to its log entry by entry, and each entry ("Lane dumps" below).
   Optional, as `built`.
+- `tpf3mp_native.mods(list)`: the mods to load a save with, given the
+  save's (names, one a line): that list, then those left out and those
+  added, the same way, from the room's `Begin` (`tpf3mp_bridge::mods::plan`);
+  `nil` without the room's lists. `mods()` alone: `true` when the room gave
+  them. Said in the hook's log ("the room's world loads with N mods: ...").
+  Optional, as `built` ([MODS.md](MODS.md)).
+- `tpf3mp_native.personal()`: this player's personal mods, names one a
+  line, or `nil`: the guards tell a personal mod's commands by it
+  ("The player's commands" below). Optional.
 
 The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
@@ -875,7 +887,12 @@ stands still meanwhile:
 - **Loading.** A `Load` with a file (the room's save, fetched by the
   agent) is copied into the folder as `tpf3mp_room_<pid>.sav`, and the GUI
   asked to load it (`app.loadGame`, with a `SavegameId` in the game's save
-  namespace). The GUI tells the hook each time a world's GUI starts
+  namespace). With the room's mod lists (`Begin`), the GUI first reads the
+  save's details (`app.getSavegameInfo`, a few frames) and loads it with
+  their `mods` replaced: the save's shared mods, TPF3-MP, and this
+  player's personal mods, leaving out another player's
+  (`mod/tpf3mp_1/content/scripts/tpf3mp/worldload.lua`; [MODS.md](MODS.md)).
+  A shared mod not installed here fails the load, and says which. The GUI tells the hook each time a world's GUI starts
   (`tpf3mp_native.world`); the room's world is the first to start after
   the GUI took the request, never the one it was asked in, whose GUI may
   well report itself in between. Then `Session::loaded(next_step)`, and
@@ -934,10 +951,19 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   the loaded world by itself. Confirmed in a two-game playtest on build
   40408: a guest at the main menu loaded the room's world by itself, with
   no Start Game click.
-- **Loads it with TPF3-MP active.** `info` is nil, so the save keeps its
-  own mod list, and the room's save was written by a game whose GUI had
-  TPF3-MP linked (only the mod saves for the room). A world whose mod
-  does not start never says it is up, and is held after `LOAD_PATIENCE`.
+- **Loads it with TPF3-MP active.** Without the room's mod lists `info`
+  is nil, so the save keeps its own mod list, and the room's save was
+  written by a game whose GUI had TPF3-MP linked (only the mod saves for
+  the room). With them (the room's `Begin`, [MODS.md](MODS.md)), the chunk,
+  handed the hook's `mods` as a third function, first reads the save's
+  details (`app.getSavegameInfo`, answered "busy" until the game has them)
+  and passes `info` as the menu's own Load Game page does when a player
+  changes a save's mods: `api.type.SaveGameDetails.new(data.info)` with
+  `mods` set to the save's shared mods, TPF3-MP and this player's
+  personal ones, each `api.type.ModId` checked with the user profile's
+  `ModRep:exists` (a shared mod not installed here fails the load and
+  holds the world). A world whose mod does not start never says it is up,
+  and is held after `LOAD_PATIENCE`.
 
 The loaded world's GUI says it started (`tpf3mp_native.world`), the step's
 detour takes the world at its first call (`Session::loaded`), and the
@@ -982,7 +1008,32 @@ So the stock windows do send through `api.cmd.sendCommand`, as the mod's
 replays do (the question in PLAN.md, Part 2). What tells them apart is the
 Lua state, not a caller's address: the player's commands come from the
 GUI's state, the room's replays from the game script's states, whose
-`api.cmd` the mod leaves alone.
+`api.cmd` the mod leaves alone, but for one thing: what a player's
+personal mods send there (below, and [MODS.md](MODS.md)).
+
+A GUI mod only one player runs (a personal mod, [MODS.md](MODS.md)) sends
+through the same guard as the player's clicks: carried or refused alike.
+A refusal names the mod it came from, the nearest function on the stack
+whose source is a mod's file (`<modId>::/...`, `guard.callers`), so
+hook.log says `refused the player's makeTownCreateCmd in the room's game
+(1 so far), from the mod gw_big_city_1`. A personal mod's event to game
+scripts (`makeScriptingSendEventCmd`) is sent here as it is: it reaches this
+game's game scripts only, where the mod's own game script runs.
+
+A personal mod's game script runs in its player's game only, in the
+simulation's states, where a command runs at once. There
+`tpf3mp/modguard.lua`, installed by the mod's game script in each state it
+links in, sits in front of `sendCommand` in the room's game: a command with
+a personal mod anywhere on its stack is not run; a vehicle's manual
+departure (`VehicleChange::ManualDeparture`), departure or stop, or a
+line's rename or update, for the player's own company's, goes to the room
+as an action, once per change within 5 s of game time; an event between
+game scripts is dropped; anything else is refused, each once in hook.log
+(`handed makeVehicleSetManualDepartureCmd from the personal mod
+celmi_timetables to the room (1 so far)`). Commands from the game's own
+scripts, TPF3-MP's and shared mods run as before. A state without
+`debug.getinfo` cannot tell them apart, and says so in hook.log when the
+player has personal mods.
 
 The mod guards the build tools in its game script, whose `guiHandleEvent`
 runs in the GUI's state. The street, track, station and depot, stop and

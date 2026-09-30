@@ -240,6 +240,10 @@ function guard.install(cmd, env)
 	-- itself.
 	local kinds = setmetatable({}, { __mode = "k" })
 	local calls = setmetatable({}, { __mode = "k" })
+	-- The mod that made each command, if one did: a window's helper
+	-- (engine_react_util's commit) sends what a mod's function made, with
+	-- that mod no longer on the stack.
+	local makers = setmetatable({}, { __mode = "k" })
 	local factories = {}
 	for name, factory in pairs(cmd) do
 		if type(name) == "string" and name:match("^make.+Cmd$") then
@@ -256,6 +260,7 @@ function guard.install(cmd, env)
 			local t = type(command)
 			if t == "table" or t == "userdata" then
 				kinds[command] = name
+				makers[command] = (env.caller or guard.caller)()
 				if guard.CARRY[name] then calls[command] = { n = select("#", ...), ... } end
 			end
 			return command
@@ -273,7 +278,7 @@ function guard.install(cmd, env)
 		if kind ~= nil and guard.PASS[kind] then
 			return send(command, ...)
 		end
-		local from = (env.caller or guard.caller)()
+		local from = makers[command] or (env.caller or guard.caller)()
 		-- A personal mod's event to game scripts reaches this game's alone,
 		-- where its own game script runs (docs/MODS.md).
 		if kind == "makeScriptingSendEventCmd" and from and env.personal and env.personal(from) then

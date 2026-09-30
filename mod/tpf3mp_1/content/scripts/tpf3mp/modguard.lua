@@ -116,6 +116,9 @@ function modguard.install(cmd, env)
 
 	local kinds = setmetatable({}, { __mode = "k" })
 	local calls = setmetatable({}, { __mode = "k" })
+	-- The mods on the stack when each command was made.
+	local makers = setmetatable({}, { __mode = "k" })
+	local function stack() return (env.callers or guardModule().callers)() end
 	local wrapped = 0
 	local names = {}
 	for name in pairs(modguard.CARRY) do names[#names + 1] = name end
@@ -129,6 +132,7 @@ function modguard.install(cmd, env)
 				if t == "table" or t == "userdata" then
 					kinds[command] = name
 					calls[command] = { n = select("#", ...), ... }
+					makers[command] = stack()
 				end
 				return command
 			end
@@ -153,10 +157,9 @@ function modguard.install(cmd, env)
 		-- A personal mod anywhere on the stack: one calling a shared mod's
 		-- helper is still its own.
 		local from
-		for _, mod in ipairs((env.callers or guardModule().callers)()) do
-			if env.personal(mod) then
-				from = mod
-				break
+		for _, mods in ipairs({ makers[command] or {}, stack() }) do
+			for _, mod in ipairs(mods) do
+				if from == nil and env.personal(mod) then from = mod end
 			end
 		end
 		if from == nil then return send(command, ...) end

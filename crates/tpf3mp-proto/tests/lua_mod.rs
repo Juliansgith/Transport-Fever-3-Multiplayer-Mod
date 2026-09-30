@@ -3711,6 +3711,12 @@ fn the_guard_names_the_mod_and_lets_a_personal_mods_events_reach_its_script() {
             api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
             FROM = nil
             api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
+            -- Made by the mod, sent by the game's own helper (a window's
+            -- commit): still the mod's.
+            FROM = 'celmi_timetables'
+            local made = api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setMinWait', {})
+            FROM = nil
+            api.cmd.sendCommand(made)
             local sent = {}
             for _, s in ipairs(SENT) do sent[#sent + 1] = s.command.kind .. ':' .. tostring(s.command.id) end
             return callers, REFUSED, table.concat(sent, ',')
@@ -3720,8 +3726,8 @@ fn the_guard_names_the_mod_and_lets_a_personal_mods_events_reach_its_script() {
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(callers, "celmi_timetables,gw_big_city_1");
     assert_eq!(
-        sent, "event:TimetablesEdit",
-        "the personal mod's own event only"
+        sent, "event:TimetablesEdit,event:TimetablesEdit",
+        "the personal mod's own events only"
     );
     assert_eq!(
         refused,
