@@ -1473,7 +1473,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
              elsewhere.toAdd[1].transf[13] = 99 \
              out[#out + 1] = ask('constructionBuilder', elsewhere) \
              out[#out + 1] = ask('constructionBuilder', {CONSTRUCTION_PROPOSAL}) \
-             out[#out + 1] = ask('streetTerminalBuilder', {CONSTRUCTION_PROPOSAL}) \
+             out[#out + 1] = ask('laneModifier', {CONSTRUCTION_PROPOSAL}) \
              local unnamed = {CONSTRUCTION_PROPOSAL} unnamed.toAdd[1].name = '' \
              HOOK.clicks = 1 \
              out[#out + 1] = ask('constructionBuilder', unnamed) \
@@ -1527,7 +1527,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     );
     assert!(
         logged.contains(
-            &"the room does not carry the streetTerminalBuilder tool yet \
+            &"the room does not carry the laneModifier tool yet \
               [+c::/depots/road/road_maint_station.con{frozen 0n 0e}]"
                 .to_owned()
         ),
@@ -2428,6 +2428,286 @@ fn the_bulldozer_removes_a_construction_or_edges_in_every_game() {
         .eval()
         .unwrap();
     assert_eq!(why, "removing an edge with a stop or signal on it");
+}
+
+/// Stops over FAKE_NETWORK: the game's edge object types, the stop's model
+/// and construction, and the script proposal's edge object record. Edge
+/// 100 runs north from node 8 (50, -40) to node 9 (50, 40).
+const FAKE_STOPS: &str = r#"
+api.type.ComponentType.EDGE_OBJECT = 14
+api.type.enum.EdgeObjectType = { STOP_LEFT = 0, STOP_RIGHT = 1, SIGNAL = 2 }
+api.type.SimpleStreetProposal = { EdgeObject = { new = function() return {} end } }
+api.res.modelRep = { getName = function(id)
+    if id == 77 then return '::/stations/street/small_stops/small_new.con' end
+end }
+-- Edge objects, as their EDGE_OBJECT component has them.
+OBJECTS = {}
+local get = api.engine.getComponent
+api.engine.getComponent = function(id, kind)
+    if kind == 14 then return OBJECTS[id] end
+    return get(id, kind)
+end
+"#;
+
+/// The stop tool's proposal for a stop left of edge 100, 6 m east of its
+/// middle, as build 40408 hands it to game scripts: the edge removed and
+/// added again between the same nodes, the new stop in its objects and in
+/// `edgeObjectsToAdd`. `old` are the objects the edge had, `kept` those the
+/// tool keeps on it and `kept_records` their `edgeObjectsToAdd` records,
+/// each followed by a comma.
+fn stop_proposal(old: &str, kept: &str, kept_records: &str) -> String {
+    let edge = |entity: i64, objects: String| {
+        format!(
+            "{{ entity = {entity}, type = 0, comp = {{ node0 = 8, node1 = 9, \
+             tangent0 = {{ x = 0, y = 80, z = 0 }}, tangent1 = {{ x = 0, y = 80, z = 0 }}, \
+             objects = {{ {objects} }} }} }}"
+        )
+    };
+    let removed = edge(100, old.to_owned());
+    let added = edge(-1, format!("{kept} {{ -400000000, 0 }}"));
+    format!(
+        "{{ toAdd = {{}}, toRemove = {{}}, proposal = {{ addedNodes = {{}}, removedNodes = {{}}, \
+         removedSegments = {{ {removed} }}, addedSegments = {{ {added} }}, \
+         edgeObjectsToAdd = {{ {kept_records} {{ category = 0, left = true, \
+             modelInstance = {{ modelId = 77, \
+                 transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 56,0,0,1 }} }} }} }} }} }}"
+    )
+}
+
+#[test]
+fn a_stop_the_stop_tool_placed_goes_to_the_room_and_every_game_places_it() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    let proposal = stop_proposal("", "", "");
+    let asked: String = lua
+        .load(format!(
+            "HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({{}}, nil, nil) \
+             local r = SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetTerminalBuilder', \
+                 'builder.proposalCreate', {{ {proposal} }}) \
+             if r == nil then return 'nil' end \
+             for text in pairs(r.errorMessages) do return text end"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(asked, "nil", "the stop tool builds through the room");
+    lua.load("HOOK.clicks = 1 SCRIPT.guiUpdate({}, nil, nil)")
+        .exec()
+        .unwrap();
+    let handed: String = lua
+        .load(
+            "local s = HOOK.commands[1].PlaceStop
+             local function n(v) return string.format('%.3f', v) end
+             return table.concat({ #HOOK.commands, tostring(schema_check(HOOK.commands[1])),
+                 s.edge.network, n(s.edge.ends.a.y), n(s.edge.ends.b.y), n(s.at.x), n(s.at.y),
+                 tostring(s.left), n(s.direction.x), n(s.direction.y), s.model }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        handed,
+        "1|true|Street|-40.000|40.000|50.000|0.000|true|0.000|1.000\
+         |::/stations/street/small_stops/small_new.con",
+        "the edge by its ends, the stop's place on its centreline, the engine's side, \
+         the edge's direction there and the stop's construction"
+    );
+
+    // What the room orders, every game places: the edge rebuilt with the
+    // stop, as the tool does, paid by the player.
+    lua.load("HOOK.batch = { HOOK.commands[1] } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let placed: String = lua
+        .load(
+            "local c = SENT[1] local p = c.proposal.streetProposal local e = p.edgesToAdd[1]
+             local o = p.edgeObjectsToAdd[1]
+             return table.concat({ #SENT, e.entity, e.type, e.comp.node0, e.comp.node1,
+                 e.comp.roadTemplate, #e.comp.objects, e.comp.objects[1][1], e.comp.objects[1][2],
+                 table.concat(p.edgesToRemove, ','), table.concat(p.nodeConfigsToRemove, ','),
+                 o.edgeEntity, string.format('%.4f', o.param), tostring(o.left), o.model,
+                 o.playerEntity, tostring(c.context.player), tostring(c.ignoreErrors),
+                 tostring(c.playerInitiated) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        placed,
+        "1|-1|0|8|9|::/street/country.street_template|1|-1|0|100|8,9|-1|0.5000|true\
+         |::/stations/street/small_stops/small_new.con|25|25|true|true"
+    );
+}
+
+#[test]
+fn a_stop_the_room_cannot_carry_says_why() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    let capture = |proposal: String| -> String {
+        lua.load(format!(
+            "local a, why = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua').stop({proposal})
+             if a == nil then return why end
+             if type(a) == 'table' then return 'table' end
+             return tostring(a)"
+        ))
+        .eval()
+        .unwrap()
+    };
+    // Dropped where a stop stood: the old one is gone from the new edge.
+    assert_eq!(
+        capture(stop_proposal("{ 555, 0 },", "", "")),
+        "a stop that replaces another"
+    );
+    // A two-sided stop: two new objects.
+    let two = stop_proposal("", "{ -400000001, 1 },", "{ category = 0, left = false },");
+    assert_eq!(
+        capture(two),
+        "more than one stop at once (a two-sided stop)"
+    );
+    // A signal, and a side the engine lists other than `left` says.
+    let signal = stop_proposal("", "", "").replace("category = 0", "category = 2");
+    assert_eq!(capture(signal), "a signal or waypoint");
+    let side = stop_proposal("", "", "").replace("left = true", "left = false");
+    assert_eq!(capture(side), "a stop whose side the room cannot say");
+    // With a stop on the other side, kept: carried.
+    let beside = stop_proposal(
+        "{ 555, 1 },",
+        "{ 555, 1 },",
+        "{ category = 0, left = false },",
+    );
+    assert_eq!(capture(beside), "table");
+    // The tool before its first click: nothing.
+    assert_eq!(
+        capture(
+            "{ toAdd = {}, toRemove = {}, proposal = { addedNodes = {}, removedNodes = {}, \
+             addedSegments = {}, removedSegments = {}, edgeObjectsToAdd = {} } }"
+                .into()
+        ),
+        "false"
+    );
+}
+
+#[test]
+fn a_stop_is_placed_beside_the_edges_others_and_never_on_a_taken_side() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    // A stop on the right already; the room orders one on the left, from a
+    // game whose edge ran the other way (its direction south): here it is
+    // the right, taken.
+    let stop = "{ PlaceStop = { edge = { network = 'Street', ends = { a = { x = 50, y = -40, z = 0 }, \
+        b = { x = 50, y = 40, z = 0 } } }, at = { x = 50, y = 0, z = 0 }, left = true, \
+        direction = { x = 0, y = -1, z = 0 }, model = '::/stations/street/small_stops/small_new.con' } }";
+    lua.load(format!(
+        "EDGES[100].objects = {{ {{ 555, 1 }} }} HOOK.batch = {{ {stop} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .last()
+            .unwrap()
+            .ends_with("the edge has a stop on that side already"),
+        "{logged:?}"
+    );
+    // Facing north it is the left: placed beside the kept one.
+    lua.load(format!(
+        "HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+        stop.replace("y = -1", "y = 1")
+    ))
+    .exec()
+    .unwrap();
+    let objects: String = lua
+        .load(
+            "local p = SENT[1].proposal.streetProposal
+             local out = {}
+             for _, o in ipairs(p.edgesToAdd[1].comp.objects) do out[#out + 1] = o[1] .. ':' .. o[2] end
+             return table.concat(out, ',') .. '|' .. tostring(p.edgeObjectsToAdd[1].left)",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        objects, "555:1,-1:0|true",
+        "the kept stop under its own entity"
+    );
+    // A place off the edge, as another world would have it: placed nowhere.
+    lua.load(format!(
+        "SENT = {{}} EDGES[100].objects = {{}} HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+        stop.replace("at = { x = 50,", "at = { x = 53,")
+    ))
+    .exec()
+    .unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+}
+
+#[test]
+fn the_bulldozer_removes_a_stop_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(
+        "OBJECTS[555] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 56,0.2,0,1 }, \
+             edgeObjectConstruction = '::/stations/street/small_stops/small_new.con' } \
+         OBJECTS[556] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 44,0.2,0,1 }, \
+             edgeObjectConstruction = '::/stations/street/small_stops/small_new.con' }",
+    )
+    .exec()
+    .unwrap();
+    // The bulldozer over stop 555: edge 100 rebuilt with 556 alone.
+    let removal: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+             local function seg(e, objects) return { entity = e, type = 0, comp = { node0 = 8, node1 = 9,
+                 tangent0 = { x = 0, y = 80, z = 0 }, tangent1 = { x = 0, y = 80, z = 0 },
+                 objects = objects } } end
+             STOP = capture.bulldoze({ toAdd = {}, toRemove = {}, proposal = { addedNodes = {},
+                 removedNodes = {}, removedSegments = { seg(100, { { 555, 0 }, { 556, 1 } }) },
+                 addedSegments = { seg(-1, { { 556, 1 } }) }, edgeObjectsToAdd = { { category = 0 } } } })
+             local b = STOP.Bulldoze.EdgeObject
+             return table.concat({ tostring(schema_check(STOP)), b.edge.network, b.edge.ends.a.y,
+                 b.at.x, b.model }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        removal,
+        "true|Street|-40|56|::/stations/street/small_stops/small_new.con"
+    );
+    lua.load(
+        "EDGES[100].objects = { { 555, 0 }, { 556, 1 } } HOOK.batch = { STOP } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let removed: String = lua
+        .load(
+            "local p = SENT[1].proposal.streetProposal local e = p.edgesToAdd[1]
+             return table.concat({ #SENT, #e.comp.objects, e.comp.objects[1][1],
+                 table.concat(p.edgesToRemove, ','), table.concat(p.edgeObjectsToRemove, ','),
+                 tostring(SENT[1].context.player) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        removed, "1|1|556|100|555|25",
+        "the other stop kept under its own entity"
+    );
 }
 
 #[test]

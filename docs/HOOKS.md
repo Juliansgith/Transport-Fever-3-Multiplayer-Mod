@@ -1021,7 +1021,7 @@ builds it, paid by the player (`Context.player`) and clearing town
 buildings in its way (`gatherBuildings`), as the tool builds; without a
 context the game builds for free.
 
-Four tools build through the room so far:
+Five tools build through the room so far:
 
 - **The construction tool** (`constructionBuilder`): a proposal of one
   construction (a station, a depot, anything the tool places) becomes a
@@ -1067,14 +1067,53 @@ Four tools build through the room so far:
   their ends. The replay removes them as the game makes such a removal
   itself, `createProposalRemove` for the construction and
   `makeSegmentsRemoveProposal` for the edges (on build 40408 the first
-  gave exactly the bulldozer's proposal), and the player pays. Removing a
-  stop or signal, or an edge with one on it, is refused.
+  gave exactly the bulldozer's proposal), and the player pays. A stop it
+  removes is carried as the stop tool's builds are (below): its edge
+  rebuilt without it, the stop named by its edge, where it stands and its
+  construction (the `EDGE_OBJECT` component's `transf` and
+  `edgeObjectConstruction`), a `Bulldoze::EdgeObject`; the replay puts it
+  in `edgeObjectsToRemove`. Removing a signal, or an edge with a stop or
+  signal on it, is refused.
+- **The stop tool** (`streetTerminalBuilder`): a stop on a street. The
+  tool queues a `WorldBuildProposal` (command 52 from
+  `UI::StreetTerminalBuilder`, found statically), which the hook's gate
+  stops like the others. Its proposal has the shape the game's own mission
+  scripts check a stop by (`checkStop`,
+  `mission_task_build_construction_util.tl`): one edge removed and the same
+  edge added again between the same nodes, whose `objects` list its stops
+  as `{ entity, EdgeObjectType }`, as many as `edgeObjectsToAdd`. The new
+  stop is the one entity the old edge did not list. It becomes a
+  `PlaceStop`: the edge by its ends, the point of its centreline where the
+  stop stands, the engine's `left`, the edge's direction there, and the
+  stop's model named as the game's guide names it,
+  `api.res.modelRep.getName(modelInstance.modelId)` (a construction such
+  as `::/stations/street/small_stops/small_new.con`). Every game's
+  `postUpdate` rebuilds the edge as the game's electrify task rebuilds one
+  (`electrify.tl`: the edge's own component read afresh, entity -1), its
+  other stops kept under their own entities, the new stop
+  `edgeObjectsToAdd[1]` (edge -1, the parameter where it stands, `left`,
+  the model, the player), named in the edge's objects as `{ -1, side }`,
+  the lane configurations at the edge's ends removed as for any edge a
+  replay removes; then the game's verdict, and the build as the player's
+  own (`ignoreErrors`, `playerInitiated`), paid by the player. A receiver
+  whose edge runs the other way flips `left`; a side already taken is
+  refused (two stops on one side is a fatal assert in the game's lane
+  creation on TPF2). Refused: a stop dropped where one stood (the game
+  moves its lines to the new one, which a replay cannot say), a two-sided
+  stop (two new objects at once), signals and waypoints, and a stop whose
+  engine side (`STOP_LEFT`, `STOP_RIGHT`) is not what its `left` says.
+  INFERRED, not yet seen in the game: that the tool's proposal lists
+  `objects` in the order of `edgeObjectsToAdd`, that a kept stop keeps its
+  entity there, that `STOP_LEFT` goes with `left`, that a script proposal
+  names a new object `-1` in the edge's objects (TPF2's convention), that
+  the model name `modelRep` gives is the one `EdgeObject.model` takes, and
+  that the tool's click is `playerInitiated`.
 
 A refusal shows its reason in the tool, and the log has each new reason
 with the proposal's shape (`the room cannot carry this ... build`); every
-build handed to the room is logged with its shape too. The stop tool, and
-the upgrade, bus lane and tram track tools, stay refused until their builds
-are captured. Where the profile lacks the
+build handed to the room is logged with its shape too. The upgrade, bus
+lane and tram track tools, and the signal tools, stay refused until their
+builds are captured. Where the profile lacks the
 two targets, `clicks()` is nil and every tool stays refused.
 
 Seen on build 40408, through the deployed server with two games on one PC:

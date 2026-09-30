@@ -349,6 +349,13 @@ lossless from Lua. Rules:
 - the edge is found by its end points within 2 m, else the nearest centreline
   within 14 m; an edge frozen into a construction is refused.
 
+On TF3 the mod carries a stop placed with the stop tool, and a stop the
+bulldozer removes, the same way (HOOKS.md, "The build tools"): a
+`PlaceStop` or `Bulldoze::EdgeObject` read off the tool's proposal, the
+edge named by its ends within 0.5 m, the stop's place by the point of the
+edge's centreline where it stands. A stop that replaces another, a
+two-sided stop, signals and waypoints stay refused.
+
 ## Terrain and the asset brush
 
 - **Terraform.** The whole edit is a grid of 4 m cells, each `{target height,

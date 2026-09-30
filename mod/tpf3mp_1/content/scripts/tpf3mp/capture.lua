@@ -182,8 +182,15 @@ function capture.track(proposal)
 	return module("engine").captureBuild(proposal, "Track")
 end
 
+-- A stop placed on a street or track with the stop tool (tpf3mp_proto
+-- action::PlaceStop), read off its proposal by tpf3mp/engine.lua. Returns
+-- the action table; false for a proposal of nothing; or nil and why.
+function capture.stop(proposal)
+	return module("engine").placeStop(proposal)
+end
+
 -- The bulldozer's removal (tpf3mp_proto action::Bulldoze), read off its
--- proposal by tpf3mp/engine.lua. Returns the action table; false for a
+-- proposal by tpf3mp/engine.lua: a construction, edges, or a stop. Returns the action table; false for a
 -- proposal of nothing; or nil and why.
 function capture.bulldoze(proposal)
 	return module("engine").bulldoze(proposal)

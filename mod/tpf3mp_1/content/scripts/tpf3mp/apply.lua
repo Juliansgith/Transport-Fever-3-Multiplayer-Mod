@@ -161,6 +161,8 @@ local HANDLERS = {}
 local networkInto
 -- The construction of a file at a place ("vehicles and lines", below).
 local constructionAt
+-- Removes a stop from its edge ("stops", below).
+local removeEdgeObject
 
 function HANDLERS.BuildConstruction(build)
 	if build.replaces ~= nil then
@@ -565,6 +567,9 @@ function HANDLERS.Bulldoze(b)
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
 		log("removing " .. network .. " edges " .. table.concat(ids, ","))
+	elseif b.EdgeObject then
+		-- A simple proposal: the game's verdict first (buildProposal).
+		return removeEdgeObject(b.EdgeObject, context)
 	else
 		return false, "a bulldoze of no kind"
 	end
@@ -575,6 +580,114 @@ end
 
 function HANDLERS.BuildTrack(track)
 	return buildNetwork("Track", track.track, track.style, track.polyline)
+end
+
+-- ---------------------------------------------------------------- stops
+--
+-- A stop is placed, or removed, as the stop tool and the bulldozer propose
+-- it (tpf3mp/engine.lua): the edge removed and added again between the same
+-- nodes, its own component read afresh (as the game's electrify task
+-- rebuilds an edge, electrify.tl), so every stop and signal it had stays
+-- under its own entity, re-parented with its station group and lines. A new
+-- stop is `edgeObjectsToAdd[1]`, named in the edge's objects as -1 (TPF2's
+-- tool and scripts did so; INFERRED on TF3); a removed one goes into
+-- `edgeObjectsToRemove`. The lane configurations at the edge's ends name it,
+-- and go with it, as for any edge a replay removes (networkInto).
+
+-- The existing edge a stop action names, as edgeBetween finds it.
+local function stopEdge(ref)
+	local e = edgeBetween(readNodes(ref.network), ref.network, arr(ref.ends.a), arr(ref.ends.b))
+	if e == nil then error("no " .. ref.network .. " edge for the stop", 0) end
+	return e
+end
+
+-- A proposal that removes edge `e` and adds it again with `objects`.
+local function rebuildWith(e, network, objects)
+	local proposal = api.type.SimpleProposal.new()
+	local s = api.type.SegmentAndEntity.new()
+	s.entity = -1
+	s.comp = api.engine.getComponent(e.id, api.type.ComponentType.BASE_EDGE)
+	s.type = network == "Track" and 1 or 0
+	s.comp.objects = objects
+	proposal.streetProposal.edgesToAdd = { s }
+	proposal.streetProposal.edgesToRemove = { e.id }
+	local configs = {}
+	for _, node in ipairs({ e.comp.node0, e.comp.node1 }) do
+		if api.engine.getComponent(node, api.type.ComponentType.BASE_NODE_CONFIG) ~= nil then
+			configs[#configs + 1] = node
+		end
+	end
+	if #configs > 0 then proposal.streetProposal.nodeConfigsToRemove = configs end
+	return proposal
+end
+
+-- How near its edge's centreline a stop's place is: the originator's own
+-- point of that centreline, rounded to the millimetre.
+local STOP_TOLERANCE = 0.5
+
+function HANDLERS.PlaceStop(stop)
+	local network = stop.edge.network
+	local e = stopEdge(stop.edge)
+	local u, off = geom.parameterAt(e.a, e.ta, e.b, e.tb, stop.at.x, stop.at.y)
+	if off > STOP_TOLERANCE then error("the stop's place is not on its edge", 0) end
+	-- The engine's side, flipped where this edge runs the other way.
+	local left = stop.left == true
+	local t, d = geom.hermiteTangent(e.a, e.ta, e.b, e.tb, u), stop.direction
+	if t[1] * d.x + t[2] * d.y + t[3] * d.z < 0 then left = not left end
+	local types = enum("EdgeObjectType")
+	local side = left and types.STOP_LEFT or types.STOP_RIGHT
+	-- One stop a side: a second is a fatal assert in the game's lane
+	-- creation (TPF2, docs/BUILDING.md).
+	local objects = {}
+	for i, o in ipairs(e.comp.objects or {}) do
+		if o[2] == side then error("the edge has a stop on that side already", 0) end
+		objects[i] = { o[1], o[2] }
+	end
+	objects[#objects + 1] = { -1, side }
+	local proposal = rebuildWith(e, network, objects)
+	local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+	eo.edgeEntity = -1
+	eo.param = u
+	eo.left = left
+	eo.oneWay = false
+	eo.model = stop.model
+	eo.playerEntity = api.engine.util.getPlayer()
+	eo.name = ""
+	proposal.streetProposal.edgeObjectsToAdd = { eo }
+	log(string.format("placing %s on %s edge %d at %.4f, %s", tostring(stop.model), network, e.id, u,
+		left and "left" or "right"))
+	-- Paid by the player, as the tool builds.
+	local context = api.type.Context.new()
+	context.player = api.engine.util.getPlayer()
+	return buildProposal(proposal, context)
+end
+
+-- A stop the bulldozer removes: the object of that construction on the
+-- edge, nearest where it stood, within 2 m.
+function removeEdgeObject(ref, context)
+	local network = ref.edge.network
+	local e = stopEdge(ref.edge)
+	local best, bestD
+	for _, o in ipairs(e.comp.objects or {}) do
+		local c = api.engine.getComponent(o[1], api.type.ComponentType.EDGE_OBJECT)
+		local t = c and c.transf
+		if c and c.edgeObjectConstruction == ref.model and t then
+			local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
+			local dist = dx * dx + dy * dy + dz * dz
+			if dist <= 4 and (bestD == nil or dist < bestD or (dist == bestD and o[1] < best)) then
+				best, bestD = o[1], dist
+			end
+		end
+	end
+	if best == nil then error("no " .. tostring(ref.model) .. " there", 0) end
+	local objects = {}
+	for _, o in ipairs(e.comp.objects) do
+		if o[1] ~= best then objects[#objects + 1] = { o[1], o[2] } end
+	end
+	local proposal = rebuildWith(e, network, objects)
+	proposal.streetProposal.edgeObjectsToRemove = { best }
+	log("removing " .. tostring(ref.model) .. " " .. tostring(best) .. " from " .. network .. " edge " .. e.id)
+	return buildProposal(proposal, context)
 end
 
 -- ------------------------------------------------------ vehicles and lines

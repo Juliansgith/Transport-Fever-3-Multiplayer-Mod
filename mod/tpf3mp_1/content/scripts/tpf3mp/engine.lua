@@ -28,6 +28,7 @@ local function module(name)
 end
 
 local roads = module("roads")
+local geom = module("geom")
 
 local engine = {}
 
@@ -278,6 +279,9 @@ function engine.describe(proposal)
 	return "unreadable: " .. tostring(text)
 end
 
+-- A stop's removal ("stops", below).
+local removeStop
+
 -- The bulldozer's proposal as a Bulldoze action (tpf3mp_proto
 -- action::Bulldoze): one construction, by its file and position, whose own
 -- entrance edge and node the game removes with it; or edges of one network,
@@ -288,6 +292,11 @@ function engine.bulldoze(proposal)
 	local ok, action = pcall(function()
 		local street = get(proposal, "proposal")
 		if street == nil then error("a proposal with no street proposal", 0) end
+		-- A stop removed: its edge rebuilt without it, nothing else.
+		if #list(get(proposal, "toAdd")) == 0 and #list(get(proposal, "toRemove")) == 0
+			and #list(get(street, "addedSegments")) == 1 and #list(get(street, "addedNodes")) == 0 then
+			return removeStop(street)
+		end
 		if #list(get(proposal, "toAdd")) > 0 or #list(get(street, "addedSegments")) > 0
 			or #list(get(street, "addedNodes")) > 0 then
 			error("a bulldozer proposal that builds", 0)
@@ -326,6 +335,168 @@ function engine.bulldoze(proposal)
 	end)
 	if not ok then return nil, tostring(action) end
 	return action
+end
+
+-- ------------------------------------------------------------------ stops
+--
+-- The stop tool (streetTerminalBuilder) and the bulldozer over a stop hand
+-- game scripts the shape the game's own mission scripts check a stop by
+-- (mission_task_build_construction_util.tl, checkStop, build 40408): one
+-- existing edge removed, and the same edge added again (a new entity between
+-- the same two nodes) whose `objects` list the edge's stops and signals as
+-- { entity, EdgeObjectType }, as many as `edgeObjectsToAdd`. An object the
+-- edge had keeps its entity there (re-parented, its station group and lines
+-- kept; TPF2's tool did so, docs/BUILDING.md), so the new stop is the one
+-- entity the old edge did not list, and a removed one the entity the new
+-- edge no longer lists. INFERRED: the order of `objects` is the order of
+-- `edgeObjectsToAdd`, as the mission scripts' checks take it.
+
+-- The one existing edge a stop proposal rebuilds: its removed and added
+-- records, and its network; or raises.
+local function rebuiltEdge(street)
+	if #list(get(street, "addedNodes")) > 0 or #list(get(street, "removedNodes")) > 0 then
+		error("a stop build that adds or removes nodes", 0)
+	end
+	local added, removed = list(get(street, "addedSegments")), list(get(street, "removedSegments"))
+	if #added ~= 1 or #removed ~= 1 then error("a stop build of " .. #removed .. " edges", 0) end
+	local old, new = get(removed[1], "comp"), get(added[1], "comp")
+	if old == nil or new == nil then error("an edge with no component", 0) end
+	if get(old, "node0") ~= get(new, "node0") or get(old, "node1") ~= get(new, "node1") then
+		error("a stop build that moves its edge", 0)
+	end
+	local network = networkOf(removed[1])
+	if networkOf(added[1]) ~= network then error("a stop build that changes its edge's network", 0) end
+	return old, new, network
+end
+
+-- The objects an edge lists, as { entity, type } pairs, by entity.
+local function objectsOf(comp)
+	local out, byEntity = {}, {}
+	for _, o in ipairs(list(get(comp, "objects"))) do
+		local entity, kind = get(o, 1), get(o, 2)
+		if type(entity) ~= "number" then error("an edge object it cannot read", 0) end
+		out[#out + 1] = { entity, kind }
+		byEntity[entity] = kind
+	end
+	return out, byEntity
+end
+
+-- The edge between an existing edge's two nodes, as the schema names it
+-- (action::EdgeRef), and its geometry for geom.lua; or raises.
+local function edgeRef(comp, network)
+	local a, b = nodePos(get(comp, "node0")), nodePos(get(comp, "node1"))
+	if a == nil or b == nil then error("the stop's edge has no position here", 0) end
+	local ta, tb = vec3(get(comp, "tangent0")), vec3(get(comp, "tangent1"))
+	if ta == nil or tb == nil or type(ta[1]) ~= "number" or type(tb[1]) ~= "number" then
+		error("the stop's edge has no tangents", 0)
+	end
+	return { network = network, ends = { a = { x = a[1], y = a[2], z = a[3] }, b = { x = b[1], y = b[2], z = b[3] } } },
+		{ a = a, b = b, ta = ta, tb = tb }
+end
+
+-- A stop placed with the stop tool, as a PlaceStop action (tpf3mp_proto
+-- action::PlaceStop): the edge by its ends, the place on its centreline,
+-- the engine's `left`, the edge's direction there and the stop's model
+-- (api.res.modelRep.getName of its model instance, as the game's guide
+-- names a stop: "::/stations/street/small_stops/small_new.con"). false for a
+-- proposal of nothing; nil and why the room cannot carry it.
+function engine.placeStop(proposal)
+	local ok, action = pcall(function()
+		local street = get(proposal, "proposal")
+		if street == nil then error("a proposal with no street proposal", 0) end
+		if #list(get(proposal, "toAdd")) > 0 or #list(get(proposal, "toRemove")) > 0 then
+			error("a stop build with constructions", 0)
+		end
+		local toAdd = list(get(street, "edgeObjectsToAdd"))
+		if #toAdd == 0 and #list(get(street, "addedSegments")) == 0 and #list(get(street, "removedSegments")) == 0 then
+			return false
+		end
+		local old, new, network = rebuiltEdge(street)
+		local _, had = objectsOf(old)
+		local now, has = objectsOf(new)
+		if #now ~= #toAdd then error("a stop build whose objects it cannot pair", 0) end
+		-- A stop dropped where one stood replaces it, and the game moves its
+		-- lines to the new one, which a replay cannot say (docs/BUILDING.md).
+		for entity in pairs(had) do
+			if has[entity] == nil then error("a stop that replaces another", 0) end
+		end
+		local index
+		for k, o in ipairs(now) do
+			if had[o[1]] == nil then
+				if index ~= nil then error("more than one stop at once (a two-sided stop)", 0) end
+				index = k
+			end
+		end
+		if index == nil then return false end
+		local eo = toAdd[index]
+		if get(eo, "category") ~= 0 then error("a signal or waypoint", 0) end
+		local types = enum("EdgeObjectType")
+		local left = get(eo, "left") == true
+		-- INFERRED: the engine lists a stop it calls left as STOP_LEFT.
+		if now[index][2] ~= (left and types.STOP_LEFT or types.STOP_RIGHT) then
+			error("a stop whose side the room cannot say", 0)
+		end
+		local instance = get(eo, "modelInstance")
+		local model
+		pcall(function() model = api.res.modelRep.getName(get(instance, "modelId")) end)
+		model = resName(model, "the stop's model")
+		local ref, curve = edgeRef(old, network)
+		-- Where along the edge: the proposal's own parameter where it has
+		-- one, else the point of the centreline nearest the stop's model.
+		local u = get(eo, "param")
+		if type(u) ~= "number" or u < 0 or u > 1 then
+			local t = get(instance, "transf")
+			local x, y = get(t, 13), get(t, 14)
+			if type(x) ~= "number" or type(y) ~= "number" then error("a stop with no place", 0) end
+			u = geom.parameterAt(curve.a, curve.ta, curve.b, curve.tb, x, y)
+		end
+		local at = geom.hermitePos(curve.a, curve.ta, curve.b, curve.tb, u)
+		local d = geom.hermiteTangent(curve.a, curve.ta, curve.b, curve.tb, u)
+		local len = math.sqrt(d[1] * d[1] + d[2] * d[2] + d[3] * d[3])
+		if len == 0 then error("the stop's edge has no direction there", 0) end
+		return { PlaceStop = {
+			edge = ref,
+			at = { x = at[1], y = at[2], z = at[3] },
+			left = left,
+			direction = { x = d[1] / len, y = d[2] / len, z = d[3] / len },
+			model = model,
+		} }
+	end)
+	if not ok then return nil, tostring(action) end
+	return action
+end
+
+-- The bulldozer over a stop: the edge rebuilt without it. A Bulldoze of the
+-- edge object (action::Bulldoze::EdgeObject): the edge by its ends, where
+-- the stop stands and its construction, as its EDGE_OBJECT component says;
+-- or raises. INFERRED: the bulldozer proposes a stop's removal in the stop
+-- tool's shape, less the stop (as TPF2's did).
+function removeStop(street)
+	local old, new, network = rebuiltEdge(street)
+	local had = objectsOf(old)
+	local _, has = objectsOf(new)
+	local gone
+	for _, o in ipairs(had) do
+		if has[o[1]] == nil then
+			if gone ~= nil then error("removing more than one stop at once", 0) end
+			gone = o[1]
+		end
+	end
+	if gone == nil or #had ~= #list(get(new, "objects")) + 1 then
+		error("a bulldozer proposal that rebuilds an edge", 0)
+	end
+	local c = api.engine.getComponent(gone, api.type.ComponentType.EDGE_OBJECT)
+	local t = c and get(c, "transf")
+	local x, y, z = get(t, 13), get(t, 14), get(t, 15)
+	if type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
+		error("a stop with no place", 0)
+	end
+	local ref = edgeRef(old, network)
+	return { Bulldoze = { EdgeObject = {
+		edge = ref,
+		at = { x = x, y = y, z = z },
+		model = resName(get(c, "edgeObjectConstruction"), "the stop's construction"),
+	} } }
 end
 
 -- The action table of a street or track tool's proposal; false for a

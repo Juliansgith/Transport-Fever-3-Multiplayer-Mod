@@ -26,8 +26,9 @@
 -- lanes did not come.
 --
 -- `guiHandleEvent` runs in the GUI's state, where the game's own build
--- tools (streets, tracks, stations and depots, stops, the bulldozer) tell
--- game scripts of every proposal they make (`builder.proposalCreate`), and
+-- tools (streets, tracks, stations and depots, stops on streets, the
+-- bulldozer) tell game scripts of every proposal they make
+-- (`builder.proposalCreate`), and
 -- honour an error returned for it, as the game's company script does with
 -- its permits (docs/HOOKS.md, "The build tools"). In the room's game:
 --
@@ -65,7 +66,7 @@ function data()
 	-- The tools whose builds the room carries, by the tool's id: the
 	-- capture that makes each one's action.
 	local CAPTURE = { constructionBuilder = "construction", streetBuilder = "street", trackBuilder = "track",
-		bulldozer = "bulldoze" }
+		bulldozer = "bulldoze", streetTerminalBuilder = "stop" }
 	-- In the GUI: the last proposal seen at each count of the player's builds
 	-- ({ action = t } or { why = text }), and the builds handed on so far.
 	local snapshots, handled = {}, nil
