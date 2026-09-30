@@ -187,6 +187,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
         [
             "tpf3mp.bridge",
             "tpf3mp.capture",
+            "tpf3mp.companies",
             "tpf3mp.engine",
             "tpf3mp.geom",
             "tpf3mp.guard",
@@ -394,7 +395,7 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {},
          dump = nil, dumped = {} }
 tpf3mp_native = {
-    version = 9,
+    version = 10,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then
@@ -404,9 +405,9 @@ tpf3mp_native = {
         return ok, why
     end,
     take = function()
-        local batch = HOOK.batch
-        HOOK.batch = nil
-        return batch
+        local batch, origins = HOOK.batch, HOOK.origins
+        HOOK.batch, HOOK.origins = nil, nil
+        return batch, origins
     end,
     log = function(line) HOOK.logged[#HOOK.logged + 1] = line end,
     poll = function()
@@ -594,7 +595,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 9; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 10; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -687,7 +688,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 9, command = print, log = print })
+             why({ version = 10, command = print, log = print })
              return out",
         )
         .eval()
@@ -890,7 +891,7 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 9 }
+             local native = { version = 10 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
                                   'status', 'chat', 'say' }) do
@@ -962,6 +963,7 @@ api = {
             ConstructionEntity = { new = function() return {} end },
         },
         Context = { new = function() return {} end },
+        Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
     },
     engine = {
         util = { getPlayer = function() return 25 end },
@@ -977,6 +979,11 @@ api = {
         makeScriptingSendEventCmd = function(src, id, name, param)
             return { event = { src = src, id = id, name = name, param = param } }
         end,
+        makeGameAddPlayerCmd = function(name, color)
+            NEXT_PLAYER = (NEXT_PLAYER or 900) + 1
+            return { addPlayer = name, color = color, resultEntity = NEXT_PLAYER }
+        end,
+        makeEntitySetNameCmd = function(entity, name) return { setName = name, entity = entity } end,
         sendCommand = function(command, callback)
             -- As the game in a game script: no callback in update; in
             -- postUpdate one is called at once, with the command's data (the
@@ -2145,7 +2152,7 @@ fn in_the_rooms_game_the_build_tools_are_refused() {
 fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
     let (lua, _script) = engine();
     lua.load(
-        "HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } UPDATE({}, STATE, 0.2) \
+        "HOOK.batch = { { Terraform = {} } } UPDATE({}, STATE, 0.2) \
          REFUSE = true",
     )
     .exec()
@@ -2167,7 +2174,7 @@ fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
     assert_eq!(logged[0], "the game script is linked");
     assert_eq!(
         logged[1],
-        "action 1 of this step was not applied: this version of the mod does not apply CompanyOp yet"
+        "action 1 of this step was not applied: this version of the mod does not apply Terraform yet"
     );
     // The game's own refusal, as it raised it.
     assert!(
@@ -4018,4 +4025,196 @@ fn the_game_script_seeds_math_random_with_the_room_steps_seed_each_update() {
         .unwrap();
     assert_eq!(draws.0, draws.1, "the same step's seed, the same draws");
     assert_eq!(draws.2, 0.0, "no seed: the state's own sequence goes on");
+}
+
+/// Pure: the roster of companies (tpf3mp/companies.lua).
+#[test]
+fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
+    let lua = gui();
+    lua.load(
+        r#"
+        COMP = { [2] = { [700] = { player = 901 }, [701] = { player = 25 }, [702] = { player = -1 } } }
+        api = {
+            engine = {
+                util = { getPlayer = function() return 25 end },
+                getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+            },
+            type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2 },
+                     Vec3f = { new = function(x, y, z) return { x, y, z } end } },
+            cmd = {
+                makeGameAddPlayerCmd = function(name, color) return { add = name, color = color } end,
+                makeEntitySetNameCmd = function(e, name) return { rename = e, name = name } end,
+            },
+        }
+        SENT, NEXT = {}, 900
+        function send(cmd)
+            SENT[#SENT + 1] = cmd
+            if cmd.add then NEXT = NEXT + 1 return { resultEntity = NEXT } end
+        end
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        A, B, D = string.rep("a", 64), string.rep("b", 64), string.rep("d", 64)
+        R = C.ensure(nil, api)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    // Everyone plays for the save's own company until they choose.
+    assert_eq!(
+        eval("return C.of(R, A).id .. ' ' .. C.of(R, A).entity"),
+        "0 25"
+    );
+    // A founds Rival: a new player entity, the next colour, and A plays for it.
+    assert_eq!(
+        eval(
+            "local ok, why, id = C.run(R, A, { Create = { name = ' Rival ' } }, send, api) \
+             return tostring(ok) .. ' ' .. tostring(id)"
+        ),
+        "true 1"
+    );
+    assert_eq!(
+        eval(
+            "local c = C.of(R, A) \
+             return c.name .. ' ' .. c.entity .. ' ' .. SENT[1].add .. ' ' .. SENT[1].color[3]"
+        ),
+        "Rival 901 Rival 0.85"
+    );
+    assert_eq!(
+        eval("return tostring(C.of(R, B).id)"),
+        "0",
+        "B still plays for the first"
+    );
+    // B joins Rival: two players in one company, D alone in the first.
+    assert_eq!(
+        eval("return tostring(C.run(R, B, { Join = 1 }, send, api))"),
+        "true"
+    );
+    assert_eq!(eval("return C.of(R, B).id .. ' ' .. C.of(R, D).id"), "1 0");
+    // Only its players rename or recolour a company; names stay unique.
+    assert_eq!(
+        eval(
+            "local ok, why = C.run(R, D, { Rename = { company = 1, name = 'Mine' } }, send, api) \
+             return why"
+        ),
+        "only its players rename a company"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, A, { Create = { name = 'rival' } }, send, api) return why"),
+        "a company is called rival already"
+    );
+    assert_eq!(
+        eval(
+            "C.run(R, B, { Rename = { company = 1, name = 'Blue Line' } }, send, api) \
+             return C.find(R, 1).name .. ' ' .. SENT[#SENT].rename"
+        ),
+        "Blue Line 901"
+    );
+    assert_eq!(
+        eval(
+            "C.run(R, A, { Recolor = { company = 1, color = { r = 0.1, g = 0.2, b = 0.3 } } }, send, api) \
+             return tostring(C.find(R, 1).color[2])"
+        ),
+        "0.2"
+    );
+    // A company somebody plays for is not dissolved, nor the first; an empty
+    // one is, and cannot be joined after.
+    assert_eq!(
+        eval("local ok, why = C.run(R, D, { Delete = 1 }, send, api) return why"),
+        "only a company nobody plays for is dissolved"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, D, { Delete = 0 }, send, api) return why"),
+        "the room's first company stays"
+    );
+    assert_eq!(
+        eval(
+            "C.run(R, A, { Join = 0 }, send, api) C.run(R, B, { Join = 0 }, send, api) \
+             return tostring(C.run(R, D, { Delete = 1 }, send, api)) .. ' ' .. #C.live(R)"
+        ),
+        "true 1"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, A, { Join = 1 }, send, api) return why"),
+        "there is no company 1"
+    );
+    // What another company owns is refused, naming it; its own and no
+    // one's are not.
+    assert_eq!(
+        eval(
+            "local ok, why = C.mayTouch(R, 25, 700, api, 'vehicle') \
+             return tostring(ok) .. ' ' .. why"
+        ),
+        "false the vehicle belongs to Blue Line"
+    );
+    assert_eq!(
+        eval(
+            "return tostring(C.mayTouch(R, 25, 701, api)) .. tostring(C.mayTouch(R, 25, 702, api)) \
+             .. tostring(C.mayTouch(R, 25, 703, api))"
+        ),
+        "truetruetrue"
+    );
+    // At most MAX companies.
+    assert_eq!(
+        eval(
+            "for i = 1, C.MAX do C.run(R, A, { Create = { name = 'C' .. i } }, send, api) end \
+             return #C.live(R) .. ' ' .. select(2, C.run(R, A, { Create = { name = 'X' } }, send, api))"
+        ),
+        "8 the room has 8 companies already"
+    );
+}
+
+/// Through the game script: a player founds a company, and what they do is
+/// booked to it; the roster is kept in the script's state.
+#[test]
+fn what_a_player_does_is_booked_to_their_company() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        A, B = string.rep("a", 64), string.rep("b", 64)
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A }
+        UPDATE({}, STATE, 0.2)
+        -- A's loan, and B's (who plays for the first company).
+        HOOK.batch = { { Loan = { Take = { next = {}, offer = {} } } },
+                       { Loan = { Take = { next = {}, offer = {} } } } }
+        HOOK.origins = { A, B }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let roster: String = lua
+        .load(
+            "local r = STATE.value.companies local c = r.list[2] \
+             return #r.list .. ' ' .. c.name .. ' ' .. c.entity .. ' ' .. r.members[1].company",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        roster, "2 Rival 901 1",
+        "the roster is saved with the world"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.contains(
+            &"action 1 of this step was not applied: Not in multiplayer yet: loans for a company other than the room's first"
+                .to_owned()
+        ),
+        "{logged:?}"
+    );
+    let sent: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do \
+                 out[#out + 1] = c.addPlayer or (c.event and c.event.name) or '?' end \
+             return table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        sent, "Rival,Obtain",
+        "the company, then B's loan for the first company"
+    );
 }

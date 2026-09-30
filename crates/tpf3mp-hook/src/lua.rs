@@ -105,7 +105,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 9.0;
+pub const VERSION: f64 = 10.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -196,6 +196,8 @@ enum Request {
 struct Batch {
     /// Its actions, until a game script takes them.
     actions: Option<Vec<LuaValue>>,
+    /// Who sent each of them, as `crate::lobby::hex` names players.
+    origins: Vec<String>,
     /// Each action's ticket, for the player's own.
     tickets: Vec<Option<u64>>,
     /// The updates it runs, and those a game script has begun (`take`).
@@ -290,6 +292,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     answers: VecDeque::new(),
     batch: Batch {
         actions: None,
+        origins: Vec::new(),
         tickets: Vec::new(),
         updates: 0,
         begun: 0,
@@ -381,6 +384,10 @@ pub fn begin_batch(
         .collect::<Result<Vec<_>, _>>()?;
     shared().batch = Batch {
         tickets: actions.iter().map(|ordered| ordered.ticket).collect(),
+        origins: actions
+            .iter()
+            .map(|ordered| crate::lobby::hex(&ordered.player))
+            .collect(),
         actions: (!tables.is_empty()).then_some(tables),
         updates,
         begun: 0,
@@ -847,35 +854,44 @@ unsafe extern "C-unwind" fn native_take(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
-    let batch = {
+    let (batch, origins) = {
         let mut shared = shared();
         shared.batch.begun = shared.batch.begun.saturating_add(1);
-        shared.batch.actions.take()
+        let batch = shared.batch.actions.take();
+        (batch, shared.batch.origins.clone())
     };
     let Some(tables) = batch else {
         // SAFETY: Lua calls this with its own state, on its thread.
         unsafe { (api.pushnil)(l) };
         return 1;
     };
-    let list = LuaValue::Table(
-        tables
-            .iter()
-            .enumerate()
-            .map(|(index, table)| {
-                #[allow(clippy::cast_precision_loss)]
-                let position = (index + 1) as f64;
-                (LuaValue::Number(position), table.clone())
-            })
-            .collect(),
-    );
+    let numbered = |values: Vec<LuaValue>| {
+        LuaValue::Table(
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let position = (index + 1) as f64;
+                    (LuaValue::Number(position), value)
+                })
+                .collect(),
+        )
+    };
+    let list = numbered(tables.clone());
+    // Who sent each: the second value, which a mod before companies ignores.
+    let senders = numbered(origins.iter().map(|hex| LuaValue::string(hex)).collect());
     // SAFETY: as above.
     let top = unsafe { (api.gettop)(l) };
     let pushed = std::panic::catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: as above.
-        unsafe { push(api, l, &list, 0) }
+        unsafe {
+            push(api, l, &list, 0)?;
+            push(api, l, &senders, 0)
+        }
     }));
     if matches!(pushed, Ok(Ok(()))) {
-        return 1;
+        return 2;
     }
     // Not handed over: the step gate finds them untaken and holds.
     shared().batch.actions = Some(tables);
@@ -1046,6 +1062,10 @@ fn room_status() -> Option<LuaValue> {
                             LuaValue::string("me"),
                             LuaValue::Boolean(room.me == Some(member.player)),
                         ),
+                        (
+                            LuaValue::string("id"),
+                            LuaValue::string(&crate::lobby::hex(&member.player)),
+                        ),
                     ]),
                 )
             })
@@ -1058,6 +1078,12 @@ fn room_status() -> Option<LuaValue> {
         ),
         (LuaValue::string("players"), players),
     ];
+    if let Some(me) = &room.me {
+        fields.push((
+            LuaValue::string("me_id"),
+            LuaValue::string(&crate::lobby::hex(me)),
+        ));
+    }
     if let Some(speed) = room.speed {
         fields.push((
             LuaValue::string("speed"),
@@ -1827,7 +1853,11 @@ pub(crate) mod tests {
     }
 
     fn ordered(action: Action, ticket: Option<u64>) -> Ordered {
-        Ordered { action, ticket }
+        Ordered {
+            action,
+            ticket,
+            player: PlayerId(FixedBytes([7; 32])),
+        }
     }
 
     #[test]
@@ -2069,7 +2099,7 @@ pub(crate) mod tests {
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
                  type(tpf3mp_native.dump), type(tpf3mp_native.dumped)"
             ),
-            Ok("9|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("10|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();

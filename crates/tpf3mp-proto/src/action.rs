@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 7;
+pub const ACTION_SCHEMA_VERSION: u32 = 8;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -704,6 +704,12 @@ pub enum CompanyOp {
         name: ObjectName,
     },
     Delete(CompanyId),
+    /// The company's colour, for its vehicles and lines. Appended under
+    /// schema version 8: the variants before it keep their bytes.
+    Recolor {
+        company: CompanyId,
+        color: Tint,
+    },
 }
 
 /// A loan on its terms, as Transport Fever 3's loan script keeps it
@@ -924,7 +930,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                7, // schema version
+                8, // schema version
                 5, // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -967,7 +973,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                7, // schema version
+                8, // schema version
                 1, // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1000,7 +1006,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                7,  // schema version
+                8,  // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1018,12 +1024,26 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                7,  // schema version
+                8,  // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
                 2, 1, b'm', 1, b'q', // two industry types, in order
                 0,    // no permit
+            ]
+        );
+        let recolor = Action::CompanyOp(CompanyOp::Recolor {
+            company: CompanyId(2),
+            color: Tint { r: 1, g: 0, b: 0 },
+        });
+        assert_eq!(
+            recolor.to_payload().unwrap().as_bytes(),
+            [
+                8,  // schema version
+                11, // Action::CompanyOp
+                4,  // CompanyOp::Recolor, appended under schema version 8
+                2,  // company-2
+                2, 0, 0, // the colour, zigzag
             ]
         );
     }
