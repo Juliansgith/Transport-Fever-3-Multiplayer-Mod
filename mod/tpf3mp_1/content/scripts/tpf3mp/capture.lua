@@ -215,6 +215,49 @@ function capture.ownStreets(street, component)
 	return true
 end
 
+-- Keeps of a construction's network part only the edges joined, through each
+-- other, to a node that exists or to what the build removes, and the new
+-- nodes they use. The construction's own tracks and streets come in its
+-- proposal too, as new edges between new nodes that reach nothing existing
+-- (build 40408: a rail station on open ground proposes its platform track,
+-- 24 edges through 25 new nodes); the construction builds those itself, and
+-- built beside it they block it ("Construction Not Possible").
+local function joinedOnly(part)
+	local parent = {}
+	local function find(x)
+		while parent[x] ~= x do x = parent[x] end
+		return x
+	end
+	for _, e in ipairs(part.edges) do
+		for _, n in ipairs({ e.node0, e.node1 }) do
+			if parent[n] == nil then parent[n] = n end
+		end
+		local a, b = find(e.node0), find(e.node1)
+		if a ~= b then parent[a] = b end
+	end
+	local joined = {}
+	for n in pairs(parent) do
+		if type(n) == "number" and n >= 0 then joined[find(n)] = true end
+	end
+	for _, r in ipairs(part.removed) do
+		for _, n in ipairs({ r.node0, r.node1 }) do
+			if parent[n] ~= nil then joined[find(n)] = true end
+		end
+	end
+	local edges, used = {}, {}
+	for _, e in ipairs(part.edges) do
+		if joined[find(e.node0)] then
+			edges[#edges + 1] = e
+			used[e.node0], used[e.node1] = true, true
+		end
+	end
+	local nodes = {}
+	for _, n in ipairs(part.nodes) do
+		if used[n.id] then nodes[#nodes + 1] = n end
+	end
+	part.edges, part.nodes = edges, nodes
+end
+
 -- The street and track changes a construction tool's proposal makes with its
 -- construction (seen on build 40408: a bus station placed by a road rebuilds
 -- the road through a new junction and adds an edge from the junction to the
@@ -225,9 +268,15 @@ function capture.connection(proposal)
 	local ok, part = pcall(engine.fromProposal, proposal, nil, true)
 	if not ok then return nil, tostring(part) end
 	if part == nil then return false end
-	if #part.edges == 0 then return nil, "a construction that removes streets and builds none" end
+	local removes = #part.removed > 0 or #part.removedNodes > 0
+	joinedOnly(part)
+	if #part.edges == 0 then
+		if removes then return nil, "a construction that removes streets and builds none" end
+		return false
+	end
 	part.explicit = true
 	local first = part.edges[1]
+	part.network = first.network
 	if part.network == "Street" then part.street = first.template else part.track = first.template end
 	part.style = first.style
 	local action, why = module("roads").capture(part, engine.world())
@@ -358,9 +407,13 @@ function capture.vehicleBuy(ctx, _player, depot, config)
 	} }
 end
 
+-- `stopIndex` -1 is the line manager's "Next Reachable Stop" (build 40408):
+-- the game picks the stop, which the action carries as no first stop.
 function capture.vehicleSetLine(ctx, vehicle, line, stopIndex)
+	local first = nil
+	if stopIndex ~= -1 then first = stopIndex end
 	return { AssignLine = {
-		vehicles = { vehicleOf(ctx, vehicle) }, line = lineOf(ctx, line), first_stop = stopIndex,
+		vehicles = { vehicleOf(ctx, vehicle) }, line = lineOf(ctx, line), first_stop = first,
 	} }
 end
 

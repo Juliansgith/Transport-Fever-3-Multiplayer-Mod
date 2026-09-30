@@ -235,7 +235,7 @@ pub fn set_stops(line: u32, stations: &[u32]) -> Action {
     edit(line, LineChange::Update(line_data(stations)))
 }
 
-pub fn assign(vehicles: &[u32], line: Option<u32>, first_stop: u16) -> Action {
+pub fn assign(vehicles: &[u32], line: Option<u32>, first_stop: Option<u16>) -> Action {
     Action::AssignLine(AssignLine {
         vehicles: list(vehicles.iter().map(|v| VehicleId(*v)).collect()),
         line: line.map(LineId),
@@ -381,7 +381,7 @@ fn bus_line(script: Script, actor: usize, y: i32, buses: u32, ids: (u32, u32, u3
     let vehicles: Vec<u32> = (first_vehicle..first_vehicle + buses).collect();
     script
         .act(actor, line("Bus", &[first_station, first_station + 1]))
-        .act(actor, assign(&vehicles, Some(line_id), 0))
+        .act(actor, assign(&vehicles, Some(line_id), Some(0)))
 }
 
 fn bus_line_scenario() -> Scenario {
@@ -402,7 +402,7 @@ fn bus_line_scenario() -> Scenario {
         .expect_all([Check::Vehicles(3), Check::Idle(3)])
         .act(0, line("Harbour - Hill", &[0, 1]))
         .expect(Check::Lines(1))
-        .act(0, assign(&[0, 1, 2], Some(0), 0))
+        .act(0, assign(&[0, 1, 2], Some(0), Some(0)))
         .expect_all([
             Check::Line {
                 line: LineId(0),
@@ -454,8 +454,8 @@ fn rail_line_scenario() -> Scenario {
         )
         .act(0, buy(TRAIN_DEPOT, at(2000, 30), &[LOCOMOTIVE, WAGON, WAGON]))
         .act(0, line("West - East", &[0, 1]))
-        .act(0, assign(&[0], Some(0), 0))
-        .act(0, assign(&[1], Some(0), 1))
+        .act(0, assign(&[0], Some(0), Some(0)))
+        .act(0, assign(&[1], Some(0), Some(1)))
         .expect(Check::Line {
             line: LineId(0),
             stops: 2,
@@ -491,7 +491,7 @@ fn two_companies_scenario() -> Scenario {
             },
         ])
         // Nobody uses what another company owns.
-        .act(1, assign(&[0], Some(0), 0))
+        .act(1, assign(&[0], Some(0), Some(0)))
         .expect(Check::Ignored(1))
         .act(
             1,
@@ -687,7 +687,7 @@ fn refusals_scenario() -> Scenario {
         .expect_all([Check::Ignored(1), Check::StreetEdges(1)])
         .act(0, road(vec![node(at(3000, 3000), Network::Street), new(a)]))
         .act(0, line("Nowhere", &[4, 5]))
-        .act(0, assign(&[7], None, 0))
+        .act(0, assign(&[7], None, Some(0)))
         .act(0, construction(BUS_STATION, at(0, 20), "Station"))
         .act(0, buy(BUS_STATION, at(0, 20), &[BUS]))
         .act(
@@ -776,7 +776,7 @@ fn town_scenario(blocks: i32) -> Scenario {
         script = script.act(0, line("Town", &route));
     }
     for bus in 0..buses {
-        script = script.act(0, assign(&[bus], Some(bus % lines), 0));
+        script = script.act(0, assign(&[bus], Some(bus % lines), Some(0)));
     }
     let buses = usize::try_from(buses).expect("small town");
     script
@@ -815,7 +815,7 @@ fn crowd_scenario() -> Scenario {
         script = script
             .act(idx, buy(BUS_DEPOT, at(700, y + 20), &[BUS]))
             .act(idx, line("Bus", &[actor * 2, actor * 2 + 1]))
-            .act(idx, assign(&[actor], Some(actor), 0));
+            .act(idx, assign(&[actor], Some(actor), Some(0)));
     }
     script
         .expect_all([Check::Lines(4), Check::Vehicles(4), Check::Idle(0)])
