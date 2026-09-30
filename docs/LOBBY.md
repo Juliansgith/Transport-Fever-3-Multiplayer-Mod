@@ -1,11 +1,12 @@
 # The Multiplayer entry on the main menu
 
-D17 moves the room into the game: connecting, rooms, the lobby and chat in
-an in-game panel, reached from the main menu. This page says how the entry
-gets onto Transport Fever 3's main menu at all, which took three tries on
-release day, and what the mod and the hook each contribute. The lobby
-window's content (connect, rooms, chat) is the next step and lands in the
-same window.
+D17 moves the room into the game (the owner lifted its hold on
+2026-09-30): connecting, rooms, the lobby and chat in a Multiplayer window
+reached from the main menu. This page says how the entry gets onto
+Transport Fever 3's main menu at all, which took three tries on release
+day, what the mod and the hook each contribute, and how the window talks
+to the launcher that started the game. Players' steps are in
+[PLAYING.md](PLAYING.md), "The Multiplayer menu in the game".
 
 ## What the game allows, and what it does not
 
@@ -25,7 +26,7 @@ The game's `base/init.lua` resolves every `ug_require` and then calls
 `resolveutil.loadfile(resolved)`, a Lua function whose body is a C++ lambda
 (`framework/lua/Loader.cpp`, `lua::MakeState::<lambda_8>`). The hook, loaded
 into the suspended game before any of its code runs (D11), detours that body
-(`crates/tpf3mp-hook/src/menu.rs`):
+(`crates/tpf3mp-hook/src/menu_entry.rs`):
 
 1. The detour's thunk saves the argument registers, reads the Lua state out
    of the lambda's closure (`**(closure + 0x10)`, the layout the body's own
@@ -53,22 +54,38 @@ A game Steam started has no hook and keeps the plain menu.
 
 ## The build profile
 
-Four targets, resolved by signature from `profiles/*.toml` in the per-user
-data directory (`docs/HOOKS.md`); the first is detoured, the other three are
-only called:
+The entry's targets are in the release's built-in profile for the build
+(`profiles/tf3_build40408_steam_windows.toml`, `docs/HOOKS.md`), next to the
+step gate's: `lua_loadfile` is detoured, the others only called. The first
+three are optional there: without them the menu stays the game's and the
+step gate still installs. `tpf3mp-hookcore/tests/tf3_static_proof.rs` pins
+their addresses in the installed game (`TPF3MP_TF3_EXE`).
 
 | target | what | how to find it again |
 |---|---|---|
-| `lua_loadfile` | the `resolveutil.loadfile` body | `Loader.cpp`: the function with the strings `Could no load file`, `base/tl.lua`, `Error while pcalling` |
-| `lua_load` | Lua 5.2 `lua_load` | the only caller of `luaD_protectedparser` (the function that references the `attempt to load a %s chunk` check); `luaZ_init`, a `"?"` default chunk name, then the `_ENV` upvalue fix-up. Not the nearby `lua_dump`, which checks for a Lua closure on the stack top and returns 1 |
-| `lua_pcallk` | Lua 5.2 `lua_pcallk` | called right before `Error while pcalling` in the loader body; reads `L->top`, `L->stack`, `L->nny`, calls `luaD_pcall` |
-| `lua_settop` | Lua 5.2 `lua_settop` | the 72-byte function reached through the two-instruction `lua_pop` wrappers in `state.cpp`; fills with nil up to `ci->func + 1 + idx` |
+| `lua_loadfile` (0x2fa1d50) | the `resolveutil.loadfile` body | `Loader.cpp`: the function with the strings `Could no load file`, `base/tl.lua`, `Error while pcalling` |
+| `lua_load` (0x2fbdf70) | Lua 5.2 `lua_load` | the only caller of `luaD_protectedparser` (the function that references the `attempt to load a %s chunk` check); `luaZ_init`, a `"?"` default chunk name, then the `_ENV` upvalue fix-up. Not the nearby `lua_dump`, which checks for a Lua closure on the stack top and returns 1 |
+| `lua_pcallk` (0x2fbe0c0) | Lua 5.2 `lua_pcallk` | called right before `Error while pcalling` in the loader body; reads `L->top`, `L->stack`, `L->nny`, calls `luaD_pcall` |
+| `lua_settop`, `lua_pushlstring`, `lua_tolstring` | Lua 5.2 | already the step gate's (the Lua link, `docs/HOOKS.md`) |
 
-`crates/tpf3mp-hook/profiles/tf3-40408-de1daad3.toml` is build 40408's.
-On a patch: `tpfre index` the new exe, find the four again with `tpfre q`
+On a patch: `tpfre index` the new exe, find them again with `tpfre q`
 (`str`, `callers`, `dis`), regenerate the signatures with `sig --toml`, and
-add a profile file for the new build; the hook picks the one whose `[build]`
-matches.
+put them in the new build's profile. The hook tries the menu's targets in
+every profile that matches the build, the data folder's first.
+
+## Talking to the launcher
+
+The window asks the hook for the lobby through the request channel above
+(`tpf3mp/state.lua`, a few times a second) and sends its actions the same
+way (`tpf3mp/act.lua`). The hook does not answer on its own: an action is
+queued for the launcher that started the game and handed to its agent over
+the link (`ToAgent::Lobby`), and the state is the launcher's lobby as the
+agent last sent it (`ToHook::Lobby`, bridge version 7). Every request also
+reads the link, since at the main menu no step of the game does
+(`crates/tpf3mp-hook/src/lobby.rs`; `docs/HOOKS.md`, "The main menu's
+Multiplayer window"). The launcher carries the actions out as if its own
+window had asked; Connect goes to its own server (D12). A game whose hook
+has no link to its launcher shows so in the window and sends nothing.
 
 ## The mod's copies
 
@@ -81,14 +98,11 @@ is listed in `_content.json` like any other file of the mod.
 
 ## Trying it
 
-```bat
-cargo build --release -p tpf3mp-hook -p tpf3mp-launch
-copy crates\tpf3mp-hook\profiles\tf3-40408-de1daad3.toml %LOCALAPPDATA%\TPF3-MP\profiles\
-target\release\tpf3mp-launch.exe --exe "C:\...\TransportFever3.exe" ^
-    --hook target\release\tpf3mp_hook.dll --env TPF3MP_GAME_LINK=dev
-```
+Start the launcher, then **Start Transport Fever 3** (before or in a
+room), and click **Multiplayer** on the game's main menu. The mod must be
+installed in the game's staging area and active.
 
-`tpf3mp-launch` starts the game the way the launcher does (suspended, the
-hook loaded, then resumed) and prints its pid. The mod must be installed in
-the game's staging area and active; `TPF3MP_GAME_LINK` only needs to be set,
-the hook logs that no agent is present and carries on.
+`tools/lobby/launch-tf3-dev.bat` and `tpf3mp-launch` start the game with the
+hook but without a launcher: the entry and window appear, and the window
+says the game has no link to the launcher. They are for checking the entry
+alone.

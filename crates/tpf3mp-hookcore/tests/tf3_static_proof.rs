@@ -46,6 +46,9 @@ const TARGETS: &[(&str, u64)] = &[
     ("lua_tolstring", 0x2fbed30),
     ("lua_tonumberx", 0x2fbedd0),
     ("lua_type", 0x2fbef90),
+    ("lua_loadfile", 0x2fa1d50),
+    ("lua_load", 0x2fbdf70),
+    ("lua_pcallk", 0x2fbe0c0),
 ];
 
 #[test]

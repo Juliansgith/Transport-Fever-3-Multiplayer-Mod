@@ -93,7 +93,10 @@ your own machine, in the tab the launcher opened.
    TPF3-MP in it, for this room; once the game has loaded, the Game part
    says it is connected. Only a game started here joins the room: started
    from Steam, it is the plain game. Press it once; the launcher refuses to
-   start a second game while the first still runs.
+   start a second game while the first still runs. You can also start the
+   game before you are in a room (**Start Transport Fever 3** under the
+   main button) and do the rest from the game's main menu: see "The
+   Multiplayer menu in the game".
 5. **Ready.** Everyone presses **Ready**. The room's owner then presses
    **Start game**. Everyone's game starts from the owner's world.
 
@@ -112,6 +115,38 @@ operator's, such as a restart coming: when the server comes back, the
 launcher rejoins by itself. The **Session log** tells you what happened,
 such as your world being replaced by the room's, or your connection coming
 back.
+
+## The Multiplayer menu in the game
+
+Connecting, rooms, the lobby and chat are in the game too. The launcher
+still starts the game and holds the connection, so keep it open; everything
+you do in the game shows in the launcher's window as well, and the other
+way round.
+
+1. **Start the game from the launcher**, in a room or not: **Start
+   Transport Fever 3**. Started from Steam, the game has no Multiplayer
+   entry.
+2. **Open the Multiplayer window.** On the game's main menu, click
+   **Multiplayer**: the card in the top row, or the button in the top bar.
+   If the window says the game has no link to the launcher, the game was
+   not started from the launcher: close it and start it from there.
+3. **Connect.** Enter the name others will see and press **Connect**. The
+   server is the launcher's (**EU**); there is none to type.
+4. **Create or join.** Create a room (a name, and a password if you want
+   one), or type the invite code a friend sent you, such as `K7QM2X`, and
+   **Join**.
+5. **The room.** The window shows the room's invite code, its players (the
+   crown marks the host, the tick who is ready) and, on the right, the
+   room's chat, where you can write to everyone. Press **Ready**. The owner
+   presses **Start** once everyone is ready.
+6. **Play.** The room's game starts from the owner's world: the owner
+   loads it with **Load Game**, as in single player, and it becomes the
+   room's. Everyone else loads a save of their own too, any save: the game
+   then loads the room's world by itself.
+
+**Leave** gives up your seat; **Disconnect** leaves the server. After a
+room's game has ended, start the game again from the launcher to play the
+next room's game.
 
 ## Updates
 
@@ -137,8 +172,9 @@ protected folder such as Program Files.
   and new chat. Click it, or the Multiplayer button among the mods'
   buttons, for the Multiplayer window: the room's players (the host, you,
   anyone away), its speed, whether your world matches the room's, and the
-  room's newest chat, where you can write to everyone. Rooms, invites and
-  starting the game stay in the launcher.
+  room's newest chat, where you can write to everyone. Rooms and invites
+  are in the launcher and on the main menu's Multiplayer window (see "The
+  Multiplayer menu in the game").
 - **Speed and pause.** The room's owner sets the room's speed, pause
   included, with the game's own speed buttons, and everyone's game runs at
   it. Anyone else's speed buttons do not change the room's speed: the

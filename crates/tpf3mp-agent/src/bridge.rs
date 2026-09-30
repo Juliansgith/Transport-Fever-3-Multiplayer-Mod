@@ -18,10 +18,13 @@ use std::{
 };
 
 use thiserror::Error;
-use tokio::{sync::mpsc, task::AbortHandle};
+use tokio::{
+    sync::{mpsc, watch},
+    task::AbortHandle,
+};
 use tpf3mp_bridge::{
-    BridgeError, MAX_MESSAGE, MAX_PATH, RoomInfo, RoomMember, ToAgent, ToHook, check_version,
-    decode, encode,
+    BridgeError, LobbyAction, LobbyView, MAX_MESSAGE, MAX_PATH, RoomInfo, RoomMember, ToAgent,
+    ToHook, check_version, decode, encode,
 };
 use tpf3mp_net::close;
 use tpf3mp_proto::{
@@ -101,6 +104,16 @@ pub struct BridgeOptions {
     /// What a front end shows of the session, kept up to date by the
     /// bridge.
     pub status: Option<SharedStatus>,
+    /// The launcher's lobby, for the game's main-menu window (D17).
+    pub lobby: Option<LobbyLink>,
+}
+
+/// The launcher's lobby as a bridge passes it on: the lobby to show the
+/// game's main-menu window, and where the window's actions go (D17).
+#[derive(Debug, Clone)]
+pub struct LobbyLink {
+    pub views: watch::Receiver<LobbyView>,
+    pub actions: mpsc::UnboundedSender<LobbyAction>,
 }
 
 impl Default for BridgeOptions {
@@ -114,6 +127,7 @@ impl Default for BridgeOptions {
             progress_every: Duration::from_millis(20),
             worlds: None,
             status: None,
+            lobby: None,
         }
     }
 }
@@ -335,6 +349,8 @@ pub struct Bridge<L> {
     /// The room as the server last showed it: the game's Multiplayer window
     /// shows it, and chat names its members.
     room: Option<RoomView>,
+    /// The game's build, once its hook said hello.
+    build: Option<String>,
 }
 
 impl<L: HookLink> Bridge<L> {
@@ -367,6 +383,49 @@ impl<L: HookLink> Bridge<L> {
             received: None,
             controls: None,
             room: None,
+            build: None,
+        }
+    }
+
+    /// Takes over a link whose hook has already said hello, as `build`, and
+    /// was answered (the launcher's lobby link, `launcher::lobby`).
+    pub fn greeted(mut self, build: &str) -> Self {
+        self.hook_ready = true;
+        self.build = Some(build.to_owned());
+        self.status(|status| status.game = Some(build.to_owned()));
+        self
+    }
+
+    /// Gives the link back, with the game's build if its hook said hello:
+    /// the launcher keeps it for the game's next room.
+    pub fn into_link(self) -> (L, Option<String>) {
+        let build = self.build.filter(|_| self.hook_ready);
+        (self.link, build)
+    }
+
+    /// Queues the launcher's lobby for the hook when it changed: only the
+    /// newest waits to go.
+    fn lobby_news(&mut self) {
+        let Some(lobby) = &mut self.options.lobby else {
+            return;
+        };
+        if !lobby.views.has_changed().unwrap_or(false) {
+            return;
+        }
+        let view = lobby.views.borrow_and_update().clone();
+        self.outbox
+            .retain(|message| !matches!(message, ToHook::Lobby(_)));
+        self.outbox.push_back(ToHook::Lobby(view));
+    }
+
+    /// The player acted in the game's main-menu window: the launcher does
+    /// it.
+    fn lobby_action(&self, action: LobbyAction) {
+        match &self.options.lobby {
+            Some(lobby) => {
+                let _ = lobby.actions.send(action);
+            }
+            None => debug!(?action, "a lobby action with no launcher to take it"),
         }
     }
 
@@ -400,6 +459,7 @@ impl<L: HookLink> Bridge<L> {
             self.check_hook(now)?;
             self.read_hook(client).await?;
             self.report_progress(client, now).await?;
+            self.lobby_news();
             // Turns wait while the world they continue is being fetched.
             if !matches!(self.world, World::Fetching { .. })
                 && let (Some(follower), Some(playout)) = (&mut self.follower, &mut self.playout)
@@ -437,10 +497,18 @@ impl<L: HookLink> Bridge<L> {
     }
 
     /// Tells the hook the session is over, as far as the link still takes
-    /// messages.
+    /// messages. A room left before its game began has nothing for the game
+    /// to end: it stays as it was, the launcher's lobby link keeps going,
+    /// and the game can follow the player into the next room.
     pub fn end(&mut self, reason: &str) {
         if let Some(fetch) = self.fetch.take() {
             fetch.abort();
+        }
+        if !self.begun {
+            self.outbox
+                .retain(|message| matches!(message, ToHook::Lobby(_)));
+            let _ = self.flush();
+            return;
         }
         self.outbox.push_back(ToHook::End {
             reason: Text::lossy(reason),
@@ -496,6 +564,7 @@ impl<L: HookLink> Bridge<L> {
                     check_version(version)?;
                     info!(%build, "the game's hook attached");
                     self.hook_ready = true;
+                    self.build = Some(build.as_str().to_owned());
                     self.status(|status| status.game = Some(build.as_str().to_owned()));
                     // The hello goes first, ahead of a game that began
                     // before the hook attached.
@@ -546,6 +615,7 @@ impl<L: HookLink> Bridge<L> {
                 // speed from it; anyone else's is refused, as a notice.
                 ToAgent::Speed { speed } => self.request(client, Request::SetSpeed(speed)),
                 ToAgent::Log { message } => info!(hook = %message),
+                ToAgent::Lobby(action) => self.lobby_action(action),
             }
         }
         Ok(())
@@ -1049,6 +1119,9 @@ impl Outbox {
             ToHook::Diverged { lanes, .. } => lanes.len() * 2,
             ToHook::Chat { from, text } => from.as_str().len() + text.as_str().len(),
             ToHook::Room(room) => room.members.len() * 64,
+            ToHook::Lobby(view) => {
+                view.chat.len() * 320 + view.room.as_ref().map_or(0, |room| room.members.len() * 80)
+            }
             ToHook::End { reason } => reason.as_str().len(),
             _ => 0,
         };
@@ -1515,6 +1588,52 @@ mod tests {
         while out.pop_front().is_some() && out.messages.len() > taken / 2 {}
         pump(&mut follower, &mut playout, now, &mut out);
         assert!(out.messages.len() > taken / 2);
+    }
+
+    fn lobby(name: &str) -> LobbyView {
+        LobbyView {
+            name: Text::lossy(name),
+            ..LobbyView::default()
+        }
+    }
+
+    #[test]
+    fn a_greeted_bridge_passes_the_launchers_lobby_both_ways() {
+        use crate::launcher::lobby::tests::FakeLink;
+
+        let fake = FakeLink::default();
+        let (views_tx, views) = watch::channel(LobbyView::default());
+        let (actions, mut heard) = mpsc::unbounded_channel();
+        let mut bridge = Bridge::new(
+            fake.clone(),
+            BridgeOptions {
+                lobby: Some(LobbyLink { views, actions }),
+                ..BridgeOptions::default()
+            },
+        )
+        .greeted("40408");
+        views_tx.send(lobby("A")).unwrap();
+        views_tx.send(lobby("B")).unwrap();
+        bridge.lobby_news();
+        bridge.flush().unwrap();
+        assert_eq!(
+            fake.hook_hears(),
+            vec![ToHook::Lobby(lobby("B"))],
+            "the newest only, and no hello again"
+        );
+        bridge.lobby_news();
+        bridge.flush().unwrap();
+        assert!(fake.hook_hears().is_empty(), "unchanged");
+
+        bridge.lobby_action(LobbyAction::Start);
+        assert_eq!(heard.try_recv().unwrap(), LobbyAction::Start);
+
+        // A room left before its game began ends nothing in the game, and
+        // the launcher gets the link back, greeted.
+        bridge.end("Left");
+        assert!(fake.hook_hears().is_empty());
+        let (_link, build) = bridge.into_link();
+        assert_eq!(build.as_deref(), Some("40408"));
     }
 
     #[test]

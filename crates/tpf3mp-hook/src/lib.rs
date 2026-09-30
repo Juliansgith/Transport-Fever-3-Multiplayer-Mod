@@ -40,11 +40,11 @@ mod platform;
 pub mod step;
 pub mod worlds;
 
-/// The lobby as the in-game menu sees it (docs/LOBBY.md).
+/// The lobby as the main menu's Multiplayer window sees it (docs/LOBBY.md).
 pub mod lobby;
 /// The main-menu Multiplayer entry (docs/LOBBY.md): Windows x86-64 only.
 #[cfg(all(windows, target_arch = "x86_64"))]
-pub mod menu;
+pub mod menu_entry;
 
 /// Names the link to the launcher that started this game, and that
 /// launcher's process. The launcher always sets both; without them, the hook
@@ -115,12 +115,12 @@ fn install_menu(profiles: &[Profile], log: &mut Logger, data_dir: Option<&Path>)
     // be installed side by side (one per feature), so each is tried in turn.
     let mut reasons = Vec::new();
     for profile in profiles {
-        match menu::resolve_targets(profile) {
+        match menu_entry::resolve_targets(profile) {
             Ok(targets) => {
                 let log_path = data_dir.map(|dir| dir.join("hook.log"));
                 // SAFETY: the launcher loaded the hook into the suspended game,
                 // so no game code runs yet, and the targets are profile-verified.
-                match unsafe { menu::install(&targets, log_path.as_deref()) } {
+                match unsafe { menu_entry::install(&targets, log_path.as_deref()) } {
                     Ok(()) => log.line(&format!(
                         "main-menu Multiplayer entry armed from profile {:?} (loader at {:#x})",
                         profile.name, targets.loadfile

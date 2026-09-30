@@ -2,13 +2,18 @@
 --
 -- It shows the lobby the hook hands it and sends the player's choices back,
 -- over the hook's request channel: `resolveutil.loadfile("tpf3mp_1::/tpf3mp/state.lua")`
--- answers with the state as a Lua table literal; an action is left as JSON in
+-- answers with the launcher's lobby as a Lua table literal; an action is left as JSON in
 -- `resolveutil.__tpf3mp_action` and then `resolveutil.loadfile("tpf3mp_1::/tpf3mp/act.lua")`
 -- is called, which the hook answers after taking the JSON (the loader accepts
 -- exactly one argument). Both files exist in the mod, because the game checks
 -- that before it lets the loader run; the hook answers before the loader reads
 -- them, so their contents never matter. Without a hook (a game Steam started)
 -- this window is not reachable at all.
+--
+-- The hook passes everything on to the TPF3-MP launcher that started the
+-- game, over its link (D17): the launcher connects, makes and joins rooms and
+-- carries the chat; the window shows what the launcher says, a few times a
+-- second. Connecting goes to the launcher's own server (D12).
 --
 -- Plain Lua, loaded by the mod's main_page.tl through `ug_require`; it uses
 -- the same react, builtin and helpers the menu does, and the menu's own
@@ -224,7 +229,6 @@ end
 function lobby.content(onClose)
 	local stateS = react.useState(nil)
 	local problemS = react.useState(nil)
-	local server = react.useRef("")
 	local name = react.useRef("")
 	local roomName = react.useRef("")
 	local invite = react.useRef("")
@@ -264,10 +268,12 @@ function lobby.content(onClose)
 		else
 			children[#children + 1] = gap(6)
 		end
-		if state and state.preview then
+		if state and not state.linked then
 			children[#children + 1] = label(
-				"Preview: the hook answers on its own until the launcher carries the room.",
-				"font-scale-body, hint")
+				_("This game has no link to the TPF3-MP launcher: start Transport Fever 3 from the launcher."),
+				"font-scale-body, error")
+		elseif state and not state.heard then
+			children[#children + 1] = label(_("Waiting for the launcher..."), "font-scale-body, hint")
 		end
 		children[#children + 1] = gap(10)
 		children[#children + 1] = body
@@ -291,15 +297,18 @@ function lobby.content(onClose)
 		return frame(
 			label(connecting and _("Connecting...") or _("Not connected"), "font-scale-body, hint"),
 			column({
-				heading(_("Connect to a server")),
-				field(_("Server"), server, "play.example.org:4433"),
-				field(_("Your name"), name, _("name")),
+				heading(_("Connect to the server")),
+				label(state.server ~= "" and state.server or _("the launcher's server"), "font-scale-body, highlight"),
+				gap(10),
+				field(_("Your name"), name, state.name ~= "" and state.name or _("name")),
 			}),
 			{
 				gui_react_util.makeHorizontalSpacer(),
 				button(_("Close"), onClose),
 				primary(connecting and _("Connecting...") or _("Connect"), function()
-					act({ action = "connect", server = server:get(), name = name:get() })
+					local typed = name:get()
+					if typed == nil or typed == "" then typed = state.name end
+					act({ action = "connect", name = typed })
 				end),
 			}
 		)
@@ -327,7 +336,7 @@ function lobby.content(onClose)
 				}, style{ size = { LEFT, 0 } }),
 				column({
 					heading(_("Join a room")),
-					field(_("Invite code"), invite, "XXXX-XXXX"),
+					field(_("Invite code"), invite, "K7QM2X"),
 					field(_("Password (if it has one)"), password, "", true),
 					row({ primary(_("Join"), function()
 						act({ action = "join", invite = invite:get(), password = password:get() })

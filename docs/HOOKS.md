@@ -353,7 +353,15 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     with their names and whether they are connected), for the game's
     Multiplayer window: sent when the game begins and whenever the room
     changes (bridge version 6).
-  - `End`: the session is over.
+  - `Lobby(LobbyView)`: the launcher's lobby as it stands (its
+    connection, server, the player's name, the room with its invite,
+    members, ready marks and owner, the newest 40 chat lines, the last
+    error and notice), for the Multiplayer window on the game's main menu
+    (D17): sent whenever it changes, before, during and after a room's
+    game; only the newest counts (bridge version 7).
+  - `End`: the session is over. Sent only once the room's game has begun:
+    a room left before that ends nothing in the game, which keeps its link
+    for the player's next room.
 - **From the hook (`ToAgent`):**
   - `Hello`: always first, with the game build.
   - `Loaded { next_step }`: the ordered world is loaded.
@@ -368,6 +376,11 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   - `Speed { speed }`: the player picked this speed in the game's speed
     row (`Session::request_speed`); the agent asks the room, which takes it
     from the owner only. Bridge version 4.
+  - `Lobby(LobbyAction)`: the player pressed a button of the main menu's
+    Multiplayer window: connect (a name; the server is the launcher's,
+    D12), disconnect, create, join, ready, start, kick, chat or leave. The
+    launcher carries it out as if its own window had asked (bridge
+    version 7).
   - `Log`: a line for the agent's log.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
@@ -445,6 +458,43 @@ by hand (see [DEVELOPMENT.md](DEVELOPMENT.md)). On release day, what remains for
   applies the canonical economy, with `save` and `restore` so its rooms'
   logs compact (`crates/tpf3mp-server/src/ruleset.rs`). It is added to
   the server's `RulesMenu` next to `native`, which stays offered.
+
+### The main menu's Multiplayer window
+
+The room's lobby is in the game (D17, as amended on 2026-09-30): the
+Multiplayer entry on the game's main menu (docs/LOBBY.md) opens a window
+that connects, creates or joins a room, shows its players and their ready
+marks, chats, gets ready and, for the owner, starts the room's game. It
+drives the launcher that started the game, which still holds the
+connection (D11): the window is only another front end of the launcher's
+[`Action`s](../crates/tpf3mp-agent/src/launcher/api.rs).
+
+- **One link for the game's life.** The launcher opens the game's link
+  when it starts, not when a room begins, so the game can start before a
+  room is chosen. While no room session holds the link, the launcher
+  serves it itself (`launcher::lobby::IdleLink`): it answers the hook's
+  hello, sends the lobby whenever it changes and carries out the window's
+  actions. A room session's bridge takes the link over already greeted
+  (`Bridge::greeted`), passes the lobby both ways (`BridgeOptions::lobby`)
+  and gives the link back when it ends (`Bridge::into_link`).
+- **Reading the link at the menu.** At the main menu no step of the game
+  runs, so nothing else reads the link. The window asks the hook for the
+  lobby a few times a second; each request exchanges it through the step
+  driver (`StepDriver::lobby`): the window's actions go out as
+  `ToAgent::Lobby`, and `Session::poll_lobby` reads what came in, keeping
+  the lobby, and stops at the first message the game must see at its gate
+  (the room's `Begin`), which `try_begin` takes when a world steps. In the
+  room's game the gate reads the link and keeps the lobby it finds
+  (`Gated::Lobby`); the lobby never holds the world or reaches the
+  in-game Multiplayer window's notices.
+- **Fail closed.** A hook whose step gate did not install has no driver:
+  the window says the game has no link to the launcher and takes no action.
+  A menu the hook cannot reach (its targets missing) stays the game's own,
+  and the launcher's window still does everything.
+- **One room's game per game.** A room left before its game began ends
+  nothing: the game follows the player into the next room. After a room's
+  game has ended, the window still shows the lobby, but the next room's
+  game needs the game started again from the launcher.
 
 ### The step gate in the game
 

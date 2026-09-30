@@ -53,7 +53,9 @@ use std::{
 };
 
 use ring::digest::{SHA256, digest};
-use tpf3mp_bridge::{Begin, Game, Notice, SaveOrder, Session, SessionError, StepGate};
+use tpf3mp_bridge::{
+    Begin, Game, LobbyAction, LobbyView, Notice, SaveOrder, Session, SessionError, StepGate,
+};
 use tpf3mp_proto::{
     ChatText, Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Speed, action::Action,
 };
@@ -91,6 +93,20 @@ pub trait RoomGate {
         game: &mut HookGame,
         outcome: Result<(), String>,
     ) -> Result<(), SessionError>;
+    /// Hands the launcher an action of the main menu's Multiplayer window
+    /// ([`Session::lobby_act`]).
+    fn lobby_act(&mut self, action: LobbyAction) -> Result<(), SessionError> {
+        let _ = action;
+        Err(SessionError::Unexpected("a lobby action"))
+    }
+    /// Reads the link where no step does ([`Session::poll_lobby`]).
+    fn poll_lobby(&mut self) -> Result<(), SessionError> {
+        Ok(())
+    }
+    /// The launcher's lobby, if new ([`Session::take_lobby`]).
+    fn take_lobby(&mut self) -> Option<LobbyView> {
+        None
+    }
 }
 
 /// Longest a save the room ordered may take the game before it is reported
@@ -167,6 +183,15 @@ impl RoomGate for Session {
         outcome: Result<(), String>,
     ) -> Result<(), SessionError> {
         Session::saved(self, game, outcome)
+    }
+    fn lobby_act(&mut self, action: LobbyAction) -> Result<(), SessionError> {
+        Session::lobby_act(self, action)
+    }
+    fn poll_lobby(&mut self) -> Result<(), SessionError> {
+        Session::poll_lobby(self)
+    }
+    fn take_lobby(&mut self) -> Option<LobbyView> {
+        Session::take_lobby(self)
     }
 }
 
@@ -263,6 +288,8 @@ pub trait StepHandler: Send {
     fn chosen_speed(&mut self, speedup: u64);
     /// See [`StepDriver::say`].
     fn say(&mut self, text: ChatText);
+    /// See [`StepDriver::lobby`].
+    fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView>;
 }
 
 impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
@@ -283,6 +310,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn say(&mut self, text: ChatText) {
         StepDriver::say(self, text);
+    }
+    fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
+        StepDriver::lobby(self, actions)
     }
 }
 
@@ -363,6 +393,8 @@ pub struct StepDriver<G> {
     refused: Vec<(u64, String)>,
     /// Lines for the hook's log.
     log: Vec<String>,
+    /// What last went wrong with the lobby, logged once.
+    lobby_fault: Option<String>,
 }
 
 impl<G: RoomGate> StepDriver<G> {
@@ -381,7 +413,34 @@ impl<G: RoomGate> StepDriver<G> {
             tickets: HashMap::new(),
             refused: Vec::new(),
             log: Vec::new(),
+            lobby_fault: None,
         }
+    }
+
+    /// The main menu's Multiplayer window (D17): hands the launcher the
+    /// player's `actions` and returns its lobby, if it sent a new one.
+    /// Outside the room's game the driver reads the link itself first: at
+    /// the main menu no step of the game does. The lobby never holds the
+    /// world: a link that fails here fails the step gate's next read too.
+    pub fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
+        let mut fault = None;
+        for action in actions {
+            if let Err(error) = self.gate.lobby_act(action) {
+                fault = Some(format!(
+                    "the launcher did not hear the lobby window: {error}"
+                ));
+            }
+        }
+        if matches!(self.phase, Phase::BeforeBegin | Phase::Ended)
+            && let Err(error) = self.gate.poll_lobby()
+        {
+            fault = Some(format!("reading the launcher's lobby failed: {error}"));
+        }
+        if fault.is_some() && fault != self.lobby_fault {
+            self.log.extend(fault.clone());
+        }
+        self.lobby_fault = fault;
+        self.gate.take_lobby()
     }
 
     /// The tickets of the player's actions that will never happen (the room
@@ -797,6 +856,15 @@ pub(crate) mod tests {
         /// What the room says, handed to the game by each poll, one list a
         /// poll.
         pub(crate) notices: VecDeque<Vec<Notice>>,
+        /// The lobby window's actions the launcher heard.
+        pub(crate) lobby_acts: Vec<LobbyAction>,
+        /// The lobbies the link holds, one read by each `poll_lobby`.
+        pub(crate) lobbies: VecDeque<LobbyView>,
+        /// How often the link was read for the lobby, and whether that fails.
+        pub(crate) lobby_polls: usize,
+        pub(crate) lobby_fails: bool,
+        /// The lobby read and not taken yet.
+        pub(crate) lobby_heard: Option<LobbyView>,
     }
 
     impl RoomGate for Script {
@@ -890,6 +958,23 @@ pub(crate) mod tests {
             );
             self.saves.push(outcome);
             Ok(())
+        }
+        fn lobby_act(&mut self, action: LobbyAction) -> Result<(), SessionError> {
+            self.lobby_acts.push(action);
+            Ok(())
+        }
+        fn poll_lobby(&mut self) -> Result<(), SessionError> {
+            self.lobby_polls += 1;
+            if self.lobby_fails {
+                return Err(SessionError::AgentGone);
+            }
+            if let Some(view) = self.lobbies.pop_front() {
+                self.lobby_heard = Some(view);
+            }
+            Ok(())
+        }
+        fn take_lobby(&mut self) -> Option<LobbyView> {
+            self.lobby_heard.take()
         }
     }
 
@@ -1273,6 +1358,67 @@ pub(crate) mod tests {
     }
 
     const PAUSED: Updates = Updates::Exactly(0);
+
+    fn lobby_named(name: &str) -> LobbyView {
+        LobbyView {
+            name: tpf3mp_proto::Text::new(name).unwrap(),
+            ..LobbyView::default()
+        }
+    }
+
+    #[test]
+    fn the_menus_window_talks_to_the_launcher_before_during_and_after_the_rooms_game() {
+        let mut script = Script::default();
+        script.lobbies.push_back(lobby_named("at the menu"));
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Wait,
+        ]);
+        let (mut d, mut calls) = driver(script);
+        // At the menu no step reads the link: the window's exchange does.
+        assert_eq!(
+            d.lobby(vec![LobbyAction::Start]),
+            Some(lobby_named("at the menu"))
+        );
+        assert_eq!(d.gate.lobby_acts, vec![LobbyAction::Start]);
+        assert_eq!(d.gate.lobby_polls, 1);
+        assert_eq!(d.lobby(Vec::new()), None, "nothing new");
+        // In the room's game the gate reads the link; the window only takes
+        // what it kept.
+        call(&mut d, &mut calls);
+        assert_eq!(d.phase(), &Phase::Running);
+        let polls = d.gate.lobby_polls;
+        d.gate.lobby_heard = Some(lobby_named("in the game"));
+        assert_eq!(
+            d.lobby(vec![LobbyAction::Ready { ready: true }]),
+            Some(lobby_named("in the game"))
+        );
+        assert_eq!(
+            d.gate.lobby_polls, polls,
+            "the gate's link is not read here"
+        );
+        assert_eq!(d.gate.lobby_acts.len(), 2);
+        assert_eq!(d.phase(), &Phase::Running, "nor is the game disturbed");
+    }
+
+    #[test]
+    fn a_lobby_that_cannot_be_read_is_logged_once_and_holds_nothing() {
+        let script = Script {
+            lobby_fails: true,
+            ..Script::default()
+        };
+        let (mut d, _calls) = driver(script);
+        assert_eq!(d.lobby(Vec::new()), None);
+        assert_eq!(d.lobby(Vec::new()), None);
+        let log = d.take_log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(log[0].contains("lobby"), "{log:?}");
+        assert_eq!(d.phase(), &Phase::BeforeBegin);
+    }
 
     #[test]
     fn before_the_room_begins_the_game_steps_as_it_would() {

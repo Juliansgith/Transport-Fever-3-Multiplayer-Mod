@@ -47,7 +47,7 @@ use tpf3mp_hookcore::profile::{self, Profile};
 
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
-use crate::lobby::{LobbyState, parse_action};
+use crate::lobby;
 
 /// The Lua run once in each of the game's Lua states, the first time the
 /// loader runs there. It wraps `resolveutil.loadfile` (the function
@@ -120,8 +120,6 @@ static PATCHED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 static DETOUR: Mutex<Option<InlineDetour>> = Mutex::new(None);
 /// The hook's log, for what happens at run time.
 static LOG: Mutex<Option<File>> = Mutex::new(None);
-/// The lobby as the window sees it.
-static LOBBY: Mutex<LobbyState> = Mutex::new(LobbyState::new());
 
 type LuaReader = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut usize) -> *const c_char;
 type LuaLoad = unsafe extern "C" fn(
@@ -414,13 +412,13 @@ fn eval_string(state: *mut c_void, chunk: &'static str) -> Option<String> {
 }
 
 /// Answers a request from the lobby window, or `None` when `path` is an
-/// ordinary file the loader should handle.
+/// ordinary file the loader should handle. Each request exchanges the lobby
+/// with the launcher first ([`crate::install::lobby_pump`]): at the main
+/// menu nothing else reads the link.
 fn answer(state: *mut c_void, path: &str) -> Option<String> {
     if path == STATE_FILE {
-        let lobby = LOBBY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        return Some(lobby.to_lua());
+        crate::install::lobby_pump();
+        return Some(lobby::state().to_lua());
     }
     if path != ACT_FILE {
         return None;
@@ -429,20 +427,24 @@ fn answer(state: *mut c_void, path: &str) -> Option<String> {
         note("lobby action refused: no JSON in resolveutil.__tpf3mp_action");
         return Some("error: no action".to_owned());
     };
-    Some(match parse_action(&json) {
-        Ok(action) => {
-            note(&format!("lobby action {action:?}"));
-            LOBBY
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .apply_local(&action);
-            "ok".to_owned()
-        }
-        Err(error) => {
-            note(&format!("lobby action refused: {error} ({json})"));
-            format!("error: {error}")
-        }
-    })
+    Some(
+        match lobby::parse_action(&json).and_then(|action| {
+            note(&format!(
+                "lobby action {} for the launcher",
+                lobby::kind(&action)
+            ));
+            lobby::queue(action)
+        }) {
+            Ok(()) => {
+                crate::install::lobby_pump();
+                "ok".to_owned()
+            }
+            Err(error) => {
+                note(&format!("lobby action refused: {error}"));
+                format!("error: {error}")
+            }
+        },
+    )
 }
 
 /// Pushes `reply` for Lua, twice: the loader's glue always hands Lua two
@@ -626,10 +628,18 @@ mod tests {
 
     #[test]
     fn the_state_file_is_answered_and_other_files_are_not() {
+        let _serial = crate::lua::tests::SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::lobby::reset();
         let none = std::ptr::null_mut();
         let state = answer(none, STATE_FILE).expect("the state file is answered");
         assert!(state.starts_with("{ connection = "), "{state}");
         assert!(state.contains(r#"connection = "disconnected""#), "{state}");
+        assert!(
+            state.contains("linked = false"),
+            "no step driver in this test: {state}"
+        );
         assert!(answer(none, "gui/main/react.lua").is_none());
         assert!(answer(none, "tpf3mp/other.lua").is_none());
         // Without a Lua state (or before lua_tolstring is resolved) an action
