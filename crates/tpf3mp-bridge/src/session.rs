@@ -170,6 +170,9 @@ pub struct Session {
     /// The link generation the hellos were exchanged on.
     generation: u32,
     lobby: Lobby,
+    /// A world that came up while the session was between rooms, told to
+    /// the next room once hellos are exchanged there.
+    world_between_rooms: Option<u64>,
 }
 
 /// Where the session is before its room's game begins, and after.
@@ -232,6 +235,7 @@ impl Session {
             name: name.to_owned(),
             build: build.clone(),
             lobby: Lobby::Waiting,
+            world_between_rooms: None,
         };
         session.send(&ToAgent::Hello {
             version: BRIDGE_VERSION,
@@ -301,6 +305,9 @@ impl Session {
                 };
                 check_version(version)?;
                 self.lobby = Lobby::Waiting;
+                if let Some(world) = self.world_between_rooms.take() {
+                    self.send(&ToAgent::WorldUp { world })?;
+                }
                 continue;
             }
             match message {
@@ -529,6 +536,29 @@ impl Session {
     /// Asks the room to run at the speed the player picked.
     pub fn request_speed(&mut self, speed: Speed) -> Result<(), SessionError> {
         self.send(&ToAgent::Speed { speed })
+    }
+
+    /// Before the room begins a game: the game's world number `world` is up,
+    /// with the mod linked (see [`ToAgent::WorldUp`]). The agent marks the
+    /// player ready in the room's lobby. Once the room began a game, the
+    /// worlds are the room's to order, and nothing is told: returns whether
+    /// the agent was.
+    ///
+    /// Between rooms (the last room ended before its game began, and the
+    /// next room's hellos are not exchanged yet) the world is kept and told
+    /// to the next room once they are: its link is the one the agent reads.
+    pub fn world_up(&mut self, world: u64) -> Result<bool, SessionError> {
+        match self.lobby {
+            Lobby::Begun => Ok(false),
+            Lobby::Left { .. } | Lobby::Greeting => {
+                self.world_between_rooms = Some(world);
+                Ok(false)
+            }
+            Lobby::Waiting => {
+                self.send(&ToAgent::WorldUp { world })?;
+                Ok(true)
+            }
+        }
     }
 
     /// Says something to the room for the player.
@@ -797,6 +827,33 @@ mod tests {
         begins_on(&mut session, &agent);
     }
 
+    /// A save loaded while the player is between rooms is told to the next
+    /// room once its hellos are exchanged, so that room marks them ready.
+    #[test]
+    fn a_world_up_between_rooms_is_told_to_the_next() {
+        let (mut session, agent, name) = lobby("between");
+        say(
+            &agent,
+            &ToHook::End {
+                reason: Text::lossy("Left"),
+            },
+        );
+        assert!(session.try_begin().unwrap().is_none());
+        drop(agent);
+        assert!(!session.world_up(7).unwrap(), "no room to tell");
+
+        let agent = Link::create(&Config::new(name), Role::Agent).unwrap();
+        assert_eq!(until_the_hook_speaks(&mut session, &agent), "test");
+        assert!(matches!(heard_now(&agent), Some(ToAgent::Log { .. })));
+        say(&agent, &agent_hello());
+        assert!(session.try_begin().unwrap().is_none());
+        assert!(
+            matches!(heard_now(&agent), Some(ToAgent::WorldUp { world: 7 })),
+            "the kept world, once the new room said hello"
+        );
+        assert!(heard_now(&agent).is_none(), "once");
+    }
+
     #[test]
     fn a_link_re_created_in_the_lobby_is_followed() {
         let (mut session, old, name) = lobby("recreated");
@@ -910,6 +967,38 @@ mod tests {
             assert!(Instant::now() < deadline, "the hook said nothing");
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn a_world_up_is_told_in_the_lobby_and_not_once_the_room_began() {
+        let name = format!("test.session.world-up.{}", std::process::id());
+        let agent = Link::create(&Config::new(name.clone()), Role::Agent).unwrap();
+        say(
+            &agent,
+            &ToHook::Hello {
+                version: BRIDGE_VERSION,
+            },
+        );
+        let mut session = Session::attach(&name, "test", Duration::from_secs(10)).unwrap();
+        assert!(session.world_up(1).unwrap());
+        assert_eq!(heard(&agent), ToAgent::WorldUp { world: 1 });
+        say(
+            &agent,
+            &ToHook::Begin {
+                rules: RulesName::new("native").unwrap(),
+                steps_per_second: 5,
+                checkpoint_interval: 50,
+                saves: Text::lossy("saves"),
+                player: PlayerId(FixedBytes([1; 32])),
+            },
+        );
+        assert!(session.try_begin().unwrap().is_some());
+        assert!(!session.world_up(2).unwrap(), "the room's game began");
+        session.log("after").unwrap();
+        assert!(
+            matches!(heard(&agent), ToAgent::Log { .. }),
+            "no world up once the room began"
+        );
     }
 
     #[test]

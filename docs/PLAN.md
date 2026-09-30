@@ -182,6 +182,11 @@ Dev B (the game's side of the bridge):
 - [ ] `save_check::check_lua_data` on a fetched save at `Done::Fetched`
   (`crates/tpf3mp-agent/src/bridge.rs`); refuse to load one that fails.
 - [ ] Two games through the real server with the rig, two players.
+- [x] *Added, the owner's ask:* a player is marked ready by the agent once
+  their game has a world up with the mod linked, in the lobby
+  (`ToAgent::WorldUp`, bridge version 7); Not ready holds for that world.
+  The owner still presses Start game; starting by itself once everyone
+  is ready would be next, if wanted.
 
 Dev C (building):
 

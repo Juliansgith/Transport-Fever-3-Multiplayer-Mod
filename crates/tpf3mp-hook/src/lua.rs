@@ -28,7 +28,9 @@
 //!   loads with `app.loadGame` ([`request_save`], [`request_load`]).
 //! - `saved(name, ok, why)`: the GUI's answer to a save ([`take_save_answer`]).
 //! - `world()`: a world's GUI started. Once the GUI has taken a load, the
-//!   next world to start is the one it loaded ([`load_done`]).
+//!   next world to start is the one it loaded ([`load_done`]). Before the
+//!   room begins a game, the step gate tells the agent of each new world
+//!   ([`take_world_up`]), which marks the player ready.
 //! - `room()`: whether the room's game runs ([`set_in_room`]): the GUI then
 //!   refuses the player's commands the room cannot carry yet (docs/HOOKS.md,
 //!   "The player's commands").
@@ -217,6 +219,8 @@ struct Shared {
     /// A load asked for: `None` until the GUI took it, then the worlds
     /// started by then.
     load: Option<Option<u64>>,
+    /// The last world [`take_world_up`] handed out.
+    told: u64,
     /// The room, for the game's Multiplayer window ([`notice`]).
     room: RoomStatus,
 }
@@ -270,6 +274,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
         replay: false,
         said: VecDeque::new(),
     },
+    told: 0,
 });
 
 fn shared() -> MutexGuard<'static, Shared> {
@@ -395,6 +400,19 @@ pub fn load_done() -> bool {
         shared.load = None;
     }
     done
+}
+
+/// The number of the latest world whose GUI started, if it is newer than
+/// the last one handed out here; once. Worlds that started in between are
+/// gone, replaced by this one, and never handed out.
+pub fn take_world_up() -> Option<u64> {
+    let mut shared = shared();
+    if shared.worlds > shared.told {
+        shared.told = shared.worlds;
+        Some(shared.worlds)
+    } else {
+        None
+    }
 }
 
 fn log(line: String) {
@@ -1976,5 +1994,23 @@ pub(crate) mod tests {
         set_in_room(true);
         assert_eq!(lua.run("return tpf3mp_native.room()"), Ok("true".into()));
         set_in_room(false);
+    }
+
+    #[test]
+    fn a_world_that_starts_is_handed_to_the_step_gate_once() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        let _ = take_world_up();
+        assert_eq!(take_world_up(), None, "no world since");
+        lua.run("tpf3mp_native.world()").unwrap();
+        let first = take_world_up().expect("the world is handed out");
+        assert_eq!(take_world_up(), None, "once");
+        // Two worlds before the gate asks: the first is gone, the latest is
+        // the one handed out.
+        lua.run("tpf3mp_native.world() tpf3mp_native.world()")
+            .unwrap();
+        assert_eq!(take_world_up(), Some(first + 2));
+        assert_eq!(take_world_up(), None);
     }
 }

@@ -17,7 +17,9 @@
 //! - none while the room withholds the next step (the room is paused, or a
 //!   player is behind): the game's paused path, and the world stands still;
 //! - before a room has begun a game, and after it has ended, what the
-//!   game's own speed says;
+//!   game's own speed says; before, each new world the player's game has up
+//!   is told to the agent, which marks the player ready in the room's lobby
+//!   ([`RoomGate::world_up`]);
 //! - while the game saves its world for the room, or loads the room's
 //!   (docs/HOOKS.md, "The room's world"), none;
 //! - on anything it cannot follow (the agent gone, a malformed message, a
@@ -86,6 +88,9 @@ pub trait RoomGate {
     fn command(&mut self, payload: Payload) -> Result<u64, SessionError>;
     /// Says `text` to the room for the player.
     fn chat(&mut self, text: ChatText) -> Result<(), SessionError>;
+    /// Before the room begins: the game's world number `world` is up. Says
+    /// whether the agent was told.
+    fn world_up(&mut self, world: u64) -> Result<bool, SessionError>;
     fn saved(
         &mut self,
         game: &mut HookGame,
@@ -117,6 +122,9 @@ pub trait GameControl: Send {
     fn room_notice(&mut self, notice: &Notice);
     /// Tells the game's Multiplayer window which player is this game's.
     fn set_me(&mut self, player: PlayerId);
+    /// The number of a world whose GUI started with the mod linked, since
+    /// the last call, if one did: the latest. Once.
+    fn world_up(&mut self) -> Option<u64>;
 }
 
 /// A save the game is making for the room.
@@ -160,6 +168,9 @@ impl RoomGate for Session {
     }
     fn chat(&mut self, text: ChatText) -> Result<(), SessionError> {
         Session::chat(self, text)
+    }
+    fn world_up(&mut self, world: u64) -> Result<bool, SessionError> {
+        Session::world_up(self, world)
     }
     fn saved(
         &mut self,
@@ -590,7 +601,13 @@ impl<G: RoomGate> StepDriver<G> {
                     self.control.set_me(begin.player);
                     self.phase = Phase::Running;
                 }
-                Ok(None) => return Updates::Own,
+                Ok(None) => {
+                    self.tell_world_up();
+                    return match self.phase {
+                        Phase::Holding(_) => Updates::Exactly(0),
+                        _ => Updates::Own,
+                    };
+                }
                 Err(error) => self.hold(format!("before the game began: {error}")),
             }
         }
@@ -653,6 +670,24 @@ impl<G: RoomGate> StepDriver<G> {
                     return Updates::Exactly(0);
                 }
             }
+        }
+    }
+
+    /// In the room's lobby: tells the agent of a new world the game has up,
+    /// with the mod linked (it said so through `world()`), for the agent to
+    /// mark the player ready. The game steps it, so it is up, not one being
+    /// replaced; a world that started and was replaced before this call is
+    /// never told.
+    fn tell_world_up(&mut self) {
+        let Some(world) = self.control.world_up() else {
+            return;
+        };
+        match self.gate.world_up(world) {
+            Ok(true) => self.log.push(format!(
+                "world {world} is up with the mod linked: told the agent, which marks the player ready"
+            )),
+            Ok(false) => {}
+            Err(error) => self.hold(format!("telling the agent the world is up: {error}")),
         }
     }
 
@@ -797,6 +832,8 @@ pub(crate) mod tests {
         /// What the room says, handed to the game by each poll, one list a
         /// poll.
         pub(crate) notices: VecDeque<Vec<Notice>>,
+        /// The worlds told up.
+        pub(crate) worlds_up: Vec<u64>,
     }
 
     impl RoomGate for Script {
@@ -879,6 +916,10 @@ pub(crate) mod tests {
             self.said.push(text);
             Ok(())
         }
+        fn world_up(&mut self, world: u64) -> Result<bool, SessionError> {
+            self.worlds_up.push(world);
+            Ok(true)
+        }
         fn saved(
             &mut self,
             _game: &mut HookGame,
@@ -908,6 +949,7 @@ pub(crate) mod tests {
         pub(crate) load_done: bool,
         pub(crate) room_notices: Vec<Notice>,
         pub(crate) me: Option<PlayerId>,
+        pub(crate) world_up: Option<u64>,
     }
 
     impl GameControl for FakeControl {
@@ -937,6 +979,9 @@ pub(crate) mod tests {
         }
         fn set_me(&mut self, player: PlayerId) {
             self.state.lock().unwrap().me = Some(player);
+        }
+        fn world_up(&mut self) -> Option<u64> {
+            self.state.lock().unwrap().world_up.take()
         }
     }
 
@@ -1279,6 +1324,31 @@ pub(crate) mod tests {
         let (mut d, mut calls) = driver(Script::default());
         assert_eq!(call(&mut d, &mut calls), Updates::Own);
         assert_eq!(d.phase(), &Phase::BeforeBegin);
+    }
+
+    #[test]
+    fn a_world_up_in_the_lobby_is_told_to_the_agent_once_and_not_in_the_rooms_game() {
+        let mut script = Script::default();
+        script.begin.extend([None, None, None, Some(begin())]);
+        script.gates.push_back(StepGate::Wait);
+        let (mut d, state) = driver_with(script);
+        let mut calls = Vec::new();
+        // No world up yet: nothing told.
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert!(d.gate.worlds_up.is_empty());
+        // The mod says a world's GUI started: the next call tells it, once.
+        state.lock().unwrap().world_up = Some(1);
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert_eq!(d.gate.worlds_up, vec![1]);
+        assert!(d.take_log().iter().any(|l| l.contains("world 1 is up")));
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert_eq!(d.gate.worlds_up, vec![1], "once a world");
+        // The room begins; a world that starts in its game is the room's.
+        state.lock().unwrap().world_up = Some(2);
+        call(&mut d, &mut calls);
+        assert_eq!(d.phase(), &Phase::Running);
+        call(&mut d, &mut calls);
+        assert_eq!(d.gate.worlds_up, vec![1]);
     }
 
     #[test]

@@ -411,8 +411,19 @@ fn status(state: &State, reach: Reach) -> Option<(String, Tone)> {
             };
             Some((format!("{step}{speed}."), Tone::Ready))
         }
+        // Readiness is automatic: the agent marks the player ready once the
+        // game has a world up with the mod linked.
+        World::None if you(state).is_some_and(|me| me.ready) => Some((
+            format!(
+                "The game is connected ({build}). You are ready; the world loads when the room starts."
+            ),
+            Tone::Plain,
+        )),
         World::None => Some((
-            format!("The game is connected ({build}). The world loads when the room starts."),
+            format!(
+                "The game is connected ({build}). Load your save in the game: you are marked \
+                 ready automatically once its world is up."
+            ),
             Tone::Plain,
         )),
         _ => None,
@@ -740,6 +751,35 @@ mod tests {
         };
         let view = present(&state, Reach::Online, None);
         assert_eq!(view.main.does, Does::Act(Action::Start));
+        assert_eq!(view.secondary[0].label, "Not ready");
+    }
+
+    #[test]
+    fn in_the_lobby_readiness_follows_the_save_loading_and_ready_stays_a_button() {
+        let mut state = in_room(
+            vec![
+                member("Ann", true, true, false),
+                member("Bob", false, false, true),
+            ],
+            true,
+        );
+        state.game = Game {
+            attached: Some("40391".into()),
+            ..Game::default()
+        };
+        let view = present(&state, Reach::Online, None);
+        let (text, _) = view.status.unwrap();
+        assert!(
+            text.contains("Load your save in the game") && text.contains("marked ready"),
+            "{text}"
+        );
+        // Pressing it by hand still works.
+        assert_eq!(view.main.does, Does::Act(Action::Ready { ready: true }));
+
+        state.room.as_mut().unwrap().members[0].ready = true;
+        let view = present(&state, Reach::Online, None);
+        let (text, _) = view.status.unwrap();
+        assert!(text.contains("You are ready"), "{text}");
         assert_eq!(view.secondary[0].label, "Not ready");
     }
 

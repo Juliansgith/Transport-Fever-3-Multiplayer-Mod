@@ -36,8 +36,8 @@ pub use gate::{Gate, GateError, Gated};
 pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, StepGate};
 
 /// Version of these messages. Both sides send it first and refuse a peer
-/// that speaks another.
-pub const BRIDGE_VERSION: u32 = 6;
+/// that speaks another. 7 added [`ToAgent::WorldUp`].
+pub const BRIDGE_VERSION: u32 = 7;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -146,6 +146,12 @@ pub enum ToAgent {
     /// for it. Only the room's owner may change the room's speed; the server
     /// refuses anyone else, and the agent shows the refusal.
     Speed { speed: Speed },
+    /// Before the room begins a game: a world is up in the game, with the
+    /// mod linked to the hook, and the game steps it. `world` counts the
+    /// worlds whose GUI started since the hook began, from 1, so a world is
+    /// told once and a new one has a higher number. The agent marks the
+    /// player ready in the room's lobby, once per world.
+    WorldUp { world: u64 },
 }
 
 #[derive(Debug, Error)]

@@ -99,8 +99,13 @@ your own machine, in the tab the launcher opened.
    closed", and you are back on the server, out of the room. Join it again
    with its invite and start the game again. A game that closes before it
    connected leaves you in the room; just start it again.
-5. **Ready.** Everyone presses **Ready**. The room's owner then presses
-   **Start game**. Everyone's game starts from the owner's world.
+5. **Load your save.** In the game, load a save (any world will do for a
+   guest; the owner's is the one everyone plays). Once its world is up,
+   the launcher marks you **ready** by itself: nobody has to press
+   **Ready**. The button stays, to get ready by hand, and **Not ready**
+   keeps you not ready until you load another world. When everyone is
+   ready, the room's owner presses **Start game**. Everyone's game starts
+   from the owner's world.
 
 The window is tearded's TPF2 multiplayer launcher, for Transport Fever 3.
 On the left, under the game's name, a checklist ticks these steps off as
@@ -194,6 +199,8 @@ across PCs and systems:
 2. Start `tpf3mp-fakegame` from the same folder (from a terminal on Linux
    and macOS). The window's **Game** part says the game is connected.
 3. Connect, create or join a room, get ready and start, as in a real game.
+   The fake game has no save to load, so it does not mark you ready:
+   press **Ready**.
    The fake game plays by itself: watch the **Game** part count steps, and
    try chatting, leaving and rejoining, and joining a game already running.
 

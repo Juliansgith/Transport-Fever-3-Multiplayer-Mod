@@ -375,6 +375,16 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   - `Speed { speed }`: the player picked this speed in the game's speed
     row (`Session::request_speed`); the agent asks the room, which takes it
     from the owner only. Bridge version 4.
+  - `WorldUp { world }`: before the room begins a game, the game has a
+    world up with the mod linked, and steps it (`Session::world_up`).
+    `world` counts the worlds whose GUI started (`tpf3mp_native.world`)
+    since the hook began, so each is told once. In the room's lobby the
+    agent marks the player ready (`Request::SetReady(true)`, as the Ready
+    button does), once a world: a player who then presses Not ready stays
+    so until another world is up. Nothing is marked once the room's game
+    began, while the game's world is being replaced, or before the agent
+    knows the room is in its lobby; the step gate sends nothing after
+    `Begin`. Bridge version 7.
   - `Log`: a line for the agent's log.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
@@ -610,7 +620,9 @@ for the table (`bridge.find`). Its contract is in
   it, once, `{ save = name }` or `{ load = name }`, or `nil` ("The room's
   world" below).
 - `tpf3mp_native.saved(name, ok, why)`: the GUI's answer to a save.
-- `tpf3mp_native.world()`: a world's GUI started.
+- `tpf3mp_native.world()`: a world's GUI started. Before the room begins
+  a game, the step gate's next call tells the agent the latest such world
+  (`lua::take_world_up`, `ToAgent::WorldUp`), which marks the player ready.
 - `tpf3mp_native.room()`: whether the room's game runs (the step gate's
   phase, held included), for the guard ("The player's commands" below).
 - `tpf3mp_native.checkpoint()`: in a game script's update, whether it is
@@ -646,7 +658,9 @@ for the table (`bridge.find`). Its contract is in
   `player`) and the client sequence number, which `Session::command`
   returned when the driver handed the action over, and which it keeps with
   the action's ticket. An action the room refuses (`Notice::Refused`), or
-  one handed over when no room's game runs, answers `ok = false` with why. on whichever thread runs their state (the GUI's
+  one handed over when no room's game runs, answers `ok = false` with why.
+
+The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
 nothing but the hook's queues. They reach Lua through Lua 5.2's C API as
 the build profile names it: 18 functions besides `luaB_print`, found from

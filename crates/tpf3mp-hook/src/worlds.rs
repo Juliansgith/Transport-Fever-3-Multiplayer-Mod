@@ -95,6 +95,10 @@ impl GameControl for GuiWorlds {
     fn load_done(&mut self) -> bool {
         lua::load_done()
     }
+
+    fn world_up(&mut self) -> Option<u64> {
+        lua::take_world_up()
+    }
 }
 
 /// The save folder of the Steam account playing: Steam's folder and the

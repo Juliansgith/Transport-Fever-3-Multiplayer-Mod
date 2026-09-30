@@ -26,8 +26,8 @@ use tpf3mp_bridge::{
 use tpf3mp_net::close;
 use tpf3mp_proto::{
     BoundedVec, ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom,
-    LaneDigest, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomView, SavedWorld,
-    SessionId, SnapshotId, Speed, Text, WorldOffer,
+    LaneDigest, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomPhase, RoomView,
+    SavedWorld, SessionId, SnapshotId, Speed, Text, WorldOffer,
 };
 use tpf3mp_snapshot::ManifestId;
 use tracing::{debug, info, warn};
@@ -343,6 +343,12 @@ pub struct Bridge<L> {
     /// The room as the server last showed it: the game's Multiplayer window
     /// shows it, and chat names its members.
     room: Option<RoomView>,
+    /// The room's phase as last announced, if it was.
+    room_phase: Option<RoomPhase>,
+    /// The latest world the game said is up ([`ToAgent::WorldUp`]), or 0.
+    world_up: u64,
+    /// The latest world the player's readiness was decided for.
+    readied: u64,
 }
 
 impl<L: HookLink> Bridge<L> {
@@ -352,7 +358,6 @@ impl<L: HookLink> Bridge<L> {
         Self {
             hook_beat: (link.peer_heartbeat(), now),
             link,
-            options,
             follower: None,
             playout: None,
             outbox: Outbox::default(),
@@ -375,6 +380,13 @@ impl<L: HookLink> Bridge<L> {
             received: None,
             controls: None,
             room: None,
+            room_phase: options.status.as_ref().and_then(|status| {
+                let status = status.lock().unwrap_or_else(PoisonError::into_inner);
+                status.room.as_ref().map(|room| room.phase)
+            }),
+            world_up: 0,
+            readied: 0,
+            options,
         }
     }
 
@@ -553,10 +565,52 @@ impl<L: HookLink> Bridge<L> {
                 // The game's speed row: the room's owner sets the room's
                 // speed from it; anyone else's is refused, as a notice.
                 ToAgent::Speed { speed } => self.request(client, Request::SetSpeed(speed)),
+                ToAgent::WorldUp { world } => self.world_up(world, client),
                 ToAgent::Log { message } => info!(hook = %message),
             }
         }
         Ok(())
+    }
+
+    /// The game has its world number `world` up, with the mod linked: in
+    /// the room's lobby, the player is marked ready, as by the Ready button.
+    /// Once a world: a player who then says Not ready stays so until another
+    /// world is up. Never once the room's game began, nor while its world
+    /// is being replaced; while the room's phase is not known yet, it waits
+    /// for the room's announcement (fail closed).
+    fn world_up(&mut self, world: u64, client: &Client) {
+        if world <= self.world_up {
+            debug!(world, "a world already told up");
+            return;
+        }
+        self.world_up = world;
+        self.ready_for_world(client);
+    }
+
+    /// Marks the player ready for the latest world up, if not done for it
+    /// and the room is in its lobby. See [`Bridge::world_up`].
+    fn ready_for_world(&mut self, client: &Client) {
+        let world = self.world_up;
+        if world <= self.readied {
+            return;
+        }
+        let lobby = match self.room_phase {
+            // Not known yet: the room's announcement decides.
+            None if !self.begun => return,
+            Some(RoomPhase::Lobby) => !self.begun && self.world == World::Ready,
+            _ => false,
+        };
+        // Decided for this world, either way.
+        self.readied = world;
+        if !lobby {
+            debug!(world, "the game's world is up outside the room's lobby");
+            return;
+        }
+        info!(world, "the game's world is up with the mod linked: ready");
+        self.status(|status| {
+            status.notice("your game has its world up: you are marked ready");
+        });
+        self.request(client, Request::SetReady(true));
     }
 
     /// The game saved its world at a save event: cut the save into the
@@ -724,6 +778,8 @@ impl<L: HookLink> Bridge<L> {
                     self.outbox.push_back(ToHook::Room(room_info(&room)));
                 }
                 self.room = Some(room.clone());
+                self.room_phase = Some(room.phase);
+                self.ready_for_world(client);
                 self.status(|status| status.room = Some(room));
             }
             ClientEvent::Notice(text) => self.status(|status| status.announce(text.as_str())),
