@@ -56,6 +56,12 @@ const TARGETS: &[(&str, u64)] = &[
     // The seeds and the order fixes (crates/tpf3mp-hook/src/seeds.rs, order.rs).
     ("ecs::LandVehicleMoveSystem::Update2/shuffle", 0xac1b70),
     ("ecs::LandVehicleMoveSystem::Update2/records", 0xac1d72),
+    // The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs).
+    ("GameSim::Step/paused GameTime advance", 0x159412),
+    ("CGameTime::Advance", 0xbace10),
+    ("CGameTime::Advance/tick", 0xbace99),
+    ("CGameTime::GetTickCount", 0x2a95c0),
+    ("CGameTime::GetUpdateCount", 0x2a9680),
     (
         "ecs::SimEntityAtTerminalSystem::Update/vehicles at stop",
         0xb0e35c,
@@ -121,6 +127,30 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
             .unwrap_or_else(|| panic!("{name} did not resolve"));
         assert_eq!(target.address, rva, "{name} resolved to the wrong RVA");
     }
+
+    // The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs): the paused
+    // path's call and the running loop's both reach the advance, the paused
+    // one with r8b = 0 and the running one with r8b = 1, and the advance
+    // counts tickCount always and updateCount only when r8b is set.
+    let at = |rva: u64| usize::try_from(rva - base).unwrap();
+    let callee = |site: u64| {
+        let i = at(site);
+        assert_eq!(text_bytes[i], 0xE8, "a call at {site:#x}");
+        let rel = i32::from_le_bytes(text_bytes[i + 1..i + 5].try_into().unwrap());
+        (site as i64 + 5 + i64::from(rel)) as u64
+    };
+    assert_eq!(callee(0x159412), 0xbace10);
+    assert_eq!(callee(0x15954b), 0xbace10);
+    assert_eq!(&text_bytes[at(0x159405)..at(0x159408)], &[0x45, 0x33, 0xC0]);
+    assert_eq!(&text_bytes[at(0x15953e)..at(0x159541)], &[0x41, 0xB0, 0x01]);
+    assert_eq!(
+        &text_bytes[at(0xbace99)..at(0xbace99) + 11],
+        &[
+            0xFF, 0x47, 0x3C, 0x40, 0x84, 0xED, 0x74, 0x03, 0xFF, 0x47, 0x40
+        ]
+    );
+    // The land-vehicle shuffle's seed is the tickCount getter's answer.
+    assert_eq!(callee(0xac1b23), 0x2a95c0);
 
     // A required target's bytes changed: resolution fails closed.
     let mut tampered = text_bytes.to_vec();

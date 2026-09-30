@@ -339,7 +339,7 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
         StepDriver::take_refused(self)
     }
     fn in_room(&self) -> bool {
-        matches!(self.phase, Phase::Running | Phase::Holding(_))
+        StepDriver::in_room(self)
     }
     fn chosen_speed(&mut self, speedup: u64) {
         StepDriver::chosen_speed(self, speedup);
@@ -383,6 +383,13 @@ pub struct Batch<'a> {
     /// The batch ends at a checkpoint step: after its last update the game
     /// reads the world's lanes.
     pub lanes: bool,
+    /// The call is the room's game's (the driver follows a room's game, or
+    /// holds it): a paused call must not count a frame in the game's
+    /// `tickCount` ([`crate::ticks`]).
+    pub room: bool,
+    /// The room's step the batch's first update runs, when it runs the
+    /// room's steps.
+    pub first_step: Option<u64>,
 }
 
 /// A lane the game read: its number and what the game read for it, which
@@ -554,6 +561,11 @@ impl<G: RoomGate> StepDriver<G> {
         }
     }
 
+    /// In the room's game: the driver follows a room's game, or holds it.
+    pub fn in_room(&self) -> bool {
+        matches!(self.phase, Phase::Running | Phase::Holding(_))
+    }
+
     /// The room's step the next update runs, once a world is loaded.
     pub fn next_step(&self) -> Option<u64> {
         self.next_step
@@ -610,16 +622,18 @@ impl<G: RoomGate> StepDriver<G> {
         } else {
             Vec::new()
         };
-        let batch = Batch {
-            updates,
-            actions: &actions,
-            lanes: runs && self.lanes_due,
-        };
         // The per-update reseed numbers exactly the updates this call runs
         // for the room; anything else disarms it.
         let released = match (self.phase == Phase::Running, updates) {
             (true, Updates::Exactly(steps)) if steps > 0 => self.next_step,
             _ => None,
+        };
+        let batch = Batch {
+            updates,
+            actions: &actions,
+            lanes: runs && self.lanes_due,
+            room: self.in_room(),
+            first_step: released,
         };
         crate::seeds::before_updates(released, updates);
         match run(&batch) {
@@ -1430,6 +1444,45 @@ pub(crate) mod tests {
             "each lane its own digest"
         );
         assert_eq!(d.phase(), &Phase::Running);
+    }
+
+    /// Every call of the room's game says so, its paused ones included (they
+    /// must not count a frame in the game's tickCount), and a batch that
+    /// runs the room's steps says which step it starts at; a call before
+    /// the room began is the game's own.
+    #[test]
+    fn a_batch_says_whether_it_is_the_rooms_and_the_step_it_starts_at() {
+        let mut script = Script::default();
+        script.begin.extend([None, Some(begin())]);
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Wait,
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        let (mut d, _) = driver(script);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            d.on_step(Vec::new(), &mut |batch| {
+                seen.push((batch.updates, batch.room, batch.first_step));
+                Ok(batch.lanes.then(Vec::new))
+            });
+        }
+        assert_eq!(
+            seen,
+            [
+                (Updates::Own, false, None),
+                (Updates::Exactly(1), true, Some(1)),
+                (Updates::Exactly(0), true, None),
+                (Updates::Exactly(2), true, Some(2)),
+            ]
+        );
+        assert!(d.in_room());
     }
 
     #[test]

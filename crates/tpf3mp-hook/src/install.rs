@@ -89,6 +89,13 @@ const OWN_SPEED: u64 = u64::MAX;
 /// room's game; `NO_SPEED` until then.
 static CHOSEN: AtomicU64 = AtomicU64::new(NO_SPEED);
 const NO_SPEED: u64 = u64::MAX;
+/// While the game's step runs: the `CGameTime` its speed call was made on,
+/// which the checkpoint line reads the counters through ([`crate::ticks`]);
+/// 0 otherwise.
+static GAME_TIME: AtomicUsize = AtomicUsize::new(0);
+/// The room's step the last batch ended at: a batch that does not start
+/// right after it (a world loaded) logs its counters too.
+static LAST_STEP_RUN: AtomicU64 = AtomicU64::new(u64::MAX);
 /// When the game's step last ran, in milliseconds since [`EPOCH`]; 0 never.
 static LAST_STEP: AtomicU64 = AtomicU64::new(0);
 static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -227,6 +234,7 @@ unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> 
 /// whatever the speed row or a key says, paused included: the room's pause
 /// is the only pause. Otherwise the game's own answer.
 unsafe extern "C" fn step_speed(this: usize, a: usize, b: usize, c: usize) -> u64 {
+    GAME_TIME.store(this, Ordering::Release);
     // SAFETY: the getter's detour, called with the arguments the step passed.
     let own = unsafe { speed_detour(this, a, b, c) };
     match UPDATES.load(Ordering::Acquire) {
@@ -241,20 +249,44 @@ unsafe extern "C" fn step_speed(this: usize, a: usize, b: usize, c: usize) -> u6
 type StepFn = unsafe extern "C" fn(usize, usize, usize, usize);
 
 /// Runs the game's own step once, with `updates` answered to its call of
-/// the speed getter.
+/// the speed getter; `room` says the call is the room's game's, so its
+/// paused path leaves the game's tickCount alone ([`crate::ticks`]).
 ///
 /// # Safety
 ///
 /// `original` is the step's trampoline; the arguments are the game's.
-unsafe fn run_step(original: StepFn, updates: Updates, this: usize, a: usize, b: usize, c: usize) {
+unsafe fn run_step(
+    original: StepFn,
+    updates: Updates,
+    room: bool,
+    this: usize,
+    a: usize,
+    b: usize,
+    c: usize,
+) {
     let answer = match updates {
         Updates::Own => OWN_SPEED,
         Updates::Exactly(updates) => u64::from(updates),
     };
     UPDATES.store(answer, Ordering::Release);
+    crate::ticks::set_room(room);
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
+    crate::ticks::set_room(false);
     UPDATES.store(OWN_SPEED, Ordering::Release);
+}
+
+/// After a batch of the room's steps `first..first + updates`: at a
+/// checkpoint, and at the first batch after a world was loaded, the game's
+/// two counters go to the log with the room's step, for two games' logs to
+/// be compared ([`crate::ticks::checkpoint_line`]).
+fn log_counters(first: u64, updates: u32, checkpoint: bool) {
+    let last = first.saturating_add(u64::from(updates)).saturating_sub(1);
+    let before = LAST_STEP_RUN.swap(last, Ordering::AcqRel);
+    if checkpoint || before.saturating_add(1) != first {
+        let counters = crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire));
+        log_line(&crate::ticks::checkpoint_line(last, counters));
+    }
 }
 
 /// The detour: every call of the game's step comes here, and runs the
@@ -268,9 +300,11 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     // for this function, which keeps the game's own ABI.
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
     LAST_STEP.store(now_ms(), Ordering::Release);
+    // The step's speed call sets it again for this call.
+    GAME_TIME.store(0, Ordering::Release);
     if BROKEN.load(Ordering::Acquire) {
         // SAFETY: the game's step on its paused path: the world stands still.
-        unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+        unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
         return;
     }
     let mut ran = false;
@@ -279,7 +313,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         let Some(driver) = driver.as_mut() else {
             ran = true;
             // SAFETY: the game's own step, called as the game called it.
-            unsafe { run_step(original, Updates::Own, this, a, b, c) };
+            unsafe { run_step(original, Updates::Own, false, this, a, b, c) };
             return;
         };
         // SAFETY: as above, once per call, with the updates the driver chose;
@@ -292,11 +326,14 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             };
             match lua::begin_batch(batch.actions, updates, batch.lanes) {
                 Ok(()) => {
-                    unsafe { run_step(original, batch.updates, this, a, b, c) };
+                    unsafe { run_step(original, batch.updates, batch.room, this, a, b, c) };
+                    if let Some(first) = batch.first_step {
+                        log_counters(first, updates, batch.lanes);
+                    }
                     lua::end_batch()
                 }
                 Err(reason) => {
-                    unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+                    unsafe { run_step(original, Updates::Exactly(0), batch.room, this, a, b, c) };
                     Err(reason)
                 }
             }
@@ -330,7 +367,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         UPDATES.store(OWN_SPEED, Ordering::Release);
         if !ran {
             // SAFETY: as above.
-            unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+            unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
         }
     }
 }
@@ -544,6 +581,7 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         target.address = target.address.saturating_add(base as u64);
     }
     crate::seeds::install(&absolute);
+    log_line(&crate::ticks::install(&absolute));
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
     }
