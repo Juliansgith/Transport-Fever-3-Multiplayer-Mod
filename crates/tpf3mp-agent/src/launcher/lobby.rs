@@ -11,14 +11,15 @@
 //! the link over already greeted, and gives it back when it ends.
 
 use tpf3mp_bridge::{
-    BRIDGE_VERSION, LobbyAction, LobbyConnection, LobbyLine, LobbyMember, LobbyRoom, LobbyRules,
-    LobbyView, LobbyWorld, MAX_LOBBY_CHAT, MAX_LOBBY_RULES, MAX_LOBBY_SAVES, MAX_SAVE_NAME,
+    BRIDGE_VERSION, LobbyAction, LobbyConnection, LobbyHave, LobbyLine, LobbyMember, LobbyMod,
+    LobbyModClass, LobbyRoom, LobbyRoomMod, LobbyRules, LobbyView, LobbyWorld, MAX_LOBBY_CHAT,
+    MAX_LOBBY_MODS, MAX_LOBBY_ROOM_MODS, MAX_LOBBY_RULES, MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName,
     SaveName, ToAgent, ToHook, check_version, decode, encode,
 };
 use tpf3mp_proto::{BoundedVec, Text};
 use tracing::{debug, info, warn};
 
-use super::api::{self, Action, Connection, MemberContent, Phase, State, World};
+use super::api::{self, Action, Connection, MemberContent, ModClass, ModHave, Phase, State, World};
 use crate::bridge::{BridgeFault, HookLink};
 
 /// The lobby the menu's window shows, from what the launcher shows.
@@ -127,6 +128,49 @@ pub(crate) fn view(state: &State) -> LobbyView {
             .content_diff
             .as_ref()
             .map(|diff| Text::lossy(&diff.summary)),
+        // A mod whose id is too long to name whole is left out: a shortened
+        // one would name no mod.
+        mods: BoundedVec::new(
+            state
+                .mods
+                .iter()
+                .filter_map(|m| {
+                    Some(LobbyMod {
+                        id: ModName::new(&m.id).ok()?,
+                        name: Text::lossy(&m.name),
+                        class: match m.class {
+                            ModClass::Personal => LobbyModClass::Personal,
+                            ModClass::Carried => LobbyModClass::Carried,
+                            ModClass::Shared => LobbyModClass::Shared,
+                        },
+                        reason: Text::lossy(&m.reason),
+                        chosen: m.chosen,
+                        choosable: m.choosable,
+                    })
+                })
+                .take(MAX_LOBBY_MODS)
+                .collect(),
+        )
+        .unwrap_or_default(),
+        room_mods: BoundedVec::new(
+            state
+                .room_mods
+                .iter()
+                .take(MAX_LOBBY_ROOM_MODS)
+                .map(|m| LobbyRoomMod {
+                    id: Text::lossy(&m.id),
+                    version: Text::lossy(&m.version),
+                    have: match m.have {
+                        ModHave::Yes => LobbyHave::Yes,
+                        ModHave::No => LobbyHave::No,
+                        ModHave::OtherVersion => LobbyHave::OtherVersion,
+                    },
+                })
+                .collect(),
+        )
+        .unwrap_or_default(),
+        room_mods_more: u32::try_from(state.room_mods.len().saturating_sub(MAX_LOBBY_ROOM_MODS))
+            .unwrap_or(u32::MAX),
     }
 }
 
@@ -173,6 +217,10 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
             text: text.as_str().to_owned(),
         },
         LobbyAction::Leave => Action::Leave,
+        LobbyAction::ChooseMod { id, chosen } => Action::ChooseMod {
+            id: id.as_str().to_owned(),
+            chosen,
+        },
     }
 }
 
@@ -459,8 +507,63 @@ pub(crate) mod tests {
                 summary: "you lack stations 3".into(),
                 ..Differences::default()
             }),
+            mods: vec![
+                api::ModRow {
+                    id: "schbrongx_minimap".into(),
+                    name: "Minimap".into(),
+                    class: ModClass::Personal,
+                    reason: "only what this player sees".into(),
+                    chosen: true,
+                    choosable: true,
+                },
+                api::ModRow {
+                    id: "m".repeat(200),
+                    name: "A mod whose id is too long".into(),
+                    class: ModClass::Shared,
+                    reason: String::new(),
+                    chosen: false,
+                    choosable: false,
+                },
+            ],
+            room_mods: (0..40)
+                .map(|n| api::RoomModRow {
+                    id: format!("pack{n}"),
+                    version: "1".into(),
+                    have: if n == 0 { ModHave::No } else { ModHave::Yes },
+                })
+                .collect(),
             ..State::default()
         }
+    }
+
+    #[test]
+    fn the_menus_window_sees_the_players_mods_and_the_rooms() {
+        let view = view(&state());
+        assert_eq!(
+            view.mods.len(),
+            1,
+            "an id too long to name whole is left out"
+        );
+        let minimap = &view.mods[0];
+        assert_eq!(minimap.id.as_str(), "schbrongx_minimap");
+        assert_eq!(minimap.class, LobbyModClass::Personal);
+        assert!(minimap.chosen && minimap.choosable);
+        assert_eq!(view.room_mods.len(), MAX_LOBBY_ROOM_MODS);
+        assert_eq!(view.room_mods[0].have, LobbyHave::No);
+        assert_eq!(view.room_mods_more, 8);
+        assert_eq!(
+            action(
+                LobbyAction::ChooseMod {
+                    id: Text::new("schbrongx_minimap").unwrap(),
+                    chosen: false
+                },
+                &state()
+            ),
+            Action::ChooseMod {
+                id: "schbrongx_minimap".into(),
+                chosen: false
+            }
+        );
     }
 
     #[test]

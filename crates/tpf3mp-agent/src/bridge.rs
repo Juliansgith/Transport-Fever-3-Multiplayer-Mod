@@ -117,6 +117,29 @@ pub struct BridgeOptions {
     /// the hook when the game begins. Without them a world loads with the
     /// mods its save lists.
     pub mods: Option<ModLists>,
+    /// The player's mods as they choose them in the lobby (`crate::picker`):
+    /// the lists at the moment the game begins, in place of `mods`, and what
+    /// to declare anew when the room says how this game differs.
+    pub picker: Option<PickerLink>,
+}
+
+/// The mods the room's worlds load with, now.
+pub type ListsNow = Arc<dyn Fn() -> Option<ModLists> + Send + Sync>;
+/// Takes in how the room says this game differs; returns what to declare
+/// anew, if that changed.
+pub type Learn = Arc<dyn Fn(&ContentDiff) -> Option<ContentManifest> + Send + Sync>;
+
+/// The launcher's mod picker, as a bridge asks it (`crate::picker::Mods`).
+#[derive(Clone)]
+pub struct PickerLink {
+    pub lists: ListsNow,
+    pub learn: Learn,
+}
+
+impl std::fmt::Debug for PickerLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PickerLink")
+    }
 }
 
 /// The launcher's lobby as a bridge passes it on: the lobby to show the
@@ -141,6 +164,7 @@ impl Default for BridgeOptions {
             lobby: None,
             start_world: None,
             mods: None,
+            picker: None,
         }
     }
 }
@@ -412,6 +436,9 @@ pub struct Bridge<L> {
     menu_readied: u64,
     /// The game's build, once its hook said hello.
     build: Option<String>,
+    /// What this game last declared to the room in the session, when the
+    /// picker changed it: declared again on a new connection.
+    declared: Option<ContentManifest>,
 }
 
 impl<L: HookLink> Bridge<L> {
@@ -463,6 +490,7 @@ impl<L: HookLink> Bridge<L> {
             menu_readied: 0,
             options,
             build: None,
+            declared: None,
         }
     }
 
@@ -954,7 +982,10 @@ impl<L: HookLink> Bridge<L> {
                         checkpoint_interval: start.checkpoint_interval,
                         saves: path_text(&saves)?,
                         player: client.player(),
-                        mods: self.options.mods.clone(),
+                        mods: match &self.options.picker {
+                            Some(picker) => (picker.lists)(),
+                            None => self.options.mods.clone(),
+                        },
                     });
                     if let Some(room) = &self.room {
                         self.outbox.push_back(ToHook::Room(room_info(room)));
@@ -1042,12 +1073,28 @@ impl<L: HookLink> Bridge<L> {
                 self.status(|status| status.room = Some(room));
             }
             ClientEvent::Notice(text) => self.status(|status| status.announce(text.as_str())),
-            ClientEvent::ContentDiff(diff) => self.status(|status| {
-                if let Some(diff) = &diff {
-                    status.notice(format!("your game differs from the room's: {diff}"));
+            ClientEvent::ContentDiff(diff) => {
+                // What the room says this game lacks names the room's shared
+                // mods: the picker declares those this player has.
+                let again = diff
+                    .as_ref()
+                    .zip(self.options.picker.as_ref())
+                    .and_then(|(diff, picker)| (picker.learn)(diff));
+                if let Some(manifest) = again {
+                    info!(
+                        mods = manifest.mods.len(),
+                        "declaring the room's shared mods this game has"
+                    );
+                    self.declared = Some(manifest.clone());
+                    self.request(client, Request::DeclareContent(manifest));
                 }
-                status.content_diff = diff;
-            }),
+                self.status(|status| {
+                    if let Some(diff) = &diff {
+                        status.notice(format!("your game differs from the room's: {diff}"));
+                    }
+                    status.content_diff = diff;
+                });
+            }
             ClientEvent::Kicked => return Ok(Some(BridgeEnd::Kicked)),
             ClientEvent::Closed(reason) => return Ok(Some(BridgeEnd::Closed(reason))),
         }
@@ -1613,6 +1660,7 @@ async fn rejoin_room<L: HookLink>(
     let deadline = Instant::now() + rejoin.give_up_after;
     let mut backoff = Duration::from_millis(250);
     let mut resume = bridge.resume_point();
+    let declared = bridge.declared.clone();
     loop {
         let attempt = async {
             let (client, events) = connect(options.clone()).await.map_err(|error| {
@@ -1622,7 +1670,7 @@ async fn rejoin_room<L: HookLink>(
                     Failed::Retry(error.to_string())
                 }
             })?;
-            if let Some(content) = &rejoin.content {
+            if let Some(content) = declared.as_ref().or(rejoin.content.as_ref()) {
                 client
                     .declare_content(content.clone())
                     .await

@@ -188,10 +188,10 @@ The server compares content fingerprints (`tpf3mp-proto/src/content.rs`,
 refuse `ContentMismatch`, "players have different game versions or mods").
 Nothing there changes: the agent declares only the shared mods.
 
-- The launcher (`LauncherArgs`) and the agent read the player's mods from
-  `--mods <file>`, one mod a line in load order with its version, as before.
-  The hook does not yet report the game's active mods (PLAN.md, Part 2); in
-  Transport Fever 3 a game's mods are chosen per save anyway.
+- Without `--mods`, the launcher finds the player's mods itself and the
+  player chooses their personal ones ("Choosing mods" below). With
+  `--mods <file>`, one mod a line in load order with its version, that list
+  overrides it, as before; the picker is then off.
 - Each listed mod is found among the installed ones and scanned
   (`crates/tpf3mp-agent/src/content.rs`, `split`). A personal one stays out of
   the manifest; a carried one too, with `--personal-game-scripts`; a shared
@@ -204,6 +204,58 @@ Nothing there changes: the agent declares only the shared mods.
 The launcher window's content comparison, its "differ" pill and the
 `ContentDiff` messages work on the declared manifests, so they speak of
 shared mods only.
+
+## Choosing mods
+
+Without `--mods`, the launcher (`crates/tpf3mp-agent/src/picker.rs`):
+
+- **finds every installed mod** by itself when it starts: Mod Hub's cache
+  (`%LOCALAPPDATA%\mod.io\10640\mods`), each Steam account's
+  `staging_area` and `mods`, the game's `mods` and `dlcs` (the first of each
+  id counts), scans each and keeps its class and first reason, its name
+  (`_metadata/modinfo.json`) and its `revision`. Each goes to the launcher's
+  log: `mod schbrongx_minimap 1 is personal: only what this player sees`;
+- **lets the player choose** their personal mods, and carried ones with
+  `--personal-game-scripts` (`LobbyAction::ChooseMod`, the page's
+  `choose_mod`). A shared mod is never chosen: every player needs the
+  room's. The choice is remembered in the launcher's `launcher.json`
+  (`"mods"`), and the room's worlds load with the chosen ones (the lists of
+  `Begin`, read when the game begins; a choice made later loads with the
+  next world);
+- **makes the owner's start save the room's shared mods.** When the player
+  creates a room from a start save, the launcher reads the save's mods
+  (`tpf3mp_modscan::save`, below) and takes those that are not the player's
+  personal mods (chosen or not) as the room's, each in the player's version
+  (a mod the save lists and this player lacks is still the room's, with no
+  version: fail closed). It declares them before the room exists. A save
+  whose mods do not read leaves the room's mods unknown, and says so:
+  worlds then load with their saves' own mods, as without the picker;
+- **learns them as a guest.** Joining a room, the launcher declares no mods;
+  the room answers with what this game lacks (`ContentDiff`: the owner's
+  mods in load order, the first 32 named, with the owner's versions), and
+  the bridge declares again the room's mods this player has, in its own
+  versions (`PickerLink`, `Request::DeclareContent`, which a member may send
+  any time). A guest with every one of them, in the same versions, then
+  matches the owner, and a missing one or another version stays in the
+  "differ" pill and the lobby's list. Joining a running game learns from its
+  refusal and tries once more. More than 32 shared mods cannot all be
+  learned this way.
+
+The lobby shows both lists (`LobbyView::mods`, `LobbyView::room_mods`,
+bridge version 13): every installed mod with its class, reason, whether it
+is chosen and whether it may be; and the room's shared mods with whether
+this player has each (`yes`, `no`, `other_version`).
+
+### The mods a save lists
+
+A save is a zstd frame; near its start, after the `tf**` magic and a few
+settings, is its list of mods as the game writes it (`GameSaveCommandData`'s
+`modDescs`): a `u32` count, then per mod five `u32`-length strings (id,
+source, hub id as `<source>,<id>`, name, url) and an `i32` severity. SEEN in
+build 40408's saves (the DLCs, `DLC`; TPF3-MP, `StagingArea`). The reader
+tries each offset in the first 64 KiB and takes the first whole list that
+holds together; a save where none does is refused. `tpf3mp-modscan --save
+<file>` prints it.
 
 ## The save's mod list
 

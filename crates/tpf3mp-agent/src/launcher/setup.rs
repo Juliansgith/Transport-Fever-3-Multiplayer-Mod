@@ -269,12 +269,30 @@ impl LauncherArgs {
         // Next to the identity: the same player's last server and name.
         let remember = identity_file.with_file_name("launcher.json");
         let remembered = Remembered::load(&remember);
+        let build = game_build(self.game_build.as_deref(), installed.as_ref());
         let split = split_mods(
-            &game_build(self.game_build.as_deref(), installed.as_ref()),
+            &build,
             self.mods.as_deref(),
             installed.as_ref(),
             self.personal_game_scripts,
         )?;
+        // Without --mods, the launcher finds the player's mods itself and
+        // lets them choose their personal ones (docs/MODS.md).
+        let picker = self.mods.is_none().then(|| {
+            let found = crate::picker::discover(
+                installed.as_ref().map(|game| game.dir.as_path()),
+                &steam::steam_roots(),
+            );
+            for m in &found {
+                tracing::info!("mod {} {} is {}: {}", m.id, m.version, m.class, m.reason);
+            }
+            crate::picker::Mods::new(
+                tpf3mp_proto::Text::lossy(build.trim()),
+                found,
+                remembered.mods.clone().unwrap_or_default(),
+                self.personal_game_scripts,
+            )
+        });
         Ok(LauncherConfig {
             // The launcher window sets it: it records the player's log.
             diagnostics: None,
@@ -301,6 +319,7 @@ impl LauncherArgs {
                 .unwrap_or_else(|| "player".to_owned()),
             content: split.manifest,
             mods: split.lists,
+            picker,
             installed,
             link: self.game_link.clone(),
             worlds: open_worlds(self.worlds.as_deref(), self.worlds_gib, &self.game_link)?,

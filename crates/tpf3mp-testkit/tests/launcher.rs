@@ -144,6 +144,7 @@ fn launcher_config(
         name: name.into(),
         content: toy_content(),
         mods: None,
+        picker: None,
         installed: None,
         link: format!("tpf3mp-launcher-{}-{name}", std::process::id()),
         worlds: Worlds::open(&root.join(name), 1 << 30).unwrap(),
@@ -793,6 +794,191 @@ async fn a_game_at_its_main_menu_plays_the_lobby_through_the_launcher() {
     );
 
     drop(launcher);
+    let _ = stop.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
+}
+
+/// A guest's launcher that found its own mods (docs/MODS.md, "Choosing
+/// mods"): it chooses its personal mods, remembers them, and learns the
+/// room's shared mods from what the room says it lacks, declaring those it
+/// has, so that the room starts though the guest runs a mod the owner does
+/// not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_guest_with_its_own_mods_learns_the_rooms_and_the_room_starts() {
+    use tpf3mp_agent::{
+        launcher::{Action, MemberContent, ModHave, Phase},
+        picker::{Installed, Mods},
+    };
+    use tpf3mp_modscan::Class;
+
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
+    config.rules = toy_rules_menu();
+    config.max_sessions_per_address = 100;
+    config.max_handshakes_per_address = 100;
+    let server = Server::bind(config).unwrap();
+    let server_address = server.local_addr().unwrap().to_string();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(server.run(async {
+        let _ = stopped.await;
+    }));
+
+    let listed = |id: &str, version: &str| ModRef {
+        id: Text::new(id).unwrap(),
+        version: Text::new(version).unwrap(),
+    };
+    // The owner declares the room's shared mods as its start save made them.
+    let mut ann = launcher_config(
+        root.path(),
+        "cora",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    ann.content = ContentManifest::new(
+        toy_content().game,
+        vec![listed("vehicles_pack", "3"), listed("tpf3mp_1", "1")],
+    );
+    // The guest found its mods: the room's two, and a minimap of its own.
+    let mut gus = launcher_config(
+        root.path(),
+        "hal",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    let remember = root.path().join("hal-launcher.json");
+    gus.remember = Some(remember.clone());
+    let mod_of = |id: &str, class: Class, version: &str| Installed {
+        id: id.into(),
+        name: id.into(),
+        version: version.into(),
+        class,
+        reason: String::new(),
+        path: root.path().join(id),
+    };
+    gus.picker = Some(Mods::new(
+        toy_content().game,
+        vec![
+            mod_of("tpf3mp_1", Class::Shared, "1"),
+            mod_of("vehicles_pack", Class::Shared, "3"),
+            mod_of("schbrongx_minimap", Class::Personal, "1"),
+        ],
+        [],
+        false,
+    ));
+    let ann = Launcher::start_local(ann);
+    let gus = Launcher::start_local(gus);
+    let (ann_handle, gus_handle) = (ann.handle(), gus.handle());
+
+    // Choosing: a personal mod yes, a shared one never; remembered.
+    gus_handle
+        .act(Action::ChooseMod {
+            id: "schbrongx_minimap".into(),
+            chosen: true,
+        })
+        .await
+        .unwrap();
+    assert!(
+        gus_handle
+            .act(Action::ChooseMod {
+                id: "vehicles_pack".into(),
+                chosen: true
+            })
+            .await
+            .is_err()
+    );
+    let rows = gus_handle.state().mods;
+    assert_eq!(rows[0].id, "schbrongx_minimap", "the choosable first");
+    assert!(rows[0].chosen && rows[0].choosable);
+    assert!(!rows[1].choosable);
+    let remembered = std::fs::read_to_string(&remember).unwrap();
+    assert!(remembered.contains("schbrongx_minimap"), "{remembered}");
+
+    for (handle, name) in [(&ann_handle, "Ann"), (&gus_handle, "Gus")] {
+        handle
+            .act(Action::Connect {
+                server: server_address.clone(),
+                name: name.into(),
+            })
+            .await
+            .unwrap();
+    }
+    ann_handle
+        .act(Action::Create {
+            room: "mods".into(),
+            max_players: 2,
+            password: None,
+            rules: None,
+            start_save: None,
+        })
+        .await
+        .unwrap();
+    let invite = ann_handle.state().room.unwrap().invite.unwrap();
+    gus_handle
+        .act(Action::Join {
+            invite,
+            password: None,
+        })
+        .await
+        .unwrap();
+    // The room tells the guest what it lacks; the guest declares what it
+    // has of it, and matches the owner.
+    let learned = tokio::time::timeout(WAIT, async {
+        loop {
+            let state = gus_handle.state();
+            let same = state.room.as_ref().is_some_and(|room| {
+                room.members
+                    .iter()
+                    .find(|member| member.you)
+                    .is_some_and(|me| me.content == MemberContent::Same)
+            });
+            if same {
+                return state;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the guest matches the owner");
+    let room_mods: Vec<(String, ModHave)> = learned
+        .room_mods
+        .iter()
+        .map(|m| (m.id.clone(), m.have))
+        .collect();
+    assert_eq!(
+        room_mods,
+        [
+            ("vehicles_pack".to_owned(), ModHave::Yes),
+            ("tpf3mp_1".to_owned(), ModHave::Yes)
+        ]
+    );
+
+    for handle in [&ann_handle, &gus_handle] {
+        handle.act(Action::Ready { ready: true }).await.unwrap();
+    }
+    let started = tokio::time::timeout(WAIT, async {
+        loop {
+            // Readiness takes a moment to reach the room.
+            let _ = ann_handle.act(Action::Start).await;
+            if ann_handle
+                .state()
+                .room
+                .is_some_and(|room| room.phase != Phase::Lobby)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(
+        started.is_ok(),
+        "the room never started; notices: {:?}",
+        ann_handle.state().notices
+    );
+
+    drop((ann, gus));
     let _ = stop.send(());
     let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
 }

@@ -42,6 +42,10 @@ pub(crate) struct View {
     /// The save rooms this player creates start from, unless they pick
     /// another.
     pub(crate) start_save: Option<String>,
+    /// The player's installed mods, and whether each is chosen.
+    pub(crate) mods: Vec<ModRow>,
+    /// The room's shared mods, and whether this player has each.
+    pub(crate) room_mods: Vec<RoomModRow>,
 }
 
 /// Something the player asks for.
@@ -88,6 +92,11 @@ pub enum Action {
     },
     /// Starts Transport Fever 3 with TPF3-MP's hook in it, for this room.
     LaunchGame,
+    /// Plays with an installed personal mod, or not (docs/MODS.md).
+    ChooseMod {
+        id: String,
+        chosen: bool,
+    },
 }
 
 /// Everything a launcher front end shows: the web page reads it as JSON,
@@ -138,6 +147,88 @@ pub struct State {
     /// The save rooms this player creates start from unless they pick
     /// another: the launcher's `--start-save`, or the one last picked.
     pub start_save: Option<String>,
+    /// The mods this player has installed, those they may choose first
+    /// ([`Action::ChooseMod`]; docs/MODS.md).
+    pub mods: Vec<ModRow>,
+    /// The room's shared mods, from its owner's start save, and whether this
+    /// player has each; empty while not known.
+    pub room_mods: Vec<RoomModRow>,
+}
+
+/// One installed mod, as the front ends list it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModRow {
+    pub id: String,
+    pub name: String,
+    pub class: ModClass,
+    /// Why it is of its class, in a line.
+    pub reason: String,
+    pub chosen: bool,
+    pub choosable: bool,
+}
+
+/// What the scan made of a mod.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModClass {
+    Personal,
+    Carried,
+    Shared,
+}
+
+/// One of the room's shared mods, and whether this player has it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RoomModRow {
+    pub id: String,
+    pub version: String,
+    pub have: ModHave,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModHave {
+    Yes,
+    No,
+    OtherVersion,
+}
+
+/// The picker's mods as the front ends list them: those the player may
+/// choose first, then the rest, each group by name.
+pub(crate) fn mod_rows(mods: &crate::picker::Mods) -> (Vec<ModRow>, Vec<RoomModRow>) {
+    use tpf3mp_modscan::Class;
+    let mut rows: Vec<ModRow> = mods
+        .installed()
+        .iter()
+        .map(|m| ModRow {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            class: match m.class {
+                Class::Personal => ModClass::Personal,
+                Class::Carried => ModClass::Carried,
+                Class::Shared => ModClass::Shared,
+            },
+            reason: m.reason.clone(),
+            chosen: mods.is_chosen(&m.id),
+            choosable: mods.is_choosable(&m.id),
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        (!a.choosable, a.name.to_lowercase()).cmp(&(!b.choosable, b.name.to_lowercase()))
+    });
+    let room = mods
+        .required()
+        .into_iter()
+        .map(|r| RoomModRow {
+            id: r.id,
+            version: r.version,
+            have: match r.have {
+                crate::picker::Have::Yes => ModHave::Yes,
+                crate::picker::Have::No => ModHave::No,
+                crate::picker::Have::OtherVersion => ModHave::OtherVersion,
+            },
+        })
+        .collect();
+    (rows, room)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -413,6 +504,8 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         diagnostics: view.diagnostics,
         saves: view.saves.clone(),
         start_save: view.start_save.clone(),
+        mods: view.mods.clone(),
+        room_mods: view.room_mods.clone(),
     }
 }
 

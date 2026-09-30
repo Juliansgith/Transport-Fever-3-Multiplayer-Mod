@@ -40,8 +40,8 @@ use tpf3mp_proto::{
 use tracing::{info, warn};
 
 pub use self::api::{
-    Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent, Phase,
-    Room, RulesChoice, State, World,
+    Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent,
+    ModClass, ModHave, ModRow, Phase, Room, RoomModRow, RulesChoice, State, World,
 };
 use self::{api::View, http::Page, lobby::IdleLink};
 use crate::{
@@ -97,6 +97,10 @@ pub struct LauncherConfig {
     /// This player's mods for the room's worlds, shared and personal, when
     /// it listed them (`BridgeOptions::mods`).
     pub mods: Option<tpf3mp_bridge::ModLists>,
+    /// The player's installed mods and those they chose, when the launcher
+    /// found them itself (no `--mods`): `content` and `mods` then follow
+    /// them and the room (`crate::picker`; docs/MODS.md).
+    pub picker: Option<crate::picker::Mods>,
     /// Transport Fever 3 as Steam installed it, if it did.
     pub installed: Option<crate::steam::Installed>,
     /// The shared-memory link the game's hook opens.
@@ -221,6 +225,8 @@ impl LauncherHandle {
 
     /// What the launcher shows now.
     pub fn state(&self) -> State {
+        // A room session's bridge may have learned the room's mods.
+        self.shared.show_mods();
         api::snapshot(&self.shared.view(), &self.shared.status())
     }
 }
@@ -241,6 +247,8 @@ pub(crate) struct Shared {
     actions: mpsc::Sender<(Action, oneshot::Sender<Result<(), String>>)>,
     /// The bridges' ends of the game window's lobby.
     lobby: LobbyLink,
+    /// The player's mods, when the launcher found them itself.
+    picker: Option<Arc<Mutex<crate::picker::Mods>>>,
 }
 
 impl Shared {
@@ -266,7 +274,9 @@ impl Shared {
                 views: views_rx,
                 actions: lobby_actions,
             },
+            picker: config.picker.clone().map(|mods| Arc::new(Mutex::new(mods))),
         });
+        shared.show_mods();
         let lobby = LobbyEnds {
             views,
             actions: lobby_rx,
@@ -280,6 +290,50 @@ impl Shared {
 
     fn status(&self) -> std::sync::MutexGuard<'_, Status> {
         self.status.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The picker's mods, locked, if the launcher found them itself.
+    fn picker(&self) -> Option<std::sync::MutexGuard<'_, crate::picker::Mods>> {
+        self.picker
+            .as_ref()
+            .map(|mods| mods.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// What the picker declares now; the build alone without a picker.
+    fn content_of_picker(&self) -> ContentManifest {
+        self.picker().map_or_else(
+            || ContentManifest::new(Text::lossy(""), Vec::new()),
+            |mods| mods.manifest(),
+        )
+    }
+
+    /// What this player declares to the room now.
+    fn content(&self, config: &LauncherConfig) -> ContentManifest {
+        self.picker()
+            .map_or_else(|| config.content.clone(), |mods| mods.manifest())
+    }
+
+    /// Puts the picker's mods in the view.
+    fn show_mods(&self) {
+        let rows = self.picker().map(|mods| api::mod_rows(&mods));
+        if let Some((mods, room_mods)) = rows {
+            let mut view = self.view();
+            view.mods = mods;
+            view.room_mods = room_mods;
+        }
+    }
+
+    /// The picker as a room session asks it.
+    fn picker_link(&self) -> Option<bridge::PickerLink> {
+        let lists = Arc::clone(self.picker.as_ref()?);
+        let learning = Arc::clone(&lists);
+        Some(bridge::PickerLink {
+            lists: Arc::new(move || lists.lock().unwrap_or_else(PoisonError::into_inner).lists()),
+            learn: Arc::new(move |diff| {
+                let mut mods = learning.lock().unwrap_or_else(PoisonError::into_inner);
+                mods.learn(diff).then(|| mods.manifest())
+            }),
+        })
     }
 }
 
@@ -364,6 +418,7 @@ async fn control(
                 lobby_act(&shared, &config, asked, &mut connected, &mut session, &mut game, &mut idle).await;
             }
             _ = tick.tick() => {
+                shared.show_mods();
                 let view = lobby::view(&api::snapshot(&shared.view(), &shared.status()));
                 lobby.views.send_if_modified(|told| {
                     let changed = *told != view;
@@ -428,8 +483,12 @@ async fn control(
                 }
                 // Back to the server, ready for the next room.
                 if let Some(finished) = finished {
+                    if let Some(mut mods) = shared.picker() {
+                        mods.forget_room();
+                    }
+                    shared.show_mods();
                     connected =
-                        reconnect(&shared, finished.options, config.content.clone()).await;
+                        reconnect(&shared, finished.options, shared.content(&config)).await;
                 }
             }
             () = game_exit(&mut game) => {
@@ -502,6 +561,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Kick { .. } => "kick",
         Action::Chat { .. } => "chat",
         Action::Leave => "leave",
+        Action::ChooseMod { .. } => "choose_mod",
         Action::Diagnostics { .. } => "diagnostics",
         Action::LaunchGame => "launch_game",
     }
@@ -584,6 +644,16 @@ async fn act(
                 config.start_save.as_ref(),
                 crate::steam::find_save,
             )?;
+            // The room's shared mods are the start save's, less this
+            // player's personal ones: declared before the room exists, so
+            // the room compares every guest's with them (docs/MODS.md).
+            if let Some(manifest) = own_start(shared, start_world.as_deref()) {
+                current
+                    .client
+                    .declare_content(manifest)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
             let create = CreateRoom {
                 name: Text::new(room.trim())
                     .map_err(|_| "that room name is too long".to_owned())?,
@@ -658,6 +728,30 @@ async fn act(
         }
         Action::Leave => forward(session, Control::Leave).await,
         Action::LaunchGame => launch_game(shared, config, session, game, idle),
+        Action::ChooseMod { id, chosen } => {
+            let chosen_now = {
+                let mut mods = shared
+                    .picker()
+                    .ok_or("this launcher takes its mods from --mods")?;
+                mods.choose(&id, chosen)?;
+                mods.chosen()
+            };
+            shared.show_mods();
+            if let Some(file) = &config.remember {
+                let mut remembered = Remembered::load(file);
+                remembered.mods = Some(chosen_now);
+                if let Err(error) = remembered.save(file) {
+                    warn!(%error, "cannot remember the mods chosen for next time");
+                }
+            }
+            info!(id, chosen, "a mod chosen");
+            if session.is_some() {
+                shared
+                    .status()
+                    .notice("the mods you choose now load with the room's next world".to_owned());
+            }
+            Ok(())
+        }
         Action::Diagnostics { on } => {
             let recorder = config
                 .diagnostics
@@ -828,13 +922,14 @@ fn begin_session(
         // A room this player created starts from the save named for it.
         start_world: start_world.filter(|_| owned),
         mods: config.mods.clone(),
+        picker: shared.picker_link(),
         ..BridgeOptions::default()
     };
     let rejoin = Rejoin {
         options: options.clone(),
         invite,
         password,
-        content: Some(config.content.clone()),
+        content: Some(shared.content(config)),
         give_up_after: REJOIN_PATIENCE,
     };
     let task = tokio::spawn(async move {
@@ -930,7 +1025,7 @@ async fn connect_to(
     let result = match connect(options.clone()).await {
         // What the game runs goes with every connection, so rooms can
         // compare it and say how it differs.
-        Ok((client, events)) => match client.declare_content(config.content.clone()).await {
+        Ok((client, events)) => match client.declare_content(shared.content(config)).await {
             Ok(()) => Ok((client, events)),
             Err(error) => Err(error.to_string()),
         },
@@ -967,6 +1062,40 @@ async fn connect_to(
     Ok(())
 }
 
+/// With the picker, the room this player creates starts from `save`: its
+/// mods, less this player's personal ones, become the room's shared mods.
+/// Returns what to declare, or `None` without the picker. A save whose mods
+/// cannot be read leaves the room's unknown: its worlds load with the save's
+/// own mods, as without the picker, and the player is told.
+fn own_start(shared: &Shared, save: Option<&Path>) -> Option<ContentManifest> {
+    let read = save.map(tpf3mp_modscan::save::mods);
+    let mut mods = shared.picker()?;
+    match read {
+        Some(Ok(listed)) => {
+            info!(
+                mods = listed.len(),
+                "the room's shared mods come from its start save"
+            );
+            mods.own_start(&listed);
+        }
+        Some(Err(why)) => {
+            warn!(%why, "the start save's mods do not read");
+            mods.forget_room();
+            drop(mods);
+            shared.status().notice(format!(
+                "the start save's mods could not be read ({why}): everyone loads its own list of mods"
+            ));
+            shared.show_mods();
+            return Some(shared.content_of_picker());
+        }
+        None => mods.forget_room(),
+    }
+    let manifest = mods.manifest();
+    drop(mods);
+    shared.show_mods();
+    Some(manifest)
+}
+
 /// What the launcher remembers between runs: the server and the name the
 /// player last connected with, which the page then offers first.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -977,12 +1106,15 @@ pub struct Remembered {
     /// switched them off.
     #[serde(default)]
     pub diagnostics: Option<bool>,
+    /// The personal mods the player chose, by id (docs/MODS.md).
+    #[serde(default)]
+    pub mods: Option<Vec<String>>,
 }
 
 impl Remembered {
     /// What `file` holds, or nothing if it is missing or not ours.
     pub fn load(file: &Path) -> Self {
-        let small = fs::metadata(file).is_ok_and(|metadata| metadata.len() <= 4096);
+        let small = fs::metadata(file).is_ok_and(|metadata| metadata.len() <= 64 * 1024);
         small
             .then(|| fs::read(file).ok())
             .flatten()
@@ -1009,7 +1141,21 @@ async fn join(
     password: Option<Text<64>>,
 ) -> Result<(), String> {
     let current = connected.as_mut().ok_or("connect to a server first")?;
-    let joined = current
+    // Another's room: its shared mods are learned from what it says this
+    // game lacks (docs/MODS.md). Until then, this game declares none.
+    let fresh = shared.picker().map(|mut mods| {
+        mods.forget_room();
+        mods.manifest()
+    });
+    if let Some(manifest) = fresh {
+        shared.show_mods();
+        current
+            .client
+            .declare_content(manifest)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let mut joined = current
         .client
         .join_room(JoinRoom {
             invite,
@@ -1017,6 +1163,35 @@ async fn join(
             resume: None,
         })
         .await;
+    // A running game compares at once: learn the room's mods from its
+    // refusal, and try once more with those this game has.
+    if matches!(
+        joined,
+        Err(ClientError::Refused(RequestError::ContentMismatch))
+    ) && shared.picker.is_some()
+    {
+        let diff = content_diff(&mut current.events).await;
+        let again = diff.as_ref().and_then(|diff| {
+            let mut mods = shared.picker()?;
+            mods.learn(diff).then(|| mods.manifest())
+        });
+        shared.show_mods();
+        if let Some(manifest) = again {
+            current
+                .client
+                .declare_content(manifest)
+                .await
+                .map_err(|error| error.to_string())?;
+            joined = current
+                .client
+                .join_room(JoinRoom {
+                    invite,
+                    password: password.clone(),
+                    resume: None,
+                })
+                .await;
+        }
+    }
     let room = match joined {
         Ok(room) => room,
         Err(ClientError::Refused(RequestError::ContentMismatch)) => {
@@ -1250,6 +1425,7 @@ mod tests {
             server: Some("tpf3mp.example.org:29470".into()),
             name: Some("Ann".into()),
             diagnostics: Some(false),
+            mods: Some(vec!["schbrongx_minimap".into()]),
         };
         remembered.save(&file).unwrap();
         assert_eq!(Remembered::load(&file), remembered);
@@ -1263,6 +1439,7 @@ mod tests {
             Remembered::load(&file),
             Remembered {
                 diagnostics: None,
+                mods: None,
                 ..remembered
             }
         );

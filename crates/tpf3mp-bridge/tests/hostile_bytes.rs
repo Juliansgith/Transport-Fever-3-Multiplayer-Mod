@@ -147,6 +147,22 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 total: 1 << 24,
             },
             differences: Some(Text::new("you lack stations 3").unwrap()),
+            mods: BoundedVec::new(vec![tpf3mp_bridge::LobbyMod {
+                id: Text::new("schbrongx_minimap").unwrap(),
+                name: Text::new("Minimap").unwrap(),
+                class: tpf3mp_bridge::LobbyModClass::Personal,
+                reason: Text::new("only what this player sees").unwrap(),
+                chosen: true,
+                choosable: true,
+            }])
+            .unwrap(),
+            room_mods: BoundedVec::new(vec![tpf3mp_bridge::LobbyRoomMod {
+                id: Text::new("vehicles_pack").unwrap(),
+                version: Text::new("3").unwrap(),
+                have: tpf3mp_bridge::LobbyHave::No,
+            }])
+            .unwrap(),
+            room_mods_more: 0,
         })),
     ];
     let to_agent = [

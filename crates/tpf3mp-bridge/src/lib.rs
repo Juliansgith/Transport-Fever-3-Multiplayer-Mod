@@ -46,8 +46,9 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// ([`ToAgent::Command`]'s `secret`) and a seal in each ordered command
 /// (protocol 8); 12 added the mods the room's world loads with to
 /// [`ToHook::Begin`]. (The lobby's, the passwords' and the mods' changes
-/// were each 10 on their own branches.)
-pub const BRIDGE_VERSION: u32 = 12;
+/// were each 10 on their own branches.) 13 added the player's mods and the
+/// room's shared mods to [`LobbyView`], and [`LobbyAction::ChooseMod`].
+pub const BRIDGE_VERSION: u32 = 13;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -162,6 +163,66 @@ pub struct LobbyView {
     pub world: LobbyWorld,
     /// How this player's game differs from the room's, while it does.
     pub differences: Option<Text<256>>,
+    /// The mods this player has installed, those they may choose first
+    /// (docs/MODS.md, "Choosing mods"), as many as fit.
+    pub mods: BoundedVec<LobbyMod, MAX_LOBBY_MODS>,
+    /// The room's shared mods, from its owner's start save, and whether this
+    /// player has each; empty while they are not known.
+    pub room_mods: BoundedVec<LobbyRoomMod, MAX_LOBBY_ROOM_MODS>,
+    /// The room's shared mods beyond those listed.
+    pub room_mods_more: u32,
+}
+
+/// Most installed mods a [`LobbyView`] lists.
+pub const MAX_LOBBY_MODS: usize = 64;
+/// Most of the room's shared mods a [`LobbyView`] lists.
+pub const MAX_LOBBY_ROOM_MODS: usize = 32;
+
+/// One mod this player has installed, as the window lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyMod {
+    /// Its id, as [`LobbyAction::ChooseMod`] names it.
+    pub id: ModName,
+    /// Its name for players.
+    pub name: Text<48>,
+    pub class: LobbyModClass,
+    /// Why it is of its class, in a line ("every player needs it: ...").
+    pub reason: Text<96>,
+    /// Whether the player plays with it.
+    pub chosen: bool,
+    /// Whether the player may choose it: a personal mod, or a carried one
+    /// with `--personal-game-scripts`. A shared mod never: every player
+    /// needs the room's.
+    pub choosable: bool,
+}
+
+/// What the scan made of a mod (`tpf3mp_modscan::Class`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LobbyModClass {
+    /// Only what this player sees.
+    Personal,
+    /// Decides in the simulation through what the room carries.
+    Carried,
+    /// Every player needs it.
+    Shared,
+}
+
+/// One of the room's shared mods, and whether this player has it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyRoomMod {
+    pub id: ModName,
+    /// The room's version of it (empty when unknown).
+    pub version: Text<32>,
+    pub have: LobbyHave,
+}
+
+/// Whether this player has one of the room's shared mods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LobbyHave {
+    Yes,
+    No,
+    /// Installed, in another version.
+    OtherVersion,
 }
 
 /// Rules a room can be played by, as the server offers them.
@@ -201,6 +262,9 @@ impl Default for LobbyView {
             start_save: None,
             world: LobbyWorld::None,
             differences: None,
+            mods: BoundedVec::empty(),
+            room_mods: BoundedVec::empty(),
+            room_mods_more: 0,
         }
     }
 }
@@ -285,6 +349,13 @@ pub enum LobbyAction {
         text: ChatText,
     },
     Leave,
+    /// Play with the installed mod `id`, or not: a personal one, or a
+    /// carried one with `--personal-game-scripts` (docs/MODS.md). The
+    /// launcher remembers it for next time.
+    ChooseMod {
+        id: ModName,
+        chosen: bool,
+    },
 }
 
 /// The room as the game's Multiplayer window shows it.
@@ -524,6 +595,28 @@ mod tests {
                 total: u64::MAX,
             },
             differences: Some(Text::new("d".repeat(256)).unwrap()),
+            mods: BoundedVec::new(vec![
+                LobbyMod {
+                    id: Text::new("m".repeat(96)).unwrap(),
+                    name: Text::new("n".repeat(48)).unwrap(),
+                    class: LobbyModClass::Carried,
+                    reason: Text::new("r".repeat(96)).unwrap(),
+                    chosen: true,
+                    choosable: true,
+                };
+                MAX_LOBBY_MODS
+            ])
+            .unwrap(),
+            room_mods: BoundedVec::new(vec![
+                LobbyRoomMod {
+                    id: Text::new("m".repeat(96)).unwrap(),
+                    version: Text::new("v".repeat(32)).unwrap(),
+                    have: LobbyHave::OtherVersion,
+                };
+                MAX_LOBBY_ROOM_MODS
+            ])
+            .unwrap(),
+            room_mods_more: u32::MAX,
         }));
         let bytes = encode(&view).unwrap();
         assert_eq!(decode::<ToHook>(&bytes).unwrap(), view);
@@ -537,6 +630,14 @@ mod tests {
         assert_eq!(
             decode::<ToAgent>(&encode(&action).unwrap()).unwrap(),
             action
+        );
+        let choose = ToAgent::Lobby(LobbyAction::ChooseMod {
+            id: Text::new("schbrongx_minimap").unwrap(),
+            chosen: true,
+        });
+        assert_eq!(
+            decode::<ToAgent>(&encode(&choose).unwrap()).unwrap(),
+            choose
         );
     }
 

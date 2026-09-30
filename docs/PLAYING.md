@@ -15,6 +15,10 @@ this page says so where it applies.
   room's world loads with your personal mods and without other players'
   ([MODS.md](MODS.md); proposed, D25). `tpf3mp-modscan --installed` says
   which of your mods are personal, and why.
+  Without `--mods` the launcher finds your mods itself: choose your
+  personal ones in the lobby, and it remembers them; a room you create
+  takes its shared mods from its start save, and the lobby shows each
+  player which of them they have.
 - The TPF3-MP package for your system, from the project's releases:
   Windows x64, Linux x64 or macOS on Apple silicon. Players on different
   systems can share one room.

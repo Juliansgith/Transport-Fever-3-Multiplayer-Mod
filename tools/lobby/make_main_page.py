@@ -71,20 +71,17 @@ local function safeContent(onClose : function(), focus : string) : TreeNodeId
 end
 
 local Tpf3mpLobbyWindow = react.RegisterWrapperRecipe("Tpf3mpLobbyWindow", builtin.Window, function(param : Tpf3mpLobbyWindowParam) : TreeNodeId
-	-- Centred on the given point, as the game's style sheet centres the
-	-- Deluxe Edition window (anchorPoint 0.5, 0.5): without it the point
-	-- is the window's top-left corner, and it covered the menu's logo.
-	local sheet = api.gui.StyleSheet.new()
-	sheet.anchorPoint = api.type.Vec2f.new(0.5, 0.5)
+	-- Centred on the given point: the window's top-left corner goes half
+	-- its size up and left of it (lobby.lua's WIDTH, HEIGHT, plus the
+	-- title bar). A wrapper recipe may pass meta only for its class: a
+	-- styleSheet with anchorPoint made the game assert and close
+	-- ("Wrapper recipe must return child", 2026-09-30).
 	return builtin.Window{
 		title = _("Multiplayer"),
 		id = "window.tpf3mp.lobby",
-		meta = {
-			class = "fade-in",
-			styleSheet = sheet,
-		},
-		initialX = param.pos and param.pos.x or nil,
-		initialY = param.pos and param.pos.y or nil,
+		meta = { class = "fade-in" },
+		initialX = param.pos and (param.pos.x - 460) or nil,
+		initialY = param.pos and (param.pos.y - 320) or nil,
 		movable = false,
 		closable = true,
 		onClose = param.onClose,

@@ -8,6 +8,7 @@ pub mod diagnostics;
 mod follower;
 pub mod launcher;
 pub mod logs;
+pub mod picker;
 mod playout;
 pub mod save_check;
 pub mod steam;

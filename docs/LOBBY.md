@@ -135,6 +135,15 @@ has no link to its launcher shows so in the window and sends nothing. The
 hook's answer to an action is `ok`, or `error: ` and why it refused it
 (such as a name too long), which the window shows.
 
+**Mods** (docs/MODS.md, "Choosing mods"). The lobby carries the player's
+installed mods (`mods`: `{ id, name, class, reason, chosen, choosable }`,
+class `personal`, `carried` or `shared`, those the player may choose first,
+64 at most) and the room's shared mods once known (`room_mods`: `{ id,
+version, have }`, have `yes`, `no` or `other_version`, 32 at most, and
+`room_mods_more` beyond). The window chooses one with
+`{"action":"choose_mod","id":"<id>","chosen":true|false}`; the launcher
+refuses a mod that is not choosable, with why. Bridge version 13.
+
 **The start save.** The lobby lists the player's saves, newest first, by
 name: those `steam::find_save` finds by that name, in the save folder of
 the Steam account playing (`steam::list_saves`, looked at every 5

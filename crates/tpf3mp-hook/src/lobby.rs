@@ -24,7 +24,9 @@ use std::{
 };
 
 use serde::Deserialize;
-use tpf3mp_bridge::{LobbyAction, LobbyConnection, LobbyView, LobbyWorld};
+use tpf3mp_bridge::{
+    LobbyAction, LobbyConnection, LobbyHave, LobbyModClass, LobbyView, LobbyWorld, ModName,
+};
 use tpf3mp_proto::{FixedBytes, PlayerId, Text};
 
 use crate::step::StepHandler;
@@ -94,6 +96,28 @@ pub struct Rules {
     pub description: String,
 }
 
+/// One mod the player has installed (docs/MODS.md, "Choosing mods").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModEntry {
+    /// What `choose_mod` names.
+    pub id: String,
+    pub name: String,
+    /// `personal`, `carried` or `shared`.
+    pub class: &'static str,
+    pub reason: String,
+    pub chosen: bool,
+    pub choosable: bool,
+}
+
+/// One of the room's shared mods.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomMod {
+    pub id: String,
+    pub version: String,
+    /// `yes`, `no` or `other_version`: whether this player has it.
+    pub have: &'static str,
+}
+
 /// Everything the lobby window shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LobbyState {
@@ -124,6 +148,12 @@ pub struct LobbyState {
     pub total: u64,
     /// How this game differs from the room's, while it does.
     pub differences: Option<String>,
+    /// The player's installed mods, the choosable first.
+    pub mods: Vec<ModEntry>,
+    /// The room's shared mods, and whether this player has each.
+    pub room_mods: Vec<RoomMod>,
+    /// The room's shared mods beyond `room_mods`.
+    pub room_mods_more: u32,
 }
 
 /// What the window sends, as JSON: the tag `action` plus the fields, e.g.
@@ -167,6 +197,10 @@ enum WindowAction {
         text: String,
     },
     Leave,
+    ChooseMod {
+        id: String,
+        chosen: bool,
+    },
 }
 
 fn default_max_players() -> u32 {
@@ -249,6 +283,10 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
             text: text(&said, "message")?,
         },
         WindowAction::Leave => LobbyAction::Leave,
+        WindowAction::ChooseMod { id, chosen } => LobbyAction::ChooseMod {
+            id: ModName::new(id.trim()).map_err(|_| "that mod's id is too long".to_owned())?,
+            chosen,
+        },
     })
 }
 
@@ -265,6 +303,7 @@ pub fn kind(action: &LobbyAction) -> &'static str {
         LobbyAction::Kick { .. } => "kick",
         LobbyAction::Chat { .. } => "chat",
         LobbyAction::Leave => "leave",
+        LobbyAction::ChooseMod { .. } => "choose_mod",
     }
 }
 
@@ -321,6 +360,9 @@ impl LobbyState {
             bytes: 0,
             total: 0,
             differences: None,
+            mods: Vec::new(),
+            room_mods: Vec::new(),
+            room_mods_more: 0,
         }
     }
 
@@ -418,6 +460,36 @@ impl LobbyState {
                 .differences
                 .as_ref()
                 .map(|text| text.as_str().to_owned()),
+            mods: view
+                .mods
+                .iter()
+                .map(|m| ModEntry {
+                    id: m.id.as_str().to_owned(),
+                    name: m.name.as_str().to_owned(),
+                    class: match m.class {
+                        LobbyModClass::Personal => "personal",
+                        LobbyModClass::Carried => "carried",
+                        LobbyModClass::Shared => "shared",
+                    },
+                    reason: m.reason.as_str().to_owned(),
+                    chosen: m.chosen,
+                    choosable: m.choosable,
+                })
+                .collect(),
+            room_mods: view
+                .room_mods
+                .iter()
+                .map(|m| RoomMod {
+                    id: m.id.as_str().to_owned(),
+                    version: m.version.as_str().to_owned(),
+                    have: match m.have {
+                        LobbyHave::Yes => "yes",
+                        LobbyHave::No => "no",
+                        LobbyHave::OtherVersion => "other_version",
+                    },
+                })
+                .collect(),
+            room_mods_more: view.room_mods_more,
         }
     }
 
@@ -463,6 +535,28 @@ impl LobbyState {
             out.push(',');
         }
         out.push_str(" }");
+        out.push_str(", mods = {");
+        for m in &self.mods {
+            out.push_str(&format!(
+                " {{ id = {}, name = {}, class = {}, reason = {}, chosen = {}, choosable = {} }},",
+                lua_str(&m.id),
+                lua_str(&m.name),
+                lua_str(m.class),
+                lua_str(&m.reason),
+                m.chosen,
+                m.choosable
+            ));
+        }
+        out.push_str(" }, room_mods = {");
+        for m in &self.room_mods {
+            out.push_str(&format!(
+                " {{ id = {}, version = {}, have = {} }},",
+                lua_str(&m.id),
+                lua_str(&m.version),
+                lua_str(m.have)
+            ));
+        }
+        out.push_str(&format!(" }}, room_mods_more = {}", self.room_mods_more));
         out.push_str(", chat = {");
         for line in &self.chat {
             out.push_str(&format!(
@@ -664,6 +758,13 @@ mod tests {
             Ok(LobbyAction::Ready { ready: true })
         );
         assert_eq!(
+            parse_action(r#"{"action":"choose_mod","id":"schbrongx_minimap","chosen":true}"#),
+            Ok(LobbyAction::ChooseMod {
+                id: Text::new("schbrongx_minimap").unwrap(),
+                chosen: true,
+            })
+        );
+        assert_eq!(
             parse_action(r#"{"action":"leave"}"#),
             Ok(LobbyAction::Leave)
         );
@@ -735,6 +836,22 @@ mod tests {
                 total: 20_000_000,
             },
             differences: None,
+            mods: tpf3mp_proto::BoundedVec::new(vec![tpf3mp_bridge::LobbyMod {
+                id: Text::new("schbrongx_minimap").unwrap(),
+                name: Text::new("Minimap").unwrap(),
+                class: LobbyModClass::Personal,
+                reason: Text::new("only what this player sees").unwrap(),
+                chosen: true,
+                choosable: true,
+            }])
+            .unwrap(),
+            room_mods: tpf3mp_proto::BoundedVec::new(vec![tpf3mp_bridge::LobbyRoomMod {
+                id: Text::new("vehicles_pack").unwrap(),
+                version: Text::new("3").unwrap(),
+                have: LobbyHave::OtherVersion,
+            }])
+            .unwrap(),
+            room_mods_more: 2,
         }
     }
 
@@ -791,6 +908,17 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let mods: mlua::Table = state.get("mods").unwrap();
+        let minimap: mlua::Table = mods.get(1).unwrap();
+        assert_eq!(minimap.get::<String>("id").unwrap(), "schbrongx_minimap");
+        assert_eq!(minimap.get::<String>("class").unwrap(), "personal");
+        assert!(
+            minimap.get::<bool>("chosen").unwrap() && minimap.get::<bool>("choosable").unwrap()
+        );
+        let room_mods: mlua::Table = state.get("room_mods").unwrap();
+        let pack: mlua::Table = room_mods.get(1).unwrap();
+        assert_eq!(pack.get::<String>("have").unwrap(), "other_version");
+        assert_eq!(state.get::<u32>("room_mods_more").unwrap(), 2);
     }
 
     /// A step driver that records what the window handed it and answers

@@ -30,6 +30,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tpf3mp-modscan.workspace = true
 tempfile.workspace = true
 
 [lints]
