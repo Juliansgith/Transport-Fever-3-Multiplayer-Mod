@@ -467,6 +467,8 @@ pub fn take_save_answer() -> Option<Result<String, String>> {
 
 /// Asks the GUI to load the save `name` of the game's own save folder.
 pub fn request_load(name: &str) {
+    // The world goes: nothing cached about its memory holds.
+    crate::image::invalidate();
     let mut shared = shared();
     shared.request = Some(Request::Load(name.to_owned()));
     shared.menu_load = None;
@@ -967,6 +969,8 @@ unsafe extern "C-unwind" fn native_saved(l: State) -> c_int {
 
 /// `world()`.
 unsafe extern "C-unwind" fn native_world(_l: State) -> c_int {
+    // A new world: nothing cached about the last one's memory holds.
+    crate::image::invalidate();
     let mut shared = shared();
     shared.worlds += 1;
     // A world loaded: the room's, after a divergence.

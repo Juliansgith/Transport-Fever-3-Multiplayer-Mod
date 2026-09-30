@@ -463,7 +463,7 @@ fn before_script_call(state_object: usize, call: ScriptCall, entity: u32, engine
         );
         return;
     };
-    if !crate::image::readable(state_object, std::mem::size_of::<usize>()) {
+    if !crate::image::readable_cached(state_object, std::mem::size_of::<usize>()) {
         once(
             &UNREADABLE_LOGGED,
             &format!(
@@ -884,7 +884,7 @@ mod native {
 
     /// A word of the game's memory, if it is readable.
     fn word(address: usize) -> Option<usize> {
-        if address == 0 || !crate::image::readable(address, std::mem::size_of::<usize>()) {
+        if address == 0 || !crate::image::readable_cached(address, std::mem::size_of::<usize>()) {
             return None;
         }
         // SAFETY: readable, checked just above; read by value, unaligned.
@@ -894,7 +894,7 @@ mod native {
     /// The script's entity, an `int` at `offset` in the call's functor.
     fn entity(functor: usize, offset: usize) -> Option<u32> {
         let address = functor.checked_add(offset)?;
-        if !crate::image::readable(address, std::mem::size_of::<u32>()) {
+        if !crate::image::readable_cached(address, std::mem::size_of::<u32>()) {
             return None;
         }
         // SAFETY: as in `word`.
@@ -947,6 +947,9 @@ mod native {
 
     extern "C" fn before_update_c(_engine: usize, _b: usize, _c: usize, _d: usize) {
         crate::perf::update();
+        // The engine frees between updates: the readable regions are asked
+        // for again.
+        crate::image::invalidate();
         let _ = catch_unwind(before_update);
     }
 

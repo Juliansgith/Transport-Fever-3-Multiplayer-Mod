@@ -273,6 +273,9 @@ unsafe fn run_step(
     };
     UPDATES.store(answer, Ordering::Release);
     crate::ticks::set_room(room);
+    // Whatever the engine freed since the last step, no cached region
+    // answers for it.
+    crate::image::invalidate();
     let started = crate::perf::start();
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };

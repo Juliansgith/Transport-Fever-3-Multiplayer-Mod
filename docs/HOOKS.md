@@ -1952,10 +1952,20 @@ edge's entity has no slot" (the only refusal in the three-player
 playtest's hook.log, about 70% of the appends) and the vehicles' lists
 were never sorted; the persons' (`Add`) were.
 
-Each append reads the eight words to an edge's entries through one
-`image::Probe`: the committed regions it finds are remembered for that
-call, so a region costs one `VirtualQuery` per append instead of one per
-word (13 per edge before). The sort is `road::place`, in place: one scan
+Every read on the hot paths (this walk, the order fixes' vectors, the
+game scripts' reseed) is checked through `image::Readable`: a per-thread
+cache of the regions `VirtualQuery` found committed and readable, dropped
+(`image::invalidate`) before every simulation update, before every call
+of the game's step, when a world's GUI starts and when a load is asked
+for, so a region is asked of the system about once per update, not once
+per word (13 times per edge before). The system call costs about 1.7 µs on
+the development PC and tens of microseconds inside Sandboxie, which hooks
+system calls: in the three-player playtest (`f622599`) the boxed games
+spent 37 to 42% of their step time in the hook, most of it in these
+checks. Every address the hook reads comes from a structure the engine
+keeps live; the checks guard against a layout the hook misreads, and
+dropping the cache wherever the engine frees keeps a freed region from
+answering. The sort is `road::place`, in place: one scan
 finds how far the list is strictly ascending; a list kept sorted is then
 either whole (nothing written) or out of order only in the entry just
 appended, which is moved into place by binary search; anything else is
@@ -1963,7 +1973,9 @@ sorted whole through a reused buffer. It gives exactly the order of the
 reference `road::entry_order` (checked on random lists in the tests),
 refuses the same lists, and writes nothing when it refuses. On the
 development PC one append to an edge of 2 to 32 entries went from about
-5 µs to 0.7 µs (`order::splice_tests::road_append_bench`), the sort alone
+5 to 8 µs to about 0.1 µs (`order::splice_tests::road_append_bench`; a
+check from the cache is about 7 ns against 1.7 µs asking the system,
+`image::tests::readable_bench`), the sort alone
 from 94 to 31 ns at 2 entries and 508 to 117 ns at 128
 (`order::tests::road_sort_bench`). Both appenders must be detoured, or none sorts. The callbacks run
 serially at the end of a modification (INFERRED from their callers, the
@@ -2059,7 +2071,7 @@ Every 10 seconds of wall time, after a call of the step, two lines go to
 hook.log (nothing while no step runs, at the main menu):
 
 ```
-perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step)
+perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 90000 hits, 1200 misses
 perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
 ```
 
@@ -2068,7 +2080,9 @@ that time per second of wall time, its calls (batches) and the
 simulation updates run (`ecs::Engine::Update` calls, counted by the seeds'
 per-update detour, so `0` without it), and the step's time per update;
 then the hook: the sum of every piece below, per second, and as a share
-of the game's step time. Each piece of the second line is
+of the game's step time; then the readability checks answered from
+`image::Readable`'s cache and those that asked the system (each miss is
+one `VirtualQuery` or more). Each piece of the second line is
 `<name> <calls>/<total ms>/<mean µs>` over the window:
 
 | piece | what is timed | calls are |

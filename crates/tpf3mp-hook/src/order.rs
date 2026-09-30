@@ -47,7 +47,7 @@ use std::sync::{
 use tpf3mp_hookcore::detour::{InlineDetour, SavedRegs, Splice};
 use tpf3mp_hookcore::profile::ResolvedProfile;
 
-use crate::image::Probe;
+use crate::image::Readable as Probe;
 use crate::log;
 use crate::perf::{self, Piece};
 
@@ -93,20 +93,15 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
     outcomes
 }
 
-/// Reads a plain value from the game's memory, only if it is readable.
+/// Reads a plain value from the game's memory, only if it is readable (the
+/// check through the per-thread region cache, [`crate::image::Readable`]).
 fn read<T: Copy>(address: u64) -> Option<T> {
-    let address = usize::try_from(address).ok()?;
-    if !crate::image::readable(address, std::mem::size_of::<T>()) {
-        return None;
-    }
-    // SAFETY: `size_of::<T>()` bytes at `address` are committed, readable
-    // memory, checked just above; the read is unaligned and by value.
-    Some(unsafe { std::ptr::read_unaligned(address as *const T) })
+    Probe::new().read(address)
 }
 
 /// Whether `len` bytes at `address` may be read.
 fn readable(address: u64, len: usize) -> bool {
-    usize::try_from(address).is_ok_and(|address| crate::image::readable(address, len))
+    usize::try_from(address).is_ok_and(|address| crate::image::readable_cached(address, len))
 }
 
 /// Says a refusal once per reason (a fix refuses per step, the log is not
@@ -1056,8 +1051,9 @@ pub mod platform {
 /// three-player playtest) and the vehicles' lists were never sorted.
 ///
 /// Cheap per append: the eight words from the data to an edge's entries
-/// are read through one [`Probe`] per append, so a region is asked of the
-/// system once, not once a word; a list that was in order before the
+/// are checked through the per-thread region cache
+/// ([`crate::image::Readable`]), so a region is asked of the system about
+/// once per update, not once a word; a list that was in order before the
 /// append needs one scan and, at most, the new entry moved into place
 /// ([`place`]); nothing is allocated unless a list was out of order.
 pub mod road {

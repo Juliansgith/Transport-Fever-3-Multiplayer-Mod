@@ -241,6 +241,11 @@ pub struct Window {
     pub pieces: [Sample; Piece::ALL.len()],
     /// The road fix's refusals in the window, by reason.
     pub road_refusals: Vec<(&'static str, u64)>,
+    /// Readability checks through the region cache
+    /// ([`crate::image::Readable`]): answered from it, and asked of the
+    /// system.
+    pub cache_hits: u64,
+    pub cache_misses: u64,
 }
 
 /// The window's two lines: the game's step and the hook's total against
@@ -275,6 +280,10 @@ pub fn lines(window: &Window) -> [String; 2] {
         hook.millis(),
         hook.millis() / seconds,
     );
+    let first = format!(
+        "{first}; readable cache {} hits, {} misses",
+        window.cache_hits, window.cache_misses
+    );
     let mut second = String::from("perf: ");
     for (i, (piece, sample)) in Piece::ALL.iter().zip(window.pieces.iter()).enumerate() {
         if i > 0 {
@@ -303,6 +312,7 @@ pub fn lines(window: &Window) -> [String; 2] {
 
 /// Takes every counter, zero again, into a window of `seconds`.
 fn take(seconds: f64) -> Window {
+    let (cache_hits, cache_misses) = crate::image::take_counts();
     let mut pieces = [Sample::default(); Piece::ALL.len()];
     for (sample, counter) in pieces.iter_mut().zip(PIECES.iter()) {
         *sample = counter.take();
@@ -313,6 +323,8 @@ fn take(seconds: f64) -> Window {
         updates: UPDATES.swap(0, Ordering::Relaxed),
         pieces,
         road_refusals: crate::order::road::take_refusals(),
+        cache_hits,
+        cache_misses,
     }
 }
 
@@ -410,6 +422,8 @@ mod tests {
             updates: 600,
             pieces,
             road_refusals: vec![("the edge's entity has no slot", 12)],
+            cache_hits: 90_000,
+            cache_misses: 1_200,
         }
     }
 
@@ -419,7 +433,7 @@ mod tests {
         assert_eq!(
             first,
             "perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates \
-             (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step)"
+             (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 90000 hits, 1200 misses"
         );
     }
 
@@ -461,7 +475,7 @@ mod tests {
             first.contains("in 0 batches, 0 updates (no updates)"),
             "{first}"
         );
-        assert!(first.ends_with("no game step to compare)"), "{first}");
+        assert!(first.contains("no game step to compare);"), "{first}");
         assert!(second.ends_with("; road-entry refused 0"), "{second}");
     }
 
