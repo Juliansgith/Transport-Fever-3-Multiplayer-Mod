@@ -587,7 +587,10 @@ for the table (`bridge.find`). Its contract is in
   hook keeps what the room tells it (`Room`, `Speed`, `Diverged`), and
   forgets the divergence when a world loads (bridge version 9).
 - `tpf3mp_native.chat()`: in the GUI: what the room's members said since
-  the last call, `{ { from =, text = } }`, oldest first, 64 lines at most.
+  the last call, `{ { from =, text =, old = } }`, oldest first, 64 lines
+  at most. A world's GUI starts with none of the chat so far, so after
+  `world()` the next call first gives the last 50 lines taken before
+  again, with `old` set.
 - `tpf3mp_native.say(text)`: in the GUI: says `text` (280 bytes at most,
   trimmed) to the room for the player, `true` or `false` and why; the step
   driver sends it (`Session::chat`) in the room's game only.

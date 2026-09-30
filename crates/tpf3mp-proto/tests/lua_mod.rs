@@ -303,6 +303,25 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
 }
 
 #[test]
+fn chat_a_new_world_is_given_again_is_not_new() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let label: String = lua
+        .load(
+            "HOOK.room = true \
+             HOOK.status = { room = 'r', players = {} } \
+             HOOK.heard = { { from = 'Sam', text = 'before', old = true }, \
+                            { from = 'Sam', text = 'after' } } \
+             BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+             return views(BAR.layout)[1].params.content.params.text",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(label, "Multiplayer: r · 0/0 playing · 1 new");
+}
+
+#[test]
 fn only_the_newest_chat_lines_show_in_the_window() {
     let lua = gui();
     lua.load(FAKE_HOOK).exec().unwrap();

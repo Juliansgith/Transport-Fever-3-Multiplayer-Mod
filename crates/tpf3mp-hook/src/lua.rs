@@ -99,6 +99,8 @@ const MAX_WAITING: usize = 256;
 /// sent.
 const MAX_HEARD: usize = 64;
 const MAX_SAID: usize = 16;
+/// Most chat lines kept for a new world's GUI.
+const MAX_HISTORY: usize = 50;
 /// Most answers waiting for the GUI.
 const MAX_ANSWERS: usize = 256;
 /// Most lanes one checkpoint reports, and the longest text one lane may be.
@@ -231,6 +233,12 @@ struct RoomStatus {
     diverged: Option<u64>,
     /// Chat heard, oldest first: who, and what.
     heard: VecDeque<(String, String)>,
+    /// Chat the GUI took, oldest first, for the GUI of the next world: a
+    /// world's GUI starts with nothing of the last one's.
+    history: VecDeque<(String, String)>,
+    /// Whether the next `chat()` gives the history first: a world's GUI
+    /// started since.
+    replay: bool,
     /// What the player said, for the room.
     said: VecDeque<ChatText>,
 }
@@ -258,6 +266,8 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
         speed: None,
         diverged: None,
         heard: VecDeque::new(),
+        history: VecDeque::new(),
+        replay: false,
         said: VecDeque::new(),
     },
 });
@@ -793,6 +803,8 @@ unsafe extern "C-unwind" fn native_world(_l: State) -> c_int {
     shared.worlds += 1;
     // A world loaded: the room's, after a divergence.
     shared.room.diverged = None;
+    // Its GUI has none of the chat so far: give it the history again.
+    shared.room.replay = true;
     0
 }
 
@@ -919,24 +931,50 @@ unsafe extern "C-unwind" fn native_status(l: State) -> c_int {
     unsafe { push_or_nil(api, l, status.as_ref()) }
 }
 
+/// The chat lines `chat()` gives, oldest first, each with whether it is
+/// old: after a world's GUI started, the history it took before, then
+/// what was heard since the last call. What it gives goes into the history.
+fn take_chat() -> Vec<(String, String, bool)> {
+    let mut shared = shared();
+    let room = &mut shared.room;
+    let mut lines: Vec<(String, String, bool)> = Vec::new();
+    if std::mem::take(&mut room.replay) {
+        lines.extend(
+            room.history
+                .iter()
+                .map(|(from, text)| (from.clone(), text.clone(), true)),
+        );
+    }
+    for (from, text) in room.heard.drain(..) {
+        if room.history.len() >= MAX_HISTORY {
+            room.history.pop_front();
+        }
+        room.history.push_back((from.clone(), text.clone()));
+        lines.push((from, text, false));
+    }
+    lines
+}
+
 /// `chat()`: what the room's members said since the last call, oldest
-/// first: `{ { from =, text = }, ... }`.
+/// first: `{ { from =, text =, old = }, ... }`, `old` for the lines a
+/// previous world's GUI took, given again once to a new world's GUI.
 unsafe extern "C-unwind" fn native_chat(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
-    let heard: Vec<(String, String)> = shared().room.heard.drain(..).collect();
+    let lines = take_chat();
     #[allow(clippy::cast_precision_loss)]
     let list = LuaValue::Table(
-        heard
+        lines
             .iter()
             .enumerate()
-            .map(|(index, (from, text))| {
+            .map(|(index, (from, text, old))| {
                 (
                     LuaValue::Number((index + 1) as f64),
                     LuaValue::Table(vec![
                         (LuaValue::string("from"), LuaValue::string(from)),
                         (LuaValue::string("text"), LuaValue::string(text)),
+                        (LuaValue::string("old"), LuaValue::Boolean(*old)),
                     ]),
                 )
             })
@@ -1475,6 +1513,8 @@ pub(crate) mod tests {
             speed: None,
             diverged: None,
             heard: VecDeque::new(),
+            history: VecDeque::new(),
+            replay: false,
             said: VecDeque::new(),
         };
     }
@@ -1642,6 +1682,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_new_worlds_gui_gets_the_last_fifty_lines_of_chat() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        for i in 1..=60 {
+            notice(&Notice::Chat {
+                from: Text::new("Sam").unwrap(),
+                text: Text::new(format!("line {i}")).unwrap(),
+            });
+            if i % 30 == 0 {
+                lua.run("tpf3mp_native.chat()").unwrap();
+            }
+        }
+        lua.run("tpf3mp_native.world()").unwrap();
+        assert_eq!(
+            lua.run(
+                "local c = tpf3mp_native.chat() \
+                 return #c, c[1].text, c[#c].text, tostring(c[1].old)"
+            ),
+            Ok("50|line 11|line 60|true".into())
+        );
+    }
+
+    #[test]
     fn the_multiplayer_window_sees_the_room_and_its_chat() {
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         reset();
@@ -1692,11 +1757,28 @@ pub(crate) mod tests {
             Ok("Julian: the bus is late|0".into()),
             "heard once"
         );
-        // The world the room sends loads: the divergence is over.
+        // The world the room sends loads: the divergence is over, and its
+        // GUI, which starts with no chat, gets what was said so far once,
+        // as old lines, then what is new.
         lua.run("tpf3mp_native.world()").unwrap();
         assert_eq!(
             lua.run("return tostring(tpf3mp_native.status().diverged)"),
             Ok("nil".into())
+        );
+        notice(&Notice::Chat {
+            from: Text::new("Sam").unwrap(),
+            text: Text::new("I lost my world").unwrap(),
+        });
+        assert_eq!(
+            lua.run(
+                "local out = {} \
+                 for _, c in ipairs(tpf3mp_native.chat()) do \
+                     out[#out + 1] = c.from .. ': ' .. c.text .. (c.old and ' (old)' or '') \
+                 end \
+                 return table.concat(out, '; '), #tpf3mp_native.chat()"
+            ),
+            Ok("Julian: the bus is late (old); Sam: I lost my world|0".into()),
+            "the history once, then only what is new"
         );
         // What the player says goes to the room; nothing, or too much, not.
         assert_eq!(

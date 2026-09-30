@@ -292,10 +292,12 @@ function data()
 			shared.status = status
 			if before ~= after then changed = true end
 		end
+		-- A new world's GUI gets the chat so far again, as old lines: they
+		-- fill the window without counting as new.
 		for _, line in ipairs(link:chat()) do
 			shared.lines[#shared.lines + 1] = tostring(line.from) .. ": " .. tostring(line.text)
 			if #shared.lines > CHAT_LINES then table.remove(shared.lines, 1) end
-			if not shared.open then shared.unread = shared.unread + 1 end
+			if not shared.open and not line.old then shared.unread = shared.unread + 1 end
 			changed = true
 		end
 		if changed then shared.version = shared.version + 1 end
