@@ -65,6 +65,49 @@ room's vehicles lane reports it at the next checkpoint.
   host's, but the street edges' do not (edges 7547 and 7546 at the top):
   loading a save is not the host's live numbering.
 
+## The cause, found later the same day
+
+It is not timed by frames. Every departure measured starts exactly on a
+millimetre (each position ends in `.xxx775`), and one formula fits them
+all on the fixture's road depot:
+
+    start = 7.726775 m - (entity id mod 1000) mm
+
+(two buses bought in one room to test it, entities 7365 and 1012, started
+at 7.361775 m and 7.714775 m as predicted). So the depot sets a leaving
+vehicle back along its first edge by its entity id, and the games gave the
+same bus different ids.
+
+Why the ids differ, from an in-memory trace of `ecs::Engine::AddEntity`
+(0x2bb37b0) and `RemoveEntity` (0x2bb75f0) in three games of one room:
+
+- `AddEntity` reuses freed ids from a first-in, first-out queue (a
+  `std::deque<int>` at +0xe0) and grows the table only when it is empty;
+  `RemoveEntity` queues the id again. The simulation creates and removes
+  entities all the time (people, cargo), so every new id depends on the
+  whole history of that queue.
+- All of it runs on the simulation thread, in both engine buffers alike;
+  the interface creates no entities there, and a player's own clicks do
+  not disturb the ids.
+- Saving and loading renumbers some entities and rebuilds the queue. The
+  host kept playing its own world while the others loaded the host's save,
+  so from the first step the host handed out other ids than they did. The
+  two players who loaded the same save allocated identical ids in
+  identical order, and gave the bus the same id and start; the host did
+  not (7665 against 7618).
+
+## The fix
+
+Every game plays from the same loaded save: whenever the room hands a world
+to one member, it hands it to every member playing, the owner too, and all
+of them reload it (docs/PROTOCOL.md, "Everyone loads it"). With it, three
+games in one room allocated identical ids from the first step, gave a bus
+bought by one player the same id and start in all three, and ran it
+identically for 1,788 updates and four stops, then on to 4,200 updates,
+with no divergence under the full lanes.
+
+The options below were written before the cause was known; none is needed.
+
 ## What the room does now
 
 It catches each divergence at the next checkpoint and sends the diverged
