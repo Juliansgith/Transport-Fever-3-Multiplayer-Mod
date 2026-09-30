@@ -2093,15 +2093,45 @@ impl Room {
                 None => waiting = true,
             }
         }
+        // Every game plays from the same loaded world. A world handed to one
+        // member goes to every member playing, so all of them load the same
+        // save at the same step: a game that kept its own world numbers its
+        // entities differently from one that loaded a save, and Transport
+        // Fever 3's simulation depends on entity ids (a vehicle leaving a
+        // depot starts at an offset made from its id).
+        if !feeds.is_empty() {
+            let served: Vec<usize> = feeds.iter().map(|(index, _)| *index).collect();
+            for (index, member) in self.members.iter().enumerate() {
+                if served.contains(&index) || member.link.is_none() || !member.streaming {
+                    continue;
+                }
+                if let Some(feed) = game.saves.current.as_ref().and_then(|agreed| {
+                    game.feed_from(self.id, self.settings, &self.rules, agreed)
+                        .ok()
+                }) {
+                    info!(room = %self.id, player = %member.player, "rebasing a replica with the others");
+                    feeds.push((index, feed));
+                }
+            }
+        }
         game.saves.wanted = waiting;
         let offered = game.saves.current.as_ref().map(Agreed::id);
+        let mut slow = Vec::new();
         for (index, (feed, stream_from)) in feeds {
             let member = &mut self.members[index];
             let Some(link) = &member.link else {
                 continue;
             };
+            let was_streaming = member.streaming;
             member.streaming = link.turns.try_send(feed).is_ok();
             if !member.streaming {
+                // A member already playing whose queue is full would get
+                // neither its old stream nor the world: as any slow
+                // consumer, it is disconnected, reconnects and is handed
+                // the world then.
+                if was_streaming {
+                    slow.push(index);
+                }
                 continue;
             }
             if matches!(member.needs, Needs::Rebase { .. }) {
@@ -2117,6 +2147,9 @@ impl Room {
                 member.pace = Pace::CatchingUp(None);
             }
             member.stream_from = stream_from;
+        }
+        for index in slow {
+            self.drop_link(index, true);
         }
     }
 

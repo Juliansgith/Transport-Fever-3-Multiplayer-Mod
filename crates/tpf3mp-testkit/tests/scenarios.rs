@@ -493,7 +493,9 @@ async fn a_player_joins_a_running_game_from_the_rooms_world() {
         input_delay_ms: 60,
         checkpoint_interval: 20,
     };
-    let mut players = saving_players(3, 700);
+    // Long enough that the starters still play when the newcomer's world
+    // is handed on (they reload it too), however slow the machine.
+    let mut players = saving_players(3, 2000);
     // The third player arrives two seconds in, after about 200 steps.
     players[2].join_after = Some(Duration::from_secs(2));
     let reports = play_bridged_room(BridgedPlan {
@@ -513,10 +515,15 @@ async fn a_player_joins_a_running_game_from_the_rooms_world() {
         reports[2].received, 1,
         "the newcomer loaded the room's world"
     );
-    // The owner's world, saved at the start, serves the newcomer too: it
-    // loads that save and plays the turns since.
+    // The owner's world, saved at the start, is everyone's: both starters
+    // loaded it, and loaded the newcomer's world with it when it came, so
+    // every game plays from the same loaded save.
     assert!(reports[0].saves >= 1, "the owner saved its world");
-    assert_eq!(reports[1].received, 1, "the other starter loaded it too");
+    assert_eq!(
+        reports[0].received, 2,
+        "the owner: the start, then the join"
+    );
+    assert_eq!(reports[1].received, 2, "the other starter: the same");
     for report in &reports {
         assert!(report.diverged.is_empty(), "{:?}", report.diverged);
     }
@@ -612,8 +619,8 @@ async fn every_player_starts_from_the_owners_world() {
     let received: Vec<usize> = reports.iter().map(|report| report.received).collect();
     assert_eq!(
         received,
-        [0, 1, 1],
-        "everyone but the owner loaded its world"
+        [1, 1, 1],
+        "everyone loaded the owner's saved world, the owner too"
     );
     for report in &reports {
         assert!(report.diverged.is_empty(), "{:?}", report.diverged);
@@ -638,7 +645,9 @@ async fn a_diverged_replica_is_rebased_onto_the_agreed_world() {
         input_delay_ms: 60,
         checkpoint_interval: 50,
     };
-    let mut players = saving_players(3, 800);
+    // Long enough that every player still plays when the agreed world is
+    // handed on after the drift, however slow the machine.
+    let mut players = saving_players(3, 2000);
     players[2].drift_at = Some(120);
     let reports = play_bridged_room(BridgedPlan {
         server: server.address,
@@ -652,15 +661,17 @@ async fn a_diverged_replica_is_rebased_onto_the_agreed_world() {
     .await
     .unwrap();
 
-    // The drifting replica was told, given the agreed world, and ended in
-    // the same world as everyone else. Every player but the owner also
-    // loaded the owner's world at the start.
+    // The drifting replica was told, and every player was given the
+    // agreed world with it, so all ended in the same world, each loaded
+    // from the same save. Every player also loaded the owner's world at
+    // the start.
     assert!(!reports[2].diverged.is_empty(), "the drift was noticed");
-    assert_eq!(reports[2].received, 2, "the start, then one rebase");
     assert_worlds_agree(&reports);
-    for (report, received) in reports[..2].iter().zip([0, 1]) {
+    for report in &reports {
+        assert_eq!(report.received, 2, "the start, then one rebase");
+    }
+    for report in &reports[..2] {
         assert!(report.diverged.is_empty(), "{:?}", report.diverged);
-        assert_eq!(report.received, received);
     }
     server.stop().await;
     let _ = std::fs::remove_dir_all(&root);
@@ -685,7 +696,9 @@ async fn a_restored_room_still_hands_on_its_world() {
         input_delay_ms: 60,
         checkpoint_interval: 25,
     };
-    let mut players = saving_players(3, 500);
+    // Long enough that the second player still plays when the last one's
+    // world is handed on (it reloads it too).
+    let mut players = saving_players(3, 1200);
     // One player joins early, so the room saves before the restart; the
     // last joins after it, from the world the restored room kept.
     players[1].join_after = Some(Duration::from_secs(1));
@@ -706,7 +719,9 @@ async fn a_restored_room_still_hands_on_its_world() {
 
     let reports = game.await.unwrap().unwrap();
     assert_worlds_agree(&reports);
-    assert_eq!(reports[1].received, 1);
+    // The second player loaded its world when it joined, and the third's
+    // with it; the third loaded one.
+    assert_eq!(reports[1].received, 2);
     assert_eq!(reports[2].received, 1);
     second.stop().await;
     let _ = std::fs::remove_dir_all(&root);

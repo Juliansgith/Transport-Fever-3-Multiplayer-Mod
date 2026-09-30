@@ -140,16 +140,17 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   and all fingerprints are equal.
 - **The first world.** On a server that keeps snapshots, the owner's world
   is everyone's: the owner's game loads it, the room saves it before the
-  first step, and every other player loads that save (see "Snapshots").
-  Worlds generated separately on each machine could differ between
-  platforms. Everyone still holds the clock until loaded. Without
-  snapshots, every player loads the same world locally.
+  first step, and every player loads that save, the owner too (see
+  "Snapshots"). Worlds generated separately on each machine could differ
+  between platforms, and a game that kept its world differs from one that
+  loaded its save (below). Everyone still holds the clock until loaded.
+  Without snapshots, every player loads the same world locally.
 - **Joining a running game.** A newcomer's declared content must equal the
   game's; otherwise the room sends it a `ContentDiff` and refuses the join
   with `ContentMismatch`. Every replica sees
   `PlayerJoined` at one step, and the newcomer receives the room's world to
-  load (see "Snapshots"). Only a server that keeps snapshots allows this;
-  others answer `GameRunning`.
+  load, every other player with it (see "Snapshots"). Only a server that
+  keeps snapshots allows this; others answer `GameRunning`.
 
 ## Turns: the ordered event log
 
@@ -310,6 +311,17 @@ joins a running game, one who can no longer resume, and one whose world
 diverged all receive the room's latest agreed snapshot, then follow the
 turns since it. Only a server configured with a snapshot store does this.
 
+**Everyone loads it.** Whenever the room hands a snapshot to a member, it
+hands the same snapshot to every member playing, which reload it too, so
+every game plays from the same loaded save. A game that keeps its own world
+numbers its entities differently from one that loaded a save (Transport
+Fever 3 build 40408: saving and loading renumbers some, and the free ids
+go back into a first-in, first-out queue in another order), and the
+simulation depends on entity ids: a vehicle leaving a depot starts
+`id mod 1000` millimetres back along its first edge
+(investigation/TF3_VEHICLE_DETERMINISM_2026-09-30.md). Two games that
+loaded the same save number every entity alike.
+
 **Saving.** The room saves every ten minutes of play, sooner when someone
 waits for a world, but never twice within a minute, and not at all while
 nothing has changed.
@@ -344,7 +356,8 @@ the current one.
 
 **Rebasing.** A member found diverged, at a checkpoint or a save, receives
 the first world the room agrees on after the divergence, and the room saves
-soon to have one. A member is rebased at most once every five minutes; a
+soon to have one; every other member playing receives it with it. A member
+is rebased for its own divergence at most once every five minutes; a
 replica that keeps diverging is told each time.
 
 **Learned on TPF2 Multiplayer's transfer path.** Its shared-save flow is the
