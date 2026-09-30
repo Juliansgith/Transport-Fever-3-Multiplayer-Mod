@@ -59,6 +59,13 @@
 //!   the ticket's answer.
 //! - `results()`: in the GUI: the answers since the last call, a list of
 //!   `{ ticket =, ok =, entity =, why = }`, oldest first ([`refused`]).
+//! - `dump()`: in a game script's `postUpdate`, at a checkpoint whose lanes
+//!   the driver wants dumped ([`crate::lanedump`]): `{ step =, lanes = {
+//!   ... } }`, once, or `nil`. Optional in the contract, as `dumped` is.
+//! - `dumped(lane, entry)`: one entry of a lane dumped there, which goes to
+//!   `hook.log` as `lane <lane> step <step> <entry>`, up to
+//!   [`MAX_DUMP_LINES`] a checkpoint. Returns `true`, or `false` once no
+//!   more are taken.
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -84,7 +91,7 @@ use tpf3mp_proto::{
     lua::{LuaValue, MAX_DEPTH, MAX_NODES, action_from_lua, action_to_lua},
 };
 
-use crate::step::Ordered;
+use crate::{lanedump::DumpOrder, step::Ordered};
 
 /// A `lua_State`, never dereferenced here.
 pub type State = *mut c_void;
@@ -119,6 +126,10 @@ const MAX_LANE_TEXT: usize = 4096;
 /// Most lines waiting for the hook's log, and the longest kept.
 const MAX_LOG_LINES: usize = 1024;
 const MAX_LOG_LINE: usize = 1000;
+/// Most entries one checkpoint's lane dump writes, all its lanes together,
+/// and the longest entry kept.
+pub const MAX_DUMP_LINES: usize = 5000;
+const MAX_DUMP_LINE: usize = 2000;
 
 /// Where a Lua state keeps its globals.
 #[derive(Debug, Clone, Copy)]
@@ -194,6 +205,18 @@ struct Batch {
     /// update.
     lanes_wanted: bool,
     lanes: Option<Vec<(u16, String)>>,
+    /// The lanes to dump at its checkpoint.
+    dump: Option<Dump>,
+}
+
+/// A checkpoint's lane dump, as the batch runs it.
+struct Dump {
+    step: u64,
+    lanes: Vec<u16>,
+    /// `dump()` handed it to the mod.
+    taken: bool,
+    written: usize,
+    left_out: usize,
 }
 
 /// What became of one of the player's actions: `results()`'s entries.
@@ -217,6 +240,8 @@ struct Shared {
     batch: Batch,
     /// Lines for the hook's log.
     log: VecDeque<String>,
+    /// Lane dump entries for the hook's log, after `log`'s lines.
+    dumped: Vec<String>,
     /// A request the GUI has not polled yet.
     request: Option<Request>,
     /// The GUI's answer to the last save: the name saved, or why not.
@@ -270,8 +295,10 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
         begun: 0,
         lanes_wanted: false,
         lanes: None,
+        dump: None,
     },
     log: VecDeque::new(),
+    dumped: Vec::new(),
     request: None,
     save_answer: None,
     worlds: 0,
@@ -336,9 +363,15 @@ fn answer(answer: Answer) {
 
 /// A batch of `updates` updates begins; its first update applies
 /// `actions`, the room's events for the step it starts at, and with
-/// `lanes` its last update reads the world's lanes. Refuses an action with
-/// no table form, before any update runs.
-pub fn begin_batch(actions: &[Ordered], updates: u32, lanes: bool) -> Result<(), String> {
+/// `lanes` its last update reads the world's lanes, and writes those
+/// `dump` names to the log. Refuses an action with no table form, before
+/// any update runs.
+pub fn begin_batch(
+    actions: &[Ordered],
+    updates: u32,
+    lanes: bool,
+    dump: Option<&DumpOrder>,
+) -> Result<(), String> {
     let tables = actions
         .iter()
         .map(|ordered| {
@@ -353,6 +386,13 @@ pub fn begin_batch(actions: &[Ordered], updates: u32, lanes: bool) -> Result<(),
         begun: 0,
         lanes_wanted: lanes,
         lanes: None,
+        dump: dump.filter(|_| lanes).map(|order| Dump {
+            step: order.step,
+            lanes: order.lanes.clone(),
+            taken: false,
+            written: 0,
+            left_out: 0,
+        }),
     };
     Ok(())
 }
@@ -362,6 +402,31 @@ pub fn begin_batch(actions: &[Ordered], updates: u32, lanes: bool) -> Result<(),
 /// room's step without them.
 pub fn end_batch() -> Result<Option<Vec<(u16, String)>>, String> {
     let mut shared = shared();
+    if let Some(dump) = shared.batch.dump.take() {
+        let lanes = dump
+            .lanes
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let line = if !dump.taken {
+            format!(
+                "lane dump at step {}: the mod did not dump lanes {lanes} (a mod without lane dumps, or no checkpoint read)",
+                dump.step
+            )
+        } else if dump.left_out > 0 {
+            format!(
+                "lane dump at step {}: lanes {lanes}, {} entries written and {} left out (at most {MAX_DUMP_LINES} a checkpoint)",
+                dump.step, dump.written, dump.left_out
+            )
+        } else {
+            format!(
+                "lane dump at step {}: lanes {lanes}, {} entries written",
+                dump.step, dump.written
+            )
+        };
+        shared.dumped.push(line);
+    }
     let batch = &mut shared.batch;
     batch.lanes_wanted = false;
     batch.updates = 0;
@@ -378,9 +443,12 @@ pub fn end_batch() -> Result<Option<Vec<(u16, String)>>, String> {
     }
 }
 
-/// The lines logged since the last call.
+/// The lines logged since the last call, the lane dumps' last.
 pub fn take_log() -> Vec<String> {
-    shared().log.drain(..).collect()
+    let mut shared = shared();
+    let mut lines: Vec<String> = shared.log.drain(..).collect();
+    lines.append(&mut shared.dumped);
+    lines
 }
 
 /// Asks the GUI to save the world under `name`, in the game's own save
@@ -545,6 +613,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"status", native_status),
                 (b"chat", native_chat),
                 (b"say", native_say),
+                (b"dump", native_dump),
+                (b"dumped", native_dumped),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -1387,6 +1457,91 @@ unsafe extern "C-unwind" fn native_room(l: State) -> c_int {
     1
 }
 
+/// `dump()`: at a checkpoint whose lanes are to be dumped, in its last
+/// update: `{ step =, lanes = { ... } }`, once; else nil.
+unsafe extern "C-unwind" fn native_dump(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let order = {
+        let mut shared = shared();
+        let batch = &mut shared.batch;
+        let due = batch.lanes_wanted && batch.begun == batch.updates;
+        match batch.dump.as_mut() {
+            Some(dump) if due && !dump.taken => {
+                dump.taken = true;
+                Some((dump.step, dump.lanes.clone()))
+            }
+            _ => None,
+        }
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let table = order.map(|(step, lanes)| {
+        LuaValue::Table(vec![
+            (LuaValue::string("step"), LuaValue::Number(step as f64)),
+            (
+                LuaValue::string("lanes"),
+                LuaValue::Table(
+                    lanes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, lane)| {
+                            (
+                                LuaValue::Number((i + 1) as f64),
+                                LuaValue::Number(f64::from(*lane)),
+                            )
+                        })
+                        .collect(),
+                ),
+            ),
+        ])
+    });
+    // SAFETY: Lua calls this with its own state, on its thread.
+    unsafe { push_or_nil(api, l, table.as_ref()) }
+}
+
+/// Takes one entry of a lane the mod dumps into the log, or says why not:
+/// `Err(true)` once the checkpoint wrote its most, `Err(false)` when no
+/// dump of that lane runs.
+fn take_dumped(lane: f64, entry: &str) -> Result<(), bool> {
+    let mut shared = shared();
+    let Shared { batch, dumped, .. } = &mut *shared;
+    let Some(dump) = batch.dump.as_mut().filter(|dump| dump.taken) else {
+        return Err(false);
+    };
+    let Some(lane) = dump
+        .lanes
+        .iter()
+        .copied()
+        .find(|known| f64::from(*known) == lane)
+    else {
+        return Err(false);
+    };
+    if dump.written >= MAX_DUMP_LINES {
+        dump.left_out += 1;
+        return Err(true);
+    }
+    dump.written += 1;
+    dumped.push(format!("lane {lane} step {} {entry}", dump.step));
+    Ok(())
+}
+
+/// `dumped(lane, entry)`: `true`, or `false` when the entry was not taken.
+unsafe extern "C-unwind" fn native_dumped(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let (lane, entry) = unsafe { (number_arg(api, l, 1), string_arg(api, l, 2, MAX_DUMP_LINE)) };
+    let taken = match (lane, entry) {
+        (Some(lane), Some(entry)) => take_dumped(lane, &entry).is_ok(),
+        _ => false,
+    };
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe { (api.pushboolean)(l, c_int::from(taken)) };
+    1
+}
+
 /// `log(line)`.
 unsafe extern "C-unwind" fn native_log(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -1629,8 +1784,8 @@ pub(crate) mod tests {
 
     fn reset() {
         take_commands();
-        take_log();
         let _ = end_batch();
+        take_log();
         let mut shared = shared();
         shared.answers.clear();
         shared.room = RoomStatus {
@@ -1657,7 +1812,7 @@ pub(crate) mod tests {
         lua.register();
         // Three updates, ending at a checkpoint: each update begins with
         // take(), and only the third may report lanes.
-        begin_batch(&[], 3, true).unwrap();
+        begin_batch(&[], 3, true, None).unwrap();
         let mut due = Vec::new();
         for _ in 0..3 {
             lua.run("tpf3mp_native.take()").unwrap();
@@ -1682,7 +1837,7 @@ pub(crate) mod tests {
         );
         // A batch that does not end at a checkpoint wants none, and takes
         // none.
-        begin_batch(&[], 1, false).unwrap();
+        begin_batch(&[], 1, false, None).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
         assert_eq!(
             lua.run("return tpf3mp_native.checkpoint()"),
@@ -1694,9 +1849,125 @@ pub(crate) mod tests {
         assert!(refused.starts_with("false|no checkpoint"), "{refused}");
         assert_eq!(end_batch(), Ok(None));
         // A checkpoint whose lanes never came ends without them.
-        begin_batch(&[], 1, true).unwrap();
+        begin_batch(&[], 1, true, None).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
         assert_eq!(end_batch(), Ok(None));
+    }
+
+    /// What `dump()` hands the mod, as text.
+    const DUMP: &str = "local d = tpf3mp_native.dump() \
+                        if d == nil then return 'nil' end \
+                        return d.step .. ':' .. table.concat(d.lanes, ',')";
+
+    #[test]
+    fn a_lane_dump_is_handed_out_once_at_its_checkpoint_and_written_by_entry() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        let order = DumpOrder {
+            step: 300,
+            lanes: vec![1, 3],
+            why: "step 250 diverged".into(),
+        };
+        begin_batch(&[], 2, true, Some(&order)).unwrap();
+        lua.run("tpf3mp_native.take()").unwrap();
+        assert_eq!(
+            lua.run(DUMP),
+            Ok("nil".into()),
+            "not before the last update"
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.dumped(3, 'vehicle-0 x=1')"),
+            Ok("false".into()),
+            "nothing written before the dump is handed out"
+        );
+        lua.run("tpf3mp_native.take()").unwrap();
+        assert_eq!(lua.run(DUMP), Ok("300:1,3".into()));
+        assert_eq!(lua.run(DUMP), Ok("nil".into()), "once");
+        assert_eq!(
+            lua.run(
+                "return tostring(tpf3mp_native.dumped(3, 'vehicle-0 speed=5')) \
+                 .. ',' .. tostring(tpf3mp_native.dumped(3, 'vehicle-1 speed=0')) \
+                 .. ',' .. tostring(tpf3mp_native.dumped(0, 'edge')) \
+                 .. ',' .. tostring(tpf3mp_native.dumped(3))"
+            ),
+            Ok("true,true,false,false".into()),
+            "lane 0 is not dumped, and an entry is text"
+        );
+        lua.run("tpf3mp_native.lanes({ [3] = 'v' })").unwrap();
+        assert!(end_batch().unwrap().is_some());
+        assert_eq!(
+            take_log(),
+            [
+                "lane 3 step 300 vehicle-0 speed=5",
+                "lane 3 step 300 vehicle-1 speed=0",
+                "lane dump at step 300: lanes 1,3, 2 entries written",
+            ]
+        );
+        // After the batch, nothing more is taken.
+        assert_eq!(
+            lua.run("return tpf3mp_native.dumped(3, 'late')"),
+            Ok("false".into())
+        );
+        // A batch with no checkpoint dumps nothing, whatever it is handed.
+        begin_batch(&[], 1, false, Some(&order)).unwrap();
+        lua.run("tpf3mp_native.take()").unwrap();
+        assert_eq!(lua.run(DUMP), Ok("nil".into()));
+        assert_eq!(end_batch(), Ok(None));
+        assert!(take_log().is_empty());
+        // A mod that never asks is said in the log.
+        begin_batch(&[], 1, true, Some(&order)).unwrap();
+        lua.run("tpf3mp_native.take()").unwrap();
+        let _ = end_batch();
+        let log = take_log();
+        assert_eq!(log.len(), 1);
+        assert!(log[0].contains("the mod did not dump lanes 1,3"), "{log:?}");
+    }
+
+    #[test]
+    fn a_checkpoints_dump_writes_a_bounded_number_of_entries() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        let order = DumpOrder {
+            step: 50,
+            lanes: vec![0, 3],
+            why: String::new(),
+        };
+        begin_batch(&[], 1, true, Some(&order)).unwrap();
+        lua.run("tpf3mp_native.take()").unwrap();
+        lua.run(DUMP).unwrap();
+        let taken = lua
+            .run(&format!(
+                "local n = 0 \
+                 for i = 1, {} do \
+                     local lane = (i % 2 == 0) and 0 or 3 \
+                     if tpf3mp_native.dumped(lane, 'e' .. i .. string.rep('x', 3000)) then n = n + 1 end \
+                 end \
+                 return n",
+                MAX_DUMP_LINES + 7
+            ))
+            .unwrap();
+        assert_eq!(taken, MAX_DUMP_LINES.to_string());
+        let _ = end_batch();
+        let log = take_log();
+        assert_eq!(log.len(), MAX_DUMP_LINES + 1);
+        assert!(
+            log.iter()
+                .take(MAX_DUMP_LINES)
+                .all(|line| line.len() <= MAX_DUMP_LINE + 20),
+            "each entry cut to its most"
+        );
+        assert_eq!(
+            log.last().unwrap(),
+            &format!(
+                "lane dump at step 50: lanes 0,3, {MAX_DUMP_LINES} entries written and 7 left out (at most {MAX_DUMP_LINES} a checkpoint)"
+            )
+        );
+        // The ordinary log keeps its own bound, apart from the dump's.
+        const { assert!(MAX_DUMP_LINES > MAX_LOG_LINES) };
     }
 
     #[test]
@@ -1711,7 +1982,7 @@ pub(crate) mod tests {
         let sell = Action::SellVehicle {
             vehicles: BoundedVec::new(vehicles).unwrap(),
         };
-        begin_batch(&[ordered(sell, None)], 1, false).unwrap();
+        begin_batch(&[ordered(sell, None)], 1, false, None).unwrap();
         let walked = lua
             .run(
                 "local list = tpf3mp_native.take()[1].SellVehicle.vehicles \
@@ -1739,7 +2010,7 @@ pub(crate) mod tests {
             ("{ [1] = 5 }", "lane 1 is not a string"),
             ("{ [1] = string.rep('a', 5000) }", "longer than"),
         ] {
-            begin_batch(&[], 1, true).unwrap();
+            begin_batch(&[], 1, true, None).unwrap();
             lua.run("tpf3mp_native.take()").unwrap();
             let result = lua
                 .run(&format!("return tpf3mp_native.lanes({lanes})"))
@@ -1769,9 +2040,10 @@ pub(crate) mod tests {
                  type(tpf3mp_native.checkpoint), type(tpf3mp_native.lanes), \
                  type(tpf3mp_native.clicks), type(tpf3mp_native.built), \
                  type(tpf3mp_native.replaying), \
-                 type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say)"
+                 type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
+                 type(tpf3mp_native.dump), type(tpf3mp_native.dumped)"
             ),
-            Ok("9|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("9|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -1945,6 +2217,7 @@ pub(crate) mod tests {
             ],
             1,
             false,
+            None,
         )
         .unwrap();
         lua.run(
@@ -2011,7 +2284,7 @@ pub(crate) mod tests {
         let lua = Lua::new();
         lua.register();
         assert_eq!(lua.run("return tpf3mp_native.take()"), Ok("nil".into()));
-        begin_batch(&[ordered(depot_build(), None)], 1, false).unwrap();
+        begin_batch(&[ordered(depot_build(), None)], 1, false, None).unwrap();
         assert_eq!(
             lua.run(
                 "local first = tpf3mp_native.take() local again = tpf3mp_native.take() \
@@ -2022,14 +2295,14 @@ pub(crate) mod tests {
         );
         assert_eq!(end_batch(), Ok(None));
         // An action nobody took is found at the batch's end.
-        begin_batch(&[ordered(depot_build(), None)], 1, false).unwrap();
+        begin_batch(&[ordered(depot_build(), None)], 1, false, None).unwrap();
         assert!(
             end_batch()
                 .unwrap_err()
                 .contains("did not take the 1 action")
         );
         // A batch without actions has nothing to take.
-        begin_batch(&[], 1, false).unwrap();
+        begin_batch(&[], 1, false, None).unwrap();
         assert_eq!(lua.run("return tpf3mp_native.take()"), Ok("nil".into()));
         assert_eq!(end_batch(), Ok(None));
     }

@@ -20,7 +20,10 @@
 --   batch at a checkpoint step (`checkpoint`). It returns both, or nil.
 -- - `postUpdate` applies the actions (tpf3mp/apply.lua) and, at a
 --   checkpoint, reads the world's lanes (tpf3mp/lanes.lua) and hands them
---   to the hook (`lanes`), which reports them to the room.
+--   to the hook (`lanes`), which reports them to the room. When the hook
+--   asks (`dump`: after a divergence, or TPF3MP_HOOK_LANE_DUMP), it also
+--   hands it the lanes asked for entry by entry, for hook.log (docs/HOOKS.md,
+--   "Lane dumps").
 --
 -- The hook holds the world if nobody took the actions, or if a checkpoint's
 -- lanes did not come.
@@ -289,6 +292,16 @@ function data()
 				end
 				local ok, why = l:lanes(read)
 				if not ok then l:log("the lanes were not taken: " .. tostring(why)) end
+				local dump = l:dump()
+				if dump then
+					local saved = state and state.get and state:get()
+					local reg = type(saved) == "table" and saved.registry or nil
+					-- Every entry is handed over: the hook keeps the first
+					-- few thousand and counts the rest.
+					for _, lane in ipairs(dump.lanes) do
+						for _, entry in ipairs(lanes.dump(api, lane, reg)) do l:dumped(lane, entry) end
+					end
+				end
 			end
 		end,
 

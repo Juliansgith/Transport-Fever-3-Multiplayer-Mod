@@ -724,6 +724,10 @@ for the table (`bridge.find`). Its contract is in
   returned when the driver handed the action over, and which it keeps with
   the action's ticket. An action the room refuses (`Notice::Refused`), or
   one handed over when no room's game runs, answers `ok = false` with why.
+- `tpf3mp_native.dump()` and `tpf3mp_native.dumped(lane, entry)`: in a
+  game script's `postUpdate` at a checkpoint: the lanes the hook wants
+  written to its log entry by entry, and each entry ("Lane dumps" below).
+  Optional, as `built`.
 
 The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
@@ -1430,6 +1434,91 @@ and the room resynced a game whose simulation had not diverged.
 
 Seen on build 40408, two games through the deployed server: every lane
 read, and the room found no divergence over several checkpoints.
+
+#### Lane dumps
+
+A digest says *that* a lane differs, not which vehicle, line or edge, nor
+how. So after a divergence every game in the room writes the full text of
+the diverged lanes to its `hook.log`, entry by entry, at the same two
+checkpoints, and `tools/lane_diff.py` diffs two or three games' logs
+(`crates/tpf3mp-hook/src/lanedump.rs`). Seen in a three-player playtest on
+build 40408: the room said `Diverged { step: 250, lanes: [3] }` to two games
+and nothing more.
+
+- **Who dumps.** The room tells only the games whose world differed from
+  its verdict (`Notice::Diverged`), and the others are needed to diff
+  against. So a game told it diverged says so in the room's chat, a line
+  every member's hook reads (the room passes chat to its sender too):
+
+  ```
+  [tpf3mp] lane dump lanes=3 steps=300,350 diverged=250: this game's world differed from the room's; every game writes these lanes to its hook.log
+  ```
+
+  Its steps are the first two checkpoints at least 20 steps
+  (`lanedump::MARGIN_STEPS`) past the step the game runs next, time for the
+  line to reach every game. Every game that hears it, that one included,
+  dumps those lanes at those steps; the line shows in the Multiplayer
+  window like any other. No protocol change: the chat carries it.
+- **Bounds.** One dump asked for a minute at most, here or heard
+  (`lanedump::GAP`); a line naming steps already planned only adds its
+  lanes (both diverged games of a room of three say one). A line heard is
+  checked: at most 16 lanes and two steps, each a checkpoint step, not past,
+  and no more than 20 checkpoints ahead. One checkpoint writes at most
+  `lua::MAX_DUMP_LINES` (5000) entries, all its lanes together, each cut to
+  2000 bytes; the rest are counted.
+- **By hand.** `TPF3MP_HOOK_LANE_DUMP` in the game's environment dumps
+  lanes at every checkpoint, for chasing a desync on purpose: `all`, or
+  lane numbers (`3`, `0,3`). `off` dumps nothing, not even after a
+  divergence. The hook says in its log what it read.
+- **In the game.** The driver passes the dump with the batch that ends at
+  the checkpoint (`step::Batch::dump`, `lua::begin_batch`). In that
+  batch's last update `tpf3mp_native.dump()` answers `{ step =, lanes = {
+  ... } }` once; the game script, right after handing over the lanes, reads
+  each lane asked for again with `lanes.dump`, and hands each entry to
+  `tpf3mp_native.dumped(lane, entry)`, which the hook writes to its log
+  after the batch as `lane <n> step <step> <entry>`, then a line
+  `lane dump at step <step>: ... entries written`. Both functions are
+  optional in the bridge contract (a hook or mod without them dumps
+  nothing, as `built`), so `VERSION` stays 9.
+- **The entries.** `lanes.dump` runs the very reader that sums the lane
+  up, so it reads the same values the digest hashes: each entry is
+  `<key> <field>=<value> ... entity=<e> row=<row>`, the fields the raw
+  values the row was made from at full precision (`%.17g`), `row` the text
+  hashed. The key is the registry's canonical id where there is one
+  (`vehicle-N`, `line-N`, `town-N`, `industry-N`), else `row:<row>`
+  (edges, other constructions) or `player` and `people`. Entries are sorted
+  by key, ids first, so the same world dumps the same lines in the same
+  order whatever order the engine lists it in. Each lane ends with
+  `summary <text>`, the lane's text as hashed; a lane that cannot be read
+  is one line `err <why>`.
+
+  | lane | fields |
+  |---|---|
+  | 0 network | `p0`, `p1` (the edge's ends), `template` |
+  | 1 constructions | `file`, `x`, `y`, `z` |
+  | 2 lines | `stops`, then `stop<i>=<group>/<station>/<terminal>` |
+  | 3 vehicles | `state`, `stop` (index), `line`, `edge`, `pos`, `speed` (`MOVE_PATH.dyn`) |
+  | 4 economy | `balance` |
+  | 5 towns | `buildings` |
+  | 6 people | `count` |
+
+  A vehicle's line, a line's stops and their station groups are read for
+  the dump only; the lanes hash what the table above says.
+
+After a divergence, gather each game's `hook.log` (a second player in a
+Sandboxie box has its own under the box's copy of the data folder) and run:
+
+```
+grep 'lane 3 step 300' hook.log          # one game's vehicles at step 300
+python tools/lane_diff.py james=james/hook.log bob=bob/hook.log cat=cat/hook.log
+python tools/lane_diff.py --lane 3 --step 300 --max 50 --ignore entity a.log b.log
+```
+
+For each lane and step dumped by two or more games it pairs the entries
+by key and prints the ones that differ, grouping the games that agree and
+showing only the fields that differ, and whether the lane's text itself
+differed (a difference below the lane's rounding leaves it alike). It exits
+1 when an entry differs. `python tools/test_lane_diff.py` tests it.
 
 ### Seeds, as built
 

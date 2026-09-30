@@ -66,6 +66,8 @@ use tpf3mp_proto::{
     ChatText, Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Speed, action::Action,
 };
 
+use crate::lanedump::{self, DumpOrder, LaneDumps};
+
 /// Most steps one call of the game's step runs, catching up with the room:
 /// at the game's 1x (5 calls a second), rooms up to 16x keep up. The game
 /// itself runs up to 64 in a call (its debug steps).
@@ -390,6 +392,9 @@ pub struct Batch<'a> {
     /// The room's step the batch's first update runs, when it runs the
     /// room's steps.
     pub first_step: Option<u64>,
+    /// With `lanes`: the lanes whose full text the game writes to the log
+    /// after its last update, entry by entry ([`crate::lanedump`]).
+    pub dump: Option<&'a DumpOrder>,
 }
 
 /// A lane the game read: its number and what the game read for it, which
@@ -400,6 +405,15 @@ pub type LaneText = (u16, String);
 /// lanes the game read, if it read them, or why it did not follow the
 /// batch (its actions were not applied).
 pub type RunStep<'a> = dyn FnMut(&Batch<'_>) -> Result<Option<Vec<LaneText>>, String> + 'a;
+
+/// Numbers as a comma-separated list, for the log.
+fn join<T: ToString>(items: &[T]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 /// The digests the session reports for the lanes the game read.
 pub fn lane_digests(lanes: &[LaneText]) -> Vec<LaneDigest> {
@@ -430,8 +444,11 @@ pub struct StepDriver<G> {
     chosen: Option<u64>,
     /// Steps between checkpoints, from the room's `Begin`.
     checkpoint_interval: u64,
-    /// The batch chosen last ends at a checkpoint step.
+    /// The batch chosen last ends at a checkpoint step, this one.
     lanes_due: bool,
+    checkpoint_step: u64,
+    /// The lane dumps to come ([`crate::lanedump`]).
+    dumps: LaneDumps,
     /// The player's actions handed to the room and not yet ordered back:
     /// the ticket the mod was given for each, by its client sequence number.
     tickets: HashMap<u64, u64>,
@@ -466,6 +483,8 @@ impl<G: RoomGate> StepDriver<G> {
             chosen: None,
             checkpoint_interval: u64::MAX,
             lanes_due: false,
+            checkpoint_step: 0,
+            dumps: LaneDumps::default(),
             tickets: HashMap::new(),
             refused: Vec::new(),
             menus: 0,
@@ -475,6 +494,12 @@ impl<G: RoomGate> StepDriver<G> {
             log: Vec::new(),
             lobby_fault: None,
         }
+    }
+
+    /// Which lanes to dump besides those a divergence asks for (the game's
+    /// [`lanedump::ENV`]).
+    pub fn set_lane_dumps(&mut self, dumps: LaneDumps) {
+        self.dumps = dumps;
     }
 
     /// The main menu's Multiplayer window (D17): hands the launcher the
@@ -606,6 +631,7 @@ impl<G: RoomGate> StepDriver<G> {
         }
         // The session hears the room only in the gate's calls above.
         for notice in std::mem::take(&mut self.game.window) {
+            self.plan_dumps(&notice);
             self.control.room_notice(&notice);
         }
         // The actions wait until a batch runs: a batch that starts at their
@@ -628,12 +654,28 @@ impl<G: RoomGate> StepDriver<G> {
             (true, Updates::Exactly(steps)) if steps > 0 => self.next_step,
             _ => None,
         };
+        let lanes = runs && self.lanes_due;
+        let dump = if lanes && self.phase == Phase::Running {
+            self.dumps.take(self.checkpoint_step)
+        } else {
+            None
+        };
+        if let Some(dump) = &dump {
+            self.log.push(format!(
+                "dumping lanes {} at the checkpoint after step {} ({}): lines \"lane <n> step {}\"",
+                join(&dump.lanes),
+                dump.step,
+                dump.why,
+                dump.step
+            ));
+        }
         let batch = Batch {
             updates,
             actions: &actions,
-            lanes: runs && self.lanes_due,
+            lanes,
             room: self.in_room(),
             first_step: released,
+            dump: dump.as_ref(),
         };
         crate::seeds::before_updates(released, updates);
         match run(&batch) {
@@ -678,6 +720,70 @@ impl<G: RoomGate> StepDriver<G> {
             Err(reason) => self.hold(format!("the game did not follow the room's step: {reason}")),
         }
         Outcome { updates }
+    }
+
+    /// A divergence, or a line of the room's chat asking for a lane dump:
+    /// plans the dump (docs/HOOKS.md, "Lane dumps"). A divergence is said in
+    /// the room's chat, for every game to dump the same lanes at the same
+    /// steps.
+    fn plan_dumps(&mut self, notice: &Notice) {
+        if self.phase != Phase::Running {
+            return;
+        }
+        let next = self.gate.next_step();
+        let now = Instant::now();
+        match notice {
+            Notice::Diverged { step, lanes } => {
+                let Some(ask) =
+                    self.dumps
+                        .diverged(*step, lanes, next, self.checkpoint_interval, now)
+                else {
+                    if !self.dumps.setting().off {
+                        self.log.push(format!(
+                            "step {step} diverged; lanes were dumped less than a minute ago, so not again yet"
+                        ));
+                    }
+                    return;
+                };
+                self.log.push(format!(
+                    "step {step} diverged: dumping lanes {} at steps {}, and asking every game in the room to",
+                    join(&ask.lanes),
+                    join(&ask.steps)
+                ));
+                match ChatText::new(lanedump::announce(&ask)) {
+                    Ok(text) => {
+                        if let Err(error) = self.gate.chat(text) {
+                            self.log.push(format!(
+                                "the room did not hear the lane dump asked: {error}"
+                            ));
+                        }
+                    }
+                    Err(_) => self
+                        .log
+                        .push("the lane dump asked is too long for the room's chat".into()),
+                }
+            }
+            Notice::Chat { from, text } => {
+                match self
+                    .dumps
+                    .heard(text.as_str(), next, self.checkpoint_interval, now)
+                {
+                    None => {}
+                    Some(Ok(ask)) => self.log.push(format!(
+                        "{} asks for a lane dump: lanes {} at steps {} (step {} diverged there)",
+                        from.as_str(),
+                        join(&ask.lanes),
+                        join(&ask.steps),
+                        ask.diverged
+                    )),
+                    Some(Err(why)) => self.log.push(format!(
+                        "not taking the lane dump {} asks for: {why}",
+                        from.as_str()
+                    )),
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Hands the player's actions to the room, in the room's game only: an
@@ -748,6 +854,7 @@ impl<G: RoomGate> StepDriver<G> {
                             let steps = steps.max(1);
                             let last = first.saturating_add(u64::from(steps) - 1);
                             self.lanes_due = last.is_multiple_of(self.checkpoint_interval);
+                            self.checkpoint_step = last;
                             Updates::Exactly(steps)
                         }
                         Err(error) => {
@@ -1868,6 +1975,120 @@ pub(crate) mod tests {
         let state = state.lock().unwrap();
         assert_eq!(state.me, Some(begin().player), "the game's own player");
         assert_eq!(state.room_notices, heard, "what the room said, in order");
+    }
+
+    /// Runs the room's steps up to `through`, one call at a time, and
+    /// returns each checkpoint's lane dump: its step and lanes.
+    fn dumps_through(d: &mut StepDriver<Script>, through: u64) -> Vec<(u64, Vec<u16>)> {
+        let mut dumps = Vec::new();
+        while d.gate.ran < through {
+            d.on_step(Vec::new(), &mut |batch| {
+                if let Some(dump) = batch.dump {
+                    assert!(batch.lanes, "a dump comes with a checkpoint");
+                    dumps.push((dump.step, dump.lanes.clone()));
+                }
+                Ok(batch.lanes.then(Vec::new))
+            });
+        }
+        dumps
+    }
+
+    fn room_running(interval: u32, steps: usize) -> Script {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(interval)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script
+            .gates
+            .extend(std::iter::repeat_n(StepGate::Run, steps));
+        script
+    }
+
+    #[test]
+    fn a_divergence_asks_every_game_for_a_lane_dump_and_dumps_here_too() {
+        let mut script = room_running(10, 60);
+        script.notices.push_back(vec![Notice::Diverged {
+            step: 10,
+            lanes: vec![3],
+        }]);
+        let (mut d, _) = driver(script);
+        let dumps = dumps_through(&mut d, 60);
+        // Told before step 1: the first checkpoint 20 steps on or later.
+        assert_eq!(dumps, [(30, vec![3]), (40, vec![3])]);
+        let said: Vec<&str> = d.gate.said.iter().map(|t| t.as_str()).collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(
+            crate::lanedump::parse(said[0]),
+            Some(crate::lanedump::Ask {
+                lanes: vec![3],
+                steps: vec![30, 40],
+                diverged: 10
+            }),
+            "the room's chat carries the steps and lanes"
+        );
+        let log = d.take_log().join("\n");
+        assert!(
+            log.contains("step 10 diverged: dumping lanes 3 at steps 30,40"),
+            "{log}"
+        );
+        assert!(
+            log.contains("dumping lanes 3 at the checkpoint after step 30 (step 10 diverged)"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_game_that_did_not_diverge_dumps_what_the_rooms_chat_asks() {
+        let mut script = room_running(10, 60);
+        let ask = crate::lanedump::Ask {
+            lanes: vec![0, 3],
+            steps: vec![30, 40],
+            diverged: 10,
+        };
+        script.notices.push_back(vec![Notice::Chat {
+            from: tpf3mp_proto::Text::new("bob").unwrap(),
+            text: ChatText::new(crate::lanedump::announce(&ask)).unwrap(),
+        }]);
+        let (mut d, state) = driver_with(script);
+        let dumps = dumps_through(&mut d, 60);
+        assert_eq!(dumps, [(30, vec![0, 3]), (40, vec![0, 3])]);
+        assert!(d.gate.said.is_empty(), "it asks nobody else");
+        assert!(
+            d.take_log()
+                .iter()
+                .any(|l| l.contains("bob asks for a lane dump: lanes 0,3 at steps 30,40")),
+        );
+        assert_eq!(
+            state.lock().unwrap().room_notices.len(),
+            1,
+            "the window still shows the line"
+        );
+    }
+
+    #[test]
+    fn the_environments_lanes_are_dumped_at_every_checkpoint() {
+        let (mut d, _) = driver(room_running(10, 30));
+        d.set_lane_dumps(LaneDumps::new(
+            crate::lanedump::Setting::from_env(Some("3")).0,
+        ));
+        assert_eq!(
+            dumps_through(&mut d, 30),
+            [(10, vec![3]), (20, vec![3]), (30, vec![3])]
+        );
+        // Off: a divergence asks nothing and dumps nothing.
+        let mut script = room_running(10, 60);
+        script.notices.push_back(vec![Notice::Diverged {
+            step: 10,
+            lanes: vec![3],
+        }]);
+        let (mut d, _) = driver(script);
+        d.set_lane_dumps(LaneDumps::new(
+            crate::lanedump::Setting::from_env(Some("off")).0,
+        ));
+        assert!(dumps_through(&mut d, 60).is_empty());
+        assert!(d.gate.said.is_empty());
     }
 
     #[test]

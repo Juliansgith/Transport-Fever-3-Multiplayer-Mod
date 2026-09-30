@@ -324,7 +324,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
                 Updates::Exactly(updates) => updates,
                 Updates::Own => 0,
             };
-            match lua::begin_batch(batch.actions, updates, batch.lanes) {
+            match lua::begin_batch(batch.actions, updates, batch.lanes, batch.dump) {
                 Ok(()) => {
                     unsafe { run_step(original, batch.updates, batch.room, this, a, b, c) };
                     if let Some(first) = batch.first_step {
@@ -357,9 +357,8 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
         {
-            for line in lines {
-                log.line(&line);
-            }
+            // One write: a lane dump is thousands of lines.
+            log.lines(&lines);
         }
     }));
     if result.is_err() {
@@ -492,11 +491,25 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     let session = tpf3mp_bridge::Session::attach(link_name, &profile.name, Duration::from_secs(30))
         .map_err(|error| format!("the agent's link: {error}"))?;
     lua::install_api(api);
-    *DRIVER.lock().unwrap_or_else(|p| p.into_inner()) =
-        Some(Box::new(crate::step::StepDriver::new(
-            session,
-            Box::new(crate::worlds::GuiWorlds::in_steam_folder()),
-        )));
+    let mut driver = crate::step::StepDriver::new(
+        session,
+        Box::new(crate::worlds::GuiWorlds::in_steam_folder()),
+    );
+    let env = std::env::var(crate::lanedump::ENV).ok();
+    let (setting, refused) = crate::lanedump::Setting::from_env(env.as_deref());
+    if let Some(why) = refused {
+        log_line(&why);
+    } else if setting.off {
+        log_line("lane dumps are off, even after a divergence");
+    } else if !setting.always.is_empty() {
+        log_line(&format!(
+            "dumping lanes {:?} at every checkpoint ({})",
+            setting.always,
+            crate::lanedump::ENV
+        ));
+    }
+    driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
+    *DRIVER.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(driver));
 
     // SAFETY: both targets are functions the profile resolved, exactly once,
     // in this process's code; the game has not run a step yet (the hook

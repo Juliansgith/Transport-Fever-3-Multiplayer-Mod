@@ -391,7 +391,8 @@ fn loaded_names(lua: &Lua) -> Vec<String> {
 const FAKE_HOOK: &str = r#"
 HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, worlds = 0,
          room = false, checkpoint = false, lanes = nil, clicks = nil, replaying = {},
-         applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {} }
+         applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {},
+         dump = nil, dumped = {} }
 tpf3mp_native = {
     version = 9,
     command = function(action)
@@ -453,6 +454,20 @@ tpf3mp_native = {
     say = function(text)
         if text:match('^%s*$') then return false, 'nothing to say' end
         HOOK.said[#HOOK.said + 1] = text
+        return true
+    end,
+    -- A lane dump the hook asks for ({ step =, lanes = }), once; the
+    -- entries go to HOOK.dumped as the hook writes them to its log.
+    dump = function()
+        local order = HOOK.dump
+        HOOK.dump = nil
+        HOOK.dumping = order
+        return order
+    end,
+    dumped = function(lane, entry)
+        local order = HOOK.dumping
+        if order == nil then return false end
+        HOOK.dumped[#HOOK.dumped + 1] = 'lane ' .. lane .. ' step ' .. order.step .. ' ' .. entry
         return true
     end,
 }
@@ -1169,6 +1184,117 @@ fn the_game_script_hands_the_lanes_over_at_a_checkpoint_only() {
         .collect();
     handed.sort();
     assert_eq!(handed, read_lanes(&lua));
+}
+
+/// A game of the room with the stand-in world: its registry begun at the
+/// room's first update, the engine listing entities in its own order.
+fn dumping_game(reversed: bool) -> Lua {
+    let (lua, _script) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    lua.load(format!(
+        "REVERSED = {reversed} HOOK.room = true UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    lua
+}
+
+/// The lines the game script hands the hook at a checkpoint whose lanes
+/// the hook wants dumped.
+fn dump_at_checkpoint(lua: &Lua, step: u64, lanes: &str) -> Vec<String> {
+    lua.load(format!(
+        "HOOK.dumped = {{}} HOOK.checkpoint = true HOOK.dump = {{ step = {step}, lanes = {{ {lanes} }} }} \
+         UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    lua.load("return HOOK.dumped").eval().unwrap()
+}
+
+#[test]
+fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_every_game() {
+    let a = dumping_game(false);
+    let b = dumping_game(true);
+    let dump_a = dump_at_checkpoint(&a, 300, "3, 0, 1, 2, 4, 5, 6");
+    let dump_b = dump_at_checkpoint(&b, 300, "3, 0, 1, 2, 4, 5, 6");
+    assert_eq!(
+        dump_a, dump_b,
+        "the same world dumps the same lines, whatever order the engine lists it in"
+    );
+    // Vehicles by their registry ids, with the raw values the lane rounds.
+    let vehicles: Vec<&String> = dump_a
+        .iter()
+        .filter(|l| l.starts_with("lane 3 step 300 "))
+        .collect();
+    assert_eq!(
+        vehicles,
+        [
+            "lane 3 step 300 vehicle-0 state=1 stop=0 line=nil edge=3 pos=10.199999999999999 speed=5 \
+             entity=401 row=1:0:3@10.20 v5.00",
+            "lane 3 step 300 vehicle-1 state=2 stop=1 line=nil edge=0 pos=0 speed=0 entity=402 \
+             row=2:1:0@0.00 v0.00",
+            &format!("lane 3 step 300 summary {}", read_lanes(&a)[3].1),
+        ],
+        "keyed, full precision, then the text the hook hashes"
+    );
+    // Every lane ends with the text lanes.read reads for it.
+    for (lane, text) in read_lanes(&a) {
+        let summary = format!("lane {lane} step 300 summary {text}");
+        assert!(dump_a.contains(&summary), "{summary} in {dump_a:#?}");
+    }
+    assert!(
+        dump_a.contains(&"lane 5 step 300 town-0 buildings=3 entity=7 row=7:3".to_owned()),
+        "{dump_a:#?}"
+    );
+    assert!(
+        dump_a.iter().any(|l| l.starts_with(
+            "lane 0 step 300 row:0,0,0>100,0,1:street/country.lua p0=0,0,0 \
+                                   p1=100.04000000000001,0,1"
+        )),
+        "an edge by its row, with its raw ends: {dump_a:#?}"
+    );
+    // Hashing changes nothing: the lanes are what they were.
+    assert_eq!(read_lanes(&a), read_lanes(&b));
+
+    // A vehicle a millimetre on in one game: the lanes still agree (1 cm),
+    // the dumps name it and how.
+    b.load("WORLD[9][402].dyn.pathPos.pos = 0.001")
+        .exec()
+        .unwrap();
+    assert_eq!(read_lanes(&a), read_lanes(&b));
+    let dump_a = dump_at_checkpoint(&a, 350, "3");
+    let dump_b = dump_at_checkpoint(&b, 350, "3");
+    let differ: Vec<(&String, &String)> =
+        dump_a.iter().zip(&dump_b).filter(|(x, y)| x != y).collect();
+    assert_eq!(differ.len(), 1, "{differ:#?}");
+    assert!(differ[0].0.starts_with("lane 3 step 350 vehicle-1 "));
+    assert!(differ[0].1.contains(" pos=0.001 "), "{}", differ[0].1);
+
+    // No dump asked: nothing handed over at a checkpoint.
+    a.load("HOOK.dumped = {} HOOK.checkpoint = true UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let none: Vec<String> = a.load("return HOOK.dumped").eval().unwrap();
+    assert!(none.is_empty());
+}
+
+#[test]
+fn a_lane_that_cannot_be_read_dumps_why_and_a_hook_without_dumps_is_left_alone() {
+    let lua = dumping_game(false);
+    lua.load("api.engine.system.townBuildingSystem = nil")
+        .exec()
+        .unwrap();
+    let dump = dump_at_checkpoint(&lua, 50, "5");
+    assert_eq!(dump.len(), 1, "{dump:?}");
+    assert!(dump[0].starts_with("lane 5 step 50 err "), "{dump:?}");
+    // An older hook has neither function: the lanes still go over.
+    lua.load("tpf3mp_native.dump, tpf3mp_native.dumped = nil, nil")
+        .exec()
+        .unwrap();
+    let dump = dump_at_checkpoint(&lua, 100, "5");
+    assert!(dump.is_empty());
+    let handed: bool = lua.load("return HOOK.lanes ~= nil").eval().unwrap();
+    assert!(handed);
 }
 
 const DEPOT: &str = "{ BuildConstruction = { \

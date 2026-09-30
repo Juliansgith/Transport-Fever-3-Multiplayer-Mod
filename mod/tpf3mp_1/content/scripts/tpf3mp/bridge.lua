@@ -44,6 +44,13 @@
 --                                   -- last call, { { from =, text = } }
 --     say     = function(text),     -- says text to the room -> true |
 --                                   -- false, why
+--     dump    = function(),         -- optional; in a game script's
+--                                   -- postUpdate at a checkpoint: the lanes
+--                                   -- to dump, { step =, lanes = { n, ... } },
+--                                   -- once, or nil
+--     dumped  = function(lane, entry), -- optional; one entry of a lane
+--                                   -- dumped, for hook.log -> true | false
+--                                   -- (no more taken)
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -229,6 +236,25 @@ function Link:built(click)
 	if type(proposal) == "table" then return proposal end
 	if why ~= nil then return nil, tostring(why) end
 	return nil
+end
+
+-- In a game script's postUpdate at a checkpoint: the lanes the hook wants
+-- dumped entry by entry (docs/HOOKS.md, "Lane dumps"), { step =, lanes = {
+-- n, ... } }, once; or nil, and nil from a hook without dumps (`dump` is
+-- optional).
+function Link:dump()
+	if type(self.native.dump) ~= "function" then return nil end
+	local ok, order = pcall(self.native.dump)
+	if not ok or type(order) ~= "table" or type(order.lanes) ~= "table" then return nil end
+	return order
+end
+
+-- Hands the hook one entry of a lane dumped. Returns whether it was taken:
+-- false once the checkpoint has written its most.
+function Link:dumped(lane, entry)
+	if type(self.native.dumped) ~= "function" then return false end
+	local ok, taken = pcall(self.native.dumped, lane, tostring(entry))
+	return ok and taken == true
 end
 
 -- The game script begins (true) or ends applying the room's actions.

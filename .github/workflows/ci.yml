@@ -90,6 +90,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python tools/dayone/test_dayone.py
+      - run: python tools/test_lane_diff.py
       - run: pip install lupa==2.8 && python tools/probe/check_lua.py
 
   page:

@@ -37,6 +37,7 @@ pub mod autoload;
 pub mod builds;
 pub mod image;
 mod install;
+pub mod lanedump;
 pub mod log;
 pub mod lua;
 pub mod menu;
@@ -381,6 +382,21 @@ impl Logger {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             let _ = writeln!(file, "[{seconds}] {message}");
+        }
+    }
+
+    /// Writes `messages` as [`Logger::line`] would, in one write.
+    pub(crate) fn lines(&mut self, messages: &[String]) {
+        if let Some(file) = &mut self.file {
+            let seconds = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let mut text = String::new();
+            for message in messages {
+                text.push_str(&format!("[{seconds}] {message}\n"));
+            }
+            let _ = file.write_all(text.as_bytes());
         }
     }
 }

@@ -36,6 +36,16 @@
 -- street system's node map, lines from the line system, and the player
 -- from the engine's util.
 --
+-- A lane can also be dumped (`lanes.dump`): its full text, entry by entry,
+-- read by the same reader that sums it up, with the raw values it rounds
+-- (`%.17g`), keyed by the registry's id where there is one (vehicle-N,
+-- line-N, town-N, industry-N) and else by the row it hashes, sorted the
+-- same on every game that has the same world; then its summary, the text
+-- the hook hashes. The hook writes each entry to hook.log as
+-- `lane <n> step <step> <entry>`, for tools/lane_diff.py to diff between
+-- games (docs/HOOKS.md, "Lane dumps"). Reading a lane for its digest builds
+-- none of it.
+--
 -- Pure Lua over the `api` it is given; the tests hand it a fake.
 
 local lanes = {}
@@ -84,9 +94,33 @@ local function component(api, entity, kind)
 	return api.engine.getComponent(entity, api.type.ComponentType[kind])
 end
 
+-- A field only a dump reads, or nil: the game's components are userdata,
+-- which raise on a field they lack.
+local function get(value, key)
+	if value == nil then return nil end
+	local ok, v = pcall(function() return value[key] end)
+	if ok then return v end
+	return nil
+end
+
+-- A number at full precision, for a dump; anything else as text.
+local function full(v)
+	if type(v) == "number" then return string.format("%.17g", v) end
+	return tostring(v)
+end
+
+local function vecFull(p)
+	if type(p) ~= "table" then return tostring(p) end
+	return full(p.x or p[1]) .. "," .. full(p.y or p[2]) .. "," .. full(p.z or p[3] or 0)
+end
+
+-- Each reader returns its lane's text. With `emit` (a dump), it also calls
+-- emit(kind, entity, row, fields) for every row it hashes: the registry's
+-- kind that names the entity, if any, the row as hashed, and the raw values
+-- it was made from. Without `emit` it builds no fields.
 local readers = {}
 
-readers[lanes.NETWORK] = function(api)
+readers[lanes.NETWORK] = function(api, emit)
 	local rows, seen = {}, {}
 	for _, segments in pairs(api.engine.system.streetSystem.getNode2SegmentMap()) do
 		for _, e in pairs(segments) do
@@ -96,7 +130,12 @@ readers[lanes.NETWORK] = function(api)
 				if edge then
 					local a, b = vec01(edge.position0), vec01(edge.position1)
 					if a > b then a, b = b, a end
-					rows[#rows + 1] = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
+					local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
+					rows[#rows + 1] = row
+					if emit then
+						emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)
+							.. " template=" .. tostring(edge.roadTemplate))
+					end
 				end
 			end
 		end
@@ -104,7 +143,7 @@ readers[lanes.NETWORK] = function(api)
 	return summary(rows)
 end
 
-readers[lanes.CONSTRUCTIONS] = function(api)
+readers[lanes.CONSTRUCTIONS] = function(api, emit)
 	local rows = {}
 	for _, e in ipairs(entities(api, "CONSTRUCTION")) do
 		local c = component(api, e, "CONSTRUCTION")
@@ -112,22 +151,39 @@ readers[lanes.CONSTRUCTIONS] = function(api)
 			local t = c.transf
 			local x, y = 0, 0
 			if t then x, y = t[13] or 0, t[14] or 0 end
-			rows[#rows + 1] = string.format("%s@%s,%s", tostring(c.fileName), q01(x), q01(y))
+			local row = string.format("%s@%s,%s", tostring(c.fileName), q01(x), q01(y))
+			rows[#rows + 1] = row
+			if emit then
+				emit("industries", e, row, "file=" .. tostring(c.fileName) .. " x=" .. full(x) .. " y=" .. full(y)
+					.. " z=" .. full(t and t[15]))
+			end
 		end
 	end
 	return summary(rows)
 end
 
-readers[lanes.LINES] = function(api)
+readers[lanes.LINES] = function(api, emit, ids)
 	local rows = {}
 	for _, e in pairs(api.engine.system.lineSystem.getLines()) do
 		local line = component(api, e, "LINE")
-		rows[#rows + 1] = tostring(line and line.stops and #line.stops or "?")
+		local row = tostring(line and line.stops and #line.stops or "?")
+		rows[#rows + 1] = row
+		if emit then
+			local fields = { "stops=" .. row }
+			local stops = get(line, "stops")
+			local n = tonumber(row) or 0
+			for i = 1, n do
+				local stop = get(stops, i)
+				fields[#fields + 1] = "stop" .. i .. "=" .. ids("groups", get(stop, "stationGroup"), "group") .. "/"
+					.. full(get(stop, "station")) .. "/" .. full(get(stop, "terminal"))
+			end
+			emit("lines", e, row, table.concat(fields, " "))
+		end
 	end
 	return summary(rows)
 end
 
-readers[lanes.VEHICLES] = function(api)
+readers[lanes.VEHICLES] = function(api, emit, ids)
 	local rows = {}
 	for _, e in ipairs(entities(api, "TRANSPORT_VEHICLE")) do
 		local v = component(api, e, "TRANSPORT_VEHICLE")
@@ -137,19 +193,29 @@ readers[lanes.VEHICLES] = function(api)
 		if d and d.pathPos then
 			where = string.format("%d@%.2f v%.2f", d.pathPos.edgeIndex, d.pathPos.pos, d.speed)
 		end
-		rows[#rows + 1] = tostring(v and v.state) .. ":" .. tostring(v and v.stopIndex) .. ":" .. where
+		local row = tostring(v and v.state) .. ":" .. tostring(v and v.stopIndex) .. ":" .. where
+		rows[#rows + 1] = row
+		if emit then
+			local pos = d and d.pathPos
+			emit("vehicles", e, row, "state=" .. tostring(v and v.state) .. " stop=" .. tostring(v and v.stopIndex)
+				.. " line=" .. ids("lines", get(v, "line"), "line")
+				.. " edge=" .. full(pos and pos.edgeIndex) .. " pos=" .. full(pos and pos.pos)
+				.. " speed=" .. full(d and d.speed))
+		end
 	end
 	return summary(rows)
 end
 
-readers[lanes.ECONOMY] = function(api)
+readers[lanes.ECONOMY] = function(api, emit)
 	local player = api.engine.util.getPlayer()
 	local account = component(api, player, "ACCOUNT")
 	local balance = account and account.balance
-	return tostring(player) .. ":" .. (balance ~= nil and string.format("%d", balance) or "?")
+	local text = tostring(player) .. ":" .. (balance ~= nil and string.format("%d", balance) or "?")
+	if emit then emit("player", player, text, "balance=" .. full(balance)) end
+	return text
 end
 
-readers[lanes.TOWNS] = function(api)
+readers[lanes.TOWNS] = function(api, emit)
 	local map = api.engine.system.townBuildingSystem.getTown2BuildingMap()
 	local rows = {}
 	for _, town in ipairs(entities(api, "TOWN")) do
@@ -158,13 +224,17 @@ readers[lanes.TOWNS] = function(api)
 		if type(buildings) == "table" then
 			for _ in pairs(buildings) do count = count + 1 end
 		end
-		rows[#rows + 1] = tostring(town) .. ":" .. count
+		local row = tostring(town) .. ":" .. count
+		rows[#rows + 1] = row
+		if emit then emit("towns", town, row, "buildings=" .. count) end
 	end
 	return summary(rows)
 end
 
-readers[lanes.PEOPLE] = function(api)
-	return tostring(#entities(api, "SIM_PERSON"))
+readers[lanes.PEOPLE] = function(api, emit)
+	local text = tostring(#entities(api, "SIM_PERSON"))
+	if emit then emit("people", nil, text, "count=" .. text) end
+	return text
 end
 
 -- Every lane's text, by lane number, and the lanes that could not be read
@@ -181,6 +251,64 @@ function lanes.read(api)
 		end
 	end
 	return out, failed
+end
+
+-- The registry's kinds as a dump names their ids.
+local PREFIX = { vehicles = "vehicle", lines = "line", towns = "town", industries = "industry",
+	groups = "group" }
+
+-- Lane `lane` entry by entry, as a list of lines, sorted: each
+-- `<key> <field=value> ... entity=<e> row=<row>`, then `summary <text>`, the
+-- lane's text as lanes.read reads it; a lane that cannot be read is the one
+-- line `err <why>`. `reg` is the registry of the game script's state
+-- (tpf3mp/registry.lua), which names the keys; nil names none.
+function lanes.dump(api, lane, reg)
+	local reader = readers[lane]
+	if reader == nil then return { "err no lane " .. tostring(lane) } end
+	-- The registry's ids by entity, per kind, made when first asked.
+	local byEntity = {}
+	local function idOf(kind, e)
+		if kind == nil or e == nil then return nil end
+		local map = byEntity[kind]
+		if map == nil then
+			map = {}
+			local r = type(reg) == "table" and reg[kind]
+			for _, pair in ipairs(type(r) == "table" and r.bound or {}) do map[pair[2]] = pair[1] end
+			byEntity[kind] = map
+		end
+		return map[e]
+	end
+	-- An entity a field names, by its id if it has one.
+	local function ids(kind, e, prefix)
+		local id = idOf(kind, e)
+		if id ~= nil then return prefix .. "-" .. id end
+		if e == nil then return "nil" end
+		return "entity-" .. tostring(e)
+	end
+	local entries = {}
+	local function emit(kind, e, row, fields)
+		local id = idOf(kind, e)
+		local key, order
+		if id ~= nil then
+			key = PREFIX[kind] .. "-" .. id
+			order = string.format("0 %s %015d", PREFIX[kind], id)
+		elseif kind == "player" or kind == "people" then
+			key, order = kind, "0 " .. kind
+		else
+			key = "row:" .. string.gsub(row, "%s", "_")
+			order = "1 " .. row .. "\30" .. string.format("%015d", tonumber(e) or 0)
+		end
+		local text = key .. " " .. fields
+		if e ~= nil then text = text .. " entity=" .. tostring(e) end
+		entries[#entries + 1] = { order = order, text = text .. " row=" .. row }
+	end
+	local ok, text = pcall(reader, api, emit, ids)
+	if not ok or type(text) ~= "string" then return { "err " .. tostring(text) } end
+	table.sort(entries, function(a, b) return a.order < b.order end)
+	local out = {}
+	for i, entry in ipairs(entries) do out[i] = entry.text end
+	out[#out + 1] = "summary " .. text
+	return out
 end
 
 lanes.hash = hashStr
