@@ -10,12 +10,13 @@ use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
         ACTION_SCHEMA_VERSION, Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
-        ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeKind, EdgeRef,
-        EditLine, Fraction, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp,
-        LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeRef, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
-        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
-        Tram, Transform, UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
+        ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds,
+        EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData, LineId,
+        LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network,
+        NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle,
+        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent, Terminal,
+        Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleChange,
+        VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -74,6 +75,10 @@ fn polyline() -> Polyline {
                 },
                 structure: Structure::Ground,
                 kind: None,
+                decorations: BoundedVec::default(),
+                locked: false,
+                owned: false,
+                lanes: BoundedVec::default(),
             },
             Link {
                 from: 1,
@@ -94,6 +99,13 @@ fn polyline() -> Polyline {
                     template: text("street/country.street_template"),
                     style: None,
                 }),
+                decorations: list(vec![Decoration {
+                    name: text("::/infrastructure/edge_addons/barrier_b.edge"),
+                    flag: false,
+                }]),
+                locked: true,
+                owned: true,
+                lanes: BoundedVec::default(),
             },
         ]),
         list(vec![EdgeRef {
@@ -309,6 +321,25 @@ fn samples() -> Vec<Action> {
             },
             model: text("stations/street/small_stops/small_new_twosided.con"),
             two_sided: true,
+            object: EdgeObjectKind::Stop,
+            one_way: false,
+        }),
+        Action::PlaceStop(PlaceStop {
+            edge: EdgeRef {
+                network: Network::Track,
+                ends: ends(pos(10, 0, 0), pos(90_000, 0, 0)),
+            },
+            at: pos(45_000, 0, 0),
+            left: false,
+            direction: UnitDir {
+                x: 1_000_000,
+                y: 0,
+                z: 0,
+            },
+            model: text("infrastructure/signal/signal_path_a.con"),
+            two_sided: false,
+            object: EdgeObjectKind::Signal,
+            one_way: true,
         }),
         Action::Terraform(
             Terraform::new(

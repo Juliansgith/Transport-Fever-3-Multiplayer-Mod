@@ -2096,7 +2096,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     );
     assert!(
         logged.contains(
-            &"the room does not carry the laneModifier tool yet \
+            &"the room does not carry the laneModifier tool yet (?) \
               [+c::/depots/road/road_maint_station.con{frozen 0n 0e}]"
                 .to_owned()
         ),
@@ -2561,7 +2561,7 @@ fn the_game_script_rebuilds_a_street_through_a_new_junction() {
         logged
             .last()
             .unwrap()
-            .ends_with("removal 2 has a stop or signal on it"),
+            .ends_with("removal 2 has a stop or signal on it and no link rebuilds it"),
         "{logged:?}"
     );
 }
@@ -3270,9 +3270,22 @@ fn a_stop_the_room_cannot_carry_says_why() {
     // A two-sided stop: a new object on each side, one click.
     let two = stop_proposal("", "{ -400000001, 1 },", "{ category = 0, left = false },");
     assert_eq!(capture(two), "table");
-    // A signal, and a side the engine lists other than `left` says.
+    // A signal the engine lists as a stop, and a side the engine lists
+    // other than `left` says.
     let signal = stop_proposal("", "", "").replace("category = 0", "category = 2");
-    assert_eq!(capture(signal), "a signal or waypoint");
+    assert_eq!(capture(signal), "a signal the engine lists as no signal");
+    // A signal (the engine's SIGNAL, 2): carried as one, one-way as noted.
+    let signal = stop_proposal("", "", "")
+        .replace("category = 0", "category = 2")
+        .replace("{ -400000000, 0 }", "{ -400000000, 2 }");
+    let carried: String = lua
+        .load(format!(
+            "local a = ug_require('tpf3mp_1::/scripts/tpf3mp/engine.lua').placeStop({signal}, nil, true) \
+             return a.PlaceStop.object .. ' ' .. tostring(a.PlaceStop.one_way) .. ' ' .. tostring(schema_check(a))"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(carried, "Signal true true");
     let side = stop_proposal("", "", "").replace("left = true", "left = false");
     assert_eq!(capture(side), "a stop whose side the room cannot say");
     // With a stop on the other side, kept: carried.
@@ -4724,4 +4737,72 @@ fn the_huds_state_follows_the_players_company() {
             && logged.contains("the stop tool's stop is noted"),
         "{logged}"
     );
+}
+
+/// A road modifier's build, as the room orders it: the street 8-9 rebuilt in
+/// place with the lanes, decoration, lock and owner the tool gave it. Every
+/// game gives the lanes their modes as the game takes them, a Lua array
+/// from 1 (build 40408: keyed from 0 they land one mode off, and a sidewalk
+/// that carries vehicles crashed the simulation), its decoration by the id
+/// its name has here, and the acting company as its owner.
+#[test]
+fn a_road_modifier_is_built_with_its_lanes_decorations_lock_and_owner() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(
+        r#"
+        -- Each read of a template's lanes gives new copies, as the game's.
+        api.res.streetTemplateRep.get = function(id)
+            return setmetatable({ streetStyle = '::/style/country.street_style' }, { __index = function(_, k)
+                if k == 'laneConfigs' then
+                    return { { speed = 1, width = 1, height = 0, offset = 0, forward = true, transportModes = {} },
+                             { speed = 1, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } }
+                end
+            end })
+        end
+        api.res.edgeDecorationRep = { find = function(name)
+            if name == '::/infrastructure/edge_addons/barrier_b.edge' then return 3 end return -1 end }
+        api.type.PlayerOwned = { new = function() return {} end }
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let action = "{ BuildRoad = { street = '::/street/country.street_template', bus_lane = false, tram = 'None', \
+        polyline = { vertices = { \
+            { pos = { x = 50, y = -40, z = 0 }, resolve = { Node = 'Street' } }, \
+            { pos = { x = 50, y = 40, z = 0 }, resolve = { Node = 'Street' } } }, \
+          links = { { from = 0, to = 1, tangent0 = { x = 0, y = 80, z = 0 }, tangent1 = { x = 0, y = 80, z = 0 }, \
+            structure = 'Ground', \
+            lanes = { { speed = 22.22, width = 2, height = 0, offset = -1, forward = false, modes = 3 }, \
+                      { speed = 22.22, width = 5, height = 0, offset = -0.5, forward = false, modes = 124 } }, \
+            decorations = { { name = '::/infrastructure/edge_addons/barrier_b.edge', flag = false } }, \
+            locked = true, owned = true } }, \
+          removals = { { network = 'Street', ends = { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } } }, \
+          removed_nodes = {} } } }";
+    lua.load(format!(
+        "HOOK.batch = {{ {action} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let built: String = lua
+        .load(
+            "local e = SENT[1].proposal.streetProposal.edgesToAdd[1]
+             local function modes(l)
+                 local on = {}
+                 for i = 1, 16 do if l.transportModes[i] then on[#on + 1] = i - 1 end end
+                 return table.concat(on, ',') .. (l.transportModes[0] == nil and '' or ' zero-keyed!')
+             end
+             return table.concat({ modes(e.comp.laneConfigs[1]), modes(e.comp.laneConfigs[2]),
+                 e.comp.laneConfigs[2].width, e.comp.edgeDecorations[1][1],
+                 tostring(e.comp.edgeDecorations[1][2]), tostring(e.comp.roadDevelopmentLocked),
+                 e.playerOwned.player }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(built, "0,1|2,3,4,5,6|5|3|false|true|25");
 }

@@ -192,6 +192,7 @@ impl Scale {
 fn field_scale(owner: &str, field: &str) -> Scale {
     match (owner, field) {
         ("Pos" | "Pos2" | "Tangent" | "TerrainCell", _) => Scale::Milli,
+        ("Lane", "speed" | "width" | "height" | "offset") => Scale::Milli,
         ("Terraform" | "TerraformFields", "cell") => Scale::Milli,
         ("UnitDir" | "Tint", _)
         | ("Transform", "basis")
@@ -1095,6 +1096,10 @@ mod tests {
                     tangent1: tangent,
                     structure: Structure::Bridge(Text::new("bridge/cement.lua").unwrap()),
                     kind: None,
+                    decorations: BoundedVec::default(),
+                    locked: false,
+                    owned: false,
+                    lanes: BoundedVec::default(),
                 }])
                 .unwrap(),
                 BoundedVec::<EdgeRef, 256>::empty(),

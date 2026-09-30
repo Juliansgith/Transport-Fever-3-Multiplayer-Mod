@@ -96,10 +96,12 @@ function data()
 	-- that a later build would send its proposals under them.
 	local CAPTURE = { constructionBuilder = "construction", streetBuilder = "street", trackBuilder = "track",
 		bulldozer = "bulldoze", streetTerminalBuilder = "stop", moduleBuilder = "construction",
-		moduleBulldozer = "bulldoze" }
+		moduleBulldozer = "bulldoze", streetTrackModifier = "modify" }
 	-- In the GUI: the last proposal seen at each count of the player's builds
 	-- ({ action = t } or { why = text }), and the builds handed on so far.
 	local snapshots, handled = {}, nil
+	-- What the log said of the tools the room does not carry, by tool and change.
+	local toolsLogged = nil
 	-- The last reason a proposal was refused for, and how many were logged.
 	local refusedWhy, refusals = nil, 0
 	-- The events of the room's game the mod does not handle, by id and
@@ -372,12 +374,25 @@ function data()
 			end
 			-- A tool the room does not carry: its proposals' shapes, for the
 			-- log, when they change, a few dozen times at most.
-			if refusals < 40 and type(param) == "table" and capture then
+			if type(param) == "table" and capture then
 				local described, text = pcall(capture.describe, param[1])
-				local key = tostring(id) .. " " .. (described and text or "")
-				if described and text ~= "" and key ~= refusedWhy then
-					refusedWhy, refusals = key, refusals + 1
-					l:log("the room does not carry the " .. tostring(id) .. " tool yet [" .. text .. "]")
+				local diffed, diff = pcall(capture.rebuildDiff, param[1])
+				local tool = l.note and l:note(capture.TOOL_NOTE) or "?"
+				-- Once for each tool and what it changes, a few dozen at most.
+				local key = tostring(id) .. " " .. tostring(tool) .. " " .. tostring(diff)
+				toolsLogged = toolsLogged or {}
+				if described and text ~= "" and not toolsLogged[key] and refusals < 80 then
+					toolsLogged[key], refusals = true, refusals + 1
+					l:log("the room does not carry the " .. tostring(id) .. " tool yet (" .. tostring(tool) .. ") [" .. text .. "]")
+					if diffed and diff ~= "" then
+						local n = 0
+						for part in (diff .. "; "):gmatch("(.-); ") do
+							n = n + 1
+							if n <= 12 then l:log("  what it changes: " .. part) end
+						end
+					elseif not diffed then
+						l:log("  what it changes: " .. tostring(diff))
+					end
 				end
 			end
 			return { errorMessages = { [REFUSED] = true } }

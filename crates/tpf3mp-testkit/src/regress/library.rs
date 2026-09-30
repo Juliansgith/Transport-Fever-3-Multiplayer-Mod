@@ -8,11 +8,11 @@ use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
         Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConsistPart,
-        ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeRef, EditLine, LineChange,
-        LineData, LineId, LineStop, Link, LoadMode, Network, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
-        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
-        Tram, Transform, UnitDir, VehicleId, Vertex,
+        ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeObjectKind, EdgeRef,
+        EditLine, LineChange, LineData, LineId, LineStop, Link, LoadMode, Network, Param,
+        ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart,
+        Resolve, RoadBuild, StationId, StopRules, Structure, Tangent, Terminal, Terraform,
+        TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleId, Vertex,
     },
 };
 
@@ -96,6 +96,10 @@ pub fn polyline(vertices: Vec<Vertex>, structure: &Structure) -> Polyline {
                 tangent1: tangent,
                 structure: structure.clone(),
                 kind: None,
+                decorations: BoundedVec::default(),
+                locked: false,
+                owned: false,
+                lanes: BoundedVec::default(),
             }
         })
         .collect();
@@ -303,6 +307,8 @@ pub fn place_stop(a: Pos, b: Pos, pos: Pos) -> Action {
         },
         model: text(STREET_STOP),
         two_sided: false,
+        object: EdgeObjectKind::Stop,
+        one_way: false,
     })
 }
 
