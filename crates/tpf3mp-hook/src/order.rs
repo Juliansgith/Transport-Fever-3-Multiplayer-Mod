@@ -11,7 +11,9 @@
 //! its own and each failing closed on its own:
 //!
 //! 1. **Land-vehicle reservation order** ([`land_vehicle`]): sorted by
-//!    entity id before the engine's seeded shuffle. A fix.
+//!    entity id before the engine's seeded shuffle. A fix. The shuffle's
+//!    seed is the game's `tickCount`, which [`crate::ticks`] keeps equal;
+//!    a line sampled by the seed's value logs both for two games to diff.
 //! 2. **Ship and aircraft claim order** ([`measure`]): measured through the
 //!    reservation manager, as TPF2 did, before anything is changed.
 //! 3. **Road edge entries** ([`measure`]): the append calls are measured;
@@ -265,18 +267,24 @@ pub mod land_vehicle {
             // stack and holds it until the hook returns.
             let regs = unsafe { &*regs };
             let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+            // The site follows the seed's fix-up (`cmove r8d, r12d`) and the
+            // mask loop, which leaves r8 alone: r8d is the shuffle's seed.
+            let seed = regs.r8 as u32;
             match apply(regs.rbp) {
                 Ok((sorted, before)) => {
                     if sorted == Sorted::Reordered {
                         let reorders = REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
                         if reorders <= 3 {
                             log::line(&format!(
-                                "order fix {FIX}: {} vehicles put in entity order before the shuffle (call #{n})",
+                                "order fix {FIX}: {} vehicles put in entity order before the shuffle (call #{n}, seed {seed})",
                                 before.len()
                             ));
                         }
                     }
-                    measure::note_land_vehicles(&before, sorted);
+                    if let Some(line) = sample_line(seed, &before) {
+                        log::line(&line);
+                    }
+                    measure::note_land_vehicles(&before, sorted, seed);
                 }
                 Err(why) => REFUSALS.note(FIX, why),
             }
@@ -338,6 +346,14 @@ pub mod land_vehicle {
         if !readable(records, records_len) {
             return Err("the node records are unreadable");
         }
+        if measure::enabled() {
+            // SAFETY: the readable records span, whole 20-byte records; the
+            // entity id is each record's first dword.
+            let order = (0..record_count).map(|i| unsafe {
+                std::ptr::read_unaligned((records + i * RECORD_LEN) as *const u32)
+            });
+            measure::note_land_nodes(order);
+        }
         // SAFETY: `vector_len` readable bytes at `begin`, in whole 8-byte
         // entries; the copy is by value.
         let entries: Vec<u64> = (0..count)
@@ -364,6 +380,33 @@ pub mod land_vehicle {
             };
         }
         Ok((Sorted::Reordered, before))
+    }
+
+    /// One seed value in this many gets a [`sample_line`].
+    pub const SAMPLE: u32 = 256;
+
+    /// For one seed value in [`SAMPLE`] (the seed is the game's tickCount,
+    /// so about one update in 256): the seed, how many vehicles want track
+    /// (0 when fewer than two) and a hash of their entity ids in the order
+    /// the engine shuffles them. Sampled by the seed's value, not by a
+    /// count of calls, so two games that agree write the same lines and two
+    /// logs can be diffed; the engine's shuffle and priority sort are a
+    /// function of exactly these, so equal lines mean an equal claim order.
+    pub fn sample_line(seed: u32, before: &[u32]) -> Option<String> {
+        if !seed.is_multiple_of(SAMPLE) {
+            return None;
+        }
+        let mut ids = before.to_vec();
+        ids.sort_unstable();
+        let mut hash = Fnv1a::new();
+        for id in &ids {
+            hash.write_u32(*id);
+        }
+        Some(format!(
+            "order fix {FIX}: sample seed={seed} n={} ids={:016x}",
+            ids.len(),
+            hash.0
+        ))
     }
 
     /// The entries sorted by their key (the entity id of the node an entry
@@ -586,6 +629,14 @@ pub mod measure {
         pub land_vehicles: Fnv1a,
         pub land_vehicle_calls: u64,
         pub land_vehicle_reorders: u64,
+        /// The land-vehicle shuffle's seeds (the game's tickCount), one per
+        /// call of the sort site.
+        pub land_seeds: Fnv1a,
+        /// The land-vehicle family's node list, entity by entity, in its
+        /// own order (hashed where at least two vehicles want track): the
+        /// order the engine's shuffle permutes, and the survey's item 3.
+        pub land_nodes: Fnv1a,
+        pub land_node_count: u64,
         pub vehicles_at_stop: Fnv1a,
         pub vehicle_stop_calls: u64,
         pub vehicle_stop_reorders: u64,
@@ -601,6 +652,9 @@ pub mod measure {
                 land_vehicles: Fnv1a::new(),
                 land_vehicle_calls: 0,
                 land_vehicle_reorders: 0,
+                land_seeds: Fnv1a::new(),
+                land_nodes: Fnv1a::new(),
+                land_node_count: 0,
                 vehicles_at_stop: Fnv1a::new(),
                 vehicle_stop_calls: 0,
                 vehicle_stop_reorders: 0,
@@ -610,7 +664,7 @@ pub mod measure {
         /// One log line: the update it closes and every lane.
         pub fn line(&self, update: u64, interval: u64) -> String {
             format!(
-                "order measure: updates {}..={update}: claims={:016x}/{} appends={:016x}/{} land={:016x}/{} reordered {} vehstop={:016x}/{} reordered {}",
+                "order measure: updates {}..={update}: claims={:016x}/{} appends={:016x}/{} land={:016x}/{} reordered {} seeds={:016x} nodes={:016x}/{} vehstop={:016x}/{} reordered {}",
                 update.saturating_sub(interval.saturating_sub(1)),
                 self.claims.0,
                 self.claim_count,
@@ -619,6 +673,9 @@ pub mod measure {
                 self.land_vehicles.0,
                 self.land_vehicle_calls,
                 self.land_vehicle_reorders,
+                self.land_seeds.0,
+                self.land_nodes.0,
+                self.land_node_count,
                 self.vehicles_at_stop.0,
                 self.vehicle_stop_calls,
                 self.vehicle_stop_reorders,
@@ -677,11 +734,21 @@ pub mod measure {
         LANES.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    pub(super) fn note_land_vehicles(before: &[u32], sorted: Sorted) {
+    pub(super) fn note_land_nodes(order: impl Iterator<Item = u32>) {
+        let mut lanes = lanes();
+        for entity in order {
+            lanes.land_nodes.write_u32(entity);
+            lanes.land_node_count += 1;
+        }
+        lanes.land_nodes.write(b"|");
+    }
+
+    pub(super) fn note_land_vehicles(before: &[u32], sorted: Sorted, seed: u32) {
         if !enabled() {
             return;
         }
         let mut lanes = lanes();
+        lanes.land_seeds.write_u32(seed);
         lanes.land_vehicle_calls += 1;
         lanes.land_vehicles.write_u32(before.len() as u32);
         for key in before {
@@ -1120,7 +1187,38 @@ mod tests {
         assert!(line.starts_with("order measure: updates 201..=300: claims="));
         assert!(line.contains("/3 appends="));
         assert!(line.contains("land="));
+        assert!(line.contains(" seeds="));
+        assert!(line.contains(" nodes="));
         assert!(line.contains("vehstop="));
+    }
+
+    #[test]
+    fn the_land_vehicle_sample_is_chosen_by_the_seeds_value_and_hashes_the_sorted_ids() {
+        assert_eq!(land_vehicle::sample_line(255, &[3, 1]), None);
+        assert_eq!(land_vehicle::sample_line(257, &[3, 1]), None);
+        let line = land_vehicle::sample_line(512, &[30, 10, 20]).unwrap();
+        assert!(
+            line.starts_with("order fix land-vehicle-order: sample seed=512 n=3 ids="),
+            "{line}"
+        );
+        // The engine's order before the sort does not change the line: two
+        // games whose node lists differ in order, and that the fix puts in
+        // one order, log the same.
+        assert_eq!(
+            land_vehicle::sample_line(512, &[10, 20, 30]),
+            Some(line.clone())
+        );
+        let mut hash = Fnv1a::new();
+        for id in [10u32, 20, 30] {
+            hash.write_u32(id);
+        }
+        assert!(line.ends_with(&format!("{:016x}", hash.0)), "{line}");
+        assert_ne!(land_vehicle::sample_line(512, &[10, 20]), Some(line));
+        assert!(
+            land_vehicle::sample_line(0, &[])
+                .unwrap()
+                .contains("seed=0 n=0 ")
+        );
     }
 
     #[test]

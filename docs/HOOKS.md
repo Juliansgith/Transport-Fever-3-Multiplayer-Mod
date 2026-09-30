@@ -1443,7 +1443,9 @@ survey (`investigation/TPF3_RNG_2026-09-29.md`, items 5 to 7) found are
 not functions of the room's state. Three independent pieces, each failing
 closed on its own with its reason in `hook.log` (every line starts with
 `seeds:`), installed by `install.rs::install_inner` after the step gate,
-the build tools and the main menu's load.
+the build tools and the main menu's load. A fourth, `ticks.rs`, keeps the
+frame counter one of the engine's own seeds reads equal in every game
+(piece 4 below).
 All three are Windows x64 only, like the step gate.
 
 **1. The game scripts' `math.random`, reseeded per step (live).** The
@@ -1540,6 +1542,73 @@ movement and path code is where `sinf`/`cosf`/`atan2f` run every step)
 and later in `n` and `t`, is the CRT; the same split in the second pair is
 not. If it is the CRT, the fix is a detour of those imports to one body
 (the survey's known technique, not built).
+
+**4. The paused frames' `tickCount` (`paused-tick`, live; not run in the
+game yet).** `crates/tpf3mp-hook/src/ticks.rs`; the findings are in
+[investigation/TPF3_TRAIN_PRIORITY_2026-09-30.md](../investigation/TPF3_TRAIN_PRIORITY_2026-09-30.md).
+`GameTime.tickCount` (`+0x3c`) counts every update and also every call of
+`GameSim::Step` on its paused path; `updateCount` (`+0x40`) counts updates
+only (the API's own words, `engine.d.tl:434`). The paused path (the speed
+call answered 0) calls the GameTime advance (`0xbace10`, `CGameTime::Advance`,
+name ours) with `r8b = 0` at `0x159412`; the advance runs `inc [+0x3c]`
+always and `inc [+0x40]` only when `r8b` is set (`0xbace99`). The room's
+game takes that path whenever the room holds the world, and during every
+room `Load` and `Save`, a machine-dependent number of times, so without
+the fix every hold leaves the games' `tickCount` apart for good. The
+simulation reads it in the land-vehicle reservation shuffle's seed
+(`0xac1b23`: which train or road vehicle gets contested track first), in
+`AccountSystem::Update2` (`tickCount % n`), in the town developer's and
+street proposals' stamps, and in the base game's notifications game
+script (`tickCount % 30` picks which notifications' sim scripts update).
+TPF2 Multiplayer made the same call a NOP (`156824d`, `pausedtick`).
+
+- *The patch.* The profile target `GameSim::Step/paused GameTime advance`
+  (the call's `E8`, found by the eleven instructions around it, one match)
+  is redirected with `CallRedirect`, which refuses unless the call reaches
+  the target `CGameTime::Advance`; the fix also refuses unless
+  `CGameTime::Advance/tick` (the two increments' eleven bytes) sits `0x89`
+  into the advance and reads back as expected. Any miss leaves the call
+  alone and says why (`paused-tick fix: off, ...`). The redirect's
+  function holds the advance only when the step detour said this call is
+  the room's game's (`step::Batch::room`: the driver follows a room's game
+  or holds it) and the call is a paused one (`r8b` clear); otherwise it
+  calls the game's own advance with the registers the step passed. So a
+  game outside a room pauses exactly as before, and the running loop's
+  call (`0x15954b`, `r8b = 1`) is never touched. A redirect rather than
+  TPF2's NOP, for that reason: the same process can play alone and in a
+  room.
+- *What skipping drops* (read in the binary): the advance opens an engine
+  modification scope (`0x2bbbba0`/`0x2bbc060`) around the increments and
+  records a `ComponentChanged` for `GameTime` into each observer's change
+  log (`0x2bb6b50`); a held frame records none, which is true. The UI
+  readers of `tickCount` stand still while the room holds: the
+  notifications script refreshes one of its four type groups per paused
+  frame by `tickCount % 4`, and the industry window rate-limits its
+  expansion preview by `tickCount`. The town and street builder tools stamp
+  their proposals with it; those proposals travel to the room in the
+  action's bytes. The horn-sound choice (`0x26948f0`) is presentation.
+- *Kill switch.* `TPF3MP_HOOK_PAUSED_TICK=0` (or `off`) in the launcher's
+  environment leaves the call alone.
+- *The counters in hook.log.* At every checkpoint, and at the first batch
+  after a world is loaded, the step detour logs
+  `ticks: step <room step>: tickCount=<n> updateCount=<n>`, read through the
+  game's getters (`CGameTime::GetTickCount` `0x2a95c0`,
+  `CGameTime::GetUpdateCount` `0x2a9680`, names ours) with the `CGameTime`
+  the step's own speed call was made on. Two games of one room must log
+  equal lines at equal steps. The redirect itself logs
+  `paused-tick: holding tickCount on the room's paused frames (held n,
+  passed m)` at the first hold and every 16384th: those counts differ per
+  machine by design.
+
+**Tested without the game** (`ticks::tests`, `step::tests`): the decision
+(only the room's paused frames), the kill switch, the layout check, the
+checkpoint line, that nothing installs without the targets, that the
+profile states the site's bytes, the driver's `room` and `first_step` on
+each batch, and the redirect through a real `call` on a hand-written
+function (the advance runs outside a room, is held in it, runs again
+after). The static proof (`tf3_static_proof.rs`) checks on the installed
+game that both calls reach the advance, with `r8b` 0 and 1, and the
+increments' bytes.
 
 **Tested without the game** (`seeds::tests`): the
 seed derivation (range, purity, the pinned values), the batch arithmetic
@@ -1644,7 +1713,29 @@ duplicate id, an index past the records, or bounds that are not whole
 entries is a refusal. With `TPF3MP_HOOK_MEASURE_ORDER` set the ids in the
 engine's order are hashed into the `land` lane, so two replicas' logs
 show whether their node lists agreed before the sort (`reordered` counts
-how often they were out of order).
+how often they were out of order), each call's seed into `seeds`, and
+the family's whole node list, entity by entity, into `nodes` (on updates
+where at least two vehicles want track): the survey's item 3 for this
+family.
+
+The sort makes the shuffle's input a function of the entity set; the
+shuffle's **seed** is `GameTime.tickCount` (`0xac1b23`, then `% (2^31-1)`,
+0 becomes 1), which the `paused-tick` fix above keeps equal in every game.
+The splice reads it from `r8d` at the site (the seed's fix-up leaves it
+there, `cmove r8d, r12d`, and the mask loop after it does not touch `r8`).
+Whatever the measurement, for one seed value in 256 (about one update in
+256, since the seed is the frame counter) the fix logs
+
+```
+order fix land-vehicle-order: sample seed=<seed> n=<vehicles that want track> ids=<fnv64 of their ids, sorted>
+```
+
+sampled by the seed's value, not by a count of calls, so two games that
+agree write the same lines. The engine's shuffle and its priority sort
+(each vehicle's line's `reservationPriority`, descending, stable) are a
+function of exactly the seed, the ids and the priorities, so equal lines
+at equal seeds mean an equal claim order for vehicles of equal priority.
+`n` is 0 when fewer than two vehicles want track.
 
 **Vehicles at a stop** (item 4, TPF2's `vehstop`, TERMINAL_WAIT_ORDER.md).
 `ecs::SimEntityAtTerminalSystem::Update` (`0xb0db00`) asks
@@ -1710,7 +1801,7 @@ counts updates and closes each one's lanes, and the four functions above
 feed them. Every `interval` updates one line goes to hook.log:
 
 ```
-order measure: updates 201..=300: claims=<fnv64>/<n> appends=<fnv64>/<n> land=<fnv64>/<calls> reordered <n> vehstop=<fnv64>/<calls> reordered <n>
+order measure: updates 201..=300: claims=<fnv64>/<n> appends=<fnv64>/<n> land=<fnv64>/<calls> reordered <n> seeds=<fnv64> nodes=<fnv64>/<n> vehstop=<fnv64>/<calls> reordered <n>
 ```
 
 Updates are numbered from the room's step once the step driver has

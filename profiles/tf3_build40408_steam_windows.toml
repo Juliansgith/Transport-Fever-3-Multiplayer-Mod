@@ -412,6 +412,63 @@ offset = 0
 prologue = "4C 8B 45 80 49 8B 50 08 49 63 45 00 48 8D 0C 80 48 8B 02 4C 8D 24 88"
 required = false
 
+# The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs; docs/HOOKS.md "Seeds, as
+# built"; investigation/TPF3_TRAIN_PRIORITY_2026-09-30.md). GameSim::Step's
+# paused path (its speed call answered 0) calls the GameTime advance with r8b = 0
+# at 0x159412: `mov rcx,[rbp+8]; xor r8d,r8d; mov edx,[rcx+0x208]; mov
+# rcx,[rcx+0x18]; call advance`, then `mov rdx,[rbp+8]; xor r8d,r8d` for the
+# engine's paused update. The advance always counts tickCount (+0x3c), so every
+# frame the room holds the world counts on its own. The hook redirects this one
+# call, checked to reach CGameTime::Advance, and skips it in the room's game.
+# Site = signature start (0x159401) + 17; one match in .text (tpfre q bytes).
+[[target]]
+name = "GameSim::Step/paused GameTime advance"
+signature = "48 8B 4D 08 45 33 C0 8B 91 08 02 00 00 48 8B 49 18 E8 ?? ?? ?? ?? 48 8B 55 08 45 33 C0"
+offset = 17
+prologue = "E8"
+required = false
+
+# The GameTime advance (name ours; 0xbace10, gametime.cpp's neighbour): (engine,
+# GameTime entity, bool update). An engine modification scope around `inc
+# [GameTime+0x3c]` always and `inc [GameTime+0x40]` when update is set, then a
+# ComponentChanged for GameTime. Called at 0x159412 (paused, update 0) and
+# 0x15954b (each update, update 1). The redirect checks the call reaches it.
+[[target]]
+name = "CGameTime::Advance"
+signature = "48 89 5C 24 10 55 56 57 41 56 41 57 48 83 EC 20 41 0F B6 E8"
+offset = 0
+prologue = "48 89 5C 24 10 55 56 57 41 56 41 57 48 83 EC 20"
+required = false
+
+# The advance's two increments (0xbace99 = advance + 0x89): `inc [rdi+0x3c];
+# test bpl,bpl; je +3; inc [rdi+0x40]`. The fix refuses unless they are here: the
+# call it skips must be the one that counts tickCount and not updateCount.
+[[target]]
+name = "CGameTime::Advance/tick"
+signature = "FF 47 3C 40 84 ED 74 03 FF 47 40"
+offset = 0
+prologue = "FF 47 3C 40 84 ED 74 03 FF 47 40"
+required = false
+
+# CGameTime's tickCount and updateCount getters (0x2a95c0, 0x2a9680; names
+# ours): `rax=[rcx+0x10]; rcx=[rcx+8]; edx=[rax]; call GetComponent<GameTime>;
+# mov eax,[rax+0x3c]` (+0x40). Called only: the hook logs both counters at every
+# checkpoint through them, with the CGameTime the step's speed call was made on.
+# The land-vehicle shuffle's seed reads the first (0xac1b23).
+[[target]]
+name = "CGameTime::GetTickCount"
+signature = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 3C 48 83 C4 28 C3"
+offset = 0
+prologue = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10"
+required = false
+
+[[target]]
+name = "CGameTime::GetUpdateCount"
+signature = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 40 48 83 C4 28 C3"
+offset = 0
+prologue = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10"
+required = false
+
 # The vehicles-at-a-stop order fix's site (order.rs): inside Update, right after
 # the call of TransportVehicleSystem's (line, stopIndex) -> &vector<Entity>
 # getter (below), `mov [rsp+0x248], rax` keeps the vector for the boarding

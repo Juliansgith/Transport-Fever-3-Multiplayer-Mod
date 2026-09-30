@@ -45,6 +45,7 @@ pub mod order;
 mod platform;
 pub mod seeds;
 pub mod step;
+pub mod ticks;
 pub mod worlds;
 
 /// The lobby as the main menu's Multiplayer window sees it (docs/LOBBY.md).
