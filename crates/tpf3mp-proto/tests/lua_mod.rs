@@ -3139,7 +3139,7 @@ fn a_stop_the_stop_tool_placed_goes_to_the_room_and_every_game_places_it() {
         });
     assert_eq!(
         placed,
-        "1|-1|0|8|9|::/street/country.street_template|1|-1|0|100|8,9|-1|0.5000|true\
+        "1|-1|0|8|9|::/street/country.street_template|1|-400000000|0|100|8,9|-1|0.5000|true\
          |::/stations/street/small_stops/small_new.con|25|25|true|true"
     );
 }
@@ -3242,7 +3242,7 @@ fn a_stop_as_the_game_proposes_it_is_the_noted_construction_under_the_cursor() {
         });
     assert_eq!(
         placed,
-        "-1:1|-2:0|false:stations/street/small_stops/small_new_twosided.con\
+        "-400000000:1|-400000001:0|false:stations/street/small_stops/small_new_twosided.con\
          |true:stations/street/small_stops/small_new_twosided.con"
     );
 }
@@ -3335,7 +3335,7 @@ fn a_stop_is_placed_beside_the_edges_others_and_never_on_a_taken_side() {
         .eval()
         .unwrap();
     assert_eq!(
-        objects, "555:1,-1:0|true",
+        objects, "555:1,-400000000:0|true",
         "the kept stop under its own entity"
     );
     // A place off the edge, as another world would have it: placed nowhere.

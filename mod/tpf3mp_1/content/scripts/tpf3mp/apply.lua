@@ -674,6 +674,9 @@ end
 -- point of that centreline, rounded to the millimetre.
 local STOP_TOLERANCE = 0.5
 
+-- The entity a proposal gives its first new edge object (build 40408).
+local NEW_EDGE_OBJECT = -400000000
+
 function HANDLERS.PlaceStop(stop)
 	local network = stop.edge.network
 	local e = stopEdge(stop.edge)
@@ -701,7 +704,11 @@ function HANDLERS.PlaceStop(stop)
 	end
 	local added = {}
 	for k, l in ipairs(sides) do
-		objects[#objects + 1] = { -k, l and types.STOP_LEFT or types.STOP_RIGHT }
+		-- A new edge object is named by its place in edgeObjectsToAdd,
+		-- from -400000000 down (build 40408: con_util_entity_index.h
+		-- asserts the range, a fatal error; game_mechanics/towns/
+		-- town_util.tl; the stop tool's own proposals).
+		objects[#objects + 1] = { NEW_EDGE_OBJECT - (k - 1), l and types.STOP_LEFT or types.STOP_RIGHT }
 		local eo = api.type.SimpleStreetProposal.EdgeObject.new()
 		eo.edgeEntity = -1
 		eo.param = u
