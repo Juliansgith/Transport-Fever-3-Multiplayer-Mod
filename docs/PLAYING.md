@@ -223,6 +223,9 @@ protected folder such as Program Files.
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window
   hears it a moment after your click.
+- **Achievements.** A game with TPF3-MP active still earns achievements:
+  the mod keeps them on, as the game lets a mod do. This holds even when
+  the save has other mods that would switch them off.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
   does not happen in your game either. The game bar says "Not in
   multiplayer yet: …" for what the game's windows do that the room does
