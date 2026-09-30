@@ -220,6 +220,54 @@ It copies the build profiles in the user's data folder into each game's.
 A server started with `tpf3mp-server` lets 8 sessions in from one address
 by default: pass `--max-sessions-per-address` for bigger rigs.
 
+For a playtest with the launcher on one PC, the launchers can get into a
+room without clicking: the owner's with `--auto-create <room name>
+--invite-file <file>` connects, creates the room and writes its invite to
+the file; every other one with `--auto-join --invite-file <same file>`
+waits for the file and joins. Both need `--server`. With
+`--auto-start <players>` the owner's also starts the room's game once that
+many players are in it and every one is ready. The dev server makes
+a new certificate each time it starts, so start the launchers after it.
+
+Nothing needs a click in the game either. `--auto-play` starts Transport
+Fever 3 by itself, as the launcher's button does, once the launcher is in
+the room. `--auto-load <save>` names a save in the game's save folder,
+such as `mptest`. The owner's game loads it from its main menu, once, and
+starts it with no Start Game to press. The launcher passes the name in
+`TPF3MP_AUTO_LOAD`, and the hook loads it the way it loads the room's world
+for a guest, logging `auto-load: ...` lines. A guest leaves the flag out:
+it waits at the menu, is marked ready there, and gets the room's world when
+the room starts. Several games run on one PC without a sandbox when each
+launcher has its own `--game-link`, `--listen`, `--identity`, `--worlds` and
+`--game-data-dir` (the hook's log and profiles, passed in
+`TPF3MP_DATA_DIR`): the launcher already starts each game with `SteamAppId`,
+so Steam lets it run beside the others. So a whole two-player playtest
+starts from two commands:
+
+```sh
+tpf3mp-launcher --server 127.0.0.1:29470 --name james --auto-create playtest --auto-start 2 --invite-file invite.txt --auto-play --auto-load mptest
+tpf3mp-launcher --server 127.0.0.1:29470 --name bob --auto-join --invite-file invite.txt --auto-play
+```
+
+`--start-save <save>` instead of `--auto-load` has every game, the owner's
+too, load the save from its main menu at the same moment, with no game
+loading it first or saving it for the room. It takes a save's name in the
+game's save folder (`<Steam>/userdata/<account>/3493540/local/save/<save>.sav`,
+of the account Steam names as playing, or the one account that has it) or
+a file's path. The owner's launcher reads the file when it starts, and
+when it creates a room hands it to the room in the lobby, as it uploads a
+save the room asks for ("The first world" in [PROTOCOL.md](PROTOCOL.md)).
+The owner's game then waits at its menu like a guest's, and is marked
+ready there once the room has the save; `--auto-start` starts the room
+once everyone is. It needs a server that keeps worlds; the old way, above,
+still works without one.
+
+```sh
+tpf3mp-launcher --server 127.0.0.1:29470 --name james --auto-create playtest --auto-start 3 --invite-file invite.txt --auto-play --start-save twomptest
+tpf3mp-launcher --server 127.0.0.1:29470 --name bob --auto-join --invite-file invite.txt --auto-play
+tpf3mp-launcher --server 127.0.0.1:29470 --name cat --auto-join --invite-file invite.txt --auto-play
+```
+
 With Transport Fever 3 itself (build 40408), two games run on one PC like
 this:
 

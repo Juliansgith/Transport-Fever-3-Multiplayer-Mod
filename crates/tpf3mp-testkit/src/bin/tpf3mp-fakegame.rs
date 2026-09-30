@@ -47,6 +47,7 @@ fn main() -> Result<()> {
         target_step: args.steps,
         drift_at: None,
         patience: Duration::from_secs(3600),
+        at_menu: false,
     })
     .join()
     .map_err(|_| anyhow::anyhow!("the game panicked"))?

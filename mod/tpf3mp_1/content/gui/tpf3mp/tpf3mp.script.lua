@@ -14,8 +14,8 @@
 -- game a command the room carries goes to the room, and its window hears
 -- what became of it once this game has applied it; a command the room
 -- cannot carry yet is refused, and the game bar says so for a few seconds.
--- The guard names vehicles, lines and station groups by the canonical ids
--- the mod's game script keeps in its state (tpf3mp/registry.lua).
+-- The guard names vehicles, lines, station groups and towns by the canonical
+-- ids the mod's game script keeps in its state (tpf3mp/registry.lua).
 --
 -- It follows what mods made for Transport Fever 3 build 40391 rely on
 -- (investigation/TF3_MODS_2026-09-27.md): a .script.lua defines data();
@@ -123,6 +123,12 @@ function data()
 		vehicle = idOf("vehicles"),
 		line = idOf("lines"),
 		group = idOf("groups"),
+		town = idOf("towns"),
+		player = function()
+			local ok, player = pcall(function() return api.engine.util.getPlayer() end)
+			if ok and type(player) == "number" then return player end
+			return nil
+		end,
 		depot = function(depot)
 			local c
 			pcall(function()
@@ -136,6 +142,20 @@ function data()
 		model = function(id)
 			local ok, name = pcall(function() return api.res.modelRep.getName(id) end)
 			if ok and type(name) == "string" and name ~= "" then return name end
+			return nil
+		end,
+		-- A vehicle's parts as its TRANSPORT_VEHICLE component has them.
+		parts = function(vehicle)
+			local ok, parts = pcall(function()
+				local tv = api.engine.getComponent(vehicle, api.type.ComponentType.TRANSPORT_VEHICLE)
+				local list = tv.transportVehicleConfig.vehicles
+				local out = {}
+				for i = 1, #list do
+					out[i] = { model = list[i].part.modelId, purchased = list[i].purchaseTime }
+				end
+				return out
+			end)
+			if ok then return parts end
 			return nil
 		end,
 	}

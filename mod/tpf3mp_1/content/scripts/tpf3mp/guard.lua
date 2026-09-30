@@ -53,19 +53,24 @@ end
 -- nil, or an error, for one it does not carry, which is then refused.
 guard.CARRY = {
 	-- The finance window's loans (finances_loan_gui.tl): the loan script's
-	-- events, with the loans as the script keeps them.
-	makeScriptingSendEventCmd = function(_ctx, _src, id, name, param)
+	-- events, with the loans as the script keeps them. The construction
+	-- menu's prospecting: the company script's spawnIndustry
+	-- (capture.prospect).
+	makeScriptingSendEventCmd = function(ctx, _src, id, name, param)
 		if id == "Loan" and type(param) == "table" then
 			if name == "Obtain" and type(param[1]) == "table" and type(param[2]) == "table" then
 				return { Loan = { Take = { next = param[1], offer = param[2] } } }
 			elseif name == "Repay" and type(param[2]) == "table" then
 				return { Loan = { Repay = { loan = param[2] } } }
 			end
+		elseif id == "Companies" and name == "spawnIndustry" then
+			return capture().prospect(ctx, param)
 		end
 		-- Which event, for the log.
 		error("the " .. tostring(id) .. " script's " .. tostring(name) .. " event", 0)
 	end,
 	makeVehicleBuyCmd = by("vehicleBuy"),
+	makeVehicleReplaceCmd = by("vehicleReplace"),
 	makeVehicleSetLineCmd = by("vehicleSetLine"),
 	makeVehicleSellCmd = by("vehicleSell"),
 	makeVehicleSetStoppedByUserCmd = by("vehicleStop"),
@@ -77,6 +82,10 @@ guard.CARRY = {
 	makeLineDestroyCmd = by("lineDestroy"),
 	makeEntitySetNameCmd = by("setName"),
 	makeEntitySetColorCmd = by("setColor"),
+	-- A construction's parameters changed in its window: an edit of that
+	-- construction, which every game replaces alike. Other builds a window
+	-- sends stay refused.
+	makeWorldBuildProposalCmd = by("windowBuild"),
 }
 
 -- What a window's callback reads of a command it made that went, by kind:
@@ -86,6 +95,12 @@ guard.RESULT = {
 		return { resultVehicleEntity = entity, playerEntity = args[1], depotEntity = args[2], config = args[3] }
 	end,
 	makeLineCreateCmd = function(entity) return { resultEntity = entity } end,
+	-- The game's windows send a replacement without a callback (build 40408,
+	-- vehicle_react_util.tl); one that has one hears the vehicle as it is
+	-- after (VehicleReplaceCommandData, api/tealdef/api/cmd.d.tl).
+	makeVehicleReplaceCmd = function(entity, args)
+		return { vehicleEntity = entity, config = args[2] }
+	end,
 }
 
 -- What the player is told a refused kind is, where "this" would not do.

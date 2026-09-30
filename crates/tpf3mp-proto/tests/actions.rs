@@ -13,9 +13,9 @@ use tpf3mp_proto::{
         ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeKind, EdgeRef,
         EditLine, Fraction, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp,
         LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeRef, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
-        Terminal, Terraform, TerrainCell, Tint, TrackBuild, Tram, Transform, UnitDir,
-        VehicleChange, VehicleId, VehicleOp, Vertex,
+        Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
+        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
+        Tram, Transform, UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -370,7 +370,54 @@ fn samples() -> Vec<Action> {
             vehicle: VehicleId(2),
             change: VehicleChange::Depart,
         }),
+        Action::ReplaceVehicle(replacement()),
+        Action::Prospect(Prospect {
+            town: TownId(4),
+            cargo: text("::/cargos/coal/coal.cargo"),
+            industries: list(vec![text("coal_mine"), text("coal_mine_large")]),
+            permit: Some(text(
+                "game_mechanics/company/explorations/exploration_coal.res",
+            )),
+        }),
     ]
+}
+
+/// A train's replacement: its locomotive kept, turned, and a new coach
+/// behind it.
+fn replacement() -> ReplaceVehicle {
+    let color = Tint {
+        r: 1_000_000,
+        g: 250_000,
+        b: 0,
+    };
+    ReplaceVehicle {
+        vehicle: VehicleId(9),
+        consist: list(vec![
+            ReplacedPart {
+                part: ConsistPart {
+                    model: text("vehicle/train/br_101.mdl"),
+                    reversed: true,
+                    loads: BoundedVec::empty(),
+                    color,
+                },
+                kept: Some(0),
+            },
+            ReplacedPart {
+                part: ConsistPart {
+                    model: text("vehicle/waggon/ic_2nd.mdl"),
+                    reversed: false,
+                    loads: list(vec![Load {
+                        config: 1,
+                        cargo: 0,
+                    }]),
+                    color,
+                },
+                kept: None,
+            },
+        ]),
+        groups: list(vec![1, 1]),
+        multiple_units: list(vec![text(""), text("")]),
+    }
 }
 
 /// Decodes `bytes` as an action payload: an error, or an action that
@@ -388,13 +435,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=13.
+    // Every top-level variant is sampled: postcard tags them 0..=15.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=13).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=15).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();
@@ -436,6 +483,28 @@ fn the_mod_s_tables_are_in_the_game_s_units() {
         stop.get("direction").unwrap().get("x"),
         Some(&lua::LuaValue::Number(1.0))
     );
+}
+
+/// A replacement as the mod writes it: the vehicle by canonical id, each
+/// part as a purchase's under `part`, a kept part by its index and a new
+/// one with `kept` left out, colours as fractions.
+#[test]
+fn a_replacement_is_the_vehicle_s_id_and_its_parts_as_the_mod_writes_them() {
+    let table = lua::action_to_lua(&Action::ReplaceVehicle(replacement())).unwrap();
+    let replace = table.get("ReplaceVehicle").unwrap();
+    assert_eq!(replace.get("vehicle"), Some(&lua::LuaValue::Number(9.0)));
+    let lua::LuaValue::Table(consist) = replace.get("consist").unwrap() else {
+        panic!("a consist is a sequence");
+    };
+    let first = &consist[0].1;
+    assert_eq!(first.get("kept"), Some(&lua::LuaValue::Number(0.0)));
+    let part = first.get("part").unwrap();
+    assert_eq!(part.get("reversed"), Some(&lua::LuaValue::Boolean(true)));
+    assert_eq!(
+        part.get("color").unwrap().get("g"),
+        Some(&lua::LuaValue::Number(0.25))
+    );
+    assert_eq!(consist[1].1.get("kept"), None, "a new part keeps nothing");
 }
 
 #[test]

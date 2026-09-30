@@ -25,12 +25,19 @@
 //! `playerInitiated` at +0x3d2. A build whose profile has not these targets
 //! installs nothing here, and the GUI keeps refusing the tools.
 //!
+//! The module editor tells game scripts nothing of its proposals, so the GUI
+//! has no preview to pair its click with. The add's detour is entered
+//! through a thunk that notes where `Add` returns to; a click whose call
+//! returns into the module editor's `MousePressed` has its proposal read
+//! natively and kept for that click ([`crate::modules`]).
+//!
 //! Only Windows x64 installs the detours ([`install`]); elsewhere they are
 //! built for the tests alone.
 
 #![allow(unsafe_code)]
 #![cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Where a `Command` keeps its payload.
@@ -92,6 +99,52 @@ unsafe fn player_build(payload: *const u8) -> bool {
     }
 }
 
+thread_local! {
+    /// Where the `Add` call being handled on this thread returns to, as the
+    /// entry thunk found it at `[rsp]`; 0 when unknown.
+    static RETURN_ADDRESS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Notes where this thread's `Add` call returns to. Called by the thunk
+/// with the argument registers saved.
+extern "system" fn note_return_address(address: usize) {
+    RETURN_ADDRESS.with(|slot| slot.set(address));
+}
+
+/// Takes the return address the thunk noted for this call.
+fn take_return_address() -> usize {
+    RETURN_ADDRESS.with(|slot| slot.replace(0))
+}
+
+/// The add's detour entry: saves the four argument registers, passes
+/// `[rsp]` (where `Add` returns to) to [`note_return_address`], restores
+/// them and jumps to [`add_detour`] with the stack as the caller left it,
+/// so its stack argument is the caller's. (The thunk of `feat/capture-all`'s
+/// `detours.rs`, by Juliansgith.)
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[unsafe(naked)]
+unsafe extern "C" fn add_entry() {
+    core::arch::naked_asm!(
+        // Entry rsp is 8 mod 16: 0x48 makes it 16-aligned for the call,
+        // with 0x20 of shadow space under the four saved registers.
+        "sub rsp, 0x48",
+        "mov [rsp + 0x20], rcx",
+        "mov [rsp + 0x28], rdx",
+        "mov [rsp + 0x30], r8",
+        "mov [rsp + 0x38], r9",
+        "mov rcx, [rsp + 0x48]",
+        "call {note}",
+        "mov r9, [rsp + 0x38]",
+        "mov r8, [rsp + 0x30]",
+        "mov rdx, [rsp + 0x28]",
+        "mov rcx, [rsp + 0x20]",
+        "add rsp, 0x48",
+        "jmp {detour}",
+        note = sym note_return_address,
+        detour = sym add_detour,
+    )
+}
+
 /// `CommandList::Add`'s signature: the list, the connection returned, the
 /// command, the callback and the progress; returns the connection.
 type AddFn = unsafe extern "C" fn(usize, usize, usize, usize, usize) -> usize;
@@ -106,13 +159,19 @@ unsafe extern "C" fn add_detour(
     progress: usize,
 ) -> usize {
     let original = ADD_ORIGINAL.load(Ordering::Acquire);
+    let return_address = take_return_address();
     if command != 0 && crate::lua::in_room() {
         // SAFETY: the game passes the command it adds, whose first field is
         // its payload.
         let payload = unsafe { (command as *const usize).add(COMMAND_PAYLOAD).read() };
         // SAFETY: a command's payload, the size the dispatcher reads.
         if unsafe { player_build(payload as *const u8) } {
-            CLICKS.fetch_add(1, Ordering::AcqRel);
+            let click = CLICKS.fetch_add(1, Ordering::AcqRel);
+            if crate::modules::is_module_editor(return_address) {
+                // Read before the game takes it: the command is the
+                // caller's until Add returns.
+                crate::modules::record(&crate::modules::Process, click, payload);
+            }
         }
     }
     // SAFETY: the trampoline of the add, called with the arguments the game
@@ -151,10 +210,15 @@ unsafe extern "C" fn apply_detour(context: usize, payload: usize, r8: usize, r9:
 pub unsafe fn install(
     add: usize,
     apply: usize,
+    module_call: Option<usize>,
     detour: unsafe fn(*mut u8, *const u8) -> Result<usize, String>,
 ) -> Result<(), String> {
-    // SAFETY: the caller's; each detour has its target's ABI.
-    let add_original = unsafe { detour(add as *mut u8, add_detour as *const u8) }?;
+    if let Some(call) = module_call {
+        crate::modules::set_call(call);
+    }
+    // SAFETY: the caller's; the entry thunk has the add's ABI and jumps to
+    // add_detour, which has it too.
+    let add_original = unsafe { detour(add as *mut u8, add_entry as *const u8) }?;
     ADD_ORIGINAL.store(add_original, Ordering::Release);
     // SAFETY: as above.
     let apply_original = unsafe { detour(apply as *mut u8, apply_detour as *const u8) }?;
@@ -174,6 +238,28 @@ mod tests {
         bytes[PAYLOAD_INDEX] = index as u8;
         bytes[PLAYER_INITIATED] = player;
         bytes
+    }
+
+    /// The entry thunk hands the add's detour every argument, the one on
+    /// the stack included, and the detour reaches the original with them.
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[test]
+    fn the_entry_thunk_passes_every_argument_through() {
+        unsafe extern "C" fn original(a: usize, b: usize, c: usize, d: usize, e: usize) -> usize {
+            a + 2 * b + 3 * c + 4 * d + 5 * e
+        }
+        ADD_ORIGINAL.store(original as *const () as usize, Ordering::Release);
+        // SAFETY: the thunk has the add's ABI; with no command (0) the
+        // detour reads nothing of the arguments and calls `original`.
+        let entry: AddFn =
+            unsafe { std::mem::transmute::<*const (), AddFn>(add_entry as *const ()) };
+        assert_eq!(unsafe { entry(1, 2, 0, 4, 5) }, 1 + 4 + 16 + 25);
+        assert_eq!(
+            take_return_address(),
+            0,
+            "the detour took what the thunk noted"
+        );
+        ADD_ORIGINAL.store(0, Ordering::Release);
     }
 
     #[test]

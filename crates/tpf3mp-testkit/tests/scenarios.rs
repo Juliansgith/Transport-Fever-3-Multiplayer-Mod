@@ -17,7 +17,7 @@ use tpf3mp_testkit::{
     scenario::{
         BridgedPlan, BridgedPlayer, RoomPlan, latency_summary, play_bridged_room, play_room,
     },
-    toy::{lane, toy_rules_menu},
+    toy::{ToyWorld, lane, toy_rules_menu},
 };
 
 struct TestServer {
@@ -292,6 +292,7 @@ async fn games_behind_the_bridge_and_gate_agree() {
         players,
         deadline: Duration::from_secs(60),
         worlds: None,
+        start_world: None,
     })
     .await
     .unwrap();
@@ -349,6 +350,7 @@ async fn games_ride_out_a_server_restart() {
         players,
         deadline: Duration::from_secs(60),
         worlds: None,
+        start_world: None,
     }));
 
     // Mid-game, the server is upgraded: it stops, and a new process takes
@@ -506,6 +508,7 @@ async fn a_player_joins_a_running_game_from_the_rooms_world() {
         players,
         deadline: Duration::from_secs(60),
         worlds: Some(root.join("players")),
+        start_world: None,
     })
     .await
     .unwrap();
@@ -560,6 +563,7 @@ async fn a_player_behind_a_udp_block_joins_late_through_the_tunnel() {
         players,
         deadline: Duration::from_secs(60),
         worlds: Some(root.join("players")),
+        start_world: None,
     })
     .await
     .unwrap();
@@ -611,6 +615,7 @@ async fn every_player_starts_from_the_owners_world() {
         players,
         deadline: Duration::from_secs(60),
         worlds: Some(root.join("players")),
+        start_world: None,
     })
     .await
     .unwrap();
@@ -625,6 +630,63 @@ async fn every_player_starts_from_the_owners_world() {
     for report in &reports {
         assert!(report.diverged.is_empty(), "{:?}", report.diverged);
     }
+    server.stop().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_game_starts_from_the_save_the_owner_named_at_once() {
+    let root = temp_dir("start-save");
+    let identity = ServerIdentity::self_signed(&["localhost"]).unwrap();
+    let server = TestServer::start_saving(
+        "127.0.0.1:0".parse().unwrap(),
+        identity,
+        None,
+        root.join("server"),
+    )
+    .await;
+    let settings = RoomSettings {
+        steps_per_second: 100,
+        input_delay_ms: 60,
+        checkpoint_interval: 20,
+    };
+    // The owner's save, of a world none of the games has: every game can
+    // only play it by loading it.
+    std::fs::create_dir_all(&root).unwrap();
+    let save = root.join("mptest.sav");
+    std::fs::write(&save, ToyWorld::new(77).save()).unwrap();
+    let mut players = saving_players(3, 400);
+    for (index, player) in players.iter_mut().enumerate() {
+        player.world_seed = 40 + index as u64;
+    }
+    let reports = play_bridged_room(BridgedPlan {
+        server: server.address,
+        server_name: "localhost".into(),
+        trust: server.trust.clone(),
+        settings,
+        players,
+        deadline: Duration::from_secs(60),
+        worlds: Some(root.join("players")),
+        start_world: Some(save.clone()),
+    })
+    .await
+    .unwrap();
+
+    assert_worlds_agree(&reports);
+    let received: Vec<usize> = reports.iter().map(|report| report.received).collect();
+    assert_eq!(
+        received,
+        [1, 1, 1],
+        "every game loaded the owner's save from its menu, the owner's too"
+    );
+    assert_eq!(
+        reports[0].saves, 0,
+        "the owner's game saved nothing for the room"
+    );
+    for report in &reports {
+        assert!(report.diverged.is_empty(), "{:?}", report.diverged);
+    }
+    assert!(save.is_file(), "the owner's save stays where it was");
     server.stop().await;
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -657,6 +719,7 @@ async fn a_diverged_replica_is_rebased_onto_the_agreed_world() {
         players,
         deadline: Duration::from_secs(60),
         worlds: Some(root.join("players")),
+        start_world: None,
     })
     .await
     .unwrap();
@@ -711,6 +774,7 @@ async fn a_restored_room_still_hands_on_its_world() {
         players,
         deadline: Duration::from_secs(90),
         worlds: Some(root.join("players")),
+        start_world: None,
     }));
 
     tokio::time::sleep(Duration::from_secs(4)).await;

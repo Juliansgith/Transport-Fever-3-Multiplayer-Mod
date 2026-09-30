@@ -17,9 +17,15 @@
 //! - none while the room withholds the next step (the room is paused, or a
 //!   player is behind): the game's paused path, and the world stands still;
 //! - before a room has begun a game, and after it has ended, what the
-//!   game's own speed says;
+//!   game's own speed says; before, each new world the player's game has up
+//!   is told to the agent, which marks the player ready in the room's lobby
+//!   ([`RoomGate::world_up`]);
 //! - while the game saves its world for the room, or loads the room's
 //!   (docs/HOOKS.md, "The room's world"), none;
+//! - with no world up at all, at the game's main menu, no call comes: the
+//!   menu's own frame drives [`StepDriver::on_menu`] instead, which follows
+//!   the room until its game begins, tells the agent the game is at its
+//!   menu, and starts a load of the room's save from there;
 //! - on anything it cannot follow (the agent gone, a malformed message, a
 //!   room's world that did not load) none, for good: the world stands still
 //!   rather than run on apart from the room's (fail closed).
@@ -53,10 +59,14 @@ use std::{
 };
 
 use ring::digest::{SHA256, digest};
-use tpf3mp_bridge::{Begin, Game, Notice, SaveOrder, Session, SessionError, StepGate};
+use tpf3mp_bridge::{
+    Begin, Game, LobbyAction, LobbyView, Notice, SaveOrder, Session, SessionError, StepGate,
+};
 use tpf3mp_proto::{
     ChatText, Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Speed, action::Action,
 };
+
+use crate::lanedump::{self, DumpOrder, LaneDumps};
 
 /// Most steps one call of the game's step runs, catching up with the room:
 /// at the game's 1x (5 calls a second), rooms up to 16x keep up. The game
@@ -86,11 +96,31 @@ pub trait RoomGate {
     fn command(&mut self, payload: Payload) -> Result<u64, SessionError>;
     /// Says `text` to the room for the player.
     fn chat(&mut self, text: ChatText) -> Result<(), SessionError>;
+    /// Before the room begins: the game's world number `world` is up. Says
+    /// whether the agent was told.
+    fn world_up(&mut self, world: u64) -> Result<bool, SessionError>;
+    /// Before the room begins: the game is at its main menu, arrived there
+    /// for the `menu`th time. Says whether the agent was told now.
+    fn menu_up(&mut self, menu: u64) -> Result<bool, SessionError>;
     fn saved(
         &mut self,
         game: &mut HookGame,
         outcome: Result<(), String>,
     ) -> Result<(), SessionError>;
+    /// Hands the launcher an action of the main menu's Multiplayer window
+    /// ([`Session::lobby_act`]).
+    fn lobby_act(&mut self, action: LobbyAction) -> Result<(), SessionError> {
+        let _ = action;
+        Err(SessionError::Unexpected("a lobby action"))
+    }
+    /// Reads the link where no step does ([`Session::poll_lobby`]).
+    fn poll_lobby(&mut self) -> Result<(), SessionError> {
+        Ok(())
+    }
+    /// The launcher's lobby, if new ([`Session::take_lobby`]).
+    fn take_lobby(&mut self) -> Option<LobbyView> {
+        None
+    }
 }
 
 /// Longest a save the room ordered may take the game before it is reported
@@ -108,15 +138,31 @@ pub trait GameControl: Send {
     /// The last save's outcome, once the game has one: the file written, or
     /// why not.
     fn save_result(&mut self) -> Option<Result<PathBuf, String>>;
-    /// Asks the game to load the save `file` (the room's world).
-    fn request_load(&mut self, file: &Path) -> Result<(), String>;
+    /// Asks the game to load the save `file` (the room's world), through
+    /// the GUI of the world it has up or from its main menu.
+    fn request_load(&mut self, file: &Path, from: LoadFrom) -> Result<(), String>;
     /// Whether the world the last load asked for is up. Once.
     fn load_done(&mut self) -> bool;
+    /// Why the last load asked for could not be started, if it could not.
+    /// Once.
+    fn load_failed(&mut self) -> Option<String>;
     /// Tells the game's Multiplayer window what the room said: the room,
     /// its speed, its chat, a divergence, the game's end.
     fn room_notice(&mut self, notice: &Notice);
     /// Tells the game's Multiplayer window which player is this game's.
     fn set_me(&mut self, player: PlayerId);
+    /// The number of a world whose GUI started with the mod linked, since
+    /// the last call, if one did: the latest. Once.
+    fn world_up(&mut self) -> Option<u64>;
+}
+
+/// Where a load of the room's save is started from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadFrom {
+    /// The GUI of the world the game has up (the mod's, `app.loadGame`).
+    Gui,
+    /// The game's main menu, with no world up (`crate::menu`).
+    Menu,
 }
 
 /// A save the game is making for the room.
@@ -161,12 +207,27 @@ impl RoomGate for Session {
     fn chat(&mut self, text: ChatText) -> Result<(), SessionError> {
         Session::chat(self, text)
     }
+    fn world_up(&mut self, world: u64) -> Result<bool, SessionError> {
+        Session::world_up(self, world)
+    }
+    fn menu_up(&mut self, menu: u64) -> Result<bool, SessionError> {
+        Session::menu_up(self, menu)
+    }
     fn saved(
         &mut self,
         game: &mut HookGame,
         outcome: Result<(), String>,
     ) -> Result<(), SessionError> {
         Session::saved(self, game, outcome)
+    }
+    fn lobby_act(&mut self, action: LobbyAction) -> Result<(), SessionError> {
+        Session::lobby_act(self, action)
+    }
+    fn poll_lobby(&mut self) -> Result<(), SessionError> {
+        Session::poll_lobby(self)
+    }
+    fn take_lobby(&mut self) -> Option<LobbyView> {
+        Session::take_lobby(self)
     }
 }
 
@@ -263,6 +324,10 @@ pub trait StepHandler: Send {
     fn chosen_speed(&mut self, speedup: u64);
     /// See [`StepDriver::say`].
     fn say(&mut self, text: ChatText);
+    /// See [`StepDriver::on_menu`].
+    fn on_menu(&mut self);
+    /// See [`StepDriver::lobby`].
+    fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView>;
 }
 
 impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
@@ -276,13 +341,19 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
         StepDriver::take_refused(self)
     }
     fn in_room(&self) -> bool {
-        matches!(self.phase, Phase::Running | Phase::Holding(_))
+        StepDriver::in_room(self)
     }
     fn chosen_speed(&mut self, speedup: u64) {
         StepDriver::chosen_speed(self, speedup);
     }
+    fn on_menu(&mut self) {
+        StepDriver::on_menu(self);
+    }
     fn say(&mut self, text: ChatText) {
         StepDriver::say(self, text);
+    }
+    fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
+        StepDriver::lobby(self, actions)
     }
 }
 
@@ -314,6 +385,16 @@ pub struct Batch<'a> {
     /// The batch ends at a checkpoint step: after its last update the game
     /// reads the world's lanes.
     pub lanes: bool,
+    /// The call is the room's game's (the driver follows a room's game, or
+    /// holds it): a paused call must not count a frame in the game's
+    /// `tickCount` ([`crate::ticks`]).
+    pub room: bool,
+    /// The room's step the batch's first update runs, when it runs the
+    /// room's steps.
+    pub first_step: Option<u64>,
+    /// With `lanes`: the lanes whose full text the game writes to the log
+    /// after its last update, entry by entry ([`crate::lanedump`]).
+    pub dump: Option<&'a DumpOrder>,
 }
 
 /// A lane the game read: its number and what the game read for it, which
@@ -324,6 +405,15 @@ pub type LaneText = (u16, String);
 /// lanes the game read, if it read them, or why it did not follow the
 /// batch (its actions were not applied).
 pub type RunStep<'a> = dyn FnMut(&Batch<'_>) -> Result<Option<Vec<LaneText>>, String> + 'a;
+
+/// Numbers as a comma-separated list, for the log.
+fn join<T: ToString>(items: &[T]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 /// The digests the session reports for the lanes the game read.
 pub fn lane_digests(lanes: &[LaneText]) -> Vec<LaneDigest> {
@@ -354,15 +444,30 @@ pub struct StepDriver<G> {
     chosen: Option<u64>,
     /// Steps between checkpoints, from the room's `Begin`.
     checkpoint_interval: u64,
-    /// The batch chosen last ends at a checkpoint step.
+    /// The batch chosen last ends at a checkpoint step, this one.
     lanes_due: bool,
+    checkpoint_step: u64,
+    /// The lane dumps to come ([`crate::lanedump`]).
+    dumps: LaneDumps,
     /// The player's actions handed to the room and not yet ordered back:
     /// the ticket the mod was given for each, by its client sequence number.
     tickets: HashMap<u64, u64>,
     /// The tickets of the player's actions that will never happen, and why.
     refused: Vec<(u64, String)>,
+    /// The times the game came to its main menu ([`StepDriver::on_menu`]).
+    menus: u64,
+    /// Whether the game is at its menu: no step ran since the last
+    /// [`StepDriver::on_menu`].
+    at_menu: bool,
+    /// What the menu last said it cannot do, so it is logged once.
+    menu_said: Option<&'static str>,
+    /// The room's step the next update runs, once a world is loaded: what
+    /// the per-update reseed ([`crate::seeds`]) numbers updates by.
+    next_step: Option<u64>,
     /// Lines for the hook's log.
     log: Vec<String>,
+    /// What last went wrong with the lobby, logged once.
+    lobby_fault: Option<String>,
 }
 
 impl<G: RoomGate> StepDriver<G> {
@@ -378,10 +483,49 @@ impl<G: RoomGate> StepDriver<G> {
             chosen: None,
             checkpoint_interval: u64::MAX,
             lanes_due: false,
+            checkpoint_step: 0,
+            dumps: LaneDumps::default(),
             tickets: HashMap::new(),
             refused: Vec::new(),
+            menus: 0,
+            at_menu: false,
+            menu_said: None,
+            next_step: None,
             log: Vec::new(),
+            lobby_fault: None,
         }
+    }
+
+    /// Which lanes to dump besides those a divergence asks for (the game's
+    /// [`lanedump::ENV`]).
+    pub fn set_lane_dumps(&mut self, dumps: LaneDumps) {
+        self.dumps = dumps;
+    }
+
+    /// The main menu's Multiplayer window (D17): hands the launcher the
+    /// player's `actions` and returns its lobby, if it sent a new one.
+    /// Outside the room's game the driver reads the link itself first: at
+    /// the main menu no step of the game does. The lobby never holds the
+    /// world: a link that fails here fails the step gate's next read too.
+    pub fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
+        let mut fault = None;
+        for action in actions {
+            if let Err(error) = self.gate.lobby_act(action) {
+                fault = Some(format!(
+                    "the launcher did not hear the lobby window: {error}"
+                ));
+            }
+        }
+        if matches!(self.phase, Phase::BeforeBegin | Phase::Ended)
+            && let Err(error) = self.gate.poll_lobby()
+        {
+            fault = Some(format!("reading the launcher's lobby failed: {error}"));
+        }
+        if fault.is_some() && fault != self.lobby_fault {
+            self.log.extend(fault.clone());
+        }
+        self.lobby_fault = fault;
+        self.gate.take_lobby()
     }
 
     /// The tickets of the player's actions that will never happen (the room
@@ -442,6 +586,16 @@ impl<G: RoomGate> StepDriver<G> {
         }
     }
 
+    /// In the room's game: the driver follows a room's game, or holds it.
+    pub fn in_room(&self) -> bool {
+        matches!(self.phase, Phase::Running | Phase::Holding(_))
+    }
+
+    /// The room's step the next update runs, once a world is loaded.
+    pub fn next_step(&self) -> Option<u64> {
+        self.next_step
+    }
+
     pub fn phase(&self) -> &Phase {
         &self.phase
     }
@@ -460,6 +614,10 @@ impl<G: RoomGate> StepDriver<G> {
     /// the game's own step, exactly once, with the updates given and the
     /// room's actions for the step the batch starts at.
     pub fn on_step(&mut self, commands: Vec<(u64, Payload)>, run: &mut RunStep<'_>) -> Outcome {
+        // A world is up: the next time the menu drives, the game came back
+        // to it.
+        self.at_menu = false;
+        self.menu_said = None;
         let mut updates = self.updates();
         if let Some(fault) = self.game.fault.take() {
             self.hold(fault);
@@ -473,6 +631,7 @@ impl<G: RoomGate> StepDriver<G> {
         }
         // The session hears the room only in the gate's calls above.
         for notice in std::mem::take(&mut self.game.window) {
+            self.plan_dumps(&notice);
             self.control.room_notice(&notice);
         }
         // The actions wait until a batch runs: a batch that starts at their
@@ -489,11 +648,36 @@ impl<G: RoomGate> StepDriver<G> {
         } else {
             Vec::new()
         };
+        // The per-update reseed numbers exactly the updates this call runs
+        // for the room; anything else disarms it.
+        let released = match (self.phase == Phase::Running, updates) {
+            (true, Updates::Exactly(steps)) if steps > 0 => self.next_step,
+            _ => None,
+        };
+        let lanes = runs && self.lanes_due;
+        let dump = if lanes && self.phase == Phase::Running {
+            self.dumps.take(self.checkpoint_step)
+        } else {
+            None
+        };
+        if let Some(dump) = &dump {
+            self.log.push(format!(
+                "dumping lanes {} at the checkpoint after step {} ({}): lines \"lane <n> step {}\"",
+                join(&dump.lanes),
+                dump.step,
+                dump.why,
+                dump.step
+            ));
+        }
         let batch = Batch {
             updates,
             actions: &actions,
-            lanes: runs && self.lanes_due,
+            lanes,
+            room: self.in_room(),
+            first_step: released,
+            dump: dump.as_ref(),
         };
+        crate::seeds::before_updates(released, updates);
         match run(&batch) {
             Ok(lanes) => {
                 if batch.lanes {
@@ -521,9 +705,12 @@ impl<G: RoomGate> StepDriver<G> {
                 }
                 if let Updates::Exactly(steps) = updates {
                     for _ in 0..steps {
-                        if let Err(error) = self.gate.after_step(&mut self.game) {
-                            self.hold(format!("reporting a step: {error}"));
-                            break;
+                        match self.gate.after_step(&mut self.game) {
+                            Ok(step) => self.next_step = Some(step + 1),
+                            Err(error) => {
+                                self.hold(format!("reporting a step: {error}"));
+                                break;
+                            }
                         }
                     }
                 }
@@ -533,6 +720,70 @@ impl<G: RoomGate> StepDriver<G> {
             Err(reason) => self.hold(format!("the game did not follow the room's step: {reason}")),
         }
         Outcome { updates }
+    }
+
+    /// A divergence, or a line of the room's chat asking for a lane dump:
+    /// plans the dump (docs/HOOKS.md, "Lane dumps"). A divergence is said in
+    /// the room's chat, for every game to dump the same lanes at the same
+    /// steps.
+    fn plan_dumps(&mut self, notice: &Notice) {
+        if self.phase != Phase::Running {
+            return;
+        }
+        let next = self.gate.next_step();
+        let now = Instant::now();
+        match notice {
+            Notice::Diverged { step, lanes } => {
+                let Some(ask) =
+                    self.dumps
+                        .diverged(*step, lanes, next, self.checkpoint_interval, now)
+                else {
+                    if !self.dumps.setting().off {
+                        self.log.push(format!(
+                            "step {step} diverged; lanes were dumped less than a minute ago, so not again yet"
+                        ));
+                    }
+                    return;
+                };
+                self.log.push(format!(
+                    "step {step} diverged: dumping lanes {} at steps {}, and asking every game in the room to",
+                    join(&ask.lanes),
+                    join(&ask.steps)
+                ));
+                match ChatText::new(lanedump::announce(&ask)) {
+                    Ok(text) => {
+                        if let Err(error) = self.gate.chat(text) {
+                            self.log.push(format!(
+                                "the room did not hear the lane dump asked: {error}"
+                            ));
+                        }
+                    }
+                    Err(_) => self
+                        .log
+                        .push("the lane dump asked is too long for the room's chat".into()),
+                }
+            }
+            Notice::Chat { from, text } => {
+                match self
+                    .dumps
+                    .heard(text.as_str(), next, self.checkpoint_interval, now)
+                {
+                    None => {}
+                    Some(Ok(ask)) => self.log.push(format!(
+                        "{} asks for a lane dump: lanes {} at steps {} (step {} diverged there)",
+                        from.as_str(),
+                        join(&ask.lanes),
+                        join(&ask.steps),
+                        ask.diverged
+                    )),
+                    Some(Err(why)) => self.log.push(format!(
+                        "not taking the lane dump {} asks for: {why}",
+                        from.as_str()
+                    )),
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Hands the player's actions to the room, in the room's game only: an
@@ -578,19 +829,14 @@ impl<G: RoomGate> StepDriver<G> {
     fn updates(&mut self) -> Updates {
         if self.phase == Phase::BeforeBegin {
             match self.gate.try_begin() {
-                Ok(Some(begin)) => {
-                    self.log.push(format!(
-                        "the room began a game: rules {}, {} steps a second, checkpoints every {}",
-                        begin.rules.as_str(),
-                        begin.steps_per_second,
-                        begin.checkpoint_interval
-                    ));
-                    self.checkpoint_interval = u64::from(begin.checkpoint_interval).max(1);
-                    self.game.me = Some(begin.player);
-                    self.control.set_me(begin.player);
-                    self.phase = Phase::Running;
+                Ok(Some(begin)) => self.began(&begin, ""),
+                Ok(None) => {
+                    self.tell_world_up();
+                    return match self.phase {
+                        Phase::Holding(_) => Updates::Exactly(0),
+                        _ => Updates::Own,
+                    };
                 }
-                Ok(None) => return Updates::Own,
                 Err(error) => self.hold(format!("before the game began: {error}")),
             }
         }
@@ -608,6 +854,7 @@ impl<G: RoomGate> StepDriver<G> {
                             let steps = steps.max(1);
                             let last = first.saturating_add(u64::from(steps) - 1);
                             self.lanes_due = last.is_multiple_of(self.checkpoint_interval);
+                            self.checkpoint_step = last;
                             Updates::Exactly(steps)
                         }
                         Err(error) => {
@@ -635,9 +882,10 @@ impl<G: RoomGate> StepDriver<G> {
                             "playing the room's world from step {}",
                             load.next_step
                         ));
+                        self.world_loaded(load.next_step);
                     }
                     Some(file) => {
-                        if !self.load(&file, load.next_step) {
+                        if !self.load(&file, load.next_step, LoadFrom::Gui) {
                             return Updates::Exactly(0);
                         }
                     }
@@ -653,6 +901,39 @@ impl<G: RoomGate> StepDriver<G> {
                     return Updates::Exactly(0);
                 }
             }
+        }
+    }
+
+    /// The room began a game: follow it from here. `place` says where the
+    /// game is, for the log.
+    fn began(&mut self, begin: &Begin, place: &str) {
+        self.log.push(format!(
+            "the room began a game{place}: rules {}, {} steps a second, checkpoints every {}",
+            begin.rules.as_str(),
+            begin.steps_per_second,
+            begin.checkpoint_interval
+        ));
+        self.checkpoint_interval = u64::from(begin.checkpoint_interval).max(1);
+        self.game.me = Some(begin.player);
+        self.control.set_me(begin.player);
+        self.phase = Phase::Running;
+    }
+
+    /// In the room's lobby: tells the agent of a new world the game has up,
+    /// with the mod linked (it said so through `world()`), for the agent to
+    /// mark the player ready. The game steps it, so it is up, not one being
+    /// replaced; a world that started and was replaced before this call is
+    /// never told.
+    fn tell_world_up(&mut self) {
+        let Some(world) = self.control.world_up() else {
+            return;
+        };
+        match self.gate.world_up(world) {
+            Ok(true) => self.log.push(format!(
+                "world {world} is up with the mod linked: told the agent, which marks the player ready"
+            )),
+            Ok(false) => {}
+            Err(error) => self.hold(format!("telling the agent the world is up: {error}")),
         }
     }
 
@@ -706,17 +987,22 @@ impl<G: RoomGate> StepDriver<G> {
         true
     }
 
-    /// Moves a load of the room's save on: asks the game to load it, then
-    /// waits for its world. Returns whether the world is loaded; until then
-    /// the world stands still.
-    fn load(&mut self, file: &Path, next_step: u64) -> bool {
+    /// Moves a load of the room's save on: asks the game to load it (from
+    /// `from`, if it is not loading it yet), then waits for its world.
+    /// Returns whether the world is loaded; until then the world stands
+    /// still.
+    fn load(&mut self, file: &Path, next_step: u64, from: LoadFrom) -> bool {
         let now = Instant::now();
         let Some(loading) = &self.loading else {
-            match self.control.request_load(file) {
+            match self.control.request_load(file, from) {
                 Ok(()) => {
                     self.log.push(format!(
-                        "loading the room's world from {} to run step {next_step} next",
-                        file.display()
+                        "loading the room's world from {}{} to run step {next_step} next",
+                        file.display(),
+                        match from {
+                            LoadFrom::Gui => "",
+                            LoadFrom::Menu => " from the game's main menu",
+                        }
                     ));
                     self.loading = Some(Loading {
                         next_step,
@@ -727,6 +1013,11 @@ impl<G: RoomGate> StepDriver<G> {
             }
             return false;
         };
+        if let Some(why) = self.control.load_failed() {
+            self.loading = None;
+            self.hold(format!("the room's world could not be loaded: {why}"));
+            return false;
+        }
         if !self.control.load_done() {
             if now.saturating_duration_since(loading.since) >= LOAD_PATIENCE {
                 self.hold(format!(
@@ -745,7 +1036,102 @@ impl<G: RoomGate> StepDriver<G> {
         self.log.push(format!(
             "playing the room's world from its save, from step {next_step}"
         ));
+        self.world_loaded(next_step);
         true
+    }
+
+    /// The room's world is loaded and runs `next_step` next: the reseed and
+    /// the order measurement number updates by the room's steps from here.
+    fn world_loaded(&mut self, next_step: u64) {
+        self.next_step = Some(next_step);
+        crate::order::measure::room_step(next_step);
+    }
+
+    /// At the game's main menu, with no world up, on each of the menu's
+    /// frames (the step's detour gets no call there; `crate::install` calls
+    /// this only while this game has never stepped a world, no world's GUI
+    /// has started, and the menu can load a save, `crate::menu`). It
+    /// follows the room as the step does, but runs nothing:
+    ///
+    /// - before the room begins a game, it reads whether it did, and tells
+    ///   the agent the game is at its menu, once per arrival
+    ///   ([`RoomGate::menu_up`]), which marks a guest ready, and the owner
+    ///   once the room has the save it starts from;
+    /// - in the room's game, it starts a load of the room's save from the
+    ///   menu ([`LoadFrom::Menu`]) and waits for it as the step does; the
+    ///   step takes the loaded world once it runs;
+    /// - a load without a file (the owner's own world) and a save need a
+    ///   world up: the menu leaves them to the step, and logs so once.
+    pub fn on_menu(&mut self) {
+        if !self.at_menu {
+            self.at_menu = true;
+            self.menus += 1;
+        }
+        if self.phase == Phase::BeforeBegin {
+            match self.gate.try_begin() {
+                Ok(Some(begin)) => self.began(&begin, " while this game is at its main menu"),
+                Ok(None) => {
+                    match self.gate.menu_up(self.menus) {
+                        Ok(true) => self.log.push(format!(
+                            "the game is at its main menu (arrival {}): told the agent, which marks a guest ready, or the owner once the room has the save it starts from",
+                            self.menus
+                        )),
+                        Ok(false) => {}
+                        Err(error) => {
+                            self.hold(format!("telling the agent the game is at its menu: {error}"));
+                        }
+                    }
+                    return;
+                }
+                Err(error) => {
+                    self.hold(format!("before the game began: {error}"));
+                    return;
+                }
+            }
+        }
+        if self.phase != Phase::Running {
+            return;
+        }
+        if let Some(fault) = self.game.fault.take() {
+            self.hold(fault);
+            return;
+        }
+        match self.gate.poll_step(&mut self.game) {
+            Ok(StepGate::Load(load)) => match load.file {
+                Some(file) => {
+                    self.load(&file, load.next_step, LoadFrom::Menu);
+                }
+                None => self.menu_says(
+                    "the room plays the world this game starts from, which the main menu cannot pick: load it (the room's owner loads the world everyone plays)",
+                ),
+            },
+            Ok(StepGate::Save(_)) => self.menu_says(
+                "the room asks this game to save its world, which needs a world up: load it from the main menu",
+            ),
+            Ok(StepGate::Ended) => {
+                self.log
+                    .push("the room's game ended; the game runs on its own".into());
+                self.phase = Phase::Ended;
+            }
+            Ok(StepGate::Run | StepGate::Wait) => {}
+            Err(error) => self.hold(error.to_string()),
+        }
+        for notice in self.game.notices.drain(..) {
+            self.log.push(format!("the room says: {notice}"));
+        }
+        // The Multiplayer window of the world the menu loads shows what the
+        // room said meanwhile.
+        for notice in std::mem::take(&mut self.game.window) {
+            self.control.room_notice(&notice);
+        }
+    }
+
+    /// Logs what the menu cannot do, once until it changes.
+    fn menu_says(&mut self, what: &'static str) {
+        if self.menu_said != Some(what) {
+            self.menu_said = Some(what);
+            self.log.push(format!("at the main menu: {what}"));
+        }
     }
 
     fn hold(&mut self, reason: String) {
@@ -797,6 +1183,19 @@ pub(crate) mod tests {
         /// What the room says, handed to the game by each poll, one list a
         /// poll.
         pub(crate) notices: VecDeque<Vec<Notice>>,
+        /// The worlds told up.
+        pub(crate) worlds_up: Vec<u64>,
+        /// The menu arrivals told, as the session tells them: once each.
+        pub(crate) menus_up: Vec<u64>,
+        /// The lobby window's actions the launcher heard.
+        pub(crate) lobby_acts: Vec<LobbyAction>,
+        /// The lobbies the link holds, one read by each `poll_lobby`.
+        pub(crate) lobbies: VecDeque<LobbyView>,
+        /// How often the link was read for the lobby, and whether that fails.
+        pub(crate) lobby_polls: usize,
+        pub(crate) lobby_fails: bool,
+        /// The lobby read and not taken yet.
+        pub(crate) lobby_heard: Option<LobbyView>,
     }
 
     impl RoomGate for Script {
@@ -879,6 +1278,17 @@ pub(crate) mod tests {
             self.said.push(text);
             Ok(())
         }
+        fn world_up(&mut self, world: u64) -> Result<bool, SessionError> {
+            self.worlds_up.push(world);
+            Ok(true)
+        }
+        fn menu_up(&mut self, menu: u64) -> Result<bool, SessionError> {
+            if self.menus_up.last() == Some(&menu) {
+                return Ok(false);
+            }
+            self.menus_up.push(menu);
+            Ok(true)
+        }
         fn saved(
             &mut self,
             _game: &mut HookGame,
@@ -890,6 +1300,23 @@ pub(crate) mod tests {
             );
             self.saves.push(outcome);
             Ok(())
+        }
+        fn lobby_act(&mut self, action: LobbyAction) -> Result<(), SessionError> {
+            self.lobby_acts.push(action);
+            Ok(())
+        }
+        fn poll_lobby(&mut self) -> Result<(), SessionError> {
+            self.lobby_polls += 1;
+            if self.lobby_fails {
+                return Err(SessionError::AgentGone);
+            }
+            if let Some(view) = self.lobbies.pop_front() {
+                self.lobby_heard = Some(view);
+            }
+            Ok(())
+        }
+        fn take_lobby(&mut self) -> Option<LobbyView> {
+            self.lobby_heard.take()
         }
     }
 
@@ -904,10 +1331,12 @@ pub(crate) mod tests {
     pub(crate) struct ControlState {
         pub(crate) save_requests: Vec<String>,
         pub(crate) save_answer: Option<Result<PathBuf, String>>,
-        pub(crate) load_requests: Vec<PathBuf>,
+        pub(crate) load_requests: Vec<(PathBuf, LoadFrom)>,
         pub(crate) load_done: bool,
+        pub(crate) load_failure: Option<String>,
         pub(crate) room_notices: Vec<Notice>,
         pub(crate) me: Option<PlayerId>,
+        pub(crate) world_up: Option<u64>,
     }
 
     impl GameControl for FakeControl {
@@ -921,22 +1350,28 @@ pub(crate) mod tests {
         fn save_result(&mut self) -> Option<Result<PathBuf, String>> {
             self.state.lock().unwrap().save_answer.take()
         }
-        fn request_load(&mut self, file: &Path) -> Result<(), String> {
+        fn request_load(&mut self, file: &Path, from: LoadFrom) -> Result<(), String> {
             self.state
                 .lock()
                 .unwrap()
                 .load_requests
-                .push(file.to_owned());
+                .push((file.to_owned(), from));
             Ok(())
         }
         fn load_done(&mut self) -> bool {
             std::mem::take(&mut self.state.lock().unwrap().load_done)
+        }
+        fn load_failed(&mut self) -> Option<String> {
+            self.state.lock().unwrap().load_failure.take()
         }
         fn room_notice(&mut self, notice: &Notice) {
             self.state.lock().unwrap().room_notices.push(notice.clone());
         }
         fn set_me(&mut self, player: PlayerId) {
             self.state.lock().unwrap().me = Some(player);
+        }
+        fn world_up(&mut self) -> Option<u64> {
+            self.state.lock().unwrap().world_up.take()
         }
     }
 
@@ -1119,6 +1554,45 @@ pub(crate) mod tests {
         assert_eq!(d.phase(), &Phase::Running);
     }
 
+    /// Every call of the room's game says so, its paused ones included (they
+    /// must not count a frame in the game's tickCount), and a batch that
+    /// runs the room's steps says which step it starts at; a call before
+    /// the room began is the game's own.
+    #[test]
+    fn a_batch_says_whether_it_is_the_rooms_and_the_step_it_starts_at() {
+        let mut script = Script::default();
+        script.begin.extend([None, Some(begin())]);
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Wait,
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        let (mut d, _) = driver(script);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            d.on_step(Vec::new(), &mut |batch| {
+                seen.push((batch.updates, batch.room, batch.first_step));
+                Ok(batch.lanes.then(Vec::new))
+            });
+        }
+        assert_eq!(
+            seen,
+            [
+                (Updates::Own, false, None),
+                (Updates::Exactly(1), true, Some(1)),
+                (Updates::Exactly(0), true, None),
+                (Updates::Exactly(2), true, Some(2)),
+            ]
+        );
+        assert!(d.in_room());
+    }
+
     #[test]
     fn a_checkpoint_without_the_worlds_lanes_holds_the_world() {
         let mut script = Script::default();
@@ -1274,11 +1748,97 @@ pub(crate) mod tests {
 
     const PAUSED: Updates = Updates::Exactly(0);
 
+    fn lobby_named(name: &str) -> LobbyView {
+        LobbyView {
+            name: tpf3mp_proto::Text::new(name).unwrap(),
+            ..LobbyView::default()
+        }
+    }
+
+    #[test]
+    fn the_menus_window_talks_to_the_launcher_before_during_and_after_the_rooms_game() {
+        let mut script = Script::default();
+        script.lobbies.push_back(lobby_named("at the menu"));
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Wait,
+        ]);
+        let (mut d, mut calls) = driver(script);
+        // At the menu no step reads the link: the window's exchange does.
+        assert_eq!(
+            d.lobby(vec![LobbyAction::Start]),
+            Some(lobby_named("at the menu"))
+        );
+        assert_eq!(d.gate.lobby_acts, vec![LobbyAction::Start]);
+        assert_eq!(d.gate.lobby_polls, 1);
+        assert_eq!(d.lobby(Vec::new()), None, "nothing new");
+        // In the room's game the gate reads the link; the window only takes
+        // what it kept.
+        call(&mut d, &mut calls);
+        assert_eq!(d.phase(), &Phase::Running);
+        let polls = d.gate.lobby_polls;
+        d.gate.lobby_heard = Some(lobby_named("in the game"));
+        assert_eq!(
+            d.lobby(vec![LobbyAction::Ready { ready: true }]),
+            Some(lobby_named("in the game"))
+        );
+        assert_eq!(
+            d.gate.lobby_polls, polls,
+            "the gate's link is not read here"
+        );
+        assert_eq!(d.gate.lobby_acts.len(), 2);
+        assert_eq!(d.phase(), &Phase::Running, "nor is the game disturbed");
+    }
+
+    #[test]
+    fn a_lobby_that_cannot_be_read_is_logged_once_and_holds_nothing() {
+        let script = Script {
+            lobby_fails: true,
+            ..Script::default()
+        };
+        let (mut d, _calls) = driver(script);
+        assert_eq!(d.lobby(Vec::new()), None);
+        assert_eq!(d.lobby(Vec::new()), None);
+        let log = d.take_log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(log[0].contains("lobby"), "{log:?}");
+        assert_eq!(d.phase(), &Phase::BeforeBegin);
+    }
+
     #[test]
     fn before_the_room_begins_the_game_steps_as_it_would() {
         let (mut d, mut calls) = driver(Script::default());
         assert_eq!(call(&mut d, &mut calls), Updates::Own);
         assert_eq!(d.phase(), &Phase::BeforeBegin);
+    }
+
+    #[test]
+    fn a_world_up_in_the_lobby_is_told_to_the_agent_once_and_not_in_the_rooms_game() {
+        let mut script = Script::default();
+        script.begin.extend([None, None, None, Some(begin())]);
+        script.gates.push_back(StepGate::Wait);
+        let (mut d, state) = driver_with(script);
+        let mut calls = Vec::new();
+        // No world up yet: nothing told.
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert!(d.gate.worlds_up.is_empty());
+        // The mod says a world's GUI started: the next call tells it, once.
+        state.lock().unwrap().world_up = Some(1);
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert_eq!(d.gate.worlds_up, vec![1]);
+        assert!(d.take_log().iter().any(|l| l.contains("world 1 is up")));
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert_eq!(d.gate.worlds_up, vec![1], "once a world");
+        // The room begins; a world that starts in its game is the room's.
+        state.lock().unwrap().world_up = Some(2);
+        call(&mut d, &mut calls);
+        assert_eq!(d.phase(), &Phase::Running);
+        call(&mut d, &mut calls);
+        assert_eq!(d.gate.worlds_up, vec![1]);
     }
 
     #[test]
@@ -1418,6 +1978,120 @@ pub(crate) mod tests {
         assert_eq!(state.room_notices, heard, "what the room said, in order");
     }
 
+    /// Runs the room's steps up to `through`, one call at a time, and
+    /// returns each checkpoint's lane dump: its step and lanes.
+    fn dumps_through(d: &mut StepDriver<Script>, through: u64) -> Vec<(u64, Vec<u16>)> {
+        let mut dumps = Vec::new();
+        while d.gate.ran < through {
+            d.on_step(Vec::new(), &mut |batch| {
+                if let Some(dump) = batch.dump {
+                    assert!(batch.lanes, "a dump comes with a checkpoint");
+                    dumps.push((dump.step, dump.lanes.clone()));
+                }
+                Ok(batch.lanes.then(Vec::new))
+            });
+        }
+        dumps
+    }
+
+    fn room_running(interval: u32, steps: usize) -> Script {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(interval)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script
+            .gates
+            .extend(std::iter::repeat_n(StepGate::Run, steps));
+        script
+    }
+
+    #[test]
+    fn a_divergence_asks_every_game_for_a_lane_dump_and_dumps_here_too() {
+        let mut script = room_running(10, 60);
+        script.notices.push_back(vec![Notice::Diverged {
+            step: 10,
+            lanes: vec![3],
+        }]);
+        let (mut d, _) = driver(script);
+        let dumps = dumps_through(&mut d, 60);
+        // Told before step 1: the first checkpoint 20 steps on or later.
+        assert_eq!(dumps, [(30, vec![3]), (40, vec![3])]);
+        let said: Vec<&str> = d.gate.said.iter().map(|t| t.as_str()).collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(
+            crate::lanedump::parse(said[0]),
+            Some(crate::lanedump::Ask {
+                lanes: vec![3],
+                steps: vec![30, 40],
+                diverged: 10
+            }),
+            "the room's chat carries the steps and lanes"
+        );
+        let log = d.take_log().join("\n");
+        assert!(
+            log.contains("step 10 diverged: dumping lanes 3 at steps 30,40"),
+            "{log}"
+        );
+        assert!(
+            log.contains("dumping lanes 3 at the checkpoint after step 30 (step 10 diverged)"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_game_that_did_not_diverge_dumps_what_the_rooms_chat_asks() {
+        let mut script = room_running(10, 60);
+        let ask = crate::lanedump::Ask {
+            lanes: vec![0, 3],
+            steps: vec![30, 40],
+            diverged: 10,
+        };
+        script.notices.push_back(vec![Notice::Chat {
+            from: tpf3mp_proto::Text::new("bob").unwrap(),
+            text: ChatText::new(crate::lanedump::announce(&ask)).unwrap(),
+        }]);
+        let (mut d, state) = driver_with(script);
+        let dumps = dumps_through(&mut d, 60);
+        assert_eq!(dumps, [(30, vec![0, 3]), (40, vec![0, 3])]);
+        assert!(d.gate.said.is_empty(), "it asks nobody else");
+        assert!(
+            d.take_log()
+                .iter()
+                .any(|l| l.contains("bob asks for a lane dump: lanes 0,3 at steps 30,40")),
+        );
+        assert_eq!(
+            state.lock().unwrap().room_notices.len(),
+            1,
+            "the window still shows the line"
+        );
+    }
+
+    #[test]
+    fn the_environments_lanes_are_dumped_at_every_checkpoint() {
+        let (mut d, _) = driver(room_running(10, 30));
+        d.set_lane_dumps(LaneDumps::new(
+            crate::lanedump::Setting::from_env(Some("3")).0,
+        ));
+        assert_eq!(
+            dumps_through(&mut d, 30),
+            [(10, vec![3]), (20, vec![3]), (30, vec![3])]
+        );
+        // Off: a divergence asks nothing and dumps nothing.
+        let mut script = room_running(10, 60);
+        script.notices.push_back(vec![Notice::Diverged {
+            step: 10,
+            lanes: vec![3],
+        }]);
+        let (mut d, _) = driver(script);
+        d.set_lane_dumps(LaneDumps::new(
+            crate::lanedump::Setting::from_env(Some("off")).0,
+        ));
+        assert!(dumps_through(&mut d, 60).is_empty());
+        assert!(d.gate.said.is_empty());
+    }
+
     #[test]
     fn what_the_player_says_reaches_the_room_in_its_game_only() {
         let mut script = Script::default();
@@ -1526,7 +2200,10 @@ pub(crate) mod tests {
         let (mut d, state) = driver_with(script);
         let mut calls = Vec::new();
         assert_eq!(call(&mut d, &mut calls), PAUSED, "asked to load");
-        assert_eq!(state.lock().unwrap().load_requests, vec![file]);
+        assert_eq!(
+            state.lock().unwrap().load_requests,
+            vec![(file, LoadFrom::Gui)]
+        );
         assert_eq!(call(&mut d, &mut calls), PAUSED, "still loading");
         assert!(d.gate.loaded.is_empty());
         // The loaded world's GUI started.
@@ -1538,5 +2215,146 @@ pub(crate) mod tests {
                 .iter()
                 .any(|line| line.contains("from its save, from step 101"))
         );
+    }
+
+    /// The driver knows the room's step the next update runs, from the
+    /// loaded world on: what the per-update reseed numbers updates by.
+    #[test]
+    fn the_driver_counts_the_rooms_steps_from_the_loaded_world() {
+        let mut script = Script::default();
+        script.begin.push_back(None);
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        let (mut d, mut calls) = driver(script);
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert_eq!(d.next_step(), None, "no world of the room's yet");
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(2));
+        assert_eq!(d.next_step(), Some(3), "loaded at 1, two steps ran");
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert_eq!(d.next_step(), Some(3), "a paused call runs no step");
+    }
+
+    #[test]
+    fn at_the_menu_the_agent_is_told_once_per_arrival_until_the_room_begins() {
+        let mut script = Script::default();
+        script.begin.extend([None, None, None, None, Some(begin())]);
+        script.gates.push_back(StepGate::Wait);
+        let (mut d, mut calls) = driver(script);
+        d.on_menu();
+        d.on_menu();
+        assert_eq!(d.gate.menus_up, vec![1], "one arrival, told once");
+        assert!(
+            d.take_log()
+                .iter()
+                .any(|l| l.contains("at its main menu (arrival 1)"))
+        );
+        // A world comes up and goes: the game is back at its menu.
+        call(&mut d, &mut calls);
+        d.on_menu();
+        assert_eq!(d.gate.menus_up, vec![1, 2]);
+        assert_eq!(calls.len(), 1, "the menu runs no step");
+        // The room begins while the game is at its menu.
+        d.on_menu();
+        assert_eq!(d.phase(), &Phase::Running);
+        assert_eq!(d.gate.menus_up, vec![1, 2], "nothing told once it began");
+    }
+
+    #[test]
+    fn the_rooms_save_is_loaded_from_the_menu_and_played_once_its_world_runs() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        let file = PathBuf::from("worlds/room.sav");
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: Some(file.clone()),
+                next_step: 41,
+            }),
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        let (mut d, state) = driver_with(script);
+        d.on_menu();
+        assert_eq!(d.phase(), &Phase::Running);
+        assert_eq!(state.lock().unwrap().me, Some(ME), "the room's player");
+        assert_eq!(
+            state.lock().unwrap().load_requests,
+            vec![(file.clone(), LoadFrom::Menu)],
+            "no world up: the menu loads it"
+        );
+        d.on_menu();
+        assert_eq!(
+            state.lock().unwrap().load_requests.len(),
+            1,
+            "asked once, then waited for"
+        );
+        assert!(d.gate.loaded.is_empty());
+        // The room's world is up: its step takes it and plays on.
+        state.lock().unwrap().load_done = true;
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(d.gate.loaded, vec![41]);
+        assert_eq!(state.lock().unwrap().load_requests.len(), 1);
+        assert!(
+            d.take_log()
+                .iter()
+                .any(|l| l.contains("from the game's main menu to run step 41 next"))
+        );
+    }
+
+    #[test]
+    fn a_load_the_menu_could_not_start_holds_the_world() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.push_back(StepGate::Load(Load {
+            file: Some(PathBuf::from("room.sav")),
+            next_step: 1,
+        }));
+        let (mut d, state) = driver_with(script);
+        d.on_menu();
+        state.lock().unwrap().load_failure = Some("this Lua state has no app".into());
+        d.on_menu();
+        assert!(
+            matches!(d.phase(), Phase::Holding(reason) if reason.contains("no app")),
+            "{:?}",
+            d.phase()
+        );
+    }
+
+    #[test]
+    fn the_menu_leaves_the_owners_world_and_a_save_to_a_world_up() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+        ]);
+        let (mut d, state) = driver_with(script);
+        d.on_menu();
+        d.on_menu();
+        assert!(state.lock().unwrap().load_requests.is_empty());
+        assert!(d.gate.loaded.is_empty(), "no world to take at the menu");
+        let log = d.take_log();
+        assert_eq!(
+            log.iter()
+                .filter(|l| l.contains("the main menu cannot pick"))
+                .count(),
+            1,
+            "said once: {log:?}"
+        );
+        // The player loads their world: its step takes it.
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(d.gate.loaded, vec![1]);
     }
 }

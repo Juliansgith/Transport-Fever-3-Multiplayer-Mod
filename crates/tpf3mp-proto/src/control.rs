@@ -51,7 +51,8 @@ pub enum ServerMessage {
     /// The room's owner removed this player, who cannot come back to it.
     Kicked,
     /// Upload the world this client saved at the save event `event`: open a
-    /// bulk stream and serve `snapshot` on it.
+    /// bulk stream and serve `snapshot` on it. Event 0 is the world the
+    /// owner named for the room to start from ([`Request::StartWorld`]).
     Upload {
         event: u64,
         snapshot: SnapshotId,
@@ -152,6 +153,13 @@ pub enum Request {
     /// Lines of this client's log, redacted, for the server's operator to
     /// read by this session's ID (see "Diagnostics" in PROTOCOL.md).
     Diagnostics(crate::DiagnosticBatch),
+    /// The owner, in the lobby: the room's game starts from this world, a
+    /// save the owner's client holds, and not from one the owner's game
+    /// saves once the game began. The room asks for it at once
+    /// ([`ServerMessage::Upload`] with event 0), and when the game starts
+    /// every member loads it, the owner too. Declaring another replaces it.
+    /// Only on a server that keeps snapshots.
+    StartWorld(SavedWorld),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +233,10 @@ pub enum RequestError {
     /// The server keeps no more diagnostics from this session: it keeps
     /// none, or this session sent all it may.
     DiagnosticsNotKept,
+    /// The server keeps no worlds, so a room cannot be handed one.
+    WorldsNotKept,
+    /// The world the room starts from is still on its way to the server.
+    StartWorldPending,
 }
 
 impl fmt::Display for RequestError {
@@ -248,6 +260,12 @@ impl fmt::Display for RequestError {
             Self::UnknownRules => "this server does not offer those rules",
             Self::InvalidContent => "the game's list of mods is too long to declare",
             Self::DiagnosticsNotKept => "the server keeps no more diagnostics from this session",
+            Self::WorldsNotKept => {
+                "this server keeps no worlds, so a room cannot start from a save"
+            }
+            Self::StartWorldPending => {
+                "the save the room starts from is still being uploaded; start once it is there"
+            }
         })
     }
 }

@@ -161,11 +161,35 @@ local HANDLERS = {}
 local networkInto
 -- The construction of a file at a place ("vehicles and lines", below).
 local constructionAt
+-- Removes a stop from its edge ("stops", below).
+local removeEdgeObject
+
+-- An edit of a construction (its modules or parameters, an upgrade): the
+-- construction the action names removed and the new one built in one
+-- proposal, the old mapped to the new (old2new), as the game's own upgrade
+-- makes one (mission_framework_util_entity.tl, upgradeConstruction), so
+-- what stood on the old one (its stations, their station groups and the
+-- lines that stop there) passes to the new. The game's verdict first, and
+-- built as the player's own build, paid by the player (buildProposal). The
+-- new one stands where the old one stood, so the next edit, a depot or a
+-- line finds it by the same file and place.
+local function replaceConstruction(build, proposal, entity)
+	if build.connection ~= nil then error("an edit that builds streets around the construction", 0) end
+	local old = constructionAt(build.replaces)
+	proposal.constructionsToAdd = { entity }
+	proposal.constructionsToRemove = { old }
+	proposal.old2new = { [old] = 0 }
+	log("replacing " .. tostring(old) .. " " .. tostring(build.replaces.file) .. " with " .. tostring(build.file))
+	local context = api.type.Context.new()
+	context.player = api.engine.util.getPlayer()
+	context.gatherBuildings = true
+	context.gatherFields = true
+	buildProposal(proposal, context)
+	-- What it made, where the action says: this game could name it.
+	return true, constructionAt({ file = build.file, at = build.transform.origin })
+end
 
 function HANDLERS.BuildConstruction(build)
-	if build.replaces ~= nil then
-		return false, "this version of the mod does not replace constructions yet"
-	end
 	local proposal = api.type.SimpleProposal.new()
 	local entity = api.type.SimpleProposal.ConstructionEntity.new()
 	entity.fileName = build.file
@@ -173,6 +197,7 @@ function HANDLERS.BuildConstruction(build)
 	entity.params = params(build.params)
 	entity.name = build.name
 	entity.playerEntity = api.engine.util.getPlayer()
+	if build.replaces ~= nil then return replaceConstruction(build, proposal, entity) end
 	proposal.constructionsToAdd = { entity }
 	-- The streets the tool built around it, in the same proposal: the
 	-- street it joins rebuilt through a junction. Not the construction's own
@@ -565,6 +590,9 @@ function HANDLERS.Bulldoze(b)
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
 		log("removing " .. network .. " edges " .. table.concat(ids, ","))
+	elseif b.EdgeObject then
+		-- A simple proposal: the game's verdict first (buildProposal).
+		return removeEdgeObject(b.EdgeObject, context)
 	else
 		return false, "a bulldoze of no kind"
 	end
@@ -575,6 +603,114 @@ end
 
 function HANDLERS.BuildTrack(track)
 	return buildNetwork("Track", track.track, track.style, track.polyline)
+end
+
+-- ---------------------------------------------------------------- stops
+--
+-- A stop is placed, or removed, as the stop tool and the bulldozer propose
+-- it (tpf3mp/engine.lua): the edge removed and added again between the same
+-- nodes, its own component read afresh (as the game's electrify task
+-- rebuilds an edge, electrify.tl), so every stop and signal it had stays
+-- under its own entity, re-parented with its station group and lines. A new
+-- stop is `edgeObjectsToAdd[1]`, named in the edge's objects as -1 (TPF2's
+-- tool and scripts did so; INFERRED on TF3); a removed one goes into
+-- `edgeObjectsToRemove`. The lane configurations at the edge's ends name it,
+-- and go with it, as for any edge a replay removes (networkInto).
+
+-- The existing edge a stop action names, as edgeBetween finds it.
+local function stopEdge(ref)
+	local e = edgeBetween(readNodes(ref.network), ref.network, arr(ref.ends.a), arr(ref.ends.b))
+	if e == nil then error("no " .. ref.network .. " edge for the stop", 0) end
+	return e
+end
+
+-- A proposal that removes edge `e` and adds it again with `objects`.
+local function rebuildWith(e, network, objects)
+	local proposal = api.type.SimpleProposal.new()
+	local s = api.type.SegmentAndEntity.new()
+	s.entity = -1
+	s.comp = api.engine.getComponent(e.id, api.type.ComponentType.BASE_EDGE)
+	s.type = network == "Track" and 1 or 0
+	s.comp.objects = objects
+	proposal.streetProposal.edgesToAdd = { s }
+	proposal.streetProposal.edgesToRemove = { e.id }
+	local configs = {}
+	for _, node in ipairs({ e.comp.node0, e.comp.node1 }) do
+		if api.engine.getComponent(node, api.type.ComponentType.BASE_NODE_CONFIG) ~= nil then
+			configs[#configs + 1] = node
+		end
+	end
+	if #configs > 0 then proposal.streetProposal.nodeConfigsToRemove = configs end
+	return proposal
+end
+
+-- How near its edge's centreline a stop's place is: the originator's own
+-- point of that centreline, rounded to the millimetre.
+local STOP_TOLERANCE = 0.5
+
+function HANDLERS.PlaceStop(stop)
+	local network = stop.edge.network
+	local e = stopEdge(stop.edge)
+	local u, off = geom.parameterAt(e.a, e.ta, e.b, e.tb, stop.at.x, stop.at.y)
+	if off > STOP_TOLERANCE then error("the stop's place is not on its edge", 0) end
+	-- The engine's side, flipped where this edge runs the other way.
+	local left = stop.left == true
+	local t, d = geom.hermiteTangent(e.a, e.ta, e.b, e.tb, u), stop.direction
+	if t[1] * d.x + t[2] * d.y + t[3] * d.z < 0 then left = not left end
+	local types = enum("EdgeObjectType")
+	local side = left and types.STOP_LEFT or types.STOP_RIGHT
+	-- One stop a side: a second is a fatal assert in the game's lane
+	-- creation (TPF2, docs/BUILDING.md).
+	local objects = {}
+	for i, o in ipairs(e.comp.objects or {}) do
+		if o[2] == side then error("the edge has a stop on that side already", 0) end
+		objects[i] = { o[1], o[2] }
+	end
+	objects[#objects + 1] = { -1, side }
+	local proposal = rebuildWith(e, network, objects)
+	local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+	eo.edgeEntity = -1
+	eo.param = u
+	eo.left = left
+	eo.oneWay = false
+	eo.model = stop.model
+	eo.playerEntity = api.engine.util.getPlayer()
+	eo.name = ""
+	proposal.streetProposal.edgeObjectsToAdd = { eo }
+	log(string.format("placing %s on %s edge %d at %.4f, %s", tostring(stop.model), network, e.id, u,
+		left and "left" or "right"))
+	-- Paid by the player, as the tool builds.
+	local context = api.type.Context.new()
+	context.player = api.engine.util.getPlayer()
+	return buildProposal(proposal, context)
+end
+
+-- A stop the bulldozer removes: the object of that construction on the
+-- edge, nearest where it stood, within 2 m.
+function removeEdgeObject(ref, context)
+	local network = ref.edge.network
+	local e = stopEdge(ref.edge)
+	local best, bestD
+	for _, o in ipairs(e.comp.objects or {}) do
+		local c = api.engine.getComponent(o[1], api.type.ComponentType.EDGE_OBJECT)
+		local t = c and c.transf
+		if c and c.edgeObjectConstruction == ref.model and t then
+			local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
+			local dist = dx * dx + dy * dy + dz * dz
+			if dist <= 4 and (bestD == nil or dist < bestD or (dist == bestD and o[1] < best)) then
+				best, bestD = o[1], dist
+			end
+		end
+	end
+	if best == nil then error("no " .. tostring(ref.model) .. " there", 0) end
+	local objects = {}
+	for _, o in ipairs(e.comp.objects) do
+		if o[1] ~= best then objects[#objects + 1] = { o[1], o[2] } end
+	end
+	local proposal = rebuildWith(e, network, objects)
+	proposal.streetProposal.edgeObjectsToRemove = { best }
+	log("removing " .. tostring(ref.model) .. " " .. tostring(best) .. " from " .. network .. " edge " .. e.id)
+	return buildProposal(proposal, context)
 end
 
 -- ------------------------------------------------------ vehicles and lines
@@ -613,38 +749,113 @@ end
 
 local function tint(c) return api.type.Vec3f.new(c.r, c.g, c.b) end
 
+-- The game's time here, the same in every game: when a part is bought.
+local function now()
+	return api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME).gameTime
+end
+
+-- A ConsistPart as the game's TransportVehiclePart, bought at `time`. Every
+-- compartment loads automatically, as the store sends it
+-- (vehicle_react_util.tl).
+local function vehiclePart(p, time)
+	local model = api.res.modelRep.find(p.model)
+	if type(model) ~= "number" or model < 0 then error("no vehicle model " .. tostring(p.model), 0) end
+	local part = api.type.TransportVehiclePart.new()
+	part.part.modelId = model
+	part.part.reversed = p.reversed == true
+	local loads, auto = {}, {}
+	for k, l in ipairs(p.loads) do
+		local lc = api.type.LoadConfig.new()
+		lc.loadConfigIndex = l.config
+		lc.cargoTypeId = l.cargo
+		loads[k], auto[k] = lc, true
+	end
+	part.part.compartment2loadConfig = loads
+	part.part.color = tint(p.color)
+	part.purchaseTime = time
+	part.autoLoadConfig = auto
+	return part
+end
+
+-- A TransportVehicleConfig of these parts, groups and multiple units.
+local function vehicleConfig(vehicles, groups, units)
+	local config = api.type.TransportVehicleConfig.new()
+	config.vehicles = vehicles
+	config.vehicleGroups = seq(groups)
+	config.muFileNames = seq(units)
+	return config
+end
+
 function HANDLERS.BuyVehicle(buy)
 	local _, construction = constructionAt(buy.depot)
 	local depot = construction.depots and construction.depots[1]
 	if depot == nil then error("the construction there has no depot", 0) end
-	-- Bought now: the game's time here, the same in every game.
-	local time = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME).gameTime
+	local time = now()
 	local vehicles = {}
-	for i, p in ipairs(buy.consist) do
-		local model = api.res.modelRep.find(p.model)
-		if type(model) ~= "number" or model < 0 then error("no vehicle model " .. tostring(p.model), 0) end
-		local part = api.type.TransportVehiclePart.new()
-		part.part.modelId = model
-		part.part.reversed = p.reversed == true
-		local loads, auto = {}, {}
-		for k, l in ipairs(p.loads) do
-			local lc = api.type.LoadConfig.new()
-			lc.loadConfigIndex = l.config
-			lc.cargoTypeId = l.cargo
-			loads[k], auto[k] = lc, true
-		end
-		part.part.compartment2loadConfig = loads
-		part.part.color = tint(p.color)
-		part.purchaseTime = time
-		part.autoLoadConfig = auto
-		vehicles[i] = part
-	end
-	local config = api.type.TransportVehicleConfig.new()
-	config.vehicles = vehicles
-	config.vehicleGroups = seq(buy.groups)
-	config.muFileNames = seq(buy.multiple_units)
+	for i, p in ipairs(buy.consist) do vehicles[i] = vehiclePart(p, time) end
+	local config = vehicleConfig(vehicles, buy.groups, buy.multiple_units)
 	local data, entities = send(api.cmd.makeVehicleBuyCmd(api.engine.util.getPlayer(), depot, config))
 	return true, madeBy("resultVehicleEntity", data, entities)
+end
+
+-- Whether `e` is a vehicle in this world.
+local function isVehicle(e)
+	if type(e) ~= "number" or e < 0 then return false end
+	local ok, c = pcall(api.engine.getComponent, e, api.type.ComponentType.TRANSPORT_VEHICLE)
+	return ok and c ~= nil
+end
+
+-- A vehicle's consist replaced, as the store's HandleVehicleChanges sends it
+-- (vehicle_react_util.tl): a part the vehicle keeps is its own part, its
+-- purchase time and wear as this game has them now, with the facing, loads
+-- and colour the player chose; a new part is bought now. The vehicle is
+-- then the entity the game names (its command data, its result entities)
+-- that is a vehicle, else the vehicle itself: TF3's API says the vehicle is
+-- replaced (cmd.d.tl), and its command data has no result field. Returns
+-- that entity, for the registry to keep the vehicle's id on.
+function HANDLERS.ReplaceVehicle(replace, ctx)
+	local vehicle = entityOf(ctx, "vehicles", replace.vehicle)
+	local tv = api.engine.getComponent(vehicle, api.type.ComponentType.TRANSPORT_VEHICLE)
+	local own = tv and tv.transportVehicleConfig and tv.transportVehicleConfig.vehicles
+	if own == nil then error("vehicle " .. tostring(replace.vehicle) .. " has no parts to read", 0) end
+	local time = now()
+	local vehicles, kept = {}, {}
+	for i, r in ipairs(replace.consist) do
+		local part = vehiclePart(r.part, time)
+		if r.kept ~= nil then
+			local old = own[r.kept + 1]
+			if old == nil then error("part " .. i .. " keeps a part the vehicle does not have", 0) end
+			if old.part.modelId ~= part.part.modelId then
+				error("part " .. i .. " keeps a part of another model", 0)
+			end
+			if kept[r.kept] then error("part " .. i .. " keeps a part kept already", 0) end
+			kept[r.kept] = true
+			part.purchaseTime = old.purchaseTime
+			part.maintenanceState = old.maintenanceState
+			part.maintenanceChange = old.maintenanceChange
+		end
+		vehicles[i] = part
+	end
+	local config = vehicleConfig(vehicles, replace.groups, replace.multiple_units)
+	local count = 0
+	for _ in pairs(kept) do count = count + 1 end
+	log("replacing vehicle " .. tostring(replace.vehicle) .. " (entity " .. tostring(vehicle) .. "): "
+		.. #vehicles .. " part(s), " .. count .. " kept")
+	local data, entities = send(api.cmd.makeVehicleReplaceCmd(vehicle, config))
+	local candidates = {}
+	for _, pair in ipairs(type(entities) == "table" and entities or {}) do
+		if type(pair) == "table" then candidates[#candidates + 1] = pair[1] end
+	end
+	local ok, named = pcall(function() return data.vehicleEntity end)
+	if ok then candidates[#candidates + 1] = named end
+	candidates[#candidates + 1] = vehicle
+	for _, e in ipairs(candidates) do
+		if isVehicle(e) then
+			if e ~= vehicle then log("vehicle " .. tostring(replace.vehicle) .. " is entity " .. e .. " now, was " .. vehicle) end
+			return true, e
+		end
+	end
+	return true, nil
 end
 
 function HANDLERS.SellVehicle(sell, ctx)
@@ -748,6 +959,12 @@ end
 -- handler returns the entity, where the game said which.
 apply.CREATES = { BuyVehicle = "vehicles", CreateLine = "lines" }
 
+-- What an action changes and names by canonical id, which keeps its id
+-- whatever entity it is after: the replaced vehicle. Its kind in the
+-- registry and the field of the action naming it; its handler returns the
+-- entity it is now, where this game could name it.
+apply.KEEPS = { ReplaceVehicle = { kind = "vehicles", field = "vehicle" } }
+
 -- A loan's terms as the loan script keeps them (loan.d.tl): the action's
 -- table has the script's own field names and fractions.
 local function loanTerms(terms)
@@ -771,10 +988,35 @@ function HANDLERS.Loan(op)
 	return false, "a loan is taken or paid back"
 end
 
+-- Prospecting goes through the company script's own event, with the
+-- parameters the construction menu sends it (gui/construction/
+-- construction_react_util.tl): here it runs at once, in every game at the
+-- same update, so every game's company script keeps the same prospection
+-- from the same game time, and months later draws the same outcome and
+-- builds the same industry at the same place: it seeds its draws, and the
+-- game its placement, from the game time
+-- (investigation/TPF3_PROSPECTING_2026-09-30.md). The company is the
+-- player's, as the menu names it; the industry types go in the order the
+-- originator's menu listed them.
+function HANDLERS.Prospect(p, ctx)
+	local town = entityOf(ctx, "towns", p.town)
+	local types = seq(p.industries)
+	if #types == 0 then error("a prospection that can find no industry", 0) end
+	log("prospecting for " .. tostring(p.cargo) .. " near town-" .. tostring(p.town) .. " (" .. tostring(town)
+		.. "): " .. table.concat(types, ", "))
+	return run(api.cmd.makeScriptingSendEventCmd("", "Companies", "spawnIndustry", {
+		companyEntity = api.engine.util.getPlayer(),
+		townEntity = town,
+		types = types,
+		permitKey = p.permit,
+		cargoType = p.cargo,
+	}))
+end
+
 -- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the
 -- actions that name vehicles, lines and station groups. Returns true, nil
--- and the entity it made (for the kinds in CREATES, where the game said),
--- or false and why not; never raises.
+-- and the entity it made or changed (for the kinds in CREATES and KEEPS,
+-- where the game said), or false and why not; never raises.
 function apply.run(action, ctx)
 	if type(action) ~= "table" then return false, "an action is a table" end
 	local kind, body = next(action)

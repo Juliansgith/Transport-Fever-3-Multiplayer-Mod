@@ -605,6 +605,17 @@ impl Client {
                 .await
             }
             Request::Diagnostics(batch) => self.keep_diagnostics(&batch),
+            Request::StartWorld(world) => {
+                if self.shared.snapshots.is_none() {
+                    return Err(RequestError::WorldsNotKept);
+                }
+                self.in_room(|player, reply| RoomCommand::StartWorld {
+                    player,
+                    world,
+                    reply,
+                })
+                .await
+            }
         }
     }
 

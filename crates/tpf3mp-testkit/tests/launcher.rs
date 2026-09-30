@@ -131,6 +131,8 @@ fn launcher_config(
         diagnostics: None,
         hook: None,
         game_exe: None,
+        game_env: Vec::new(),
+        start_save: None,
         listen: "127.0.0.1:0".parse().unwrap(),
         server: None,
         server_fixed: false,
@@ -189,6 +191,7 @@ async fn two_players_play_a_room_from_their_launchers() {
             target_step: 300,
             drift_at: None,
             patience: WAIT,
+            at_menu: false,
         })
     });
     let ann = Launcher::start(ann_config).await.unwrap();
@@ -412,9 +415,10 @@ async fn a_window_drives_the_launcher_in_process() {
     assert!(refused.is_err());
     assert!(handle.state().error.is_some());
 
-    // The game starts from a room only: it connects to the room's session.
+    // The game may start before a room is chosen (D17): here it is refused
+    // only because this launcher has no game to start.
     let refused = handle.act(Action::LaunchGame).await.unwrap_err();
-    assert!(refused.contains("room"), "{refused}");
+    assert!(!refused.contains("room"), "{refused}");
 
     handle
         .act(Action::Connect {
@@ -449,6 +453,108 @@ async fn a_window_drives_the_launcher_in_process() {
     assert_eq!(room.phase, Phase::Lobby);
     assert!(room.you_own);
     assert!(room.invite.is_some());
+
+    drop(launcher);
+    let _ = stop.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
+}
+
+/// After leaving a room the launcher connects again on its own; that
+/// connection declares the game's content too, so the next room it makes
+/// can start. Without it the server holds no content for the player and
+/// refuses every start as "different game versions or mods" (found in the
+/// two-instance playtest of 2026-09-29).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_made_after_leaving_one_can_start() {
+    use tpf3mp_agent::launcher::{Action, Connection, MemberContent, Phase};
+
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
+    config.rules = toy_rules_menu();
+    config.max_sessions_per_address = 100;
+    config.max_handshakes_per_address = 100;
+    let server = Server::bind(config).unwrap();
+    let server_address = server.local_addr().unwrap().to_string();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(server.run(async {
+        let _ = stopped.await;
+    }));
+
+    let config = launcher_config(
+        root.path(),
+        "gus",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    let launcher = Launcher::start_local(config);
+    let handle = launcher.handle();
+    handle
+        .act(Action::Connect {
+            server: server_address,
+            name: "Gus".into(),
+        })
+        .await
+        .unwrap();
+    let create = || Action::Create {
+        room: "again".into(),
+        max_players: 1,
+        password: None,
+        rules: None,
+    };
+    handle.act(create()).await.unwrap();
+    handle.act(Action::Leave).await.unwrap();
+    // The session hands its connection back and the launcher connects again.
+    tokio::time::timeout(WAIT, async {
+        while handle.state().room.is_some() || handle.state().connection != Connection::Connected {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("connected again after leaving");
+
+    handle.act(create()).await.unwrap();
+    handle.act(Action::Ready { ready: true }).await.unwrap();
+    let me = tokio::time::timeout(WAIT, async {
+        loop {
+            let me = handle
+                .state()
+                .room
+                .and_then(|room| room.members.into_iter().find(|member| member.you));
+            if let Some(me) = me.filter(|me| me.ready) {
+                return me;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("ready in the new room");
+    assert_eq!(
+        me.content,
+        MemberContent::Same,
+        "the new connection declared no content"
+    );
+    handle.act(Action::Start).await.unwrap();
+    let started = tokio::time::timeout(WAIT, async {
+        loop {
+            let state = handle.state();
+            if state
+                .room
+                .as_ref()
+                .is_some_and(|room| room.phase != Phase::Lobby)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        started.is_ok(),
+        "the room never started; notices: {:?}",
+        handle.state().notices
+    );
 
     drop(launcher);
     let _ = stop.send(());
@@ -543,6 +649,142 @@ async fn a_launcher_with_its_own_server_plays_there_alone() {
         .await
         .unwrap_err();
     assert!(refused.contains("another server"), "{refused}");
+
+    drop(launcher);
+    let _ = stop.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(10), server_task).await;
+}
+
+/// The game's main menu drives the launcher (D17): a game at its menu,
+/// before any room, connects, creates a room, chats, gets ready and starts
+/// it from its Multiplayer window, and the launcher's own window shows the
+/// same room.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_game_at_its_main_menu_plays_the_lobby_through_the_launcher() {
+    use tpf3mp_agent::launcher::{Connection, Phase};
+    use tpf3mp_bridge::{LobbyAction, LobbyConnection, LobbyView, Session};
+
+    let root = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost", "127.0.0.1"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let mut config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), identity);
+    config.rules = toy_rules_menu();
+    config.max_sessions_per_address = 100;
+    config.max_handshakes_per_address = 100;
+    let server = Server::bind(config).unwrap();
+    let server_address = server.local_addr().unwrap().to_string();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(server.run(async {
+        let _ = stopped.await;
+    }));
+
+    let mut config = launcher_config(
+        root.path(),
+        "fay",
+        &trust,
+        Arc::new(Identity::generate().unwrap().0),
+    );
+    // The server the launcher plays on: the window names none (D12).
+    config.server = Some(server_address);
+    let link_name = config.link.clone();
+    let launcher = Launcher::start_local(config);
+    let handle = launcher.handle();
+
+    // The game, at its main menu: nothing but the menu's window reads the
+    // link, as the hook's menu entry does (crates/tpf3mp-hook/src/lobby.rs).
+    let game = tokio::task::spawn_blocking(move || {
+        let mut session = Session::attach(&link_name, "menu test", WAIT).unwrap();
+        let mut shown = LobbyView::default();
+        let mut wait_for =
+            |session: &mut Session, what: &str, done: &dyn Fn(&LobbyView) -> bool| {
+                let deadline = std::time::Instant::now() + WAIT;
+                loop {
+                    session.poll_lobby().unwrap();
+                    if let Some(view) = session.take_lobby() {
+                        shown = view;
+                    }
+                    if done(&shown) {
+                        return shown.clone();
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the window never showed {what}: {shown:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            };
+        let act = |session: &mut Session, action: LobbyAction| session.lobby_act(action).unwrap();
+
+        wait_for(&mut session, "the launcher's lobby", &|view| {
+            view.connection == LobbyConnection::Disconnected && view.name.as_str() == "fay"
+        });
+        act(
+            &mut session,
+            LobbyAction::Connect {
+                name: Text::new("Fay").unwrap(),
+            },
+        );
+        wait_for(&mut session, "the connection", &|view| {
+            view.connection == LobbyConnection::Connected
+        });
+        act(
+            &mut session,
+            LobbyAction::Create {
+                room: Text::new("menu room").unwrap(),
+                max_players: 2,
+                password: None,
+            },
+        );
+        let view = wait_for(&mut session, "the room", &|view| view.room.is_some());
+        let room = view.room.unwrap();
+        assert_eq!(room.name.as_str(), "menu room");
+        assert!(room.you_own && !room.running);
+        assert!(room.invite.is_some());
+        act(
+            &mut session,
+            LobbyAction::Chat {
+                text: Text::new("hello from the menu").unwrap(),
+            },
+        );
+        wait_for(&mut session, "the chat", &|view| {
+            view.chat
+                .iter()
+                .any(|line| line.you && line.text.as_str() == "hello from the menu")
+        });
+        act(&mut session, LobbyAction::Ready { ready: true });
+        wait_for(&mut session, "the player ready", &|view| {
+            view.room
+                .as_ref()
+                .is_some_and(|room| room.members.iter().any(|member| member.you && member.ready))
+        });
+        act(&mut session, LobbyAction::Start);
+        // The room's game begins: the game takes it at its gate.
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            session.poll_lobby().unwrap();
+            if let Some(begin) = session.try_begin().unwrap() {
+                return begin;
+            }
+            assert!(std::time::Instant::now() < deadline, "the room never began");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let begin = tokio::time::timeout(WAIT * 2, game).await.unwrap().unwrap();
+    assert_eq!(begin.rules.as_str(), "toy");
+
+    // The launcher's own window saw it all.
+    let state = handle.state();
+    assert_eq!(state.connection, Connection::Connected);
+    assert_eq!(state.game.attached.as_deref(), Some("menu test"));
+    let room = state.room.unwrap();
+    assert_eq!(room.name, "menu room");
+    assert_eq!(room.phase, Phase::Running);
+    assert!(
+        state
+            .chat
+            .iter()
+            .any(|line| line.you && line.text == "hello from the menu")
+    );
 
     drop(launcher);
     let _ = stop.send(());

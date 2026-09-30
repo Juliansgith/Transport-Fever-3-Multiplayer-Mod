@@ -103,6 +103,11 @@ end
 -- the rest (tpf3mp_proto action::ConstructionBuild). Returns the action
 -- table, or nil and why the room cannot carry it yet.
 --
+-- A proposal that replaces one construction of the player's with a new one
+-- (an edit of its modules or parameters, an upgrade) is carried with
+-- `replaces`, the old one by its file and place; every game removes it and
+-- builds the new one in one proposal (tpf3mp/apply.lua).
+--
 -- The construction's own streets its script makes again wherever it is
 -- built. The proposal's street part is what the tool built around it, and
 -- travels with it (capture.connection): built without it, a station by a
@@ -115,15 +120,22 @@ function capture.construction(proposal)
 		if length(street and get(street, list)) == nil then return nil, "a proposal it cannot read" end
 	end
 	-- Constructions in the way: town buildings the placement clears, which
-	-- the replay clears again (gatherBuildings), or a construction replaced
-	-- (a module edit), which the room does not carry yet.
+	-- the replay clears again (gatherBuildings), and at most one other
+	-- construction the new one replaces: a module edit or an upgrade,
+	-- named by its file and where it stands (capture.replaced).
 	local toRemove = get(proposal, "toRemove")
 	local removed = length(toRemove)
 	if removed == nil then return nil, "a proposal it cannot read" end
+	local replaced, replaces
 	for i = 1, removed do
-		local c = api.engine.getComponent(get(toRemove, i), api.type.ComponentType.CONSTRUCTION)
+		local entity = get(toRemove, i)
+		local c = api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
 		if (length(c and get(c, "townBuildings")) or 0) == 0 then
-			return nil, "a construction that replaces another"
+			if replaced ~= nil then return nil, "a construction that replaces more than one" end
+			local why
+			replaces, why = capture.replaced(c)
+			if not replaces then return nil, why end
+			replaced = { entity = entity, component = c }
 		end
 	end
 	local toAdd = get(proposal, "toAdd")
@@ -132,6 +144,12 @@ function capture.construction(proposal)
 	local file = get(con, "fileName")
 	if type(file) ~= "string" or file == "" then return nil, "a construction of no file" end
 	local name = get(con, "name")
+	if replaced and (type(name) ~= "string" or name == "") then
+		-- An edit keeps the construction's name, as the game's own
+		-- upgrade does (mission_framework_util_entity.tl, upgradeConstruction).
+		local ok, old = pcall(function() return api.engine.util.getEntityName(replaced.entity) end)
+		if ok then name = old end
+	end
 	if type(name) ~= "string" or name == "" then return nil, "an unnamed construction" end
 	local params = get(con, "params")
 	if type(params) ~= "table" then
@@ -143,10 +161,58 @@ function capture.construction(proposal)
 	if not list then return nil, why end
 	local ok, transform = pcall(capture.transform, get(con, "transf"))
 	if not ok then return nil, tostring(transform) end
+	if replaced then
+		-- The street part of an edit is the construction's own: every game
+		-- makes the new one's again as it builds it. One that removes a
+		-- street or track not its own changes the streets around it, which
+		-- an edit does not carry.
+		local own, why = capture.ownStreets(street, replaced.component)
+		if not own then return nil, why end
+		return { BuildConstruction = { file = file, transform = transform, params = list, name = name,
+			replaces = replaces } }
+	end
 	local connection, whyNot = capture.connection(proposal)
 	if connection == nil then return nil, whyNot end
 	return { BuildConstruction = { file = file, transform = transform, params = list, name = name,
 		connection = connection or nil } }
+end
+
+-- The construction an edit replaces, as actions name one (tpf3mp_proto
+-- action::ConstructionRef): its file and where it stands. Every game finds
+-- it there (tpf3mp/apply.lua, constructionAt), and finds the new one there
+-- again for the next edit: an edit keeps the file and the place, and entity
+-- ids are no name (docs/BUILDING.md, "Module edits and upgrades"). Returns
+-- the reference, or nil and why the room cannot name it.
+function capture.replaced(component)
+	if component == nil then return nil, "removing something that is no construction" end
+	local file = get(component, "fileName")
+	local t = get(component, "transf")
+	local x, y, z = get(t, 13), get(t, 14), get(t, 15)
+	if type(file) ~= "string" or file == "" or type(x) ~= "number" or type(y) ~= "number"
+		or type(z) ~= "number" then
+		return nil, "a construction the room cannot name"
+	end
+	return { file = file, at = { x = x, y = y, z = z } }
+end
+
+-- Whether an edit's street part removes only the old construction's own
+-- nodes and edges (its CONSTRUCTION component's frozenNodes and
+-- frozenEdges). true, or nil and why not.
+function capture.ownStreets(street, component)
+	local own = {}
+	for _, key in ipairs({ "frozenNodes", "frozenEdges" }) do
+		local list = get(component, key)
+		for i = 1, (length(list) or 0) do own[get(list, i)] = true end
+	end
+	for _, key in ipairs({ "removedSegments", "removedNodes" }) do
+		local list = get(street, key)
+		for i = 1, (length(list) or 0) do
+			if not own[get(get(list, i), "entity")] then
+				return nil, "a construction edit that changes the streets around it"
+			end
+		end
+	end
+	return true
 end
 
 -- Keeps of a construction's network part only the edges joined, through each
@@ -231,11 +297,45 @@ function capture.track(proposal)
 	return module("engine").captureBuild(proposal, "Track")
 end
 
+-- A stop placed on a street or track with the stop tool (tpf3mp_proto
+-- action::PlaceStop), read off its proposal by tpf3mp/engine.lua. Returns
+-- the action table; false for a proposal of nothing; or nil and why.
+function capture.stop(proposal)
+	return module("engine").placeStop(proposal)
+end
+
 -- The bulldozer's removal (tpf3mp_proto action::Bulldoze), read off its
--- proposal by tpf3mp/engine.lua. Returns the action table; false for a
+-- proposal by tpf3mp/engine.lua: a construction, edges, or a stop. Returns the action table; false for a
 -- proposal of nothing; or nil and why.
+--
+-- A proposal that removes a construction and adds one is an edit: a module
+-- taken off with the module bulldozer, if that reaches game scripts as the
+-- bulldozer's (INFERRED, not seen in the game), is carried as the edit it is
+-- (capture.construction), or refused.
 function capture.bulldoze(proposal)
+	local toRemove = get(proposal, "toRemove")
+	if (length(get(proposal, "toAdd")) or 0) > 0 and (length(toRemove) or 0) > 0 then
+		for i = 1, length(toRemove) do
+			local c = api.engine.getComponent(get(toRemove, i), api.type.ComponentType.CONSTRUCTION)
+			if (length(c and get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
+		end
+		return nil, "a bulldozer proposal that builds"
+	end
 	return module("engine").bulldoze(proposal)
+end
+
+-- A build a window sends itself (api.cmd.makeWorldBuildProposalCmd, as
+-- tpf3mp/guard.lua's CARRY takes it): the room carries an edit of one
+-- construction, as the construction menu's parameters and the station's
+-- cargo buttons make one (api.engine.util.proposal
+-- .createProposalReplaceConstruction, gui/construction/construction.tl and
+-- gui/entity_window/entity_window_util.tl, build 40408). Every other build
+-- from a window stays refused. Returns the action table, or raises why not.
+function capture.windowBuild(_ctx, proposal)
+	local action, why = capture.construction(proposal)
+	if not action then error(why, 0) end
+	if action.BuildConstruction.replaces == nil then error("building from this window", 0) end
+	return action
 end
 
 -- A proposal's street part in one line, for the log (tpf3mp/engine.lua);
@@ -255,6 +355,10 @@ end
 --   ctx.depot(e) -> { file =, at = { x, y, z } } of the depot's
 --                   construction, or nil
 --   ctx.model(id) -> a vehicle model's file name, or nil
+--   ctx.parts(e) -> a vehicle's parts, front to back, each
+--                   { model = modelId, purchased = purchaseTime }, or nil
+--   ctx.town(e)   -> a town's canonical id, or nil
+--   ctx.player()  -> the player's company entity, or nil
 --
 -- Each returns the action table, or raises why the room cannot carry it.
 
@@ -286,21 +390,63 @@ local function lineOf(ctx, entity)
 	return named("a line the room cannot name", ctx.line(entity))
 end
 
+-- One TransportVehiclePart of a vehicle config as the schema's ConsistPart.
+-- Each part's reversed flag rides along: a turned wagon (an ICE's tail head,
+-- a cab car) stays turned (TPF2-MP learned it the hard way, release
+-- 0.6.1.12, from tearded's fork).
+local function consistPart(ctx, tvp)
+	local part = get(tvp, "part")
+	return {
+		model = named("a vehicle model the room cannot name", ctx.model(get(part, "modelId"))),
+		reversed = get(part, "reversed") == true,
+		loads = each(get(part, "compartment2loadConfig"), function(lc)
+			return { config = get(lc, "loadConfigIndex"), cargo = get(lc, "cargoTypeId") }
+		end),
+		color = tintOf(get(part, "color")),
+	}
+end
+
 -- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
 function capture.vehicleBuy(ctx, _player, depot, config)
-	local consist = each(get(config, "vehicles"), function(tvp)
-		local part = get(tvp, "part")
-		return {
-			model = named("a vehicle model the room cannot name", ctx.model(get(part, "modelId"))),
-			reversed = get(part, "reversed") == true,
-			loads = each(get(part, "compartment2loadConfig"), function(lc)
-				return { config = get(lc, "loadConfigIndex"), cargo = get(lc, "cargoTypeId") }
-			end),
-			color = tintOf(get(part, "color")),
-		}
-	end)
 	return { BuyVehicle = {
 		depot = named("a depot the room cannot name", ctx.depot(depot)),
+		consist = each(get(config, "vehicles"), function(tvp) return consistPart(ctx, tvp) end),
+		groups = each(get(config, "vehicleGroups"), function(n) return n end),
+		multiple_units = each(get(config, "muFileNames"), function(name) return name end),
+	} }
+end
+
+-- The vehicle window's "modify" and the store's "replace" (build 40408,
+-- gui/line_vehicle_mgmt/vehicle_react_util.tl HandleVehicleChanges): one
+-- makeVehicleReplaceCmd per vehicle, a group's vehicles one by one, with the
+-- config the store built. A part the player left in the consist is the
+-- vehicle's own, its purchase time kept; the store bought the rest, with
+-- purchase time 0, which HandleVehicleChanges sets to the GUI's game time
+-- before it sends. So a part is kept when it is one of the vehicle's own
+-- parts, of the same model and purchase time, each own part matched once,
+-- front to back. `ctx.parts(e)` lists the vehicle's parts now, each
+-- { model = modelId, purchased = purchaseTime }.
+function capture.vehicleReplace(ctx, vehicle, config)
+	local id = vehicleOf(ctx, vehicle)
+	local own = ctx.parts and ctx.parts(vehicle)
+	if type(own) ~= "table" then error("a vehicle whose parts the room cannot read", 0) end
+	local taken = {}
+	local consist = each(get(config, "vehicles"), function(tvp)
+		local out = { part = consistPart(ctx, tvp) }
+		local model, purchased = get(get(tvp, "part"), "modelId"), get(tvp, "purchaseTime")
+		if type(purchased) == "number" and purchased > 0 then
+			for i, p in ipairs(own) do
+				if not taken[i] and p.model == model and p.purchased == purchased then
+					taken[i], out.kept = true, i - 1
+					break
+				end
+			end
+		end
+		return out
+	end)
+	if #consist == 0 then error("a replacement of no vehicles", 0) end
+	return { ReplaceVehicle = {
+		vehicle = id,
 		consist = consist,
 		groups = each(get(config, "vehicleGroups"), function(n) return n end),
 		multiple_units = each(get(config, "muFileNames"), function(name) return name end),
@@ -391,6 +537,42 @@ end
 
 function capture.lineDestroy(ctx, lineEntity)
 	return { EditLine = { line = lineOf(ctx, lineEntity), change = "Delete" } }
+end
+
+-- ------------------------------------------------------------ prospecting
+--
+-- The construction menu's prospection (gui/construction/
+-- construction_react_util.tl, ProspectionActionRecipe.onSelect): the event
+-- `Companies` `spawnIndustry` to the company script, with the player's
+-- company, the town picked, the industry types, the permit and the cargo
+-- (investigation/TPF3_PROSPECTING_2026-09-30.md). The types keep the order
+-- the menu listed them in, which the game's shuffle depends on.
+function capture.prospect(ctx, param)
+	if type(param) ~= "table" then error("a prospection it cannot read", 0) end
+	local player = ctx.player and ctx.player()
+	if player == nil or get(param, "companyEntity") ~= player then
+		error("prospecting for another company", 0)
+	end
+	local cargo = get(param, "cargoType")
+	if type(cargo) ~= "string" or cargo == "" then error("a prospection for no cargo", 0) end
+	local permit = get(param, "permitKey")
+	if permit ~= nil and type(permit) ~= "string" then error("a permit it cannot read", 0) end
+	local types = get(param, "types")
+	local n = length(types)
+	if n == nil or n == 0 then error("a prospection that can find no industry", 0) end
+	local industries = {}
+	for i = 1, n do
+		local t = get(types, i)
+		if type(t) ~= "string" or t == "" then error("an industry type it cannot read", 0) end
+		industries[i] = t
+	end
+	local town = ctx.town and ctx.town(get(param, "townEntity")) or nil
+	return { Prospect = {
+		town = named("a town the room cannot name", town),
+		cargo = cargo,
+		industries = industries,
+		permit = permit,
+	} }
 end
 
 -- Renaming and recolouring: lines so far.

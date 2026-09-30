@@ -93,8 +93,25 @@ your own machine, in the tab the launcher opened.
    TPF3-MP in it, for this room; once the game has loaded, the Game part
    says it is connected. Only a game started here joins the room: started
    from Steam, it is the plain game. Press it once; the launcher refuses to
-   start a second game while the first still runs.
-5. **Ready.** Everyone presses **Ready**. The room's owner then presses
+   start a second game while the first still runs. If the game closes or
+   crashes once it has connected, the launcher notices within a second:
+   the Session log says "the game session failed: Transport Fever 3
+   closed", and you are back on the server, out of the room. Join it again
+   with its invite and start the game again. A game that closes before it
+   connected leaves you in the room; just start it again.
+   You can also start the game before you are in a room (**Start
+   Transport Fever 3** under the main button) and do the rest from the
+   game's main menu: see "The Multiplayer menu in the game".
+5. **Wait at the menu, or load your save.** A guest just waits at the
+   game's main menu: once the game is there, the launcher marks you
+   **ready** by itself, and when the room starts, your game loads the
+   room's world from the menu and starts it, with no **Start Game** to
+   press. The room's owner loads the save everyone will play; once its
+   world is up, the launcher marks the owner ready. (A guest who loads a
+   world instead is marked ready too, and the room's world replaces it.)
+   Nobody has to press **Ready**: the button stays, to get ready by hand,
+   and **Not ready** keeps you not ready until you come back to the menu
+   or load another world. When everyone is ready, the room's owner presses
    **Start game**. Everyone's game starts from the owner's world.
 
 The window is tearded's TPF2 multiplayer launcher, for Transport Fever 3.
@@ -112,6 +129,41 @@ operator's, such as a restart coming: when the server comes back, the
 launcher rejoins by itself. The **Session log** tells you what happened,
 such as your world being replaced by the room's, or your connection coming
 back.
+
+## The Multiplayer menu in the game
+
+Connecting, rooms, the lobby and chat are in the game too. The launcher
+still starts the game and holds the connection, so keep it open; everything
+you do in the game shows in the launcher's window as well, and the other
+way round.
+
+1. **Start the game from the launcher**, in a room or not: **Start
+   Transport Fever 3**. Started from Steam, the game has no Multiplayer
+   entry.
+2. **Open the Multiplayer window.** On the game's main menu, click
+   **Multiplayer**: the card in the top row, or the button in the top bar.
+   If the window says the game has no link to the launcher, the game was
+   not started from the launcher: close it and start it from there.
+3. **Connect.** Enter the name others will see and press **Connect**. The
+   server is the launcher's (**EU**); there is none to type.
+4. **Create or join.** Create a room (a name, and a password if you want
+   one), or type the invite code a friend sent you, such as `K7QM2X`, and
+   **Join**.
+5. **The room.** The window shows the room's invite code, its players (the
+   crown marks the host, the tick who is ready) and, on the right, the
+   room's chat, where you can write to everyone. A guest waiting at the
+   main menu is marked ready by itself; the owner is marked ready once
+   their world is up. **Ready** is still there to press by hand. The owner
+   presses **Start** once everyone is ready.
+6. **Play.** The room's game starts from the owner's world: the owner
+   loads it with **Load Game**, as in single player, and it becomes the
+   room's. Everyone else stays at the main menu: the game loads the room's
+   world from there by itself and starts it. (A guest who loads a save of
+   their own instead is fine too: the room's world replaces it.)
+
+**Leave** gives up your seat; **Disconnect** leaves the server. After a
+room's game has ended, start the game again from the launcher to play the
+next room's game.
 
 ## Updates
 
@@ -137,8 +189,9 @@ protected folder such as Program Files.
   and new chat. Click it, or the Multiplayer button among the mods'
   buttons, for the Multiplayer window: the room's players (the host, you,
   anyone away), its speed, whether your world matches the room's, and the
-  room's newest chat, where you can write to everyone. Rooms, invites and
-  starting the game stay in the launcher.
+  room's newest chat, where you can write to everyone. Rooms and invites
+  are in the launcher and on the main menu's Multiplayer window (see "The
+  Multiplayer menu in the game").
 - **Speed and pause.** The room's owner sets the room's speed, pause
   included, with the game's own speed buttons, and everyone's game runs at
   it. Anyone else's speed buttons do not change the room's speed: the
@@ -151,7 +204,9 @@ protected folder such as Program Files.
   were away too long to catch up, the room sends you its world again.
 - **Leaving.** **Leave room** gives up your seat. The owner can also remove
   a player whose game froze; a removed player cannot come back to that
-  room.
+  room. If the room's game had not begun yet, your game keeps running and
+  follows you into the next room you create or join: no need to restart
+  it.
 - **Your world disagrees.** Every few seconds everyone's game compares the
   world with the room's. If yours has drifted, the room sends you its world
   and your game reloads it. A notice says so.
@@ -159,6 +214,13 @@ protected folder such as Program Files.
   which you notice as a short pause, like an autosave.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
+- **Prospecting.** Prospect for resources near a town from the
+  construction menu as usual: every player's game starts the prospection
+  together, a moment after your click, and uses your company's permit.
+  When it ends, months later, every game finds the same industry at the
+  same place, or nothing, and says so in the same notification. Taking a
+  new company rank, greening an industry and marketing campaigns are not
+  in multiplayer yet.
 - **Roads, tracks, stations and depots.** Build them with the game's own
   street, track and construction tools: every player's game builds them
   together, a moment after your click, and your company pays as usual. A
@@ -190,6 +252,8 @@ across PCs and systems:
 2. Start `tpf3mp-fakegame` from the same folder (from a terminal on Linux
    and macOS). The window's **Game** part says the game is connected.
 3. Connect, create or join a room, get ready and start, as in a real game.
+   The fake game has no save to load, so it does not mark you ready:
+   press **Ready**.
    The fake game plays by itself: watch the **Game** part count steps, and
    try chatting, leaving and rejoining, and joining a game already running.
 

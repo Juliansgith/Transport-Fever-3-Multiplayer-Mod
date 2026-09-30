@@ -294,24 +294,38 @@ fn main_action(state: &State, update: &UpdateState) -> Main {
 }
 
 fn secondary(state: &State) -> Vec<Secondary> {
+    // Before a room the game may start too: its main menu's Multiplayer
+    // window connects, creates and joins through this launcher (D17).
+    let start_game =
+        (state.room.is_none() && state.installed.is_some() && state.game.attached.is_none())
+            .then_some(Secondary {
+                label: "Start Transport Fever 3",
+                icon: "play",
+                then: Then::Act(Action::LaunchGame),
+                danger: false,
+            });
     if state.connection != Connection::Connected {
-        return Vec::new();
+        return start_game.into_iter().collect();
     }
     let Some(room) = &state.room else {
-        return vec![
-            Secondary {
+        return [
+            Some(Secondary {
                 label: "Join with an invite",
                 icon: "users",
                 then: Then::Open(Form::Join),
                 danger: false,
-            },
-            Secondary {
+            }),
+            start_game,
+            Some(Secondary {
                 label: "Disconnect",
                 icon: "close",
                 then: Then::Act(Action::Disconnect),
                 danger: false,
-            },
-        ];
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
     };
     let mut buttons = Vec::new();
     let me = you(state);
@@ -411,8 +425,19 @@ fn status(state: &State, reach: Reach) -> Option<(String, Tone)> {
             };
             Some((format!("{step}{speed}."), Tone::Ready))
         }
+        // Readiness is automatic: the agent marks the player ready once the
+        // game has a world up with the mod linked.
+        World::None if you(state).is_some_and(|me| me.ready) => Some((
+            format!(
+                "The game is connected ({build}). You are ready; the world loads when the room starts."
+            ),
+            Tone::Plain,
+        )),
         World::None => Some((
-            format!("The game is connected ({build}). The world loads when the room starts."),
+            format!(
+                "The game is connected ({build}). Load your save in the game: you are marked \
+                 ready automatically once its world is up."
+            ),
             Tone::Plain,
         )),
         _ => None,
@@ -697,6 +722,47 @@ mod tests {
     }
 
     #[test]
+    fn before_a_room_the_game_can_start_for_its_menus_window() {
+        let installed = Some(InstalledGame {
+            dir: r"C:\Games\Transport Fever 3".into(),
+            build: "20364158".into(),
+        });
+        let start = |state: &State| {
+            present(state, Reach::Online, None)
+                .secondary
+                .iter()
+                .any(|button| {
+                    button.label == "Start Transport Fever 3"
+                        && button.then == Then::Act(Action::LaunchGame)
+                })
+        };
+        let mut state = State {
+            installed: installed.clone(),
+            ..State::default()
+        };
+        assert!(start(&state), "not connected yet: the game's menu connects");
+        state.connection = Connection::Connected;
+        let labels: Vec<_> = present(&state, Reach::Online, None)
+            .secondary
+            .iter()
+            .map(|b| b.label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Join with an invite",
+                "Start Transport Fever 3",
+                "Disconnect"
+            ]
+        );
+        state.game.attached = Some("40408".into());
+        assert!(!start(&state), "running already");
+        state.game.attached = None;
+        state.installed = None;
+        assert!(!start(&state), "no game to start");
+    }
+
+    #[test]
     fn in_a_room_the_game_starts_first_then_everyone_gets_ready() {
         let state = in_room(
             vec![
@@ -740,6 +806,35 @@ mod tests {
         };
         let view = present(&state, Reach::Online, None);
         assert_eq!(view.main.does, Does::Act(Action::Start));
+        assert_eq!(view.secondary[0].label, "Not ready");
+    }
+
+    #[test]
+    fn in_the_lobby_readiness_follows_the_save_loading_and_ready_stays_a_button() {
+        let mut state = in_room(
+            vec![
+                member("Ann", true, true, false),
+                member("Bob", false, false, true),
+            ],
+            true,
+        );
+        state.game = Game {
+            attached: Some("40391".into()),
+            ..Game::default()
+        };
+        let view = present(&state, Reach::Online, None);
+        let (text, _) = view.status.unwrap();
+        assert!(
+            text.contains("Load your save in the game") && text.contains("marked ready"),
+            "{text}"
+        );
+        // Pressing it by hand still works.
+        assert_eq!(view.main.does, Does::Act(Action::Ready { ready: true }));
+
+        state.room.as_mut().unwrap().members[0].ready = true;
+        let view = present(&state, Reach::Online, None);
+        let (text, _) = view.status.unwrap();
+        assert!(text.contains("You are ready"), "{text}");
         assert_eq!(view.secondary[0].label, "Not ready");
     }
 

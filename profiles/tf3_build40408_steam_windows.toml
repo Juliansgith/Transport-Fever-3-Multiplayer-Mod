@@ -131,6 +131,23 @@ offset = 0
 prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
 required = false
 
+# UI::ModuleBuilder::MousePressed's call of CommandList::Add (0x543b25, in
+# 0x543630, which names "UI::ModuleBuilder::MousePressed" and
+# modulebuilder.cpp): `lea r9,[rbp+0xa0]; mov r8,rax; lea rdx,[rsp+0x50];
+# mov rcx,rdi; call Add`, after the factory 0x9ee860 made the command with
+# playerInitiated 1. Add returns to this + 5 (0x543b2a) for every module
+# edit, which tells game scripts nothing; the hook reads its proposal there
+# (crates/tpf3mp-hook/src/modules.rs; found for feat/capture-all,
+# investigation/TPF3_CONSTRUCTION_CAPTURE_2026-09-29.md there, re-checked
+# with tpfre on this build: one match). Without it the module editor stays
+# refused.
+[[target]]
+name = "ModuleBuilder::MousePressed/Add call"
+signature = "4C 8D 8D A0 00 00 00 4C 8B C0 48 8D 54 24 50 48 8B CF E8 ?? ?? ?? ??"
+offset = 18
+prologue = "E8"
+required = false
+
 # Lua 5.2's C API, which the hook calls to give each Lua state the
 # `tpf3mp_native` table (HOOKS.md, "The Lua side"). luaB_print is found by its
 # own string; its calls name gettop, getglobal, pushvalue, callk, tolstring and
@@ -291,3 +308,316 @@ signature = "48 83 EC 28 E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 48 3B C1 74 ?? 8B 4
 offset = 0
 prologue = "48 83 EC 28"
 required = true
+
+# The main menu's load of the room's world (crates/tpf3mp-hook/src/menu.rs).
+# All optional: without them a game needs a world up to take the room's.
+
+# CMenuUI per-frame update (vtable slot 50, main thread): polls m_loadGameResult
+# (+0x1bd0) and the pending SavegameInfo lookup (+0x1b90); starts queued loads.
+# Detoured: after the game's own frame, the hook follows the room from the menu.
+# (rva 0x6a0160)
+[[target]]
+name = "UI::CMenuUI::DoStep"
+signature = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 50 F6 FF FF"
+offset = 0
+prologue = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56"
+required = false
+
+# Lua 5.2 C API, address only (never detoured). (rva 0x2fbe0c0)
+[[target]]
+name = "lua_pcallk"
+signature = "48 89 74 24 18 57 48 83 EC 40 33 F6 48 89 6C 24 58"
+offset = 0
+prologue = "48 89 74 24 18 57 48 83 EC 40 33 F6 48 89 6C 24 58"
+required = false
+
+# Lua 5.2 C API, address only (never detoured). (rva 0x2fb40b0)
+[[target]]
+name = "luaL_ref"
+signature = "48 89 5C 24 10 57 48 83 EC 20 8B FA 48 8B D9"
+offset = 0
+prologue = "48 89 5C 24 10 57 48 83 EC 20 8B FA 48 8B D9"
+required = false
+
+# Lua 5.2 lua_load(L, reader, data, chunkname, mode) (rva 0x2fbdf70): luaZ_init,
+# the "?" default chunk name, luaD_protectedparser, then the _ENV upvalue set
+# from the registry's globals (index 2). Called only, never detoured: the main
+# menu's load runs a chunk with it.
+# The main menu's Multiplayer entry (docs/LOBBY.md). Optional: without them
+# the menu stays the game's and everything above still installs. Found on
+# release day for feat/ingame-lobby, where the entry reached the real game's
+# menu with these signatures (its own profile file then; merged in here).
+
+# resolveutil.loadfile's body (0x2fa1d50; framework/lua/Loader.cpp,
+# lua::MakeState::<lambda_8>): the strings "Could no load file", "base/tl.lua"
+# and "Error while pcalling". Detoured: the menu entry's loader patch.
+[[target]]
+name = "lua_loadfile"
+signature = "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 41 56 41 57 48 8D AC 24 C0 FE FF FF 48 81 EC 40 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 30 01 00 00 0F B6 DA 4C 8B F1"
+offset = 0
+prologue = "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20"
+required = false
+
+# lua_load (0x2fbdf70): luaZ_init, the "?" default chunk name,
+# luaD_protectedparser, then the _ENV upvalue fix-up (not the nearby lua_dump).
+# Called, never detoured.
+[[target]]
+name = "lua_load"
+signature = "48 89 5C 24 10 56 48 83 EC 50 49 8B D9 48 8B F1"
+offset = 0
+prologue = "48 89 5C 24 10 56 48 83 EC 50 49 8B D9 48 8B F1"
+required = false
+
+# RegisterAppUsertypes(lua::State&, UI::CMenuUI&, std::function<bool()> const&)
+# (rva 0xdc5fa0): gives a Lua state its `app` table (the string
+# "RegisterAppUsertypes", and the only function naming getProgressMonitor and
+# setWaitForStartReadyGame). Called from the CMenuUI construction path, the
+# react menu and CMenuUI::SetupAppScriptInterface. Detoured: after it, the
+# hook adopts the state for the main menu's load.
+[[target]]
+name = "RegisterAppUsertypes"
+signature = "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 50 FB FF FF 48 81 EC B0 05 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 A8 04 00 00 49 8B D8"
+offset = 0
+prologue = "48 89 5C 24 20 55 56 57 41 54 41 55 41 56"
+required = false
+
+# The seeds and the order fixes (crates/tpf3mp-hook/src/seeds.rs, order.rs;
+# docs/HOOKS.md, "Seeds, as built" and "The order fixes, as built"). All
+# optional: a build without one loses that piece, not the profile.
+
+# The land-vehicle order fix's site (crates/tpf3mp-hook/src/order.rs, docs/HOOKS.md
+# "The order fixes, as built"): inside Update2, right after the minstd seed is
+# fixed up (`cmove r8d, r12d` ... the mask loop) and right before the engine's
+# Fisher-Yates reads the vector it shuffles: `mov r13, [rbp-0x20]` (begin),
+# `mov rsi, [rbp-0x18]` (end), `cmp r13, rsi`. The hook sorts that vector by
+# entity id here. Site 0xac1b70 = signature start + 40; nothing branches into
+# 0xac1b71..0xac1b7b (tpfre xrefs).
+[[target]]
+name = "ecs::LandVehicleMoveSystem::Update2/shuffle"
+signature = "45 0F 44 C4 41 BE 40 00 00 00 49 C7 C3 FF FF FF FF 0F 1F 80 00 00 00 00 4D 8D 76 FF 49 D1 EB 49 81 FB FD FF FF 7F 77 F0 4C 8B 6D E0 48 8B 75 E8 4C 3B EE"
+offset = 40
+prologue = "4C 8B 6D E0 48 8B 75 E8 4C 3B EE"
+required = false
+
+# The engine's own walk from an entry of that vector to its node record, at the
+# head of the reservation loop (0xac1d72): `mov r8, [rbp-0x80]` (this), `mov
+# rdx, [r8+8]` (the node-list holder), `movsxd rax, [r13]` (the entry's node
+# index), `lea rcx, [rax+rax*4]`, `mov rax, [rdx]` (the records), `lea r12,
+# [rax+rcx*4]` (record = records + index*20). The order fix reads the entity id
+# the same way and refuses unless this shape is present.
+[[target]]
+name = "ecs::LandVehicleMoveSystem::Update2/records"
+signature = "4C 8B 45 80 49 8B 50 08 49 63 45 00 48 8D 0C 80 48 8B 02 4C 8D 24 88 49 8B 50 18"
+offset = 0
+prologue = "4C 8B 45 80 49 8B 50 08 49 63 45 00 48 8D 0C 80 48 8B 02 4C 8D 24 88"
+required = false
+
+# The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs; docs/HOOKS.md "Seeds, as
+# built"; investigation/TPF3_TRAIN_PRIORITY_2026-09-30.md). GameSim::Step's
+# paused path (its speed call answered 0) calls the GameTime advance with r8b = 0
+# at 0x159412: `mov rcx,[rbp+8]; xor r8d,r8d; mov edx,[rcx+0x208]; mov
+# rcx,[rcx+0x18]; call advance`, then `mov rdx,[rbp+8]; xor r8d,r8d` for the
+# engine's paused update. The advance always counts tickCount (+0x3c), so every
+# frame the room holds the world counts on its own. The hook redirects this one
+# call, checked to reach CGameTime::Advance, and skips it in the room's game.
+# Site = signature start (0x159401) + 17; one match in .text (tpfre q bytes).
+[[target]]
+name = "GameSim::Step/paused GameTime advance"
+signature = "48 8B 4D 08 45 33 C0 8B 91 08 02 00 00 48 8B 49 18 E8 ?? ?? ?? ?? 48 8B 55 08 45 33 C0"
+offset = 17
+prologue = "E8"
+required = false
+
+# The GameTime advance (name ours; 0xbace10, gametime.cpp's neighbour): (engine,
+# GameTime entity, bool update). An engine modification scope around `inc
+# [GameTime+0x3c]` always and `inc [GameTime+0x40]` when update is set, then a
+# ComponentChanged for GameTime. Called at 0x159412 (paused, update 0) and
+# 0x15954b (each update, update 1). The redirect checks the call reaches it.
+[[target]]
+name = "CGameTime::Advance"
+signature = "48 89 5C 24 10 55 56 57 41 56 41 57 48 83 EC 20 41 0F B6 E8"
+offset = 0
+prologue = "48 89 5C 24 10 55 56 57 41 56 41 57 48 83 EC 20"
+required = false
+
+# The advance's two increments (0xbace99 = advance + 0x89): `inc [rdi+0x3c];
+# test bpl,bpl; je +3; inc [rdi+0x40]`. The fix refuses unless they are here: the
+# call it skips must be the one that counts tickCount and not updateCount.
+[[target]]
+name = "CGameTime::Advance/tick"
+signature = "FF 47 3C 40 84 ED 74 03 FF 47 40"
+offset = 0
+prologue = "FF 47 3C 40 84 ED 74 03 FF 47 40"
+required = false
+
+# CGameTime's tickCount and updateCount getters (0x2a95c0, 0x2a9680; names
+# ours): `rax=[rcx+0x10]; rcx=[rcx+8]; edx=[rax]; call GetComponent<GameTime>;
+# mov eax,[rax+0x3c]` (+0x40). Called only: the hook logs both counters at every
+# checkpoint through them, with the CGameTime the step's speed call was made on.
+# The land-vehicle shuffle's seed reads the first (0xac1b23).
+[[target]]
+name = "CGameTime::GetTickCount"
+signature = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 3C 48 83 C4 28 C3"
+offset = 0
+prologue = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10"
+required = false
+
+[[target]]
+name = "CGameTime::GetUpdateCount"
+signature = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 40 48 83 C4 28 C3"
+offset = 0
+prologue = "48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10"
+required = false
+
+# The vehicles-at-a-stop order fix's site (order.rs): inside Update, right after
+# the call of TransportVehicleSystem's (line, stopIndex) -> &vector<Entity>
+# getter (below), `mov [rsp+0x248], rax` keeps the vector for the boarding
+# loop; the hook sorts it by entity id here. Site 0xb0e35c = signature start +
+# 9; nothing branches into 0xb0e35d..0xb0e363 (tpfre xrefs). TPF2's `vehstop`
+# site (0xa820f4) had the same shape.
+[[target]]
+name = "ecs::SimEntityAtTerminalSystem::Update/vehicles at stop"
+signature = "49 8B 4F 28 E8 ?? ?? ?? ?? 48 89 84 24 48 02 00 00 41 8B 7F 50 48 8B 4C 24 58"
+offset = 9
+prologue = "48 89 84 24 48 02 00 00 41 8B 7F 50"
+required = false
+
+# The getter that call reaches (name ours): hashes (line, stopIndex) into the
+# system data's phmap (+0x90) and returns &slot.vector, or a static empty
+# vector when the key is missing. The fix checks the call before its site
+# targets this. 0xb86510
+[[target]]
+name = "ecs::TransportVehicleSystem::GetVehiclesAtLineStop"
+signature = "48 89 5C 24 10 57 48 83 EC 30 48 8B F9 89 54 24 40"
+offset = 0
+prologue = "48 89 5C 24 10 57 48 83 EC 30 48 8B F9 89 54 24 40"
+required = false
+
+# The platform-order fix (order.rs `platform`; investigation/TPF3_TRAIN_PRIORITY_2026-09-30.md).
+# ecs::TransportVehicleSystem::Update2 (vf12, 0xb8bae0) walks its node list, 8-byte
+# {entity, TransportVehicle index} records, `for rsi in 0..count*8`, reloading the
+# list's begin each iteration (`mov rax,[r13+8]; mov rdi,[rax]`, 0xb8bcc4) and asking
+# FindNextFreeTerminal for each en-route vehicle. The site is the next three
+# instructions (0xb8bccb = signature start + 7): `mov rcx,[r13+0x10]; movsxd
+# rax,[rsi+rdi+4]; imul rbx,rax,0x1e8`; the first two (9 bytes) are stolen, nothing
+# branches into 0xb8bccc..0xb8bcd3 (tpfre xrefs), and rdi is set anew after the loop
+# (0xb8c22f) before any other use. The hook points rdi at a copy sorted by entity.
+[[target]]
+name = "ecs::TransportVehicleSystem::Update2/visit"
+signature = "49 8B 45 08 48 8B 38 49 8B 4D 10 48 63 44 3E 04 48 69 D8 E8 01 00 00"
+offset = 7
+prologue = "49 8B 4D 10 48 63 44 3E 04 48 69 D8 E8 01 00 00"
+required = false
+
+# (anon)::FindNextFreeTerminal (0xb84e20, named by its assert) std::sorts its 12-byte
+# candidate terminals [r13, r14) by a cost it looks up per candidate (0xb85453; the
+# comparator compares floats only). The site (0xb85430) is the size computation right
+# before that call: `mov rcx,r14; sub rcx,r13` (6 bytes, stolen; 0xb85430 is a branch
+# target, 0xb85431..0xb85435 are not), then `mov rax,rdi; imul rcx`. The hook puts
+# the candidates in one order first, so equal costs break the same way everywhere.
+[[target]]
+name = "FindNextFreeTerminal/candidate sort"
+signature = "49 8B CE 49 2B CD 48 8B C7 48 F7 E9 48 D1 FA 4C 8B C2 49 C1 E8 3F 4C 03 C2 4C 8D 4D F0 49 8B D6 49 8B CD E8"
+offset = 0
+prologue = "49 8B CE 49 2B CD 48 8B C7 48 F7 E9"
+required = false
+
+# transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
+[[target]]
+name = "transport::EdgeReservationManager::Reserve"
+signature = "44 89 4C 24 20 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 58 FF FF FF"
+offset = 0
+prologue = "44 89 4C 24 20 55 53 56 57 41 54 41 55 41 56"
+required = false
+
+# The shorter Reserve overload, called from the move systems' vf4/vf9 (assert-named). 0x255c160
+[[target]]
+name = "transport::EdgeReservationManager::Reserve_simple"
+signature = "48 89 5C 24 18 55 57 41 54 41 55 41 57 48 83 EC 60"
+offset = 0
+prologue = "48 89 5C 24 18 55 57 41 54 41 55 41 57 48 83 EC 60"
+required = false
+
+# transport::EdgeUseManager::Add (assert-named): a person's entry on a road edge
+# (rcx = this, rdx = &EdgeId, r8d = entity, r9d = component index, then the
+# bounds); its one caller is PersonMoveSystem. Measured, not changed (survey
+# item 3; order.rs). 0x255e940
+[[target]]
+name = "transport::EdgeUseManager::Add"
+signature = "48 89 5C 24 18 48 89 74 24 20 55 57 41 56 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 38"
+offset = 0
+prologue = "48 89 5C 24 18 48 89 74 24 20 55 57 41 56"
+required = false
+
+# transport::EdgeUseManager::AddRange (assert-named): a vehicle's entries on the
+# edges of its move path (rcx = this, r9 = &edges vector, one caller). Measured,
+# not changed (survey item 3). 0x255cc70
+[[target]]
+name = "transport::EdgeUseManager::AddRange"
+signature = "48 8B C4 48 89 58 10 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 08 FF FF FF 48 81 EC C0 01 00 00 C5 F8 29 70 B8 C5 F8 29 78 A8 C5 78 29 40 98 C5 78 29 48 88 C5 78 29 90 78 FF FF FF C5 78 29 98 68 FF FF FF 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 58"
+offset = 0
+prologue = "48 8B C4 48 89 58 10 55 56 57 41 54 41 55"
+required = false
+
+# The per-step engine advance GameSim::Step calls for each sub-step (recon: sub_2bb8a50(engine, dt); name ours). 0x2bb8a50
+[[target]]
+name = "ecs::Engine::Update"
+signature = "40 56 57 41 56 48 83 EC 40 48 8B 79 30 48 8B F1"
+offset = 0
+prologue = "40 56 57 41 56 48 83 EC 40 48 8B 79 30 48 8B F1"
+required = false
+
+# The game scripts' calls, where the engine hands a script's call the lua::State it
+# runs in (crates/tpf3mp-hook/src/seeds.rs, piece 1). The game runs game scripts on a
+# pool of Lua states, one per worker thread of its job pool, so the seeds module
+# reseeds math.random in the state about to run each call, on its own thread, from
+# the room's step, the call's kind and the script's entity.
+#
+# game_script_util::Update's functor, _Do_call(this, lua::State*& rdx,
+# lua::Loader2::GameScriptData& r8) (vtable 0x37412a8 slot 2; rva 0xf45450): builds the
+# GameScriptStateNotificationHelper for the state before the script's update runs in
+# it. The entity is at this+0x20 (mov eax, [rdi+0x20] at 0xf45490).
+[[target]]
+name = "game_script_util::Update/lambda_1::_Do_call"
+signature = "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 41 56 41 57 48 83 EC 30 4C 8B 79 18"
+offset = 0
+prologue = "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20"
+required = false
+
+# game_script_util::PostUpdate's functor, the same shape (vtable 0x37412e0 slot 2; its
+# code also serves HandleApplyCommandBuildProposal's functor; rva 0xf449b0). The
+# entity is at this+0x18 (mov eax, [rdi+0x18] at 0xf449e6).
+[[target]]
+name = "game_script_util::PostUpdate/lambda_1::_Do_call"
+signature = "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 83 EC 30 48 8B 69 10"
+offset = 0
+prologue = "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56"
+required = false
+
+# game_script_util::HandleEvent's inner lambda, operator()(captures, lua::State* rdx,
+# GameScriptData& r8), reached from its functor's _Do_call (vtable 0x3741318 slot 2,
+# 0xf44a70: mov rdx,[rdx]; add rcx,8; jmp) (rva 0xf41770). The entity is at
+# captures+0x20; captures+0x28 is the event's int const* seed, which the engine
+# applies itself when set (call lua::State::RandomSeed at 0xf417b5).
+[[target]]
+name = "game_script_util::HandleEvent/lambda_1/lambda_1::operator()"
+signature = "48 89 5C 24 18 55 56 57 41 56 41 57 48 8D 6C 24 A0 48 81 EC 60 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 4D 8B F8"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 41 56 41 57 48 8D 6C 24 A0"
+required = false
+
+# The TownDevelopAt command applier seeds its minstd from the CRT rand() (wall clock): refuse or reseed (item 5). 0x9dedf0
+[[target]]
+name = "TownDevelopAt::Apply"
+signature = "48 8B C4 48 89 58 18 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 48 FC FF FF 48 81 EC 80 04 00 00 C5 F8 29 70 B8 C5 F8 29 78 A8 C5 78 29 40 98"
+offset = 0
+prologue = "48 8B C4 48 89 58 18 55 56 57 41 54 41 55"
+required = false
+
+# Lua 5.2 C API, address only (never detoured). (rva 0x2fbdb90)
+[[target]]
+name = "lua_getfield"
+signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 4D 8B D0 48 8B F1 E8 ?? ?? ?? ?? 48 8B 5E 10 49 8B D2"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
+required = false

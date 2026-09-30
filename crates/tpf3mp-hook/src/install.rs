@@ -2,7 +2,9 @@
 //! the matched profile in the game's own mapped image, attaches the session
 //! to the agent, and detours the step to [`crate::step::StepDriver`]. It
 //! also detours Lua's `print`, which gives each of the game's Lua states the
-//! mod's link to the hook ([`crate::lua`]).
+//! mod's link to the hook ([`crate::lua`]), and, where the profile has them,
+//! the main menu's frame and Lua registration, so a game at its main menu
+//! can load the room's world ([`crate::menu`]).
 //!
 //! Windows only for now: the one profile so far is Steam build 40408 on
 //! Windows, and on other systems the hook installs nothing (fail closed).
@@ -14,9 +16,10 @@
 use std::{
     ffi::c_int,
     sync::{
-        Mutex,
+        Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
+    time::Instant,
 };
 
 use tpf3mp_hookcore::profile::Profile;
@@ -86,6 +89,122 @@ const OWN_SPEED: u64 = u64::MAX;
 /// room's game; `NO_SPEED` until then.
 static CHOSEN: AtomicU64 = AtomicU64::new(NO_SPEED);
 const NO_SPEED: u64 = u64::MAX;
+/// While the game's step runs: the `CGameTime` its speed call was made on,
+/// which the checkpoint line reads the counters through ([`crate::ticks`]);
+/// 0 otherwise.
+static GAME_TIME: AtomicUsize = AtomicUsize::new(0);
+/// The room's step the last batch ended at: a batch that does not start
+/// right after it (a world loaded) logs its counters too.
+static LAST_STEP_RUN: AtomicU64 = AtomicU64::new(u64::MAX);
+/// The time of the game's own step inside the step detour's call running
+/// now (`crate::perf`): the detour's time less this is the gate's.
+static STEP_GAME_NANOS: AtomicU64 = AtomicU64::new(0);
+/// When the game's step last ran, in milliseconds since [`EPOCH`]; 0 never.
+static LAST_STEP: AtomicU64 = AtomicU64::new(0);
+static EPOCH: OnceLock<Instant> = OnceLock::new();
+
+fn now_ms() -> u64 {
+    let epoch = EPOCH.get_or_init(Instant::now);
+    u64::try_from(epoch.elapsed().as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1)
+}
+
+/// Writes `line` to the hook's log, if it has one.
+pub(crate) fn log_line(line: &str) {
+    if let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+        log.line(line);
+    }
+}
+
+/// One of the main menu's frames (`crate::menu`), after the game's own: in a
+/// game that has run no world yet and has a menu Lua state to load from on
+/// this thread, the driver follows the room from here
+/// ([`StepHandler::on_menu`]), and a load of the room's save it asks for is
+/// started in the menu. Otherwise nothing: the step's detour drives the room
+/// while a world is up.
+pub(crate) fn menu_frame() {
+    // Only before this game has run any world: a world that stops stepping
+    // (saving the room's world, held while another player loads) is not at
+    // the menu, and taking the room's session from its menu frames there
+    // hung the owner's game (measured, 2026-09-30). Joining from the menu
+    // is a fresh game's case; back at the menu after a world, the player
+    // loads any save, as before. A world whose GUI has started counts too,
+    // before its first step (the owner's save for the room comes then).
+    if BROKEN.load(Ordering::Acquire)
+        || LAST_STEP.load(Ordering::Acquire) != 0
+        || lua::any_world_started()
+        || !crate::menu::available()
+    {
+        return;
+    }
+    // Never waits: were the step's detour to hold the driver on this
+    // thread, the menu skips a frame.
+    let Ok(mut guard) = DRIVER.try_lock() else {
+        return;
+    };
+    let Some(driver) = guard.as_mut() else {
+        return;
+    };
+    driver.on_menu();
+    let in_room = driver.in_room();
+    IN_ROOM.store(in_room, Ordering::Release);
+    lua::set_in_room(in_room);
+    let mut lines = driver.take_log();
+    drop(guard);
+    let room_load = lua::take_menu_load();
+    lines.extend(auto_load_frame(room_load.is_some() || in_room));
+    if let Some(name) = room_load {
+        // SAFETY: the menu's frame, on the thread that runs its Lua, after
+        // the game's own frame: no Lua runs on it now.
+        match unsafe { crate::menu::serve(&name) } {
+            Some(crate::menu::Served::Started) => {
+                lua::menu_load_started();
+                lines.push(format!(
+                    "the main menu is loading the room's world ({name}); the game starts it by itself"
+                ));
+            }
+            Some(crate::menu::Served::Busy) => lua::menu_load_later(&name),
+            Some(crate::menu::Served::Failed(why)) => {
+                lines.push(format!(
+                    "the main menu could not load the room's world: {why}"
+                ));
+                lua::menu_load_failed(why);
+            }
+            None => lua::menu_load_failed("no Lua state of the menu's on this thread".into()),
+        }
+    }
+    lines.extend(lua::take_log());
+    for line in lines {
+        log_line(&line);
+    }
+}
+
+/// The launcher's `--auto-load` save, loaded from the menu's frames.
+static AUTO_LOAD: Mutex<Option<crate::autoload::AutoLoad>> = Mutex::new(None);
+
+/// One of the menu's frames for `--auto-load` (`crate::autoload`): loads
+/// the save the launcher named, unless the room's own world comes instead.
+/// Returns the lines to log.
+fn auto_load_frame(room_world: bool) -> Option<String> {
+    let mut slot = AUTO_LOAD.lock().unwrap_or_else(PoisonError::into_inner);
+    let auto = slot.get_or_insert_with(crate::autoload::AutoLoad::from_env);
+    if room_world {
+        return auto.cancel();
+    }
+    let now = Instant::now();
+    let save = auto.due(now)?.to_owned();
+    // The lock is let go while the menu's Lua runs.
+    drop(slot);
+    // SAFETY: the menu's frame, on the thread that runs its Lua, after the
+    // game's own frame: no Lua runs on it now.
+    let served = unsafe { crate::menu::serve(&save) };
+    AUTO_LOAD
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_mut()
+        .and_then(|auto| auto.answered(served, now))
+}
 
 /// The speed getter's signature, passed through as the step's is.
 type SpeedFn = unsafe extern "C" fn(usize, usize, usize, usize) -> u64;
@@ -118,6 +237,7 @@ unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> 
 /// whatever the speed row or a key says, paused included: the room's pause
 /// is the only pause. Otherwise the game's own answer.
 unsafe extern "C" fn step_speed(this: usize, a: usize, b: usize, c: usize) -> u64 {
+    GAME_TIME.store(this, Ordering::Release);
     // SAFETY: the getter's detour, called with the arguments the step passed.
     let own = unsafe { speed_detour(this, a, b, c) };
     match UPDATES.load(Ordering::Acquire) {
@@ -132,20 +252,53 @@ unsafe extern "C" fn step_speed(this: usize, a: usize, b: usize, c: usize) -> u6
 type StepFn = unsafe extern "C" fn(usize, usize, usize, usize);
 
 /// Runs the game's own step once, with `updates` answered to its call of
-/// the speed getter.
+/// the speed getter; `room` says the call is the room's game's, so its
+/// paused path leaves the game's tickCount alone ([`crate::ticks`]).
 ///
 /// # Safety
 ///
 /// `original` is the step's trampoline; the arguments are the game's.
-unsafe fn run_step(original: StepFn, updates: Updates, this: usize, a: usize, b: usize, c: usize) {
+unsafe fn run_step(
+    original: StepFn,
+    updates: Updates,
+    room: bool,
+    this: usize,
+    a: usize,
+    b: usize,
+    c: usize,
+) {
     let answer = match updates {
         Updates::Own => OWN_SPEED,
         Updates::Exactly(updates) => u64::from(updates),
     };
     UPDATES.store(answer, Ordering::Release);
+    crate::ticks::set_room(room);
+    // Whatever the engine freed since the last step, no cached region
+    // answers for it.
+    crate::image::invalidate();
+    let started = crate::perf::start();
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
+    if let Some(started) = started {
+        let nanos = crate::perf::nanos_since(started);
+        crate::perf::game_step(nanos);
+        STEP_GAME_NANOS.fetch_add(nanos, Ordering::Relaxed);
+    }
+    crate::ticks::set_room(false);
     UPDATES.store(OWN_SPEED, Ordering::Release);
+}
+
+/// After a batch of the room's steps `first..first + updates`: at a
+/// checkpoint, and at the first batch after a world was loaded, the game's
+/// two counters go to the log with the room's step, for two games' logs to
+/// be compared ([`crate::ticks::checkpoint_line`]).
+fn log_counters(first: u64, updates: u32, checkpoint: bool) {
+    let last = first.saturating_add(u64::from(updates)).saturating_sub(1);
+    let before = LAST_STEP_RUN.swap(last, Ordering::AcqRel);
+    if checkpoint || before.saturating_add(1) != first {
+        let counters = crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire));
+        log_line(&crate::ticks::checkpoint_line(last, counters));
+    }
 }
 
 /// The detour: every call of the game's step comes here, and runs the
@@ -158,9 +311,14 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     // SAFETY: ORIGINAL holds the trampoline InlineDetour::install returned
     // for this function, which keeps the game's own ABI.
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
+    let started = crate::perf::start();
+    STEP_GAME_NANOS.store(0, Ordering::Relaxed);
+    LAST_STEP.store(now_ms(), Ordering::Release);
+    // The step's speed call sets it again for this call.
+    GAME_TIME.store(0, Ordering::Release);
     if BROKEN.load(Ordering::Acquire) {
         // SAFETY: the game's step on its paused path: the world stands still.
-        unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+        unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
         return;
     }
     let mut ran = false;
@@ -169,7 +327,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         let Some(driver) = driver.as_mut() else {
             ran = true;
             // SAFETY: the game's own step, called as the game called it.
-            unsafe { run_step(original, Updates::Own, this, a, b, c) };
+            unsafe { run_step(original, Updates::Own, false, this, a, b, c) };
             return;
         };
         // SAFETY: as above, once per call, with the updates the driver chose;
@@ -180,13 +338,16 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
                 Updates::Exactly(updates) => updates,
                 Updates::Own => 0,
             };
-            match lua::begin_batch(batch.actions, updates, batch.lanes) {
+            match lua::begin_batch(batch.actions, updates, batch.lanes, batch.dump) {
                 Ok(()) => {
-                    unsafe { run_step(original, batch.updates, this, a, b, c) };
+                    unsafe { run_step(original, batch.updates, batch.room, this, a, b, c) };
+                    if let Some(first) = batch.first_step {
+                        log_counters(first, updates, batch.lanes);
+                    }
                     lua::end_batch()
                 }
                 Err(reason) => {
-                    unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+                    unsafe { run_step(original, Updates::Exactly(0), batch.room, this, a, b, c) };
                     Err(reason)
                 }
             }
@@ -197,6 +358,8 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         for text in lua::take_said() {
             driver.say(text);
         }
+        // The main menu's Multiplayer window, whose lobby the step just read.
+        crate::lobby::exchange(driver.as_mut());
         IN_ROOM.store(driver.in_room(), Ordering::Release);
         lua::set_in_room(driver.in_room());
         let chosen = CHOSEN.load(Ordering::Acquire);
@@ -208,9 +371,8 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
         {
-            for line in lines {
-                log.line(&line);
-            }
+            // One write: a lane dump is thousands of lines.
+            log.lines(&lines);
         }
     }));
     if result.is_err() {
@@ -218,7 +380,48 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         UPDATES.store(OWN_SPEED, Ordering::Release);
         if !ran {
             // SAFETY: as above.
-            unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+            unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
+        }
+    }
+    if let Some(started) = started {
+        let total = crate::perf::nanos_since(started);
+        let game = STEP_GAME_NANOS.swap(0, Ordering::Relaxed);
+        crate::perf::add(crate::perf::Piece::Gate, total.saturating_sub(game));
+        // Once a window: the timing's two lines (their own write is the
+        // next window's gate).
+        if let Some(lines) = crate::perf::tick(std::time::Instant::now()) {
+            for line in lines {
+                log_line(&line);
+            }
+        }
+    }
+}
+
+/// The main menu's Multiplayer window asks (crate::menu_entry): its actions
+/// go to the launcher and its lobby comes back through the step driver,
+/// which at the menu is the only reader of the link. Never waits for the
+/// driver: the step's detour holds it only while a step runs, and exchanges
+/// the lobby itself after it.
+pub(crate) fn lobby_pump() {
+    let Ok(mut guard) = DRIVER.try_lock() else {
+        return;
+    };
+    let Some(driver) = guard.as_mut() else {
+        drop(guard);
+        crate::lobby::unlinked();
+        return;
+    };
+    let lines = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::lobby::exchange(driver.as_mut());
+        driver.take_log()
+    }))
+    .unwrap_or_default();
+    drop(guard);
+    if !lines.is_empty()
+        && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
+    {
+        for line in lines {
+            log.line(&line);
         }
     }
 }
@@ -314,11 +517,25 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     let session = tpf3mp_bridge::Session::attach(link_name, &profile.name, Duration::from_secs(30))
         .map_err(|error| format!("the agent's link: {error}"))?;
     lua::install_api(api);
-    *DRIVER.lock().unwrap_or_else(|p| p.into_inner()) =
-        Some(Box::new(crate::step::StepDriver::new(
-            session,
-            Box::new(crate::worlds::GuiWorlds::in_steam_folder()),
-        )));
+    let mut driver = crate::step::StepDriver::new(
+        session,
+        Box::new(crate::worlds::GuiWorlds::in_steam_folder()),
+    );
+    let env = std::env::var(crate::lanedump::ENV).ok();
+    let (setting, refused) = crate::lanedump::Setting::from_env(env.as_deref());
+    if let Some(why) = refused {
+        log_line(&why);
+    } else if setting.off {
+        log_line("lane dumps are off, even after a divergence");
+    } else if !setting.always.is_empty() {
+        log_line(&format!(
+            "dumping lanes {:?} at every checkpoint ({})",
+            setting.always,
+            crate::lanedump::ENV
+        ));
+    }
+    driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
+    *DRIVER.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(driver));
 
     // SAFETY: both targets are functions the profile resolved, exactly once,
     // in this process's code; the game has not run a step yet (the hook
@@ -367,13 +584,54 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     let builds = match (at(ADD_TARGET), at(BUILD_APPLY_TARGET)) {
         // SAFETY: both are the functions the profile resolved, which no
         // thread runs yet; detour_forever installs each for good.
-        (Ok(add), Ok(apply)) => unsafe { crate::builds::install(add, apply, detour_forever) }
-            .map(|()| "the build tools build through the room".to_owned())
-            .unwrap_or_else(|error| format!("the build tools stay refused: {error}")),
+        (Ok(add), Ok(apply)) => {
+            let module = at(crate::modules::MODULE_ADD_CALL).ok();
+            // SAFETY: as above.
+            unsafe { crate::builds::install(add, apply, module, detour_forever) }
+                .map(|()| match module {
+                    Some(call) => format!(
+                        "the build tools build through the room; the module editor's builds \
+                         are read where Add returns to {:#x}",
+                        call + 5
+                    ),
+                    None => "the build tools build through the room; the profile has no \
+                             module editor call, so its builds stay refused"
+                        .to_owned(),
+                })
+                .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))
+        }
         _ => "the build tools stay refused: the profile has no build targets".to_owned(),
     };
-    if let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
-        log.line(&builds);
+    log_line(&builds);
+    // Loading the room's world from the main menu (docs/HOOKS.md, "Loading
+    // from the main menu"): without it, a game needs a world up to take the
+    // room's, as before.
+    // SAFETY: `at` gives the functions the profile resolved in this build,
+    // which no thread runs yet; detour_forever installs each for good.
+    match unsafe { crate::menu::install(&at, detour_forever) } {
+        Ok(line) | Err(line) => log_line(&line),
+    }
+    // The seeds and the order fixes (docs/HOOKS.md, "Seeds, as built" and
+    // "The order fixes, as built") take the targets at their addresses in
+    // this process; each piece installs, and fails closed, on its own, and
+    // logs its own outcome.
+    let mut absolute = resolved.clone();
+    for target in &mut absolute.targets {
+        target.address = target.address.saturating_add(base as u64);
+    }
+    log_line(&if crate::perf::configure_from_env() {
+        format!(
+            "perf: timing the hook's work, two lines every {} s ({}=0 turns it off)",
+            crate::perf::WINDOW.as_secs(),
+            crate::perf::ENV
+        )
+    } else {
+        format!("perf: timing off ({} says so)", crate::perf::ENV)
+    });
+    crate::seeds::install(&absolute);
+    log_line(&crate::ticks::install(&absolute));
+    for outcome in crate::order::install(&absolute) {
+        log_line(&outcome.to_string());
     }
     Ok(step_rva)
 }
@@ -689,6 +947,94 @@ mod tests {
         unsafe { detour.detach() }.unwrap();
         IN_ROOM.store(false, Ordering::Release);
         CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+
+    /// A game at its main menu, no world up: the menu's frame follows the
+    /// room into its game and has the menu's Lua load the room's save.
+    #[test]
+    fn at_the_main_menu_the_rooms_save_is_loaded_by_the_menus_lua() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        // No world has started in this game (SERIAL is the Lua link's).
+        lua::forget_worlds();
+        crate::menu::tests::menu51();
+        let dir = std::env::temp_dir().join(format!("tpf3mp-menu-frame-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let room = dir.join("room.sav");
+        std::fs::write(&room, b"the room's world").unwrap();
+        let menu = Lua::new();
+        menu.run(
+            "LOADS = {} api = { type = { SavegameId = { new = function() return {} end } } } \
+             app = { SaveGameNamespace = { getSavegame = function() return 'savegame' end }, \
+                     getProgressMonitor = function() return { getTask = function() return '' end } end, \
+                     loadGame = function(id) LOADS[#LOADS + 1] = id.saveGameName end }",
+        )
+        .unwrap();
+        let mut script = Script::default();
+        script.begin.extend([None, Some(begin())]);
+        script.gates.push_back(StepGate::Load(Load {
+            file: Some(room.clone()),
+            next_step: 9,
+        }));
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            script,
+            Box::new(crate::worlds::GuiWorlds::in_folder(Ok(dir.clone()))),
+        )));
+        LAST_STEP.store(0, Ordering::Release);
+
+        // No menu state yet: the menu does nothing (fail closed).
+        menu_frame();
+        assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
+        assert!(!DRIVER.lock().unwrap().as_ref().unwrap().in_room());
+
+        assert_eq!(unsafe { crate::menu::adopt(menu.state()) }, Ok(true));
+        // The lobby: nothing to load.
+        menu_frame();
+        assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
+        // The room begins and orders its save: the menu loads it.
+        menu_frame();
+        let name = format!("tpf3mp_room_{}", std::process::id());
+        assert_eq!(menu.run("return #LOADS, LOADS[1]"), Ok(format!("1|{name}")));
+        assert!(dir.join(format!("{name}.sav")).is_file());
+        menu_frame();
+        assert_eq!(menu.run("return #LOADS"), Ok("1".into()), "loaded once");
+        // A world's GUI has started: the menu keeps out, even before its
+        // first step (the owner's save for the room comes then).
+        lua::menu_load_failed(String::new());
+        let _ = lua::take_load_failure();
+        lua::request_menu_load("again");
+        {
+            let world = Lua::new();
+            world.register();
+            world.run("tpf3mp_native.world()").unwrap();
+        }
+        menu_frame();
+        assert_eq!(
+            menu.run("return #LOADS"),
+            Ok("1".into()),
+            "no menu work once a world's GUI started"
+        );
+        // A world has stepped: the menu keeps out of it for good, also
+        // while that world stops stepping (a save, or held for another
+        // player), and even with an order waiting.
+        lua::forget_worlds();
+        LAST_STEP.store(now_ms().max(1), Ordering::Release);
+        menu_frame();
+        assert_eq!(
+            menu.run("return #LOADS"),
+            Ok("1".into()),
+            "no menu work after a world"
+        );
+
+        *DRIVER.lock().unwrap() = None;
+        LAST_STEP.store(0, Ordering::Release);
+        IN_ROOM.store(false, Ordering::Release);
+        lua::set_in_room(false);
+        crate::menu::tests::forget_all();
+        let _ = lua::take_menu_load();
+        lua::menu_load_failed(String::new());
+        let _ = lua::take_load_failure();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     static PRINTED: AtomicUsize = AtomicUsize::new(0);

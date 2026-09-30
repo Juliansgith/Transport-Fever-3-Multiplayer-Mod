@@ -2,9 +2,9 @@
 //! ready, chats and plays, with this agent doing the work. It is the
 //! launcher backend of `docs/ARCHITECTURE.md`. Front ends read its
 //! [`State`] and send it [`Action`]s: the native window of the
-//! `tpf3mp-launcher` crate through a [`LauncherHandle`], or a page in the
-//! player's browser (`Launcher::start`); an in-game interface can drive the
-//! same actions later.
+//! `tpf3mp-launcher` crate through a [`LauncherHandle`], a page in the
+//! player's browser (`Launcher::start`), or the Multiplayer window on the
+//! game's main menu (D17), over the link to the game's hook ([`lobby`]).
 //!
 //! The page is served on the loopback interface only. Every API request
 //! carries a secret token that only the launched page knows, and requests
@@ -13,6 +13,7 @@
 
 mod api;
 mod http;
+pub(crate) mod lobby;
 pub mod setup;
 
 use std::{
@@ -27,9 +28,11 @@ use serde::{Deserialize, Serialize};
 
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
+    time::MissedTickBehavior,
 };
+use tpf3mp_bridge::{LobbyAction, LobbyView};
 use tpf3mp_net::{Identity, ServerTrust};
 use tpf3mp_proto::{
     ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomSettings, Text,
@@ -40,10 +43,12 @@ pub use self::api::{
     Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent, Phase,
     Room, RulesChoice, State, World,
 };
-use self::{api::View, http::Page};
+use self::{api::View, http::Page, lobby::IdleLink};
 use crate::{
     Client, ClientError, ClientEvent, ConnectOptions, Events, TunnelChoice, Worlds,
-    bridge::{self, Bridge, BridgeEnd, BridgeOptions, Control, Rejoin, SharedStatus, Status},
+    bridge::{
+        self, Bridge, BridgeEnd, BridgeOptions, Control, LobbyLink, Rejoin, SharedStatus, Status,
+    },
     connect,
 };
 
@@ -52,6 +57,11 @@ use crate::{
 const REJOIN_PATIENCE: Duration = Duration::from_secs(300);
 /// Actions queued from the page before it waits.
 const ACTION_QUEUE: usize = 32;
+/// How often the launcher looks whether the game it started still runs.
+const GAME_POLL: Duration = Duration::from_millis(500);
+/// How often the launcher's lobby is worked out for the game's window and
+/// the game's link served while no room session holds it.
+const LOBBY_TICK: Duration = Duration::from_millis(100);
 
 /// What a launcher needs.
 #[derive(Debug, Clone)]
@@ -95,6 +105,16 @@ pub struct LauncherConfig {
     pub hook: Option<PathBuf>,
     /// The game's executable, when it is not where Steam's folder says.
     pub game_exe: Option<PathBuf>,
+    /// More variables for the game's environment, on top of the link's: for
+    /// playtests, such as the save the hook loads at the main menu
+    /// ([`tpf3mp_ipc::AUTO_LOAD_ENV`]).
+    pub game_env: Vec<(String, String)>,
+    /// A save the rooms this player creates start from: handed to the room
+    /// in its lobby, and loaded by every game from its main menu when the
+    /// game starts, this player's too (see `BridgeOptions::start_world`).
+    /// Without it, the owner's game loads the world and saves it for the
+    /// room once the game began.
+    pub start_save: Option<PathBuf>,
 }
 
 /// A running launcher.
@@ -121,8 +141,8 @@ impl Launcher {
             address,
         });
         let url = format!("http://{address}/#{}", page.token);
-        let (shared, actions) = Shared::new(&config);
-        let control = tokio::spawn(control(Arc::clone(&shared), config, actions));
+        let (shared, actions, lobby) = Shared::new(&config);
+        let control = tokio::spawn(control(Arc::clone(&shared), config, actions, lobby));
         let serve = tokio::spawn(http::serve(listener, Arc::clone(&shared), page));
         let task = tokio::spawn(async move {
             let _ = tokio::join!(control, serve);
@@ -138,8 +158,8 @@ impl Launcher {
     /// that drives it through [`Launcher::handle`]. Call it within a Tokio
     /// runtime.
     pub fn start_local(config: LauncherConfig) -> Self {
-        let (shared, actions) = Shared::new(&config);
-        let task = tokio::spawn(control(Arc::clone(&shared), config, actions));
+        let (shared, actions, lobby) = Shared::new(&config);
+        let task = tokio::spawn(control(Arc::clone(&shared), config, actions, lobby));
         Self {
             url: None,
             shared,
@@ -200,16 +220,27 @@ impl LauncherHandle {
 
 type Actions = mpsc::Receiver<(Action, oneshot::Sender<Result<(), String>>)>;
 
+/// The controller's ends of the lobby the game's window shows (D17): the
+/// lobby it works out, and the actions the window sends.
+struct LobbyEnds {
+    views: watch::Sender<LobbyView>,
+    actions: mpsc::UnboundedReceiver<LobbyAction>,
+}
+
 /// What the front ends and the controller share.
 pub(crate) struct Shared {
     view: Mutex<View>,
     status: SharedStatus,
     actions: mpsc::Sender<(Action, oneshot::Sender<Result<(), String>>)>,
+    /// The bridges' ends of the game window's lobby.
+    lobby: LobbyLink,
 }
 
 impl Shared {
-    fn new(config: &LauncherConfig) -> (Arc<Self>, Actions) {
+    fn new(config: &LauncherConfig) -> (Arc<Self>, Actions, LobbyEnds) {
         let (actions, receiver) = mpsc::channel(ACTION_QUEUE);
+        let (views, views_rx) = watch::channel(LobbyView::default());
+        let (lobby_actions, lobby_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(Self {
             view: Mutex::new(View {
                 server: config.server.clone(),
@@ -223,8 +254,16 @@ impl Shared {
             }),
             status: SharedStatus::default(),
             actions,
+            lobby: LobbyLink {
+                views: views_rx,
+                actions: lobby_actions,
+            },
         });
-        (shared, receiver)
+        let lobby = LobbyEnds {
+            views,
+            actions: lobby_rx,
+        };
+        (shared, receiver, lobby)
     }
 
     fn view(&self) -> std::sync::MutexGuard<'_, View> {
@@ -246,34 +285,122 @@ struct Connected {
 /// A room session, run by a bridge.
 struct Session {
     controls: mpsc::Sender<Control>,
-    task: JoinHandle<Result<BridgeEnd, bridge::BridgeFault>>,
+    task: JoinHandle<SessionEnded>,
     options: ConnectOptions,
 }
 
+/// How a room session ended, and the game's link it gives back, with the
+/// game's build if its hook said hello.
+type SessionEnded = (
+    Result<BridgeEnd, bridge::BridgeFault>,
+    tpf3mp_ipc::Link,
+    Option<String>,
+);
+
+/// The game's link, served by the launcher while no room session holds it.
+type Idle = Option<IdleLink<tpf3mp_ipc::Link>>;
+
+/// Opens the link the game's hook attaches to (D11: the launcher names it in
+/// the game's environment), as a new generation.
+fn open_link(config: &LauncherConfig) -> Result<IdleLink<tpf3mp_ipc::Link>, String> {
+    tpf3mp_ipc::Link::create(
+        &tpf3mp_ipc::Config::new(&config.link),
+        tpf3mp_ipc::Role::Agent,
+    )
+    .map(IdleLink::new)
+    .map_err(|error| format!("cannot open the link to the game: {error}"))
+}
+
 /// Carries out the page's actions, one at a time, and keeps the view.
-async fn control(shared: Arc<Shared>, config: LauncherConfig, mut actions: Actions) {
+async fn control(
+    shared: Arc<Shared>,
+    config: LauncherConfig,
+    mut actions: Actions,
+    mut lobby: LobbyEnds,
+) {
     let mut connected: Option<Connected> = None;
     let mut session: Option<Session> = None;
     // The game last started from here, while it may still be running.
     let mut game: Option<tpf3mp_launch::Started> = None;
+    // The game's link, for as long as the launcher runs: the game can start
+    // before a room is chosen, and its menu's window talks to the launcher
+    // over it (D17).
+    let mut idle: Idle = open_link(&config)
+        .inspect_err(|error| warn!(%error, "the game's link opens with the first room instead"))
+        .ok();
+    let mut tick = tokio::time::interval(LOBBY_TICK);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             action = actions.recv() => {
                 let Some((action, reply)) = action else {
                     return;
                 };
-                let result = act(&shared, &config, action, &mut connected, &mut session, &mut game).await;
+                let result = act(&shared, &config, action, &mut connected, &mut session, &mut game, &mut idle).await;
                 shared.view().error = result.as_ref().err().cloned();
                 let _ = reply.send(result);
             }
+            Some(asked) = lobby.actions.recv() => {
+                lobby_act(&shared, &config, asked, &mut connected, &mut session, &mut game, &mut idle).await;
+            }
+            _ = tick.tick() => {
+                let view = lobby::view(&api::snapshot(&shared.view(), &shared.status()));
+                lobby.views.send_if_modified(|told| {
+                    let changed = *told != view;
+                    if changed {
+                        told.clone_from(&view);
+                    }
+                    changed
+                });
+                // A game that has closed is no longer there to show.
+                if session.is_none() && game.as_mut().is_some_and(|started| !started.is_running()) {
+                    game = None;
+                    shared.status().game = None;
+                    idle = idle.take().map(IdleLink::forget_game);
+                }
+                let asked = match &mut idle {
+                    Some(link) => {
+                        let asked = link.pump(&view).unwrap_or_else(|error| {
+                            warn!(%error, "serving the game's link failed");
+                            Vec::new()
+                        });
+                        if let Some(build) = link.build() {
+                            let mut status = shared.status();
+                            if status.game.is_none() {
+                                status.game = Some(build.to_owned());
+                            }
+                        }
+                        asked
+                    }
+                    None => Vec::new(),
+                };
+                for asked in asked {
+                    lobby_act(&shared, &config, asked, &mut connected, &mut session, &mut game, &mut idle).await;
+                }
+            }
             ended = session_end(&mut session) => {
                 let finished = session.take();
+                let (ended, link) = match ended {
+                    Ok((ended, link, build)) => (
+                        ended,
+                        Some(IdleLink::given_back(link, build, game.is_some())),
+                    ),
+                    Err(error) => (Err(bridge::BridgeFault::Rejoin(error)), None),
+                };
+                // The game keeps its link for the next room; a session that
+                // failed outright left none, so a new one is opened.
+                idle = link.or_else(|| open_link(&config).ok());
                 let message = match ended {
                     Ok(end) => format!("the game session ended: {}", describe(&end)),
                     Err(fault) => format!("the game session failed: {fault}"),
                 };
                 info!(%message);
-                shared.status().notice(message);
+                {
+                    // No game plays through a session that ended.
+                    let mut status = shared.status();
+                    status.notice(message);
+                    status.game = None;
+                }
                 {
                     let mut view = shared.view();
                     view.invite = None;
@@ -281,7 +408,25 @@ async fn control(shared: Arc<Shared>, config: LauncherConfig, mut actions: Actio
                 }
                 // Back to the server, ready for the next room.
                 if let Some(finished) = finished {
-                    connected = reconnect(&shared, finished.options).await;
+                    connected =
+                        reconnect(&shared, finished.options, config.content.clone()).await;
+                }
+            }
+            () = game_exit(&mut game) => {
+                // Its session cannot go on without it: end it now rather
+                // than when the hook's heartbeat limit runs out, so the
+                // player can start the game again at once.
+                game = None;
+                info!("Transport Fever 3 closed");
+                match &session {
+                    Some(session) => {
+                        let _ = session.controls.send(Control::GameClosed).await;
+                    }
+                    // Outside a room the launcher's own link held its hook.
+                    None => {
+                        shared.status().game = None;
+                        idle = idle.take().map(IdleLink::forget_game);
+                    }
                 }
             }
             event = next_event(&mut connected) => match event {
@@ -303,6 +448,45 @@ async fn control(shared: Arc<Shared>, config: LauncherConfig, mut actions: Actio
     }
 }
 
+/// One action from the game's main-menu window (D17): the launcher's own,
+/// on its own server. A refusal shows in both windows, as a page's does.
+async fn lobby_act(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    asked: LobbyAction,
+    connected: &mut Option<Connected>,
+    session: &mut Option<Session>,
+    game: &mut Option<tpf3mp_launch::Started>,
+    idle: &mut Idle,
+) {
+    let state = api::snapshot(&shared.view(), &shared.status());
+    let action = lobby::action(asked, &state);
+    // The kind only: a join carries its invite, which is not logged bare
+    // (D13).
+    info!(
+        action = action_kind(&action),
+        "the game's Multiplayer window asks"
+    );
+    let result = act(shared, config, action, connected, session, game, idle).await;
+    shared.view().error = result.err();
+}
+
+fn action_kind(action: &Action) -> &'static str {
+    match action {
+        Action::Connect { .. } => "connect",
+        Action::Disconnect => "disconnect",
+        Action::Create { .. } => "create",
+        Action::Join { .. } => "join",
+        Action::Ready { .. } => "ready",
+        Action::Start => "start",
+        Action::Kick { .. } => "kick",
+        Action::Chat { .. } => "chat",
+        Action::Leave => "leave",
+        Action::Diagnostics { .. } => "diagnostics",
+        Action::LaunchGame => "launch_game",
+    }
+}
+
 /// One action from the page.
 async fn act(
     shared: &Arc<Shared>,
@@ -311,6 +495,7 @@ async fn act(
     connected: &mut Option<Connected>,
     session: &mut Option<Session>,
     game: &mut Option<tpf3mp_launch::Started>,
+    idle: &mut Idle,
 ) -> Result<(), String> {
     match action {
         Action::Connect { server, name } => {
@@ -327,14 +512,27 @@ async fn act(
             }
             connect_to(shared, config, connected, &server, name).await?;
             match passed {
-                Some(passed) => join(shared, config, connected, session, passed.invite, None).await,
+                Some(passed) => {
+                    join(
+                        shared,
+                        config,
+                        connected,
+                        session,
+                        idle,
+                        passed.invite,
+                        None,
+                    )
+                    .await
+                }
                 None => Ok(()),
             }
         }
         Action::Disconnect => {
             if let Some(session) = session.take() {
                 let _ = session.controls.send(Control::Leave).await;
-                let _ = session.task.await;
+                if let Ok((_, link, build)) = session.task.await {
+                    *idle = Some(IdleLink::resumed(link, build));
+                }
             }
             if let Some(connected) = connected.take() {
                 connected.client.close().await;
@@ -370,7 +568,15 @@ async fn act(
                 .await
                 .map_err(|error| error.to_string())?;
             shared.status().room = Some(room);
-            begin_session(shared, config, connected, session, invite, create.password)
+            begin_session(
+                shared,
+                config,
+                connected,
+                session,
+                idle,
+                invite,
+                create.password,
+            )
         }
         Action::Join { invite, password } => {
             let passed = passed_invite(&invite).ok_or("that is not an invite")?;
@@ -391,7 +597,16 @@ async fn act(
                 let name = current.options.name.clone();
                 connect_to(shared, config, connected, &server, name).await?;
             }
-            join(shared, config, connected, session, passed.invite, password).await
+            join(
+                shared,
+                config,
+                connected,
+                session,
+                idle,
+                passed.invite,
+                password,
+            )
+            .await
         }
         Action::Ready { ready } => forward(session, Control::Ready(ready)).await,
         Action::Start => forward(session, Control::Start).await,
@@ -407,7 +622,7 @@ async fn act(
             forward(session, Control::Chat(text)).await
         }
         Action::Leave => forward(session, Control::Leave).await,
-        Action::LaunchGame => launch_game(shared, config, session, game),
+        Action::LaunchGame => launch_game(shared, config, session, game, idle),
         Action::Diagnostics { on } => {
             let recorder = config
                 .diagnostics
@@ -428,20 +643,17 @@ async fn act(
     }
 }
 
-/// Starts Transport Fever 3 with the hook in it, told the room session's
-/// link: the only way the hook runs (D11). A game started from Steam is
-/// the plain game.
-/// Starts the game with the hook in it, for the room this is in: the only
-/// way a game runs TPF3-MP (D11).
+/// Starts Transport Fever 3 with the hook in it, told the launcher's link:
+/// the only way the hook runs (D11). A game started from Steam is the plain
+/// game. It may start before a room is chosen: its main menu's Multiplayer
+/// window connects, creates and joins through this launcher (D17).
 fn launch_game(
     shared: &Arc<Shared>,
     config: &LauncherConfig,
     session: &Option<Session>,
     game: &mut Option<tpf3mp_launch::Started>,
+    idle: &mut Idle,
 ) -> Result<(), String> {
-    if session.is_none() {
-        return Err("create or join a room first: the game connects to it".into());
-    }
     if !tpf3mp_launch::SUPPORTED {
         return Err(tpf3mp_launch::LaunchError::Unsupported.to_string());
     }
@@ -478,6 +690,11 @@ fn launch_game(
         .hook
         .clone()
         .ok_or("this TPF3-MP has no hook library for the game")?;
+    // The link the game's hook attaches to: the room session's, or the
+    // launcher's own.
+    if session.is_none() && idle.is_none() {
+        *idle = Some(open_link(config)?);
+    }
     let started = tpf3mp_launch::start(&tpf3mp_launch::Launch {
         exe,
         args: Vec::new(),
@@ -488,14 +705,17 @@ fn launch_game(
                 tpf3mp_ipc::LAUNCHER_PID_ENV.to_owned(),
                 std::process::id().to_string(),
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(config.game_env.iter().cloned())
+        .collect(),
     })
     .map_err(|error| error.to_string())?;
     info!(pid = started.pid, "started the game with the hook");
     *game = Some(started);
-    shared
-        .status()
-        .notice("started Transport Fever 3 with TPF3-MP; it connects once it has loaded");
+    shared.status().notice(
+        "started Transport Fever 3 with TPF3-MP; its main menu has a Multiplayer entry, and it joins the room once it has loaded",
+    );
     Ok(())
 }
 
@@ -506,6 +726,7 @@ fn begin_session(
     config: &LauncherConfig,
     connected: &mut Option<Connected>,
     session: &mut Option<Session>,
+    idle: &mut Idle,
     invite: Invite,
     password: Option<Text<64>>,
 ) -> Result<(), String> {
@@ -514,24 +735,32 @@ fn begin_session(
         events,
         options,
     } = connected.take().ok_or("not connected")?;
-    let link = tpf3mp_ipc::Link::create(
-        &tpf3mp_ipc::Config::new(&config.link),
-        tpf3mp_ipc::Role::Agent,
-    )
-    .map_err(|error| format!("cannot open the link to the game: {error}"))?;
+    // The game's link, greeted already if its hook said hello: the session
+    // takes it over and gives it back when it ends.
+    let (link, build) = match idle.take() {
+        Some(link) => link.into_parts(),
+        None => open_link(config)?.into_parts(),
+    };
     let (controls, controls_rx) = mpsc::channel(ACTION_QUEUE);
     // A fresh status for the new session, with the room already known.
-    {
+    let owned = {
         let mut status = shared.status();
         let room = status.room.take();
+        let owned = room
+            .as_ref()
+            .is_some_and(|room| room.owner == config.identity.player());
         *status = Status {
             room,
             ..Status::default()
         };
-    }
+        owned
+    };
     let bridge_options = BridgeOptions {
         worlds: Some(config.worlds.clone()),
         status: Some(Arc::clone(&shared.status)),
+        lobby: Some(shared.lobby.clone()),
+        // A room this player created starts from the save named for it.
+        start_world: config.start_save.clone().filter(|_| owned),
         ..BridgeOptions::default()
     };
     let rejoin = Rejoin {
@@ -543,7 +772,12 @@ fn begin_session(
     };
     let task = tokio::spawn(async move {
         let mut bridge = Bridge::new(link, bridge_options).with_controls(controls_rx);
-        bridge::play(&mut bridge, client, events, &rejoin).await
+        if let Some(build) = &build {
+            bridge = bridge.greeted(build);
+        }
+        let ended = bridge::play(&mut bridge, client, events, &rejoin).await;
+        let (link, build) = bridge.into_link();
+        (ended, link, build)
     });
     {
         let mut view = shared.view();
@@ -574,8 +808,22 @@ async fn forward(session: &Option<Session>, control: Control) -> Result<(), Stri
 }
 
 /// Connects again after a room session, which took the old connection.
-async fn reconnect(shared: &Arc<Shared>, options: ConnectOptions) -> Option<Connected> {
-    match connect(options.clone()).await {
+/// What the game runs goes with this connection too, as with the first
+/// (`connect_to`): without it the server knows no content for the player,
+/// and every room made on it refuses to start.
+async fn reconnect(
+    shared: &Arc<Shared>,
+    options: ConnectOptions,
+    content: ContentManifest,
+) -> Option<Connected> {
+    let connected = match connect(options.clone()).await {
+        Ok((client, events)) => match client.declare_content(content).await {
+            Ok(()) => Ok((client, events)),
+            Err(error) => Err(error.to_string()),
+        },
+        Err(error) => Err(error.to_string()),
+    };
+    match connected {
         Ok((client, events)) => {
             let mut view = shared.view();
             view.connected = true;
@@ -591,7 +839,7 @@ async fn reconnect(shared: &Arc<Shared>, options: ConnectOptions) -> Option<Conn
             warn!(%error, "cannot reconnect after the session");
             let mut view = shared.view();
             view.connected = false;
-            view.error = Some(error.to_string());
+            view.error = Some(error);
             None
         }
     }
@@ -689,6 +937,7 @@ async fn join(
     config: &LauncherConfig,
     connected: &mut Option<Connected>,
     session: &mut Option<Session>,
+    idle: &mut Idle,
     invite: Invite,
     password: Option<Text<64>>,
 ) -> Result<(), String> {
@@ -716,7 +965,7 @@ async fn join(
         Err(error) => return Err(error.to_string()),
     };
     shared.status().room = Some(room);
-    begin_session(shared, config, connected, session, invite, password)
+    begin_session(shared, config, connected, session, idle, invite, password)
 }
 
 /// How the game differs from a room that refused it, if the room says so
@@ -859,14 +1108,27 @@ fn password_text(password: Option<String>) -> Result<Option<Text<64>>, String> {
         .transpose()
 }
 
-/// The end of the current session, or never without one.
-async fn session_end(session: &mut Option<Session>) -> Result<BridgeEnd, bridge::BridgeFault> {
+/// The end of the current session, or never without one: how it ended and
+/// the link it gives back, or why its task failed.
+async fn session_end(session: &mut Option<Session>) -> Result<SessionEnded, String> {
     match session {
-        Some(session) => match (&mut session.task).await {
-            Ok(ended) => ended,
-            Err(error) => Err(bridge::BridgeFault::Rejoin(error.to_string())),
-        },
+        Some(session) => (&mut session.task).await.map_err(|error| error.to_string()),
         None => std::future::pending().await,
+    }
+}
+
+/// When the game started from here has exited, or never without one.
+async fn game_exit(game: &mut Option<tpf3mp_launch::Started>) {
+    match game {
+        Some(started) => exited(|| started.is_running()).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Returns once `running` says no, asking every [`GAME_POLL`].
+async fn exited(mut running: impl FnMut() -> bool) {
+    while running() {
+        tokio::time::sleep(GAME_POLL).await;
     }
 }
 
@@ -986,6 +1248,22 @@ mod tests {
         assert_eq!(passed("thanks for STREET".into()), None);
         // A cut-off invite is none.
         assert_eq!(passed(code[..code.len() - 1].to_owned()), None);
+    }
+
+    #[tokio::test]
+    async fn a_game_that_exits_is_noticed_within_a_poll() {
+        let mut asked = 0;
+        let started = std::time::Instant::now();
+        exited(|| {
+            asked += 1;
+            asked < 3
+        })
+        .await;
+        assert_eq!(asked, 3, "asked until the game had gone");
+        assert!(started.elapsed() < GAME_POLL * 3, "{:?}", started.elapsed());
+        // A launcher that started no game waits on none.
+        let none = tokio::time::timeout(Duration::from_millis(50), game_exit(&mut None)).await;
+        assert!(none.is_err());
     }
 
     #[test]

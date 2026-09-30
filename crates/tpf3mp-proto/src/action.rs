@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 6;
+pub const ACTION_SCHEMA_VERSION: u32 = 7;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -61,6 +61,9 @@ pub const MAX_CARGOS: usize = 64;
 pub const MAX_ALTERNATIVES: usize = 32;
 /// Most transport modes a line lists.
 pub const MAX_MODES: usize = 32;
+/// Most industry types one prospection may find. Build 40408's economy has
+/// at most a handful per cargo.
+pub const MAX_INDUSTRY_TYPES: usize = 32;
 
 /// A resource file name as the game lists it, such as
 /// `street/standard/town_medium_new.lua` or a vehicle's `.mdl`.
@@ -138,6 +141,12 @@ canonical_id!(
     /// A station group, which line stops name.
     StationId,
     "station-"
+);
+canonical_id!(
+    /// A town. Towns come with the room's world, not from an action: every
+    /// game binds them, lowest entity first, at the room's first update.
+    TownId,
+    "town-"
 );
 
 /// The two transport networks. A road node and a track node can stand at
@@ -464,6 +473,32 @@ pub struct BuyVehicle {
     pub multiple_units: BoundedVec<Text<128>, MAX_CONSIST>,
 }
 
+/// One vehicle of a replacement consist: the part as a purchase carries it,
+/// and whether it is one the vehicle has already.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplacedPart {
+    pub part: ConsistPart,
+    /// The index, from 0, of the vehicle's own part this one keeps, with its
+    /// age and wear, of the same model; none for a part bought new. TF3's
+    /// store keeps a part the player left in the consist as it was (its
+    /// purchase time), and buys the rest.
+    pub kept: Option<u8>,
+}
+
+/// The vehicle window's "modify" and "replace" (`makeVehicleReplaceCmd`):
+/// one vehicle's consist swapped for another, the vehicle staying the one
+/// its line and orders name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplaceVehicle {
+    pub vehicle: VehicleId,
+    /// The new consist, front to back.
+    pub consist: BoundedVec<ReplacedPart, MAX_CONSIST>,
+    /// Its groups, as [`BuyVehicle::groups`].
+    pub groups: BoundedVec<u8, MAX_CONSIST>,
+    /// For each group, the multiple unit's file, or empty.
+    pub multiple_units: BoundedVec<Text<128>, MAX_CONSIST>,
+}
+
 /// How long vehicles load at a stop (the game's `Line.LoadMode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LoadMode {
@@ -707,6 +742,25 @@ pub enum LoanOp {
     Repay { loan: LoanTerms },
 }
 
+/// Prospecting near a town for one cargo: what TF3's construction menu sends
+/// the company script when the player picks a town with a prospection
+/// (`gui/construction/construction_react_util.tl`, the event `Companies`
+/// `spawnIndustry`), field for field. The game decides the rest, months
+/// later, from its own state and the game time, the same in every game
+/// (investigation/TPF3_PROSPECTING_2026-09-30.md).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Prospect {
+    pub town: TownId,
+    /// The cargo prospected for, a cargo resource (`cargoType`).
+    pub cargo: ResName,
+    /// The industry types that may be found, as the economy tags them, in
+    /// the originator's order: the game shuffles them with draws taken in
+    /// this order (`types`).
+    pub industries: BoundedVec<ResName, MAX_INDUSTRY_TYPES>,
+    /// The company permit it uses (`permitKey`), if it names one.
+    pub permit: Option<ResName>,
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -727,6 +781,8 @@ pub enum Action {
     /// Boxed: its terms are larger than every other action.
     Loan(Box<LoanOp>),
     VehicleOp(VehicleOp),
+    ReplaceVehicle(ReplaceVehicle),
+    Prospect(Prospect),
 }
 
 #[derive(Debug, Error)]
@@ -868,7 +924,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                6, // schema version
+                7, // schema version
                 5, // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -911,7 +967,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                6, // schema version
+                7, // schema version
                 1, // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -922,6 +978,52 @@ mod tests {
                 0, // the build's own kind
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
+            ]
+        );
+        // Appended with Prospect under schema version 7: the variants
+        // before them keep their bytes.
+        let replace = Action::ReplaceVehicle(ReplaceVehicle {
+            vehicle: VehicleId(3),
+            consist: BoundedVec::new(vec![ReplacedPart {
+                part: ConsistPart {
+                    model: Text::new("m").unwrap(),
+                    reversed: true,
+                    loads: BoundedVec::empty(),
+                    color: Tint { r: 1, g: 0, b: 0 },
+                },
+                kept: Some(2),
+            }])
+            .unwrap(),
+            groups: BoundedVec::new(vec![1]).unwrap(),
+            multiple_units: BoundedVec::new(vec![Text::new("").unwrap()]).unwrap(),
+        });
+        assert_eq!(
+            replace.to_payload().unwrap().as_bytes(),
+            [
+                7,  // schema version
+                14, // Action::ReplaceVehicle
+                3,  // vehicle-3
+                1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
+                1, 2, // kept: Some(2)
+                1, 1, 1, 0, // groups { 1 }, multiple units { "" }
+            ]
+        );
+        let prospect = Action::Prospect(Prospect {
+            town: TownId(3),
+            cargo: Text::new("c").unwrap(),
+            industries: BoundedVec::new(vec![Text::new("m").unwrap(), Text::new("q").unwrap()])
+                .unwrap(),
+            permit: None,
+        });
+        assert_eq!(
+            prospect.to_payload().unwrap().as_bytes(),
+            [
+                7,  // schema version
+                15, // Action::Prospect
+                3,  // town-3
+                1, b'c', // cargo
+                2, 1, b'm', 1, b'q', // two industry types, in order
+                0,    // no permit
             ]
         );
     }

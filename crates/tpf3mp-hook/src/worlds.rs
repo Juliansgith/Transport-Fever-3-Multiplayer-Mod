@@ -9,7 +9,9 @@
 //! there once the GUI says it is written, and moved to the room's file; the
 //! picture the game writes beside it is removed. A world the room hands
 //! over is copied into the folder as `tpf3mp_room_<pid>` and loaded from
-//! there; it stays until the next one replaces it.
+//! there, by the GUI of the world the game has up, or by the game's main menu
+//! when it has none (`crate::menu`); it stays until the next one replaces
+//! it.
 
 use std::{
     fs,
@@ -19,7 +21,10 @@ use std::{
 use tpf3mp_bridge::Notice;
 use tpf3mp_proto::PlayerId;
 
-use crate::{lua, step::GameControl};
+use crate::{
+    lua,
+    step::{GameControl, LoadFrom},
+};
 
 /// Transport Fever 3's Steam app.
 pub const STEAM_APP: &str = "3493540";
@@ -77,7 +82,7 @@ impl GameControl for GuiWorlds {
         lua::set_me(player);
     }
 
-    fn request_load(&mut self, file: &Path) -> Result<(), String> {
+    fn request_load(&mut self, file: &Path, from: LoadFrom) -> Result<(), String> {
         let folder = self.folder.clone()?;
         let name = format!("tpf3mp_room_{}", self.tag);
         let target = folder.join(format!("{name}.sav"));
@@ -88,12 +93,23 @@ impl GameControl for GuiWorlds {
                 target.display()
             )
         })?;
-        lua::request_load(&name);
+        match from {
+            LoadFrom::Gui => lua::request_load(&name),
+            LoadFrom::Menu => lua::request_menu_load(&name),
+        }
         Ok(())
     }
 
     fn load_done(&mut self) -> bool {
         lua::load_done()
+    }
+
+    fn load_failed(&mut self) -> Option<String> {
+        lua::take_load_failure()
+    }
+
+    fn world_up(&mut self) -> Option<u64> {
+        lua::take_world_up()
     }
 }
 
@@ -268,7 +284,7 @@ mod tests {
         let lua = Lua::new();
         lua.register();
         let mut worlds = GuiWorlds::in_folder(Ok(dir.clone()));
-        worlds.request_load(&room).unwrap();
+        worlds.request_load(&room, LoadFrom::Gui).unwrap();
         let name = format!("tpf3mp_room_{}", std::process::id());
         assert_eq!(
             fs::read(dir.join(format!("{name}.sav"))).unwrap(),
@@ -277,8 +293,36 @@ mod tests {
         assert_eq!(lua.run("return tpf3mp_native.poll().load"), Ok(name));
         // Without a save folder nothing is asked.
         let mut nowhere = GuiWorlds::in_folder(Err("no Steam".into()));
-        assert_eq!(nowhere.request_load(&room), Err("no Steam".into()));
+        assert_eq!(
+            nowhere.request_load(&room, LoadFrom::Menu),
+            Err("no Steam".into())
+        );
         assert_eq!(lua.run("return tpf3mp_native.poll()"), Ok("nil".into()));
+        assert_eq!(lua::take_menu_load(), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn with_no_world_up_the_main_menu_is_asked_to_load_the_rooms_save() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let dir = folder("menu-load");
+        let room = dir.join("from-the-room.sav");
+        fs::write(&room, b"the room's world").unwrap();
+        let lua = Lua::new();
+        lua.register();
+        let mut worlds = GuiWorlds::in_folder(Ok(dir.clone()));
+        worlds.request_load(&room, LoadFrom::Menu).unwrap();
+        let name = format!("tpf3mp_room_{}", std::process::id());
+        assert!(dir.join(format!("{name}.sav")).is_file());
+        assert_eq!(
+            lua.run("return tpf3mp_native.poll()"),
+            Ok("nil".into()),
+            "not the GUI's"
+        );
+        assert_eq!(lua::take_menu_load(), Some(name));
+        lua::menu_load_failed("no menu".into());
+        assert_eq!(worlds.load_failed().as_deref(), Some("no menu"));
+        assert_eq!(worlds.load_failed(), None);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

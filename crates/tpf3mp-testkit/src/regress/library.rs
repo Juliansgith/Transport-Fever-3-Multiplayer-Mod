@@ -10,14 +10,14 @@ use tpf3mp_proto::{
         Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConsistPart,
         ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeRef, EditLine, LineChange,
         LineData, LineId, LineStop, Link, LoadMode, Network, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
-        Terminal, Terraform, TerrainCell, Tint, TrackBuild, Tram, Transform, UnitDir, VehicleId,
-        Vertex,
+        Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
+        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
+        Tram, Transform, UnitDir, VehicleId, Vertex,
     },
 };
 
 use super::{
-    model::START_MONEY,
+    model::{PROSPECTION_STEPS, START_MONEY},
     script::{Check, Item, Scenario},
 };
 
@@ -172,6 +172,30 @@ pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
     })
 }
 
+/// A vehicle's consist replaced: each car a model and, for one the vehicle
+/// has already, the index of the car it keeps.
+pub fn replace(vehicle: u32, consist: &[(&str, Option<u8>)]) -> Action {
+    Action::ReplaceVehicle(ReplaceVehicle {
+        vehicle: VehicleId(vehicle),
+        consist: list(
+            consist
+                .iter()
+                .map(|(model, kept)| ReplacedPart {
+                    part: ConsistPart {
+                        model: text(model),
+                        reversed: false,
+                        loads: BoundedVec::empty(),
+                        color: Tint { r: 0, g: 0, b: 0 },
+                    },
+                    kept: *kept,
+                })
+                .collect(),
+        ),
+        groups: list(vec![u8::try_from(consist.len()).expect("a short consist")]),
+        multiple_units: list(vec![text("")]),
+    })
+}
+
 pub fn sell(vehicles: &[u32]) -> Action {
     Action::SellVehicle {
         vehicles: list(vehicles.iter().map(|v| VehicleId(*v)).collect()),
@@ -314,6 +338,17 @@ pub fn terraform(x: i32, y: i32, cell: u32, columns: u16, rows: u16, height: i32
 
 pub fn company(op: CompanyOp) -> Action {
     Action::CompanyOp(op)
+}
+
+/// Prospecting near town `town` for `cargo`, as TF3's construction menu
+/// sends it.
+pub fn prospect(town: u32, cargo: &str, industries: &[&str]) -> Action {
+    Action::Prospect(Prospect {
+        town: TownId(town),
+        cargo: text(cargo),
+        industries: list(industries.iter().map(|kind| text(kind)).collect()),
+        permit: Some(text(cargo)),
+    })
 }
 
 impl Scenario {
@@ -463,11 +498,33 @@ fn rail_line_scenario() -> Scenario {
         })
         .run(3_000)
         .expect(Check::DeliveredAtLeast(1))
+        // The second train lengthened in the vehicle window: its own cars
+        // kept, a coach bought; it stays vehicle-1, on its line.
+        .act(
+            0,
+            replace(
+                1,
+                &[
+                    (LOCOMOTIVE, Some(0)),
+                    (WAGON, Some(1)),
+                    (WAGON, Some(2)),
+                    (WAGON, None),
+                ],
+            ),
+        )
+        .expect_all([
+            Check::Vehicles(2),
+            Check::Line {
+                line: LineId(0),
+                stops: 2,
+                vehicles: 2,
+            },
+        ])
         .act(0, bulldoze_edges(track_net, &[(far, mid)]))
         .expect_all([Check::TrackEdges(3), Check::Ignored(0)])
         .scenario(
             "rail-line",
-            "lay track with a switch, a bridge and a level crossing, build stations and a yard, run two trains",
+            "lay track with a switch, a bridge and a level crossing, build stations and a yard, run two trains, lengthen one",
             true,
             1,
         )
@@ -679,6 +736,31 @@ fn companies_scenario() -> Scenario {
         .exact()
 }
 
+/// Two players prospect; each prospection ends after its time, with an
+/// industry or without, alike on every replica.
+fn prospecting_scenario() -> Scenario {
+    const COAL: &str = "::/cargos/coal/coal.cargo";
+    const GRAIN: &str = "::/cargos/grain/grain.cargo";
+    Script::default()
+        .act(0, prospect(1, COAL, &["coal_mine", "coal_mine_large"]))
+        .act(0, prospect(1, COAL, &["coal_mine"]))
+        .act(1, prospect(1, COAL, &["coal_mine"]))
+        .act(1, prospect(2, GRAIN, &["farm_grain"]))
+        .expect_all([Check::Prospections(3), Check::Ignored(1)])
+        .run(PROSPECTION_STEPS + 10)
+        .expect_all([
+            Check::Prospections(0),
+            Check::IndustriesAtMost(3),
+            Check::Ignored(1),
+        ])
+        .scenario(
+            "prospecting",
+            "prospect near towns; one prospection per company, town and cargo; each ends in an industry or nothing",
+            true,
+            2,
+        )
+}
+
 fn refusals_scenario() -> Scenario {
     let (a, b) = (at(0, 0), at(500, 0));
     Script::default()
@@ -688,6 +770,7 @@ fn refusals_scenario() -> Scenario {
         .act(0, road(vec![node(at(3000, 3000), Network::Street), new(a)]))
         .act(0, line("Nowhere", &[4, 5]))
         .act(0, assign(&[7], None, Some(0)))
+        .act(0, replace(7, &[(BUS, None)]))
         .act(0, construction(BUS_STATION, at(0, 20), "Station"))
         .act(0, buy(BUS_STATION, at(0, 20), &[BUS]))
         .act(
@@ -705,7 +788,7 @@ fn refusals_scenario() -> Scenario {
             road(vec![split(a, Network::Street, a, b), new(at(0, 300))]),
         )
         .expect_all([
-            Check::Ignored(10),
+            Check::Ignored(11),
             Check::StreetEdges(1),
             Check::TrackEdges(0),
             Check::Stations(1),
@@ -843,6 +926,7 @@ pub fn scenarios() -> Vec<Arc<Scenario>> {
         rail_line_scenario(),
         two_companies_scenario(),
         refusals_scenario(),
+        prospecting_scenario(),
         line_editing_scenario(),
         demolition_scenario(),
         companies_scenario(),

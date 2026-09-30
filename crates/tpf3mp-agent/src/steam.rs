@@ -140,19 +140,101 @@ pub fn steam_roots() -> Vec<PathBuf> {
 /// Program Files.
 #[cfg(windows)]
 fn windows_steam_path() -> Option<PathBuf> {
+    let path = registry_value(r"HKCU\Software\Valve\Steam", "SteamPath", "REG_SZ")?;
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// The Steam account playing, as the registry names it; none on other
+/// systems, or when Steam is not running.
+fn active_account() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        let value = registry_value(
+            r"HKCU\Software\Valve\Steam\ActiveProcess",
+            "ActiveUser",
+            "REG_DWORD",
+        )?;
+        let hex = value.strip_prefix("0x")?;
+        u32::from_str_radix(hex, 16)
+            .ok()
+            .filter(|account| *account != 0)
+    }
+    #[cfg(not(windows))]
+    None
+}
+
+/// One value of the current user's registry, as `reg query` prints it.
+#[cfg(windows)]
+fn registry_value(key: &str, value: &str, kind: &str) -> Option<String> {
     use std::os::windows::process::CommandExt;
     // Without a console window flashing up from the launcher's window.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = std::process::Command::new("reg")
-        .args(["query", r"HKCU\Software\Valve\Steam", "/v", "SteamPath"])
+        .args(["query", key, "/v", value])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
-    let line = text.lines().find(|line| line.contains("SteamPath"))?;
-    let (_, path) = line.split_once("REG_SZ")?;
-    let path = path.trim();
-    (!path.is_empty()).then(|| PathBuf::from(path))
+    let line = text.lines().find(|line| line.contains(value))?;
+    let (_, found) = line.split_once(kind)?;
+    Some(found.trim().to_owned())
+}
+
+/// The file of Transport Fever 3's save `name`: `name` itself when it is
+/// the path of a file, otherwise `<name>.sav` in the game's save folder,
+/// `<Steam>/userdata/<account>/3493540/local/save`, of the account Steam
+/// names as playing, or of the one account on this machine that has it.
+pub fn find_save(name: &str) -> Result<PathBuf, String> {
+    find_save_in(&steam_roots(), active_account(), name)
+}
+
+/// [`find_save`] in the Steam installations at `roots`, `active` being the
+/// account playing, if known.
+pub fn find_save_in(roots: &[PathBuf], active: Option<u32>, name: &str) -> Result<PathBuf, String> {
+    let named = Path::new(name);
+    if named.is_file() {
+        return Ok(named.to_owned());
+    }
+    let file = if name.to_ascii_lowercase().ends_with(".sav") {
+        name.to_owned()
+    } else {
+        format!("{name}.sav")
+    };
+    // A save's name, not a way out of the save folder.
+    let mut parts = Path::new(&file).components();
+    let (Some(Component::Normal(_)), None) = (parts.next(), parts.next()) else {
+        return Err(format!("{name} is neither a file nor the name of a save"));
+    };
+    let mut found: Vec<(Option<u32>, PathBuf)> = Vec::new();
+    for root in roots {
+        let Ok(accounts) = fs::read_dir(root.join("userdata")) else {
+            continue;
+        };
+        for account in accounts.flatten() {
+            let save = account
+                .path()
+                .join(TRANSPORT_FEVER_3.to_string())
+                .join("local")
+                .join("save")
+                .join(&file);
+            if save.is_file() {
+                let id = account.file_name().to_str().and_then(|id| id.parse().ok());
+                found.push((id, save));
+            }
+        }
+    }
+    if let Some((_, save)) = found.iter().find(|(id, _)| id.is_some() && *id == active) {
+        return Ok(save.clone());
+    }
+    match found.len() {
+        1 => Ok(found.remove(0).1),
+        0 => Err(format!(
+            "no save {file} in Transport Fever 3's save folder of any Steam account on this machine"
+        )),
+        _ => Err(format!(
+            "several Steam accounts have a save {file}, and Steam names none as playing; give the save's path"
+        )),
+    }
 }
 
 fn read_small(path: &Path) -> Option<String> {
@@ -446,6 +528,42 @@ mod tests {
         let root = temp("escape");
         let steam_root = steam(&root, "../../elsewhere");
         assert_eq!(find_in(&[steam_root], TRANSPORT_FEVER_3), None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn put_save(root: &Path, account: &str, file: &str) -> PathBuf {
+        let folder = root
+            .join("userdata")
+            .join(account)
+            .join("3493540")
+            .join("local")
+            .join("save");
+        fs::create_dir_all(&folder).unwrap();
+        let save = folder.join(file);
+        fs::write(&save, b"a save").unwrap();
+        save
+    }
+
+    #[test]
+    fn a_save_is_found_by_name_in_the_accounts_save_folder() {
+        let root = temp("saves");
+        let mine = put_save(&root, "111", "mptest.sav");
+        let roots = [root.clone()];
+        assert_eq!(find_save_in(&roots, None, "mptest").unwrap(), mine);
+        assert_eq!(find_save_in(&roots, None, "mptest.sav").unwrap(), mine);
+        // A path is taken as it is.
+        let path = mine.display().to_string();
+        assert_eq!(find_save_in(&[], None, &path).unwrap(), mine);
+        assert!(find_save_in(&roots, None, "other").is_err());
+        assert!(
+            find_save_in(&roots, None, "../111/3493540/local/save/mptest").is_err(),
+            "a name, not a way out of the folder"
+        );
+        // Two accounts with the save: the one playing, else neither.
+        let theirs = put_save(&root, "222", "mptest.sav");
+        assert!(find_save_in(&roots, None, "mptest").is_err());
+        assert_eq!(find_save_in(&roots, Some(222), "mptest").unwrap(), theirs);
+        assert_eq!(find_save_in(&roots, Some(111), "mptest").unwrap(), mine);
         fs::remove_dir_all(&root).unwrap();
     }
 

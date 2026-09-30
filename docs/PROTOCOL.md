@@ -136,14 +136,32 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   `ContentDiff(None)` once the member matches. The game's manifest is kept
   in its log, so a restored game can still say how a newcomer differs.
 - **Starting.** In the lobby, members declare their content and toggle
-  **ready**. The owner can start the game only when every member is ready
-  and all fingerprints are equal.
+  **ready**. The owner can start the game only when every member is ready,
+  all fingerprints are equal, and the world the owner handed over, if any,
+  has arrived (`StartWorldPending` until then).
 - **The first world.** On a server that keeps snapshots, the owner's world
-  is everyone's: the owner's game loads it, the room saves it before the
-  first step, and every player loads that save, the owner too (see
+  is everyone's, and every player loads it as a save, the owner too (see
   "Snapshots"). Worlds generated separately on each machine could differ
   between platforms, and a game that kept its world differs from one that
   loaded its save (below). Everyone still holds the clock until loaded.
+  The owner provides it one of two ways:
+  - **Handed over in the lobby.** The owner's client sends
+    `StartWorld(SavedWorld)`, a save it holds (the launcher's
+    `--start-save`), before the game starts. The room answers `Upload`
+    with event 0 at once, and the owner's client uploads it on a bulk
+    stream as it uploads any save the room asks for. When the game
+    starts, every member's first turn stream names that world, starting
+    from the game's first turn, so every game loads the same file from its
+    main menu at the same time and no game saves first. Only the owner
+    may send it, only in the lobby, and only to a server that keeps
+    snapshots (`WorldsNotKept` otherwise); another replaces it, and it
+    goes with the owner if the owner leaves. The room gives up on one
+    that does not start arriving within 30 seconds, and the game then
+    starts as below.
+  - **Saved by the owner's game.** Without one, the owner's game loads
+    the world, the room saves it before the first step, and every player
+    loads that save.
+
   Without snapshots, every player loads the same world locally.
 - **Joining a running game.** A newcomer's declared content must equal the
   game's; otherwise the room sends it a `ContentDiff` and refuses the join
@@ -321,6 +339,11 @@ simulation depends on entity ids: a vehicle leaving a depot starts
 `id mod 1000` millimetres back along its first edge
 (investigation/TF3_VEHICLE_DETERMINISM_2026-09-30.md). Two games that
 loaded the same save number every entity alike.
+
+**The world a room starts from** is a snapshot too: one the owner's
+client uploaded in the lobby ("The first world" above), which the room
+holds as its current snapshot from the start, standing before the first
+turn (save event 0, turn 0, step 0).
 
 **Saving.** The room saves every ten minutes of play, sooner when someone
 waits for a world, but never twice within a minute, and not at all while

@@ -349,7 +349,11 @@ function render(s) {
     line = "Playing" + (game.step != null ? ", step " + game.step : "")
       + (game.speed === 0 ? " (paused)" : " at " + game.speed / 100 + "×") + ".";
   } else {
-    line = "The game is connected (" + game.attached + "). The world loads when the room starts.";
+    const you = s.room && s.room.members.find((m) => m.you);
+    line = "The game is connected (" + game.attached + "). "
+      + (you && you.ready
+        ? "You are ready; the world loads when the room starts."
+        : "Load your save in the game: you are marked ready automatically once its world is up.");
   }
   text($("game-state"), line);
   show("fetch", game.world === "fetching");

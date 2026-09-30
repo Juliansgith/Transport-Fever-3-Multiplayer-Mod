@@ -75,6 +75,37 @@ impl CallRedirect {
     }
 }
 
+/// A placeholder that can never be constructed on this architecture.
+pub enum Splice {}
+
+impl Splice {
+    /// Always fails on a non-x86-64 build.
+    ///
+    /// # Safety
+    ///
+    /// Never patches anything; the `unsafe` keeps one signature across
+    /// architectures.
+    pub unsafe fn install(
+        _site: *mut u8,
+        _expected: &[u8],
+        _steal: usize,
+        _hook: super::SpliceHook,
+    ) -> Result<Self, DetourError> {
+        Err(DetourError::UnsupportedArchitecture {
+            arch: std::env::consts::ARCH,
+        })
+    }
+
+    /// Nothing to restore.
+    ///
+    /// # Safety
+    ///
+    /// Never constructed.
+    pub unsafe fn detach(self) -> Result<(), DetourError> {
+        match self {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

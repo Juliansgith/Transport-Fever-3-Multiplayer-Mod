@@ -25,8 +25,8 @@ use tpf3mp_proto::{
     Event, EventBody, FixedBytes, LaneDigest, PlayerId,
     action::{
         Action, Bulldoze, CompanyId, CompanyOp, ConstructionBuild, ConstructionRef, EdgeEnds,
-        LineChange, LineId, LoanOp, Network, Polyline, Pos, Resolve, Structure, Terraform,
-        VehicleChange,
+        LineChange, LineId, LoanOp, Network, Polyline, Pos, Prospect, ReplaceVehicle, Resolve,
+        Structure, Terraform, VehicleChange,
     },
 };
 
@@ -50,6 +50,12 @@ pub const UPKEEP_EVERY: u64 = 100;
 pub const CAR_CAPACITY: u32 = 40;
 /// Most passengers waiting at one station.
 pub const MAX_WAITING: u32 = 1_000;
+
+/// Steps a prospection takes before its outcome, the model's stand-in for
+/// TF3's six months.
+pub const PROSPECTION_STEPS: u64 = 300;
+/// In hundredths: how often a prospection finds an industry.
+pub const PROSPECTION_CHANCE: u64 = 60;
 
 /// Tolerances of `docs/BUILDING.md`, in millimetres.
 const NODE_TOLERANCE: i64 = 1_500;
@@ -180,6 +186,25 @@ struct Vehicle {
     load: u32,
 }
 
+/// A prospection under way: TF3's company script keeps these
+/// (`pendingProspections`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Prospection {
+    company: u32,
+    town: u32,
+    cargo: String,
+    industries: Vec<String>,
+    began: u64,
+}
+
+/// An industry a prospection found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Industry {
+    kind: String,
+    town: u32,
+    at: P,
+}
+
 /// Everything a save holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct State {
@@ -194,6 +219,12 @@ struct State {
     lines: BTreeMap<u32, Line>,
     vehicles: BTreeMap<u32, Vehicle>,
     terrain: BTreeMap<(i32, i32), i32>,
+    /// In the order they began.
+    prospections: Vec<Prospection>,
+    industries: BTreeMap<u32, Industry>,
+    next_industry: u32,
+    /// The last step simulated.
+    now: u64,
     next_company: u32,
     next_station: u32,
     next_line: u32,
@@ -407,6 +438,7 @@ impl State {
                 }
                 Ok(())
             }
+            Action::ReplaceVehicle(replace) => self.replace(replace, company),
             Action::PlaceStop(stop) => {
                 let key = self.find_edge(net(stop.edge.network), &stop.edge.ends)?;
                 let at = p(&stop.at);
@@ -451,7 +483,65 @@ impl State {
                 }
                 LoanOp::Repay { loan } => self.charge(company, loan.amount.max(0)),
             },
+            Action::Prospect(prospect) => self.prospect(prospect, company),
             Action::CompanyOp(_) => unreachable!("handled above"),
+        }
+    }
+
+    /// As TF3's company script: one prospection per company, town and cargo
+    /// at a time; it costs a permit, which the model does not keep.
+    fn prospect(&mut self, prospect: &Prospect, company: u32) -> Result<(), Refusal> {
+        let (town, cargo) = (prospect.town.0, prospect.cargo.as_str());
+        if self
+            .prospections
+            .iter()
+            .any(|p| p.company == company && p.town == town && p.cargo == cargo)
+        {
+            refuse!("company-{company} prospects for {cargo} near town-{town} already");
+        }
+        self.prospections.push(Prospection {
+            company,
+            town,
+            cargo: cargo.to_owned(),
+            industries: prospect
+                .industries
+                .iter()
+                .map(|kind| kind.as_str().to_owned())
+                .collect(),
+            began: self.now,
+        });
+        Ok(())
+    }
+
+    /// The prospections whose time is up: each finds an industry of one of
+    /// its types near its town, or nothing, by the simulation's generator.
+    fn prospections_end(&mut self, rng: &mut SplitMix64) {
+        let now = self.now;
+        let (due, going): (Vec<Prospection>, Vec<Prospection>) =
+            std::mem::take(&mut self.prospections)
+                .into_iter()
+                .partition(|p| now.saturating_sub(p.began) >= PROSPECTION_STEPS);
+        self.prospections = going;
+        for prospection in due {
+            let found = rng.below(100) < PROSPECTION_CHANCE;
+            let count = u64::try_from(prospection.industries.len()).unwrap_or(0);
+            if !found || count == 0 {
+                continue;
+            }
+            let pick = usize::try_from(rng.below(count)).unwrap_or(0);
+            let offset = |r: &mut SplitMix64| i32::try_from(r.below(2_000)).unwrap_or(0) * 1_000;
+            let base = i32::try_from(prospection.town).unwrap_or(0) * 100_000;
+            let at = [base + offset(rng), base + offset(rng), 0];
+            let id = self.next_industry;
+            self.next_industry += 1;
+            self.industries.insert(
+                id,
+                Industry {
+                    kind: prospection.industries[pick].clone(),
+                    town: prospection.town,
+                    at,
+                },
+            );
         }
     }
 
@@ -857,6 +947,71 @@ impl State {
         }
     }
 
+    /// A vehicle's consist swapped for another, as TF3's vehicle window
+    /// does: the company's own vehicle, a consist of cars whose groups add
+    /// up to it, each kept car one of the vehicle's own of the same model,
+    /// kept once. New cars are paid for, cars left out are sold at half; the
+    /// vehicle keeps its id and its line.
+    fn replace(&mut self, replace: &ReplaceVehicle, company: u32) -> Result<(), Refusal> {
+        let [id] = self.own_vehicles(std::iter::once(replace.vehicle.0), company)?[..] else {
+            unreachable!("one vehicle named, one checked")
+        };
+        if replace.consist.is_empty() {
+            refuse!("a replacement of no cars");
+        }
+        let grouped: usize = replace.groups.iter().map(|g| usize::from(*g)).sum();
+        if grouped != replace.consist.len() || replace.groups.contains(&0) {
+            refuse!(
+                "groups of {grouped} cars for a consist of {}",
+                replace.consist.len()
+            );
+        }
+        if replace.multiple_units.len() != replace.groups.len() {
+            refuse!(
+                "{} multiple units for {} groups",
+                replace.multiple_units.len(),
+                replace.groups.len()
+            );
+        }
+        let old = &self.vehicles[&id].consist;
+        let mut kept = BTreeSet::new();
+        for (index, part) in replace.consist.iter().enumerate() {
+            let Some(from) = part.kept else { continue };
+            match old.get(usize::from(from)) {
+                None => refuse!("car {index} keeps car {from}, which vehicle-{id} does not have"),
+                Some(model) if model != part.part.model.as_str() => {
+                    refuse!(
+                        "car {index} keeps car {from}, a {model}, as a {}",
+                        part.part.model
+                    )
+                }
+                Some(_) => {}
+            }
+            if !kept.insert(from) {
+                refuse!("car {from} kept twice");
+            }
+        }
+        let bought = i64::try_from(replace.consist.len() - kept.len()).unwrap_or(i64::MAX);
+        let sold = i64::try_from(old.len() - kept.len()).unwrap_or(i64::MAX);
+        // Net of what the cars left out bring: a negative charge pays in.
+        self.charge(
+            company,
+            VEHICLE_COST
+                .saturating_mul(bought)
+                .saturating_sub(VEHICLE_COST.saturating_mul(sold) / 2),
+        )?;
+        let vehicle = self.vehicles.get_mut(&id).expect("checked above");
+        vehicle.consist = replace
+            .consist
+            .iter()
+            .map(|part| part.part.model.as_str().to_owned())
+            .collect();
+        vehicle.load = vehicle
+            .load
+            .min(CAR_CAPACITY.saturating_mul(u32::try_from(vehicle.consist.len()).unwrap_or(0)));
+        Ok(())
+    }
+
     fn own_vehicles(
         &self,
         ids: impl Iterator<Item = u32>,
@@ -880,6 +1035,8 @@ impl State {
 
     fn simulate(&mut self, step: u64) {
         let mut rng = SplitMix64::new(self.rng);
+        self.now = step;
+        self.prospections_end(&mut rng);
         let served: BTreeSet<u32> = self
             .lines
             .values()
@@ -979,6 +1136,10 @@ pub struct Observation {
     pub delivered: u64,
     pub ignored: u64,
     pub terrain_cells: usize,
+    /// Prospections under way.
+    pub prospections: usize,
+    /// Industries prospecting found.
+    pub industries: usize,
 }
 
 /// One replica of the model.
@@ -1077,7 +1238,15 @@ impl ModelWorld {
             lane_digest(lane::NETWORK, &(&s.edges, &s.terrain)),
             lane_digest(
                 lane::CONSTRUCTIONS,
-                &(&s.constructions, &s.objects, &stations, s.next_station),
+                &(
+                    &s.constructions,
+                    &s.objects,
+                    &stations,
+                    s.next_station,
+                    &s.prospections,
+                    &s.industries,
+                    s.next_industry,
+                ),
             ),
             lane_digest(lane::LINES, &(&s.lines, s.next_line)),
             lane_digest(lane::VEHICLES, &(&s.vehicles, &waiting, s.next_vehicle)),
@@ -1145,6 +1314,8 @@ impl ModelWorld {
             delivered: s.delivered,
             ignored: s.ignored,
             terrain_cells: s.terrain.len(),
+            prospections: s.prospections.len(),
+            industries: s.industries.len(),
         }
     }
 }
@@ -1237,6 +1408,142 @@ mod tests {
         );
         assert_eq!(world.observe().money[0], Some(START_MONEY));
         assert_eq!(world.ignored().len(), 1);
+    }
+
+    /// A replacement is the company's own vehicle's, keeps only cars the
+    /// vehicle has, each once and of its own model, and pays for the cars it
+    /// buys net of those it leaves out; the vehicle keeps its id.
+    #[test]
+    fn a_replacement_keeps_the_vehicles_own_cars_and_pays_for_new_ones() {
+        use crate::regress::library::{
+            BUS_DEPOT, LOCOMOTIVE, WAGON, at, buy, construction, replace,
+        };
+
+        let (one, two) = (PlayerId(FixedBytes([1; 32])), PlayerId(FixedBytes([2; 32])));
+        let mut world = ModelWorld::new(1);
+        for (seq, (player, name)) in [(one, "p1"), (two, "p2")].into_iter().enumerate() {
+            world.apply(&event(
+                seq as u64 + 1,
+                EventBody::PlayerJoined {
+                    player,
+                    name: Text::new(name).unwrap(),
+                    platform: Platform::current(),
+                },
+            ));
+        }
+        act(
+            &mut world,
+            3,
+            one,
+            &construction(BUS_DEPOT, at(0, 0), "Yard"),
+        );
+        act(
+            &mut world,
+            4,
+            one,
+            &buy(BUS_DEPOT, at(0, 0), &[LOCOMOTIVE, WAGON]),
+        );
+        let money = world.observe().money[0].unwrap();
+        let refusals = [
+            // Someone else's vehicle; one that is not there.
+            (two, replace(0, &[(LOCOMOTIVE, Some(0))])),
+            (one, replace(5, &[(LOCOMOTIVE, Some(0))])),
+            // No cars; a car the vehicle does not have; another model kept;
+            // a car kept twice.
+            (one, replace(0, &[])),
+            (one, replace(0, &[(LOCOMOTIVE, Some(2))])),
+            (one, replace(0, &[(WAGON, Some(0))])),
+            (one, replace(0, &[(WAGON, Some(1)), (WAGON, Some(1))])),
+        ];
+        for (seq, (player, action)) in refusals.iter().enumerate() {
+            act(&mut world, 5 + seq as u64, *player, action);
+        }
+        let why: Vec<String> = world.ignored().iter().map(|(_, w)| w.clone()).collect();
+        assert_eq!(
+            why,
+            [
+                "vehicle-0 is company-0's".to_owned(),
+                "no vehicle-5".to_owned(),
+                "a replacement of no cars".to_owned(),
+                "car 0 keeps car 2, which vehicle-0 does not have".to_owned(),
+                format!("car 0 keeps car 0, a {LOCOMOTIVE}, as a {WAGON}"),
+                "car 1 kept twice".to_owned(),
+            ]
+        );
+        assert_eq!(
+            world.observe().money[0],
+            Some(money),
+            "refusals cost nothing"
+        );
+        // The locomotive kept, the coach left out, two new coaches: two
+        // bought, one sold at half.
+        act(
+            &mut world,
+            20,
+            one,
+            &replace(0, &[(LOCOMOTIVE, Some(0)), (WAGON, None), (WAGON, None)]),
+        );
+        assert_eq!(world.ignored().len(), 6, "{:?}", world.ignored());
+        assert_eq!(
+            world.observe().money[0],
+            Some(money - 2 * VEHICLE_COST + VEHICLE_COST / 2)
+        );
+        assert_eq!(world.state.vehicles[&0].consist.len(), 3);
+    }
+
+    #[test]
+    fn a_prospection_ends_alike_on_every_replica_after_its_time() {
+        use crate::regress::library::prospect;
+
+        let player = PlayerId(FixedBytes([1; 32]));
+        let replica = || {
+            let mut world = ModelWorld::new(7);
+            world.apply(&event(
+                1,
+                EventBody::PlayerJoined {
+                    player,
+                    name: Text::new("p1").unwrap(),
+                    platform: Platform::current(),
+                },
+            ));
+            world
+        };
+        let (mut a, mut b) = (replica(), replica());
+        // Many towns, so some prospections find an industry and some not.
+        for (seq, town) in (2..).zip(0..20u32) {
+            for world in [&mut a, &mut b] {
+                act(
+                    world,
+                    seq,
+                    player,
+                    &prospect(town, "coal", &["mine", "pit"]),
+                );
+            }
+        }
+        // A second one for the same town and cargo changes nothing.
+        act(&mut a, 30, player, &prospect(3, "coal", &["mine"]));
+        assert_eq!(a.observe().prospections, 20);
+        assert_eq!(a.ignored().len(), 1);
+        act(&mut b, 30, player, &prospect(3, "coal", &["mine"]));
+        for step in 1..PROSPECTION_STEPS {
+            a.step(step);
+            b.step(step);
+        }
+        assert_eq!(a.observe().prospections, 20, "not before its time");
+        a.step(PROSPECTION_STEPS);
+        b.step(PROSPECTION_STEPS);
+        let seen = a.observe();
+        assert_eq!(seen.prospections, 0);
+        assert!(
+            seen.industries > 0 && seen.industries < 20,
+            "{} found",
+            seen.industries
+        );
+        assert_eq!(
+            a.lanes(),
+            b.lanes(),
+            "the same industries, at the same places"
+        );
     }
 
     /// A street drawn onto another's middle, as TF3's street tool proposes

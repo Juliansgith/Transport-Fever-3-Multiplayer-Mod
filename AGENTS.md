@@ -74,7 +74,8 @@ update the script's lists and run it again.
   - that the launcher page's script parses;
   - on Linux, format, lint and tests of the binary-analysis kit
     `tools/tpfre` (D14), its own Cargo workspace.
-  - on Linux, the release-day tools' tests (`tools/dayone`) and a real
+  - on Linux, the release-day tools' tests (`tools/dayone`), the lane
+    dump diff's (`tools/test_lane_diff.py`) and a real
     Lua's parse of the probe mods (`tools/probe/check_lua.py`).
 - **`acceptance`** (`.github/workflows/acceptance.yml`) runs on pushes to
   `acceptance`. It runs optimized load tests on all three platforms, each
