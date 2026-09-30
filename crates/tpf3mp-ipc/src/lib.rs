@@ -54,6 +54,10 @@ pub const LAUNCHER_PID_ENV: &str = "TPF3MP_LAUNCHER_PID";
 /// page would, with no Start Game to press (the launcher's `--auto-load`).
 pub const AUTO_LOAD_ENV: &str = "TPF3MP_AUTO_LOAD";
 
+/// The folder the hook keeps its log and profiles in, instead of the
+/// per-user one: one per game when several run on one PC.
+pub const DATA_DIR_ENV: &str = "TPF3MP_DATA_DIR";
+
 /// Default size of each ring's data area (1 MiB).
 pub const DEFAULT_RING_CAPACITY: u32 = 1 << 20;
 /// Default maximum payload per message (60 KiB), leaving headroom in the ring.

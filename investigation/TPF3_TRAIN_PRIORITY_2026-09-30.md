@@ -40,9 +40,9 @@ Built on this page's findings (branch `feat/train-order`):
    system and the platform chooser). **Order dependences**: the node-list
    order the shuffle permutes (fixed by the existing sort), the shuffle's
    seed `tickCount` (fixed now), the platform chooser's vehicle visit
-   order (INFERRED node order, not fixed), ship and aircraft claims in
-   node-list order (measured), and exact float ties among road-edge
-   entries (measured).
+   order (node-list order, SEEN; fixed later the same day), its cost ties
+   (fixed), ship and aircraft claims in node-list order (measured), and
+   exact float ties among road-edge entries (fixed).
 3. **Did the entity-id sort plus the reloaded save make the order equal?**
    No, not before this change: the seed is `tickCount`, which counts every
    paused frame, and the room's game sits on the paused path for a
@@ -188,10 +188,10 @@ at `[this+8]`, built by `0xb7d720`; INFERRED to be node or storage order).
 | 1 | the shuffle's seed is `tickCount`, which counts every paused frame | seed `0xac1b23`; the paused call of the GameTime advance `0x159412` | SEEN | **fixed**: `paused-tick` |
 | 2 | the shuffle permutes node-list positions, and node-list order is load order or add/swap-remove history | build loop `0xac15c0..0xac1abe`, shuffle `0xac1b70` | SEEN (code), INFERRED (history) | **fixed** earlier: `land-vehicle-order` sorts by entity id; now also measured (`nodes` lane) |
 | 3 | equal priorities fall back to the shuffle | stable sort `0xac1c6c..0xac1d62` | SEEN | deterministic once 1 and 2 hold |
-| 4 | the platform chooser visits vehicles in its list order, and later ones see earlier ones' allocations | `0xb8bae0`, `0xb8b960`, list from `0xb7d720` | SEEN (allocation), INFERRED (list order) | **not fixed**: equal after identical loads if TF3's load order is deterministic (the survey's item 3, NEEDS-MEASUREMENT) |
+| 4 | the platform chooser visits vehicles in its node-list order, and later ones see earlier ones' allocations | the loop `0xb8bcc4..0xb8c13c` over `[[this+8]]` (8-byte records, `rsi += 8`, count = Update2's `int` argument), `FindNextFreeTerminal`'s one caller `0xb8bea1`, `StoreTerminalAllocation` `0xb8b960` | SEEN | **fixed**: `platform-order` visit site walks a sorted copy |
 | 5 | ship and aircraft claims in node-list order, no shuffle | `0xaf6440..0xaf6a17`, `0xa83f75` | SEEN (ships), INFERRED (aircraft) | measured (`claims` lane) |
-| 6 | first-minimum search keeps the first of exactly equal road-edge entries, which are in append order | `0x255f340` from `0x255afd0` | SEEN | measured (`appends` lane); exact float ties only |
-| 7 | platform cost ties in introsort order | `0xb76b30` | SEEN | deterministic for equal input; nothing to do |
+| 6 | first-minimum searches keep the first of exactly equal road-edge entries, which are in append order | `0x255f340` from `0x255afd0`, `0x255ef60`, `GetNext` `0x255f760` | SEEN | **fixed**: `road-entry-order` keeps each edge's list in entity order after every append (every other writer keeps order: HOOKS.md, "Road edge entries") |
+| 7 | platform cost ties in introsort order, which depends on the candidates' input order | `0xb76b30` from `0xb85453` | SEEN | **fixed**: `platform-order` candidate site puts the input in one order |
 | 8 | other `tickCount` readers: `AccountSystem::Update2` (`tickCount % n`), the town developer's and street proposals' stamps, the notifications game script (`tickCount % 30`) | the desync survey, item 1; `game_mechanics/notifications/notifications.script.tl:50-52` | SEEN | fixed by 1 |
 | 9 | `GamePerformSimulationSteps` (a debug command, and a button of the debug panel) adds to a pending count that `GameSim::Step` runs on top of its speed answer | `0x403b8e0`, written at `0x9d895c` and `0x736843`, read at `0x1593cd` | SEEN | known (HOOKS.md, the step gate); outside this path |
 
@@ -284,19 +284,49 @@ With the same room and the same save, after the first step:
    so the same claim order. A line that appears in only one log, or a
    different `n` or `ids` for the same seed, names the update where they
    split.
-4. With `TPF3MP_HOOK_MEASURE_ORDER=1`, the `order measure:` lines:
+4. Once each: `order fix platform-order: installed (ecs::TransportVehicleSystem::Update2/visit at 0x...: ...)`,
+   `order fix platform-order: installed (FindNextFreeTerminal/candidate sort at 0x...: ...)`,
+   and two `order fix road-entry-order: installed (transport::EdgeUseManager::Add... detoured: ...)`
+   lines (`Add`, `AddRange`). Then, working: `order fix platform-order: visit alive, updates=1 ...`,
+   `... candidates alive, sorts=1 ...`, `order fix road-entry-order: alive, appends=1 ...`, and the
+   first three reorders of each (`... vehicles asked for platforms in entity order`,
+   `... an edge's entries put in entity order`). The counts in these lines differ per game.
+5. With `TPF3MP_HOOK_MEASURE_ORDER=1`, the `order measure:` lines (`visits`, `candidates`, `road`
+   are the platform and road fixes' lanes):
    - `seeds` must agree, as must `claims` (the claim order itself);
    - `nodes` says whether the land-vehicle node lists agreed before the
      sort (item 2 of the table);
    - `land` shows the same, and `reordered` counts the sorts that changed
      something.
 
+## Added the same day: platform order and road entries
+
+Built on `feat/train-order` after the first commit (docs/HOOKS.md, "The
+order fixes, as built", items 3 and 5):
+
+- **`platform-order`**, two sites. *Visit*: `TransportVehicleSystem::Update2`
+  reloads its list's begin into `rdi` every iteration and reads only
+  `[rsi+rdi]`, `[rsi+rdi+4]` (SEEN); the hook points `rdi` at a copy
+  sorted by entity id, built at the first iteration, so the engine's list
+  is never written. *Candidates*: before `FindNextFreeTerminal`'s cost
+  sort, the 12-byte candidates are put in one order (station, terminal,
+  first word), so equal costs break alike. The comparator itself is inlined
+  into four sort helpers (`0xb765b0`, `0xb755f0`, `0xb75230`, `0xb75ea0`)
+  and looks each cost up in a map, so a canonical input is the smaller
+  change (SEEN).
+- **`road-entry-order`**, sort on add. Every writer of an edge's entries
+  was read: `Add` and `AddRange` append or update in place, `Remove` and
+  `RemoveRange` erase with `memmove`, `RemoveEntity` drops a whole edge,
+  and the grow paths move vectors whole (SEEN, table in HOOKS.md). Nothing
+  reorders a list, so a sort after each append keeps it canonical with no
+  cost per update, and a per-update sort would add a walk of every edge for
+  nothing. TPF2's per-step sort (`hotjoin_order.inl`, "step") is of the
+  ECS node lists, whose `Remove` swaps the last node into the hole; its
+  road entries (`roadspace.inl`) were sorted after `Add`, as here.
+
 ## Open
 
-- **The platform chooser's visit order (table item 4).** Measure it before
-  changing anything: hash the entity order of `TransportVehicleSystem`'s
-  list at `[this+8]` once per update, next to the `nodes` lane. If two
-  games that loaded one save differ, the node-list canon (the desync
-  survey's item 3) is the fix, not a sort at one consumer.
 - **Confirm `Line+0x24` is `reservationPriority`.** Set two lines to
   different priorities and look for the difference in the claim order.
+- **Ship and aircraft claims** (table item 5) are still node-list order;
+  the `claims` lane measures them.

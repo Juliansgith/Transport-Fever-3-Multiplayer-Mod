@@ -419,6 +419,7 @@ tpf3mp_native = {
     world = function() HOOK.worlds = HOOK.worlds + 1 end,
     room = function() return HOOK.room end,
     checkpoint = function() return HOOK.checkpoint end,
+    seed = function() return HOOK.seed end,
     lanes = function(lanes)
         if not HOOK.checkpoint then return false, 'no checkpoint is due in this update' end
         HOOK.lanes = lanes
@@ -3876,4 +3877,19 @@ fn a_registry_from_an_older_mod_gains_the_towns_at_the_rooms_next_update() {
     assert_eq!((town, vehicles), (1, 2), "the towns bound, the rest kept");
     let work: mlua::Value = lua.load("return UPDATE({}, STATE, 0.2)").eval().unwrap();
     assert!(work.is_nil(), "once");
+}
+
+#[test]
+fn the_game_script_seeds_math_random_with_the_room_steps_seed_each_update() {
+    let (lua, _script) = engine();
+    // Two games at the same step draw the same numbers; outside the room's
+    // steps nothing is seeded.
+    let draws: (f64, f64, f64) = lua
+        .load(
+            "HOOK.seed = 12345 UPDATE({}, STATE, 0.2) local a = math.random()              math.randomseed(999) math.random()              UPDATE({}, STATE, 0.2) local b = math.random()              HOOK.seed = nil math.randomseed(7) UPDATE({}, STATE, 0.2)              local c = math.random() math.randomseed(7)              return a, b, c - math.random()",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(draws.0, draws.1, "the same step's seed, the same draws");
+    assert_eq!(draws.2, 0.0, "no seed: the state's own sequence goes on");
 }

@@ -500,6 +500,20 @@ fn before_script_call(state_object: usize, call: ScriptCall, entity: u32, engine
     }
 }
 
+/// The seed for the mod's own game script's `math.randomseed` in the
+/// running update (`tpf3mp_native.seed`, asked at the start of its
+/// `update`): the room step's, or `None` outside the room's steps. The
+/// per-call reseed above already seeds every script's call in the state
+/// that runs it, the mod's own included, so this adds nothing to it; it
+/// stays for the mod's call. Neither calls into a Lua state the hook would
+/// have to know is still alive: an earlier cut reseeded a roster of states
+/// its registrar detour had seen, and after a rebase that roster held states
+/// the world load had freed, so the next reseed crashed the game in
+/// `lua_getfield` (2026-09-30, three-player playtest).
+pub fn current_seed() -> Option<u32> {
+    current_step().map(|step| seed_for(step, GAME_SCRIPT_SALT))
+}
+
 /// An update of the simulation begins (the `ecs::Engine::Update` detour,
 /// on the simulation thread): its step becomes the current one, for the
 /// script calls it runs.
@@ -978,6 +992,11 @@ mod native {
     }
 
     pub(super) fn install(resolved: &ResolvedProfile) {
+        install_script_reseed(resolved);
+        install_srand(resolved);
+    }
+
+    fn install_script_reseed(resolved: &ResolvedProfile) {
         let calls = [
             (
                 UPDATE_CALL_TARGET,
@@ -1012,6 +1031,9 @@ mod native {
                 "seeds: no per-update hook ({error}); no step is known, so the game scripts' math.random is not reseeded"
             )),
         }
+    }
+
+    fn install_srand(resolved: &ResolvedProfile) {
         let srand = match resolve_srand() {
             Ok(address) => {
                 SRAND.store(address, Ordering::SeqCst);
@@ -1175,6 +1197,22 @@ mod tests {
             call_seed(Some(0), ScriptCall::PostUpdate, 7, false),
             Some(script_seed(0, ScriptCall::PostUpdate, 7))
         );
+    }
+
+    #[test]
+    fn each_released_update_offers_its_steps_seed_and_nothing_else_does() {
+        let _serial = lock(&SERIAL);
+        before_updates(Some(5), Updates::Exactly(2));
+        before_update();
+        assert_eq!(current_seed(), Some(seed_for(5, GAME_SCRIPT_SALT)));
+        before_update();
+        assert_eq!(current_seed(), Some(seed_for(6, GAME_SCRIPT_SALT)));
+        // An update the room did not release, and the game's own speed.
+        before_update();
+        assert_eq!(current_seed(), None);
+        before_updates(None, Updates::Own);
+        before_update();
+        assert_eq!(current_seed(), None);
     }
 
     #[test]
