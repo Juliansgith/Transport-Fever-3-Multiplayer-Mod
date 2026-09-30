@@ -203,6 +203,13 @@ Dev C (building):
 - [ ] Two players each build 20 roads and tracks, crossing each other's;
   lanes match at every checkpoint.
 - [ ] 60 in-game days without divergence.
+- [ ] *Added:* vehicles leaving a depot a few millimetres to 30 cm apart
+  in each game. *Cause found:* the depot sets a leaving vehicle back by its
+  entity id, and a game that kept its world numbers entities differently
+  from one that loaded its save
+  ([TF3_VEHICLE_DETERMINISM_2026-09-30.md](../investigation/TF3_VEHICLE_DETERMINISM_2026-09-30.md)).
+  *Fix* (#23): every game, the owner's too, loads the same save whenever
+  the room hands one out. Tick once merged and deployed.
 - [ ] *Added:* a third player joins mid-game, and a player rejoins after
   killing their game; lanes still match. Late join, rejoin and repair
   all load a save and then apply turns. If a loaded game walks its lists
@@ -282,10 +289,14 @@ Dev C:
   barriers, pollution plants through the construction replay.
 - [ ] Stations and depots: first place one on flat ground on two games
   and diff every edge's height. Module edits and upgrades.
-- [ ] Bulldozing a construction, charged on every game, with no demolition
-  beyond what was asked (the TPF2 "heal" bug).
-- [ ] The in-game Multiplayer window: players, speed, chat, and whether
-  the worlds match.
+- [x] Bulldozing a construction, charged on every game, with no demolition
+  beyond what was asked (the TPF2 "heal" bug). *Done* (#15): a road depot
+  and a street removed through the room on build 40408; each game removed
+  the depot, its entrance edge and that edge's loose node, nothing more,
+  and both accounts read the same.
+- [x] The in-game Multiplayer window: players, speed, chat, and whether
+  the worlds match. *Done* (#16), tried in two games through the deployed
+  server; the lobby stays in the launcher (D17, D20).
 
 ## Part 4: after launch
 
