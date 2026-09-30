@@ -37,6 +37,33 @@ struct Args {
     /// Show the launcher as a page in the browser instead of a window.
     #[arg(long)]
     browser: bool,
+
+    #[command(flatten)]
+    auto: AutoRoom,
+}
+
+/// For playtests on one PC: get into a room without clicking. The owner's
+/// launcher connects, creates the room and writes its invite to
+/// `--invite-file`; every other launcher waits for that file and joins.
+#[derive(Debug, Clone, clap::Args)]
+struct AutoRoom {
+    /// Connect at start, create a room of this name and write its invite
+    /// to --invite-file.
+    #[arg(long, requires = "invite_file", conflicts_with = "auto_join")]
+    auto_create: Option<String>,
+
+    /// Connect at start, wait for --invite-file and join its room.
+    #[arg(long, requires = "invite_file")]
+    auto_join: bool,
+
+    /// The file the owner's invite is written to and read from.
+    #[arg(long)]
+    invite_file: Option<std::path::PathBuf>,
+
+    /// With --auto-create: start the room's game once at least this many
+    /// players are in it and every one is ready.
+    #[arg(long, requires = "auto_create", conflicts_with = "auto_join")]
+    auto_start: Option<usize>,
 }
 
 /// The server a package plays on, set when it is built.
@@ -97,6 +124,7 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         let _entered = runtime.enter();
         Launcher::start_local(config.clone())
     };
+    auto_room(&runtime, &launcher, &config, args.auto.clone());
     // Whether the package's own server is up, shown before connecting.
     let probe = config
         .server
@@ -149,6 +177,125 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
             in_browser(&runtime, config)
         }
     }
+}
+
+/// Gets into a room without clicking (see [`AutoRoom`]). Failures are
+/// logged and shown in the launcher; the player can still click.
+fn auto_room(
+    runtime: &tokio::runtime::Runtime,
+    launcher: &Launcher,
+    config: &LauncherConfig,
+    auto: AutoRoom,
+) {
+    use tpf3mp_agent::launcher::Action;
+    let Some(file) = auto.invite_file.clone() else {
+        return;
+    };
+    if auto.auto_create.is_none() && !auto.auto_join {
+        return;
+    }
+    let Some(server) = config.server.clone() else {
+        warn!("--auto-create and --auto-join need --server");
+        return;
+    };
+    let handle = launcher.handle();
+    let name = config.name.clone();
+    // The owner starts from no file, so a joiner never takes an old invite.
+    if auto.auto_create.is_some() {
+        let _ = std::fs::remove_file(&file);
+    }
+    runtime.spawn(async move {
+        let connect = || Action::Connect {
+            server: server.clone(),
+            name: name.clone(),
+        };
+        let mut connected = false;
+        for _ in 0..60 {
+            if handle.act(connect()).await.is_ok() {
+                connected = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if !connected {
+            warn!("auto room: could not connect to {server}");
+            return;
+        }
+        if let Some(room) = auto.auto_create {
+            if let Err(error) = handle
+                .act(Action::Create {
+                    room,
+                    max_players: 8,
+                    password: None,
+                    rules: None,
+                })
+                .await
+            {
+                warn!(%error, "auto room: could not create the room");
+                return;
+            }
+            let invite = handle.state().room.and_then(|room| room.invite);
+            match invite {
+                Some(invite) => match std::fs::write(&file, &invite) {
+                    Ok(()) => {
+                        info!(%invite, file = %file.display(), "auto room: created, invite written")
+                    }
+                    Err(error) => warn!(%error, "auto room: cannot write the invite file"),
+                },
+                None => warn!("auto room: the room has no invite"),
+            }
+            let Some(players) = auto.auto_start else {
+                return;
+            };
+            // Start once everyone is in and ready (auto-ready marks each
+            // player once their save's world is up).
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let Some(room) = handle.state().room else {
+                    return;
+                };
+                if room.phase != tpf3mp_agent::launcher::Phase::Lobby {
+                    return;
+                }
+                if ready_to_start(&room, players) {
+                    match handle.act(Action::Start).await {
+                        Ok(()) => info!("auto room: everyone is ready; started the game"),
+                        Err(error) => warn!(%error, "auto room: could not start the game"),
+                    }
+                    return;
+                }
+            }
+        }
+        // Join: wait for the owner's invite.
+        for _ in 0..600 {
+            if let Ok(invite) = std::fs::read_to_string(&file) {
+                let invite = invite.trim().to_owned();
+                if !invite.is_empty() {
+                    match handle
+                        .act(Action::Join {
+                            invite: invite.clone(),
+                            password: None,
+                        })
+                        .await
+                    {
+                        Ok(()) => info!(%invite, "auto room: joined"),
+                        Err(error) => warn!(%error, "auto room: could not join"),
+                    }
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        warn!("auto room: no invite appeared in {}", file.display());
+    });
+}
+
+/// Whether `--auto-start <players>` starts `room` now: in its lobby, with at
+/// least `players` members, every one of them ready.
+fn ready_to_start(room: &tpf3mp_agent::launcher::Room, players: usize) -> bool {
+    room.phase == tpf3mp_agent::launcher::Phase::Lobby
+        && room.members.len() >= players
+        && room.members.iter().all(|member| member.ready)
 }
 
 /// Runs the launcher as a page in the browser until Ctrl-C.
@@ -212,5 +359,84 @@ impl eframe::App for ErrorWindow {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use tpf3mp_agent::launcher::{Member, MemberContent, Phase, Room};
+
+    use super::{Args, ready_to_start};
+
+    fn parse(args: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(std::iter::once("tpf3mp-launcher").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn the_auto_room_flags_need_an_invite_file_and_one_role() {
+        let owner = parse(&[
+            "--auto-create",
+            "test",
+            "--invite-file",
+            "invite.txt",
+            "--auto-start",
+            "2",
+        ])
+        .unwrap();
+        assert_eq!(owner.auto.auto_create.as_deref(), Some("test"));
+        assert_eq!(owner.auto.auto_start, Some(2));
+        let guest = parse(&["--auto-join", "--invite-file", "invite.txt"]).unwrap();
+        assert!(guest.auto.auto_join);
+        assert!(parse(&["--auto-create", "test"]).is_err(), "no invite file");
+        assert!(parse(&["--auto-join"]).is_err(), "no invite file");
+        assert!(
+            parse(&["--auto-create", "test", "--auto-join", "--invite-file", "i"]).is_err(),
+            "both roles"
+        );
+        assert!(
+            parse(&["--auto-join", "--invite-file", "i", "--auto-start", "2"]).is_err(),
+            "only the owner starts"
+        );
+        assert!(parse(&[]).unwrap().auto.invite_file.is_none());
+    }
+
+    fn room(ready: &[bool], phase: Phase) -> Room {
+        Room {
+            name: "test".into(),
+            rules: "native".into(),
+            phase,
+            invite: None,
+            you_own: true,
+            max_players: 8,
+            has_password: false,
+            members: ready
+                .iter()
+                .enumerate()
+                .map(|(i, &ready)| Member {
+                    id: i.to_string(),
+                    name: format!("p{i}"),
+                    platform: "windows".into(),
+                    ready,
+                    connected: true,
+                    owner: i == 0,
+                    you: i == 0,
+                    content: MemberContent::Same,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn auto_start_waits_for_enough_players_all_ready_in_the_lobby() {
+        assert!(ready_to_start(&room(&[true, true], Phase::Lobby), 2));
+        assert!(
+            !ready_to_start(&room(&[true], Phase::Lobby), 2),
+            "one short"
+        );
+        assert!(!ready_to_start(&room(&[true, false], Phase::Lobby), 2));
+        assert!(!ready_to_start(&room(&[true, true], Phase::Running), 2));
+        assert!(ready_to_start(&room(&[true, true, true], Phase::Lobby), 2));
     }
 }

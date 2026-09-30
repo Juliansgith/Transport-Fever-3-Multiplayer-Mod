@@ -220,6 +220,15 @@ It copies the build profiles in the user's data folder into each game's.
 A server started with `tpf3mp-server` lets 8 sessions in from one address
 by default: pass `--max-sessions-per-address` for bigger rigs.
 
+For a playtest with the launcher on one PC, the launchers can get into a
+room without clicking: the owner's with `--auto-create <room name>
+--invite-file <file>` connects, creates the room and writes its invite to
+the file; every other one with `--auto-join --invite-file <same file>`
+waits for the file and joins. Both need `--server`. With
+`--auto-start <players>` the owner's also starts the room's game once that
+many players are in it and every one is ready. The dev server makes
+a new certificate each time it starts, so start the launchers after it.
+
 With Transport Fever 3 itself (build 40408), two games run on one PC like
 this:
 
