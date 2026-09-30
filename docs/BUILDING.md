@@ -306,6 +306,19 @@ stamp. Two traps:
   minutes and scheduled each other's town growth for replay. Filter by
   ownership (the `PLAYER_OWNED` component), never by a name blacklist.
 
+On TPF3 an edit travels as a `BuildConstruction` with `replaces`, the old
+construction by file and place, and every game replaces it within 2 m in
+one proposal mapped old to new, as the game's own upgrade does
+([HOOKS.md](HOOKS.md), "The build tools"). The construction tool's
+proposals, the construction menu's parameters and the station window's
+cargo buttons are carried so; one replacing more than one construction,
+one the room cannot name, or one that changes streets around it is
+refused. The module editor itself tells game scripts nothing of its
+proposals on build 40408 (read from the binary: `UI::CGameUI` forwards
+`builder.proposalCreate` for six other tools only), so it stays refused
+until the hook reads its proposal natively. What TPF3 shows of an edit's
+proposal is INFERRED from TPF2's shape until an edit is seen in the game.
+
 ### Demolish
 
 Strict: every instance requires the same file within 2 m of the position. The

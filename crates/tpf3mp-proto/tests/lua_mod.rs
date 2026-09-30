@@ -1327,8 +1327,9 @@ fn a_construction_the_tool_placed_becomes_the_rooms_action() {
         .unwrap();
     assert!(!connection);
     assert!(ok);
-    // Town buildings in the way go, as the replay clears them again; a
-    // player's construction replaced does not travel.
+    // Town buildings in the way go, as the replay clears them again, and
+    // are no construction replaced; a construction the room cannot name
+    // does not travel.
     let (cleared, replaced): (bool, String) = lua
         .load(format!(
             "api.type.ComponentType = {{ CONSTRUCTION = 2 }} \
@@ -1338,12 +1339,325 @@ fn a_construction_the_tool_placed_becomes_the_rooms_action() {
              local town = {CONSTRUCTION_PROPOSAL} town.toRemove = {{ 5618 }} \
              local own = {CONSTRUCTION_PROPOSAL} own.toRemove = {{ 5618, 77 }} \
              local _, why = capture.construction(own) \
-             return capture.construction(town) ~= nil, why"
+             local action = capture.construction(town) \
+             return action ~= nil and action.BuildConstruction.replaces == nil, why"
         ))
         .eval()
         .unwrap();
     assert!(cleared);
-    assert_eq!(replaced, "a construction that replaces another");
+    assert_eq!(replaced, "a construction the room cannot name");
+}
+
+/// The player's bus station 77 as the game has it, standing at (80, 0, 0):
+/// its own entrance edge 6000 and node 6001, and no town building. In a
+/// world of the stand-in engine state, whose constructions any test can
+/// add to.
+const FAKE_STATION: &str = r#"
+api.type.ComponentType.CONSTRUCTION = 2
+CONSTRUCTIONS = { [77] = { fileName = '::/stations/street/modular_street_station/modular_terminal.con',
+    transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 80,0,0,1 }, townBuildings = {},
+    frozenEdges = { 6000 }, frozenNodes = { 6001 }, params = { seed = 7, length = 2 } } }
+local get = api.engine.getComponent
+api.engine.getComponent = function(e, kind)
+    if kind == 2 then return CONSTRUCTIONS[e] end
+    if get then return get(e, kind) end
+end
+api.engine.getEntitiesWithComponent = function(kind)
+    local l = {}
+    if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end
+    table.sort(l)
+    return l
+end
+api.engine.util = api.engine.util or {}
+api.engine.util.getEntityName = function(e)
+    if e == 77 then return 'Okehampton Station' end
+end
+"#;
+
+/// The station 77 of FAKE_STATION given a longer platform, as an edit of its
+/// modules or parameters proposes it (docs/BUILDING.md: the old construction
+/// in `toRemove`, the new one in `toAdd`, same file, new parameters): its
+/// own entrance removed and made again.
+const EDIT_PROPOSAL: &str = "{ toRemove = { 77 }, \
+    toAdd = { { fileName = '::/stations/street/modular_street_station/modular_terminal.con', \
+                name = 'Okehampton Station', playerEntity = 25, \
+                transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 80, 0, 0, 1 }, \
+                params = { seed = 7, length = 3, modules = { [12] = { name = 'station/platform.module' } } } } }, \
+    proposal = { addedNodes = { { entity = -1, comp = { position = { x = 70, y = 0, z = 0 } } } }, \
+                 addedSegments = { { entity = -2, type = 0, comp = { node0 = -1, node1 = 7 } } }, \
+                 removedSegments = { { entity = 6000, type = 0, comp = { node0 = 6001, node1 = 7 } } }, \
+                 removedNodes = { { entity = 6001, comp = { position = { x = 70, y = 0, z = 0 } } } }, \
+                 edgeObjectsToAdd = {} } }";
+
+#[test]
+fn an_edit_of_a_station_travels_with_the_station_it_replaces() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    let (carried, ok): (String, bool) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action, why = capture.construction({EDIT_PROPOSAL}) \
+             if not action then error(why) end \
+             local b = action.BuildConstruction \
+             local length \
+             for _, p in ipairs(b.params) do if p.key == 'length' then length = p.value.Int end end \
+             return table.concat({{ b.replaces.file, b.replaces.at.x, b.replaces.at.y, b.replaces.at.z, \
+                 b.file, b.name, length, tostring(b.connection) }}, '|'), schema_check(action)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        carried,
+        "::/stations/street/modular_street_station/modular_terminal.con|80|0|0\
+         |::/stations/street/modular_street_station/modular_terminal.con|Okehampton Station|3|nil",
+        "the station it replaces by its file and place, the new parameters, no connection"
+    );
+    assert!(ok, "the schema takes it");
+    // An edit whose proposal leaves the name out keeps the station's; the
+    // bulldozer's proposal of the same shape is the same edit.
+    let (named, bulldozed): (String, String) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local unnamed = {EDIT_PROPOSAL} unnamed.toAdd[1].name = '' \
+             local b = capture.bulldoze({EDIT_PROPOSAL}) \
+             return capture.construction(unnamed).BuildConstruction.name, b.BuildConstruction.replaces.file"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(named, "Okehampton Station");
+    assert_eq!(
+        bulldozed,
+        "::/stations/street/modular_street_station/modular_terminal.con"
+    );
+    // What an edit the room cannot carry says.
+    let refusals: Vec<String> = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             CONSTRUCTIONS[78] = {{ fileName = 'depot/road_depot.con', transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 9,9,0,1 }}, \
+                 townBuildings = {{}} }} \
+             CONSTRUCTIONS[79] = {{ townBuildings = {{}} }} \
+             local out = {{}} \
+             local function why(p) local _, r = capture.construction(p) out[#out + 1] = r end \
+             local two = {EDIT_PROPOSAL} two.toRemove = {{ 77, 78 }} why(two) \
+             local nameless = {EDIT_PROPOSAL} nameless.toRemove = {{ 79 }} why(nameless) \
+             local nothing = {EDIT_PROPOSAL} nothing.toRemove = {{ 80 }} why(nothing) \
+             local road = {EDIT_PROPOSAL} \
+             road.proposal.removedSegments[2] = {{ entity = 100, type = 0, comp = {{ node0 = 8, node1 = 9 }} }} \
+             why(road) \
+             CONSTRUCTIONS[5618] = {{ townBuildings = {{ 9001 }} }} \
+             local town = {EDIT_PROPOSAL} town.toRemove = {{ 5618 }} town.proposal.removedSegments = {{}} \
+             town.proposal.removedNodes = {{}} \
+             local _, b = capture.bulldoze(town) \
+             out[#out + 1] = b \
+             return out"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        refusals,
+        [
+            "a construction that replaces more than one",
+            "a construction the room cannot name",
+            "removing something that is no construction",
+            "a construction edit that changes the streets around it",
+            "a bulldozer proposal that builds"
+        ]
+    );
+}
+
+#[test]
+fn a_station_edit_a_click_saw_goes_to_the_room_and_unhandled_events_are_logged() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    lua.load(format!(
+        "HOOK.room = true HOOK.clicks = 0 \
+         SCRIPT.guiUpdate({{}}, nil, nil) \
+         R = SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', \
+             {{ {EDIT_PROPOSAL} }}) \
+         HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil) \
+         R2 = SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'moduleBuilder', 'builder.proposalCreate', \
+             {{ {EDIT_PROPOSAL} }}) \
+         HOOK.clicks = 2 SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let (refused, handed, file): (bool, usize, String) = lua
+        .load(
+            "return R ~= nil or R2 ~= nil, #HOOK.commands, \
+                 HOOK.commands[2].BuildConstruction.replaces.file",
+        )
+        .eval()
+        .unwrap();
+    assert!(!refused, "neither tool is told no");
+    assert_eq!(handed, 2, "each click's edit went to the room");
+    assert_eq!(
+        file,
+        "::/stations/street/modular_street_station/modular_terminal.con"
+    );
+    // A click with no proposal before it, as the module editor's on build
+    // 40408, is stopped and says so.
+    lua.load("HOOK.clicks = 3 SCRIPT.guiUpdate({}, nil, nil)")
+        .exec()
+        .unwrap();
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.starts_with(
+            "stopped a build the room cannot carry: no proposal seen (a tool that tells game scripts nothing"
+        )),
+        "{logged:?}"
+    );
+    // Events the script does not handle, in the room's game: each id and
+    // name once, a few dozen at most; outside it, none.
+    lua.load(
+        "SCRIPT.guiHandleEvent({}, nil, nil, '', 'someWindow', 'select', {}) \
+         SCRIPT.guiHandleEvent({}, nil, nil, '', 'someWindow', 'select', {}) \
+         SCRIPT.guiHandleEvent({}, nil, nil, '', 'moduleThing', 'builder.proposalCreate', {}) \
+         for i = 1, 60 do SCRIPT.guiHandleEvent({}, nil, nil, '', 'window' .. i, 'idAdded', {}) end \
+         HOOK.room = false \
+         SCRIPT.guiHandleEvent({}, nil, nil, '', 'elsewhere', 'select', {})",
+    )
+    .exec()
+    .unwrap();
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let unhandled: Vec<&String> = logged
+        .iter()
+        .filter(|l| l.starts_with("an event the mod does not handle: "))
+        .collect();
+    assert_eq!(unhandled.len(), 40, "{unhandled:?}");
+    assert_eq!(
+        unhandled[0],
+        "an event the mod does not handle: id someWindow, name select"
+    );
+    assert_eq!(
+        unhandled[1],
+        "an event the mod does not handle: id moduleThing, name builder.proposalCreate"
+    );
+    assert!(!logged.iter().any(|l| l.contains("elsewhere")));
+}
+
+#[test]
+fn every_game_replaces_the_edited_station_in_one_proposal() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    // This game's station has its own entity, 910, where the action says;
+    // the game's verdict is asked first, and a build replaces constructions
+    // as the game would.
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = capture.construction({EDIT_PROPOSAL}) \
+         CONSTRUCTIONS[910] = CONSTRUCTIONS[77] CONSTRUCTIONS[77] = nil \
+         ASKED = {{}} \
+         api.engine.util.proposal = {{ makeProposalData = function(p, context) \
+             ASKED[#ASKED + 1] = {{ sent = #SENT, removes = p.constructionsToRemove[1] }} \
+             return {{ errorState = {{ critical = false, messages = {{}} }} }} end }} \
+         local send = api.cmd.sendCommand \
+         api.cmd.sendCommand = function(cmd, ...) \
+             local p = cmd.proposal \
+             for _, e in ipairs(p and p.constructionsToRemove or {{}}) do CONSTRUCTIONS[e] = nil end \
+             local c = p and p.constructionsToAdd and p.constructionsToAdd[1] \
+             if c then CONSTRUCTIONS[911] = {{ fileName = c.fileName, \
+                 transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 }} }} end \
+             return send(cmd, ...) \
+         end \
+         HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let built: String = lua
+        .load(
+            "local c = SENT[1] local p = c.proposal local e = p.constructionsToAdd[1] \
+             return table.concat({ #SENT, #ASKED, ASKED[1].sent, ASKED[1].removes, \
+                 #p.constructionsToRemove, p.constructionsToRemove[1], p.old2new[910], \
+                 e.fileName, e.name, e.params.length, e.params.modules[12].name, e.playerEntity, \
+                 tostring(c.context.player), tostring(c.context.gatherBuildings), \
+                 tostring(c.ignoreErrors), tostring(c.playerInitiated), \
+                 tostring(HOOK.applied[1].ok), tostring(CONSTRUCTIONS[910]), tostring(CONSTRUCTIONS[911] ~= nil) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        built,
+        "1|1|0|910|1|910|0\
+         |::/stations/street/modular_street_station/modular_terminal.con|Okehampton Station|3\
+         |station/platform.module|25|25|true|true|true|true|nil|true",
+        "the verdict, then one proposal removing this game's station and adding the new one, \
+         mapped old to new, as the player's own build"
+    );
+    // The next edit finds the new station where the old one stood.
+    lua.load("SENT = {} HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let again: String = lua
+        .load("return SENT[1].proposal.constructionsToRemove[1] .. '|' .. tostring(HOOK.applied[2].ok)")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(again, "911|true");
+    // A station that is not there is refused with why, and nothing is sent.
+    lua.load("SENT = {} CONSTRUCTIONS = {} HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let (sent, ok, why): (usize, bool, String) = lua
+        .load("return #SENT, HOOK.applied[3].ok, HOOK.applied[3].why")
+        .eval()
+        .unwrap();
+    assert_eq!(sent, 0);
+    assert!(!ok);
+    assert_eq!(
+        why,
+        "no ::/stations/street/modular_street_station/modular_terminal.con there"
+    );
+}
+
+#[test]
+fn a_construction_edited_in_its_window_goes_to_the_room() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "api.cmd.makeWorldBuildProposalCmd = function(proposal, context, ignoreErrors, playerInitiated) \
+             return { kind = 'build', proposal = proposal } end \
+         api.type = { ComponentType = {} } api.engine = { util = {} }",
+    )
+    .exec()
+    .unwrap();
+    lua.load(FAKE_STATION).exec().unwrap();
+    lua.load("M = mount(loadPlugin()) M.step() HOOK.room = true")
+        .exec()
+        .unwrap();
+    // The construction menu's parameters, as it sends them: the game's
+    // replacement proposal, no context, playerInitiated.
+    lua.load(format!(
+        "CALLED = nil \
+         api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd({EDIT_PROPOSAL}, nil, false, true), \
+             function(data, ok) CALLED = ok end) \
+         api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd({CONSTRUCTION_PROPOSAL}, nil, false, true)) \
+         M.step()"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let (sent, handed, replaces): (usize, usize, String) = lua
+        .load("return #SENT, #HOOK.commands, HOOK.commands[1].BuildConstruction.replaces.file")
+        .eval()
+        .unwrap();
+    assert_eq!(sent, 0, "neither is built here");
+    assert_eq!(handed, 1, "the edit went to the room");
+    assert_eq!(
+        replaces,
+        "::/stations/street/modular_street_station/modular_terminal.con"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.contains("makeWorldBuildProposalCmd")
+                && l.ends_with("building from this window")),
+        "a build that edits nothing stays refused: {logged:?}"
+    );
+    // This game applied it: the window hears so.
+    lua.load("HOOK.results = { { ticket = 1, ok = true } } M.step()")
+        .exec()
+        .unwrap();
+    assert!(lua.load("return CALLED == true").eval::<bool>().unwrap());
 }
 
 /// A bus station placed by the street 8-9 of FAKE_NETWORK, as the

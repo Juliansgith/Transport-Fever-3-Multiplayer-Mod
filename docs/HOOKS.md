@@ -1003,7 +1003,10 @@ reference of its own to either. Once linked, the GUI wraps every
     to the depot (sold there or not), reverse and depart;
   - lines: creating, changing (the line whole, as the line manager built
     it: stops, terminals, loading rules), deleting, renaming and
-    recolouring.
+    recolouring;
+  - a construction's edit sent from its window
+    (`makeWorldBuildProposalCmd` with the game's replacement proposal), as
+    a `BuildConstruction` that replaces it ("The build tools" below).
 
   Vehicles, lines and station groups have no place to name them by, so
   actions name them by canonical id (`tpf3mp/registry.lua`). Every game
@@ -1071,7 +1074,8 @@ builds it, paid by the player (`Context.player`) and clearing town
 buildings in its way (`gatherBuildings`), as the tool builds; without a
 context the game builds for free.
 
-Five tools build through the room so far:
+Five tools build through the room so far, and a construction's window
+its edits:
 
 - **The construction tool** (`constructionBuilder`): a proposal of one
   construction (a station, a depot, anything the tool places) becomes a
@@ -1097,10 +1101,73 @@ Five tools build through the room so far:
   player's; the refresh finds the junction the tool chose. The town
   buildings in its way the replay clears again (`gatherBuildings`, and
   `gatherFields` for fields). Several
-  constructions at once, or one replacing a construction that is not a town
-  building (a module edit), is refused. Before sending, the replay asks the
+  constructions at once, or one replacing more than one construction that
+  is not a town building, is refused. Before sending, the replay asks the
   game's verdict (`makeProposalData`) and refuses what it calls critical,
   with its reasons.
+
+  A proposal that replaces one construction of the player's with a new
+  one (an edit of its modules or parameters, an upgrade) becomes a
+  `BuildConstruction` with `replaces`: the old construction by its file and
+  where it stands (a `ConstructionRef`, as a depot is named; entity ids are
+  no name, docs/BUILDING.md), the new one's file, transform, parameters and
+  name (the old one's, where the proposal leaves it out). Its street part
+  is the construction's own entrance, made again with it, and is not
+  carried; an edit that removes a street or track the old construction
+  does not own (its `frozenEdges`, `frozenNodes`) is refused, as is one
+  replacing a construction the room cannot name. Every game finds the old
+  construction by file and place (within 2 m), then asks the game's
+  verdict and builds, as the player's own build (`ignoreErrors`,
+  `playerInitiated`), paid by the player and clearing town buildings in
+  its way, one `SimpleProposal` that removes it (`constructionsToRemove`,
+  this game's own entity) and adds the new one, mapped old to new
+  (`old2new = { [old] = 0 }`), as the game's own upgrade makes one
+  (`mission_framework_util_entity.tl`, `upgradeConstruction`). The new
+  construction stands where the old one stood, so the next edit, a depot
+  bought at it or a line finds it by the same reference; what stood on it
+  passes to it through `old2new`, and the registry binds, after the
+  action as after every other, any station group the game made anew, the
+  same in every game. An old construction not there fails the action in
+  every game, and nothing is sent. INFERRED, not yet seen in the game:
+  that an edit's proposal names the old construction in `toRemove` and
+  the new one in `toAdd` (TPF2's shape), that its street part removes
+  only the construction's own entrance, and that `old2new` keeps its
+  stations' station groups.
+
+  Where edits come from on build 40408 (read from the binary and the
+  game's Lua, not yet seen in the game):
+  - the game tells game scripts of the proposals of six tools only, under
+    the ids `UI::CGameUI`'s constructor names them by:
+    `constructionBuilder`, `streetTerminalBuilder`, `streetBuilder`,
+    `trackBuilder`, `streetTrackModifier` (the street and track upgrade
+    tool, not carried yet) and `bulldozer`. The **module editor**
+    (`UI::ModuleBuilder`, opened from a station's window) is not among
+    them: it queues its `WorldBuildProposal` itself and game scripts hear
+    nothing of it. So its click is counted by the hook's gate and stopped,
+    and `guiUpdate` logs `stopped a build the room cannot carry: no
+    proposal seen (a tool that tells game scripts nothing, as the module
+    editor on build 40408)` (seen in the game, 2026-09-30). Carrying it
+    needs the proposal from the native side. The mod's `CAPTURE` names
+    `moduleBuilder` and `moduleBulldozer` (the construction menu's names
+    for those tools, `ConstructionActionParam`) in case a later build
+    sends their proposals; INFERRED;
+  - a construction's parameters changed in the construction menu, and the
+    cargo buttons of a station's window, send the game's replacement
+    proposal from Lua (`api.engine.util.proposal
+    .createProposalReplaceConstruction`, then `makeWorldBuildProposalCmd(proposal,
+    nil, false, true)`, `gui/construction/construction.tl`,
+    `gui/entity_window/entity_window_util.tl`). The guard carries such a
+    command as the same edit (`guard.CARRY.makeWorldBuildProposalCmd`,
+    `capture.windowBuild`); any other build a window sends stays refused
+    ("building from this window");
+  - a bulldozer proposal that removes a construction of the player's and
+    adds one (a module removed, if the module bulldozer reaches game
+    scripts as the bulldozer) is carried as the same edit; INFERRED.
+
+  In the room's game `guiHandleEvent` also logs each event it does not
+  handle by id and name, once each and 40 at most (`an event the mod does
+  not handle: id …, name …`), so a test in the game shows what a tool
+  that builds "with no proposal seen" sends, if anything.
 - **The street and track tools** (`streetBuilder`, `trackBuilder`): the
   proposal becomes a `BuildRoad` or `BuildTrack`, as the tool made it, by
   positions (docs/BUILDING.md, "The action schema"): the nodes and edges it
@@ -1162,8 +1229,8 @@ Five tools build through the room so far:
 A refusal shows its reason in the tool, and the log has each new reason
 with the proposal's shape (`the room cannot carry this ... build`); every
 build handed to the room is logged with its shape too. The upgrade, bus
-lane and tram track tools, and the signal tools, stay refused until their
-builds are captured. Where the profile lacks the
+lane and tram track tools, the signal tools and the module editor stay
+refused until their builds are captured. Where the profile lacks the
 two targets, `clicks()` is nil and every tool stays refused.
 
 Seen on build 40408, through the deployed server with two games on one PC:
