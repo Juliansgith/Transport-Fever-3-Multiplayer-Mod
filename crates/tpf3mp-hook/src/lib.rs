@@ -33,6 +33,7 @@ use std::{
 
 use tpf3mp_hookcore::profile::{BuildIdentity, Profile, ProfileError};
 
+pub mod builds;
 mod install;
 pub mod lua;
 mod platform;

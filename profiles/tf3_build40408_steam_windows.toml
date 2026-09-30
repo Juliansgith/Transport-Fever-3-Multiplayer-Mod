@@ -102,6 +102,35 @@ offset = 0
 prologue = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18"
 required = false
 
+# CommandList::Add itself (0x9d29c0, commandlist.cpp; RTTI: Connection
+# Add(Command, std::function<void(Command const&)>, weak_ptr<CmdProgress>)):
+# rcx the list, rdx the connection returned, r8 the 0x38-byte Command, r9 the
+# callback, the progress on the stack. Every player command is queued here, on
+# the main thread; the hook counts the player's builds (HOOKS.md, "The build
+# tools"). Its 43 callers are the tools and the scripting bridge.
+[[target]]
+name = "CommandList::Add"
+signature = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 98 48 81 EC 68 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 49 8B F1"
+offset = 0
+prologue = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 98"
+required = false
+
+# The simulation's apply of a WorldBuildProposal command (0x9e1160,
+# apply_command.cpp): the only function naming "WorldBuildProposal", and the
+# one that fires the apply_command events onPreBuildProposal and
+# onPostBuildProposal and calls construction_builder_util::Apply. The command
+# dispatcher (0x9d7350, a jump table on the payload's variant index + 1, the
+# index at payload+0x9b8; this is case 53) calls it with rcx its context and
+# rdx the payload, whose byte at +0x3d2 is playerInitiated, and stores its bool
+# as the command's result. The hook answers false here for the player's own
+# builds in the room's game, which the room builds in every game instead.
+[[target]]
+name = "WorldBuildProposal apply"
+signature = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 40 F7 FF FF"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
+required = false
+
 # Lua 5.2's C API, which the hook calls to give each Lua state the
 # `tpf3mp_native` table (HOOKS.md, "The Lua side"). luaB_print is found by its
 # own string; its calls name gettop, getglobal, pushvalue, callk, tolstring and

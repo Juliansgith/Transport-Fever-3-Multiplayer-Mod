@@ -533,7 +533,7 @@ for the table (`bridge.find`). Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
 `crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 6. The mod refuses any other.
+- `tpf3mp_native.version`: 7. The mod refuses any other.
 - `tpf3mp_native.command(action)`: an action table, in the game's units.
   The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
   `MAX_DEPTH` and `MAX_NODES` (a function, userdata or a table as a key is
@@ -557,6 +557,11 @@ for the table (`bridge.find`). Its contract is in
   below).
 - `tpf3mp_native.lanes(t)`: the lanes read there, a table from lane
   numbers to strings. Returns `true`, or `false` and why.
+- `tpf3mp_native.clicks()`: the player's builds queued in the room's game
+  so far, or `nil` where the hook cannot take them to the room ("The build
+  tools" below).
+- `tpf3mp_native.replaying(on)`: the game script begins or ends applying
+  the room's actions, whose builds the hook lets through.
 
 The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
@@ -633,8 +638,10 @@ money, ran in the game script's `postUpdate`.
 
 - `BuildConstruction`: a `SimpleProposal` with one `ConstructionEntity`
   (the file, the matrix from the transform, the parameters from their
-  flattened paths, the name, the player), sent with `ignoreErrors` false
-  and `playerInitiated` true, as the player's own build;
+  flattened paths, the name, the player), sent with a `Context` naming the
+  player, who pays, and gathering the town buildings in its way,
+  `ignoreErrors` false and `playerInitiated` true, as the player's own
+  build;
 - `Loan`: the loan script's own event, `makeScriptingSendEventCmd("",
   "Loan", "Obtain", { next, offer })` or `"Repay", { nil, loan }`, with the
   tables the finance window sends.
@@ -717,14 +724,15 @@ GUI's state, the room's replays from the game script's states, whose
 The mod guards the build tools in its game script, whose `guiHandleEvent`
 runs in the GUI's state. The street, track, station and depot, stop and
 bulldozer tools tell game scripts of every proposal they make
-(`builder.proposalCreate`), and of the click that would build one
-(`builder.proposalPrepareForApply`), and they honour an error a script
-returns, as the game's company script refuses constructions without a
-permit (`game_mechanics/company/company.script.tl`). In the room's game
-the mod's script returns "Not in multiplayer yet: building with this tool"
-for each, and the tool shows it in red and builds nothing (seen on build
-40408, with the street tool). The script subscribes to those events by
-name, as a save may carry an older version's subscriptions.
+(`builder.proposalCreate`), and they honour an error a script returns, as
+the game's company script refuses constructions without a permit
+(`game_mechanics/company/company.script.tl`). In the room's game the mod's
+script returns "Not in multiplayer yet: building with this tool" for every
+proposal of a tool the room does not carry yet, and the tool shows it in
+red and builds nothing (seen on build 40408, with the street tool). A tool
+the room carries builds through it instead ("The build tools" below). The
+script subscribes to those events by name, as a save may carry an older
+version's subscriptions.
 
 The mod guards the GUI's commands
 (`mod/tpf3mp_1/content/scripts/tpf3mp/guard.lua`). `api.cmd` is a plain
@@ -756,6 +764,58 @@ Before the room begins, and after it ends, every command is sent as it
 would be, and every tool builds. A kind the room comes to carry is
 captured into an action instead of refused, and applied by every game
 ("Actions in the game").
+
+### The build tools
+
+The street, track and construction tools are native: a click queues a
+`WorldBuildProposal` command, which the simulation applies at its next
+step, in that game alone. Nothing a script does stops one on build 40408:
+the street tool sends no `builder.proposalPrepareForApply` (a click is
+`proposalCreate` twice, then the simulation's `onPreBuildProposal` and
+`onPostBuildProposal`, then the GUI's `proposalApply`), an error raised in
+`onPreBuildProposal` is logged and the build goes on, and emptying the
+proposal's lists there crashes the game (found with
+`tools/probe/tf3/tpf3mp_buildprobe_1`). So the hook stops the player's
+builds natively (`crates/tpf3mp-hook/src/builds.rs`, profile targets
+`CommandList::Add` and `WorldBuildProposal apply`):
+
+- **At the click**, `CommandList::Add`, on the main thread: a command whose
+  payload is a `WorldBuildProposal` (its variant index, at payload +
+  0x9b8, is 52) with `playerInitiated` set (payload + 0x3d2) is counted, in
+  the room's game only, and added as the game would.
+- **At the apply**, the simulation's apply of a `WorldBuildProposal` (the
+  command dispatcher's case 53, `0x9e1160`): a player-initiated build in
+  the room's game answers false, as a build the game refused, and the game
+  tells the tool so through its own path. The room's own builds go
+  through: the mod's game script applies them with
+  `tpf3mp_native.replaying(true)`. Towns' growth and the game's scripts,
+  not player-initiated, go through as ever.
+
+The mod's game script, in the GUI (`guiHandleEvent`), keeps the action each
+proposal of a tool the room carries makes
+(`mod/tpf3mp_1/content/scripts/tpf3mp/capture.lua`), marked with the clicks
+counted when it saw it (`tpf3mp_native.clicks()`). Its `guiUpdate` hands
+the room the one each click saw last: the proposal and the click both run
+on the main thread, in order, so that is the proposal clicked. The room
+orders it for every game, this one included, and each game's `postUpdate`
+builds it, paid by the player (`Context.player`) and clearing town
+buildings in its way (`gatherBuildings`), as the tool builds; without a
+context the game builds for free.
+
+So far the construction tool builds through the room: a proposal of one
+construction and nothing else (a station, a depot, any construction placed
+on its own) becomes a `BuildConstruction`, with the file, the transform,
+the parameters flattened and the game's name for it. A construction built
+with roads, several at once, or one replacing another is refused, the
+reason shown in the tool. The street, track, stop and bulldozer tools stay
+refused until their builds are captured. Where the profile lacks the two
+targets, `clicks()` is nil and every tool stays refused.
+
+Seen on build 40408, through the deployed server with two games on one PC:
+a maintenance building placed with the construction tool in the guest's
+game was stopped there, handed to the room, and built in both games in the
+same update; both accounts paid its $180,336, and the room found no
+divergence.
 
 ### The world's lanes
 

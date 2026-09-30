@@ -29,9 +29,15 @@
 -- tools (streets, tracks, stations and depots, stops, the bulldozer) tell
 -- game scripts of every proposal they make (`builder.proposalCreate`), and
 -- honour an error returned for it, as the game's company script does with
--- its permits. In the room's game every such proposal gets one, so nothing
--- is built with those tools until the room carries what they build
--- (docs/HOOKS.md, "The player's commands").
+-- its permits (docs/HOOKS.md, "The build tools"). In the room's game:
+--
+-- - where the hook stops the player's builds (`clicks` is not nil), a
+--   proposal of a tool the room carries (CAPTURE) is kept as the action it
+--   makes (tpf3mp/capture.lua), marked with the clicks counted so far, and
+--   builds nothing here: the hook answers false when the game applies it.
+--   `guiUpdate` hands the room the one each click saw last, and the room
+--   orders it for every game, this one included;
+-- - every other proposal gets an error, so those tools build nothing.
 --
 -- `handleEvent` takes the event `command` of id "tpf3mp" (sent with
 -- api.cmd.makeScriptingSendEventCmd) and hands its parameter, an action
@@ -41,7 +47,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes = false, nil, nil, nil
+	local tried, link, apply, lanes, capture = false, nil, nil, nil, nil
 	-- Lanes that could not be read, logged once per state.
 	local told = false
 	-- Events subscribed to from this state.
@@ -55,17 +61,27 @@ function data()
 	-- What a build tool shows in the room's game.
 	local REFUSED = "Not in multiplayer yet: building with this tool"
 
+	-- The tools whose builds the room carries, by the tool's id: the
+	-- capture that makes each one's action.
+	local CAPTURE = { constructionBuilder = "construction" }
+	-- In the GUI: the last proposal seen at each count of the player's builds
+	-- ({ action = t } or { why = text }), and the builds handed on so far.
+	local snapshots, handled = {}, nil
+
 	local function linked()
 		if not tried then
 			tried = true
 			local okBridge, bridge = pcall(ug_require, MOD .. "::/scripts/tpf3mp/bridge.lua")
 			local okApply, applyModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/apply.lua")
 			local okLanes, lanesModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/lanes.lua")
-			if okBridge and okApply and okLanes and type(bridge) == "table"
-				and type(applyModule) == "table" and type(lanesModule) == "table" then
+			local okCapture, captureModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/capture.lua")
+			if okBridge and okApply and okLanes and okCapture and type(bridge) == "table"
+				and type(applyModule) == "table" and type(lanesModule) == "table"
+				and type(captureModule) == "table" then
 				link = bridge.attach(bridge.find())
 				apply = applyModule
 				lanes = lanesModule
+				capture = captureModule
 				if link then link:log("the game script is linked") end
 			end
 		end
@@ -89,12 +105,15 @@ function data()
 		postUpdate = function(_params, _state, _dt, work)
 			local l = linked()
 			if not l or type(work) ~= "table" then return end
+			-- The room's builds go through; the player's own the hook stops.
+			if work.actions then l:replaying(true) end
 			for i, action in ipairs(work.actions or {}) do
 				local ok, why = apply.run(action)
 				if not ok then
 					l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
 				end
 			end
+			if work.actions then l:replaying(false) end
 			if work.checkpoint then
 				local read, failed = lanes.read(api)
 				if #failed > 0 and not told then
@@ -106,13 +125,49 @@ function data()
 			end
 		end,
 
-		guiHandleEvent = function(_params, _state, _guiState, _src, _id, name, _param)
+		guiHandleEvent = function(_params, _state, _guiState, _src, id, name, param)
 			if name ~= "builder.proposalCreate" and name ~= "builder.proposalPrepareForApply" then
 				return nil
 			end
 			local l = linked()
 			if not l or not l:room() then return nil end
+			local clicks = l:clicks()
+			local kind = CAPTURE[id]
+			if clicks ~= nil and kind ~= nil and type(param) == "table" then
+				local ok, action, why = pcall(capture[kind], param[1])
+				if not ok then action, why = nil, tostring(action) end
+				snapshots[clicks] = { action = action, why = why }
+				if action then return nil end
+				return { errorMessages = { ["Not in multiplayer yet: " .. tostring(why)] = true } }
+			end
 			return { errorMessages = { [REFUSED] = true } }
+		end,
+
+		guiUpdate = function(_params, _state, _guiState)
+			local l = linked()
+			if not l then return end
+			local clicks = l:clicks()
+			if clicks == nil then return end
+			if handled == nil then handled = clicks end
+			while handled < clicks do
+				local seen = snapshots[handled]
+				if seen and seen.action then
+					local ok, why = l:command(seen.action)
+					if ok then
+						l:log("handed the player's build to the room")
+					else
+						l:log("the player's build was not handed to the room: " .. tostring(why))
+					end
+				else
+					l:log("stopped a build the room cannot carry: "
+						.. tostring(seen and seen.why or "no proposal seen"))
+				end
+				snapshots[handled] = nil
+				handled = handled + 1
+			end
+			for count in pairs(snapshots) do
+				if count < handled then snapshots[count] = nil end
+			end
 		end,
 
 		handleEvent = function(_params, _state, _src, id, name, param)

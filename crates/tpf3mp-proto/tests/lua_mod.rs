@@ -203,9 +203,9 @@ fn loaded_names(lua: &Lua) -> Vec<String> {
 
 const FAKE_HOOK: &str = r#"
 HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, worlds = 0,
-         room = false, checkpoint = false, lanes = nil }
+         room = false, checkpoint = false, lanes = nil, clicks = nil, replaying = {} }
 tpf3mp_native = {
-    version = 6,
+    version = 7,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then HOOK.commands[#HOOK.commands + 1] = action end
@@ -234,6 +234,8 @@ tpf3mp_native = {
         HOOK.checkpoint = false
         return true
     end,
+    clicks = function() return HOOK.clicks end,
+    replaying = function(on) HOOK.replaying[#HOOK.replaying + 1] = on end,
 }
 "#;
 
@@ -357,7 +359,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 6; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 7; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -450,7 +452,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 6, command = print, log = print })
+             why({ version = 7, command = print, log = print })
              return out",
         )
         .eval()
@@ -644,9 +646,9 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 6 }
+             local native = { version = 7 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
-                                  'checkpoint', 'lanes' }) do
+                                  'checkpoint', 'lanes', 'clicks', 'replaying' }) do
                  native[n] = function() end
              end
              native.room = function() error('gone') end
@@ -711,6 +713,7 @@ api = {
             new = function() return { constructionsToAdd = {} } end,
             ConstructionEntity = { new = function() return {} end },
         },
+        Context = { new = function() return {} end },
     },
     engine = { util = { getPlayer = function() return 25 end } },
     cmd = {
@@ -949,13 +952,13 @@ fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
              return table.concat({ e.fileName, e.name, e.playerEntity,
                  t[1][1], t[1][2], t[2][1], t[4][1], t[4][2], t[4][3], t[4][4],
                  e.params.seed, e.params.modules[3801].name, e.params.paramX, tostring(e.params.lit),
-                 tostring(c.ignoreErrors), tostring(c.playerInitiated), tostring(c.context) }, '|')",
+                 tostring(c.ignoreErrors), tostring(c.playerInitiated), tostring(c.context.player),                  tostring(c.context.gatherBuildings) }, '|')",
         )
         .eval()
         .unwrap();
     assert_eq!(
         built,
-        "depot/road_depot_era_a.con|Depot|25|0|1|-1|1250.5|-300|20|1|1234|depot/module.module|2.5|true|false|true|nil"
+        "depot/road_depot_era_a.con|Depot|25|0|1|-1|1250.5|-300|20|1|1234|depot/module.module|2.5|true|false|true|25|true"
     );
     // Subscribed to its console event, linked once.
     assert!(
@@ -1000,6 +1003,158 @@ fn the_game_script_takes_and_repays_loans_through_the_loan_scripts_events() {
     assert_eq!(
         events,
         "|Loan|Obtain|5000000|5000000|0.03|Small |Loan|Repay|nil|5000000|0.03|Small"
+    );
+}
+
+/// A construction tool's proposal, as build 40408 hands it to game scripts:
+/// a maintenance building placed by the construction tool.
+const CONSTRUCTION_PROPOSAL: &str = "{ \
+    proposal = { addedNodes = {}, addedSegments = {}, removedNodes = {}, removedSegments = {}, \
+                 edgeObjectsToAdd = {} }, \
+    toRemove = {}, \
+    toAdd = { { fileName = '::/depots/road/road_maint_station.con', \
+                name = 'Okehampton Maintenance Building', playerEntity = 3869, \
+                transf = { 0.707107, -0.707107, 0, 0, 0.707107, 0.707107, 0, 0, 0, 0, 1, 0, \
+                           -421.93572998047, -252.93925476074, 0.50797754526138, 1 }, \
+                params = { modules = { [3801] = { name = 'depot/module.module', variant = 2 } }, \
+                           year = 1990, seed = 0, scale = 1.5, lit = true } } } }";
+
+#[test]
+fn a_construction_the_tool_placed_becomes_the_rooms_action() {
+    let (lua, _script) = engine();
+    let (file, name, origin_x, seed, module, ok): (String, String, f64, i64, String, bool) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action = capture.construction({CONSTRUCTION_PROPOSAL}) \
+             local b = action.BuildConstruction \
+             local seed, module \
+             for _, p in ipairs(b.params) do \
+                 if p.key == 'seed' then seed = p.value.Int end \
+                 if p.key == 'modules[3801].name' then module = p.value.Text end \
+             end \
+             return b.file, b.name, b.transform.origin.x, seed, module, schema_check(action)"
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(file, "::/depots/road/road_maint_station.con");
+    assert_eq!(name, "Okehampton Maintenance Building");
+    assert!((origin_x + 421.935_729_980_47).abs() < 1e-9);
+    assert_eq!(seed, 0);
+    assert_eq!(module, "depot/module.module");
+    assert!(ok, "the schema takes it");
+    // What the room cannot carry yet says why.
+    let refusals: Vec<String> = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local out = {{}} \
+             local function why(p) local _, r = capture.construction(p) out[#out + 1] = r end \
+             local roads = {CONSTRUCTION_PROPOSAL} roads.proposal.addedSegments = {{ {{}} }} \
+             why(roads) \
+             local two = {CONSTRUCTION_PROPOSAL} two.toAdd[2] = two.toAdd[1] \
+             why(two) \
+             local unnamed = {CONSTRUCTION_PROPOSAL} unnamed.toAdd[1].name = '' \
+             why(unnamed) \
+             local odd = {CONSTRUCTION_PROPOSAL} odd.toAdd[1].params.f = print \
+             why(odd) \
+             return out"
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(refusals[0], "a construction built with roads");
+    assert_eq!(refusals[1], "more than one construction at once");
+    assert_eq!(refusals[2], "an unnamed construction");
+    assert!(
+        refusals[3].contains("parameter f is a function"),
+        "{}",
+        refusals[3]
+    );
+}
+
+#[test]
+fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
+    let (lua, _script) = engine();
+    let asked: Vec<String> = lua
+        .load(format!(
+            "HOOK.room = true HOOK.clicks = 0 \
+             local out = {{}} \
+             local function ask(id, proposal) \
+                 local r = SCRIPT.guiHandleEvent({{}}, nil, nil, '', id, 'builder.proposalCreate', {{ proposal }}) \
+                 if r == nil then return 'nil' end \
+                 for text in pairs(r.errorMessages) do return text end \
+             end \
+             SCRIPT.guiUpdate({{}}, nil, nil) \
+             local elsewhere = {CONSTRUCTION_PROPOSAL} \
+             elsewhere.toAdd[1].transf[13] = 99 \
+             out[#out + 1] = ask('constructionBuilder', elsewhere) \
+             out[#out + 1] = ask('constructionBuilder', {CONSTRUCTION_PROPOSAL}) \
+             out[#out + 1] = ask('streetBuilder', {CONSTRUCTION_PROPOSAL}) \
+             local unnamed = {CONSTRUCTION_PROPOSAL} unnamed.toAdd[1].name = '' \
+             HOOK.clicks = 1 \
+             out[#out + 1] = ask('constructionBuilder', unnamed) \
+             return out"
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(
+        asked,
+        [
+            "nil",
+            "nil",
+            "Not in multiplayer yet: building with this tool",
+            "Not in multiplayer yet: an unnamed construction"
+        ],
+        "the construction tool builds through the room; a proposal it cannot carry says why"
+    );
+    // The click: the last proposal before it goes to the room.
+    lua.load("SCRIPT.guiUpdate({}, nil, nil)").exec().unwrap();
+    let (handed, x): (usize, f64) = lua
+        .load("return #HOOK.commands, HOOK.commands[1].BuildConstruction.transform.origin.x")
+        .eval()
+        .unwrap();
+    assert_eq!(handed, 1);
+    assert!(
+        (x + 421.935_729_980_47).abs() < 1e-9,
+        "the last one, not the first"
+    );
+    // A click on a proposal it could not carry hands nothing over.
+    lua.load("HOOK.clicks = 2 SCRIPT.guiUpdate({}, nil, nil)")
+        .exec()
+        .unwrap();
+    let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
+    assert_eq!(handed, 1);
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(logged.contains(&"handed the player's build to the room".to_owned()));
+    assert!(
+        logged
+            .contains(&"stopped a build the room cannot carry: an unnamed construction".to_owned()),
+        "{logged:?}"
+    );
+    // Where the hook cannot stop the player's builds, every tool is refused.
+    let without: String = lua
+        .load(format!(
+            "HOOK.clicks = nil \
+             local r = SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', \
+                 'builder.proposalCreate', {{ {CONSTRUCTION_PROPOSAL} }}) \
+             for text in pairs(r.errorMessages) do return text end"
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(without, "Not in multiplayer yet: building with this tool");
+}
+
+#[test]
+fn the_rooms_builds_are_applied_as_replays() {
+    let (lua, _script) = engine();
+    lua.load(format!(
+        "HOOK.batch = {{ {DEPOT} }} UPDATE({{}}, STATE, 0.2) UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let replaying: Vec<bool> = lua.load("return HOOK.replaying").eval().unwrap();
+    assert_eq!(
+        replaying,
+        [true, false],
+        "on around the room's actions only"
     );
 }
 

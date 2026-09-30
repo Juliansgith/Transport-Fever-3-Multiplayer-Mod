@@ -91,8 +91,15 @@ function HANDLERS.BuildConstruction(build)
 	entity.name = build.name
 	entity.playerEntity = api.engine.util.getPlayer()
 	proposal.constructionsToAdd = { entity }
-	-- ignoreErrors false and playerInitiated true: as the player's own build.
-	return run(api.cmd.makeWorldBuildProposalCmd(proposal, nil, false, true))
+	-- Paid by the player, and clearing town buildings in its way, as the
+	-- construction tool builds (the game's bridge and tunnel window names the
+	-- player so, gui/entity_window/bridge_and_tunnel.tl); without a context
+	-- the game builds for free. ignoreErrors false and playerInitiated true:
+	-- as the player's own build.
+	local context = api.type.Context.new()
+	context.player = api.engine.util.getPlayer()
+	context.gatherBuildings = true
+	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, false, true))
 end
 
 -- A loan's terms as the loan script keeps them (loan.d.tl): the action's
