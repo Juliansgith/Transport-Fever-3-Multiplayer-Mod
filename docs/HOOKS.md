@@ -297,7 +297,14 @@ the payload may wrap around the end of the buffer.
   that stops advancing means the peer is gone.
 - **Restart.** The owner re-creates the mapping with a new `session`. A peer
   that sees `session` change knows the rings were reset and drops anything in
-  flight, then re-syncs from the new generation.
+  flight, then re-syncs from the new generation. The launcher does this for
+  every room session (`begin_session`): leaving one room and creating or
+  joining another re-creates the link while the game runs on. On Windows
+  the new owner re-initialises the very mapping the game still holds; on
+  Linux and macOS the old owner unlinks the name when it lets go, and the
+  new link is another object, so a peer finds the next generation by
+  opening the link again by name. What the hook does about a new
+  generation is in "Following the launcher from room to room" below.
 
 ### Several games on one PC
 
@@ -432,6 +439,35 @@ and calls the session from its detours:
 
 The session gives up (`AgentGone`) only when the agent's heartbeat stands
 still for its patience, never merely because a step is withheld.
+
+#### Following the launcher from room to room
+
+A game started from the launcher outlives the room it was started in: the
+player may leave the room and create or join another while the game runs
+on. Until the room's game begins (`Begin`), the session follows:
+
+- `End` before `Begin` means the room session is over, not the game: the
+  session stops reading that link and does not check that agent's
+  heartbeat any more. A link whose `session` changes before `Begin` means
+  the same, whether or not the `End` was read first.
+- It then opens the link again by name, at most every 100 ms, until it
+  finds a new `session`. There it exchanges hellos as `attach` does: its
+  own `Hello` first (then a `Log` line saying it followed), and the new
+  agent's `Hello` must be the first thing it reads; anything else is
+  refused. Then it waits for that room's `Begin`. The agent needs nothing
+  new for this: each room session is a fresh `Bridge`, which expects the
+  hook's hello first, exactly once.
+- Until the next room is created the game runs on its own, as before any
+  room. `try_begin`, which the game's step polls, waits for as long as that
+  takes; the blocking `wait_for_begin` gives up after the session's
+  patience (`AgentGone`).
+
+Everything else still fails closed. A second `Hello` on the same link
+generation is refused, and once a game has begun a new generation is
+never followed: every read then checks the link's `session`, and a change
+is `SessionError::LinkReset`, on which the hook holds the world. The
+bridge's messages did not change for this, so `BRIDGE_VERSION` stays.
+(`session::tests` in `tpf3mp-bridge` play these through over a real link.)
 
 `tpf3mp_testkit::fake_hook` implements `Game` for the toy game and runs it
 through `Session`: the exact code the real hook will run, over the real

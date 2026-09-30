@@ -156,7 +156,9 @@ protected folder such as Program Files.
   were away too long to catch up, the room sends you its world again.
 - **Leaving.** **Leave room** gives up your seat. The owner can also remove
   a player whose game froze; a removed player cannot come back to that
-  room.
+  room. If the room's game had not begun yet, your game keeps running and
+  follows you into the next room you create or join: no need to restart
+  it.
 - **Your world disagrees.** Every few seconds everyone's game compares the
   world with the room's. If yours has drifted, the room sends you its world
   and your game reloads it. A notice says so.
