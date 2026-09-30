@@ -7,11 +7,12 @@ use std::sync::Arc;
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
-        Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConstructionBuild,
-        ConstructionRef, CreateLine, EdgeEnds, EdgeRef, EditLine, LineChange, LineId, LineStop,
-        Link, Network, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Resolve, Rgb, RoadBuild,
-        StationId, Structure, Tangent, Terraform, TerrainCell, TrackBuild, Tram, Transform,
-        UnitDir, VehicleId, Vertex,
+        Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConsistPart,
+        ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeRef, EditLine, LineChange,
+        LineData, LineId, LineStop, Link, LoadMode, Network, Param, ParamValue, PlaceStop,
+        Polyline, Pos, Pos2, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
+        Terminal, Terraform, TerrainCell, Tint, TrackBuild, Tram, Transform, UnitDir, VehicleId,
+        Vertex,
     },
 };
 
@@ -154,7 +155,19 @@ fn reference(file: &str, pos: Pos) -> ConstructionRef {
 pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
     Action::BuyVehicle(BuyVehicle {
         depot: reference(depot, pos),
-        consist: list(consist.iter().map(|model| text(model)).collect()),
+        consist: list(
+            consist
+                .iter()
+                .map(|model| ConsistPart {
+                    model: text(model),
+                    reversed: false,
+                    loads: BoundedVec::empty(),
+                    color: Tint { r: 0, g: 0, b: 0 },
+                })
+                .collect(),
+        ),
+        groups: list(vec![u8::try_from(consist.len()).expect("a short consist")]),
+        multiple_units: list(vec![text("")]),
     })
 }
 
@@ -164,27 +177,49 @@ pub fn sell(vehicles: &[u32]) -> Action {
     }
 }
 
-fn stops(stations: &[u32]) -> BoundedVec<LineStop, { tpf3mp_proto::action::MAX_LINE_STOPS }> {
-    list(
-        stations
-            .iter()
-            .map(|s| LineStop {
-                station: StationId(*s),
-                terminal: None,
-            })
-            .collect(),
-    )
+/// A line through the stations, each at its first terminal, loading what is
+/// there.
+fn line_data(stations: &[u32]) -> LineData {
+    LineData {
+        stops: list(
+            stations
+                .iter()
+                .map(|s| LineStop {
+                    group: StationId(*s),
+                    terminal: Terminal {
+                        station: 0,
+                        terminal: 0,
+                    },
+                    alternatives: BoundedVec::empty(),
+                    load_mode: LoadMode::LoadIfAvailable,
+                    min_wait: 0,
+                    max_wait: 180_000_000,
+                    max_extra_wait: 0,
+                    rules: StopRules {
+                        load: BoundedVec::empty(),
+                        max_load: BoundedVec::empty(),
+                        force_unload: false,
+                        destroy_for_config_change: false,
+                        destroy_for_refresh: false,
+                    },
+                })
+                .collect(),
+        ),
+        modes: BoundedVec::empty(),
+        custom_filters: false,
+        reservation_priority: 0,
+    }
 }
 
 pub fn line(name: &str, stations: &[u32]) -> Action {
     Action::CreateLine(CreateLine {
         name: text(name),
-        color: Rgb {
-            r: 200,
-            g: 40,
-            b: 40,
+        color: Tint {
+            r: 800_000,
+            g: 160_000,
+            b: 160_000,
         },
-        stops: stops(stations),
+        line: line_data(stations),
     })
 }
 
@@ -196,7 +231,7 @@ pub fn edit(line: u32, change: LineChange) -> Action {
 }
 
 pub fn set_stops(line: u32, stations: &[u32]) -> Action {
-    edit(line, LineChange::SetStops(stops(stations)))
+    edit(line, LineChange::Update(line_data(stations)))
 }
 
 pub fn assign(vehicles: &[u32], line: Option<u32>, first_stop: u16) -> Action {
@@ -506,7 +541,17 @@ fn line_editing_scenario() -> Scenario {
             line: LineId(0),
             name: "Ring".into(),
         })
-        .act(0, edit(0, LineChange::Recolor(Rgb { r: 0, g: 90, b: 200 })))
+        .act(
+            0,
+            edit(
+                0,
+                LineChange::Recolor(Tint {
+                    r: 0,
+                    g: 350_000,
+                    b: 780_000,
+                }),
+            ),
+        )
         .act(0, set_stops(0, &[0, 9]))
         .expect(Check::Ignored(1))
         .act(0, set_stops(0, &[0]))

@@ -11,8 +11,10 @@
 //! - `command(action)`: the player acted. The table is read into a
 //!   [`LuaValue`] tree within [`MAX_DEPTH`] and [`MAX_NODES`], converted with
 //!   the schema ([`action_from_lua`]) and queued for the step gate, which
-//!   hands it to the room ([`take_commands`]). Returns `true`, or `false` and
-//!   why: an action that was not queued must not happen at all.
+//!   hands it to the room ([`take_commands`]). Returns `true` and a ticket,
+//!   or `false` and why: an action that was not queued must not happen at
+//!   all. The ticket comes back in `results()` when this game applies the
+//!   action, or when it never will.
 //! - `take()`: the actions the room ordered for this simulation update, as
 //!   tables ([`action_to_lua`]), or `nil`. The step gate begins a batch of
 //!   updates at the step the room ordered them for ([`begin_batch`]), and
@@ -42,6 +44,12 @@
 //!   ([`crate::builds`]).
 //! - `replaying(on)`: the game script begins or ends applying the room's
 //!   actions, whose builds the hook lets through ([`crate::builds`]).
+//! - `applied(index, ok, entity, why)`: in a game script's `postUpdate`,
+//!   after applying the batch's action `index` (from 1): whether it went,
+//!   what it made, if anything, and why not. For one of the player's own,
+//!   the ticket's answer.
+//! - `results()`: in the GUI: the answers since the last call, a list of
+//!   `{ ticket =, ok =, entity =, why = }`, oldest first ([`refused`]).
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -63,9 +71,10 @@ use std::{
 
 use tpf3mp_proto::{
     Payload,
-    action::Action,
     lua::{LuaValue, MAX_DEPTH, MAX_NODES, action_from_lua, action_to_lua},
 };
+
+use crate::step::Ordered;
 
 /// A `lua_State`, never dereferenced here.
 pub type State = *mut c_void;
@@ -79,12 +88,14 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 7.0;
+pub const VERSION: f64 = 8.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
 /// Most actions waiting for the step gate to hand them to the room.
 const MAX_WAITING: usize = 256;
+/// Most answers waiting for the GUI.
+const MAX_ANSWERS: usize = 256;
 /// Most lanes one checkpoint reports, and the longest text one lane may be.
 const MAX_LANES: usize = 64;
 const MAX_LANE_TEXT: usize = 4096;
@@ -158,6 +169,8 @@ enum Request {
 struct Batch {
     /// Its actions, until a game script takes them.
     actions: Option<Vec<LuaValue>>,
+    /// Each action's ticket, for the player's own.
+    tickets: Vec<Option<u64>>,
     /// The updates it runs, and those a game script has begun (`take`).
     updates: u32,
     begun: u32,
@@ -167,9 +180,23 @@ struct Batch {
     lanes: Option<Vec<(u16, String)>>,
 }
 
+/// What became of one of the player's actions: `results()`'s entries.
+#[derive(Debug, Clone, PartialEq)]
+struct Answer {
+    ticket: u64,
+    ok: bool,
+    /// The entity it made, if any.
+    entity: Option<f64>,
+    why: Option<String>,
+}
+
 struct Shared {
-    /// Actions handed over, for the room, oldest first.
-    commands: VecDeque<Payload>,
+    /// Actions handed over, for the room, oldest first, with their tickets.
+    commands: VecDeque<(u64, Payload)>,
+    /// The next ticket `command()` gives.
+    next_ticket: u64,
+    /// What became of the player's actions, for the GUI, oldest first.
+    answers: VecDeque<Answer>,
     /// The batch running.
     batch: Batch,
     /// Lines for the hook's log.
@@ -187,8 +214,11 @@ struct Shared {
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
     commands: VecDeque::new(),
+    next_ticket: 1,
+    answers: VecDeque::new(),
     batch: Batch {
         actions: None,
+        tickets: Vec::new(),
         updates: 0,
         begun: 0,
         lanes_wanted: false,
@@ -219,24 +249,45 @@ pub fn in_room() -> bool {
     IN_ROOM.load(Ordering::Acquire)
 }
 
-/// The actions handed over since the last call, oldest first.
-pub fn take_commands() -> Vec<Payload> {
+/// The actions handed over since the last call, oldest first, with their
+/// tickets.
+pub fn take_commands() -> Vec<(u64, Payload)> {
     shared().commands.drain(..).collect()
+}
+
+/// One of the player's actions will never happen: `results()` says so for
+/// its ticket.
+pub fn refused(ticket: u64, why: &str) {
+    answer(Answer {
+        ticket,
+        ok: false,
+        entity: None,
+        why: Some(why.chars().take(MAX_LOG_LINE).collect()),
+    });
+}
+
+fn answer(answer: Answer) {
+    let mut shared = shared();
+    if shared.answers.len() >= MAX_ANSWERS {
+        shared.answers.pop_front();
+    }
+    shared.answers.push_back(answer);
 }
 
 /// A batch of `updates` updates begins; its first update applies
 /// `actions`, the room's events for the step it starts at, and with
 /// `lanes` its last update reads the world's lanes. Refuses an action with
 /// no table form, before any update runs.
-pub fn begin_batch(actions: &[Action], updates: u32, lanes: bool) -> Result<(), String> {
+pub fn begin_batch(actions: &[Ordered], updates: u32, lanes: bool) -> Result<(), String> {
     let tables = actions
         .iter()
-        .map(|action| {
-            action_to_lua(action)
+        .map(|ordered| {
+            action_to_lua(&ordered.action)
                 .map_err(|error| format!("an action the room ordered has no table form: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
     shared().batch = Batch {
+        tickets: actions.iter().map(|ordered| ordered.ticket).collect(),
         actions: (!tables.is_empty()).then_some(tables),
         updates,
         begun: 0,
@@ -351,6 +402,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
                 (b"replaying", native_replaying),
+                (b"applied", native_applied),
+                (b"results", native_results),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -521,15 +574,19 @@ unsafe extern "C-unwind" fn native_command(l: State) -> c_int {
                 "{MAX_WAITING} actions are already waiting for the room"
             ));
         }
-        shared.commands.push_back(payload);
-        Ok(())
+        let ticket = shared.next_ticket;
+        shared.next_ticket += 1;
+        shared.commands.push_back((ticket, payload));
+        Ok(ticket)
     });
     // SAFETY: as above; a C function's call has room for its results.
     unsafe {
         match queued {
-            Ok(()) => {
+            Ok(ticket) => {
                 (api.pushboolean)(l, 1);
-                1
+                #[allow(clippy::cast_precision_loss)]
+                (api.pushnumber)(l, ticket as f64);
+                2
             }
             Err(reason) => {
                 (api.pushboolean)(l, 0);
@@ -814,6 +871,107 @@ unsafe extern "C-unwind" fn native_replaying(l: State) -> c_int {
     0
 }
 
+/// The number at `index` of a C function's arguments, if it is one.
+///
+/// # Safety
+///
+/// Lua's own state, on its thread, inside a C function's call.
+unsafe fn number_arg(api: &LuaApi, l: State, index: c_int) -> Option<f64> {
+    // SAFETY: the caller's.
+    unsafe {
+        if (api.gettop)(l) < index || (api.type_of)(l, index) != TNUMBER {
+            return None;
+        }
+        let mut is_number = 0;
+        let value = (api.tonumberx)(l, index, &mut is_number);
+        (is_number != 0).then_some(value)
+    }
+}
+
+/// `applied(index, ok, entity, why)`.
+unsafe extern "C-unwind" fn native_applied(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let (index, ok, entity, why) = unsafe {
+        (
+            number_arg(api, l, 1),
+            (api.gettop)(l) >= 2 && (api.toboolean)(l, 2) != 0,
+            number_arg(api, l, 3),
+            string_arg(api, l, 4, MAX_LOG_LINE),
+        )
+    };
+    let Some(index) = index.filter(|i| i.fract() == 0.0 && *i >= 1.0 && *i <= 1.0e6) else {
+        return 0;
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let ticket = shared()
+        .batch
+        .tickets
+        .get(index as usize - 1)
+        .copied()
+        .flatten();
+    if let Some(ticket) = ticket {
+        answer(Answer {
+            ticket,
+            ok,
+            entity: entity.filter(|e| e.fract() == 0.0),
+            why,
+        });
+    }
+    0
+}
+
+/// `results()`.
+unsafe extern "C-unwind" fn native_results(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let answers: Vec<Answer> = shared().answers.drain(..).collect();
+    #[allow(clippy::cast_precision_loss)]
+    let list = LuaValue::Table(
+        answers
+            .iter()
+            .enumerate()
+            .map(|(index, answer)| {
+                let mut fields = vec![
+                    (
+                        LuaValue::string("ticket"),
+                        LuaValue::Number(answer.ticket as f64),
+                    ),
+                    (LuaValue::string("ok"), LuaValue::Boolean(answer.ok)),
+                ];
+                if let Some(entity) = answer.entity {
+                    fields.push((LuaValue::string("entity"), LuaValue::Number(entity)));
+                }
+                if let Some(why) = &answer.why {
+                    fields.push((LuaValue::string("why"), LuaValue::string(why)));
+                }
+                (
+                    LuaValue::Number((index + 1) as f64),
+                    LuaValue::Table(fields),
+                )
+            })
+            .collect(),
+    );
+    // SAFETY: Lua calls this with its own state, on its thread.
+    let top = unsafe { (api.gettop)(l) };
+    let pushed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: as above.
+        unsafe { push(api, l, &list, 0) }
+    }));
+    if matches!(pushed, Ok(Ok(()))) {
+        return 1;
+    }
+    // SAFETY: as above.
+    unsafe {
+        (api.settop)(l, top);
+        (api.pushnil)(l);
+    }
+    1
+}
+
 /// `room()`: `true` while the room's game runs.
 unsafe extern "C-unwind" fn native_room(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -1064,6 +1222,11 @@ pub(crate) mod tests {
         take_commands();
         take_log();
         let _ = end_batch();
+        shared().answers.clear();
+    }
+
+    fn ordered(action: Action, ticket: Option<u64>) -> Ordered {
+        Ordered { action, ticket }
     }
 
     #[test]
@@ -1158,9 +1321,10 @@ pub(crate) mod tests {
                  type(tpf3mp_native.take), type(tpf3mp_native.log), type(tpf3mp_native.poll), \
                  type(tpf3mp_native.saved), type(tpf3mp_native.world), type(tpf3mp_native.room), \
                  type(tpf3mp_native.checkpoint), type(tpf3mp_native.lanes), \
-                 type(tpf3mp_native.clicks), type(tpf3mp_native.replaying)"
+                 type(tpf3mp_native.clicks), type(tpf3mp_native.replaying), \
+                 type(tpf3mp_native.applied), type(tpf3mp_native.results)"
             ),
-            Ok("7|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("8|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -1174,21 +1338,64 @@ pub(crate) mod tests {
         reset();
         let lua = Lua::new();
         lua.register();
-        assert_eq!(
-            lua.run(&format!("return tpf3mp_native.command({DEPOT_TABLE})")),
-            Ok("true".into())
-        );
+        let answer = lua
+            .run(&format!("return tpf3mp_native.command({DEPOT_TABLE})"))
+            .unwrap();
+        let (ok, ticket) = answer.split_once('|').unwrap();
+        assert_eq!(ok, "true");
         let commands = take_commands();
         assert_eq!(commands.len(), 1);
-        assert_eq!(Action::from_payload(&commands[0]).unwrap(), depot_build());
-        // The stack is as it was: the result alone.
+        assert_eq!(commands[0].0.to_string(), ticket, "queued with its ticket");
+        assert_eq!(Action::from_payload(&commands[0].1).unwrap(), depot_build());
+        // The stack is as it was: the result and its ticket alone.
         assert_eq!(
             lua.run(&format!(
                 "local n = select('#', tpf3mp_native.command({DEPOT_TABLE})) return n"
             )),
-            Ok("1".into())
+            Ok("2".into())
         );
         take_commands();
+    }
+
+    #[test]
+    fn the_player_hears_what_became_of_their_own_actions() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        // The room orders the player's action with ticket 41, and another
+        // player's; the game script applies both.
+        begin_batch(
+            &[
+                ordered(depot_build(), None),
+                ordered(depot_build(), Some(41)),
+            ],
+            1,
+            false,
+        )
+        .unwrap();
+        lua.run(
+            "tpf3mp_native.take() \
+             tpf3mp_native.applied(1, true, 900) \
+             tpf3mp_native.applied(2, true, 901) \
+             tpf3mp_native.applied(7, true)",
+        )
+        .unwrap();
+        assert_eq!(end_batch(), Ok(None));
+        // One the room refused.
+        refused(42, "the room refused it: NotAllowed");
+        assert_eq!(
+            lua.run(
+                "local out = {} \
+                 for _, r in ipairs(tpf3mp_native.results()) do \
+                     out[#out + 1] = r.ticket .. ':' .. tostring(r.ok) .. ':' .. tostring(r.entity) \
+                         .. ':' .. tostring(r.why) \
+                 end \
+                 return table.concat(out, ' '), #tpf3mp_native.results()"
+            ),
+            Ok("41:true:901:nil 42:false:nil:the room refused it: NotAllowed|0".into()),
+            "only the player's own, once each"
+        );
     }
 
     #[test]
@@ -1231,7 +1438,7 @@ pub(crate) mod tests {
         let lua = Lua::new();
         lua.register();
         assert_eq!(lua.run("return tpf3mp_native.take()"), Ok("nil".into()));
-        begin_batch(&[depot_build()], 1, false).unwrap();
+        begin_batch(&[ordered(depot_build(), None)], 1, false).unwrap();
         assert_eq!(
             lua.run(
                 "local first = tpf3mp_native.take() local again = tpf3mp_native.take() \
@@ -1242,7 +1449,7 @@ pub(crate) mod tests {
         );
         assert_eq!(end_batch(), Ok(None));
         // An action nobody took is found at the batch's end.
-        begin_batch(&[depot_build()], 1, false).unwrap();
+        begin_batch(&[ordered(depot_build(), None)], 1, false).unwrap();
         assert!(
             end_batch()
                 .unwrap_err()

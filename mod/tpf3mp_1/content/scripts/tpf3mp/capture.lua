@@ -164,4 +164,158 @@ function capture.describe(proposal)
 	return module("engine").describe(proposal)
 end
 
+-- ------------------------------------------------------ vehicles and lines
+--
+-- The vehicle and line windows' commands (api.cmd.make*Cmd, with the
+-- arguments the windows give them) as actions: tpf3mp/guard.lua's CARRY.
+-- `ctx` names what a command names by entity:
+--
+--   ctx.vehicle(e), ctx.line(e), ctx.group(e) -> canonical id, or nil
+--                                               (tpf3mp/registry.lua)
+--   ctx.depot(e) -> { file =, at = { x, y, z } } of the depot's
+--                   construction, or nil
+--   ctx.model(id) -> a vehicle model's file name, or nil
+--
+-- Each returns the action table, or raises why the room cannot carry it.
+
+local function named(what, id)
+	if id == nil then error(what, 0) end
+	return id
+end
+
+local function tintOf(v)
+	local r, g, b = get(v, "x"), get(v, "y"), get(v, "z")
+	if r == nil then r, g, b = get(v, 1), get(v, 2), get(v, 3) end
+	if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
+		error("a colour it cannot read", 0)
+	end
+	return { r = r, g = g, b = b }
+end
+
+local function each(list, fn)
+	local out = {}
+	for i = 1, (length(list) or 0) do out[i] = fn(get(list, i)) end
+	return out
+end
+
+local function vehicleOf(ctx, entity)
+	return named("a vehicle the room cannot name", ctx.vehicle(entity))
+end
+
+local function lineOf(ctx, entity)
+	return named("a line the room cannot name", ctx.line(entity))
+end
+
+-- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
+function capture.vehicleBuy(ctx, _player, depot, config)
+	local consist = each(get(config, "vehicles"), function(tvp)
+		local part = get(tvp, "part")
+		return {
+			model = named("a vehicle model the room cannot name", ctx.model(get(part, "modelId"))),
+			reversed = get(part, "reversed") == true,
+			loads = each(get(part, "compartment2loadConfig"), function(lc)
+				return { config = get(lc, "loadConfigIndex"), cargo = get(lc, "cargoTypeId") }
+			end),
+			color = tintOf(get(part, "color")),
+		}
+	end)
+	return { BuyVehicle = {
+		depot = named("a depot the room cannot name", ctx.depot(depot)),
+		consist = consist,
+		groups = each(get(config, "vehicleGroups"), function(n) return n end),
+		multiple_units = each(get(config, "muFileNames"), function(name) return name end),
+	} }
+end
+
+function capture.vehicleSetLine(ctx, vehicle, line, stopIndex)
+	return { AssignLine = {
+		vehicles = { vehicleOf(ctx, vehicle) }, line = lineOf(ctx, line), first_stop = stopIndex,
+	} }
+end
+
+function capture.vehicleSell(ctx, vehicles)
+	return { SellVehicle = { vehicles = each(vehicles, function(e) return vehicleOf(ctx, e) end) } }
+end
+
+function capture.vehicleStop(ctx, vehicle, stopped)
+	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { Stop = stopped == true } } }
+end
+
+function capture.vehicleToDepot(ctx, vehicle, sell, jumpTo)
+	if jumpTo ~= nil then error("moving a vehicle into a depot at once", 0) end
+	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ToDepot = { sell = sell == true } } } }
+end
+
+function capture.vehicleReverse(ctx, vehicle)
+	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = "Reverse" } }
+end
+
+function capture.vehicleDepart(ctx, vehicle)
+	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = "Depart" } }
+end
+
+-- The game's load modes (Line.LoadMode), numbers to the schema's names.
+local LOAD_MODES = { [0] = "LoadIfAvailable", [1] = "FullLoadAny", [2] = "FullLoadAll", [3] = "LegacyUnloadOnly" }
+
+-- A Line component as the schema's LineData.
+function capture.lineData(ctx, line)
+	local stops = each(get(line, "stops"), function(s)
+		if (length(get(s, "waypoints")) or 0) > 0 then error("a line through waypoints", 0) end
+		local config = get(s, "stopConfig")
+		local mode = tonumber(get(s, "loadMode"))
+		return {
+			group = named("a station the room cannot name", ctx.group(get(s, "stationGroup"))),
+			terminal = { station = get(s, "station"), terminal = get(s, "terminal") },
+			alternatives = each(get(s, "alternativeTerminals"), function(a)
+				return { station = get(a, "station"), terminal = get(a, "terminal") }
+			end),
+			load_mode = LOAD_MODES[mode] or error("a load mode " .. tostring(mode), 0),
+			min_wait = get(s, "minWaitingTime"),
+			max_wait = get(s, "maxWaitingTime"),
+			max_extra_wait = get(s, "maxAdditionalWaitingTime"),
+			rules = {
+				load = each(get(config, "load"), function(b) return b == true end),
+				max_load = each(get(config, "maxLoad"), function(f) return f end),
+				force_unload = get(config, "forceUnload") == true,
+				destroy_for_config_change = get(config, "destroyForConfigChange") == true,
+				destroy_for_refresh = get(config, "destroyForRefresh") == true,
+			},
+		}
+	end)
+	local info = get(line, "vehicleInfo")
+	local modes, transport = {}, info and get(info, "transportModes")
+	if type(transport) ~= "table" then error("a line's transport modes it cannot read", 0) end
+	for mode, on in pairs(transport) do
+		if on == true then modes[#modes + 1] = mode end
+	end
+	table.sort(modes)
+	return {
+		stops = stops,
+		modes = modes,
+		custom_filters = get(line, "customFilters") == true,
+		reservation_priority = get(line, "reservationPriority") or 0,
+	}
+end
+
+function capture.lineCreate(ctx, name, color, _player, line)
+	return { CreateLine = { name = name, color = tintOf(color), line = capture.lineData(ctx, line) } }
+end
+
+function capture.lineUpdate(ctx, lineEntity, line)
+	return { EditLine = { line = lineOf(ctx, lineEntity), change = { Update = capture.lineData(ctx, line) } } }
+end
+
+function capture.lineDestroy(ctx, lineEntity)
+	return { EditLine = { line = lineOf(ctx, lineEntity), change = "Delete" } }
+end
+
+-- Renaming and recolouring: lines so far.
+function capture.setName(ctx, entity, name)
+	return { EditLine = { line = named("renaming this", ctx.line(entity)), change = { Rename = name } } }
+end
+
+function capture.setColor(ctx, entity, color)
+	return { EditLine = { line = named("recolouring this", ctx.line(entity)), change = { Recolor = tintOf(color) } } }
+end
+
 return capture

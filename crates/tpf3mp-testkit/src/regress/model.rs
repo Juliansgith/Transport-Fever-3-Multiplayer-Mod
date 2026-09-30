@@ -26,6 +26,7 @@ use tpf3mp_proto::{
     action::{
         Action, Bulldoze, CompanyId, CompanyOp, ConstructionBuild, ConstructionRef, EdgeEnds,
         LineChange, LineId, LoanOp, Network, Polyline, Pos, Resolve, Structure, Terraform,
+        VehicleChange,
     },
 };
 
@@ -165,7 +166,7 @@ struct Station {
 struct Line {
     owner: u32,
     name: String,
-    color: [u8; 3],
+    color: [i32; 3],
     stops: Vec<(u32, Option<u16>)>,
 }
 
@@ -290,7 +291,11 @@ impl State {
                     id,
                     Vehicle {
                         owner: company,
-                        consist: buy.consist.iter().map(|m| m.as_str().to_owned()).collect(),
+                        consist: buy
+                            .consist
+                            .iter()
+                            .map(|part| part.model.as_str().to_owned())
+                            .collect(),
                         line: None,
                         next_stop: 0,
                         progress: 0,
@@ -312,7 +317,7 @@ impl State {
                 Ok(())
             }
             Action::CreateLine(create) => {
-                let stops = self.stops(create.stops.iter())?;
+                let stops = self.stops(create.line.stops.iter())?;
                 let id = self.next_line;
                 self.next_line += 1;
                 self.lines.insert(
@@ -336,8 +341,8 @@ impl State {
                         self.lines.get_mut(&line).expect("checked").color =
                             [color.r, color.g, color.b];
                     }
-                    LineChange::SetStops(stops) => {
-                        let stops = self.stops(stops.iter())?;
+                    LineChange::Update(line_data) => {
+                        let stops = self.stops(line_data.stops.iter())?;
                         let count = stops.len();
                         self.lines.get_mut(&line).expect("checked").stops = stops;
                         for vehicle in self.vehicles.values_mut() {
@@ -375,6 +380,26 @@ impl State {
                     vehicle.line = assign.line.map(|line| line.0);
                     vehicle.next_stop = assign.first_stop;
                     vehicle.progress = 0;
+                }
+                Ok(())
+            }
+            // The model keeps no vehicle state beyond its line: a vehicle
+            // sent to its depot leaves its line, and one sold there goes, as
+            // a sale.
+            Action::VehicleOp(op) => {
+                let ids = self.own_vehicles(std::iter::once(op.vehicle.0), company)?;
+                if let VehicleChange::ToDepot { sell } = op.change {
+                    for id in ids {
+                        if sell {
+                            let vehicle = self.vehicles.remove(&id).expect("checked above");
+                            let cars = i64::try_from(vehicle.consist.len()).unwrap_or(i64::MAX);
+                            if let Some(owner) = self.companies.get_mut(&company) {
+                                owner.money += VEHICLE_COST.saturating_mul(cars) / 2;
+                            }
+                        } else {
+                            self.vehicles.get_mut(&id).expect("checked above").line = None;
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -787,7 +812,9 @@ impl State {
         &self,
         stops: impl Iterator<Item = &'a tpf3mp_proto::action::LineStop>,
     ) -> Result<Vec<(u32, Option<u16>)>, Refusal> {
-        let stops: Vec<_> = stops.map(|s| (s.station.0, s.terminal)).collect();
+        let stops: Vec<_> = stops
+            .map(|s| (s.group.0, Some(s.terminal.terminal)))
+            .collect();
         if stops.len() < 2 {
             refuse!("a line of fewer than two stops");
         }

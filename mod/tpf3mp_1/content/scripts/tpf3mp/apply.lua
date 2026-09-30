@@ -433,6 +433,170 @@ function HANDLERS.BuildTrack(track)
 	return buildNetwork("Track", track.track, track.style, track.polyline)
 end
 
+-- ------------------------------------------------------ vehicles and lines
+--
+-- Vehicles, lines and station groups are named by canonical id
+-- (tpf3mp/registry.lua): `ctx.registry` is the game script's, up to date.
+-- A depot is named by its construction's file and position.
+
+local registry = module("registry")
+
+local function entityOf(ctx, kind, id)
+	local e = registry.entity(ctx and ctx.registry, kind, id)
+	if e == nil then error("no " .. kind .. " " .. tostring(id) .. " in this world", 0) end
+	return e
+end
+
+-- The construction of `ref.file` whose origin is within 2 m of `ref.at`, the
+-- nearest, the lower entity on a tie.
+local function constructionAt(ref)
+	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
+	local list = api.engine.getEntitiesWithComponent(CONSTRUCTION)
+	local best, bestD
+	for i = 1, #list do
+		local e = list[i]
+		local c = api.engine.getComponent(e, CONSTRUCTION)
+		if c and c.fileName == ref.file then
+			local t = c.transf
+			local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
+			local d = dx * dx + dy * dy + dz * dz
+			if d <= 4 and (bestD == nil or d < bestD or (d == bestD and e < best)) then best, bestD = e, d end
+		end
+	end
+	if best == nil then error("no " .. tostring(ref.file) .. " there", 0) end
+	return best, api.engine.getComponent(best, CONSTRUCTION)
+end
+
+local function tint(c) return api.type.Vec3f.new(c.r, c.g, c.b) end
+
+function HANDLERS.BuyVehicle(buy)
+	local _, construction = constructionAt(buy.depot)
+	local depot = construction.depots and construction.depots[1]
+	if depot == nil then error("the construction there has no depot", 0) end
+	-- Bought now: the game's time here, the same in every game.
+	local time = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME).gameTime
+	local vehicles = {}
+	for i, p in ipairs(buy.consist) do
+		local model = api.res.modelRep.find(p.model)
+		if type(model) ~= "number" or model < 0 then error("no vehicle model " .. tostring(p.model), 0) end
+		local part = api.type.TransportVehiclePart.new()
+		part.part.modelId = model
+		part.part.reversed = p.reversed == true
+		local loads, auto = {}, {}
+		for k, l in ipairs(p.loads) do
+			local lc = api.type.LoadConfig.new()
+			lc.loadConfigIndex = l.config
+			lc.cargoTypeId = l.cargo
+			loads[k], auto[k] = lc, true
+		end
+		part.part.compartment2loadConfig = loads
+		part.part.color = tint(p.color)
+		part.purchaseTime = time
+		part.autoLoadConfig = auto
+		vehicles[i] = part
+	end
+	local config = api.type.TransportVehicleConfig.new()
+	config.vehicles = vehicles
+	config.vehicleGroups = buy.groups
+	config.muFileNames = buy.multiple_units
+	return run(api.cmd.makeVehicleBuyCmd(api.engine.util.getPlayer(), depot, config))
+end
+
+function HANDLERS.SellVehicle(sell, ctx)
+	local vehicles = {}
+	for i, v in ipairs(sell.vehicles) do vehicles[i] = entityOf(ctx, "vehicles", v) end
+	return run(api.cmd.makeVehicleSellCmd(vehicles))
+end
+
+function HANDLERS.AssignLine(assign, ctx)
+	if assign.line == nil then
+		return false, "this version of the mod does not take vehicles off their line yet"
+	end
+	local line = entityOf(ctx, "lines", assign.line)
+	for _, v in ipairs(assign.vehicles) do
+		run(api.cmd.makeVehicleSetLineCmd(entityOf(ctx, "vehicles", v), line, assign.first_stop))
+	end
+	return true
+end
+
+function HANDLERS.VehicleOp(op, ctx)
+	local vehicle = entityOf(ctx, "vehicles", op.vehicle)
+	local change = op.change
+	if type(change) == "table" and change.Stop ~= nil then
+		return run(api.cmd.makeVehicleSetStoppedByUserCmd(vehicle, change.Stop == true))
+	elseif type(change) == "table" and change.ToDepot then
+		return run(api.cmd.makeVehicleSendToDepotCmd(vehicle, change.ToDepot.sell == true))
+	elseif change == "Reverse" then
+		return run(api.cmd.makeVehicleReverseCmd(vehicle))
+	elseif change == "Depart" then
+		return run(api.cmd.makeVehicleTryToDepartCmd(vehicle))
+	end
+	return false, "a vehicle change of no kind"
+end
+
+-- The game's load modes, by the schema's names, as numbers.
+local LOAD_MODES = { LoadIfAvailable = 0, FullLoadAny = 1, FullLoadAll = 2, LegacyUnloadOnly = 3 }
+
+-- A LineData as the game's Line component.
+local function lineComponent(data, ctx)
+	local line = api.type.Line.new()
+	local stops = {}
+	for i, s in ipairs(data.stops) do
+		local stop = api.type.Line.Stop.new()
+		stop.stationGroup = entityOf(ctx, "groups", s.group)
+		stop.station = s.terminal.station
+		stop.terminal = s.terminal.terminal
+		local alternatives = {}
+		for k, a in ipairs(s.alternatives) do
+			alternatives[k] = api.type.StationTerminal.new(a.station, a.terminal)
+		end
+		stop.alternativeTerminals = alternatives
+		stop.loadMode = LOAD_MODES[s.load_mode] or error("a load mode " .. tostring(s.load_mode), 0)
+		stop.minWaitingTime = s.min_wait
+		stop.maxWaitingTime = s.max_wait
+		stop.maxAdditionalWaitingTime = s.max_extra_wait
+		local config = api.type.Line.StopConfig.new()
+		config.load = s.rules.load
+		config.maxLoad = s.rules.max_load
+		config.forceUnload = s.rules.force_unload == true
+		config.destroyForConfigChange = s.rules.destroy_for_config_change == true
+		config.destroyForRefresh = s.rules.destroy_for_refresh == true
+		stop.stopConfig = config
+		stops[i] = stop
+	end
+	line.stops = stops
+	local modes = {}
+	for _, m in ipairs(data.modes) do modes[m] = true end
+	line.vehicleInfo.transportModes = modes
+	line.customFilters = data.custom_filters == true
+	line.reservationPriority = data.reservation_priority
+	return line
+end
+
+function HANDLERS.CreateLine(create, ctx)
+	local line = lineComponent(create.line, ctx)
+	return run(api.cmd.makeLineCreateCmd(create.name, tint(create.color), api.engine.util.getPlayer(), line))
+end
+
+function HANDLERS.EditLine(edit, ctx)
+	local line = entityOf(ctx, "lines", edit.line)
+	local change = edit.change
+	if change == "Delete" then
+		return run(api.cmd.makeLineDestroyCmd(line))
+	elseif type(change) == "table" and change.Update then
+		return run(api.cmd.makeLineUpdateCmd(line, lineComponent(change.Update, ctx)))
+	elseif type(change) == "table" and change.Rename then
+		return run(api.cmd.makeEntitySetNameCmd(line, change.Rename))
+	elseif type(change) == "table" and change.Recolor then
+		return run(api.cmd.makeEntitySetColorCmd(line, tint(change.Recolor)))
+	end
+	return false, "a line change of no kind"
+end
+
+-- What an action makes, which the game script finds bound in the registry
+-- after it (the new vehicle, the new line): its kind there.
+apply.CREATES = { BuyVehicle = "vehicles", CreateLine = "lines" }
+
 -- A loan's terms as the loan script keeps them (loan.d.tl): the action's
 -- table has the script's own field names and fractions.
 local function loanTerms(terms)
@@ -456,8 +620,10 @@ function HANDLERS.Loan(op)
 	return false, "a loan is taken or paid back"
 end
 
--- Runs one action. Returns true, or false and why not; never raises.
-function apply.run(action)
+-- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the
+-- actions that name vehicles, lines and station groups. Returns true, or
+-- false and why not; never raises.
+function apply.run(action, ctx)
 	if type(action) ~= "table" then return false, "an action is a table" end
 	local kind, body = next(action)
 	if kind == nil or next(action, kind) ~= nil then
@@ -467,7 +633,7 @@ function apply.run(action)
 	if handler == nil then
 		return false, "this version of the mod does not apply " .. tostring(kind) .. " yet"
 	end
-	local ok, applied, why = pcall(handler, body)
+	local ok, applied, why = pcall(handler, body, ctx)
 	if not ok then return false, tostring(applied) end
 	return applied == true, why
 end

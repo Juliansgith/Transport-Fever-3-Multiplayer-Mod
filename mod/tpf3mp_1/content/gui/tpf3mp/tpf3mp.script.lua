@@ -11,8 +11,11 @@
 --
 -- Once linked, it puts the guard in front of the GUI's commands
 -- (tpf3mp/guard.lua; docs/HOOKS.md, "The player's commands"): in the room's
--- game a command the room cannot carry yet is refused, and the game bar says
--- so for a few seconds.
+-- game a command the room carries goes to the room, and its window hears
+-- what became of it once this game has applied it; a command the room
+-- cannot carry yet is refused, and the game bar says so for a few seconds.
+-- The guard names vehicles, lines and station groups by the canonical ids
+-- the mod's game script keeps in its state (tpf3mp/registry.lua).
 --
 -- It follows what mods made for Transport Fever 3 build 40391 rely on
 -- (investigation/TF3_MODS_2026-09-27.md): a .script.lua defines data();
@@ -27,7 +30,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "geom", "roads", "engine", "bridge", "guard" }
+	local MODULES = { "geom", "roads", "engine", "registry", "capture", "bridge", "guard" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -67,14 +70,63 @@ function data()
 		end
 	end
 
+	-- The mod's game script's registry (tpf3mp/registry.lua), read from the
+	-- script's state as the game keeps it: game scripts are entities, named
+	-- by their file (the loan window reads the loan script so).
+	local SCRIPT_NAMES = { MOD .. "::/tpf3mp_sim/tpf3mp_sim.gs", MOD .. "::/tpf3mp_sim.gs" }
+	local function registryNow()
+		for _, name in ipairs(SCRIPT_NAMES) do
+			local ok, state = pcall(function()
+				local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(name)
+				if type(entity) ~= "number" or entity < 0 then return nil end
+				local c = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+				return c and c.state
+			end)
+			if ok and type(state) == "table" then return state.registry end
+		end
+		return nil
+	end
+
+	-- What the guard names things by (tpf3mp/capture.lua).
+	local function idOf(kind)
+		return function(entity)
+			return require("tpf3mp.registry").id(registryNow(), kind, entity)
+		end
+	end
+	local context = {
+		vehicle = idOf("vehicles"),
+		line = idOf("lines"),
+		group = idOf("groups"),
+		depot = function(depot)
+			local c
+			pcall(function()
+				local con = api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(depot)
+				c = con and api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+			end)
+			if c == nil then return nil end
+			local t = c.transf
+			return { file = c.fileName, at = { x = t[13], y = t[14], z = t[15] } }
+		end,
+		model = function(id)
+			local ok, name = pcall(function() return api.res.modelRep.getName(id) end)
+			if ok and type(name) == "string" and name ~= "" then return name end
+			return nil
+		end,
+	}
+
+	-- The GUI state's api.cmd, which the guard is on.
+	local guardedCmd = nil
+
 	-- Puts the guard in front of the GUI's commands.
 	local function guardCommands()
 		local ok, cmd = pcall(function() return api.cmd end)
-		local wrapped, why = require("tpf3mp.guard").install(ok and cmd or nil, {
+		guardedCmd = ok and cmd or nil
+		local wrapped, why = require("tpf3mp.guard").install(guardedCmd, {
 			inRoom = function() return link:room() end,
 			command = function(action) return link:command(action) end,
 			refused = refused,
 			later = function(fn) pending[#pending + 1] = fn end,
+			context = context,
 		})
 		if wrapped then
 			link:log("the guard is on " .. wrapped .. " command factories")
@@ -177,6 +229,12 @@ function data()
 			local ok, err = pcall(serve)
 			if not ok then say("serving the hook failed: " .. tostring(err)) end
 			runPending()
+			if link and guardedCmd then
+				local delivered, why = pcall(function()
+					require("tpf3mp.guard").deliver(guardedCmd, link:results())
+				end)
+				if not delivered then say("answering the player's commands failed: " .. tostring(why)) end
+			end
 			if notice then
 				shown:set(notice)
 				frames:set(NOTICE_FRAMES)

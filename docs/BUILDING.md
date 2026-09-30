@@ -386,8 +386,8 @@ lossless from Lua. Rules:
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (3; 2 had no edge kinds or removed nodes, 1 no road
-style). The Lua mod builds an action from a captured
+`ACTION_SCHEMA_VERSION` (4; 3 had TPF2's vehicles and lines, 2 no edge
+kinds or removed nodes, 1 no road style). The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
 command carried as text travels here as typed, bounded fields.
@@ -418,15 +418,16 @@ appended.
 | `BuildTrack` | track type (TF3: its road template), road style (TF3), catenary, a polyline |
 | `Bulldoze` | edges of one network by their ends; or a construction by file and position; or a stop, signal or waypoint by its edge, position and model |
 | `BuildConstruction` | file, transform, every parameter (`seed` included), name, and the construction it replaces for a module edit |
-| `BuyVehicle` | the depot by file and position, the consist's model files front to back |
+| `BuyVehicle` | the depot by file and position, the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |
 | `SellVehicle` | vehicles |
-| `CreateLine` | name, colour, stops (station and optional terminal) |
-| `EditLine` | a line and one change: rename, recolour, the whole new stop list, or delete |
+| `CreateLine` | name, colour, the line as the game keeps it: stops (station group, terminal, other terminals, load mode, waiting times, loading rules per cargo), transport modes, settings |
+| `EditLine` | a line and one change: rename, recolour, the whole line anew, or delete |
 | `AssignLine` | vehicles, the line or none, the first stop |
 | `PlaceStop` | the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, the model |
 | `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
 | `CompanyOp` | create, join, rename or delete a company |
 | `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
+| `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (sold there or not), reverse, depart |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:

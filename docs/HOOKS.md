@@ -330,7 +330,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   - `Hello`: always first.
   - `Begin`: a game starts, and saves go in this directory. It also names the
     room's rules: with `native`, the game's own economy runs untouched;
-    with canonical rules, the Lua mod shows the server's values instead.
+    with canonical rules, the Lua mod shows the server's values instead. And
+    the local player, as the room's events name the actor: the hook knows
+    the player's own commands by it when the room orders them (bridge
+    version 5).
   - `Load { file, next_step }`: load a world, then run `next_step`.
     Without a file, the game loads the world the player chose to start
     from: the owner's, or everyone's on a server that keeps no snapshots.
@@ -533,15 +536,16 @@ for the table (`bridge.find`). Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
 `crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 7. The mod refuses any other.
+- `tpf3mp_native.version`: 8. The mod refuses any other.
 - `tpf3mp_native.command(action)`: an action table, in the game's units.
   The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
   `MAX_DEPTH` and `MAX_NODES` (a function, userdata or a table as a key is
   refused), converts it with `action_from_lua` and queues
   `Action::to_payload`; the step gate hands it to `Session::command`, in
-  the room's game only. It returns `true`, or `false` and why. `false` or
-  an error means refused, and the mod does not apply the action locally
-  either: every game applies it when the room orders it.
+  the room's game only. It returns `true` and a ticket, or `false` and why.
+  `false` or an error means refused, and the mod does not apply the action
+  locally either: every game applies it when the room orders it. The
+  ticket comes back in `results()`.
 - `tpf3mp_native.take()`: the actions the room ordered for this simulation
   update, as `action_to_lua` tables, or `nil` (below).
 - `tpf3mp_native.log(line)`: a line for `hook.log`, marked `mod:`.
@@ -562,8 +566,17 @@ for the table (`bridge.find`). Its contract is in
   tools" below).
 - `tpf3mp_native.replaying(on)`: the game script begins or ends applying
   the room's actions, whose builds the hook lets through.
-
-The table's functions run on whichever thread runs their state (the GUI's
+- `tpf3mp_native.applied(index, ok, entity, why)`: in the game script's
+  `postUpdate`, after the batch's action `index` (from 1): whether it went,
+  the entity it made, if any, and why not.
+- `tpf3mp_native.results()`: in the GUI: what became of the player's own
+  actions since the last call, `{ { ticket =, ok =, entity =, why = } }`,
+  oldest first. The step driver knows the player's own actions when the
+  room orders them back: the room's event names the player (`Begin`'s
+  `player`) and the client sequence number, which `Session::command`
+  returned when the driver handed the action over, and which it keeps with
+  the action's ticket. An action the room refuses (`Notice::Refused`), or
+  one handed over when no room's game runs, answers `ok = false` with why. on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
 nothing but the hook's queues. They reach Lua through Lua 5.2's C API as
 the build profile names it: 18 functions besides `luaB_print`, found from
@@ -751,11 +764,38 @@ reference of its own to either. Once linked, the GUI wraps every
   reads as the player's request to the room;
 - a command `guard.CARRY` makes an action of goes to the room instead
   (`tpf3mp_native.command`), which orders it for every game, this one
-  included ("Actions in the game"); its callback hears on the next frame
-  that it went, as the game's windows expect. So far: loans, the finance
-  window's `makeScriptingSendEventCmd("", "Loan", "Obtain" | "Repay", …)`,
-  as a `Loan` action carrying the loans' terms, which every game's game
-  script replays through the loan script's own event;
+  included ("Actions in the game"). Its callback hears what became of it
+  once this game has applied it (`results()`, `guard.deliver`), as the
+  game's own command would answer: `(data, ok, {{ entity, 0 }})`, with the
+  entity the action made. The game's windows chain on that: the store
+  puts the vehicle it bought on a line by the entity its callback hears
+  (`resultVehicleEntity`), the line manager opens the new line
+  (`resultEntities[1][1]`). So far:
+  - loans, the finance window's `makeScriptingSendEventCmd("", "Loan",
+    "Obtain" | "Repay", …)`, as a `Loan` action carrying the loans' terms,
+    which every game's game script replays through the loan script's own
+    event;
+  - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
+    file and position, the consist part by part, as the store configured
+    it), selling, putting on a line, and the vehicle window's stop, start,
+    to the depot (sold there or not), reverse and depart;
+  - lines: creating, changing (the line whole, as the line manager built
+    it: stops, terminals, loading rules), deleting, renaming and
+    recolouring.
+
+  Vehicles, lines and station groups have no place to name them by, so
+  actions name them by canonical id (`tpf3mp/registry.lua`). Every game
+  gives them the same ids without telling another: every game runs the
+  same world, so after the same action the same things exist, and the
+  mod's game script binds each new one to the next id of its kind, lowest
+  entity first, after every action the room orders and at the room's
+  first update, and retires the ids of those gone; an id never comes back.
+  It keeps the registry in its state, which the game saves with the world,
+  so a player who joins or reloads from the room's save has it as the
+  others do. The GUI reads it from the script's state
+  (`gameScriptSystem.getEntityForGameScript`, the `GAME_SCRIPT`
+  component), as the loan window reads the loan script's. A command
+  naming something the registry has no id for is refused, and says so;
 - any other kind, and a command no wrapped factory made, is refused, as
   PLAN.md (Part 3) says of every action whose strict flag is off. It is
   not sent. Its callback, if it has one, is called on the next frame with

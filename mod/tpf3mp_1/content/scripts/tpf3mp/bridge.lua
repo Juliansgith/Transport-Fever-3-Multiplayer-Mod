@@ -5,9 +5,10 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 4,                  -- bridge.VERSION; anything else is refused
+--     version = 8,                  -- bridge.VERSION; anything else is refused
 --     command = function(action),   -- the player acted: an action table, for
---                                   -- the room to order -> true | false, why
+--                                   -- the room to order -> true, ticket |
+--                                   -- false, why
 --     take    = function(),         -- in a game script's update: the actions
 --                                   -- the room ordered for this update, or nil
 --     log     = function(line),     -- a line for hook.log
@@ -26,6 +27,11 @@
 --                                   -- the hook cannot take them to the room
 --     replaying = function(on),     -- the game script applies the room's
 --                                   -- actions (true) or is done (false)
+--     applied = function(i, ok, entity, why), -- in a game script's postUpdate:
+--                                   -- what became of the batch's action i
+--     results = function(),         -- in the GUI: what became of the player's
+--                                   -- own actions since the last call,
+--                                   -- { { ticket =, ok =, entity =, why = } }
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -49,6 +55,8 @@
 
 local bridge = {}
 
+-- 8: the player hears what became of their actions (`command`'s ticket,
+-- `applied`, `results`);
 -- 7: the build tools through the room (`clicks`, `replaying`);
 -- 6: the game script reads the world's lanes at checkpoints (`checkpoint`,
 -- `lanes`);
@@ -56,7 +64,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 7
+bridge.VERSION = 8
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -71,7 +79,7 @@ function bridge.attach(native)
 			.. ", the mod " .. bridge.VERSION
 	end
 	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world", "room",
-			"checkpoint", "lanes", "clicks", "replaying" }) do
+			"checkpoint", "lanes", "clicks", "replaying", "applied", "results" }) do
 		if type(native[name]) ~= "function" then
 			return nil, "the hook has no " .. name .. "()"
 		end
@@ -89,8 +97,10 @@ function bridge.find()
 	return nil
 end
 
--- Hands an action table to the room. Returns true, or nil and why not; an
--- action that was not handed over must not be applied locally either.
+-- Hands an action table to the room. Returns true and the action's ticket,
+-- which results() names when this game applies the action or never will; or
+-- nil and why not: an action that was not handed over must not be applied
+-- locally either.
 function Link:command(action)
 	if type(action) ~= "table" then return nil, "an action is a table" end
 	local ok, result, reason = pcall(self.native.command, action)
@@ -98,7 +108,21 @@ function Link:command(action)
 	if result ~= true then
 		return nil, "the hook refused the action: " .. tostring(reason or "no reason given")
 	end
-	return true
+	return true, reason
+end
+
+-- In a game script's postUpdate: what became of the batch's action `index`
+-- (from 1), and the entity it made, if any.
+function Link:applied(index, ok, entity, why)
+	pcall(self.native.applied, index, ok == true, entity, why and tostring(why) or nil)
+end
+
+-- In the GUI: what became of the player's own actions since the last call,
+-- a list of { ticket =, ok =, entity =, why = }, oldest first.
+function Link:results()
+	local ok, results = pcall(self.native.results)
+	if not ok or type(results) ~= "table" then return {} end
+	return results
 end
 
 -- The actions the room ordered for this update, as a list, or nil.

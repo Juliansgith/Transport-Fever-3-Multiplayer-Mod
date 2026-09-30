@@ -47,9 +47,10 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes, capture = false, nil, nil, nil, nil
-	-- Lanes that could not be read, logged once per state.
-	local told = false
+	local tried, link, apply, lanes, capture, registry = false, nil, nil, nil, nil, nil
+	-- Lanes that could not be read, and kinds the registry could not list,
+	-- logged once per state.
+	local told, toldRegistry = false, false
 	-- Events subscribed to from this state.
 	local subscribed = false
 
@@ -77,9 +78,10 @@ function data()
 			local okApply, applyModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/apply.lua")
 			local okLanes, lanesModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/lanes.lua")
 			local okCapture, captureModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/capture.lua")
-			if okBridge and okApply and okLanes and okCapture and type(bridge) == "table"
+			local okRegistry, registryModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/registry.lua")
+			if okBridge and okApply and okLanes and okCapture and okRegistry and type(bridge) == "table"
 				and type(applyModule) == "table" and type(lanesModule) == "table"
-				and type(captureModule) == "table" then
+				and type(captureModule) == "table" and type(registryModule) == "table" then
 				link = bridge.attach(bridge.find())
 				apply = applyModule
 				if link then
@@ -88,6 +90,7 @@ function data()
 				end
 				lanes = lanesModule
 				capture = captureModule
+				registry = registryModule
 				if link then link:log("the game script is linked") end
 			end
 		end
@@ -104,22 +107,46 @@ function data()
 			end
 			local actions = l:take()
 			local checkpoint = l:checkpoint()
-			if not actions and not checkpoint then return nil end
-			return { actions = actions, checkpoint = checkpoint }
+			-- The registry begins at the room's first update, the same in
+			-- every game (tpf3mp/registry.lua).
+			local saved = state and state.get and state:get()
+			local begin = l:room() and (type(saved) ~= "table" or saved.registry == nil)
+			if not actions and not checkpoint and not begin then return nil end
+			return { actions = actions, checkpoint = checkpoint, begin = begin }
 		end,
 
-		postUpdate = function(_params, _state, _dt, work)
+		postUpdate = function(_params, state, _dt, work)
 			local l = linked()
 			if not l or type(work) ~= "table" then return end
-			-- The room's builds go through; the player's own the hook stops.
-			if work.actions then l:replaying(true) end
-			for i, action in ipairs(work.actions or {}) do
-				local ok, why = apply.run(action)
-				if not ok then
-					l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
+			if work.actions or work.begin then
+				local saved = state:get()
+				if type(saved) ~= "table" then saved = {} end
+				local reg, _, failed = registry.sync(saved.registry)
+				if #failed > 0 and not toldRegistry then
+					toldRegistry = true
+					l:log("the registry could not list " .. table.concat(failed, "; "))
 				end
+				-- The room's builds go through; the player's own the hook
+				-- stops.
+				if work.actions then l:replaying(true) end
+				for i, action in ipairs(work.actions or {}) do
+					local ok, why = apply.run(action, { registry = reg })
+					local fresh
+					reg, fresh = registry.sync(reg)
+					-- What it made, for the player who ordered it.
+					local made, entity = ok and apply.CREATES[next(action)], nil
+					for _, f in ipairs(made and fresh or {}) do
+						if f[1] == made then entity = f[3] break end
+					end
+					l:applied(i, ok, entity, why)
+					if not ok then
+						l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
+					end
+				end
+				if work.actions then l:replaying(false) end
+				saved.registry = reg
+				state:set(saved)
 			end
-			if work.actions then l:replaying(false) end
 			if work.checkpoint then
 				local read, failed = lanes.read(api)
 				if #failed > 0 and not told then
