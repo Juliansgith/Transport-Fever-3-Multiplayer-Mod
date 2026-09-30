@@ -1,12 +1,15 @@
 -- A stand-in for Transport Fever 3's GUI state, as much of it as the mod's
 -- entry script (mod/tpf3mp_1/content/gui/tpf3mp/tpf3mp.script.lua) uses:
--- ug_require, react, builtin, the game bar's extension point and
--- debugPrint. Its shape follows mods made for build 40391
--- (investigation/TF3_MODS_2026-09-27.md). Run by tests/lua_mod.rs, which
--- defines mod_source(path): the text of a file under the mod's content/.
+-- ug_require, react, builtin, the game bar's and the mods' buttons'
+-- extension points, the window container's API and debugPrint. Its shape
+-- follows mods made for build 40391 (investigation/TF3_MODS_2026-09-27.md)
+-- and the game's own GUI (gui/game_bar/game_bar.tl opens its windows so).
+-- Run by tests/lua_mod.rs, which defines mod_source(path): the text of a
+-- file under the mod's content/.
 --
--- Defines the globals the game has, plus LOG (every debugPrint line) and
--- mount(recipe), which renders a plugin and runs its steps.
+-- Defines the globals the game has, plus LOG (every debugPrint line),
+-- WINDOWS (the windows open, by recipe name, each a mount) and
+-- mount(recipe, params), which renders a recipe and runs its steps.
 
 -- The game's package table has no preload (build 40408's dump,
 -- investigation/dayone-2026-09-29/probe/script_api_dump_gui.txt).
@@ -22,6 +25,9 @@ local current   -- the mount a recipe is rendering in
 local react = {}
 function react.RegisterPluginRecipe(extension, name, fn)
 	return { extension = extension, name = name, fn = fn }
+end
+function react.RegisterWrapperRecipe(name, wrapped, fn)
+	return { name = name, wraps = wrapped, fn = fn }
 end
 function react.useRef(initial)
 	-- The same ref on every render of one mount, as React keeps it.
@@ -46,20 +52,47 @@ function react.onStep(fn)
 	current.onStep = fn
 end
 
-local builtin = { type = { Orientation = { Horizontal = "Horizontal", Vertical = "Vertical" } } }
+local builtin = { type = {
+	Orientation = { Horizontal = "Horizontal", Vertical = "Vertical" },
+	ScrollBarPolicy = { Simple = "Simple", AlwaysOff = "AlwaysOff" },
+} }
 function builtin.BoxLayout(params)
 	return { layout = "BoxLayout", params = params }
 end
-function builtin.TextView(params)
-	return { view = "TextView", params = params }
+-- A view is a recipe the game has: called, it gives the node; its name
+-- says which recipe a wrapper wraps.
+for _, view in ipairs({ "TextView", "Button", "ScrollArea", "Component", "TextInputField", "Window" }) do
+	builtin[view] = setmetatable({ viewName = view }, {
+		__call = function(_, params) return { view = view, params = params } end,
+	})
 end
 
 local game_bar_widgets = { GameBarInfoDisplayExtension = "GameBarInfoDisplayExtension" }
+local main_mod_button_area = { MainModButtonAreaExtension = "MainModButtonAreaExtension" }
+
+-- The window container: a singleton window is added once and stays until
+-- removed; moving it to the front of a window not there fails, as nothing
+-- else in the fake would notice it.
+WINDOWS = {}
+local windows = {}
+function windows.addSingletonWindow(recipe, params)
+	assert(recipe.wraps == builtin.Window, "a window's recipe wraps builtin.Window")
+	if WINDOWS[recipe.name] == nil then WINDOWS[recipe.name] = mount(recipe, params) end
+end
+function windows.moveSingletonWindowToFront(recipe)
+	assert(WINDOWS[recipe.name], "no such window")
+end
+function windows.removeAllWindows(recipe)
+	WINDOWS[recipe.name] = nil
+end
+local game_react_globals = { getDefaultWindowApi = function() return windows end }
 
 local GAME = {
 	["::/gui/main/react.lua"] = react,
 	["::/gui/main/builtin.lua"] = builtin,
 	["::/gui/game_bar/game_bar_widgets.tl"] = game_bar_widgets,
+	["::/gui/main/main_mod_button_area.tl"] = main_mod_button_area,
+	["::/gui/main/game_react_globals.tl"] = game_react_globals,
 }
 
 -- The mod whose files mod_source reads: ours, or the one MOD_ID names.
@@ -78,14 +111,19 @@ function ug_require(path)
 	return module
 end
 
--- Renders a plugin recipe once, then returns the mount: render() renders it
--- again, step() runs its onStep as the game does every frame.
-function mount(recipe)
+-- Renders a recipe once with its params, then returns the mount: render()
+-- renders it again, step() runs its onStep as the game does every frame.
+function mount(recipe, params)
 	local m = { refs = {}, refIndex = 0 }
 	function m.render()
 		current, m.refIndex = m, 0
-		m.layout = recipe.fn()
+		m.layout = recipe.fn(params)
 		current = nil
+		-- A wrapper renders the recipe it wraps.
+		if recipe.wraps then
+			assert(type(m.layout) == "table" and m.layout.view == recipe.wraps.viewName,
+				recipe.name .. " must render a " .. recipe.wraps.viewName)
+		end
 		return m.layout
 	end
 	function m.step()
@@ -96,16 +134,29 @@ function mount(recipe)
 end
 
 -- Runs a mod's entry script and returns its plugin, checking the name the
--- resource file gives: ours (tpf3mp.script@Tpf3mpPlugin) unless named.
-function loadPlugin(script, recipe)
+-- resource file gives and its extension point: ours
+-- (tpf3mp.script@Tpf3mpPlugin, on the game bar) unless named.
+function loadPlugin(script, recipe, extension)
 	script = script or "gui/tpf3mp/tpf3mp.script.lua"
 	recipe = recipe or "Tpf3mpPlugin"
+	extension = extension or "GameBarInfoDisplayExtension"
 	local entry = assert(loadstring(mod_source(script), "@" .. script))
 	entry()
 	local exported = data()
 	local plugin = assert(exported[recipe], "no " .. recipe)
-	assert(plugin.extension == "GameBarInfoDisplayExtension", "on another extension point")
+	assert(plugin.extension == extension, "on another extension point")
 	return plugin
+end
+
+-- The views a rendered layout holds, depth first, as { view =, params = }.
+function views(node, out)
+	out = out or {}
+	if type(node) ~= "table" then return out end
+	if node.view then out[#out + 1] = node end
+	local params = node.params or {}
+	for _, key in ipairs({ "content", "layout", "child" }) do views(params[key], out) end
+	for _, child in ipairs(params.children or {}) do views(child, out) end
+	return out
 end
 
 -- The lines the mod logged, one per line.

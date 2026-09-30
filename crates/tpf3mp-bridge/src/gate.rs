@@ -3,7 +3,7 @@
 use thiserror::Error;
 use tpf3mp_proto::{ChatText, Event, IntentRejection, Speed, Text};
 
-use crate::{MAX_PATH, ToHook};
+use crate::{MAX_PATH, RoomInfo, ToHook};
 
 /// Stands before every step the game runs. The game may run its next step
 /// once the agent has released it; until then the hook reads messages and
@@ -54,6 +54,8 @@ pub enum Gated {
     },
     /// Show a chat message.
     Chat { from: Text<32>, text: ChatText },
+    /// Show the room as it stands.
+    Room(RoomInfo),
     /// Nothing to do but check [`Gate::may_run`] again.
     Nothing,
 }
@@ -178,6 +180,7 @@ impl Gate {
                 Ok(Gated::Load { file, next_step })
             }
             ToHook::Chat { from, text } => Ok(Gated::Chat { from, text }),
+            ToHook::Room(room) => Ok(Gated::Room(room)),
             ToHook::Hello { .. } => Err(GateError::Unexpected("a hello")),
             ToHook::Begin { .. } => Err(GateError::Unexpected("the start of a game")),
         }

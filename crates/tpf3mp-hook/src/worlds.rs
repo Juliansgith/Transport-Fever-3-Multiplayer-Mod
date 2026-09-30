@@ -16,6 +16,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use tpf3mp_bridge::Notice;
+use tpf3mp_proto::PlayerId;
+
 use crate::{lua, step::GameControl};
 
 /// Transport Fever 3's Steam app.
@@ -64,6 +67,14 @@ impl GameControl for GuiWorlds {
                 ))
             }
         }))
+    }
+
+    fn room_notice(&mut self, notice: &Notice) {
+        lua::notice(notice);
+    }
+
+    fn set_me(&mut self, player: PlayerId) {
+        lua::set_me(player);
     }
 
     fn request_load(&mut self, file: &Path) -> Result<(), String> {

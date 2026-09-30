@@ -20,7 +20,7 @@ use tpf3mp_proto::{
 };
 
 use crate::{
-    BRIDGE_VERSION, BridgeError, Gate, GateError, Gated, MAX_MESSAGE, ToAgent, ToHook,
+    BRIDGE_VERSION, BridgeError, Gate, GateError, Gated, MAX_MESSAGE, RoomInfo, ToAgent, ToHook,
     check_version, decode, encode,
 };
 
@@ -65,6 +65,8 @@ pub enum Notice {
         from: Text<32>,
         text: ChatText,
     },
+    /// The room as it stands: its name, owner and members.
+    Room(RoomInfo),
 }
 
 /// What the game does about its next step.
@@ -230,8 +232,9 @@ impl Session {
                         player,
                     }));
                 }
-                // Talk in the lobby is for the front end.
-                ToHook::Chat { .. } => {}
+                // Talk in the lobby, and the lobby itself, are for the front
+                // end.
+                ToHook::Chat { .. } | ToHook::Room(_) => {}
                 _ => return Err(SessionError::Unexpected("something before the game began")),
             }
         }
@@ -358,6 +361,7 @@ impl Session {
                 ToHook::Release { .. }
                 | ToHook::Speed(_)
                 | ToHook::Chat { .. }
+                | ToHook::Room(_)
                 | ToHook::Refused { .. }
                 | ToHook::Diverged { .. } => self.handle(message, game)?,
                 other => {
@@ -438,6 +442,7 @@ impl Session {
             }
             Gated::Ended(reason) => game.notice(Notice::Ended(reason)),
             Gated::Chat { from, text } => game.notice(Notice::Chat { from, text }),
+            Gated::Room(room) => game.notice(Notice::Room(room)),
             Gated::Nothing => {}
         }
         Ok(())

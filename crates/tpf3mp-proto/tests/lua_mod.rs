@@ -187,8 +187,189 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.geom",
             "tpf3mp.guard",
             "tpf3mp.registry",
-            "tpf3mp.roads"
+            "tpf3mp.roads",
+            "tpf3mp.ui"
         ]
+    );
+}
+
+#[test]
+fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "HOOK.room = true \
+         HOOK.status = { room = 'Sunday line', speed = 200, players = { \
+             { name = 'Julian', connected = true, owner = true, me = false }, \
+             { name = 'Sam', connected = true, owner = false, me = true } } } \
+         HOOK.heard = { { from = 'Julian', text = 'the bus is late' } } \
+         BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+         MODS = mount(loadPlugin(nil, 'Tpf3mpButton', 'MainModButtonAreaExtension')) \
+         function texts() \
+             local out = {} \
+             for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                 if v.view == 'TextView' then out[#out + 1] = v.params.text end \
+             end \
+             return out \
+         end",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    // The game bar: the room in one line, and a new chat line; the button
+    // in the mods' button area says the same new line; no window yet.
+    let (label, button, open): (String, String, bool) = lua
+        .load(
+            "return views(BAR.layout)[1].params.content.params.text, \
+                    views(MODS.layout)[1].params.content.params.text, \
+                    WINDOWS.Tpf3mpWindow ~= nil",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(label, "Multiplayer: Sunday line · 2/2 playing · 2x · 1 new");
+    assert_eq!(button, "Multiplayer (1)");
+    assert!(!open, "closed until a button is pressed");
+    // The game bar's button opens the window in the game's window
+    // container: the room, its players, the chat.
+    let (title, texts): (String, Vec<String>) = lua
+        .load(
+            "views(BAR.layout)[1].params.onClick() \
+             WINDOWS.Tpf3mpWindow.step() \
+             return WINDOWS.Tpf3mpWindow.layout.params.title, texts()",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(title, "Multiplayer");
+    assert_eq!(
+        texts,
+        [
+            "Room: Sunday line",
+            "Speed: 2x",
+            "Worlds match",
+            "",
+            "Players",
+            "  Julian (host)",
+            "  Sam (you)",
+            "",
+            "Chat",
+            "Julian: the bus is late",
+            "Send"
+        ]
+    );
+    // What the player types goes to the room.
+    let said: Vec<String> = lua
+        .load(
+            "for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.layout)) do \
+                 if v.view == 'TextInputField' then v.params.onValueChange('on my way') end \
+             end \
+             return HOOK.said",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(said, ["on my way"]);
+    // A line typed and then left (a click elsewhere cancels the field) stays
+    // in the field as typed, so Send sends what the field shows.
+    let (kept, resets): (String, bool) = lua
+        .load(
+            "local function field() \
+                 for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.layout)) do \
+                     if v.view == 'TextInputField' then return v end \
+                 end \
+             end \
+             field().params.onTyping('half typed') \
+             field().params.onCancel() \
+             WINDOWS.Tpf3mpWindow.step() \
+             WINDOWS.Tpf3mpWindow.render() \
+             return field().params.value, field().params.resetValueOnCancel",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(kept, "half typed");
+    assert!(!resets, "the field keeps what was typed");
+    // The other button closes it, and opens it again; so does the window's
+    // own close button.
+    let (closed, reopened, closed_by_itself): (bool, bool, bool) = lua
+        .load(
+            "views(MODS.layout)[1].params.onClick() \
+             local closed = WINDOWS.Tpf3mpWindow == nil \
+             views(MODS.layout)[1].params.onClick() \
+             local reopened = WINDOWS.Tpf3mpWindow ~= nil \
+             WINDOWS.Tpf3mpWindow.layout.params.onClose() \
+             return closed, reopened, WINDOWS.Tpf3mpWindow == nil",
+        )
+        .eval()
+        .unwrap();
+    assert!(closed && reopened && closed_by_itself);
+}
+
+#[test]
+fn chat_a_new_world_is_given_again_is_not_new() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let label: String = lua
+        .load(
+            "HOOK.room = true \
+             HOOK.status = { room = 'r', players = {} } \
+             HOOK.heard = { { from = 'Sam', text = 'before', old = true }, \
+                            { from = 'Sam', text = 'after' } } \
+             BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+             return views(BAR.layout)[1].params.content.params.text",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(label, "Multiplayer: r · 0/0 playing · 1 new");
+}
+
+#[test]
+fn only_the_newest_chat_lines_show_in_the_window() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let chat: Vec<String> = lua
+        .load(
+            "HOOK.room = true \
+             HOOK.status = { room = 'r', players = {} } \
+             for i = 1, 60 do HOOK.heard[i] = { from = 'Sam', text = 'line ' .. i } end \
+             BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+             views(BAR.layout)[1].params.onClick() \
+             local out, after = {}, false \
+             for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                 if v.view == 'TextView' and after and v.params.text ~= 'Send' then out[#out + 1] = v.params.text end \
+                 if v.view == 'TextView' and v.params.text == 'Chat' then after = true end \
+             end \
+             return out",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let expected: Vec<String> = (49..=60).map(|i| format!("Sam: line {i}")).collect();
+    assert_eq!(chat, expected);
+}
+
+#[test]
+fn a_window_the_game_will_not_show_is_said_in_the_game_bar() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (shown, open): (String, bool) = lua
+        .load(
+            "HOOK.room = true \
+             HOOK.status = { room = 'r', players = {} } \
+             BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+             ug_require('::/gui/main/game_react_globals.tl').getDefaultWindowApi = function() error('no window container') end \
+             views(BAR.layout)[1].params.onClick() \
+             BAR.step() BAR.render() \
+             local v = views(BAR.layout) \
+             return v[#v].params.text, package.loaded['tpf3mp.ui'].open",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(shown, "The Multiplayer window did not open");
+    assert!(!open);
+    assert!(
+        log(&lua).contains("the Multiplayer window did not open: "),
+        "{}",
+        log(&lua)
     );
 }
 
@@ -206,9 +387,9 @@ fn loaded_names(lua: &Lua) -> Vec<String> {
 const FAKE_HOOK: &str = r#"
 HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, worlds = 0,
          room = false, checkpoint = false, lanes = nil, clicks = nil, replaying = {},
-         applied = {}, results = {} }
+         applied = {}, results = {}, status = nil, heard = {}, said = {} }
 tpf3mp_native = {
-    version = 8,
+    version = 9,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then
@@ -249,6 +430,17 @@ tpf3mp_native = {
         local results = HOOK.results
         HOOK.results = {}
         return results
+    end,
+    status = function() return HOOK.status end,
+    chat = function()
+        local heard = HOOK.heard
+        HOOK.heard = {}
+        return heard
+    end,
+    say = function(text)
+        if text:match('^%s*$') then return false, 'nothing to say' end
+        HOOK.said[#HOOK.said + 1] = text
+        return true
     end,
 }
 "#;
@@ -373,7 +565,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 8; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 9; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -466,7 +658,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 8, command = print, log = print })
+             why({ version = 9, command = print, log = print })
              return out",
         )
         .eval()
@@ -669,9 +861,10 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 8 }
+             local native = { version = 9 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
-                                  'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results' }) do
+                                  'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
+                                  'status', 'chat', 'say' }) do
                  native[n] = function() end
              end
              native.room = function() error('gone') end

@@ -69,8 +69,9 @@ use std::{
     },
 };
 
+use tpf3mp_bridge::{Notice, RoomInfo};
 use tpf3mp_proto::{
-    Payload,
+    ChatText, Payload, PlayerId,
     lua::{LuaValue, MAX_DEPTH, MAX_NODES, action_from_lua, action_to_lua},
 };
 
@@ -88,12 +89,18 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 8.0;
+pub const VERSION: f64 = 9.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
 /// Most actions waiting for the step gate to hand them to the room.
 const MAX_WAITING: usize = 256;
+/// Most chat lines heard and not yet taken by the GUI, and said and not yet
+/// sent.
+const MAX_HEARD: usize = 64;
+const MAX_SAID: usize = 16;
+/// Most chat lines kept for a new world's GUI.
+const MAX_HISTORY: usize = 50;
 /// Most answers waiting for the GUI.
 const MAX_ANSWERS: usize = 256;
 /// Most lanes one checkpoint reports, and the longest text one lane may be.
@@ -210,6 +217,30 @@ struct Shared {
     /// A load asked for: `None` until the GUI took it, then the worlds
     /// started by then.
     load: Option<Option<u64>>,
+    /// The room, for the game's Multiplayer window ([`notice`]).
+    room: RoomStatus,
+}
+
+/// What the Multiplayer window shows of the room: `status()` and `chat()`.
+struct RoomStatus {
+    info: Option<RoomInfo>,
+    /// The local player.
+    me: Option<PlayerId>,
+    /// The room's speed, in percent.
+    speed: Option<u16>,
+    /// The checkpoint step this world last differed from the room's at,
+    /// until a world loads.
+    diverged: Option<u64>,
+    /// Chat heard, oldest first: who, and what.
+    heard: VecDeque<(String, String)>,
+    /// Chat the GUI took, oldest first, for the GUI of the next world: a
+    /// world's GUI starts with nothing of the last one's.
+    history: VecDeque<(String, String)>,
+    /// Whether the next `chat()` gives the history first: a world's GUI
+    /// started since.
+    replay: bool,
+    /// What the player said, for the room.
+    said: VecDeque<ChatText>,
 }
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
@@ -229,6 +260,16 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     save_answer: None,
     worlds: 0,
     load: None,
+    room: RoomStatus {
+        info: None,
+        me: None,
+        speed: None,
+        diverged: None,
+        heard: VecDeque::new(),
+        history: VecDeque::new(),
+        replay: false,
+        said: VecDeque::new(),
+    },
 });
 
 fn shared() -> MutexGuard<'static, Shared> {
@@ -404,6 +445,9 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"replaying", native_replaying),
                 (b"applied", native_applied),
                 (b"results", native_results),
+                (b"status", native_status),
+                (b"chat", native_chat),
+                (b"say", native_say),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -755,8 +799,228 @@ unsafe extern "C-unwind" fn native_saved(l: State) -> c_int {
 
 /// `world()`.
 unsafe extern "C-unwind" fn native_world(_l: State) -> c_int {
-    shared().worlds += 1;
+    let mut shared = shared();
+    shared.worlds += 1;
+    // A world loaded: the room's, after a divergence.
+    shared.room.diverged = None;
+    // Its GUI has none of the chat so far: give it the history again.
+    shared.room.replay = true;
     0
+}
+
+/// What the room tells the game, kept for the Multiplayer window: who is in
+/// the room, its speed, chat, and whether this world differed from the
+/// room's.
+pub fn notice(notice: &Notice) {
+    let mut shared = shared();
+    let room = &mut shared.room;
+    match notice {
+        Notice::Room(info) => room.info = Some(info.clone()),
+        Notice::Speed(speed) => room.speed = Some(speed.0),
+        Notice::Diverged { step, .. } => room.diverged = Some(*step),
+        Notice::Chat { from, text } => {
+            if room.heard.len() >= MAX_HEARD {
+                room.heard.pop_front();
+            }
+            room.heard
+                .push_back((from.as_str().to_owned(), text.as_str().to_owned()));
+        }
+        Notice::Ended(_) => {
+            room.info = None;
+            room.diverged = None;
+        }
+        Notice::Refused { .. } => {}
+    }
+}
+
+/// The local player, as the room's `Begin` names it.
+pub fn set_me(player: PlayerId) {
+    shared().room.me = Some(player);
+}
+
+/// What the player said in the Multiplayer window since the last call, for
+/// the room.
+pub fn take_said() -> Vec<ChatText> {
+    shared().room.said.drain(..).collect()
+}
+
+/// The room as `status()` gives it, or `None` before the room's game.
+fn room_status() -> Option<LuaValue> {
+    let shared = shared();
+    let room = &shared.room;
+    let info = room.info.as_ref()?;
+    #[allow(clippy::cast_precision_loss)]
+    let players = LuaValue::Table(
+        info.members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| {
+                (
+                    LuaValue::Number((index + 1) as f64),
+                    LuaValue::Table(vec![
+                        (
+                            LuaValue::string("name"),
+                            LuaValue::string(member.name.as_str()),
+                        ),
+                        (
+                            LuaValue::string("connected"),
+                            LuaValue::Boolean(member.connected),
+                        ),
+                        (
+                            LuaValue::string("owner"),
+                            LuaValue::Boolean(member.player == info.owner),
+                        ),
+                        (
+                            LuaValue::string("me"),
+                            LuaValue::Boolean(room.me == Some(member.player)),
+                        ),
+                    ]),
+                )
+            })
+            .collect(),
+    );
+    let mut fields = vec![
+        (
+            LuaValue::string("room"),
+            LuaValue::string(info.name.as_str()),
+        ),
+        (LuaValue::string("players"), players),
+    ];
+    if let Some(speed) = room.speed {
+        fields.push((
+            LuaValue::string("speed"),
+            LuaValue::Number(f64::from(speed)),
+        ));
+    }
+    #[allow(clippy::cast_precision_loss)]
+    if let Some(step) = room.diverged {
+        fields.push((LuaValue::string("diverged"), LuaValue::Number(step as f64)));
+    }
+    Some(LuaValue::Table(fields))
+}
+
+/// Pushes `value`, or nil if it cannot be; returns 1.
+///
+/// # Safety
+///
+/// Lua's own state, on its thread, with a free slot.
+unsafe fn push_or_nil(api: &LuaApi, l: State, value: Option<&LuaValue>) -> c_int {
+    // SAFETY: the caller's.
+    unsafe {
+        let top = (api.gettop)(l);
+        if let Some(value) = value {
+            let pushed = std::panic::catch_unwind(AssertUnwindSafe(|| push(api, l, value, 0)));
+            if matches!(pushed, Ok(Ok(()))) {
+                return 1;
+            }
+            (api.settop)(l, top);
+        }
+        (api.pushnil)(l);
+    }
+    1
+}
+
+/// `status()`: the room, for the Multiplayer window, or nil before the
+/// room's game.
+unsafe extern "C-unwind" fn native_status(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let status = room_status();
+    // SAFETY: Lua calls this with its own state, on its thread.
+    unsafe { push_or_nil(api, l, status.as_ref()) }
+}
+
+/// The chat lines `chat()` gives, oldest first, each with whether it is
+/// old: after a world's GUI started, the history it took before, then
+/// what was heard since the last call. What it gives goes into the history.
+fn take_chat() -> Vec<(String, String, bool)> {
+    let mut shared = shared();
+    let room = &mut shared.room;
+    let mut lines: Vec<(String, String, bool)> = Vec::new();
+    if std::mem::take(&mut room.replay) {
+        lines.extend(
+            room.history
+                .iter()
+                .map(|(from, text)| (from.clone(), text.clone(), true)),
+        );
+    }
+    for (from, text) in room.heard.drain(..) {
+        if room.history.len() >= MAX_HISTORY {
+            room.history.pop_front();
+        }
+        room.history.push_back((from.clone(), text.clone()));
+        lines.push((from, text, false));
+    }
+    lines
+}
+
+/// `chat()`: what the room's members said since the last call, oldest
+/// first: `{ { from =, text =, old = }, ... }`, `old` for the lines a
+/// previous world's GUI took, given again once to a new world's GUI.
+unsafe extern "C-unwind" fn native_chat(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let lines = take_chat();
+    #[allow(clippy::cast_precision_loss)]
+    let list = LuaValue::Table(
+        lines
+            .iter()
+            .enumerate()
+            .map(|(index, (from, text, old))| {
+                (
+                    LuaValue::Number((index + 1) as f64),
+                    LuaValue::Table(vec![
+                        (LuaValue::string("from"), LuaValue::string(from)),
+                        (LuaValue::string("text"), LuaValue::string(text)),
+                        (LuaValue::string("old"), LuaValue::Boolean(*old)),
+                    ]),
+                )
+            })
+            .collect(),
+    );
+    // SAFETY: Lua calls this with its own state, on its thread.
+    unsafe { push_or_nil(api, l, Some(&list)) }
+}
+
+/// `say(text)`: says `text` to the room for the player: `true`, or `false`
+/// and why not.
+unsafe extern "C-unwind" fn native_say(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let text = unsafe { string_arg(api, l, 1, 4 * 280) };
+    let said = match text.as_deref().map(str::trim) {
+        None | Some("") => Err("nothing to say"),
+        Some(text) => match ChatText::new(text) {
+            Ok(text) => {
+                let mut shared = shared();
+                if shared.room.said.len() >= MAX_SAID {
+                    Err("too much said at once")
+                } else {
+                    shared.room.said.push_back(text);
+                    Ok(())
+                }
+            }
+            Err(_) => Err("too long to say"),
+        },
+    };
+    // SAFETY: a C function's call has room for its results.
+    unsafe {
+        match said {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
 }
 
 /// `checkpoint()`: whether the update running is the last of a batch that
@@ -1014,10 +1278,11 @@ pub(crate) mod tests {
     use std::ffi::{CString, c_char, c_int};
 
     use mlua::ffi;
+    use tpf3mp_bridge::RoomMember;
     use tpf3mp_proto::action::{
         Action, ConstructionBuild, Param, ParamValue, Pos, Transform, VehicleId,
     };
-    use tpf3mp_proto::{BoundedVec, Text};
+    use tpf3mp_proto::{BoundedVec, FixedBytes, Speed, Text};
 
     use super::*;
 
@@ -1240,7 +1505,18 @@ pub(crate) mod tests {
         take_commands();
         take_log();
         let _ = end_batch();
-        shared().answers.clear();
+        let mut shared = shared();
+        shared.answers.clear();
+        shared.room = RoomStatus {
+            info: None,
+            me: None,
+            speed: None,
+            diverged: None,
+            heard: VecDeque::new(),
+            history: VecDeque::new(),
+            replay: false,
+            said: VecDeque::new(),
+        };
     }
 
     fn ordered(action: Action, ticket: Option<u64>) -> Ordered {
@@ -1366,9 +1642,9 @@ pub(crate) mod tests {
                  type(tpf3mp_native.saved), type(tpf3mp_native.world), type(tpf3mp_native.room), \
                  type(tpf3mp_native.checkpoint), type(tpf3mp_native.lanes), \
                  type(tpf3mp_native.clicks), type(tpf3mp_native.replaying), \
-                 type(tpf3mp_native.applied), type(tpf3mp_native.results)"
+                 type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say)"
             ),
-            Ok("8|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("9|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -1399,6 +1675,132 @@ pub(crate) mod tests {
             Ok("2".into())
         );
         take_commands();
+    }
+
+    fn player(n: u8) -> PlayerId {
+        PlayerId(FixedBytes([n; 32]))
+    }
+
+    #[test]
+    fn a_new_worlds_gui_gets_the_last_fifty_lines_of_chat() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        for i in 1..=60 {
+            notice(&Notice::Chat {
+                from: Text::new("Sam").unwrap(),
+                text: Text::new(format!("line {i}")).unwrap(),
+            });
+            if i % 30 == 0 {
+                lua.run("tpf3mp_native.chat()").unwrap();
+            }
+        }
+        lua.run("tpf3mp_native.world()").unwrap();
+        assert_eq!(
+            lua.run(
+                "local c = tpf3mp_native.chat() \
+                 return #c, c[1].text, c[#c].text, tostring(c[1].old)"
+            ),
+            Ok("50|line 11|line 60|true".into())
+        );
+    }
+
+    #[test]
+    fn the_multiplayer_window_sees_the_room_and_its_chat() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(
+            lua.run("return tostring(tpf3mp_native.status())"),
+            Ok("nil".into()),
+            "nothing before the room's game"
+        );
+        set_me(player(2));
+        notice(&Notice::Room(RoomInfo {
+            name: Text::new("Sunday line").unwrap(),
+            owner: player(1),
+            members: BoundedVec::new(vec![
+                RoomMember {
+                    player: player(1),
+                    name: Text::new("Julian").unwrap(),
+                    connected: true,
+                },
+                RoomMember {
+                    player: player(2),
+                    name: Text::new("Sam").unwrap(),
+                    connected: false,
+                },
+            ])
+            .unwrap(),
+        }));
+        notice(&Notice::Speed(Speed(200)));
+        notice(&Notice::Chat {
+            from: Text::new("Julian").unwrap(),
+            text: Text::new("the bus is late").unwrap(),
+        });
+        notice(&Notice::Diverged {
+            step: 500,
+            lanes: vec![3],
+        });
+        assert_eq!(
+            lua.run(
+                "local s = tpf3mp_native.status()                  local out = { s.room, s.speed, s.diverged }                  for _, p in ipairs(s.players) do                      out[#out + 1] = p.name .. ':' .. tostring(p.connected) .. ':'                          .. tostring(p.owner) .. ':' .. tostring(p.me)                  end                  return table.concat(out, ' ')"
+            ),
+            Ok("Sunday line 200 500 Julian:true:true:false Sam:false:false:true".into())
+        );
+        assert_eq!(
+            lua.run(
+                "local out = {}                  for _, c in ipairs(tpf3mp_native.chat()) do out[#out + 1] = c.from .. ': ' .. c.text end                  return table.concat(out, '; '), #tpf3mp_native.chat()"
+            ),
+            Ok("Julian: the bus is late|0".into()),
+            "heard once"
+        );
+        // The world the room sends loads: the divergence is over, and its
+        // GUI, which starts with no chat, gets what was said so far once,
+        // as old lines, then what is new.
+        lua.run("tpf3mp_native.world()").unwrap();
+        assert_eq!(
+            lua.run("return tostring(tpf3mp_native.status().diverged)"),
+            Ok("nil".into())
+        );
+        notice(&Notice::Chat {
+            from: Text::new("Sam").unwrap(),
+            text: Text::new("I lost my world").unwrap(),
+        });
+        assert_eq!(
+            lua.run(
+                "local out = {} \
+                 for _, c in ipairs(tpf3mp_native.chat()) do \
+                     out[#out + 1] = c.from .. ': ' .. c.text .. (c.old and ' (old)' or '') \
+                 end \
+                 return table.concat(out, '; '), #tpf3mp_native.chat()"
+            ),
+            Ok("Julian: the bus is late (old); Sam: I lost my world|0".into()),
+            "the history once, then only what is new"
+        );
+        // What the player says goes to the room; nothing, or too much, not.
+        assert_eq!(
+            lua.run("return tpf3mp_native.say('  on my way  ')"),
+            Ok("true".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.say('   ')"),
+            Ok("false|nothing to say".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.say(string.rep('x', 300))"),
+            Ok("false|too long to say".into())
+        );
+        let said: Vec<String> = take_said().iter().map(|t| t.as_str().to_owned()).collect();
+        assert_eq!(said, ["on my way"]);
+        // The game over, the window has no room to show.
+        notice(&Notice::Ended(Text::new("the owner left").unwrap()));
+        assert_eq!(
+            lua.run("return tostring(tpf3mp_native.status())"),
+            Ok("nil".into())
+        );
     }
 
     #[test]
