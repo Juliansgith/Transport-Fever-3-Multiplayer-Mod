@@ -40,6 +40,11 @@
 --   orders it for every game, this one included;
 -- - every other proposal gets an error, so those tools build nothing.
 --
+-- The module editor tells game scripts nothing on build 40408 (CAPTURE), so
+-- its click is stopped with "no proposal seen". Every other event of the
+-- room's game the script does not handle is logged by id and name, once
+-- each, a few dozen at most.
+--
 -- `handleEvent` takes the event `command` of id "tpf3mp" (sent with
 -- api.cmd.makeScriptingSendEventCmd) and hands its parameter, an action
 -- table, to the room: a way to act from the console, for tests. The event
@@ -64,14 +69,33 @@ function data()
 	local REFUSED = "Not in multiplayer yet: building with this tool"
 
 	-- The tools whose builds the room carries, by the tool's id: the
-	-- capture that makes each one's action.
+	-- capture that makes each one's action. On build 40408 the game tells
+	-- game scripts of the proposals of six tools only, each under the id
+	-- the game's GUI names it by (UI::CGameUI's constructor, read from the
+	-- binary): constructionBuilder, streetTerminalBuilder, streetBuilder,
+	-- trackBuilder, streetTrackModifier (the upgrade tool, not carried yet)
+	-- and bulldozer. The module editor (UI::ModuleBuilder) tells them
+	-- nothing there. moduleBuilder and moduleBulldozer are its names in the
+	-- construction menu's parameters (ConstructionActionParam); INFERRED
+	-- that a later build would send its proposals under them.
 	local CAPTURE = { constructionBuilder = "construction", streetBuilder = "street", trackBuilder = "track",
-		bulldozer = "bulldoze", streetTerminalBuilder = "stop" }
+		bulldozer = "bulldoze", streetTerminalBuilder = "stop", moduleBuilder = "construction",
+		moduleBulldozer = "bulldoze" }
 	-- In the GUI: the last proposal seen at each count of the player's builds
 	-- ({ action = t } or { why = text }), and the builds handed on so far.
 	local snapshots, handled = {}, nil
 	-- The last reason a proposal was refused for, and how many were logged.
 	local refusedWhy, refusals = nil, 0
+	-- The events of the room's game the mod does not handle, by id and
+	-- name, logged once each, a few dozen at most: what reaches the script
+	-- when a tool's build is "no proposal seen".
+	local unhandled, unhandledCount = {}, 0
+	local function note(l, id, name)
+		local key = tostring(id) .. " " .. tostring(name)
+		if unhandled[key] or unhandledCount >= 40 then return end
+		unhandled[key], unhandledCount = true, unhandledCount + 1
+		l:log("an event the mod does not handle: id " .. tostring(id) .. ", name " .. tostring(name))
+	end
 
 	local function linked()
 		if not tried then
@@ -181,12 +205,15 @@ function data()
 
 		guiHandleEvent = function(_params, _state, _guiState, _src, id, name, param)
 			if name ~= "builder.proposalCreate" and name ~= "builder.proposalPrepareForApply" then
+				local l = linked()
+				if l and l:room() then note(l, id, name) end
 				return nil
 			end
 			local l = linked()
 			if not l or not l:room() then return nil end
 			local clicks = l:clicks()
 			local kind = CAPTURE[id]
+			if kind == nil then note(l, id, name) end
 			if clicks ~= nil and kind ~= nil and type(param) == "table" then
 				local ok, action, why = pcall(capture[kind], param[1])
 				if not ok then action, why = nil, tostring(action) end
@@ -244,7 +271,8 @@ function data()
 					end
 				else
 					l:log("stopped a build the room cannot carry: "
-						.. tostring(seen and seen.why or "no proposal seen")
+						.. tostring(seen and seen.why or ("no proposal seen (a tool that tells game scripts "
+							.. "nothing, as the module editor on build 40408)"))
 						.. ((seen and seen.shape) and (" [" .. seen.shape .. "]") or ""))
 				end
 				snapshots[handled] = nil
