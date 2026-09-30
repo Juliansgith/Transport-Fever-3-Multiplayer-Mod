@@ -1080,8 +1080,9 @@ impl<G: RoomGate> StepDriver<G> {
 
     /// At the game's main menu, with no world up, on each of the menu's
     /// frames (the step's detour gets no call there; `crate::install` calls
-    /// this only while this game has never stepped a world, no world's GUI
-    /// has started, and the menu can load a save, `crate::menu`). It
+    /// this only while no world is loaded, after a world only once it closed
+    /// and nothing loads, `crate::at_menu`, and the menu can load a save,
+    /// `crate::menu`). It
     /// follows the room as the step does, but runs nothing:
     ///
     /// - before the room begins a game, it reads whether it did, and tells

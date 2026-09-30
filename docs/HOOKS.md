@@ -950,18 +950,46 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   every finalizer at `lua_close`), so the hook never calls into a closed
   state. hook.log: `menu: Lua state 0x... has app; the main menu can load
   the room's world from it`.
+- **Knows whether a world is loaded.** `DoStep` runs at the menu and in
+  a world alike, so the hook reads the engine's own answer:
+  `CMenuUI::m_game`, the loaded world, which `CMenuUI::StartGame` asserts
+  clear and sets and `CMenuUI::StopGame` clears. `DoStep` tests it before
+  it hands its frame to the world's UI; that test is the optional profile
+  target `UI::CMenuUI::DoStep/m_game test` (`0x6a01c0`, `cmp [rsi+0x6b0],
+  r13`), and its displacement is the field's offset, which the menu's
+  frame reads in the `CMenuUI` it is handed. A state given `app` while
+  `m_game` is set is the world's GUI's: the menu never loads from it, and
+  forgets it when the world closes. Loading is the menu's own sign, the
+  progress monitor's task, asked through the chunk's `busy()`.
 - **Follows the room from the menu's frame.** `UI::CMenuUI::DoStep`
   (`0x6a0160`, the menu's per-frame update on the main thread) is
   detoured. After the game's own frame, the driver runs
-  `StepDriver::on_menu` only while this game's step has never run in this
-  process and no world's GUI has started (`tpf3mp_native.world`), and a
-  state adopted on that thread is open. A world that stops stepping,
-  while saving the room's world or held for another player, is no menu:
-  an earlier rule of "no step for 2 s" took the room's session inside the
-  owner's world and hung it, and the owner's menu frame once took it while
-  saving the room's world before that world's first step (both measured
-  2026-09-30). Back at the menu after a world, the player loads any save,
-  as before. Before the room begins, `on_menu` reads `Begin` and tells
+  `StepDriver::on_menu` only while the game is at its main menu with no
+  world, and a state of the menu's adopted on that thread is open
+  (`crates/tpf3mp-hook/src/at_menu.rs`):
+  - a game that has had no world up yet (never stepped, no world's GUI
+    started, `m_game` never set) is at its menu, loading or not;
+  - a world loaded blocks, before its first step and while it stops
+    stepping (saving the room's world, held for another player): an
+    earlier rule of "no step for 2 s" took the room's session inside the
+    owner's world and hung it, and the owner's menu frame once took it
+    while saving the room's world before that world's first step (both
+    measured 2026-09-30);
+  - after a world, the menu is back once `m_game` is clear and the
+    progress monitor has no task for 2 s with no step between. A load
+    blocks: the GUI's load stops the world first and loads after, and a
+    moment without a task restarts the 2 s;
+  - after a world, a game whose `m_game` the hook cannot read (the target
+    missing) or whose menu cannot say whether it loads is never taken for
+    the menu (fail closed): as before this rule, only a fresh game follows
+    the room from its menu.
+
+  hook.log says where the menu sees the game on each change:
+  `menu: a world is loaded (CMenuUI::m_game set)`, `menu: the world closed
+  (CMenuUI::m_game cleared); ...`, `menu: no world loaded, but the game is
+  loading one`, `menu: back at the main menu after a world (no world loaded
+  or loading for 2 s)`; and when the room begins there, `the room began at
+  the main menu; the menu sees: <where>`. Before the room begins, `on_menu` reads `Begin` and tells
   the agent `MenuUp` once per arrival, which marks a guest ready (and the
   room's owner, once the room has the save the owner named for it to start
   from: PROTOCOL.md, "The first world") and keeps the hook's heartbeat
@@ -1002,11 +1030,12 @@ What the menu leaves to a world up: a `Load` without a file (the owner's
 world, or everyone's on a server that keeps no worlds), and a `Save` the
 room orders. Without a save named to start from, the owner's game
 therefore still needs its world up to start the room: the menu logs `at the main menu: the room plays the world this
-game starts from ...` once, and takes nothing. Without the menu's targets
-(all five optional in the profile) or an adopted state, nothing of this
-runs: hook.log says `the main menu cannot load the room's world (fail
-closed): ...`, and a game needs a world up, any one, before it can load
-the room's.
+game starts from ...` once, and takes nothing. Without the menu's five
+function targets (all optional in the profile) or an adopted state,
+nothing of this runs: hook.log says `the main menu cannot load the room's
+world (fail closed): ...`, and a game needs a world up, any one, before it
+can load the room's. Without the `m_game` test, the install line says so
+and only a game that has had no world up follows the room from its menu.
 
 Tried on build 40408 through the deployed server, with two games on one PC
 (the rig, the fixture save): the owner's game saved its world for the room
