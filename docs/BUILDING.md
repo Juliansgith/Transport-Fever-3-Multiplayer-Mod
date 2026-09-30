@@ -315,9 +315,11 @@ cargo buttons are carried so; one replacing more than one construction,
 one the room cannot name, or one that changes streets around it is
 refused. The module editor itself tells game scripts nothing of its
 proposals on build 40408 (read from the binary: `UI::CGameUI` forwards
-`builder.proposalCreate` for six other tools only), so it stays refused
-until the hook reads its proposal natively. What TPF3 shows of an edit's
-proposal is INFERRED from TPF2's shape until an edit is seen in the game.
+`builder.proposalCreate` for six other tools only), so the hook reads its
+proposal natively at its call of `CommandList::Add` and hands the GUI the
+same table a tool's proposal would be ([HOOKS.md](HOOKS.md), "The module
+editor"). What TPF3 shows of an edit's proposal is INFERRED from TPF2's
+shape and a static reading until an edit is seen in the game.
 
 ### Demolish
 

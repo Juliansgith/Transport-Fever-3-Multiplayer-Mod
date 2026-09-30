@@ -25,6 +25,10 @@
 --     clicks  = function(),         -- in the GUI: the player's builds queued
 --                                   -- in the room's game so far, or nil where
 --                                   -- the hook cannot take them to the room
+--     built   = function(n),        -- optional; in the GUI: the build the
+--                                   -- module editor queued at click n, as
+--                                   -- game scripts see a proposal | nil, why
+--                                   -- | nil (not the module editor's)
 --     replaying = function(on),     -- the game script applies the room's
 --                                   -- actions (true) or is done (false)
 --     applied = function(i, ok, entity, why), -- in a game script's postUpdate:
@@ -210,6 +214,20 @@ end
 function Link:clicks()
 	local ok, clicks = pcall(self.native.clicks)
 	if ok and type(clicks) == "number" then return clicks end
+	return nil
+end
+
+-- In the GUI: the build the module editor queued at click `click` (the
+-- count before it), read by the hook, as game scripts see a proposal; nil
+-- and why when it did not read; nil when that click was not the module
+-- editor's, or the hook has no `built` (it is optional: the module editor
+-- then stays refused).
+function Link:built(click)
+	if type(self.native.built) ~= "function" then return nil end
+	local ok, proposal, why = pcall(self.native.built, click)
+	if not ok then return nil, "the hook refused: " .. tostring(proposal) end
+	if type(proposal) == "table" then return proposal end
+	if why ~= nil then return nil, tostring(why) end
 	return nil
 end
 

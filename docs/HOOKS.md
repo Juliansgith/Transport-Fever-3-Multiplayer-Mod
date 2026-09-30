@@ -692,6 +692,12 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.clicks()`: the player's builds queued in the room's game
   so far, or `nil` where the hook cannot take them to the room ("The build
   tools" below).
+- `tpf3mp_native.built(n)`: in the GUI: the build the module editor
+  queued at click `n`, read by the hook, as game scripts see a proposal,
+  once; `nil` and why when it did not read; `nil` when click `n` was not
+  the module editor's ("The module editor" below). An optional function:
+  the bridge's version stays 9, and a mod or hook without it keeps the
+  module editor refused.
 - `tpf3mp_native.replaying(on)`: the game script begins or ends applying
   the room's actions, whose builds the hook lets through.
 - `tpf3mp_native.applied(index, ok, entity, why)`: in the game script's
@@ -1074,8 +1080,8 @@ builds it, paid by the player (`Context.player`) and clearing town
 buildings in its way (`gatherBuildings`), as the tool builds; without a
 context the game builds for free.
 
-Five tools build through the room so far, and a construction's window
-its edits:
+Five tools build through the room so far, the module editor through the
+hook, and a construction's window its edits:
 
 - **The construction tool** (`constructionBuilder`): a proposal of one
   construction (a station, a depot, anything the tool places) becomes a
@@ -1143,14 +1149,12 @@ its edits:
     tool, not carried yet) and `bulldozer`. The **module editor**
     (`UI::ModuleBuilder`, opened from a station's window) is not among
     them: it queues its `WorldBuildProposal` itself and game scripts hear
-    nothing of it. So its click is counted by the hook's gate and stopped,
-    and `guiUpdate` logs `stopped a build the room cannot carry: no
-    proposal seen (a tool that tells game scripts nothing, as the module
-    editor on build 40408)` (seen in the game, 2026-09-30). Carrying it
-    needs the proposal from the native side. The mod's `CAPTURE` names
-    `moduleBuilder` and `moduleBulldozer` (the construction menu's names
-    for those tools, `ConstructionActionParam`) in case a later build
-    sends their proposals; INFERRED;
+    nothing of it (its click was stopped with "no proposal seen" in the
+    game, 2026-09-30). So the hook reads it natively ("The module editor"
+    below), and the GUI takes that for the click. The mod's `CAPTURE` also
+    names `moduleBuilder` and `moduleBulldozer` (the construction menu's
+    names for those tools, `ConstructionActionParam`) in case a later
+    build sends their proposals; INFERRED;
   - a construction's parameters changed in the construction menu, and the
     cargo buttons of a station's window, send the game's replacement
     proposal from Lua (`api.engine.util.proposal
@@ -1168,6 +1172,38 @@ its edits:
   handle by id and name, once each and 40 at most (`an event the mod does
   not handle: id …, name …`), so a test in the game shows what a tool
   that builds "with no proposal seen" sends, if anything.
+- **The module editor** (`UI::ModuleBuilder`), read natively
+  (`crates/tpf3mp-hook/src/modules.rs`). It queues its build with its own
+  call of `CommandList::Add` (profile target `ModuleBuilder::MousePressed/Add
+  call`, 0x543b25 in `UI::ModuleBuilder::MousePressed`; `Add` returns to
+  0x543b2a; the factory before it sets `playerInitiated`). The add's
+  detour is entered through a thunk that notes where `Add` returns to; a
+  player's build counted there whose call returns into the module editor
+  has its `Proposal` read before `Add` runs: `toRemove`, the first
+  `toAdd` entity's file (`ResName`, printed `mod::/path`), parameters (an
+  abseil b-tree of variants, walked whole), matrix and name, and the
+  street part's removed nodes and segments by entity (the layouts of
+  `feat/capture-all`'s `conscap.rs` and
+  `investigation/TPF3_CONSTRUCTION_CAPTURE_2026-09-29.md` there, re-checked
+  with `tools/tpfre` on build 40408). Every read is checked readable,
+  every count and text capped, every table walked to exactly its size. It
+  is kept, as a Lua table of the shape game scripts see a proposal in,
+  under the click count before it (the 16 newest kept), and logged
+  (`module editor: click N queued …`, or `module editor: click N does not
+  read: …`). The GUI's `guiUpdate`, handing on click N, asks
+  `tpf3mp_native.built(N)` first, ahead of any preview another tool
+  showed: the proposal is made an action by `capture.construction`, as
+  the construction tool's, and must replace a construction (else
+  refused: `an edit that replaces no construction`); one that did not
+  read is refused with why. The click's apply is stopped as every
+  player's build is, and the room orders the edit for every game, which
+  replaces the construction as above. `built` is optional in the bridge:
+  a mod or hook without it keeps the module editor refused. Without the
+  profile target the hook logs so at install and the module editor stays
+  refused. INFERRED, not yet seen in the game: every layout read (static
+  only), that the proposal's parameters are the ones the replay needs
+  (`seed` among them), and that the module bulldozer (a
+  `UI::Bulldozer` action) is not this call.
 - **The street and track tools** (`streetBuilder`, `trackBuilder`): the
   proposal becomes a `BuildRoad` or `BuildTrack`, as the tool made it, by
   positions (docs/BUILDING.md, "The action schema"): the nodes and edges it
@@ -1229,8 +1265,8 @@ its edits:
 A refusal shows its reason in the tool, and the log has each new reason
 with the proposal's shape (`the room cannot carry this ... build`); every
 build handed to the room is logged with its shape too. The upgrade, bus
-lane and tram track tools, the signal tools and the module editor stay
-refused until their builds are captured. Where the profile lacks the
+lane and tram track tools and the signal tools stay refused until their
+builds are captured. Where the profile lacks the
 two targets, `clicks()` is nil and every tool stays refused.
 
 Seen on build 40408, through the deployed server with two games on one PC:

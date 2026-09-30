@@ -40,6 +40,7 @@ mod install;
 pub mod log;
 pub mod lua;
 pub mod menu;
+pub mod modules;
 pub mod order;
 mod platform;
 pub mod seeds;

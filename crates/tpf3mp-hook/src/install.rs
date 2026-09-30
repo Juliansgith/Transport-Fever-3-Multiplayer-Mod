@@ -508,9 +508,22 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     let builds = match (at(ADD_TARGET), at(BUILD_APPLY_TARGET)) {
         // SAFETY: both are the functions the profile resolved, which no
         // thread runs yet; detour_forever installs each for good.
-        (Ok(add), Ok(apply)) => unsafe { crate::builds::install(add, apply, detour_forever) }
-            .map(|()| "the build tools build through the room".to_owned())
-            .unwrap_or_else(|error| format!("the build tools stay refused: {error}")),
+        (Ok(add), Ok(apply)) => {
+            let module = at(crate::modules::MODULE_ADD_CALL).ok();
+            // SAFETY: as above.
+            unsafe { crate::builds::install(add, apply, module, detour_forever) }
+                .map(|()| match module {
+                    Some(call) => format!(
+                        "the build tools build through the room; the module editor's builds \
+                         are read where Add returns to {:#x}",
+                        call + 5
+                    ),
+                    None => "the build tools build through the room; the profile has no \
+                             module editor call, so its builds stay refused"
+                        .to_owned(),
+                })
+                .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))
+        }
         _ => "the build tools stay refused: the profile has no build targets".to_owned(),
     };
     log_line(&builds);

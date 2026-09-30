@@ -40,10 +40,13 @@
 --   orders it for every game, this one included;
 -- - every other proposal gets an error, so those tools build nothing.
 --
--- The module editor tells game scripts nothing on build 40408 (CAPTURE), so
--- its click is stopped with "no proposal seen". Every other event of the
--- room's game the script does not handle is logged by id and name, once
--- each, a few dozen at most.
+-- The module editor tells game scripts nothing on build 40408 (CAPTURE):
+-- the hook reads its build natively at the click, and `guiUpdate` takes it
+-- for that click (tpf3mp_native.built), ahead of any preview, and makes the
+-- edit of it as of the construction tool's proposal. A click with neither
+-- is stopped with "no proposal seen". Every event of the room's game the
+-- script does not handle is logged by id and name, once each, a few dozen
+-- at most.
 --
 -- `handleEvent` takes the event `command` of id "tpf3mp" (sent with
 -- api.cmd.makeScriptingSendEventCmd) and hands its parameter, an action
@@ -95,6 +98,26 @@ function data()
 		if unhandled[key] or unhandledCount >= 40 then return end
 		unhandled[key], unhandledCount = true, unhandledCount + 1
 		l:log("an event the mod does not handle: id " .. tostring(id) .. ", name " .. tostring(name))
+	end
+
+	-- The snapshot of a module editor's click, from its proposal as the hook
+	-- read it (tpf3mp_native.built) or why that did not read: the edit the
+	-- construction tool's capture makes of it, which must replace the
+	-- construction edited.
+	local function moduleEdit(proposal, why)
+		local shape = "module editor"
+		if proposal == nil then
+			return { why = "the module editor's edit did not read: " .. tostring(why), shape = shape }
+		end
+		local removes = type(proposal.toRemove) == "table" and #proposal.toRemove > 0
+		local ok, action, whyNot = true, nil, "an edit that replaces no construction"
+		if removes then ok, action, whyNot = pcall(capture.construction, proposal) end
+		if not ok then action, whyNot = nil, tostring(action) end
+		if action and action.BuildConstruction.replaces == nil then
+			action, whyNot = nil, "an edit that replaces no construction"
+		end
+		if not action then return { why = "the module editor's edit: " .. tostring(whyNot), shape = shape } end
+		return { action = action, shape = shape }
 	end
 
 	local function linked()
@@ -248,6 +271,10 @@ function data()
 			if handled == nil then handled = clicks end
 			while handled < clicks do
 				local seen = snapshots[handled]
+				-- The module editor's click: its build as the hook read it,
+				-- whatever preview another tool showed before.
+				local native, whyNot = l:built(handled)
+				if native ~= nil or whyNot ~= nil then seen = moduleEdit(native, whyNot) end
 				if seen and seen.action then
 					local ok, why = l:command(seen.action)
 					if ok then
@@ -258,8 +285,7 @@ function data()
 					end
 				else
 					l:log("stopped a build the room cannot carry: "
-						.. tostring(seen and seen.why or ("no proposal seen (a tool that tells game scripts "
-							.. "nothing, as the module editor on build 40408)"))
+						.. tostring(seen and seen.why or "no proposal seen (a tool that tells game scripts nothing)")
 						.. ((seen and seen.shape) and (" [" .. seen.shape .. "]") or ""))
 				end
 				snapshots[handled] = nil

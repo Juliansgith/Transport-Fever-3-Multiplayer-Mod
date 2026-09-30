@@ -131,6 +131,23 @@ offset = 0
 prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
 required = false
 
+# UI::ModuleBuilder::MousePressed's call of CommandList::Add (0x543b25, in
+# 0x543630, which names "UI::ModuleBuilder::MousePressed" and
+# modulebuilder.cpp): `lea r9,[rbp+0xa0]; mov r8,rax; lea rdx,[rsp+0x50];
+# mov rcx,rdi; call Add`, after the factory 0x9ee860 made the command with
+# playerInitiated 1. Add returns to this + 5 (0x543b2a) for every module
+# edit, which tells game scripts nothing; the hook reads its proposal there
+# (crates/tpf3mp-hook/src/modules.rs; found for feat/capture-all,
+# investigation/TPF3_CONSTRUCTION_CAPTURE_2026-09-29.md there, re-checked
+# with tpfre on this build: one match). Without it the module editor stays
+# refused.
+[[target]]
+name = "ModuleBuilder::MousePressed/Add call"
+signature = "4C 8D 8D A0 00 00 00 4C 8B C0 48 8D 54 24 50 48 8B CF E8 ?? ?? ?? ??"
+offset = 18
+prologue = "E8"
+required = false
+
 # Lua 5.2's C API, which the hook calls to give each Lua state the
 # `tpf3mp_native` table (HOOKS.md, "The Lua side"). luaB_print is found by its
 # own string; its calls name gettop, getglobal, pushvalue, callk, tolstring and
