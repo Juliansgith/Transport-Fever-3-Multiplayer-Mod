@@ -723,10 +723,12 @@ fn every_game_script_names_a_script_the_mod_has() {
 }
 
 /// A stand-in for an engine (game script) state: the commands it is sent
-/// run at once, as the game's do there.
+/// run at once, as the game's do there. REFUSE makes sendCommand raise,
+/// FAILS makes a callback hear that the command failed, NO_CALLBACKS
+/// refuses every callback.
 const FAKE_ENGINE: &str = r#"
 SENT = {}
-REFUSE = false
+REFUSE, FAILS, NO_CALLBACKS = false, false, false
 local function vec4(x, y, z, w) return { x, y, z, w } end
 api = {
     type = {
@@ -754,10 +756,17 @@ api = {
             return { event = { src = src, id = id, name = name, param = param } }
         end,
         sendCommand = function(command, callback)
-            -- As the game in a game script's update.
-            if callback ~= nil then error('Callbacks are currently disallowed') end
+            -- As the game in a game script: no callback in update; in
+            -- postUpdate one is called at once, with the command's data (the
+            -- command here), whether it went, and what it made.
+            if callback ~= nil and (PHASE == 'update' or NO_CALLBACKS) then
+                error('Callbacks are currently disallowed')
+            end
             if REFUSE then error('the proposal collides') end
             SENT[#SENT + 1] = command
+            if callback ~= nil then
+                callback(command, not FAILS, command.made and { { command.made, 1 } } or {})
+            end
         end,
     },
 }
@@ -794,8 +803,12 @@ fn engine() -> (Lua, Table) {
     lua.globals().set("SCRIPT", script.clone()).unwrap();
     lua.load(
         "UPDATE = function(p, s, dt) \
+             if BEFORE_UPDATE then BEFORE_UPDATE() end \
+             PHASE = 'update' \
              local r = SCRIPT.update(p, s, dt) \
+             PHASE = 'post' \
              if r ~= nil then SCRIPT.postUpdate(p, s, dt, r) end \
+             PHASE = nil \
              return r \
          end",
     )
@@ -845,7 +858,7 @@ api.engine.getComponent = function(e, kind)
     if c == true then return {} end
     return c
 end
-api.engine.util.transport = { getPosition = function(e) return POSITIONS[e] end }
+api.engine.util.vehicle = { getPosition = function(e) return POSITIONS[e] end }
 local function sorted(kind)
     local list = {}
     for e in pairs(WORLD[kind]) do list[#list + 1] = e end
@@ -1097,20 +1110,16 @@ fn a_construction_the_tool_placed_becomes_the_rooms_action() {
         "{}",
         refusals[2]
     );
-    // A depot's entrance street is its own: the game makes it again from
-    // the construction, so the construction alone travels.
-    let (file, ok): (String, bool) = lua
+    // A construction whose tool built no streets carries none.
+    let (connection, ok): (bool, bool) = lua
         .load(format!(
             "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
-             local depot = {CONSTRUCTION_PROPOSAL} \
-             depot.proposal.addedNodes = {{ {{ entity = -1 }}, {{ entity = -2 }} }} \
-             depot.proposal.addedSegments = {{ {{ entity = -3 }} }} \
-             local action = capture.construction(depot) \
-             return action.BuildConstruction.file, schema_check(action)"
+             local action = capture.construction({CONSTRUCTION_PROPOSAL}) \
+             return action.BuildConstruction.connection ~= nil, schema_check(action)"
         ))
         .eval()
         .unwrap();
-    assert_eq!(file, "::/depots/road/road_maint_station.con");
+    assert!(!connection);
     assert!(ok);
     // Town buildings in the way go, as the replay clears them again; a
     // player's construction replaced does not travel.
@@ -1129,6 +1138,120 @@ fn a_construction_the_tool_placed_becomes_the_rooms_action() {
         .unwrap();
     assert!(cleared);
     assert_eq!(replaced, "a construction that replaces another");
+}
+
+/// A bus station placed by the street 8-9 of FAKE_NETWORK, as the
+/// construction tool proposes it (build 40408's shape): the street rebuilt
+/// through a new junction -2, and an entrance edge from the station's own
+/// street node -1 to it.
+const STATION_BY_ROAD: &str = "{ toRemove = {}, \
+    toAdd = { { fileName = '::/stations/street/modular_street_station/modular_terminal.con', \
+                name = 'Okehampton Station', playerEntity = 25, \
+                transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 80, 0, 0, 1 }, \
+                params = { seed = 7, length = 2 } } }, \
+    proposal = { \
+    addedNodes = { { entity = -1, comp = { position = { x = 70, y = 0, z = 0 } } }, \
+                   { entity = -2, comp = { position = { x = 50, y = 0, z = 0 } } } }, \
+    addedSegments = { \
+        { entity = -3, type = 0, comp = { node0 = -1, node1 = -2, type = 0, typeIndex = -1, \
+          tangent0 = { x = -20, y = 0, z = 0 }, tangent1 = { x = -20, y = 0, z = 0 }, \
+          roadTemplate = '::/street/town_small.street_template', roadStyle = '' } }, \
+        { entity = -4, type = 0, comp = { node0 = 8, node1 = -2, type = 0, typeIndex = -1, \
+          tangent0 = { x = 0, y = 40, z = 0 }, tangent1 = { x = 0, y = 40, z = 0 }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } }, \
+        { entity = -5, type = 0, comp = { node0 = -2, node1 = 9, type = 0, typeIndex = -1, \
+          tangent0 = { x = 0, y = 40, z = 0 }, tangent1 = { x = 0, y = 40, z = 0 }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } } }, \
+    removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9 } } }, \
+    removedNodes = {}, edgeObjectsToAdd = {} } }";
+
+#[test]
+fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let (carried, ok): (String, bool) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             ACTION = capture.construction({STATION_BY_ROAD}) \
+             local c = ACTION.BuildConstruction.connection \
+             local out = {{ #c.vertices, #c.links, #c.removals }} \
+             for _, v in ipairs(c.vertices) do out[#out + 1] = type(v.resolve) == 'table' and v.resolve.Node or v.resolve end \
+             for _, l in ipairs(c.links) do out[#out + 1] = l.from .. '>' .. l.to .. ':' .. l.kind.template end \
+             out[#out + 1] = c.removals[1].ends.a.y .. ',' .. c.removals[1].ends.b.y \
+             return table.concat(out, '|'), schema_check(ACTION)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        carried,
+        "4|3|1|New|New|Street|Street\
+         |0>1:::/street/town_small.street_template\
+         |2>1:::/street/country.street_template\
+         |1>3:::/street/country.street_template|-40,40",
+        "the entrance and the rebuilt street, every link with its kind, and the street it replaces"
+    );
+    assert!(ok, "the schema takes it");
+    // Every game builds the station and the street rebuilt through the
+    // junction in one proposal, leaving out the station's own entrance,
+    // which the station makes again unsnapped; then the game's refresh of
+    // the new station, which snaps its entrance onto the junction. As the
+    // game: a built construction is listed, and refreshed on request.
+    lua.load(
+        "api.type.ComponentType.CONSTRUCTION = 2 \
+         CONSTRUCTIONS = {} \
+         local get = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 2 then return CONSTRUCTIONS[e] end return get(e, kind) end \
+         api.engine.getEntitiesWithComponent = function(kind) \
+             local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
+         local send = api.cmd.sendCommand \
+         api.cmd.sendCommand = function(cmd, ...) \
+             local c = cmd.proposal and cmd.proposal.constructionsToAdd and cmd.proposal.constructionsToAdd[1] \
+             if c then CONSTRUCTIONS[5000] = { fileName = c.fileName, \
+                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } end \
+             return send(cmd, ...) \
+         end \
+         api.engine.util.proposal = { refreshConstruction = function(e) return { refreshed = e, \
+             proposal = { addedSegments = { { entity = -2, comp = { node0 = -1, node1 = 7777 } } }, \
+                          removedSegments = { { entity = 6000 } } } } end } \
+         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let built: String = lua
+        .load(
+            "local p = SENT[1].proposal local s = p.streetProposal \
+             local out = { #SENT, p.constructionsToAdd[1].fileName, #s.nodesToAdd, #s.edgesToAdd, \
+                 table.concat(s.edgesToRemove, ','), table.concat(s.nodeConfigsToRemove or {}, ',') } \
+             for _, e in ipairs(s.edgesToAdd) do \
+                 out[#out + 1] = e.comp.node0 .. '>' .. e.comp.node1 .. ':' .. e.comp.roadTemplate end \
+             local r = SENT[2] \
+             out[#out + 1] = r.proposal.refreshed .. ':' .. tostring(r.context) .. ':' .. tostring(r.ignoreErrors) \
+                 .. ':' .. tostring(r.playerInitiated) \
+             return table.concat(out, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        built,
+        "2|::/stations/street/modular_street_station/modular_terminal.con|1|2|100|8,9\
+         |8>-3:::/street/country.street_template\
+         |-3>9:::/street/country.street_template\
+         |5000:nil:true:false",
+        "the station and the rebuilt street, then its refresh, free, as no player's click"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l == "snapping 5000 +e-2:-1>7777 -e6000"),
+        "{logged:?}"
+    );
 }
 
 #[test]
@@ -1184,11 +1307,18 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
     assert_eq!(handed, 1);
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
-    assert!(logged.contains(&"handed the player's build to the room".to_owned()));
+    assert!(
+        logged.contains(
+            &"handed the player's build to the room \
+              [+c::/depots/road/road_maint_station.con{frozen 0n 0e}]"
+                .to_owned()
+        ),
+        "what was handed over, for the log: {logged:?}"
+    );
     assert!(
         logged.contains(
             &"stopped a build the room cannot carry: an unnamed construction \
-              [+c::/depots/road/road_maint_station.con]"
+              [+c::/depots/road/road_maint_station.con{frozen 0n 0e}]"
                 .to_owned()
         ),
         "{logged:?}"
@@ -1196,7 +1326,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     assert!(
         logged.contains(
             &"the room does not carry the bulldozer tool yet \
-              [+c::/depots/road/road_maint_station.con]"
+              [+c::/depots/road/road_maint_station.con{frozen 0n 0e}]"
                 .to_owned()
         ),
         "a tool the room does not carry logs what it proposed: {logged:?}"
@@ -1276,12 +1406,19 @@ fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
     .exec()
     .unwrap();
     lua.load(format!(
-        "HOOK.batch = {{ {DEPOT} }} UPDATE({{}}, STATE, 0.2)"
+        "HOOK.batch = {{ {DEPOT} }} UPDATE({{}}, STATE, 0.2) \
+         REFUSE, FAILS = false, true \
+         HOOK.batch = {{ {DEPOT} }} UPDATE({{}}, STATE, 0.2)"
     ))
     .exec()
     .unwrap();
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
-    assert_eq!(logged.len(), 3, "{logged:?}");
+    assert_eq!(logged.len(), 4, "{logged:?}");
+    // One the game ran and answered as failed.
+    assert_eq!(
+        logged[3],
+        "action 1 of this step was not applied: the game refused it"
+    );
     assert_eq!(logged[0], "the game script is linked");
     assert_eq!(
         logged[1],
@@ -1690,11 +1827,22 @@ fn a_street_build_the_room_cannot_carry_says_why() {
 
 /// Vehicles, lines and station groups for the registry's tests, over the
 /// stand-in engine state: VEHICLES, LINES and GROUPS list what exists; a
-/// bought vehicle appears as NEXT_VEHICLE, a new line as NEXT_LINE.
+/// bought vehicle appears as NEXT_VEHICLE, a new line as NEXT_LINE. As the
+/// game's line system, LINES lists a new line only from the next update:
+/// until then it is in LATE_LINES, and exists all the same.
 const FAKE_FLEET: &str = r#"
 VEHICLES, LINES, GROUPS = { 401, 402 }, { 301 }, { 91, 90 }
+LATE_LINES = {}
 NEXT_VEHICLE, NEXT_LINE = 500, 600
-local CT = { CONSTRUCTION = 2, TRANSPORT_VEHICLE = 4, STATION_GROUP = 9, GAME_TIME = 10 }
+BEFORE_UPDATE = function()
+    for _, e in ipairs(LATE_LINES) do LINES[#LINES + 1] = e end
+    LATE_LINES = {}
+end
+local function has(list, e)
+    for _, x in ipairs(list) do if x == e then return true end end
+    return false
+end
+local CT = { CONSTRUCTION = 2, LINE = 3, TRANSPORT_VEHICLE = 4, STATION_GROUP = 9, GAME_TIME = 10 }
 api.type.ComponentType = CT
 api.engine.getEntitiesWithComponent = function(kind)
     if kind == CT.TRANSPORT_VEHICLE then return VEHICLES end
@@ -1710,6 +1858,9 @@ api.engine.getComponent = function(e, kind)
         return { fileName = 'depot/bus_depot.con', depots = { 202 },
                  transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } }
     end
+    if kind == CT.LINE and (has(LINES, e) or has(LATE_LINES, e)) then return { stops = {} } end
+    if kind == CT.TRANSPORT_VEHICLE and has(VEHICLES, e) then return {} end
+    if kind == CT.STATION_GROUP and has(GROUPS, e) then return {} end
 end
 api.res = { modelRep = {
     find = function(name) if name == 'vehicle/bus/city.mdl' then return 41 end return -1 end,
@@ -1727,10 +1878,18 @@ api.cmd.makeVehicleSetLineCmd = function(vehicle, line, stop)
 end
 local send = api.cmd.sendCommand
 api.cmd.sendCommand = function(command, ...)
+    -- As the game: a bought vehicle exists, and is listed, at once; a new
+    -- line exists at once, and is listed from the next update. The
+    -- command's data says which it made.
+    if command.buy then
+        VEHICLES[#VEHICLES + 1] = NEXT_VEHICLE
+        command.resultVehicleEntity, command.made = NEXT_VEHICLE, NEXT_VEHICLE
+    end
+    if command.createLine then
+        LATE_LINES[#LATE_LINES + 1] = NEXT_LINE
+        command.resultEntity, command.made = NEXT_LINE, NEXT_LINE
+    end
     send(command, ...)
-    -- As the game: a bought vehicle exists at once.
-    if command.buy then VEHICLES[#VEHICLES + 1] = NEXT_VEHICLE end
-    if command.createLine then LINES[#LINES + 1] = NEXT_LINE end
 end
 "#;
 
@@ -1759,16 +1918,29 @@ fn the_registry_names_vehicles_in_the_order_they_came_and_never_again() {
              out[#out + 1] = registry.id(reg, 'vehicles', 403)
              out[#out + 1] = registry.entity(reg, 'vehicles', 1)
              out[#out + 1] = #fresh .. ':' .. fresh[1][1] .. ':' .. fresh[1][2] .. ':' .. fresh[1][3]
+             -- A line the line system leaves out, but which exists, keeps
+             -- its id; one gone is retired.
+             LINES, LATE_LINES = {}, { 301 }
+             reg = registry.sync(reg)
+             out[#out + 1] = registry.id(reg, 'lines', 301)
+             LATE_LINES = {}
+             reg = registry.sync(reg)
+             out[#out + 1] = tostring(registry.id(reg, 'lines', 301))
+             -- What an action made is bound at once, listed or not.
+             LATE_LINES = { 600 }
+             reg, fresh = registry.sync(reg, { lines = { 600 } })
+             out[#out + 1] = #fresh .. ':' .. registry.id(reg, 'lines', 600)
+             LINES, LATE_LINES = { 600 }, {}
              -- A kind it cannot list keeps its names.
              api.engine.system.lineSystem = nil
              local _, _, failed = registry.sync(reg)
-             out[#out + 1] = #failed .. ':' .. registry.id(reg, 'lines', 301)
+             out[#out + 1] = #failed .. ':' .. registry.id(reg, 'lines', 600)
              return table.concat(out, ' ')",
         )
         .eval()
         .unwrap();
     assert_eq!(
-        named, "5 0 1 0 1 0 nil 2 402 1:vehicles:2:403 1:0",
+        named, "5 0 1 0 1 0 nil 2 402 1:vehicles:2:403 0 nil 1:1 1:1",
         "lowest entity first, per kind; a retired id never comes back"
     );
 }
@@ -1965,4 +2137,162 @@ fn a_line_travels_by_its_stations_ids_and_is_made_again_the_same() {
         .eval()
         .unwrap();
     assert_eq!(made, "Line 1|0.8|25|90|91|2|2|0.25|true|true|nil|600");
+    // The line system lists it only from the next update; the registry
+    // names it at once, and the next action finds it by that name.
+    let named: String = lua
+        .load(
+            "local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua') \
+             local out = { #LINES, registry.id(STATE.value.registry, 'lines', 600) } \
+             api.cmd.makeEntitySetNameCmd = function(e, name) return { rename = { entity = e, name = name } } end \
+             HOOK.batch = { { EditLine = { line = 1, change = { Rename = 'North' } } } } UPDATE({}, STATE, 0.2) \
+             out[#out + 1] = SENT[2].rename.entity \
+             out[#out + 1] = registry.id(STATE.value.registry, 'lines', 600) \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(named, "1 1 600 1");
+}
+
+#[test]
+fn a_stops_loading_flags_reach_the_game_in_order_however_it_copied_them() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    // As the game: its binding copies a list it is handed in the order
+    // `next` walks it, and the actions reach postUpdate as its own copy of
+    // what update returned, whose lists `next` walks in hash order.
+    lua.load(
+        "api.type.Line = { new = function() return { vehicleInfo = {} } end, \
+             Stop = { new = function() return {} end }, \
+             StopConfig = { new = function() return setmetatable({}, { __newindex = function(t, k, v) \
+                 if type(v) == 'table' then \
+                     local copy, key = {}, next(v) \
+                     while key ~= nil do copy[#copy + 1] = v[key] key = next(v, key) end \
+                     v = copy \
+                 end \
+                 rawset(t, k, v) end }) end } } \
+         api.type.StationTerminal = { new = function(s, t) return { station = s, terminal = t } end } \
+         api.cmd.makeLineCreateCmd = function(name, color, player, line) \
+             return { createLine = { line = line } } end \
+         HOOK.room = true UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    // Passengers loaded, the other 36 cargos not, in a table with no array
+    // part, as the game's copy has it.
+    let load = lua.create_table_with_capacity(0, 40).unwrap();
+    let max_load = lua.create_table_with_capacity(0, 40).unwrap();
+    for cargo in 1..=37 {
+        load.raw_set(cargo, cargo == 1).unwrap();
+        max_load.raw_set(cargo, f64::from(cargo) / 100.0).unwrap();
+    }
+    lua.globals().set("LOAD", load).unwrap();
+    lua.globals().set("MAX_LOAD", max_load).unwrap();
+    let flags: String = lua
+        .load(
+            "local stop = { group = 0, terminal = { station = 0, terminal = 1 }, alternatives = {}, \
+                 load_mode = 'LoadIfAvailable', min_wait = 0, max_wait = 180, max_extra_wait = 30, \
+                 rules = { load = LOAD, max_load = MAX_LOAD, force_unload = false, \
+                           destroy_for_config_change = false, destroy_for_refresh = false } } \
+             HOOK.batch = { { CreateLine = { name = 'Line 1', color = { r = 1, g = 0, b = 0 }, \
+                 line = { stops = { stop }, modes = { 3 }, custom_filters = false, \
+                          reservation_priority = 0 } } } } \
+             UPDATE({}, STATE, 0.2) \
+             local c = SENT[1].createLine.line.stops[1].stopConfig \
+             local on = {} for i = 1, #c.load do if c.load[i] then on[#on + 1] = i end end \
+             return #c.load .. ' on@' .. table.concat(on, ',') .. ' max[5]=' .. c.maxLoad[5]",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        flags, "37 on@1 max[5]=0.05",
+        "passengers, as the player set them"
+    );
+}
+
+#[test]
+fn without_callbacks_the_registry_alone_finds_what_an_action_made() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(format!(
+        "NO_CALLBACKS = true HOOK.room = true UPDATE({{}}, STATE, 0.2) \
+         HOOK.batch = {{ {BUY_BUS} }} UPDATE({{}}, STATE, 0.2) \
+         HOOK.batch = {{ {BUY_BUS} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let (sent, applied, logged): (usize, String, Vec<String>) = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = a.i .. ':' .. tostring(a.ok) .. ':' .. tostring(a.entity) end \
+             return #SENT, table.concat(out, ' '), HOOK.logged",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(sent, 2, "each bus bought once, without a callback");
+    assert_eq!(
+        applied, "1:true:500 1:true:nil",
+        "the first found as the registry's new vehicle; the second, the same entity \
+         again in this fake, is no new one"
+    );
+    assert_eq!(
+        logged
+            .iter()
+            .filter(|l| l.contains("takes no command callbacks"))
+            .count(),
+        1,
+        "{logged:?}"
+    );
+    assert!(
+        logged
+            .iter()
+            .any(|l| l == "action 1 of this step made no vehicles this game could name"),
+        "{logged:?}"
+    );
+}
+
+#[test]
+fn a_window_hears_of_what_its_command_made_once_its_world_has_it() {
+    let lua = gui();
+    let heard: String = lua
+        .load(
+            "local guard = ug_require('tpf3mp_1::/scripts/tpf3mp/guard.lua') \
+             guard.CARRY.makeLineCreateCmd = function() return { CreateLine = {} } end \
+             local cmd = { makeLineCreateCmd = function(name) return { kind = 'line', name = name } end, \
+                           sendCommand = function() end } \
+             local tickets = 0 \
+             guard.install(cmd, { inRoom = function() return true end, \
+                 command = function() tickets = tickets + 1 return true, tickets end, \
+                 refused = function() end, later = function(fn) fn() end, context = {} }) \
+             HEARD = {} \
+             local function hear(data, ok, entities) \
+                 HEARD[#HEARD + 1] = tostring(ok) .. ':' .. tostring(entities[1] and entities[1][1]) \
+                     .. ':' .. tostring(data.resultEntity) end \
+             cmd.sendCommand(cmd.makeLineCreateCmd('Line 1'), hear) \
+             cmd.sendCommand(cmd.makeLineCreateCmd('Line 2'), hear) \
+             EXISTS = {} \
+             local function sees(e) return EXISTS[e] == true end \
+             local out = {} \
+             out[#out + 1] = guard.deliver(cmd, { { ticket = 1, ok = true, entity = 600 }, \
+                                                  { ticket = 2, ok = true } }, sees) \
+             out[#out + 1] = #HEARD \
+             EXISTS[600] = true \
+             out[#out + 1] = guard.deliver(cmd, {}, sees) \
+             out[#out + 1] = table.concat(HEARD, ' ') \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    // Line 1 made 600, which this world did not show yet; line 2 made
+    // nothing the game could name.
+    assert_eq!(
+        heard, "0 0 2 true:600:600 false:nil:nil",
+        "held, in order, until the world has it; a creation that made nothing \
+         is answered as failed"
+    );
 }

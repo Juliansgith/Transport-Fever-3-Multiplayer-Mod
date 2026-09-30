@@ -144,9 +144,15 @@ function guard.notice(kind)
 end
 
 -- The api.cmd tables already guarded, so a second install() changes
--- nothing, and the callbacks waiting on each one's commands, by ticket.
+-- nothing, the callbacks waiting on each one's commands, by ticket, and
+-- the answers held back until the GUI sees what they made.
 local guarded = setmetatable({}, { __mode = "k" })
 local waiting = setmetatable({}, { __mode = "k" })
+local held = setmetatable({}, { __mode = "k" })
+
+-- Calls to deliver() an answer waits at most for the GUI to see the entity
+-- it made (one a frame: a few seconds).
+guard.HOLD = 240
 
 -- Puts the guard in front of `cmd` (the GUI state's api.cmd). `env` is:
 --   inRoom()      -> whether the room's game runs;
@@ -238,23 +244,42 @@ end
 -- What became of the commands the guard handed to the room: `results` is
 -- the hook's list ({ ticket =, ok =, entity =, why = }, bridge.lua's
 -- results()). Each waiting callback hears it, with what the room's action
--- made, as the game's own command would have answered. Returns how many
--- heard.
-function guard.deliver(cmd, results)
+-- made, as the game's own command would have answered, once `sees(entity)`
+-- says the GUI's world has what it made: the game script made it in the
+-- simulation, and a window that hears of it opens it at once. Answers keep
+-- their order; one held back holds those after it, for HOLD calls at most.
+-- A command that should have made something and made nothing the game
+-- could name is answered as failed, which the windows handle, not as made.
+-- Returns how many heard.
+function guard.deliver(cmd, results, sees)
 	local pending = waiting[cmd]
 	if pending == nil then return 0 end
-	local heard = 0
-	for _, r in ipairs(results or {}) do
+	local queue = held[cmd] or {}
+	for _, r in ipairs(results or {}) do queue[#queue + 1] = { r = r, calls = 0 } end
+	local heard, later = 0, {}
+	for _, h in ipairs(queue) do
+		local r = h.r
 		local w = r.ticket and pending[r.ticket]
 		if w then
-			pending[r.ticket] = nil
-			local result = guard.RESULT[w.kind]
-			local data = (result and r.entity) and result(r.entity, w.args) or w.command
-			local entities = r.entity and { { r.entity, 0 } } or {}
-			pcall(w.callback, data, r.ok == true, entities)
-			heard = heard + 1
+			local unseen = r.entity ~= nil and sees ~= nil and not sees(r.entity)
+			if #later > 0 or (unseen and h.calls < guard.HOLD) then
+				h.calls = h.calls + 1
+				later[#later + 1] = h
+			else
+				pending[r.ticket] = nil
+				local result = guard.RESULT[w.kind]
+				if result and r.ok == true and r.entity == nil then
+					pcall(w.callback, w.command, false, {})
+				else
+					local data = (result and r.entity) and result(r.entity, w.args) or w.command
+					local entities = r.entity and { { r.entity, 0 } } or {}
+					pcall(w.callback, data, r.ok == true, entities)
+				end
+				heard = heard + 1
+			end
 		end
 	end
+	held[cmd] = later
 	return heard
 end
 

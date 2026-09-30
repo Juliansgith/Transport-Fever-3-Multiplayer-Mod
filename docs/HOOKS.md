@@ -547,7 +547,14 @@ for the table (`bridge.find`). Its contract is in
   locally either: every game applies it when the room orders it. The
   ticket comes back in `results()`.
 - `tpf3mp_native.take()`: the actions the room ordered for this simulation
-  update, as `action_to_lua` tables, or `nil` (below).
+  update, as `action_to_lua` tables, or `nil` (below). A list's items are
+  in its table's array part, so `next` walks them in order. The game
+  copies a list it is handed (a stop's loading flags, a consist's groups)
+  into its own vector in the order `next` gives, and what a game script's
+  `update` returns reaches `postUpdate` as the game's own copy, whose
+  lists `next` walks in hash order all the same (build 40408: a bus line's
+  stops set to load grain, one cargo over from passengers). So `apply.lua`
+  hands the game every such list afresh, filled in order (`seq`).
 - `tpf3mp_native.log(line)`: a line for `hook.log`, marked `mod:`.
 - `tpf3mp_native.poll()`: in the GUI, every frame: what the hook asks of
   it, once, `{ save = name }` or `{ load = name }`, or `nil` ("The room's
@@ -625,11 +632,19 @@ Measured on build 40408:
   world changes only in `postUpdate`, not while other scripts' updates may
   run beside it.
 - In an engine state a command runs at once (the game's
-  `api/tealdef/api/cmd.d.tl`), but the game takes no callback in `update`
-  ("Callbacks are currently disallowed"): `apply.lua` sends without one,
-  and a refused command raises. In the GUI and console states commands
-  run "in the next simulation step", which is a different update on each
-  game: the reason the game script applies them, not the GUI.
+  `api/tealdef/api/cmd.d.tl`). The game takes no callback in `update`
+  ("Callbacks are currently disallowed"), but in `postUpdate` it calls one
+  at once, with the command's result: the game's mission scripts read the
+  line they made from it right after `sendCommand`
+  (`mission_vehicle_util.tl`). `apply.lua` sends every command with one
+  there: a command the game answers as failed fails the action in every
+  game, and the entity a command made (`resultEntity`,
+  `resultVehicleEntity`, else the first of its result entities) is what
+  the action made. A state where the game refuses the callback sends
+  without one, logs so once, and leaves finding what an action made to
+  the registry. A refused command raises. In the GUI and console states
+  commands run "in the next simulation step", which is a different update
+  on each game: the reason the game script applies them, not the GUI.
 - The console has a Lua state of its own. For tests, its
   `api.cmd.makeScriptingSendEventCmd("", "tpf3mp", "command", action)`
   reaches the game script's `handleEvent` in that game only, which hands
@@ -651,7 +666,10 @@ money, ran in the game script's `postUpdate`.
 
 - `BuildConstruction`: a `SimpleProposal` with one `ConstructionEntity`
   (the file, the matrix from the transform, the parameters from their
-  flattened paths, the name, the player), sent with a `Context` naming the
+  flattened paths, the name, the player) and, in its street proposal, the
+  construction's connection, resolved as a road build's polyline, less
+  the construction's own entrance (a new vertex at the end of a single
+  link), sent with a `Context` naming the
   player, who pays, and gathering the town buildings and fields in its
   way, and `playerInitiated` true, as the player's own build. The game's
   verdict comes first (`makeProposalData`): a critical error refuses the
@@ -770,7 +788,15 @@ reference of its own to either. Once linked, the GUI wraps every
   entity the action made. The game's windows chain on that: the store
   puts the vehicle it bought on a line by the entity its callback hears
   (`resultVehicleEntity`), the line manager opens the new line
-  (`resultEntities[1][1]`). So far:
+  (`resultEntities[1][1]`); told nothing, or told before its world had the
+  line, the line manager made a second line at the next stop clicked (seen
+  on build 40408). So an answer waits until the GUI's world has the entity
+  it names (`api.engine.entityExists`; the game script made it in the
+  simulation), a few seconds at most, and answers keep their order; a
+  command that should have made something and made nothing the game could
+  name is answered as failed, which the windows handle. With both, a new
+  line took its stops one by one as in single player (build 40408). So
+  far:
   - loans, the finance window's `makeScriptingSendEventCmd("", "Loan",
     "Obtain" | "Repay", …)`, as a `Loan` action carrying the loans' terms,
     which every game's game script replays through the loan script's own
@@ -790,6 +816,9 @@ reference of its own to either. Once linked, the GUI wraps every
   mod's game script binds each new one to the next id of its kind, lowest
   entity first, after every action the room orders and at the room's
   first update, and retires the ids of those gone; an id never comes back.
+  What an action made, as the game answered its command, is bound at
+  once, whatever the game's lists say, and an id is retired only when its
+  entity no longer exists, never because a list left it out.
   It keeps the registry in its state, which the game saves with the world,
   so a player who joins or reloads from the room's save has it as the
   others do. The GUI reads it from the script's state
@@ -852,11 +881,26 @@ Three tools build through the room so far:
   construction (a station, a depot, anything the tool places) becomes a
   `BuildConstruction`, with the file, the transform, the parameters
   flattened and the game's name for it. The streets in its proposal are
-  the construction's own: its script adds them (a depot's entrance, whose
-  end snaps onto the street beside it, the street rebuilt through the new
-  junction), and the game makes them again from the construction the room
-  builds. So are the town buildings in its way, which the replay clears
-  again (`gatherBuildings`, and `gatherFields` for fields). Several
+  what the tool built around the construction, and travel with it as its
+  connection: a bus station placed by a road rebuilds the road through a
+  new junction and adds an entrance edge from the junction to the
+  station's own street node (seen on build 40408, the construction's
+  frozen nodes and edges empty in the proposal). Built without them, the
+  station stood beside the road, its entrance a dead end, and the line
+  manager could not connect it ("Could Not Connect Stations"). The
+  entrance edge in the tool's proposal is the construction's own, snapped
+  onto the road: every station and depot has one frozen node and one
+  frozen edge, its entrance, and a scripted build makes that edge again
+  unsnapped, ending about 2 m short of the road (build 40408, read from
+  the console). The game's refresh of the construction
+  (`api.engine.util.proposal.refreshConstruction`) snaps it as the tool
+  does: its proposal's entrance edge ends at the road's node. So the
+  replay builds, in one action, the construction with the rest of the
+  connection (the road rebuilt through the junction), then the refresh of
+  the new construction, free (no context) and not as a click of the
+  player's; the refresh finds the junction the tool chose. The town
+  buildings in its way the replay clears again (`gatherBuildings`, and
+  `gatherFields` for fields). Several
   constructions at once, or one replacing a construction that is not a town
   building (a module edit), is refused. Before sending, the replay asks the
   game's verdict (`makeProposalData`) and refuses what it calls critical,

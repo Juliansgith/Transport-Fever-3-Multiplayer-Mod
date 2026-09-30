@@ -155,13 +155,17 @@ local function segment(seg)
 end
 
 -- A tool's proposal as tpf3mp/roads.lua takes it, or raises. `network` is
--- the tool's. Returns nil for a proposal of nothing (the tool before its
--- first point).
-function engine.fromProposal(proposal, network)
+-- the tool's; nil for the construction tool's, whose street part is taken
+-- alone (`constructions` true lets the proposal carry them) in the network
+-- of its first new edge. Returns nil for a proposal of nothing (the tool
+-- before its first point, a construction with no street part).
+function engine.fromProposal(proposal, network, constructions)
 	local street = get(proposal, "proposal")
 	if street == nil then error("a proposal with no street proposal", 0) end
-	for _, name in ipairs({ "toAdd", "toRemove" }) do
-		if #list(get(proposal, name)) > 0 then error("a build with constructions", 0) end
+	if not constructions then
+		for _, name in ipairs({ "toAdd", "toRemove" }) do
+			if #list(get(proposal, name)) > 0 then error("a build with constructions", 0) end
+		end
 	end
 	for _, name in ipairs({ "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
 		local v = get(street, name)
@@ -180,6 +184,7 @@ function engine.fromProposal(proposal, network)
 	for _, seg in ipairs(segments) do
 		local e = segment(seg)
 		capture.edges[#capture.edges + 1] = e
+		if network == nil then network = e.network capture.network = network end
 		if not first and e.network == network then first = e end
 	end
 	for _, seg in ipairs(removed) do
@@ -205,13 +210,23 @@ function engine.fromProposal(proposal, network)
 	return capture
 end
 
--- A tool's proposal in one line, for the log when the room cannot carry it:
--- nodes added (+n) and removed (-n), edges added (+e) and removed (-e) with
--- their ends, existing nodes with their positions.
+-- A tool's proposal in one line, for the log: nodes added (+n) and removed
+-- (-n), edges added (+e) and removed (-e) with their ends, existing nodes
+-- with their positions; a construction's own nodes and edges (its frozen
+-- ones) marked "*".
 function engine.describe(proposal)
 	local ok, text = pcall(function()
 		local street = get(proposal, "proposal")
 		local out = {}
+		-- The constructions' own nodes and edges.
+		local frozen = {}
+		for _, c in ipairs(list(get(proposal, "toAdd"))) do
+			local con = get(c, "construction")
+			for _, key in ipairs({ "frozenNodes", "frozenEdges" }) do
+				for _, e in ipairs(list(con and get(con, key))) do frozen[e] = true end
+			end
+		end
+		local function mark(e) return frozen[e] and "*" or "" end
 		local function at(p)
 			p = vec3(p)
 			if p == nil or type(p[1]) ~= "number" then return "(?)" end
@@ -222,14 +237,14 @@ function engine.describe(proposal)
 			return tostring(id)
 		end
 		for _, n in ipairs(list(get(street, "addedNodes"))) do
-			out[#out + 1] = "+n" .. tostring(n.entity) .. at(n.comp.position)
+			out[#out + 1] = "+n" .. tostring(n.entity) .. mark(n.entity) .. at(n.comp.position)
 		end
 		for _, n in ipairs(list(get(street, "removedNodes"))) do
 			out[#out + 1] = "-n" .. tostring(n.entity) .. at(n.comp and n.comp.position)
 		end
 		for _, s in ipairs(list(get(street, "addedSegments"))) do
-			out[#out + 1] = "+e" .. tostring(s.entity) .. "/" .. tostring(s.type) .. ":"
-				.. node(s.comp.node0) .. ">" .. node(s.comp.node1)
+			out[#out + 1] = "+e" .. tostring(s.entity) .. mark(s.entity) .. "/" .. tostring(s.type) .. ":"
+				.. node(s.comp.node0) .. mark(s.comp.node0) .. ">" .. node(s.comp.node1) .. mark(s.comp.node1)
 		end
 		for _, s in ipairs(list(get(street, "removedSegments"))) do
 			out[#out + 1] = "-e" .. tostring(s.entity) .. ":" .. node(s.comp.node0) .. ">" .. node(s.comp.node1)
@@ -250,7 +265,9 @@ function engine.describe(proposal)
 			out[#out + 1] = "+o{" .. table.concat(fields, " ") .. "}"
 		end
 		for _, c in ipairs(list(get(proposal, "toAdd"))) do
-			out[#out + 1] = "+c" .. tostring(get(c, "fileName"))
+			local con = get(c, "construction")
+			out[#out + 1] = "+c" .. tostring(get(c, "fileName")) .. "{frozen "
+				.. #list(con and get(con, "frozenNodes")) .. "n " .. #list(con and get(con, "frozenEdges")) .. "e}"
 		end
 		for _, c in ipairs(list(get(proposal, "toRemove"))) do
 			out[#out + 1] = "-c" .. tostring(c)

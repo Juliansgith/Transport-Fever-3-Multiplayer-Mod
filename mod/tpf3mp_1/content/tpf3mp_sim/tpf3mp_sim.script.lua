@@ -130,13 +130,19 @@ function data()
 				-- stops.
 				if work.actions then l:replaying(true) end
 				for i, action in ipairs(work.actions or {}) do
-					local ok, why = apply.run(action, { registry = reg })
+					local ok, why, made = apply.run(action, { registry = reg })
+					-- What it made, bound at once, for the player who ordered
+					-- it: as the game answered the command, else as the
+					-- registry found it.
+					local kind = ok and apply.CREATES[next(action)] or nil
 					local fresh
-					reg, fresh = registry.sync(reg)
-					-- What it made, for the player who ordered it.
-					local made, entity = ok and apply.CREATES[next(action)], nil
-					for _, f in ipairs(made and fresh or {}) do
-						if f[1] == made then entity = f[3] break end
+					reg, fresh = registry.sync(reg, (kind and made) and { [kind] = { made } } or nil)
+					local entity = kind and made or nil
+					for _, f in ipairs((kind and not entity) and fresh or {}) do
+						if f[1] == kind then entity = f[3] break end
+					end
+					if kind and not entity then
+						l:log("action " .. i .. " of this step made no " .. kind .. " this game could name")
 					end
 					l:applied(i, ok, entity, why)
 					if not ok then
@@ -175,9 +181,11 @@ function data()
 					return nil
 				end
 				local shape
-				if not action then
+				do
 					local described, text = pcall(capture.describe, param[1])
 					if described and text ~= "" then shape = text end
+				end
+				if not action then
 					-- The tool refuses it at once, so no click follows: the log
 					-- has it when the reason changes, a few dozen times at most.
 					if why ~= refusedWhy and refusals < 40 then
@@ -214,7 +222,8 @@ function data()
 				if seen and seen.action then
 					local ok, why = l:command(seen.action)
 					if ok then
-						l:log("handed the player's build to the room")
+						l:log("handed the player's build to the room"
+							.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
 					end

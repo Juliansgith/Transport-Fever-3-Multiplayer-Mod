@@ -731,6 +731,23 @@ impl State {
                 params: build.params.len(),
             },
         );
+        // The streets the tool built with it, in the same proposal: every
+        // link names its kind, a construction having none of its own.
+        if let Some(connection) = &build.connection {
+            let mut kinds = connection.links.iter().map(|link| link.kind.as_ref());
+            let Some(Some(first)) = kinds.next() else {
+                refuse!("a connection link of no kind");
+            };
+            if kinds.any(|kind| kind.is_none()) {
+                refuse!("a connection link of no kind");
+            }
+            let cost = match first.network {
+                Network::Street => ROAD_COST_PER_M,
+                Network::Track => TRACK_COST_PER_M,
+            };
+            let template = first.template.as_str().to_owned();
+            self.build(first.network, &template, connection, company, cost)?;
+        }
         Ok(())
     }
 

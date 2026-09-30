@@ -92,15 +92,22 @@ function capture.transform(m)
 	}
 end
 
+local function module(name)
+	local loaded = package and package.loaded and package.loaded["tpf3mp." .. name]
+	if loaded then return loaded end
+	if ug_require then return ug_require("tpf3mp_1::/scripts/tpf3mp/" .. name .. ".lua") end
+	return require("tpf3mp." .. name)
+end
+
 -- One construction placed with the construction tool: stations, depots and
 -- the rest (tpf3mp_proto action::ConstructionBuild). Returns the action
 -- table, or nil and why the room cannot carry it yet.
 --
--- The streets in the proposal are the construction's own: its script adds
--- them (a depot's entrance, constructionutil.addEdges, with a node that
--- snaps onto a street beside it), and the game makes them again, snapping
--- included, from the construction the room builds. So only the
--- construction travels.
+-- The construction's own streets its script makes again wherever it is
+-- built. The proposal's street part is what the tool built around it, and
+-- travels with it (capture.connection): built without it, a station by a
+-- road stood beside the road, its entrance a dead end, and no line could
+-- reach it (seen on build 40408).
 function capture.construction(proposal)
 	local street = get(proposal, "proposal")
 	for _, list in ipairs({ "addedNodes", "addedSegments", "removedNodes", "removedSegments",
@@ -136,14 +143,31 @@ function capture.construction(proposal)
 	if not list then return nil, why end
 	local ok, transform = pcall(capture.transform, get(con, "transf"))
 	if not ok then return nil, tostring(transform) end
-	return { BuildConstruction = { file = file, transform = transform, params = list, name = name } }
+	local connection, whyNot = capture.connection(proposal)
+	if connection == nil then return nil, whyNot end
+	return { BuildConstruction = { file = file, transform = transform, params = list, name = name,
+		connection = connection or nil } }
 end
 
-local function module(name)
-	local loaded = package and package.loaded and package.loaded["tpf3mp." .. name]
-	if loaded then return loaded end
-	if ug_require then return ug_require("tpf3mp_1::/scripts/tpf3mp/" .. name .. ".lua") end
-	return require("tpf3mp." .. name)
+-- The street and track changes a construction tool's proposal makes with its
+-- construction (seen on build 40408: a bus station placed by a road rebuilds
+-- the road through a new junction and adds an edge from the junction to the
+-- station's own street node), as a polyline whose every link names its
+-- kind; false when it makes none; nil and why the room cannot carry them.
+function capture.connection(proposal)
+	local engine = module("engine")
+	local ok, part = pcall(engine.fromProposal, proposal, nil, true)
+	if not ok then return nil, tostring(part) end
+	if part == nil then return false end
+	if #part.edges == 0 then return nil, "a construction that removes streets and builds none" end
+	part.explicit = true
+	local first = part.edges[1]
+	if part.network == "Street" then part.street = first.template else part.track = first.template end
+	part.style = first.style
+	local action, why = module("roads").capture(part, engine.world())
+	if not action then return nil, why end
+	local build = action.BuildRoad or action.BuildTrack
+	return build.polyline
 end
 
 -- A street or track tool's build (tpf3mp_proto action::RoadBuild,

@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 4;
+pub const ACTION_SCHEMA_VERSION: u32 = 5;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -408,6 +408,12 @@ pub struct ConstructionBuild {
     pub name: ObjectName,
     /// The construction this one replaces: a module edit or an upgrade.
     pub replaces: Option<ConstructionRef>,
+    /// The street and track changes the tool made with it, built in the same
+    /// proposal: a station placed by a road joins it through a junction the
+    /// road is rebuilt around, and an entrance edge to the station's own
+    /// street node, which the construction then meets at the same place.
+    /// Every link names its kind: a construction has no street of its own.
+    pub connection: Option<Box<Polyline>>,
 }
 
 /// A fraction, in millionths: in Lua a plain number (0.25 is 250,000),
@@ -860,7 +866,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                4, // schema version
+                5, // schema version
                 5, // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -903,7 +909,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                4, // schema version
+                5, // schema version
                 1, // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices

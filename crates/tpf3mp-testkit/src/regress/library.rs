@@ -142,6 +142,7 @@ pub fn construction(file: &str, pos: Pos, name: &str) -> Action {
         ]),
         name: text(name),
         replaces: None,
+        connection: None,
     })
 }
 

@@ -117,6 +117,13 @@ function data()
 	-- The GUI state's api.cmd, which the guard is on.
 	local guardedCmd = nil
 
+	-- Whether the GUI's world has `entity` yet: what the room's action made
+	-- in the simulation reaches it a moment later.
+	local function sees(entity)
+		local ok, there = pcall(function() return api.engine.entityExists(entity) end)
+		return not ok or there == true
+	end
+
 	-- Puts the guard in front of the GUI's commands.
 	local function guardCommands()
 		local ok, cmd = pcall(function() return api.cmd end)
@@ -231,7 +238,7 @@ function data()
 			runPending()
 			if link and guardedCmd then
 				local delivered, why = pcall(function()
-					require("tpf3mp.guard").deliver(guardedCmd, link:results())
+					require("tpf3mp.guard").deliver(guardedCmd, link:results(), sees)
 				end)
 				if not delivered then say("answering the player's commands failed: " .. tostring(why)) end
 			end

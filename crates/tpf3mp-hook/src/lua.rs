@@ -539,8 +539,23 @@ unsafe fn push(api: &LuaApi, l: State, value: &LuaValue, depth: usize) -> Result
             LuaValue::Integer(value) => (api.pushnumber)(l, *value as f64),
             LuaValue::String(text) => push_str(api, l, text),
             LuaValue::Table(entries) => {
-                let records = c_int::try_from(entries.len()).unwrap_or(c_int::MAX);
-                (api.createtable)(l, 0, records);
+                // A sequence's items go in the table's array part, which
+                // `next` walks in index order: the game copies a list it is
+                // given into its own vector in the order `next` gives, and
+                // from the hash part that order is not the list's (build
+                // 40408: a line's loading flags one cargo off).
+                #[allow(clippy::cast_precision_loss)]
+                let items = entries
+                    .iter()
+                    .enumerate()
+                    .take_while(|(i, (key, _))| {
+                        matches!(key, LuaValue::Number(n) if *n == (i + 1) as f64)
+                            || matches!(key, LuaValue::Integer(n) if usize::try_from(*n) == Ok(i + 1))
+                    })
+                    .count();
+                let array = c_int::try_from(items).unwrap_or(c_int::MAX);
+                let records = c_int::try_from(entries.len() - items).unwrap_or(c_int::MAX);
+                (api.createtable)(l, array, records);
                 let table = (api.gettop)(l);
                 for (key, value) in entries {
                     push(api, l, key, depth + 1)?;
@@ -999,7 +1014,9 @@ pub(crate) mod tests {
     use std::ffi::{CString, c_char, c_int};
 
     use mlua::ffi;
-    use tpf3mp_proto::action::{Action, ConstructionBuild, Param, ParamValue, Pos, Transform};
+    use tpf3mp_proto::action::{
+        Action, ConstructionBuild, Param, ParamValue, Pos, Transform, VehicleId,
+    };
     use tpf3mp_proto::{BoundedVec, Text};
 
     use super::*;
@@ -1208,6 +1225,7 @@ pub(crate) mod tests {
             .unwrap(),
             name: text("Depot"),
             replaces: None,
+            connection: None,
         })
     }
 
@@ -1277,6 +1295,32 @@ pub(crate) mod tests {
         begin_batch(&[], 1, true).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
         assert_eq!(end_batch(), Ok(None));
+    }
+
+    #[test]
+    fn a_list_reaches_lua_in_order_for_the_games_own_copying() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        // The game copies a list it is handed into its own vector in the
+        // order `next` walks the table.
+        let vehicles: Vec<VehicleId> = (0..40).map(|n| VehicleId(n * 7)).collect();
+        let sell = Action::SellVehicle {
+            vehicles: BoundedVec::new(vehicles).unwrap(),
+        };
+        begin_batch(&[ordered(sell, None)], 1, false).unwrap();
+        let walked = lua
+            .run(
+                "local list = tpf3mp_native.take()[1].SellVehicle.vehicles \
+                 local keys, k = {}, next(list) \
+                 while k ~= nil do keys[#keys + 1] = k k = next(list, k) end \
+                 return table.concat(keys, ',')",
+            )
+            .unwrap();
+        let expected: Vec<String> = (1..=40).map(|n| n.to_string()).collect();
+        assert_eq!(walked, expected.join(","));
+        let _ = end_batch();
     }
 
     #[test]

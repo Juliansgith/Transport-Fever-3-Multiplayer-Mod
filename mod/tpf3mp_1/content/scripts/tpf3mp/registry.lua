@@ -8,7 +8,15 @@
 -- entity ID"): every game runs the same world, so after the same action
 -- the same things exist. The registry binds each new one to the next id of
 -- its kind, lowest entity first, and retires the ids of those gone; the ids
--- themselves never come back. The mod's game script keeps the registry in
+-- themselves never come back.
+--
+-- What an action made, as the game answered its command, is bound at once,
+-- whatever the lists say, and an id is retired only when its entity no
+-- longer exists, never because a list left it out: the registry depends on
+-- the game's lists only to find what no action of the room's made (the
+-- world's own at the room's first update, the station groups a build makes).
+--
+-- The mod's game script keeps the registry in
 -- its state, which the game saves with the world, so a player who joins or
 -- reloads from a save of the room has it as the others do, and brings it up
 -- to date after every action the room orders and at the room's first
@@ -28,6 +36,18 @@ local registry = {}
 
 registry.KINDS = { "vehicles", "lines", "groups" }
 
+-- The component each kind's entities have.
+local COMPONENT = { vehicles = "TRANSPORT_VEHICLE", lines = "LINE", groups = "STATION_GROUP" }
+
+-- Whether `entity` is still one of `kind` in this world.
+local function exists(kind, entity)
+	local ok, c = pcall(function()
+		if api.engine.entityExists and not api.engine.entityExists(entity) then return nil end
+		return api.engine.getComponent(entity, api.type.ComponentType[COMPONENT[kind]])
+	end)
+	return ok and c ~= nil
+end
+
 -- The entities of `kind` in this world, in any order.
 local function entities(kind)
 	local list
@@ -46,8 +66,9 @@ end
 -- Brings `reg` up to date with the world, and returns it, what it bound
 -- now ({ { kind, id, entity }, ... }, in order) and the kinds it could not
 -- list, whose bindings stay as they were. `reg` may be nil: a registry is
--- begun.
-function registry.sync(reg)
+-- begun. `made` ({ [kind] = { entity, ... } }, or nil) names what the
+-- action just applied made, which the lists may not show yet.
+function registry.sync(reg, made)
 	reg = reg or {}
 	local fresh, failed = {}, {}
 	for _, kind in ipairs(registry.KINDS) do
@@ -60,12 +81,12 @@ function registry.sync(reg)
 		end
 		local present = {}
 		for _, e in ipairs(list or {}) do present[e] = true end
-		if not listed then
-			for _, pair in ipairs(r.bound) do present[pair[2]] = true end
-		end
+		for _, e in ipairs(made and made[kind] or {}) do present[e] = true end
 		local kept, known = {}, {}
 		for _, pair in ipairs(r.bound) do
-			if present[pair[2]] then
+			-- Kept while it exists, listed or not; where the kind could not
+			-- be listed, as it was.
+			if present[pair[2]] or not listed or exists(kind, pair[2]) then
 				kept[#kept + 1] = pair
 				known[pair[2]] = true
 			end

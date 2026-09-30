@@ -237,6 +237,7 @@ fn samples() -> Vec<Action> {
             ]),
             name: text("Hauptbahnhof"),
             replaces: Some(depot()),
+            connection: Some(Box::new(polyline())),
         }),
         Action::BuyVehicle(BuyVehicle {
             depot: depot(),
