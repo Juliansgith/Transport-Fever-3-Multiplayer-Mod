@@ -36,8 +36,9 @@ pub use gate::{Gate, GateError, Gated};
 pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, StepGate};
 
 /// Version of these messages. Both sides send it first and refuse a peer
-/// that speaks another. 7 added [`ToAgent::WorldUp`].
-pub const BRIDGE_VERSION: u32 = 7;
+/// that speaks another. 7 added [`ToAgent::WorldUp`]; 8 added
+/// [`ToAgent::MenuUp`].
+pub const BRIDGE_VERSION: u32 = 8;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -152,6 +153,14 @@ pub enum ToAgent {
     /// told once and a new one has a higher number. The agent marks the
     /// player ready in the room's lobby, once per world.
     WorldUp { world: u64 },
+    /// Before the room begins a game: the game is at its main menu, with no
+    /// world up, and can load the room's world from there when the room
+    /// sends one ([`ToHook::Load`] with a file). `menu` counts the times the
+    /// game came to its menu since the hook began, from 1. The agent marks
+    /// a player other than the room's owner ready, once per `menu`, if it
+    /// keeps worlds; the owner's game needs a world up, to save it for the
+    /// room.
+    MenuUp { menu: u64 },
 }
 
 #[derive(Debug, Error)]
@@ -228,6 +237,12 @@ mod tests {
             decode::<ToAgent>(&encode(&to_agent).unwrap()).unwrap(),
             to_agent
         );
+        for to_agent in [ToAgent::WorldUp { world: 2 }, ToAgent::MenuUp { menu: 3 }] {
+            assert_eq!(
+                decode::<ToAgent>(&encode(&to_agent).unwrap()).unwrap(),
+                to_agent
+            );
+        }
     }
 
     #[test]

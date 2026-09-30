@@ -46,6 +46,12 @@ const TARGETS: &[(&str, u64)] = &[
     ("lua_tolstring", 0x2fbed30),
     ("lua_tonumberx", 0x2fbedd0),
     ("lua_type", 0x2fbef90),
+    // The main menu's load (crates/tpf3mp-hook/src/menu.rs).
+    ("UI::CMenuUI::DoStep", 0x6a0160),
+    ("lua_pcallk", 0x2fbe0c0),
+    ("luaL_ref", 0x2fb40b0),
+    ("lua_load", 0x2fbdf70),
+    ("RegisterAppUsertypes", 0xdc5fa0),
 ];
 
 #[test]

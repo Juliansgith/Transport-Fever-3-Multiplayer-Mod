@@ -99,13 +99,17 @@ your own machine, in the tab the launcher opened.
    closed", and you are back on the server, out of the room. Join it again
    with its invite and start the game again. A game that closes before it
    connected leaves you in the room; just start it again.
-5. **Load your save.** In the game, load a save (any world will do for a
-   guest; the owner's is the one everyone plays). Once its world is up,
-   the launcher marks you **ready** by itself: nobody has to press
-   **Ready**. The button stays, to get ready by hand, and **Not ready**
-   keeps you not ready until you load another world. When everyone is
-   ready, the room's owner presses **Start game**. Everyone's game starts
-   from the owner's world.
+5. **Wait at the menu, or load your save.** A guest just waits at the
+   game's main menu: once the game is there, the launcher marks you
+   **ready** by itself, and when the room starts, your game loads the
+   room's world from the menu and starts it, with no **Start Game** to
+   press. The room's owner loads the save everyone will play; once its
+   world is up, the launcher marks the owner ready. (A guest who loads a
+   world instead is marked ready too, and the room's world replaces it.)
+   Nobody has to press **Ready**: the button stays, to get ready by hand,
+   and **Not ready** keeps you not ready until you come back to the menu
+   or load another world. When everyone is ready, the room's owner presses
+   **Start game**. Everyone's game starts from the owner's world.
 
 The window is tearded's TPF2 multiplayer launcher, for Transport Fever 3.
 On the left, under the game's name, a checklist ticks these steps off as

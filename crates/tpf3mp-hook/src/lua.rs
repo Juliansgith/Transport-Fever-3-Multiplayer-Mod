@@ -27,8 +27,10 @@
 //!   save folder), once, or `nil`. The GUI saves with `app.saveGame` and
 //!   loads with `app.loadGame` ([`request_save`], [`request_load`]).
 //! - `saved(name, ok, why)`: the GUI's answer to a save ([`take_save_answer`]).
-//! - `world()`: a world's GUI started. Once the GUI has taken a load, the
-//!   next world to start is the one it loaded ([`load_done`]). Before the
+//! - `world()`: a world's GUI started. Once the GUI (or the main menu, for
+//!   a game with no world up: [`request_menu_load`], `crate::menu`) has
+//!   taken a load, the next world to start is the one it loaded
+//!   ([`load_done`]). Before the
 //!   room begins a game, the step gate tells the agent of each new world
 //!   ([`take_world_up`]), which marks the player ready.
 //! - `room()`: whether the room's game runs ([`set_in_room`]): the GUI then
@@ -221,6 +223,11 @@ struct Shared {
     load: Option<Option<u64>>,
     /// The last world [`take_world_up`] handed out.
     told: u64,
+    /// A load for the main menu to start, not taken yet
+    /// ([`request_menu_load`]; `crate::menu`).
+    menu_load: Option<String>,
+    /// Why the last load asked for could not be started, once.
+    load_failure: Option<String>,
     /// The room, for the game's Multiplayer window ([`notice`]).
     room: RoomStatus,
 }
@@ -275,6 +282,8 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
         said: VecDeque::new(),
     },
     told: 0,
+    menu_load: None,
+    load_failure: None,
 });
 
 fn shared() -> MutexGuard<'static, Shared> {
@@ -387,7 +396,57 @@ pub fn take_save_answer() -> Option<Result<String, String>> {
 pub fn request_load(name: &str) {
     let mut shared = shared();
     shared.request = Some(Request::Load(name.to_owned()));
+    shared.menu_load = None;
     shared.load = Some(None);
+    shared.load_failure = None;
+}
+
+/// Asks the game's main menu to load the save `name` of the game's own save
+/// folder, for a game with no world up (`crate::menu`): the menu's frame
+/// takes it ([`take_menu_load`]) and says whether it started
+/// ([`menu_load_started`], [`menu_load_failed`]). The GUI's `poll` never
+/// hands it out.
+pub fn request_menu_load(name: &str) {
+    let mut shared = shared();
+    shared.request = None;
+    shared.menu_load = Some(name.to_owned());
+    shared.load = Some(None);
+    shared.load_failure = None;
+}
+
+/// The load the main menu is asked to start, once.
+pub fn take_menu_load() -> Option<String> {
+    shared().menu_load.take()
+}
+
+/// The main menu could not start the load yet (the game is loading
+/// something else): it is asked again on its next frame.
+pub fn menu_load_later(name: &str) {
+    let mut shared = shared();
+    if matches!(shared.load, Some(None)) && shared.menu_load.is_none() {
+        shared.menu_load = Some(name.to_owned());
+    }
+}
+
+/// The main menu started the load: as when the GUI takes one, the next
+/// world to start is the one it loads ([`load_done`]).
+pub fn menu_load_started() {
+    let mut shared = shared();
+    if matches!(shared.load, Some(None)) {
+        shared.load = Some(Some(shared.worlds));
+    }
+}
+
+/// The main menu could not start the load, for good.
+pub fn menu_load_failed(why: String) {
+    let mut shared = shared();
+    shared.load = None;
+    shared.load_failure = Some(why);
+}
+
+/// Why the last load could not be started, once.
+pub fn take_load_failure() -> Option<String> {
+    shared().load_failure.take()
 }
 
 /// Whether the load asked for is done: a world's GUI started after the GUI
@@ -400,6 +459,19 @@ pub fn load_done() -> bool {
         shared.load = None;
     }
     done
+}
+
+/// Whether any world's GUI has started in this process.
+pub fn any_world_started() -> bool {
+    shared().worlds > 0
+}
+
+/// Forgets every world's GUI start (tests).
+#[cfg(test)]
+pub(crate) fn forget_worlds() {
+    let mut shared = shared();
+    shared.worlds = 0;
+    shared.told = 0;
 }
 
 /// The number of the latest world whose GUI started, if it is newer than
@@ -1994,6 +2066,43 @@ pub(crate) mod tests {
         set_in_room(true);
         assert_eq!(lua.run("return tpf3mp_native.room()"), Ok("true".into()));
         set_in_room(false);
+    }
+
+    #[test]
+    fn a_load_for_the_main_menu_is_the_menus_and_not_the_guis() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        while lua.run("return tpf3mp_native.poll()") != Ok("nil".into()) {}
+        let _ = take_load_failure();
+        request_menu_load("tpf3mp_room_77");
+        assert_eq!(
+            lua.run("return tpf3mp_native.poll()"),
+            Ok("nil".into()),
+            "a GUI never takes the menu's load"
+        );
+        assert_eq!(take_menu_load().as_deref(), Some("tpf3mp_room_77"));
+        assert_eq!(take_menu_load(), None, "once");
+        // Busy: asked again on the next frame.
+        menu_load_later("tpf3mp_room_77");
+        assert_eq!(take_menu_load().as_deref(), Some("tpf3mp_room_77"));
+        // A world that starts before the menu started the load is not it.
+        lua.run("tpf3mp_native.world()").unwrap();
+        assert!(!load_done());
+        menu_load_started();
+        assert!(!load_done(), "started, not loaded yet");
+        lua.run("tpf3mp_native.world()").unwrap();
+        assert!(load_done(), "the next world is the room's");
+        // A load the menu could not start is said once, and never done.
+        request_menu_load("tpf3mp_room_77");
+        let _ = take_menu_load();
+        menu_load_failed("no app here".into());
+        lua.run("tpf3mp_native.world()").unwrap();
+        assert!(!load_done());
+        assert_eq!(take_load_failure().as_deref(), Some("no app here"));
+        assert_eq!(take_load_failure(), None);
+        menu_load_later("tpf3mp_room_77");
+        assert_eq!(take_menu_load(), None, "a failed load is not asked again");
     }
 
     #[test]

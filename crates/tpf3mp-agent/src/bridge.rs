@@ -349,6 +349,12 @@ pub struct Bridge<L> {
     world_up: u64,
     /// The latest world the player's readiness was decided for.
     readied: u64,
+    /// The room's owner as last announced, if it was.
+    room_owner: Option<PlayerId>,
+    /// The latest menu arrival the game told ([`ToAgent::MenuUp`]), or 0.
+    menu_up: u64,
+    /// The latest menu arrival the player's readiness was decided for.
+    menu_readied: u64,
 }
 
 impl<L: HookLink> Bridge<L> {
@@ -386,6 +392,12 @@ impl<L: HookLink> Bridge<L> {
             }),
             world_up: 0,
             readied: 0,
+            room_owner: options.status.as_ref().and_then(|status| {
+                let status = status.lock().unwrap_or_else(PoisonError::into_inner);
+                status.room.as_ref().map(|room| room.owner)
+            }),
+            menu_up: 0,
+            menu_readied: 0,
             options,
         }
     }
@@ -566,6 +578,7 @@ impl<L: HookLink> Bridge<L> {
                 // speed from it; anyone else's is refused, as a notice.
                 ToAgent::Speed { speed } => self.request(client, Request::SetSpeed(speed)),
                 ToAgent::WorldUp { world } => self.world_up(world, client),
+                ToAgent::MenuUp { menu } => self.menu_up(menu, client),
                 ToAgent::Log { message } => info!(hook = %message),
             }
         }
@@ -609,6 +622,74 @@ impl<L: HookLink> Bridge<L> {
         info!(world, "the game's world is up with the mod linked: ready");
         self.status(|status| {
             status.notice("your game has its world up: you are marked ready");
+        });
+        self.request(client, Request::SetReady(true));
+    }
+
+    /// The game is at its main menu, arrived there for the `menu`th time,
+    /// and can load the room's world from there: in the room's lobby, a
+    /// player other than the room's owner is marked ready, as by the Ready
+    /// button, once per arrival. The owner is not: the room's first world is
+    /// the owner's, which their game saves for the room from a world it has
+    /// up. Nor is anyone whose agent keeps no worlds, as it could not fetch
+    /// the room's. Otherwise as [`Bridge::world_up`].
+    fn menu_up(&mut self, menu: u64, client: &Client) {
+        if menu <= self.menu_up {
+            debug!(menu, "a menu arrival already told");
+            return;
+        }
+        self.menu_up = menu;
+        self.ready_at_menu(client);
+    }
+
+    /// Marks the player ready for the latest menu arrival, if not decided
+    /// for it and the room is in its lobby. See [`Bridge::menu_up`].
+    fn ready_at_menu(&mut self, client: &Client) {
+        let menu = self.menu_up;
+        if menu <= self.menu_readied {
+            return;
+        }
+        let lobby = match self.room_phase {
+            None if !self.begun => return,
+            Some(RoomPhase::Lobby) => !self.begun && self.world == World::Ready,
+            _ => false,
+        };
+        // Decided for this arrival, either way.
+        self.menu_readied = menu;
+        if !lobby {
+            debug!(menu, "the game is at its menu outside the room's lobby");
+            return;
+        }
+        // The room's announcement names its owner along with its phase;
+        // without one, nobody is marked (fail closed).
+        let Some(owner) = self.room_owner else {
+            return;
+        };
+        if owner == client.player() {
+            info!(
+                menu,
+                "the game is at its main menu, but the room plays its owner's world: load it to be ready"
+            );
+            self.status(|status| {
+                status.notice("load the world the room will play: your game saves it for the room");
+            });
+            return;
+        }
+        if self.options.worlds.is_none() {
+            debug!(
+                menu,
+                "the game is at its main menu, but this agent keeps no worlds to hand it the room's"
+            );
+            return;
+        }
+        info!(
+            menu,
+            "the game is at its main menu and loads the room's world when the game starts: ready"
+        );
+        self.status(|status| {
+            status.notice(
+                "your game waits at its main menu for the room's world: you are marked ready",
+            );
         });
         self.request(client, Request::SetReady(true));
     }
@@ -779,7 +860,9 @@ impl<L: HookLink> Bridge<L> {
                 }
                 self.room = Some(room.clone());
                 self.room_phase = Some(room.phase);
+                self.room_owner = Some(room.owner);
                 self.ready_for_world(client);
+                self.ready_at_menu(client);
                 self.status(|status| status.room = Some(room));
             }
             ClientEvent::Notice(text) => self.status(|status| status.announce(text.as_str())),

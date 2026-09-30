@@ -385,6 +385,15 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     began, while the game's world is being replaced, or before the agent
     knows the room is in its lobby; the step gate sends nothing after
     `Begin`. Bridge version 7.
+  - `MenuUp { menu }`: before the room begins a game, the game is at its
+    main menu with no world up, and will load the room's world from there
+    (`Session::menu_up`; "Loading from the main menu" below). `menu`
+    counts the game's arrivals at its menu since the hook began; each is
+    told once per room session, so again to the launcher's next room. In
+    the room's lobby the agent marks a player other than the room's owner
+    ready, once per arrival, if it keeps worlds; never the owner, whose
+    game must have the world everyone plays up to save it for the room.
+    Otherwise as `WorldUp`. Bridge version 8.
   - `Log`: a line for the agent's log.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
@@ -798,9 +807,69 @@ stands still meanwhile:
   account with a save folder for the game. Without one, a load holds the
   world and a save is reported failed.
 
-The GUI runs only in a world, so a game must be in one, any one, before it
-can load the room's. Loading from the main menu (`CMenuUI::StartSavegame`,
-in the profile) is next.
+#### Loading from the main menu
+
+The GUI runs only in a world, and at the game's main menu no world steps,
+so neither the GUI nor the step's detour is there. A game at its menu
+(`crates/tpf3mp-hook/src/menu.rs`; the static findings and the in-game
+checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
+
+- **Gets a Lua state that can load.** The game gives a Lua state its `app`
+  table in one function, `RegisterAppUsertypes` (profile target, build
+  40408 `0xdc5fa0`), for the menu's states and the in-game GUI's. The
+  hook detours it and, after the game's registration, runs a short chunk
+  there (`lua_load`, `lua_pcallk`): it hands the hook a function that
+  loads a save by name, kept in the state's registry (`luaL_ref`), and a
+  sentinel whose `__gc` tells the hook when the state closes (Lua 5.2 runs
+  every finalizer at `lua_close`), so the hook never calls into a closed
+  state. hook.log: `menu: Lua state 0x... has app; the main menu can load
+  the room's world from it`.
+- **Follows the room from the menu's frame.** `UI::CMenuUI::DoStep`
+  (`0x6a0160`, the menu's per-frame update on the main thread) is
+  detoured. After the game's own frame, the driver runs
+  `StepDriver::on_menu` only while this game's step has never run in this
+  process and no world's GUI has started (`tpf3mp_native.world`), and a
+  state adopted on that thread is open. A world that stops stepping,
+  while saving the room's world or held for another player, is no menu:
+  an earlier rule of "no step for 2 s" took the room's session inside the
+  owner's world and hung it, and the owner's menu frame once took it while
+  saving the room's world before that world's first step (both measured
+  2026-09-30). Back at the menu after a world, the player loads any save,
+  as before. Before the room begins, `on_menu` reads `Begin` and tells
+  the agent `MenuUp` once per arrival, which marks a guest ready and keeps
+  the hook's heartbeat going at the menu; in the room's game it answers a
+  `Load` with a file by copying the save into the folder as above and
+  loading it from the menu, as the menu's own Load Game page does:
+  `api.type.SavegameId.new()` with the name and the `savegame` namespace
+  (`app.SaveGameNamespace.getSavegame()`), then `app.loadGame(id, false,
+  nil)`. A load the game is busy with already (the progress monitor has a
+  task, the menu's own sign of it) is tried again on the next frame. Any
+  other failure holds the world.
+- **Starts the world without Start Game.** The menu's pages call
+  `app.setWaitForStartReadyGame()` before they load, which is what makes
+  the loading screen wait for the player's Start Game
+  (`app.startReadyGame()`); the hook does not, and the game then starts
+  the loaded world by itself. Confirmed in a two-game playtest on build
+  40408: a guest at the main menu loaded the room's world by itself, with
+  no Start Game click.
+- **Loads it with TPF3-MP active.** `info` is nil, so the save keeps its
+  own mod list, and the room's save was written by a game whose GUI had
+  TPF3-MP linked (only the mod saves for the room). A world whose mod
+  does not start never says it is up, and is held after `LOAD_PATIENCE`.
+
+The loaded world's GUI says it started (`tpf3mp_native.world`), the step's
+detour takes the world at its first call (`Session::loaded`), and the
+room's steps run on, as for a load from the GUI.
+
+What the menu leaves to a world up: a `Load` without a file (the owner's
+world, or everyone's on a server that keeps no worlds), and a `Save` the
+room orders. The owner's game therefore still needs its world up to start
+the room: the menu logs `at the main menu: the room plays the world this
+game starts from ...` once, and takes nothing. Without the menu's targets
+(all five optional in the profile) or an adopted state, nothing of this
+runs: hook.log says `the main menu cannot load the room's world (fail
+closed): ...`, and a game needs a world up, any one, before it can load
+the room's.
 
 Tried on build 40408 through the deployed server, with two games on one PC
 (the rig, the fixture save): the owner's game saved its world for the room

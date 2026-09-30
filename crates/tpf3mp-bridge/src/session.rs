@@ -173,6 +173,9 @@ pub struct Session {
     /// A world that came up while the session was between rooms, told to
     /// the next room once hellos are exchanged there.
     world_between_rooms: Option<u64>,
+    /// The menu arrival last told, and the link generation it was told on
+    /// ([`Session::menu_up`]).
+    menu_told: Option<(u32, u64)>,
 }
 
 /// Where the session is before its room's game begins, and after.
@@ -236,6 +239,7 @@ impl Session {
             build: build.clone(),
             lobby: Lobby::Waiting,
             world_between_rooms: None,
+            menu_told: None,
         };
         session.send(&ToAgent::Hello {
             version: BRIDGE_VERSION,
@@ -561,6 +565,22 @@ impl Session {
         }
     }
 
+    /// Before the room begins a game: the game is at its main menu, arrived
+    /// there for the `menu`th time (see [`ToAgent::MenuUp`]). Cheap to call
+    /// every frame: each arrival is told once per room session, including
+    /// to the launcher's next room when the player moves on while the game
+    /// stays at its menu. Between rooms nothing is told; the next call once
+    /// the next room's hellos are exchanged tells it. Returns whether the
+    /// agent was told now.
+    pub fn menu_up(&mut self, menu: u64) -> Result<bool, SessionError> {
+        if self.lobby != Lobby::Waiting || self.menu_told == Some((self.generation, menu)) {
+            return Ok(false);
+        }
+        self.send(&ToAgent::MenuUp { menu })?;
+        self.menu_told = Some((self.generation, menu));
+        Ok(true)
+    }
+
     /// Says something to the room for the player.
     pub fn chat(&mut self, text: ChatText) -> Result<(), SessionError> {
         self.send(&ToAgent::Chat { text })
@@ -852,6 +872,40 @@ mod tests {
             "the kept world, once the new room said hello"
         );
         assert!(heard_now(&agent).is_none(), "once");
+    }
+
+    /// A game at its main menu is told once per arrival and room session:
+    /// again to the launcher's next room, never between rooms or once the
+    /// room's game began.
+    #[test]
+    fn a_menu_arrival_is_told_once_per_room_session() {
+        let (mut session, agent, name) = lobby("menu");
+        assert!(session.menu_up(1).unwrap());
+        assert_eq!(heard_now(&agent), Some(ToAgent::MenuUp { menu: 1 }));
+        assert!(!session.menu_up(1).unwrap(), "every frame, told once");
+        assert!(heard_now(&agent).is_none());
+        say(
+            &agent,
+            &ToHook::End {
+                reason: Text::lossy("Left"),
+            },
+        );
+        assert!(session.try_begin().unwrap().is_none());
+        drop(agent);
+        assert!(!session.menu_up(1).unwrap(), "no room to tell");
+
+        let agent = Link::create(&Config::new(name), Role::Agent).unwrap();
+        assert_eq!(until_the_hook_speaks(&mut session, &agent), "test");
+        assert!(matches!(heard_now(&agent), Some(ToAgent::Log { .. })));
+        assert!(!session.menu_up(1).unwrap(), "the new room's hello first");
+        say(&agent, &agent_hello());
+        assert!(session.try_begin().unwrap().is_none());
+        assert!(session.menu_up(1).unwrap(), "the same arrival, a new room");
+        assert_eq!(heard_now(&agent), Some(ToAgent::MenuUp { menu: 1 }));
+        say(&agent, &begin(10));
+        assert!(session.try_begin().unwrap().is_some());
+        assert!(!session.menu_up(2).unwrap(), "the room's game began");
+        assert!(heard_now(&agent).is_none());
     }
 
     #[test]
