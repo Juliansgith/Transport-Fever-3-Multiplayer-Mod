@@ -832,9 +832,16 @@ lobby.CardLine = react.RegisterRecipe("Tpf3mpCardLine", function(params)
 		local line = params and params.line and params.line(state) or lobby.summary(state)
 		if line ~= lineS:old() then lineS:set(line) end
 	end, 1.0, false)
-	return builtin.TextView{
-		meta = { class = "font-scale-annotation, annotation" },
-		text = lineS:old(),
+	-- A recipe placed among a layout's children must return a layout: the
+	-- game refused a bare TextView here ("Recipe child must be a layout",
+	-- ReactFramework::Load, 2026-09-30), as its own recipes return one.
+	return builtin.BoxLayout{
+		children = {
+			builtin.TextView{
+				meta = { class = "font-scale-annotation, annotation" },
+				text = lineS:old(),
+			},
+		},
 	}
 end)
 
