@@ -1,6 +1,8 @@
 {
     "archives": null,
     "files": [
+        "gui/tpf3mp/icons/menu_multiplayer_50@2x.tga",
+        "gui/tpf3mp/icons/menu_multiplayer_50.tga",
         "tpf3mp/act.lua",
         "tpf3mp/state.lua",
         "gui/menu/lobby.lua",

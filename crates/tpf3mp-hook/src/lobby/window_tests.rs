@@ -1,0 +1,503 @@
+//! The window itself: the mod's `gui/menu/lobby.lua`, drawn in every state
+//! against a stand-in for the game's main menu (`tests/lua/fake_menu.lua`),
+//! its buttons clicked, and every action it sends parsed as the hook parses
+//! it ([`parse_action`]).
+
+use mlua::{Function, Lua, Table};
+use tpf3mp_bridge::{
+    LobbyAction, LobbyConnection, LobbyLine, LobbyMember, LobbyRoom, LobbyRules, LobbyView,
+    LobbyWorld,
+};
+use tpf3mp_proto::{BoundedVec, FixedBytes, PlayerId, Text};
+
+use super::{LobbyState, parse_action};
+
+const FAKE_MENU: &str = include_str!("../../tests/lua/fake_menu.lua");
+const WINDOW: &str = include_str!("../../../../mod/tpf3mp_1/content/gui/menu/lobby.lua");
+
+fn menu() -> Lua {
+    let lua = Lua::new();
+    lua.globals().set("LOBBY_SOURCE", WINDOW).unwrap();
+    lua.load(FAKE_MENU)
+        .set_name("@fake_menu.lua")
+        .exec()
+        .unwrap();
+    lua
+}
+
+fn show(lua: &Lua, view: Option<&LobbyView>) {
+    let literal = LobbyState::of(view, true).to_lua();
+    lua.globals().set("STATE", literal).unwrap();
+}
+
+fn call(lua: &Lua, name: &str, args: impl mlua::IntoLuaMulti) {
+    lua.globals()
+        .get::<Function>(name)
+        .unwrap()
+        .call::<()>(args)
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+}
+
+/// Draws the window as the game does: once, then a poll of the hook and a
+/// redraw.
+fn open(lua: &Lua, focus: Option<&str>) {
+    call(lua, "render", focus);
+    call(lua, "tick", ());
+}
+
+fn texts(lua: &Lua) -> String {
+    lua.globals()
+        .get::<Function>("texts")
+        .unwrap()
+        .call(())
+        .unwrap()
+}
+
+fn click(lua: &Lua, label: &str) {
+    call(lua, "click", label);
+}
+
+fn enabled(lua: &Lua, label: &str) -> bool {
+    lua.globals()
+        .get::<Function>("enabled")
+        .unwrap()
+        .call(label)
+        .unwrap()
+}
+
+fn has_button(lua: &Lua, label: &str) -> bool {
+    lua.globals()
+        .get::<Function>("find")
+        .unwrap()
+        .call::<Option<Table>>(label)
+        .unwrap()
+        .is_some()
+}
+
+/// What the window sent, as the hook parses it; and forgets it.
+fn sent(lua: &Lua) -> Vec<LobbyAction> {
+    let list: Table = lua.globals().get("SENT").unwrap();
+    let actions = list
+        .sequence_values::<String>()
+        .map(|json| {
+            let json = json.unwrap();
+            parse_action(&json).unwrap_or_else(|error| panic!("{json}: {error}"))
+        })
+        .collect();
+    lua.globals()
+        .set("SENT", lua.create_table().unwrap())
+        .unwrap();
+    actions
+}
+
+fn player(n: u8) -> PlayerId {
+    PlayerId(FixedBytes([n; 32]))
+}
+
+fn member(n: u8, name: &str, owner: bool, you: bool, ready: bool) -> LobbyMember {
+    LobbyMember {
+        player: player(n),
+        name: Text::new(name).unwrap(),
+        ready,
+        connected: true,
+        owner,
+        you,
+        same_content: Some(true),
+    }
+}
+
+fn online() -> LobbyView {
+    LobbyView {
+        connection: LobbyConnection::Connected,
+        server: Text::new("EU").unwrap(),
+        name: Text::new("Ann").unwrap(),
+        rules: BoundedVec::new(vec![
+            LobbyRules {
+                name: Text::new("native").unwrap(),
+                description: Text::new("The game's own economy").unwrap(),
+            },
+            LobbyRules {
+                name: Text::new("canonical").unwrap(),
+                description: Text::new("The server settles the economy").unwrap(),
+            },
+        ])
+        .unwrap(),
+        saves: BoundedVec::new(vec![
+            Text::new("newest").unwrap(),
+            Text::new("mptest").unwrap(),
+        ])
+        .unwrap(),
+        start_save: Some(Text::new("mptest").unwrap()),
+        ..LobbyView::default()
+    }
+}
+
+fn in_room(members: Vec<LobbyMember>, you_own: bool) -> LobbyView {
+    LobbyView {
+        room: Some(LobbyRoom {
+            name: Text::new("Friday trains").unwrap(),
+            rules: Text::new("native").unwrap(),
+            invite: Some(Text::new("K7QM2X").unwrap()),
+            running: false,
+            you_own,
+            max_players: 4,
+            has_password: true,
+            members: BoundedVec::new(members).unwrap(),
+        }),
+        chat: BoundedVec::new(vec![LobbyLine {
+            from: Text::new("Bob").unwrap(),
+            text: Text::new("I'll take the coal line").unwrap(),
+            you: false,
+        }])
+        .unwrap(),
+        ..online()
+    }
+}
+
+#[test]
+fn before_the_hook_answers_the_window_waits_and_can_be_closed() {
+    let lua = menu();
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("Waiting for the hook"), "{shown}");
+    assert!(shown.contains("The hook did not answer"), "{shown}");
+    click(&lua, "Close");
+    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 1);
+}
+
+#[test]
+fn not_connected_it_connects_with_the_name_typed_to_the_launchers_server() {
+    let lua = menu();
+    show(&lua, Some(&LobbyView::default()));
+    // The launcher's server, named as players see it (D12).
+    let mut view = LobbyView {
+        server: Text::new("EU").unwrap(),
+        name: Text::new("Ann").unwrap(),
+        ..LobbyView::default()
+    };
+    show(&lua, Some(&view));
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("Not connected"), "{shown}");
+    assert!(shown.contains("1  Connect"), "the steps: {shown}");
+    call(&lua, "type_into", ("Ann", "Ada"));
+    click(&lua, "Connect to EU");
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Connect {
+            name: Text::new("Ada").unwrap()
+        }]
+    );
+    // Under way until the launcher answers, and not sent twice.
+    assert!(texts(&lua).contains("Connecting to EU..."));
+    assert!(!enabled(&lua, "Connect to EU"));
+    view.connection = LobbyConnection::Connecting;
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("Connecting"));
+    assert!(!enabled(&lua, "Connecting..."));
+}
+
+#[test]
+fn a_game_without_its_launcher_says_so_and_offers_nothing() {
+    let lua = menu();
+    let literal = LobbyState::of(None, false).to_lua();
+    lua.globals().set("STATE", literal).unwrap();
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("no link to the TPF3-MP launcher"), "{shown}");
+    assert!(!enabled(&lua, "Connect to the TPF3-MP server"));
+}
+
+#[test]
+fn a_room_is_created_with_the_rules_players_and_save_picked() {
+    let lua = menu();
+    show(&lua, Some(&online()));
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("Create a room") && shown.contains("Join a room"));
+    assert!(shown.contains("EU lists no rooms"), "{shown}");
+    // The saves, the launcher's own first choice picked, and a way to load
+    // a world by hand.
+    let (values, chosen): (Vec<String>, String) = lua
+        .globals()
+        .get::<Function>("offered")
+        .unwrap()
+        .call("Start from this save")
+        .unwrap();
+    assert_eq!(values, ["newest", "mptest", ""]);
+    assert_eq!(chosen, "mptest");
+    call(&lua, "type_into", ("Ann's room", "Alps"));
+    call(&lua, "choose", ("Players", 6));
+    call(&lua, "choose", ("Rules", "canonical"));
+    assert!(texts(&lua).contains("The server settles the economy"));
+    click(&lua, "Create room");
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Create {
+            room: Text::new("Alps").unwrap(),
+            max_players: 6,
+            password: None,
+            rules: Some(Text::new("canonical").unwrap()),
+            start_save: Some(Text::new("mptest").unwrap()),
+        }]
+    );
+    assert!(texts(&lua).contains("Creating the room..."));
+}
+
+#[test]
+fn a_room_can_start_without_a_save_and_is_named_for_its_owner() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&LobbyView {
+            start_save: None,
+            ..online()
+        }),
+    );
+    open(&lua, None);
+    let (_, chosen): (Vec<String>, String) = lua
+        .globals()
+        .get::<Function>("offered")
+        .unwrap()
+        .call("Start from this save")
+        .unwrap();
+    assert_eq!(chosen, "newest", "without the launcher's own, the newest");
+    call(&lua, "choose", ("Start from this save", ""));
+    assert!(texts(&lua).contains("Load a world in the game once in the room"));
+    click(&lua, "Create room");
+    let actions: [LobbyAction; 1] = sent(&lua).try_into().unwrap();
+    let [
+        LobbyAction::Create {
+            room, start_save, ..
+        },
+    ] = actions
+    else {
+        panic!("not a create")
+    };
+    assert_eq!(room.as_str(), "Ann's room");
+    assert_eq!(start_save.as_ref().map(Text::as_str), Some(""), "none");
+}
+
+#[test]
+fn a_room_is_joined_by_its_invite_with_its_password() {
+    let lua = menu();
+    show(&lua, Some(&online()));
+    open(&lua, Some("join"));
+    let shown = texts(&lua);
+    assert!(
+        shown.find("Join a room") < shown.find("Create a room"),
+        "the Join a friend card puts joining first"
+    );
+    // Nothing typed: said, and nothing sent.
+    click(&lua, "Join room");
+    assert!(sent(&lua).is_empty());
+    assert!(texts(&lua).contains("Type the invite code"));
+    call(&lua, "type_into", ("K7QM2X", " k7qm2x "));
+    // The first field without a placeholder: joining's password, as joining
+    // comes first.
+    call(&lua, "type_into", ("", "pw"));
+    click(&lua, "Join room");
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Join {
+            invite: Text::new("K7QM2X").unwrap(),
+            password: Some(Text::new("pw").unwrap()),
+        }]
+    );
+}
+
+#[test]
+fn what_the_hook_refuses_is_shown_until_the_next_action() {
+    let lua = menu();
+    show(&lua, Some(&online()));
+    open(&lua, None);
+    lua.globals()
+        .set("REPLY", "error: that room name is too long")
+        .unwrap();
+    click(&lua, "Create room");
+    let shown = texts(&lua);
+    assert!(shown.contains("that room name is too long"), "{shown}");
+    assert!(!shown.contains("Creating the room..."));
+    // And the launcher's own errors, as it sends them.
+    lua.globals().set("REPLY", "ok").unwrap();
+    show(
+        &lua,
+        Some(&LobbyView {
+            error: Some(Text::new("no room has that invite").unwrap()),
+            ..online()
+        }),
+    );
+    click(&lua, "Disconnect");
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("no room has that invite"));
+}
+
+#[test]
+fn in_the_room_the_owner_starts_once_everyone_is_ready() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&in_room(
+            vec![
+                member(1, "Ann", true, true, true),
+                member(2, "Bob", false, false, false),
+            ],
+            true,
+        )),
+    );
+    open(&lua, None);
+    let shown = texts(&lua);
+    for word in [
+        "Friday trains",
+        "K7QM2X",
+        "2 of 4 players  ·  1 ready",
+        "Owner",
+        "You",
+        "Not ready",
+        "I'll take the coal line",
+    ] {
+        assert!(shown.contains(word), "{word}: {shown}");
+    }
+    assert!(!enabled(&lua, "Start the game"), "Bob is not ready");
+    click(&lua, "Not ready");
+    assert_eq!(sent(&lua), [LobbyAction::Ready { ready: false }]);
+    show(
+        &lua,
+        Some(&in_room(
+            vec![
+                member(1, "Ann", true, true, true),
+                member(2, "Bob", false, false, true),
+            ],
+            true,
+        )),
+    );
+    call(&lua, "tick", ());
+    click(&lua, "Start the game");
+    assert_eq!(sent(&lua), [LobbyAction::Start]);
+}
+
+#[test]
+fn removing_a_player_and_leaving_ask_first() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&in_room(
+            vec![
+                member(1, "Ann", true, true, true),
+                member(2, "Bob", false, false, true),
+            ],
+            true,
+        )),
+    );
+    open(&lua, None);
+    click(&lua, "Remove Bob from the room");
+    assert!(sent(&lua).is_empty(), "asked first");
+    click(&lua, "Keep");
+    click(&lua, "Remove Bob from the room");
+    click(&lua, "Remove");
+    assert_eq!(sent(&lua), [LobbyAction::Kick { player: player(2) }]);
+    click(&lua, "Leave room");
+    assert!(sent(&lua).is_empty(), "asked first");
+    assert!(texts(&lua).contains("Leave the room?"));
+    click(&lua, "Stay");
+    click(&lua, "Leave room");
+    click(&lua, "Leave");
+    assert_eq!(sent(&lua), [LobbyAction::Leave]);
+}
+
+#[test]
+fn a_guest_gets_ready_and_chats_but_neither_starts_nor_removes() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&in_room(
+            vec![
+                member(1, "Ann", true, false, true),
+                member(2, "Bob", false, true, false),
+            ],
+            false,
+        )),
+    );
+    open(&lua, None);
+    assert!(!has_button(&lua, "Start the game"));
+    assert!(!has_button(&lua, "Remove Ann from the room"));
+    click(&lua, "Ready");
+    assert_eq!(sent(&lua), [LobbyAction::Ready { ready: true }]);
+    call(&lua, "type_into", ("Say something to the room", "hi all"));
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Chat {
+            text: Text::new("hi all").unwrap()
+        }]
+    );
+}
+
+#[test]
+fn while_the_rooms_world_comes_the_window_says_how_far_and_stays_usable() {
+    let lua = menu();
+    let mut view = in_room(
+        vec![
+            member(1, "Ann", true, false, true),
+            member(2, "Bob", false, true, true),
+        ],
+        false,
+    );
+    view.room.as_mut().unwrap().running = true;
+    view.world = LobbyWorld::Fetching {
+        bytes: 5_000_000,
+        total: 20_000_000,
+    };
+    view.differences = Some(Text::new("you lack stations 3").unwrap());
+    show(&lua, Some(&view));
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(
+        shown.contains("Receiving the room's world: 25% (5.0 MB of 20.0 MB)"),
+        "{shown}"
+    );
+    assert!(shown.contains("you lack stations 3"));
+    assert!(shown.contains("The room's game is under way."));
+    assert!(!has_button(&lua, "Ready") && !has_button(&lua, "Start the game"));
+    // The chat and Leave still work.
+    call(
+        &lua,
+        "type_into",
+        ("Say something to the room", "almost there"),
+    );
+    assert_eq!(sent(&lua).len(), 1);
+    assert!(enabled(&lua, "Leave room"));
+    view.world = LobbyWorld::Loading;
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("Loading the room's world..."));
+}
+
+#[test]
+fn the_cards_say_where_the_player_is() {
+    let lua = menu();
+    let line = |view: Option<&LobbyView>, linked: bool, what: &str| -> String {
+        let literal = LobbyState::of(view, linked).to_lua();
+        let state: Table = lua.load(format!("return {literal}")).eval().unwrap();
+        let lobby: Table = lua.globals().get("LOBBY").unwrap();
+        lobby.get::<Function>(what).unwrap().call(state).unwrap()
+    };
+    assert_eq!(
+        line(None, false, "summary"),
+        "Start the game from the TPF3-MP launcher"
+    );
+    assert_eq!(line(Some(&online()), true, "summary"), "Online on EU");
+    let room = in_room(vec![member(1, "Ann", true, true, true)], true);
+    assert_eq!(
+        line(Some(&room), true, "summary"),
+        "Friday trains · 1/4 players · 1 ready"
+    );
+    assert_eq!(
+        line(Some(&room), true, "joinLine"),
+        "Your room: invite K7QM2X"
+    );
+    assert_eq!(
+        line(Some(&online()), true, "joinLine"),
+        "With the invite code they send you"
+    );
+}

@@ -590,6 +590,9 @@ pub(crate) fn reset() {
 }
 
 #[cfg(test)]
+mod window_tests;
+
+#[cfg(test)]
 mod tests {
     use tpf3mp_bridge::{LobbyLine, LobbyMember, LobbyRoom, LobbyRules};
     use tpf3mp_proto::BoundedVec;
