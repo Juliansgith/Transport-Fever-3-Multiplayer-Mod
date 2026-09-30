@@ -25,6 +25,7 @@ tar.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tpf3mp-agent.workspace = true
+tpf3mp-ipc.workspace = true
 tpf3mp-proto.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true

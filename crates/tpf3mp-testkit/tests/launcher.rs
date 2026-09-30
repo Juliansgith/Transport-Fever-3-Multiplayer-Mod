@@ -131,6 +131,7 @@ fn launcher_config(
         diagnostics: None,
         hook: None,
         game_exe: None,
+        game_env: Vec::new(),
         listen: "127.0.0.1:0".parse().unwrap(),
         server: None,
         server_fixed: false,

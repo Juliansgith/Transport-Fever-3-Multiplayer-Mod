@@ -49,6 +49,11 @@ pub const LINK_ENV: &str = "TPF3MP_GAME_LINK";
 /// this one started, the game, and in none of those (D11).
 pub const LAUNCHER_PID_ENV: &str = "TPF3MP_LAUNCHER_PID";
 
+/// For playtests: the name of a save in the game's save folder that the
+/// hook loads from the main menu by itself, once, as the menu's Load Game
+/// page would, with no Start Game to press (the launcher's `--auto-load`).
+pub const AUTO_LOAD_ENV: &str = "TPF3MP_AUTO_LOAD";
+
 /// Default size of each ring's data area (1 MiB).
 pub const DEFAULT_RING_CAPACITY: u32 = 1 << 20;
 /// Default maximum payload per message (60 KiB), leaving headroom in the ring.

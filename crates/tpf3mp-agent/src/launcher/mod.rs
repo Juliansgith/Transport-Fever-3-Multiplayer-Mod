@@ -105,6 +105,10 @@ pub struct LauncherConfig {
     pub hook: Option<PathBuf>,
     /// The game's executable, when it is not where Steam's folder says.
     pub game_exe: Option<PathBuf>,
+    /// More variables for the game's environment, on top of the link's: for
+    /// playtests, such as the save the hook loads at the main menu
+    /// ([`tpf3mp_ipc::AUTO_LOAD_ENV`]).
+    pub game_env: Vec<(String, String)>,
 }
 
 /// A running launcher.
@@ -687,7 +691,10 @@ fn launch_game(
                 tpf3mp_ipc::LAUNCHER_PID_ENV.to_owned(),
                 std::process::id().to_string(),
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(config.game_env.iter().cloned())
+        .collect(),
     })
     .map_err(|error| error.to_string())?;
     info!(pid = started.pid, "started the game with the hook");

@@ -64,6 +64,18 @@ struct AutoRoom {
     /// players are in it and every one is ready.
     #[arg(long, requires = "auto_create", conflicts_with = "auto_join")]
     auto_start: Option<usize>,
+
+    /// Start Transport Fever 3 by itself, as its button does: once in the
+    /// room with --auto-create or --auto-join, otherwise right away.
+    #[arg(long)]
+    auto_play: bool,
+
+    /// The name of a save in the game's save folder, such as `mptest`, that
+    /// the game loads by itself from its main menu, once, and starts with
+    /// no Start Game to press. For the room's owner: a guest waits at the
+    /// menu and gets the room's world.
+    #[arg(long, value_name = "SAVE")]
+    auto_load: Option<String>,
 }
 
 /// The server a package plays on, set when it is built.
@@ -112,6 +124,11 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         .build()
         .context("starting the launcher")?;
     let mut config = args.launcher.config()?;
+    if let Some(save) = &args.auto.auto_load {
+        config
+            .game_env
+            .push((tpf3mp_ipc::AUTO_LOAD_ENV.to_owned(), save.clone()));
+    }
     // On unless the player switched them off.
     if let Some(file) = &config.remember {
         diagnostics.set_on(Remembered::load(file).diagnostics.unwrap_or(true));
@@ -188,10 +205,16 @@ fn auto_room(
     auto: AutoRoom,
 ) {
     use tpf3mp_agent::launcher::Action;
+    let in_a_room = auto.auto_create.is_some() || auto.auto_join;
+    if auto.auto_play && !in_a_room {
+        let handle = launcher.handle();
+        runtime.spawn(async move { play(&handle).await });
+        return;
+    }
     let Some(file) = auto.invite_file.clone() else {
         return;
     };
-    if auto.auto_create.is_none() && !auto.auto_join {
+    if !in_a_room {
         return;
     }
     let Some(server) = config.server.clone() else {
@@ -244,6 +267,9 @@ fn auto_room(
                 },
                 None => warn!("auto room: the room has no invite"),
             }
+            if auto.auto_play {
+                play(&handle).await;
+            }
             let Some(players) = auto.auto_start else {
                 return;
             };
@@ -278,7 +304,12 @@ fn auto_room(
                         })
                         .await
                     {
-                        Ok(()) => info!(%invite, "auto room: joined"),
+                        Ok(()) => {
+                            info!(%invite, "auto room: joined");
+                            if auto.auto_play {
+                                play(&handle).await;
+                            }
+                        }
                         Err(error) => warn!(%error, "auto room: could not join"),
                     }
                     return;
@@ -288,6 +319,14 @@ fn auto_room(
         }
         warn!("auto room: no invite appeared in {}", file.display());
     });
+}
+
+/// `--auto-play`: starts the game as the launcher's button does.
+async fn play(handle: &tpf3mp_agent::launcher::LauncherHandle) {
+    match handle.act(tpf3mp_agent::launcher::Action::LaunchGame).await {
+        Ok(()) => info!("auto play: started Transport Fever 3"),
+        Err(error) => warn!(%error, "auto play: could not start Transport Fever 3"),
+    }
 }
 
 /// Whether `--auto-start <players>` starts `room` now: in its lobby, with at
@@ -400,6 +439,26 @@ mod tests {
             "only the owner starts"
         );
         assert!(parse(&[]).unwrap().auto.invite_file.is_none());
+    }
+
+    #[test]
+    fn the_game_can_start_and_load_a_save_by_itself() {
+        let owner = parse(&[
+            "--auto-create",
+            "test",
+            "--invite-file",
+            "i",
+            "--auto-play",
+            "--auto-load",
+            "mptest",
+        ])
+        .unwrap();
+        assert!(owner.auto.auto_play);
+        assert_eq!(owner.auto.auto_load.as_deref(), Some("mptest"));
+        let guest = parse(&["--auto-join", "--invite-file", "i", "--auto-play"]).unwrap();
+        assert!(guest.auto.auto_play && guest.auto.auto_load.is_none());
+        let plain = parse(&[]).unwrap();
+        assert!(!plain.auto.auto_play && plain.auto.auto_load.is_none());
     }
 
     fn room(ready: &[bool], phase: Phase) -> Room {

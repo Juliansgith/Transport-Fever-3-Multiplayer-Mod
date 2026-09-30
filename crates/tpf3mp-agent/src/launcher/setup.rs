@@ -230,6 +230,7 @@ impl LauncherArgs {
             diagnostics: None,
             hook: package_hook(),
             game_exe: self.game_exe.clone(),
+            game_env: Vec::new(),
             listen: self.listen,
             server: self.fixed_server().or(remembered.server),
             server_fixed: self.fixed_server().is_some(),

@@ -4506,6 +4506,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tpf3mp-agent",
+ "tpf3mp-ipc",
  "tpf3mp-proto",
  "tracing",
  "tracing-appender",

@@ -229,6 +229,21 @@ waits for the file and joins. Both need `--server`. With
 many players are in it and every one is ready. The dev server makes
 a new certificate each time it starts, so start the launchers after it.
 
+Nothing needs a click in the game either. `--auto-play` starts Transport
+Fever 3 by itself, as the launcher's button does, once the launcher is in
+the room. `--auto-load <save>` names a save in the game's save folder,
+such as `mptest`. The owner's game loads it from its main menu, once, and
+starts it with no Start Game to press. The launcher passes the name in
+`TPF3MP_AUTO_LOAD`, and the hook loads it the way it loads the room's world
+for a guest, logging `auto-load: ...` lines. A guest leaves the flag out:
+it waits at the menu, is marked ready there, and gets the room's world when
+the room starts. So a whole two-player playtest starts from two commands:
+
+```sh
+tpf3mp-launcher --server 127.0.0.1:29470 --name james --auto-create playtest --auto-start 2 --invite-file invite.txt --auto-play --auto-load mptest
+tpf3mp-launcher --server 127.0.0.1:29470 --name bob --auto-join --invite-file invite.txt --auto-play
+```
+
 With Transport Fever 3 itself (build 40408), two games run on one PC like
 this:
 

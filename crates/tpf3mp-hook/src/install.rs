@@ -16,7 +16,7 @@
 use std::{
     ffi::c_int,
     sync::{
-        Mutex, OnceLock,
+        Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
@@ -137,11 +137,14 @@ pub(crate) fn menu_frame() {
         return;
     };
     driver.on_menu();
-    IN_ROOM.store(driver.in_room(), Ordering::Release);
-    lua::set_in_room(driver.in_room());
+    let in_room = driver.in_room();
+    IN_ROOM.store(in_room, Ordering::Release);
+    lua::set_in_room(in_room);
     let mut lines = driver.take_log();
     drop(guard);
-    if let Some(name) = lua::take_menu_load() {
+    let room_load = lua::take_menu_load();
+    lines.extend(auto_load_frame(room_load.is_some() || in_room));
+    if let Some(name) = room_load {
         // SAFETY: the menu's frame, on the thread that runs its Lua, after
         // the game's own frame: no Lua runs on it now.
         match unsafe { crate::menu::serve(&name) } {
@@ -165,6 +168,32 @@ pub(crate) fn menu_frame() {
     for line in lines {
         log_line(&line);
     }
+}
+
+/// The launcher's `--auto-load` save, loaded from the menu's frames.
+static AUTO_LOAD: Mutex<Option<crate::autoload::AutoLoad>> = Mutex::new(None);
+
+/// One of the menu's frames for `--auto-load` (`crate::autoload`): loads
+/// the save the launcher named, unless the room's own world comes instead.
+/// Returns the lines to log.
+fn auto_load_frame(room_world: bool) -> Option<String> {
+    let mut slot = AUTO_LOAD.lock().unwrap_or_else(PoisonError::into_inner);
+    let auto = slot.get_or_insert_with(crate::autoload::AutoLoad::from_env);
+    if room_world {
+        return auto.cancel();
+    }
+    let now = Instant::now();
+    let save = auto.due(now)?.to_owned();
+    // The lock is let go while the menu's Lua runs.
+    drop(slot);
+    // SAFETY: the menu's frame, on the thread that runs its Lua, after the
+    // game's own frame: no Lua runs on it now.
+    let served = unsafe { crate::menu::serve(&save) };
+    AUTO_LOAD
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_mut()
+        .and_then(|auto| auto.answered(served, now))
 }
 
 /// The speed getter's signature, passed through as the step's is.
