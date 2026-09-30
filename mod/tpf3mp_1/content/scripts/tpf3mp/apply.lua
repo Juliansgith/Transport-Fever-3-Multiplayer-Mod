@@ -771,12 +771,11 @@ function HANDLERS.AssignLine(assign, ctx)
 		return false, "this version of the mod does not take vehicles off their line yet"
 	end
 	local line = entityOf(ctx, "lines", assign.line)
-	-- AssignLine::NEAREST_STOP is the line window's -1: the game picks the
-	-- stop nearest each vehicle, the same one in every game.
-	local stop = assign.first_stop
-	if stop == 65535 then stop = -1 end
+	-- No first stop: the game's choice, the next stop each can reach (-1).
+	local first = assign.first_stop
+	if first == nil then first = -1 end
 	for _, v in ipairs(assign.vehicles) do
-		run(api.cmd.makeVehicleSetLineCmd(entityOf(ctx, "vehicles", v), line, stop))
+		run(api.cmd.makeVehicleSetLineCmd(entityOf(ctx, "vehicles", v), line, first))
 	end
 	return true
 end

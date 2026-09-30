@@ -1367,6 +1367,60 @@ const STATION_BY_ROAD: &str = "{ toRemove = {}, \
     removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9 } } }, \
     removedNodes = {}, edgeObjectsToAdd = {} } }";
 
+/// A rail station placed on open ground, as the construction tool proposes
+/// it on build 40408: the station, and its own platform track as new edges
+/// between new nodes, joined to nothing that exists. `{JOIN}` adds an edge
+/// or not.
+const RAIL_STATION_OPEN: &str = "{ toRemove = {}, \
+    toAdd = { { fileName = '::/stations/rail/rail_station.con', \
+                name = 'Okehampton Rail', playerEntity = 25, \
+                transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 300, 0, 0, 1 }, \
+                params = { seed = 7, length = 2 } } }, \
+    proposal = { \
+    addedNodes = { { entity = -1, comp = { position = { x = 250, y = 0, z = 0 } } }, \
+                   { entity = -2, comp = { position = { x = 300, y = 0, z = 0 } } }, \
+                   { entity = -3, comp = { position = { x = 350, y = 0, z = 0 } } } }, \
+    addedSegments = { \
+        { entity = -4, type = 1, comp = { node0 = -1, node1 = -2, type = 0, typeIndex = -1, \
+          tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+          roadTemplate = '::/track/standard.track_template', roadStyle = '' } }, \
+        { entity = -5, type = 1, comp = { node0 = -2, node1 = -3, type = 0, typeIndex = -1, \
+          tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+          roadTemplate = '::/track/standard.track_template', roadStyle = '' } } {JOIN} }, \
+    removedSegments = {}, removedNodes = {}, edgeObjectsToAdd = {} } }";
+
+#[test]
+fn a_rail_station_on_open_ground_leaves_its_own_track_to_the_station() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let open = RAIL_STATION_OPEN.replace("{JOIN}", "");
+    let joined = RAIL_STATION_OPEN.replace(
+        "{JOIN}",
+        ", { entity = -6, type = 1, comp = { node0 = -3, node1 = 8, type = 0, typeIndex = -1, \
+           tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+           roadTemplate = '::/track/standard.track_template', roadStyle = '' } }",
+    );
+    let (alone, ok, links): (String, bool, usize) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local open = capture.construction({open}) \
+             local joined = capture.construction({joined}) \
+             return tostring(open.BuildConstruction.connection), schema_check(open), \
+                 #joined.BuildConstruction.connection.links"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        alone, "nil",
+        "the platform track is the station's own: built beside it, it blocks it"
+    );
+    assert!(ok, "the schema takes it");
+    assert_eq!(
+        links, 3,
+        "joined to an existing track, it travels as before"
+    );
+}
+
 #[test]
 fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
     let (lua, _script) = engine();
@@ -2155,7 +2209,7 @@ fn the_game_script_buys_the_vehicle_and_tells_the_buyer_which() {
     // vehicle put on line 0.
     lua.load(format!(
         "HOOK.room = true UPDATE({{}}, STATE, 0.2) \
-         HOOK.batch = {{ {BUY_BUS}, {{ AssignLine = {{ vehicles = {{ 2 }}, line = 0, first_stop = 1 }} }},              {{ AssignLine = {{ vehicles = {{ 2 }}, line = 0, first_stop = 65535 }} }} }} \
+         HOOK.batch = {{ {BUY_BUS}, {{ AssignLine = {{ vehicles = {{ 2 }}, line = 0, first_stop = 1 }} }} }} \
          UPDATE({{}}, STATE, 0.2)"
     ))
     .exec()
@@ -2184,15 +2238,7 @@ fn the_game_script_buys_the_vehicle_and_tells_the_buyer_which() {
         )
         .eval()
         .unwrap();
-    assert_eq!(
-        applied, "1:true:500 2:true:nil 3:true:nil",
-        "the buyer hears which"
-    );
-    let nearest: String = lua
-        .load("local s = SENT[3].setLine return table.concat({ s.vehicle, s.line, s.stop }, '|')")
-        .eval()
-        .unwrap();
-    assert_eq!(nearest, "500|301|-1", "NEAREST_STOP is the game's -1 again");
+    assert_eq!(applied, "1:true:500 2:true:nil", "the buyer hears which");
     // The registry the GUI reads is in the script's state, saved with the
     // world.
     let saved: u32 = lua
@@ -2243,7 +2289,7 @@ fn a_bought_vehicle_goes_to_the_room_and_the_store_hears_which_it_is() {
          HEARD = nil \
          api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(25, 202, CONFIG), function(data, ok, entities) \
              HEARD = { vehicle = data.resultVehicleEntity, ok = ok, entity = entities[1] and entities[1][1] } \
-             api.cmd.sendCommand(api.cmd.makeVehicleSetLineCmd(data.resultVehicleEntity, 600, -1)) \
+             api.cmd.sendCommand(api.cmd.makeVehicleSetLineCmd(data.resultVehicleEntity, 600, 0)) \
          end) \
          M.step()",
     )
@@ -2280,8 +2326,35 @@ fn a_bought_vehicle_goes_to_the_room_and_the_store_hears_which_it_is() {
         )
         .eval()
         .unwrap();
-    // The line window's -1, the stop nearest the vehicle, as NEAREST_STOP.
-    assert_eq!(assigned, "500|true|500|3|1|65535");
+    assert_eq!(assigned, "500|true|500|3|1|0");
+}
+
+#[test]
+fn the_next_reachable_stop_travels_as_the_games_choice() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    // The line manager's "Next Reachable Stop" is stop -1 (build 40408): the
+    // action carries no first stop, and every game is given -1 again.
+    let (captured, ok): (String, bool) = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local ctx = { vehicle = function() return 3 end, line = function() return 1 end } \
+             ACTION = capture.vehicleSetLine(ctx, 500, 600, -1) \
+             return tostring(ACTION.AssignLine.first_stop), schema_check(ACTION)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(captured, "nil");
+    assert!(ok, "the schema takes it");
+    lua.load(format!(
+        "HOOK.room = true UPDATE({{}}, STATE, 0.2) \
+         HOOK.batch = {{ {BUY_BUS}, {{ AssignLine = {{ vehicles = {{ 2 }}, line = 0 }} }} }} \
+         UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let stop: i64 = lua.load("return SENT[2].setLine.stop").eval().unwrap();
+    assert_eq!(stop, -1);
 }
 
 #[test]

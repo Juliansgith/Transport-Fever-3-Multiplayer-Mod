@@ -393,7 +393,7 @@ two-sided stop, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (5; 4 had no construction connections, 3 TPF2's
+`ACTION_SCHEMA_VERSION` (6; 5 always named a first stop, 4 had no construction connections, 3 TPF2's
 vehicles and lines, 2 no edge kinds or removed nodes, 1 no road style). The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
@@ -429,7 +429,7 @@ appended.
 | `SellVehicle` | vehicles |
 | `CreateLine` | name, colour, the line as the game keeps it: stops (station group, terminal, other terminals, load mode, waiting times, loading rules per cargo), transport modes, settings |
 | `EditLine` | a line and one change: rename, recolour, the whole line anew, or delete |
-| `AssignLine` | vehicles, the line or none, the first stop, or `NEAREST_STOP` (65535) for the stop nearest each vehicle: the line window's -1, which every game resolves the same from the same world |
+| `AssignLine` | vehicles, the line or none, the first stop or none for the game's choice ("Next Reachable Stop") |
 | `PlaceStop` | the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, the model |
 | `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
 | `CompanyOp` | create, join, rename or delete a company |

@@ -24,9 +24,9 @@ use serde::{Deserialize, Serialize};
 use tpf3mp_proto::{
     Event, EventBody, FixedBytes, LaneDigest, PlayerId,
     action::{
-        Action, AssignLine, Bulldoze, CompanyId, CompanyOp, ConstructionBuild, ConstructionRef,
-        EdgeEnds, LineChange, LineId, LoanOp, Network, Polyline, Pos, Resolve, Structure,
-        Terraform, VehicleChange,
+        Action, Bulldoze, CompanyId, CompanyOp, ConstructionBuild, ConstructionRef, EdgeEnds,
+        LineChange, LineId, LoanOp, Network, Polyline, Pos, Resolve, Structure, Terraform,
+        VehicleChange,
     },
 };
 
@@ -369,24 +369,20 @@ impl State {
                 if ids.is_empty() {
                     refuse!("an assignment of no vehicles");
                 }
-                if let Some(line) = assign.line {
+                if let (Some(line), Some(first)) = (assign.line, assign.first_stop) {
                     let line = self.own_line(line, company)?;
-                    if assign.first_stop != AssignLine::NEAREST_STOP
-                        && usize::from(assign.first_stop) >= self.lines[&line].stops.len()
-                    {
-                        refuse!("line-{line} has no stop {}", assign.first_stop);
+                    if usize::from(first) >= self.lines[&line].stops.len() {
+                        refuse!("line-{line} has no stop {first}");
                     }
+                } else if let Some(line) = assign.line {
+                    self.own_line(line, company)?;
                 }
                 for id in ids {
                     let vehicle = self.vehicles.get_mut(&id).expect("checked above");
                     vehicle.line = assign.line.map(|line| line.0);
-                    // The model has no positions: the nearest stop is its
-                    // first.
-                    vehicle.next_stop = if assign.first_stop == AssignLine::NEAREST_STOP {
-                        0
-                    } else {
-                        assign.first_stop
-                    };
+                    // The game's choice: the model's vehicles all reach
+                    // every stop, so the first.
+                    vehicle.next_stop = assign.first_stop.unwrap_or(0);
                     vehicle.progress = 0;
                 }
                 Ok(())

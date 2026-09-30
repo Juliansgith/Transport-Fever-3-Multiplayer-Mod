@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 5;
+pub const ACTION_SCHEMA_VERSION: u32 = 6;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -548,17 +548,10 @@ pub struct AssignLine {
     pub vehicles: BoundedVec<VehicleId, MAX_VEHICLES>,
     /// The line, or none to take the vehicles off their line.
     pub line: Option<LineId>,
-    /// Index of the stop the vehicles head for first, or
-    /// [`AssignLine::NEAREST_STOP`].
-    pub first_stop: u16,
-}
-
-impl AssignLine {
-    /// `first_stop` for "the stop nearest each vehicle": what the game's
-    /// line window asks for (its -1), and every game picks the same stop
-    /// from the same world. A value no line reaches, so the wire format is
-    /// unchanged.
-    pub const NEAREST_STOP: u16 = u16::MAX;
+    /// Index of the stop the vehicles head for first; none for the game's
+    /// choice, the next stop each vehicle can reach (the line manager's
+    /// "Next Reachable Stop", stop index -1 in TF3's command).
+    pub first_stop: Option<u16>,
 }
 
 /// What the vehicle window does to one vehicle.
@@ -875,7 +868,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                5, // schema version
+                6, // schema version
                 5, // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -918,7 +911,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                5, // schema version
+                6, // schema version
                 1, // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices

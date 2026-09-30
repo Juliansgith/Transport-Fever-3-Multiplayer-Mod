@@ -288,12 +288,12 @@ fn samples() -> Vec<Action> {
         Action::AssignLine(AssignLine {
             vehicles: list(vec![VehicleId(1)]),
             line: Some(LineId(3)),
-            first_stop: 1,
+            first_stop: Some(1),
         }),
         Action::AssignLine(AssignLine {
             vehicles: list(vec![VehicleId(1), VehicleId(2)]),
             line: None,
-            first_stop: 0,
+            first_stop: None,
         }),
         Action::PlaceStop(PlaceStop {
             edge: EdgeRef {
