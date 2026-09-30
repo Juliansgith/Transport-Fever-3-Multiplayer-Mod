@@ -203,13 +203,13 @@ Dev C (building):
 - [ ] Two players each build 20 roads and tracks, crossing each other's;
   lanes match at every checkpoint.
 - [ ] 60 in-game days without divergence.
-- [ ] *Added, open for the owner:* a bus leaving a depot starts a few
-  millimetres to 30 cm apart in each game, with the world, its path and
-  the games' entity ids the same; the room resynced a game after 6 of the
-  10 departures measured
+- [ ] *Added:* vehicles leaving a depot a few millimetres to 30 cm apart
+  in each game. *Cause found:* the depot sets a leaving vehicle back by its
+  entity id, and a game that kept its world numbers entities differently
+  from one that loaded its save
   ([TF3_VEHICLE_DETERMINISM_2026-09-30.md](../investigation/TF3_VEHICLE_DETERMINISM_2026-09-30.md)).
-  Which of its options to take: find the cause in the game, resync every
-  guest after each departure, or tolerate small vehicle differences.
+  *Fix* (#23): every game, the owner's too, loads the same save whenever
+  the room hands one out. Tick once merged and deployed.
 - [ ] *Added:* a third player joins mid-game, and a player rejoins after
   killing their game; lanes still match. Late join, rejoin and repair
   all load a save and then apply turns. If a loaded game walks its lists
