@@ -78,18 +78,22 @@ A game Steam started has no hook and keeps the plain menu.
   room's world while it comes and loads, with a progress bar; how the
   game differs from the room's. Then one of three views:
   - not connected: the name, and **Connect to EU**;
-  - connected: three tabs. **Public rooms**, the server's room list
+  - connected: a first page with two big cards, **Join a room** and
+    **Host a room**, each opening its own page with Back to the first.
+    Join: **Public rooms**, the server's room list
     (D26 proposed; PROTOCOL.md, "Rooms"), as cards in the main menu's
     style (the game's `menu_icon_react_util.CardButton`, class
     `small-rectangle-card`), each with its climate's picture (the game's
     own, `app.res.climateRep`, else its New Game card's), name,
     players/limit, companies, year and a lock for a password; a click
     joins, asking for a password first. The window asks for it when shown
-    and every 10 seconds. **Create a room**: its name, the save it starts
+    and every 10 seconds; under it, joining with an invite. Host: its name, the save it starts
     from, players, private or public (a public room is listed with the
     save's climate and year, read as the Load Game page reads them:
     `app.findAllSavegames`, `app.getSavegameInfo`), rules and a password.
-    **Join with an invite**: the invite and its password;
+    **Your mods** opens from Join, Host and the room: the player's
+    installed mods to turn on or off (`choose_mod`), and in a room the
+    room's own and whether the player has each;
   - in a room: its name, invite and counts, the players with their marks
     (owner, you, ready, away, other mods) and, for the owner, a Remove
     button that asks first; the chat; **Leave room** (asks first),
