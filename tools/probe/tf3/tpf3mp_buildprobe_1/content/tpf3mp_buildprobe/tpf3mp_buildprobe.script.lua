@@ -12,9 +12,17 @@
 -- side hears `apply_command` onPreBuildProposal/onPostBuildProposal.
 --
 -- This probe logs each event with the proposal's shape (the first few
--- proposalCreate of each tool only), and returns an error from the street
--- builder's proposalPrepareForApply: if the road is then not built, a game
--- script can stop a build at its click and hand it to the room instead.
+-- proposalCreate of each tool only, and a construction proposal's first
+-- entry field by field), and returns an error from the street builder's
+-- proposalPrepareForApply.
+--
+-- Found with it on build 40408: the street builder sends no
+-- proposalPrepareForApply (a click is proposalCreate twice, then the
+-- simulation's onPreBuildProposal, onPostBuildProposal, then the GUI's
+-- proposalApply), and nothing a game script does stops the build (an error
+-- raised in onPreBuildProposal is logged and the build goes on; emptying
+-- the proposal's lists there crashes the game). The hook stops the player's
+-- builds natively (crates/tpf3mp-hook/src/builds.rs).
 --
 -- Output: the TPF3-MP hook's log (tpf3mp_native.log) in a game its
 -- launcher started, else the game's log, as "[tpf3mp-probe build] ...".
@@ -108,6 +116,48 @@ function data()
 			.. " costs=" .. tostring(costs)
 	end
 
+	-- A construction proposal's first entry, field by field: what a capture
+	-- can read of it.
+	local function dumpConstruction(proposal)
+		local toAdd = get(proposal, "toAdd")
+		local con = toAdd and get(toAdd, 1)
+		if not con then return "no toAdd[1]" end
+		local out = {}
+		for _, key in ipairs({ "fileName", "name", "playerEntity", "hasCargoPlatform" }) do
+			out[#out + 1] = key .. "=" .. tostring(get(con, key))
+		end
+		local t = get(con, "transf")
+		if t then
+			local cells = {}
+			for i = 1, 16 do cells[#cells + 1] = tostring(get(t, i)) end
+			out[#out + 1] = "transf=" .. table.concat(cells, ",")
+		end
+		for _, part in ipairs({ "construction", "desc" }) do
+			local v = get(con, part)
+			out[#out + 1] = part .. "=" .. type(v)
+			if v ~= nil then
+				for _, key in ipairs({ "fileName", "name", "params", "transf", "frozenNodes", "frozenEdges" }) do
+					local f = get(v, key)
+					if f ~= nil then
+						local text = tostring(f)
+						if type(f) == "table" then
+							local keys = {}
+							for k, value in pairs(f) do
+								keys[#keys + 1] = tostring(k) .. ":" .. type(value) .. "=" .. tostring(value)
+								if #keys >= 25 then break end
+							end
+							text = "{" .. table.concat(keys, " ") .. "}"
+						end
+						out[#out + 1] = part .. "." .. key .. "=" .. text
+					end
+				end
+			end
+		end
+		local params = get(con, "params")
+		if params ~= nil then out[#out + 1] = "params=" .. tostring(params) end
+		return table.concat(out, " | ")
+	end
+
 	local creates = {}
 
 	return {
@@ -123,6 +173,10 @@ function data()
 			log("sim " .. tostring(name) .. " from " .. tostring(src)
 				.. " playerInitiated=" .. tostring(get(param, 4))
 				.. " " .. describe(get(param, 1)))
+			-- Found on build 40408: nothing here stops the build. An error
+			-- raised here is logged and the build goes on; emptying the
+			-- proposal's lists here crashes the game. The hook stops the
+			-- player's builds natively (crates/tpf3mp-hook/src/builds.rs).
 		end,
 
 		guiHandleEvent = function(_params, _state, _guiState, src, id, name, param)
@@ -136,6 +190,9 @@ function data()
 			log("gui " .. tostring(id) .. " " .. name .. " from " .. tostring(src) .. ": "
 				.. describe(get(param, 1)) .. " | " .. describeData(get(param, 2))
 				.. " | entities=" .. count(get(param, 3)))
+			if id == "constructionBuilder" then
+				log("construction " .. dumpConstruction(get(param, 1)))
+			end
 			if name == "builder.proposalPrepareForApply" and id == "streetBuilder" then
 				log("refusing the street build at proposalPrepareForApply")
 				return { errorMessages = { ["TPF3-MP probe: street builds are refused"] = true } }
