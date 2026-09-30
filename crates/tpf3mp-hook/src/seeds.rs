@@ -9,27 +9,34 @@
 //!
 //! 1. **The game scripts' `math.random`** is the engine's own `mt19937`,
 //!    one per `lua::State`, seeded with the constant 5489 when the state is
-//!    created and never saved: two replicas that ran the same script calls
-//!    since their states were created agree, and a replica that joined (its
-//!    state fresh at 5489 while the others' streams are far along) does
-//!    not. [`before_update`] reseeds every **game-script state** from the
-//!    room's step number before each update of the simulation, so the
-//!    stream every replica draws from at step *n* is `seed_for(n)`,
-//!    whatever its history. The states are told apart at the registrar:
-//!    the game's per-game-script-state registrar (`CGame::CGame::lambda_3`,
-//!    a profile target, called once per game-script state with the
-//!    `lua::State&` in `r8`) is detoured to mark the state it registers,
-//!    and only marked states are reseeded; the GUI state (the mod's, the
-//!    one the mod's handlers came from) and the react UI roots are never
-//!    touched, and the GUI state's scripts draw nothing anyway (the survey,
-//!    section 6). The reseed runs on the simulation thread inside
-//!    `GameSim::Step`, from a detour on `ecs::Engine::Update` (the
-//!    per-update advance, the one call `GameSim::Step` makes per update,
-//!    before the systems and so before `ecs::GameScriptSystem::Update`
-//!    runs the scripts), so it is on the thread that runs those states
-//!    while they are idle. It is per update, not per call of the game's
-//!    step: a call runs a batch of updates, batches differ per machine,
-//!    and a reseed per batch would itself diverge the replicas.
+//!    created and never saved. The game runs its game scripts on a pool of
+//!    such states, one per worker thread of its job pool (with eight or more
+//!    hardware threads the engine's shared pool; its own "GameScriptSystem
+//!    Pool", of half the threads, only below eight), so which state, and so
+//!    which stream, a script's `update` draws from depends on how that
+//!    update's jobs were scheduled, which no two machines share. Measured in
+//!    a room of three games that loaded one save: `reforestation.script.tl`
+//!    planted its first trees at steps 360, 360 and 364, and every build
+//!    after that at other steps in each game. So the hook reseeds the state
+//!    about to run a script, on the worker thread about to run it, right
+//!    before each call: the engine hands that state to a functor first (the
+//!    ones `game_script_util::Update`, `PostUpdate` and `HandleEvent` make,
+//!    [`UPDATE_CALL_TARGET`], [`POST_UPDATE_CALL_TARGET`] and
+//!    [`EVENT_CALL_TARGET`]), and the detour there calls
+//!    `math.randomseed(script_seed(step, call, entity))` in it: the room's
+//!    step of the update running, which callback, and the game script's
+//!    entity. Every script then draws the same numbers at the same step on
+//!    every game, whichever state runs it and whatever ran in that state
+//!    before. The engine does the same itself for an event that carries a
+//!    seed (`HandleEvent`'s `int const*`, through its `lua::State::
+//!    RandomSeed`), and such an event keeps the engine's seed. The step
+//!    comes from a detour on `ecs::Engine::Update` (the per-update advance,
+//!    the one call `GameSim::Step` makes per update, before the systems and
+//!    so before `ecs::GameScriptSystem::Update` runs the scripts): per
+//!    update, not per call of the game's step, since a call runs a batch of
+//!    updates and batches differ per machine. Outside the room's released
+//!    updates no step is current and nothing is reseeded: the game's own
+//!    randomness, as before.
 //! 2. **`TownDevelopAt`** seeds its town developer from the CRT `rand()`,
 //!    which the game seeds from the wall clock. The player's
 //!    `makeTownDevelopAtCmd` is refused in a room already (the mod's
@@ -46,10 +53,9 @@
 //! The seed is [`seed_for`]: a `splitmix64` mix of the step and a salt,
 //! folded to `1..=0x7fff_ffff` (an `mt19937` takes a 32-bit seed, the
 //! engine's `math.randomseed` reads an integer, and `minstd_rand` treats 0
-//! as 1, so the range suits every generator here). Both game-script states
-//! get the same seed (they run the same scripts on the two engines, and
-//! their registration order is not proven equal on every replica, so no
-//! per-state salt is derived from it).
+//! as 1, so the range suits every generator here). A script call's salt is
+//! [`script_salt`]: the call's kind and the script's entity, never the state
+//! or the thread, which differ per machine.
 //!
 //! The detours that hand control to this module are assembly thunks: they
 //! save the four argument registers and `xmm0`-`xmm3` (the targets take
@@ -64,12 +70,11 @@
 
 use std::{
     ffi::{c_char, c_int, c_void},
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::catch_unwind,
     sync::{
         Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
-    thread::ThreadId,
 };
 
 use tpf3mp_hookcore::profile::ResolvedProfile;
@@ -80,11 +85,22 @@ use crate::{
     step::Updates,
 };
 
-/// The profile target that registers each game-script state: `CGame::CGame`
-/// lambda_3's `operator()(this, TypeRegistry&, lua::State& r8, bool r9b,
-/// weak_ptr<bool const>)`, called once per game-script state (twice per
-/// `CGame`: the game has two engines, and a script state for each).
-pub const GAME_SCRIPT_TARGET: &str = "CGame::CGame::lambda_3";
+/// The profile target where a game script's `update` gets its state: the
+/// call of the functor `game_script_util::Update` makes (`_Do_call(this,
+/// lua::State*& rdx, GameScriptData& r8)`), on the thread and with the state
+/// that then run the script's `update`. The script's entity is at
+/// [`UPDATE_ENTITY`] in the functor.
+pub const UPDATE_CALL_TARGET: &str = "game_script_util::Update/lambda_1::_Do_call";
+/// As [`UPDATE_CALL_TARGET`], for `postUpdate`: the functor
+/// `game_script_util::PostUpdate` makes (the same code serves
+/// `HandleApplyCommandBuildProposal`'s), the entity at [`POST_UPDATE_ENTITY`].
+pub const POST_UPDATE_CALL_TARGET: &str = "game_script_util::PostUpdate/lambda_1::_Do_call";
+/// As [`UPDATE_CALL_TARGET`], for `handleEvent`: the operator that
+/// `game_script_util::HandleEvent`'s inner functor calls (`(captures,
+/// lua::State* rdx, GameScriptData& r8)`), the entity at [`EVENT_ENTITY`]
+/// in the captures and the event's own seed, when it has one, behind
+/// [`EVENT_SEED`].
+pub const EVENT_CALL_TARGET: &str = "game_script_util::HandleEvent/lambda_1/lambda_1::operator()";
 /// The profile target for the per-update advance: `ecs::Engine::Update
 /// (engine, float dt)`, the one call `GameSim::Step` makes for each update
 /// after applying that update's commands, before any system runs.
@@ -102,20 +118,28 @@ pub const TOWN_DEVELOP_TARGET: &str = "TownDevelopAt::Apply";
 /// [`Batch::town_apply`].
 pub const TOWN_DEVELOP_RESEED: bool = false;
 
-/// The salt of the game-script states' seed.
+/// The salt of the game scripts' seeds, before the call's kind and the
+/// script's entity ([`script_salt`]).
 pub const GAME_SCRIPT_SALT: u32 = 0;
 /// The salt of the `TownDevelopAt` seed (`"town"`), plus the command's
 /// number within its step.
 pub const TOWN_DEVELOP_SALT: u32 = 0x746f_776e;
 
-/// How many game-script states one `CGame` registers (the recon: lambda_3
-/// is called twice, once per engine). A mark past that many starts a new
-/// game's group, and the older group is retired, never touched again: a
-/// state of a game that was torn down is a dangling pointer.
-pub const GAME_SCRIPT_STATES_PER_GAME: usize = 2;
-/// Most states the roster keeps; beyond it, later ones are counted only.
-const MAX_ROSTER: usize = 64;
-/// After the first few, the reseed goes to the log once per this many steps.
+/// Where the script's entity (`ecs::Entity`, an `int`) is in each call's
+/// functor, as the engine's own code reads it (build 40408): the update
+/// functor's `mov eax, [rdi+0x20]` (0xf45490), the post-update functor's
+/// `mov eax, [rdi+0x18]` (0xf449e6), the event operator's captures'
+/// `mov eax, [rdi+0x20]` (0xf417d5).
+pub const UPDATE_ENTITY: usize = 0x20;
+pub const POST_UPDATE_ENTITY: usize = 0x18;
+pub const EVENT_ENTITY: usize = 0x20;
+/// Where the event operator's captures keep the event's `int const*` seed:
+/// the engine reseeds the state itself when it is not null (`mov rax,
+/// [rcx+0x28]` ... `call lua::State::RandomSeed`, 0xf417a7).
+pub const EVENT_SEED: usize = 0x28;
+
+/// After the first few calls of each kind, the reseed goes to the log once
+/// per this many steps.
 const LOG_FIRST: u64 = 3;
 const LOG_EVERY: u64 = 1_000;
 
@@ -129,6 +153,61 @@ pub fn seed_for(step: u64, salt: u32) -> u32 {
     z ^= z >> 31;
     // The high bits, into 1..=2^31-1.
     ((z >> 33) as u32) % 0x7fff_fffe + 1
+}
+
+/// Which of a game script's callbacks is about to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptCall {
+    Update,
+    PostUpdate,
+    Event,
+}
+
+impl ScriptCall {
+    /// Its part of the salt (`"updt"`, `"post"`, `"evnt"`).
+    pub const fn salt(self) -> u32 {
+        match self {
+            Self::Update => 0x7570_6474,
+            Self::PostUpdate => 0x706f_7374,
+            Self::Event => 0x6576_6e74,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Update => "update",
+            Self::PostUpdate => "postUpdate",
+            Self::Event => "handleEvent",
+        }
+    }
+}
+
+/// A script call's salt: the game scripts' salt, the call's kind and the
+/// script's entity, which every replica of the room shares (one save, one
+/// numbering).
+pub fn script_salt(call: ScriptCall, entity: u32) -> u32 {
+    GAME_SCRIPT_SALT ^ call.salt() ^ entity.wrapping_mul(0x9e37_79b1)
+}
+
+/// The seed a script call gets at `step`.
+pub fn script_seed(step: u64, call: ScriptCall, entity: u32) -> u32 {
+    seed_for(step, script_salt(call, entity))
+}
+
+/// What the per-call reseed does with a call: the seed for the update
+/// running now (`current`), or nothing outside the room's released updates
+/// or for an event the engine seeds itself.
+pub fn call_seed(
+    current: Option<u64>,
+    call: ScriptCall,
+    entity: u32,
+    engine_seeded: bool,
+) -> Option<u32> {
+    let step = current?;
+    if engine_seeded {
+        return None;
+    }
+    Some(script_seed(step, call, entity))
 }
 
 // ---------- the batch of updates one call of the game's step runs ----------
@@ -223,17 +302,33 @@ fn once(flag: &AtomicBool, message: &str) {
 
 static UPDATE_HOOKED: AtomicBool = AtomicBool::new(false);
 static MISMATCH_LOGGED: AtomicBool = AtomicBool::new(false);
-static ROSTER_LOGGED: AtomicBool = AtomicBool::new(false);
 static NO_API_LOGGED: AtomicBool = AtomicBool::new(false);
-static NO_STATES_LOGGED: AtomicBool = AtomicBool::new(false);
 static EXTRA_UPDATE_LOGGED: AtomicBool = AtomicBool::new(false);
 static TOWN_OUTSIDE_LOGGED: AtomicBool = AtomicBool::new(false);
+static UNREADABLE_LOGGED: AtomicBool = AtomicBool::new(false);
+static FAILED_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// The room's step of the update running now, plus one; 0 when none is
+/// (between the driver's batches, outside the room, an update the room did
+/// not release). Written on the simulation thread before each update, read
+/// by the worker threads that run that update's scripts.
+static CURRENT_STEP: AtomicU64 = AtomicU64::new(0);
+/// Script calls reseeded, per kind (update, postUpdate, handleEvent).
+static RESEEDS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+/// The last step a periodic reseed line was written for.
+static LOGGED_STEP: AtomicU64 = AtomicU64::new(0);
+
+/// The room's step of the update running now.
+pub fn current_step() -> Option<u64> {
+    CURRENT_STEP.load(Ordering::Acquire).checked_sub(1)
+}
 
 /// From the step driver, on the simulation thread, right before it runs
 /// the game's step: the room's next step and the updates this call runs.
 /// Arms the per-update reseed for exactly those updates; anything else
 /// (no step known yet, the game's own speed, the paused path) disarms it.
 pub fn before_updates(next_step: Option<u64>, updates: Updates) {
+    CURRENT_STEP.store(0, Ordering::Release);
     let mismatch = lock(&BATCH).arm(next_step, updates);
     if let Some((saw, expected)) = mismatch
         && UPDATE_HOOKED.load(Ordering::Relaxed)
@@ -245,132 +340,6 @@ pub fn before_updates(next_step: Option<u64>, updates: Updates) {
             ),
         );
     }
-    if matches!(updates, Updates::Exactly(n) if n > 0) {
-        once(&ROSTER_LOGGED, &roster_report());
-    }
-}
-
-// ---------- the roster of Lua states ----------
-
-/// A Lua state the registrar detour saw.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Seen {
-    state: usize,
-    thread: ThreadId,
-    target: String,
-}
-
-/// A game-script state, marked by the game's own registrar for them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Marked {
-    state: usize,
-    thread: ThreadId,
-    /// The registrar's `bool` argument, which tells the two states apart.
-    flag: bool,
-    /// The reseed failed in this state once; it is never tried again (the
-    /// same failure on every replica, from the same game code).
-    failed: bool,
-    reseeds: u64,
-}
-
-#[derive(Default)]
-struct Roster {
-    seen: Vec<Seen>,
-    /// Beyond `MAX_ROSTER`.
-    more: u64,
-    /// The current game's game-script states.
-    marked: Vec<Marked>,
-    /// Groups retired so far (a new game's states arrived).
-    retired: u64,
-}
-
-static ROSTER: Mutex<Roster> = Mutex::new(Roster {
-    seen: Vec::new(),
-    more: 0,
-    marked: Vec::new(),
-    retired: 0,
-});
-
-/// From the Lua bridge: `target` just registered `tpf3mp_native` in
-/// `state` on this thread.
-pub fn saw_state(state: usize, target: &str) {
-    let mut roster = lock(&ROSTER);
-    if roster.seen.len() >= MAX_ROSTER {
-        roster.more += 1;
-        return;
-    }
-    roster.seen.push(Seen {
-        state,
-        thread: std::thread::current().id(),
-        target: target.to_owned(),
-    });
-}
-
-/// From the game-script registrar's detour: `state` is a game-script
-/// state, being set up on this thread. A mark past
-/// [`GAME_SCRIPT_STATES_PER_GAME`], or of a pointer already marked, starts
-/// a new game's group and retires the old.
-fn mark_game_script(state: usize, flag: bool) {
-    let thread = std::thread::current().id();
-    let mut roster = lock(&ROSTER);
-    if roster.marked.len() >= GAME_SCRIPT_STATES_PER_GAME
-        || roster.marked.iter().any(|marked| marked.state == state)
-    {
-        roster.retired += 1;
-        log::line(&format!(
-            "seeds: a new game's script states arrive; the {} state(s) of the last are retired (group {})",
-            roster.marked.len(),
-            roster.retired
-        ));
-        roster.marked.clear();
-    }
-    roster.marked.push(Marked {
-        state,
-        thread,
-        flag,
-        failed: false,
-        reseeds: 0,
-    });
-    log::line(&format!(
-        "seeds: game-script Lua state {state:#x} registered by {GAME_SCRIPT_TARGET} (flag {flag}, state #{} of this game) on thread {thread:?}",
-        roster.marked.len()
-    ));
-}
-
-/// One line saying which states exist and which the reseed covers.
-fn roster_report() -> String {
-    let roster = lock(&ROSTER);
-    let seen: Vec<String> = roster
-        .seen
-        .iter()
-        .map(|seen| {
-            let role = if roster.marked.iter().any(|m| m.state == seen.state) {
-                "game-script"
-            } else {
-                "other (UI root?)"
-            };
-            format!(
-                "{:#x} from {} on {:?}: {role}",
-                seen.state, seen.target, seen.thread
-            )
-        })
-        .collect();
-    let covered: Vec<String> = roster
-        .marked
-        .iter()
-        .filter(|m| !m.failed)
-        .map(|m| format!("{:#x}", m.state))
-        .collect();
-    format!(
-        "seeds: Lua states seen [{}]{}; the per-step math.random reseed covers [{}]",
-        seen.join("; "),
-        if roster.more > 0 {
-            format!(" and {} more", roster.more)
-        } else {
-            String::new()
-        },
-        covered.join(", ")
-    )
 }
 
 // ---------- the reseed ----------
@@ -472,80 +441,79 @@ pub unsafe fn reseed_state(api: &SeedApi, state: State, seed: u32) -> Result<(),
     }
 }
 
-/// Reseeds every game-script state for `step`. On the simulation thread,
-/// before the update's systems run.
-fn reseed_game_scripts(step: u64) {
+/// A game script is about to run in the state whose `lua::State` object is
+/// at `state_object` (its first word the `lua_State*`), on this thread:
+/// reseed that state's `math.random` for the update running now, the call
+/// and the script. Nothing outside the room's released updates, nor for an
+/// event the engine seeds itself.
+fn before_script_call(state_object: usize, call: ScriptCall, entity: u32, engine_seeded: bool) {
+    let Some(seed) = call_seed(current_step(), call, entity, engine_seeded) else {
+        return;
+    };
     let Some(api) = SEED_API.get() else {
         once(
             &NO_API_LOGGED,
-            "seeds: the profile lacks the Lua functions the reseed calls, so the game-script states are not reseeded",
+            "seeds: the profile lacks the Lua functions the reseed calls, so the game scripts are not reseeded",
         );
         return;
     };
-    let seed = seed_for(step, GAME_SCRIPT_SALT);
-    let mut roster = lock(&ROSTER);
-    if roster.marked.is_empty() {
+    if !crate::image::readable(state_object, std::mem::size_of::<usize>()) {
         once(
-            &NO_STATES_LOGGED,
+            &UNREADABLE_LOGGED,
             &format!(
-                "seeds: no game-script state is marked ({GAME_SCRIPT_TARGET} never ran); the per-step reseed covers nothing"
+                "seeds: a game script's {} ran with an unreadable lua::State {state_object:#x}; that call is not reseeded",
+                call.name()
             ),
         );
         return;
     }
-    for marked in roster.marked.iter_mut().filter(|m| !m.failed) {
-        let state = marked.state as State;
-        // SAFETY: a game-script state the game's registrar marked, reseeded
-        // on the simulation thread between updates, when the game itself
-        // runs it (ecs::GameScriptSystem::Update, inside ecs::Engine::Update
-        // on this thread) and nothing else does.
-        let outcome = catch_unwind(AssertUnwindSafe(|| unsafe {
-            reseed_state(api, state, seed)
-        }));
-        match outcome {
-            Ok(Ok(())) => {
-                marked.reseeds += 1;
-                if marked.reseeds <= LOG_FIRST || step.is_multiple_of(LOG_EVERY) {
-                    log::line(&format!(
-                        "seeds: step {step}: math.randomseed({seed}) in game-script state {:#x} (reseed #{})",
-                        marked.state, marked.reseeds
-                    ));
-                }
-            }
-            Ok(Err(reason)) => {
-                marked.failed = true;
+    // SAFETY: the word at `state_object` is readable, checked above.
+    let state = unsafe { std::ptr::read_unaligned(state_object as *const usize) };
+    if state == 0 {
+        return;
+    }
+    let step = current_step().unwrap_or_default();
+    // SAFETY: the state the engine is about to run this script in, handed
+    // to the call's functor on this thread; nothing else runs it until the
+    // call returns (the engine runs one script at a time per worker state).
+    match unsafe { reseed_state(api, state as State, seed) } {
+        Ok(()) => {
+            let n = RESEEDS[call as usize].fetch_add(1, Ordering::Relaxed) + 1;
+            let periodic =
+                step.is_multiple_of(LOG_EVERY) && LOGGED_STEP.swap(step, Ordering::Relaxed) != step;
+            if n <= LOG_FIRST || periodic {
                 log::line(&format!(
-                    "seeds: step {step}: reseeding game-script state {:#x} failed: {reason}; that state is not reseeded again",
-                    marked.state
-                ));
-            }
-            Err(_) => {
-                marked.failed = true;
-                log::line(&format!(
-                    "seeds: step {step}: reseeding game-script state {:#x} panicked; that state is not reseeded again",
-                    marked.state
+                    "seeds: step {step}: math.randomseed({seed}) before the {} of script entity {entity} (state {state:#x}; {} update, {} postUpdate, {} handleEvent calls reseeded so far)",
+                    call.name(),
+                    RESEEDS[0].load(Ordering::Relaxed),
+                    RESEEDS[1].load(Ordering::Relaxed),
+                    RESEEDS[2].load(Ordering::Relaxed),
                 ));
             }
         }
+        Err(reason) => once(
+            &FAILED_LOGGED,
+            &format!(
+                "seeds: step {step}: the {} of script entity {entity} was not reseeded: {reason} (said once)",
+                call.name()
+            ),
+        ),
     }
 }
 
 /// An update of the simulation begins (the `ecs::Engine::Update` detour,
-/// on the simulation thread): reseed the game-script states for its step.
+/// on the simulation thread): its step becomes the current one, for the
+/// script calls it runs.
 fn before_update() {
     let step = lock(&BATCH).next_update();
-    match step {
-        Some(step) => reseed_game_scripts(step),
-        None => {
-            if lock(&BATCH).count > 0 {
-                once(
-                    &EXTRA_UPDATE_LOGGED,
-                    &format!(
-                        "seeds: {UPDATE_TARGET} ran more often than the driver released updates; the extra updates are not reseeded"
-                    ),
-                );
-            }
-        }
+    CURRENT_STEP.store(step.map_or(0, |step| step + 1), Ordering::Release);
+    if step.is_none() && lock(&BATCH).count > 0 {
+        once(
+            &EXTRA_UPDATE_LOGGED,
+            &format!(
+                "seeds: {UPDATE_TARGET} ran more often than the driver released updates; the extra updates are not reseeded"
+            ),
+        );
     }
 }
 
@@ -821,7 +789,9 @@ mod native {
 
     /// The trampolines to the originals; 0 until installed. The thunks
     /// read them.
-    static GAME_SCRIPT_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+    static UPDATE_CALL_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+    static POST_UPDATE_CALL_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+    static EVENT_CALL_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
     static UPDATE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
     static TOWN_DEVELOP_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
@@ -873,10 +843,16 @@ mod native {
     }
 
     thunk!(
-        game_script_thunk,
-        before_game_script_c,
-        GAME_SCRIPT_ORIGINAL
+        update_call_thunk,
+        before_update_call_c,
+        UPDATE_CALL_ORIGINAL
     );
+    thunk!(
+        post_update_call_thunk,
+        before_post_update_call_c,
+        POST_UPDATE_CALL_ORIGINAL
+    );
+    thunk!(event_call_thunk, before_event_call_c, EVENT_CALL_ORIGINAL);
     thunk!(update_thunk, before_update_c, UPDATE_ORIGINAL);
     thunk!(
         town_develop_thunk,
@@ -884,31 +860,63 @@ mod native {
         TOWN_DEVELOP_ORIGINAL
     );
 
+    /// A word of the game's memory, if it is readable.
+    fn word(address: usize) -> Option<usize> {
+        if address == 0 || !crate::image::readable(address, std::mem::size_of::<usize>()) {
+            return None;
+        }
+        // SAFETY: readable, checked just above; read by value, unaligned.
+        Some(unsafe { std::ptr::read_unaligned(address as *const usize) })
+    }
+
+    /// The script's entity, an `int` at `offset` in the call's functor.
+    fn entity(functor: usize, offset: usize) -> Option<u32> {
+        let address = functor.checked_add(offset)?;
+        if !crate::image::readable(address, std::mem::size_of::<u32>()) {
+            return None;
+        }
+        // SAFETY: as in `word`.
+        Some(unsafe { std::ptr::read_unaligned(address as *const u32) })
+    }
+
     /// The Rust side of each thunk: never panics out (a panic would abort
     /// the game at the `extern "C"` boundary).
-    extern "C" fn before_game_script_c(
-        _this: usize,
-        _registry: usize,
+    ///
+    /// `update`: `_Do_call(functor, lua::State*& rdx, GameScriptData& r8)`.
+    extern "C" fn before_update_call_c(functor: usize, state_ref: usize, _data: usize, _d: usize) {
+        let _ = catch_unwind(|| {
+            if let (Some(state), Some(entity)) = (word(state_ref), entity(functor, UPDATE_ENTITY)) {
+                before_script_call(state, ScriptCall::Update, entity, false);
+            }
+        });
+    }
+
+    /// `postUpdate`: as `update`.
+    extern "C" fn before_post_update_call_c(
+        functor: usize,
         state_ref: usize,
-        flag: usize,
+        _data: usize,
+        _d: usize,
     ) {
         let _ = catch_unwind(|| {
-            // r8 is `lua::State&`, whose first word is the `lua_State*`.
-            if !crate::image::readable(state_ref, std::mem::size_of::<usize>()) {
-                log::line(&format!(
-                    "seeds: {GAME_SCRIPT_TARGET} ran with an unreadable lua::State& {state_ref:#x}; no state marked"
-                ));
-                return;
+            if let (Some(state), Some(entity)) =
+                (word(state_ref), entity(functor, POST_UPDATE_ENTITY))
+            {
+                before_script_call(state, ScriptCall::PostUpdate, entity, false);
             }
-            // SAFETY: the word at `state_ref` is readable, checked above.
-            let state = unsafe { std::ptr::read_unaligned(state_ref as *const usize) };
-            if state == 0 {
-                log::line(&format!(
-                    "seeds: {GAME_SCRIPT_TARGET} ran with a lua::State whose lua_State* is null; no state marked"
-                ));
+        });
+    }
+
+    /// `handleEvent`: `operator()(captures, lua::State* rdx, GameScriptData&
+    /// r8)`; an event with its own seed is the engine's to seed.
+    extern "C" fn before_event_call_c(captures: usize, state: usize, _data: usize, _d: usize) {
+        let _ = catch_unwind(|| {
+            let Some(own_seed) = captures.checked_add(EVENT_SEED).and_then(word) else {
                 return;
+            };
+            if let Some(entity) = entity(captures, EVENT_ENTITY) {
+                before_script_call(state, ScriptCall::Event, entity, own_seed != 0);
             }
-            mark_game_script(state, flag & 0xff != 0);
         });
     }
 
@@ -969,28 +977,38 @@ mod native {
     }
 
     pub(super) fn install(resolved: &ResolvedProfile) {
-        match detour(
-            resolved,
-            GAME_SCRIPT_TARGET,
-            game_script_thunk,
-            &GAME_SCRIPT_ORIGINAL,
-        ) {
-            Ok(()) => log::line(&format!(
-                "seeds: detour installed on {GAME_SCRIPT_TARGET}; the game-script states will be marked as the game registers them"
-            )),
-            Err(error) => log::line(&format!(
-                "seeds: no game-script state marker ({error}); the per-step math.random reseed covers nothing"
-            )),
+        let calls = [
+            (
+                UPDATE_CALL_TARGET,
+                update_call_thunk as unsafe extern "C" fn(),
+                &UPDATE_CALL_ORIGINAL,
+            ),
+            (
+                POST_UPDATE_CALL_TARGET,
+                post_update_call_thunk,
+                &POST_UPDATE_CALL_ORIGINAL,
+            ),
+            (EVENT_CALL_TARGET, event_call_thunk, &EVENT_CALL_ORIGINAL),
+        ];
+        for (target, thunk, original) in calls {
+            match detour(resolved, target, thunk, original) {
+                Ok(()) => log::line(&format!(
+                    "seeds: detour installed on {target}; each game script's call there is reseeded from the room's step in the state that runs it"
+                )),
+                Err(error) => log::line(&format!(
+                    "seeds: no reseed at {target} ({error}); that callback's math.random is the game's own"
+                )),
+            }
         }
         match detour(resolved, UPDATE_TARGET, update_thunk, &UPDATE_ORIGINAL) {
             Ok(()) => {
                 UPDATE_HOOKED.store(true, Ordering::SeqCst);
                 log::line(&format!(
-                    "seeds: detour installed on {UPDATE_TARGET}; the game-script states are reseeded from the room's step before each update"
+                    "seeds: detour installed on {UPDATE_TARGET}; each update's step is known to the game scripts' calls"
                 ));
             }
             Err(error) => log::line(&format!(
-                "seeds: no per-update hook ({error}); the game-script math.random is not reseeded"
+                "seeds: no per-update hook ({error}); no step is known, so the game scripts' math.random is not reseeded"
             )),
         }
         let srand = match resolve_srand() {
@@ -1117,49 +1135,71 @@ mod tests {
     }
 
     #[test]
-    fn the_statics_arm_from_the_driver_and_the_roster_records_states() {
-        // The batch and the roster are process-wide; this test only checks
-        // the wrappers do not panic and the roster keeps what it saw.
-        let _serial = lock(&SERIAL);
-        lock(&ROSTER).marked.clear();
-        before_updates(None, Updates::Own);
-        before_updates(Some(5), Updates::Exactly(2));
-        assert!(lock(&BATCH).armed());
-        before_updates(Some(7), Updates::Exactly(0));
-        assert!(!lock(&BATCH).armed());
-        saw_state(0x1000, "test");
-        assert!(lock(&ROSTER).seen.iter().any(|seen| seen.state == 0x1000));
-        let report = roster_report();
-        assert!(report.contains("0x1000 from test"), "{report}");
-        assert!(report.contains("covers []"), "{report}");
+    fn a_script_calls_seed_is_its_step_call_and_entity_and_nothing_else() {
+        let seed = script_seed(360, ScriptCall::Update, 5_023);
+        assert_eq!(seed, script_seed(360, ScriptCall::Update, 5_023));
+        assert_ne!(seed, script_seed(361, ScriptCall::Update, 5_023));
+        assert_ne!(seed, script_seed(360, ScriptCall::PostUpdate, 5_023));
+        assert_ne!(seed, script_seed(360, ScriptCall::Event, 5_023));
+        assert_ne!(seed, script_seed(360, ScriptCall::Update, 5_024));
+        assert_eq!(
+            seed,
+            seed_for(360, script_salt(ScriptCall::Update, 5_023)),
+            "the step's seed, salted by the call"
+        );
+        assert!((1..=0x7fff_ffff).contains(&seed));
+        // Pinned: every replica derives exactly these, whatever its build.
+        assert_eq!(script_seed(1, ScriptCall::Update, 0), 883_849_443);
+        assert_eq!(script_seed(360, ScriptCall::Update, 5_023), 1_108_749_812);
+        assert_eq!(script_seed(360, ScriptCall::Event, 5_023), 471_669_604);
     }
 
     #[test]
-    fn game_script_marks_group_by_game_and_retire_the_last_games() {
+    fn a_call_is_reseeded_only_in_a_released_update_and_not_over_the_engines_own_seed() {
+        assert_eq!(call_seed(None, ScriptCall::Update, 7, false), None);
+        assert_eq!(
+            call_seed(Some(12), ScriptCall::Update, 7, false),
+            Some(script_seed(12, ScriptCall::Update, 7))
+        );
+        assert_eq!(
+            call_seed(Some(12), ScriptCall::Event, 7, true),
+            None,
+            "an event with its own seed keeps the engine's"
+        );
+        assert_eq!(
+            call_seed(Some(12), ScriptCall::Event, 7, false),
+            Some(script_seed(12, ScriptCall::Event, 7))
+        );
+        assert_eq!(
+            call_seed(Some(0), ScriptCall::PostUpdate, 7, false),
+            Some(script_seed(0, ScriptCall::PostUpdate, 7))
+        );
+    }
+
+    #[test]
+    fn the_current_step_is_the_released_update_running_and_none_between_batches() {
         let _serial = lock(&SERIAL);
-        lock(&ROSTER).marked.clear();
-        mark_game_script(0x2000, true);
-        mark_game_script(0x2001, false);
-        {
-            let roster = lock(&ROSTER);
-            let states: Vec<usize> = roster.marked.iter().map(|m| m.state).collect();
-            assert!(states.ends_with(&[0x2000, 0x2001]), "{states:?}");
-            assert!(roster.marked.iter().any(|m| m.state == 0x2000 && m.flag));
-            assert!(roster.marked.iter().any(|m| m.state == 0x2001 && !m.flag));
-        }
-        // A third mark: a new game; the old pair is retired.
-        mark_game_script(0x3000, true);
-        {
-            let roster = lock(&ROSTER);
-            let states: Vec<usize> = roster.marked.iter().map(|m| m.state).collect();
-            assert_eq!(states, vec![0x3000]);
-        }
-        // The same pointer again (reused after a teardown): a new game too.
-        mark_game_script(0x3001, false);
-        mark_game_script(0x3000, true);
-        let roster = lock(&ROSTER);
-        let states: Vec<usize> = roster.marked.iter().map(|m| m.state).collect();
-        assert_eq!(states, vec![0x3000]);
+        before_updates(None, Updates::Own);
+        assert_eq!(current_step(), None);
+        before_update();
+        assert_eq!(current_step(), None, "no batch armed");
+
+        before_updates(Some(5), Updates::Exactly(2));
+        assert!(lock(&BATCH).armed());
+        assert_eq!(current_step(), None, "the batch's updates have not begun");
+        before_update();
+        assert_eq!(current_step(), Some(5));
+        before_update();
+        assert_eq!(current_step(), Some(6));
+        before_update();
+        assert_eq!(current_step(), None, "an update the room did not release");
+
+        before_updates(Some(0), Updates::Exactly(1));
+        before_update();
+        assert_eq!(current_step(), Some(0), "step 0 is a step");
+        before_updates(Some(7), Updates::Exactly(0));
+        assert!(!lock(&BATCH).armed());
+        assert_eq!(current_step(), None, "the paused path");
     }
 
     fn avx2_cpu() -> CpuFeatures {

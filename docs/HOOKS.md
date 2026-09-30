@@ -1435,8 +1435,9 @@ read, and the room found no divergence over several checkpoints.
 
 Ported onto dev from `feat/steam-hook-on-dev` (971c48c, as merged in
 87f6b05). The targets are resolved by dev's profile resolution and handed
-over at their addresses in the process. **None of it has run in the game
-yet**: what follows marks what is tested only off the game.
+over at their addresses in the process. Piece 1 has run in the game
+(2026-09-30, three games of one room, below) and was rebuilt from what that
+showed; what follows marks what is tested only off the game.
 
 `crates/tpf3mp-hook/src/seeds.rs` is TF3's counterpart for the seeds the
 survey (`investigation/TPF3_RNG_2026-09-29.md`, items 5 to 7) found are
@@ -1448,61 +1449,87 @@ frame counter one of the engine's own seeds reads equal in every game
 (piece 4 below).
 All three are Windows x64 only, like the step gate.
 
-**1. The game scripts' `math.random`, reseeded per step (live).** The
+**1. The game scripts' `math.random`, reseeded per call (live).** The
 engine's `math.random` is a `boost::mt19937` per `lua::State`, seeded 5489
-at creation and never saved, so a replica that joined draws a different
-stream from one that ran since the start (`reforestation.script.tl:54`
-draws its proposal seed from it). The hook reseeds every **game-script
-state** from the room's step before each update:
+at creation and never saved (`reforestation.script.tl:54` draws its
+proposal seed from it every update, `exploration_plane.script.tl` its
+targets). The game runs its game scripts on a **pool** of such states, one
+per worker thread of its job pool: `GameScriptSystem` takes the engine's
+shared pool when the machine has eight or more hardware threads, and makes
+its own "GameScriptSystem Pool" of half of them only below eight
+(`0xaaeb80`). So which state, and so which stream, a script's `update`
+draws from depends on how that update's jobs were scheduled. Measured on
+2026-09-30, three games of one room that loaded one save (`real67`, the
+entity trace): every allocation matched for the first 392, then
+`reforestation` planted its first trees at steps 360, 360 and 364, and
+every build after that at other steps in each game. The first cut of this
+piece reseeded the states `CGame::CGame::lambda_3` registers, from the
+simulation thread before each update; in the game that registrar runs 16
+to 38 times per load, from the loader's and the pool's threads, and again
+while the world runs, so the two states it kept were a different pair in
+each game, and the reseed called into states other threads could be
+running. It is gone. The hook now reseeds per **call**, in the state that
+runs it:
 
-- *Which states.* TF3 registers its `api.*` in three kinds of state
-  through one master registrar (`scripting::RegisterApi`): the GUI state (from `UI::CMenuUI::SwitchToGameUI`, main
-  thread; the mod's own), the react UI roots (main thread), and the
-  **game-script states**, two per `CGame` (one per engine), each through
-  `CGame::CGame lambda_3::operator()(this, TypeRegistry&, lua::State& r8,
-  bool r9b, weak_ptr<bool const>)` at `0x11c6c0`, the new profile target
-  `CGame::CGame::lambda_3`. The hook detours that lambda and marks the
-  state it registers (`lua_State*` at `lua::State+0`, read through a
-  readable check; its `bool` is logged, it tells the two apart); only
-  marked states are reseeded. The GUI state is never marked, and its
-  scripts draw nothing anyway (survey section 6: no `math.random` under
-  `content/gui/**`). The react roots are never touched. A third mark, or a pointer marked twice,
-  starts a new game's group and retires the old one for good (a torn-down
-  game's state is a dangling pointer), `GAME_SCRIPT_STATES_PER_GAME`.
-- *Which thread, when.* `GameSim::Step`'s update loop applies the
-  update's commands and then calls `ecs::Engine::Update(engine, float dt)`
-  (`0x2bb8a50`, its only caller, at `0x15955c`), which runs every system's
-  `Update` (vtable slot 11, `dt` in `xmm3`), `ecs::GameScriptSystem::Update`
-  among them. The hook detours `ecs::Engine::Update` and reseeds there: on
-  the simulation thread, inside the game's own step, before that update's
-  scripts run, while the states are idle. It is **per update, not per call
-  of the step**: one call runs a batch of released steps, batch sizes
-  differ per machine, and a reseed per batch would itself diverge the
-  replicas. The driver arms the batch (`step::StepDriver::on_step` calls
+- *Where.* The engine calls a script's callback through a functor that is
+  handed the state it runs in, on the thread that runs it, right before
+  the Lua function is called in that state
+  (`game_script_util::UseFunctionAndCallScriptCreateParamFn`: the functor
+  builds the `GameScriptStateNotificationHelper` the script gets as its
+  `state`). Three profile targets:
+  `game_script_util::Update/lambda_1::_Do_call` (`0xf45450`, `(this,
+  lua::State*& rdx, GameScriptData& r8)`, the entity at `this+0x20`),
+  `game_script_util::PostUpdate/lambda_1::_Do_call` (`0xf449b0`, the same
+  shape, the entity at `this+0x18`; the same code serves
+  `HandleApplyCommandBuildProposal`'s functor) and
+  `game_script_util::HandleEvent/lambda_1/lambda_1::operator()`
+  (`0xf41770`, `(captures, lua::State* rdx, GameScriptData& r8)`, the
+  entity at `captures+0x20`). Each offset is where the engine's own code
+  reads the entity in that function. The detour reads the `lua_State*` at
+  `lua::State+0` and the entity, both through readable checks, and calls
+  `math.randomseed(seed)` in that state, then the original runs.
+- *Events with a seed.* `HandleEvent` takes an `int const*` seed; when it
+  is set (`captures+0x28`), the engine itself calls `lua::State::
+  RandomSeed` (`0x2fb17c0`: `math.randomseed(n)` in the state) before the
+  script's `handleEvent`. Such an event keeps the engine's seed.
+- *The step.* `GameSim::Step`'s update loop applies the update's commands
+  and then calls `ecs::Engine::Update(engine, float dt)` (`0x2bb8a50`, its
+  only caller, at `0x15955c`), which runs every system's `Update`,
+  `ecs::GameScriptSystem::Update` among them. The hook detours
+  `ecs::Engine::Update` and makes that update's room step the current one
+  (`seeds::current_step`), which the worker threads read when the
+  update's scripts run. It is **per update, not per call of the step**:
+  one call runs a batch of released steps, batch sizes differ per
+  machine, and a seed per batch would itself diverge the replicas. The
+  driver arms the batch (`step::StepDriver::on_step` calls
   `seeds::before_updates(next_step, updates)` right before running the
-  game's step; `next_step` is the loaded world's step, then one past each
-  step reported), and the detour takes one step per call while the batch
-  lasts. An update beyond the batch, or one before any batch is armed
-  (before the room's world, at the game's own speed, on the paused path),
-  reseeds nothing; the next arm logs a mismatch between the calls seen and
-  the updates released, once, as the sign the "one `Engine::Update` per
-  update" reading is wrong.
-- *The seed.* `seeds::seed_for(step, salt)`: `splitmix64(step ^ (salt <<
-  32))` folded to `1..=0x7fff_ffff`, `salt` 0 for the game-script states.
-  Both states get the same seed (they run the same scripts on the two
-  engines, and their registration order is not proven equal on every
-  replica). Pinned in a test: step 1 gives 1216681719, step 50 gives
-  1568932195.
+  game's step, which also clears the current step), and the detour takes
+  one step per call while the batch lasts. An update beyond the batch, or
+  one before any batch is armed (before the room's world, at the game's own
+  speed, on the paused path), has no current step, and its script calls
+  are not reseeded: the game's own randomness, as outside a room. The next
+  arm logs a mismatch between the calls seen and the updates released,
+  once, as the sign the "one `Engine::Update` per update" reading is wrong.
+- *The seed.* `seeds::script_seed(step, call, entity)` =
+  `seed_for(step, script_salt(call, entity))`; `seed_for(step, salt)` is
+  `splitmix64(step ^ (salt << 32))` folded to `1..=0x7fff_ffff`, and the
+  salt mixes the call's kind (`"updt"`, `"post"`, `"evnt"`) and the
+  script's entity, which every replica shares (one save, one numbering);
+  never the state or the thread, which differ per machine. So a script
+  draws the same numbers at the same step on every game, whichever state
+  runs it and whatever ran in that state before. Pinned in tests: step 1
+  gives 1216681719 for salt 0, and the update of entity 5023 at step 360
+  gets 1108749812.
 - *The call.* `math.randomseed(seed)` through Lua C API pointers the
   seeds module resolves from the profile itself (`seeds::SeedApi`: the
   link to the mod calls no Lua code, so its API has no `pcall`):
   `lua_rawgeti(REGISTRY, LUA_RIDX_GLOBALS)` for the globals table in 5.2,
   `lua_getfield` for `math` and `randomseed`, `lua_pushnumber`,
   `lua_pcallk`, stack restored after; a profile without one of them leaves
-  the reseed off, and `hook.log` names it; not the native `lua::math_randomseed`
-  lambda, whose calling convention is the engine's binding layer's. A state
-  where `math.randomseed` is missing or raises is logged and never reseeded
-  again (the same failure on every replica, from the same game code).
+  the reseed off, and `hook.log` names it. Not the engine's `lua::State::
+  RandomSeed`, which calls without protection. A call where
+  `math.randomseed` is missing or raises runs unreseeded, said once in the
+  log (the same failure on every replica, from the same game code).
 - *The detours* are assembly thunks (`#[unsafe(naked)]`): they save the
   four argument registers and `xmm0`-`xmm3`, call the Rust side, restore
   and jump to the trampoline with the stack untouched, so no target's
@@ -1611,20 +1638,24 @@ game that both calls reach the advance, with `r8b` 0 and 1, and the
 increments' bytes.
 
 **Tested without the game** (`seeds::tests`): the
-seed derivation (range, purity, the pinned values), the batch arithmetic
-(one step per update, the mismatch report, disarming), the state grouping
-and retirement, the CRT level rule on synthetic CPUs and the running CPU's
-report, the driver's step counter, and the reseed's call sequence against
-the embedded Lua 5.1: the exact seed reaches `math.randomseed`, and a
-missing `math` or a raising `randomseed` refuses with the stack restored. **Not tested without the game:** the
-three thunks against the real targets (that `CGame::CGame::lambda_3` runs
-twice with `lua::State&` in `r8`, that one `ecs::Engine::Update` is one
-released update, that nothing else runs a game-script state while the
-simulation thread is between updates), the 5.2 globals path, and whether
-`srand` resolves in the game's process. The first room's `hook.log` says:
-the two `seeds: game-script Lua state ... registered` lines, the roster
-line at the first armed batch, `seeds: step n: math.randomseed(...)` for
-the first three steps and every thousandth, and no mismatch line.
+seed derivation (range, purity, the pinned values, a script call's seed
+by step, kind and entity), the batch arithmetic (one step per update, the
+mismatch report, disarming), the current step (the released update
+running, none between batches, beyond a batch or on the paused path),
+which calls are reseeded (none without a step, none over an event's own
+seed), the CRT level rule on synthetic CPUs and the running CPU's report,
+the driver's step counter, and the reseed's call sequence against the
+embedded Lua 5.1: the exact seed reaches `math.randomseed`, and a missing
+`math` or a raising `randomseed` refuses with the stack restored. The
+static proof checks that the three call sites resolve uniquely at their
+addresses in the installed game. **Not tested without the game:** the
+thunks against the real targets (the functors' layouts, that one
+`ecs::Engine::Update` is one released update), the 5.2 globals path, and
+whether `srand` resolves in the game's process. A room's `hook.log` says:
+`seeds: detour installed on ...` for the three call sites and
+`ecs::Engine::Update`, `seeds: step n: math.randomseed(...) before the
+update of script entity e` for the first three calls of each kind and at
+every thousandth step, and no mismatch line.
 
 ### The order fixes, as built
 
