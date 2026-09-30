@@ -91,13 +91,17 @@ local function buildProposal(proposal, context)
 	if proposals and proposals.makeProposalData then
 		local data = proposals.makeProposalData(proposal, context)
 		local state = data and data.errorState
+		local messages = {}
+		for _, m in ipairs(state and state.messages or {}) do messages[#messages + 1] = tostring(m) end
 		if state and state.critical then
-			local messages = {}
-			for _, m in ipairs(state.messages or {}) do messages[#messages + 1] = tostring(m) end
 			error("the game refuses the build: " .. table.concat(messages, "; "), 0)
 		end
+		if #messages > 0 then log("the game warns of the build: " .. table.concat(messages, "; ")) end
 	end
-	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, false, true))
+	-- What is not critical the tool builds through once the player clicks,
+	-- town buildings in the way included: ignoreErrors, as the player's own
+	-- build (with it false the game drops such a build unseen).
+	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
 end
 
 local HANDLERS = {}
@@ -117,8 +121,8 @@ function HANDLERS.BuildConstruction(build)
 	-- Paid by the player, and clearing town buildings in its way, as the
 	-- construction tool builds (the game's bridge and tunnel window names the
 	-- player so, gui/entity_window/bridge_and_tunnel.tl); without a context
-	-- the game builds for free. ignoreErrors false and playerInitiated true:
-	-- as the player's own build.
+	-- the game builds for free. playerInitiated true: as the player's own
+	-- build (buildProposal).
 	local context = api.type.Context.new()
 	context.player = api.engine.util.getPlayer()
 	context.gatherBuildings = true

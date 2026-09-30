@@ -634,14 +634,18 @@ booked it in the same update, the account and the loan script's list of
 loans alike in both; the loan script's own callback, which books the
 money, ran in the game script's `postUpdate`.
 
-`apply.lua` applies two actions so far:
+`apply.lua` applies, among others:
 
 - `BuildConstruction`: a `SimpleProposal` with one `ConstructionEntity`
   (the file, the matrix from the transform, the parameters from their
   flattened paths, the name, the player), sent with a `Context` naming the
-  player, who pays, and gathering the town buildings in its way,
-  `ignoreErrors` false and `playerInitiated` true, as the player's own
-  build;
+  player, who pays, and gathering the town buildings and fields in its
+  way, and `playerInitiated` true, as the player's own build. The game's
+  verdict comes first (`makeProposalData`): a critical error refuses the
+  build, with its reasons, in every game; warnings (town buildings to
+  remove, reputation lost) are logged and built through, as the tool
+  builds once the player clicks (`ignoreErrors` true: with it false the
+  game dropped such a build without a word, seen on build 40408);
 - `Loan`: the loan script's own event, `makeScriptingSendEventCmd("",
   "Loan", "Obtain", { next, offer })` or `"Repay", { nil, loan }`, with the
   tables the finance window sends.

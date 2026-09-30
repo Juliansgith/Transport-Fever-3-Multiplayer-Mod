@@ -958,7 +958,7 @@ fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
         .unwrap();
     assert_eq!(
         built,
-        "depot/road_depot_era_a.con|Depot|25|0|1|-1|1250.5|-300|20|1|1234|depot/module.module|2.5|true|false|true|25|true|true"
+        "depot/road_depot_era_a.con|Depot|25|0|1|-1|1250.5|-300|20|1|1234|depot/module.module|2.5|true|true|true|25|true|true"
     );
     // Subscribed to its console event, linked once.
     assert!(
@@ -1408,7 +1408,7 @@ fn the_game_script_builds_a_road_as_the_players_tool_would() {
         .unwrap();
     assert_eq!(
         built,
-        "2 | 4 | 100 | 25 | false | true \
+        "2 | 4 | 100 | 25 | true | true \
          | -5@50,0,0 | -6@120,0,12 \
          | -1:7>-5 t0/0 -1 ::/street/town_small.street_template 50.000,0.000 50.000,0.000 \
          | -2:-5>-6 t0/1 3 ::/street/town_small.street_template 70.000,0.000 70.000,0.000 \
