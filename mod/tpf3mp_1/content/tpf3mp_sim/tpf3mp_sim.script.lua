@@ -50,6 +50,13 @@
 -- table, to the room: a way to act from the console, for tests. The event
 -- reaches this game's scripts only, so only this game hands the action over;
 -- the room then orders it for every game.
+--
+-- It also hears the company script's `startProspection` and
+-- `endProspection` (game_mechanics/company/company.script.tl), which every
+-- game's company script sends at the same update, and says in the hook's
+-- log when a prospection began and what it found. A prospection that found
+-- an industry binds it in the registry at once, so every game names it by
+-- the same id (docs/HOOKS.md, "Prospecting").
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
@@ -59,11 +66,14 @@ function data()
 	local told, toldRegistry = false, false
 	-- Events subscribed to from this state.
 	local subscribed = false
+	-- Says what a prospection did (below).
+	local prospected
 
 	-- The events the script needs: its console event, and the build tools'
 	-- proposals. Each by name, since a save may carry an older mod's
 	-- subscriptions.
-	local EVENTS = { "command", "builder.proposalCreate", "builder.proposalPrepareForApply" }
+	local EVENTS = { "command", "builder.proposalCreate", "builder.proposalPrepareForApply",
+		"startProspection", "endProspection" }
 
 	-- What a build tool shows in the room's game.
 	local REFUSED = "Not in multiplayer yet: building with this tool"
@@ -123,6 +133,61 @@ function data()
 		return link
 	end
 
+	-- The entity an event names: a number, or the game's { entity = }.
+	local function entityIn(value)
+		if type(value) == "table" then value = value.entity end
+		if type(value) == "number" then return value end
+		return nil
+	end
+
+	-- A town as the room names it, for the log.
+	local function townName(reg, value)
+		local e = entityIn(value)
+		local id = e and registry.id(reg, "towns", e)
+		if id then return "town-" .. id end
+		return "town entity " .. tostring(e)
+	end
+
+	-- The company script's prospection events, in the room's game: said in
+	-- the log, and a found industry bound in the registry.
+	function prospected(state, name, param)
+		local l = linked()
+		if not l or not l:room() or type(param) ~= "table" then return end
+		local saved = state and state.get and state:get()
+		if type(saved) ~= "table" or saved.registry == nil then return end
+		local cargo = tostring(param.cargoType)
+		local began = tostring(param.initiatedTimestamp)
+		if name == "startProspection" then
+			l:log("prospecting began: " .. cargo .. " near " .. townName(saved.registry, param.entity)
+				.. " at game time " .. began)
+			return
+		end
+		local where = cargo .. " near " .. townName(saved.registry, param.entity) .. ", begun at game time " .. began
+		if param.success ~= true then
+			l:log("prospecting ended: " .. where .. ", found nothing")
+			return
+		end
+		local reg, fresh = registry.sync(saved.registry)
+		saved.registry = reg
+		state:set(saved)
+		local found = {}
+		for _, f in ipairs(fresh) do
+			if f[1] == "industries" then
+				local text = "industry-" .. f[2]
+				local ok, c = pcall(api.engine.getComponent, f[3], api.type.ComponentType.CONSTRUCTION)
+				if ok and type(c) == "table" and c.transf then
+					text = text .. string.format(" %s at (%.1f, %.1f)", tostring(c.fileName), c.transf[13], c.transf[14])
+				end
+				found[#found + 1] = text
+			end
+		end
+		if #found == 0 then
+			l:log("prospecting ended: " .. where .. ", found an industry this game could not name")
+		else
+			l:log("prospecting ended: " .. where .. ", found " .. table.concat(found, "; "))
+		end
+	end
+
 	return {
 		update = function(_params, state, _dt)
 			local l = linked()
@@ -134,9 +199,10 @@ function data()
 			local actions = l:take()
 			local checkpoint = l:checkpoint()
 			-- The registry begins at the room's first update, the same in
-			-- every game (tpf3mp/registry.lua).
+			-- every game (tpf3mp/registry.lua), or at the first update since
+			-- the registry gained a kind.
 			local saved = state and state.get and state:get()
-			local begin = l:room() and (type(saved) ~= "table" or saved.registry == nil)
+			local begin = l:room() and (type(saved) ~= "table" or registry.incomplete(saved.registry))
 			if not actions and not checkpoint and not begin then return nil end
 			return { actions = actions, checkpoint = checkpoint, begin = begin }
 		end,
@@ -283,7 +349,11 @@ function data()
 			end
 		end,
 
-		handleEvent = function(_params, _state, _src, id, name, param)
+		handleEvent = function(_params, state, _src, id, name, param)
+			if id == "Company" and (name == "startProspection" or name == "endProspection") then
+				prospected(state, name, param)
+				return
+			end
 			if id ~= "tpf3mp" or name ~= "command" then return end
 			local l = linked()
 			if not l then return end

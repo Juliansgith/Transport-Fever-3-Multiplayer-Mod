@@ -815,7 +815,12 @@ money, ran in the game script's `postUpdate`.
   game dropped such a build without a word, seen on build 40408);
 - `Loan`: the loan script's own event, `makeScriptingSendEventCmd("",
   "Loan", "Obtain", { next, offer })` or `"Repay", { nil, loan }`, with the
-  tables the finance window sends.
+  tables the finance window sends;
+- `Prospect`: the company script's own event,
+  `makeScriptingSendEventCmd("", "Companies", "spawnIndustry", {
+  companyEntity, townEntity, types, permitKey, cargoType })`, with the
+  player's company, the town the registry names, and the industry types in
+  the order the action carries them ("Prospecting" below).
 
 Every other action is refused with a line in `hook.log`, the same on every
 game, so the worlds stay alike. The native build tools come next.
@@ -997,6 +1002,10 @@ reference of its own to either. Once linked, the GUI wraps every
     "Obtain" | "Repay", …)`, as a `Loan` action carrying the loans' terms,
     which every game's game script replays through the loan script's own
     event;
+  - prospecting, the construction menu's `makeScriptingSendEventCmd("",
+    "Companies", "spawnIndustry", …)`, as a `Prospect` action ("Prospecting"
+    below). The company's other events (taking a rank, `applyLevel`;
+    greening an industry, `MakeGreen`; a marketing campaign) stay refused;
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
     file and position, the consist part by part, as the store configured
     it), selling, putting on a line, and the vehicle window's stop, start,
@@ -1025,8 +1034,11 @@ reference of its own to either. Once linked, the GUI wraps every
     (`makeWorldBuildProposalCmd` with the game's replacement proposal), as
     a `BuildConstruction` that replaces it ("The build tools" below).
 
-  Vehicles, lines and station groups have no place to name them by, so
-  actions name them by canonical id (`tpf3mp/registry.lua`). Every game
+  Vehicles, lines, station groups, towns and industries have no place to
+  name them by, so actions name them by canonical id
+  (`tpf3mp/registry.lua`). Towns and the industries standing when the room
+  began get theirs at the room's first update (or, in a room begun by an
+  older mod, at its next update); an industry is named by its construction. Every game
   gives them the same ids without telling another: every game runs the
   same world, so after the same action the same things exist, and the
   mod's game script binds each new one to the next id of its kind, lowest
@@ -1053,6 +1065,72 @@ Before the room begins, and after it ends, every command is sent as it
 would be, and every tool builds. A kind the room comes to carry is
 captured into an action instead of refused, and applied by every game
 ("Actions in the game").
+
+### Prospecting
+
+Prospecting for an industry near a town
+([investigation/TPF3_PROSPECTING_2026-09-30.md](../investigation/TPF3_PROSPECTING_2026-09-30.md))
+is one command from the player's GUI, and everything after it happens in
+the simulation:
+
+1. The construction menu's prospection, on the town the player picks,
+   sends the company script `Companies` `spawnIndustry`. In the room's
+   game the guard captures it (`capture.prospect`) as a `Prospect` action:
+   the town by its canonical id, the cargo, the industry types in the
+   menu's order, the permit. It is refused, and says why in `hook.log`,
+   for a town the registry cannot name, another company, or no industry
+   type. The menu keeps its permit reserved until this game has applied
+   the action, as it does until the game answers its own command.
+2. Every game applies it at the same update, through the company script's
+   own event (`apply.lua`). The company script checks that the company
+   does not prospect there already, keeps the prospection with the game
+   time as its start, uses the permit, and tells the prospecting plane to
+   fly.
+3. Months later (six at most, trying each month with a growing chance),
+   every game's company script draws the outcome, from the game time
+   (`math.randomseed(gameTime * 1000 + index)`), shuffles the industry
+   types by those draws in the order the action carried them, and asks the
+   game for a place (`makeIndustrySpawnProposal`, seeded from the game
+   time too). It builds the industry, with the construction's seed the
+   game chose, itself: not player-initiated, so the hook's build stop lets
+   it through, and in the engine state, where the guard is not. A
+   prospection that finds nothing gives the permit back.
+4. The mod's game script hears the company script's `startProspection`
+   and `endProspection` and says each in `hook.log`; an industry found is
+   bound in the registry at once, so every game names it by the same id.
+
+What the room carries is the request, not the outcome: the outcome is a
+function of the world and the game time, which every game has alike
+(INFERRED from the scripts and the binary; the investigation says what is
+seen and what is not). The permit check is the menu's alone, as in single
+player: two players prospecting in the same moment could each pass their
+own menu's check and use one permit more than the company has, the same in
+every game.
+
+In `hook.log`, prospecting for coal near a town shows first, in the game
+of the player who picked the town:
+
+```
+handed the player's action 42 to the room
+```
+
+then in every game of the room, at the same step:
+
+```
+prospecting for ::/cargos/coal/coal.cargo near town-3 (1234): coal_mine
+prospecting began: ::/cargos/coal/coal.cargo near town-3 at game time 5400000
+the game applied 1 action(s) the room ordered
+```
+
+and, one to six game months later, again in every game at the same step:
+
+```
+prospecting ended: ::/cargos/coal/coal.cargo near town-3, begun at game time 5400000, found industry-17 <the coal mine's construction file> at (1234.5, -250.3)
+```
+
+or `..., found nothing`. The entity in brackets on the first line is each
+game's own; the rest, the industry's id, file and place included, is the
+same in every game.
 
 ### The build tools
 

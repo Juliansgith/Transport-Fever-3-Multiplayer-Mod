@@ -10,14 +10,14 @@ use tpf3mp_proto::{
         Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConsistPart,
         ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeRef, EditLine, LineChange,
         LineData, LineId, LineStop, Link, LoadMode, Network, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
-        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TrackBuild, Tram,
-        Transform, UnitDir, VehicleId, Vertex,
+        Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
+        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
+        Tram, Transform, UnitDir, VehicleId, Vertex,
     },
 };
 
 use super::{
-    model::START_MONEY,
+    model::{PROSPECTION_STEPS, START_MONEY},
     script::{Check, Item, Scenario},
 };
 
@@ -338,6 +338,17 @@ pub fn terraform(x: i32, y: i32, cell: u32, columns: u16, rows: u16, height: i32
 
 pub fn company(op: CompanyOp) -> Action {
     Action::CompanyOp(op)
+}
+
+/// Prospecting near town `town` for `cargo`, as TF3's construction menu
+/// sends it.
+pub fn prospect(town: u32, cargo: &str, industries: &[&str]) -> Action {
+    Action::Prospect(Prospect {
+        town: TownId(town),
+        cargo: text(cargo),
+        industries: list(industries.iter().map(|kind| text(kind)).collect()),
+        permit: Some(text(cargo)),
+    })
 }
 
 impl Scenario {
@@ -725,6 +736,31 @@ fn companies_scenario() -> Scenario {
         .exact()
 }
 
+/// Two players prospect; each prospection ends after its time, with an
+/// industry or without, alike on every replica.
+fn prospecting_scenario() -> Scenario {
+    const COAL: &str = "::/cargos/coal/coal.cargo";
+    const GRAIN: &str = "::/cargos/grain/grain.cargo";
+    Script::default()
+        .act(0, prospect(1, COAL, &["coal_mine", "coal_mine_large"]))
+        .act(0, prospect(1, COAL, &["coal_mine"]))
+        .act(1, prospect(1, COAL, &["coal_mine"]))
+        .act(1, prospect(2, GRAIN, &["farm_grain"]))
+        .expect_all([Check::Prospections(3), Check::Ignored(1)])
+        .run(PROSPECTION_STEPS + 10)
+        .expect_all([
+            Check::Prospections(0),
+            Check::IndustriesAtMost(3),
+            Check::Ignored(1),
+        ])
+        .scenario(
+            "prospecting",
+            "prospect near towns; one prospection per company, town and cargo; each ends in an industry or nothing",
+            true,
+            2,
+        )
+}
+
 fn refusals_scenario() -> Scenario {
     let (a, b) = (at(0, 0), at(500, 0));
     Script::default()
@@ -890,6 +926,7 @@ pub fn scenarios() -> Vec<Arc<Scenario>> {
         rail_line_scenario(),
         two_companies_scenario(),
         refusals_scenario(),
+        prospecting_scenario(),
         line_editing_scenario(),
         demolition_scenario(),
         companies_scenario(),

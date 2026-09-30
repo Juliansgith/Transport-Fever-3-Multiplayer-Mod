@@ -1,7 +1,8 @@
 -- tpf3mp/registry.lua -- the canonical ids of what the room's actions name
 -- that has no place of its own: vehicles, lines and station groups
 -- (tpf3mp_proto::action VehicleId, LineId, StationId; docs/BUILDING.md, "The
--- action schema").
+-- action schema"); towns (TownId), which prospecting names; and industries,
+-- which prospecting makes, so every game names a found industry alike.
 --
 -- Every game gives them the same ids without telling another (docs/PLAN.md,
 -- Part 3: "the same key on every game, bound in creation order, not by
@@ -26,6 +27,8 @@
 --     vehicles = { next = n, bound = { { id, entity }, ... } },
 --     lines    = { ... },
 --     groups   = { ... },
+--     towns    = { ... },
+--     industries = { ... },   -- by their constructions
 --   }
 --
 -- A list of pairs, not a table keyed by id: a save keeps it as it is.
@@ -34,10 +37,11 @@
 
 local registry = {}
 
-registry.KINDS = { "vehicles", "lines", "groups" }
+registry.KINDS = { "vehicles", "lines", "groups", "towns", "industries" }
 
 -- The component each kind's entities have.
-local COMPONENT = { vehicles = "TRANSPORT_VEHICLE", lines = "LINE", groups = "STATION_GROUP" }
+local COMPONENT = { vehicles = "TRANSPORT_VEHICLE", lines = "LINE", groups = "STATION_GROUP",
+	towns = "TOWN", industries = "CONSTRUCTION" }
 
 -- Whether `entity` is still one of `kind` in this world.
 local function exists(kind, entity)
@@ -46,6 +50,34 @@ local function exists(kind, entity)
 		return api.engine.getComponent(entity, api.type.ComponentType[COMPONENT[kind]])
 	end)
 	return ok and c ~= nil
+end
+
+-- The industries' constructions. The game keeps an industry's INDUSTRY
+-- component on a part of its construction, and finds the construction as
+-- its own scripts do (mission/tutorial/tasks/tutorial_init.tl); a part the
+-- game places in no construction stands for itself.
+local function industries()
+	-- A game without the component has no industries to name.
+	local component = api.type.ComponentType.INDUSTRY
+	if component == nil then return {} end
+	local parts = {}
+	local listed, list = pcall(api.engine.getEntitiesWithComponent, component)
+	if listed and list then
+		for i = 1, #list do parts[#parts + 1] = list[i] end
+	else
+		api.engine.forEachEntityWithComponent(function(e) parts[#parts + 1] = e end, component)
+	end
+	local connector = api.engine.system.streetConnectorSystem
+	local out, seen = {}, {}
+	for _, part in ipairs(parts) do
+		local con = connector.getConstructionEntityForSubconstruction(part)
+		if type(con) ~= "number" or con < 0 then con = part end
+		if not seen[con] then
+			seen[con] = true
+			out[#out + 1] = con
+		end
+	end
+	return out
 end
 
 -- The entities of `kind` in this world, in any order.
@@ -57,6 +89,13 @@ local function entities(kind)
 		list = api.engine.system.lineSystem.getLines()
 	elseif kind == "groups" then
 		list = api.engine.getEntitiesWithComponent(api.type.ComponentType.STATION_GROUP)
+	elseif kind == "towns" then
+		-- A game without the component has no towns to name, and refuses
+		-- what names one.
+		local component = api.type.ComponentType.TOWN
+		list = component and api.engine.getEntitiesWithComponent(component) or {}
+	elseif kind == "industries" then
+		list = industries()
 	end
 	local out = {}
 	for i = 1, (list and #list or 0) do out[i] = list[i] end
@@ -129,6 +168,17 @@ function registry.rebind(reg, kind, id, entity)
 	end
 	r.bound = kept
 	return true
+end
+
+-- Whether `reg` lacks a kind: one begun by an older mod, without the kinds
+-- added since, which the room's next update then binds, the same in every
+-- game.
+function registry.incomplete(reg)
+	if type(reg) ~= "table" then return true end
+	for _, kind in ipairs(registry.KINDS) do
+		if reg[kind] == nil then return true end
+	end
+	return false
 end
 
 -- The canonical id of `entity`, of `kind`, or nil.
