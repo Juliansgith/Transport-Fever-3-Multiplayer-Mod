@@ -203,9 +203,9 @@ fn loaded_names(lua: &Lua) -> Vec<String> {
 
 const FAKE_HOOK: &str = r#"
 HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, worlds = 0,
-         room = false }
+         room = false, checkpoint = false, lanes = nil }
 tpf3mp_native = {
-    version = 5,
+    version = 6,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then HOOK.commands[#HOOK.commands + 1] = action end
@@ -227,6 +227,13 @@ tpf3mp_native = {
     end,
     world = function() HOOK.worlds = HOOK.worlds + 1 end,
     room = function() return HOOK.room end,
+    checkpoint = function() return HOOK.checkpoint end,
+    lanes = function(lanes)
+        if not HOOK.checkpoint then return false, 'no checkpoint is due in this update' end
+        HOOK.lanes = lanes
+        HOOK.checkpoint = false
+        return true
+    end,
 }
 "#;
 
@@ -347,7 +354,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 5; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 6; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -440,7 +447,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 5, command = print, log = print })
+             why({ version = 6, command = print, log = print })
              return out",
         )
         .eval()
@@ -567,8 +574,9 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 5 }
-             for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world' }) do
+             local native = { version = 6 }
+             for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
+                                  'checkpoint', 'lanes' }) do
                  native[n] = function() end
              end
              native.room = function() error('gone') end
@@ -673,7 +681,158 @@ fn engine() -> (Lua, Table) {
         .exec()
         .unwrap();
     let script: Table = lua.load("return data()").eval().unwrap();
+    // One simulation update as the game runs it: update, then postUpdate
+    // with what update returned, and not when that is nil.
+    lua.globals().set("SCRIPT", script.clone()).unwrap();
+    lua.load(
+        "UPDATE = function(p, s, dt) \
+             local r = SCRIPT.update(p, s, dt) \
+             if r ~= nil then SCRIPT.postUpdate(p, s, dt, r) end \
+             return r \
+         end",
+    )
+    .exec()
+    .unwrap();
     (lua, script)
+}
+
+/// A small world for the lanes, over the stand-in engine state: two edges,
+/// two constructions, a line, two vehicles, a player, a town and people.
+const FAKE_WORLD: &str = r#"
+local CT = { BASE_EDGE = 1, CONSTRUCTION = 2, LINE = 3, TRANSPORT_VEHICLE = 4, PLAYER = 5,
+             ACCOUNT = 6, TOWN = 7, SIM_PERSON = 8 }
+WORLD = {
+    [CT.BASE_EDGE] = {
+        [101] = { position0 = { x = 0, y = 0, z = 0 }, position1 = { x = 100.04, y = 0, z = 1 },
+                  roadTemplate = 'street/country.lua' },
+        [102] = { position0 = { x = 100, y = 0, z = 1 }, position1 = { x = 100, y = 80, z = 2 },
+                  roadTemplate = 'street/country.lua' },
+    },
+    [CT.CONSTRUCTION] = {
+        [201] = { fileName = 'depot/road_depot.con', transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,0,0.45,1 } },
+        [202] = { fileName = 'station/bus_stop.con', transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 40,8,0,1 } },
+    },
+    [CT.LINE] = { [301] = { stops = { {}, {} } } },
+    [CT.TRANSPORT_VEHICLE] = { [401] = true, [402] = true },
+    [CT.PLAYER] = { [25] = true },
+    [CT.ACCOUNT] = { [25] = { balance = 1234567 } },
+    [CT.TOWN] = { [7] = true },
+    [CT.SIM_PERSON] = { [801] = true, [802] = true, [803] = true },
+}
+POSITIONS = { [401] = { x = 10.2, y = 5, z = 0 }, [402] = { x = 99.7, y = 1, z = 1 } }
+REVERSED = false
+api.type.ComponentType = CT
+api.engine.getEntitiesWithComponent = function(kind)
+    -- As the game: some components cannot be listed.
+    if kind == CT.BASE_EDGE or kind == CT.LINE or kind == CT.PLAYER then
+        error('Cannot loop over this component type')
+    end
+    local list = {}
+    for e in pairs(WORLD[kind] or {}) do list[#list + 1] = e end
+    table.sort(list, function(a, b) if REVERSED then return a > b end return a < b end)
+    return list
+end
+api.engine.getComponent = function(e, kind)
+    local c = (WORLD[kind] or {})[e]
+    if c == true then return {} end
+    return c
+end
+api.engine.util.transport = { getPosition = function(e) return POSITIONS[e] end }
+local function sorted(kind)
+    local list = {}
+    for e in pairs(WORLD[kind]) do list[#list + 1] = e end
+    table.sort(list, function(a, b) if REVERSED then return a > b end return a < b end)
+    return list
+end
+api.engine.system = {
+    townBuildingSystem = { getTown2BuildingMap = function()
+        return { [7] = { 901, 902, 903 } }
+    end },
+    -- Each edge under both its nodes, as the street system lists them.
+    streetSystem = { getNode2SegmentMap = function()
+        local edges = sorted(CT.BASE_EDGE)
+        return { [11] = { edges[1] }, [12] = edges, [13] = { edges[#edges] } }
+    end },
+    lineSystem = { getLines = function() return sorted(CT.LINE) end },
+}
+"#;
+
+/// The lanes the mod reads in the stand-in world.
+fn read_lanes(lua: &Lua) -> Vec<(u16, String)> {
+    let lanes: Table = lua
+        .load("return ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua').read(api)")
+        .eval()
+        .unwrap();
+    let mut out: Vec<(u16, String)> = lanes
+        .pairs::<u16, String>()
+        .map(|pair| pair.unwrap())
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn lanes_sum_up_the_world_part_by_part() {
+    let (lua, _) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    let lanes = read_lanes(&lua);
+    assert_eq!(
+        lanes.iter().map(|(lane, _)| *lane).collect::<Vec<_>>(),
+        [0, 1, 2, 3, 4, 5, 6]
+    );
+    assert!(lanes.iter().all(|(_, text)| text != "err"), "{lanes:?}");
+    assert!(lanes[0].1.starts_with("2:"), "two edges: {}", lanes[0].1);
+    assert_eq!(lanes[6].1, "3", "three people");
+    // The order the engine lists entities in changes nothing.
+    lua.load("REVERSED = true").exec().unwrap();
+    assert_eq!(read_lanes(&lua), lanes);
+    // A vehicle moved by 2 m changes the vehicles' lane alone; one moved by
+    // 0.2 m changes nothing, below the lane's metre.
+    lua.load("POSITIONS[401].x = 10.4").exec().unwrap();
+    assert_eq!(read_lanes(&lua), lanes);
+    lua.load("POSITIONS[401].x = 12.4").exec().unwrap();
+    let moved = read_lanes(&lua);
+    for (before, after) in lanes.iter().zip(&moved) {
+        assert_eq!(before.0 == 3, before.1 != after.1, "lane {}", before.0);
+    }
+    // Money spent changes the economy's lane.
+    lua.load("WORLD[6][25].balance = 1234000").exec().unwrap();
+    assert_ne!(read_lanes(&lua)[4], moved[4]);
+    // A lane the engine cannot read is err, on every game alike, and says
+    // why; the others still count.
+    let (text, failed): (String, Vec<String>) = lua
+        .load(
+            "api.engine.system.townBuildingSystem = nil \
+             local lanes, failed = ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua').read(api) \
+             return lanes[5], failed",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(text, "err");
+    assert_eq!(failed.len(), 1);
+    assert!(failed[0].starts_with("5: "), "{failed:?}");
+}
+
+#[test]
+fn the_game_script_hands_the_lanes_over_at_a_checkpoint_only() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    // No checkpoint: nothing read.
+    lua.load("UPDATE({}, STATE, 0.2)").exec().unwrap();
+    let none: bool = lua.load("return HOOK.lanes == nil").eval().unwrap();
+    assert!(none);
+    // The last update of a batch that ends at a checkpoint: the lanes go
+    // to the hook, the same the lanes module reads.
+    lua.load("HOOK.checkpoint = true UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let handed: Table = lua.load("return HOOK.lanes").eval().unwrap();
+    let mut handed: Vec<(u16, String)> = handed
+        .pairs::<u16, String>()
+        .map(|pair| pair.unwrap())
+        .collect();
+    handed.sort();
+    assert_eq!(handed, read_lanes(&lua));
 }
 
 const DEPOT: &str = "{ BuildConstruction = { \
@@ -687,12 +846,24 @@ const DEPOT: &str = "{ BuildConstruction = { \
 
 #[test]
 fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
-    let (lua, script) = engine();
-    let update: Function = script.get("update").unwrap();
-    lua.globals().set("UPDATE", update).unwrap();
-    // No action ordered: nothing sent.
-    lua.load("UPDATE({}, STATE, 0.2)").exec().unwrap();
+    let (lua, _script) = engine();
+    // No action ordered: nothing sent, and nothing for postUpdate.
+    let work: mlua::Value = lua.load("return UPDATE({}, STATE, 0.2)").eval().unwrap();
+    assert!(work.is_nil());
     assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+    // update only takes the actions; the world changes in postUpdate, as
+    // the game's own scripts change it.
+    lua.load(format!(
+        "HOOK.batch = {{ {DEPOT} }} WORK = SCRIPT.update({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+    lua.load("SCRIPT.postUpdate({}, STATE, 0.2, WORK)")
+        .exec()
+        .unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 1);
+    lua.load("SENT = {}").exec().unwrap();
     lua.load(format!(
         "HOOK.batch = {{ {DEPOT} }} UPDATE({{}}, STATE, 0.2)"
     ))
@@ -715,9 +886,12 @@ fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
     );
     // Subscribed to its console event, linked once.
     assert!(
-        lua.load("return STATE.subscribed.command")
-            .eval::<bool>()
-            .unwrap()
+        lua.load(
+            "return STATE.subscribed.command and STATE.subscribed['builder.proposalCreate'] \
+                    and STATE.subscribed['builder.proposalPrepareForApply']"
+        )
+        .eval::<bool>()
+        .unwrap()
     );
     assert_eq!(
         lua.load("return table.concat(HOOK.logged, '|')")
@@ -728,10 +902,44 @@ fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
 }
 
 #[test]
+fn in_the_rooms_game_the_build_tools_are_refused() {
+    let (lua, _script) = engine();
+    let refusals: Vec<String> = lua
+        .load(
+            "local out = {}
+             local function ask(name)
+                 local r = SCRIPT.guiHandleEvent({}, nil, nil, '', 'streetBuilder', name, {})
+                 if r == nil then return 'nil' end
+                 local texts = {}
+                 for text in pairs(r.errorMessages or {}) do texts[#texts + 1] = text end
+                 return table.concat(texts, ',')
+             end
+             out[#out + 1] = ask('builder.proposalCreate')
+             HOOK.room = true
+             out[#out + 1] = ask('builder.proposalCreate')
+             out[#out + 1] = ask('builder.proposalPrepareForApply')
+             out[#out + 1] = ask('builder.proposalApply')
+             out[#out + 1] = ask('select')
+             return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        refusals,
+        [
+            "nil",
+            "Not in multiplayer yet: building with this tool",
+            "Not in multiplayer yet: building with this tool",
+            "nil",
+            "nil"
+        ],
+        "outside the room's game nothing; in it every proposal a tool makes"
+    );
+}
+
+#[test]
 fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
-    let (lua, script) = engine();
-    let update: Function = script.get("update").unwrap();
-    lua.globals().set("UPDATE", update).unwrap();
+    let (lua, _script) = engine();
     lua.load(
         "HOOK.batch = { { SellVehicle = { vehicles = { 7 } } } } UPDATE({}, STATE, 0.2) \
          REFUSE = true",

@@ -151,10 +151,10 @@ protected folder such as Program Files.
 - **Saving.** The room saves everyone's game together from time to time,
   which you notice as a short pause, like an autosave.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
-  does not happen in your game either: the game bar says "Not in
-  multiplayer yet: …" (buying vehicles, lines, loans, …). So far this covers
-  what the game's windows do; the road, track and construction tools are
-  not stopped yet, and what you build with them stays in your game alone.
+  does not happen in your game either. The game bar says "Not in
+  multiplayer yet: …" for what the game's windows do (buying vehicles,
+  lines, loans, …), and the road, track, station and bulldozer tools show
+  "Not in multiplayer yet: building with this tool" and build nothing.
 
 ## Playtesting before the game is out
 

@@ -170,11 +170,15 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         };
         // SAFETY: as above, once per call, with the updates the driver chose;
         // the batch's first update hands the mod the room's actions for it.
-        driver.on_step(lua::take_commands(), &mut |updates, actions| {
+        driver.on_step(lua::take_commands(), &mut |batch| {
             ran = true;
-            match lua::begin_batch(actions) {
+            let updates = match batch.updates {
+                Updates::Exactly(updates) => updates,
+                Updates::Own => 0,
+            };
+            match lua::begin_batch(batch.actions, updates, batch.lanes) {
                 Ok(()) => {
-                    unsafe { run_step(original, updates, this, a, b, c) };
+                    unsafe { run_step(original, batch.updates, this, a, b, c) };
                     lua::end_batch()
                 }
                 Err(reason) => {
@@ -680,7 +684,7 @@ mod tests {
         let results = unsafe { print_detour(state.state()) };
         assert_eq!(results, 0);
         assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
-        assert_eq!(state.run("return tpf3mp_native.version"), Ok("5".into()));
+        assert_eq!(state.run("return tpf3mp_native.version"), Ok("6".into()));
         PRINT_ORIGINAL.store(0, Ordering::Release);
     }
 }

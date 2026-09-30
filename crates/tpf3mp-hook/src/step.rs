@@ -28,6 +28,11 @@
 //! TPF2MP paced TPF2 (`tpf2-multiplayer/native/src/speedhook.cpp`, which
 //! also describes the game's batch pacing).
 //!
+//! A batch that ends at a checkpoint step asks the game for the world's
+//! lanes: the mod's game script reads them after the batch's last update
+//! (docs/HOOKS.md, "The world's lanes"), and the driver reports their
+//! digests for that step. A batch that does not bring them holds the world.
+//!
 //! The room's actions travel the same way (docs/HOOKS.md, "Actions in the
 //! game"). The session ends a batch before every step the room ordered
 //! actions for, so such a step is always the first update of a batch, and
@@ -46,8 +51,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ring::digest::{SHA256, digest};
 use tpf3mp_bridge::{Begin, Game, Notice, SaveOrder, Session, SessionError, StepGate};
-use tpf3mp_proto::{Event, EventBody, LaneDigest, Payload, Speed, action::Action};
+use tpf3mp_proto::{Event, EventBody, FixedBytes, LaneDigest, Payload, Speed, action::Action};
 
 /// Most steps one call of the game's step runs, catching up with the room:
 /// at the game's 1x (5 calls a second), rooms up to 16x keep up. The game
@@ -67,6 +73,8 @@ pub enum Updates {
 pub trait RoomGate {
     fn try_begin(&mut self) -> Result<Option<Begin>, SessionError>;
     fn poll_step(&mut self, game: &mut HookGame) -> Result<StepGate, SessionError>;
+    /// The step the game runs next.
+    fn next_step(&self) -> u64;
     /// After `poll_step` said Run: the steps that may run as one batch.
     fn batch(&mut self, game: &mut HookGame, max: u32) -> Result<u32, SessionError>;
     fn after_step(&mut self, game: &mut HookGame) -> Result<u64, SessionError>;
@@ -122,6 +130,9 @@ impl RoomGate for Session {
     fn poll_step(&mut self, game: &mut HookGame) -> Result<StepGate, SessionError> {
         Session::poll_step(self, game)
     }
+    fn next_step(&self) -> u64 {
+        Session::next_step(self)
+    }
     fn batch(&mut self, game: &mut HookGame, max: u32) -> Result<u32, SessionError> {
         Session::batch(self, game, max)
     }
@@ -157,6 +168,9 @@ pub struct HookGame {
     pub actions: Vec<Action>,
     /// An event the game cannot follow.
     pub fault: Option<String>,
+    /// The world's lanes after the batch that ran last, when it ended at a
+    /// checkpoint step: what the session reports for that step.
+    pub lanes: Option<Vec<LaneDigest>>,
 }
 
 impl Game for HookGame {
@@ -176,7 +190,7 @@ impl Game for HookGame {
     }
 
     fn lanes(&mut self) -> Vec<LaneDigest> {
-        Vec::new()
+        self.lanes.take().unwrap_or_default()
     }
 
     fn save(&mut self, _file: &std::path::Path) -> Result<(), String> {
@@ -237,9 +251,40 @@ pub struct Outcome {
     pub updates: Updates,
 }
 
-/// Runs the game's own step exactly once, with the updates given and the
-/// actions its first update applies; says whether the game applied them.
-pub type RunStep<'a> = dyn FnMut(Updates, &[Action]) -> Result<(), String> + 'a;
+/// One call of the game's step, as the driver plans it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Batch<'a> {
+    pub updates: Updates,
+    /// The room's actions, for the batch's first update.
+    pub actions: &'a [Action],
+    /// The batch ends at a checkpoint step: after its last update the game
+    /// reads the world's lanes.
+    pub lanes: bool,
+}
+
+/// A lane the game read: its number and what the game read for it, which
+/// the driver reports as a digest.
+pub type LaneText = (u16, String);
+
+/// Runs the game's own step exactly once, as the batch says. Returns the
+/// lanes the game read, if it read them, or why it did not follow the
+/// batch (its actions were not applied).
+pub type RunStep<'a> = dyn FnMut(&Batch<'_>) -> Result<Option<Vec<LaneText>>, String> + 'a;
+
+/// The digests the session reports for the lanes the game read.
+pub fn lane_digests(lanes: &[LaneText]) -> Vec<LaneDigest> {
+    lanes
+        .iter()
+        .map(|(lane, text)| {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(digest(&SHA256, text.as_bytes()).as_ref());
+            LaneDigest {
+                lane: *lane,
+                digest: FixedBytes(bytes),
+            }
+        })
+        .collect()
+}
 
 pub struct StepDriver<G> {
     gate: G,
@@ -253,6 +298,10 @@ pub struct StepDriver<G> {
     phase: Phase,
     /// The speed row's last value in the room's game, once seen.
     chosen: Option<u64>,
+    /// Steps between checkpoints, from the room's `Begin`.
+    checkpoint_interval: u64,
+    /// The batch chosen last ends at a checkpoint step.
+    lanes_due: bool,
     /// Lines for the hook's log.
     log: Vec<String>,
 }
@@ -268,6 +317,8 @@ impl<G: RoomGate> StepDriver<G> {
             loading: None,
             phase: Phase::BeforeBegin,
             chosen: None,
+            checkpoint_interval: u64::MAX,
+            lanes_due: false,
             log: Vec::new(),
         }
     }
@@ -334,12 +385,36 @@ impl<G: RoomGate> StepDriver<G> {
         }
         // The actions wait until a batch runs: a batch that starts at their
         // step, since the session ends the one before there.
-        let actions = match updates {
-            Updates::Exactly(steps) if steps > 0 => std::mem::take(&mut self.game.actions),
-            _ => Vec::new(),
+        let runs = matches!(updates, Updates::Exactly(steps) if steps > 0);
+        let actions = if runs {
+            std::mem::take(&mut self.game.actions)
+        } else {
+            Vec::new()
         };
-        match run(updates, &actions) {
-            Ok(()) => {
+        let batch = Batch {
+            updates,
+            actions: &actions,
+            lanes: runs && self.lanes_due,
+        };
+        match run(&batch) {
+            Ok(lanes) => {
+                if batch.lanes {
+                    match lanes {
+                        Some(lanes) => self.game.lanes = Some(lane_digests(&lanes)),
+                        // The steps ran, but the room cannot hear whether the
+                        // world is still its own: none is reported.
+                        None => {
+                            self.hold(format!(
+                                "the game did not read the world's lanes at the checkpoint after step {}",
+                                self.gate.next_step().saturating_add(u64::from(match updates {
+                                    Updates::Exactly(steps) => steps,
+                                    Updates::Own => 0,
+                                })).saturating_sub(1)
+                            ));
+                            return Outcome { updates };
+                        }
+                    }
+                }
                 if !actions.is_empty() {
                     self.log.push(format!(
                         "the game applied {} action(s) the room ordered",
@@ -400,6 +475,7 @@ impl<G: RoomGate> StepDriver<G> {
                         begin.steps_per_second,
                         begin.checkpoint_interval
                     ));
+                    self.checkpoint_interval = u64::from(begin.checkpoint_interval).max(1);
                     self.phase = Phase::Running;
                 }
                 Ok(None) => return Updates::Own,
@@ -414,8 +490,14 @@ impl<G: RoomGate> StepDriver<G> {
         loop {
             match self.gate.poll_step(&mut self.game) {
                 Ok(StepGate::Run) => {
+                    let first = self.gate.next_step();
                     return match self.gate.batch(&mut self.game, MAX_STEPS_PER_CALL) {
-                        Ok(steps) => Updates::Exactly(steps.max(1)),
+                        Ok(steps) => {
+                            let steps = steps.max(1);
+                            let last = first.saturating_add(u64::from(steps) - 1);
+                            self.lanes_due = last.is_multiple_of(self.checkpoint_interval);
+                            Updates::Exactly(steps)
+                        }
                         Err(error) => {
                             self.hold(format!("reading the steps released: {error}"));
                             Updates::Exactly(0)
@@ -594,11 +676,22 @@ pub(crate) mod tests {
         pub(crate) events: VecDeque<Vec<Event>>,
         pub(crate) commands: Vec<Payload>,
         pub(crate) saves: Vec<Result<(), String>>,
+        /// Steps between checkpoints, from the begin handed out.
+        pub(crate) interval: u64,
+        /// The lanes reported, by checkpoint step.
+        pub(crate) checkpoints: Vec<(u64, Vec<LaneDigest>)>,
     }
 
     impl RoomGate for Script {
         fn try_begin(&mut self) -> Result<Option<Begin>, SessionError> {
-            Ok(self.begin.pop_front().flatten())
+            let begin = self.begin.pop_front().flatten();
+            if let Some(begin) = &begin {
+                self.interval = u64::from(begin.checkpoint_interval).max(1);
+            }
+            Ok(begin)
+        }
+        fn next_step(&self) -> u64 {
+            self.ran + 1
         }
         fn poll_step(&mut self, game: &mut HookGame) -> Result<StepGate, SessionError> {
             for event in self.events.pop_front().unwrap_or_default() {
@@ -614,16 +707,23 @@ pub(crate) mod tests {
                 _ => Ok(self.gates.pop_front().unwrap_or(StepGate::Wait)),
             }
         }
-        /// The Runs in a row at the front of the script are one batch.
+        /// The Runs in a row at the front of the script are one batch, up to
+        /// the next checkpoint step, as the gate's are.
         fn batch(&mut self, _game: &mut HookGame, max: u32) -> Result<u32, SessionError> {
             let runs = self
                 .gates
                 .iter()
                 .take_while(|gate| **gate == StepGate::Run)
                 .count();
-            Ok(u32::try_from(runs).unwrap_or(u32::MAX).min(max))
+            let next = self.ran + 1;
+            let to_checkpoint = match self.interval {
+                0 => u64::MAX,
+                interval => (interval - next % interval) % interval + 1,
+            };
+            let steps = u64::try_from(runs).unwrap_or(u64::MAX).min(to_checkpoint);
+            Ok(u32::try_from(steps).unwrap_or(u32::MAX).min(max))
         }
-        fn after_step(&mut self, _game: &mut HookGame) -> Result<u64, SessionError> {
+        fn after_step(&mut self, game: &mut HookGame) -> Result<u64, SessionError> {
             if self.fail_after {
                 return Err(SessionError::AgentGone);
             }
@@ -633,6 +733,10 @@ pub(crate) mod tests {
                 "a step ran unreleased"
             );
             self.ran += 1;
+            // As the session does: the lanes at checkpoint steps.
+            if self.interval > 0 && self.ran.is_multiple_of(self.interval) {
+                self.checkpoints.push((self.ran, game.lanes()));
+            }
             Ok(self.ran)
         }
         fn loaded(&mut self, next_step: u64) -> Result<(), SessionError> {
@@ -748,9 +852,9 @@ pub(crate) mod tests {
 
     fn call(driver: &mut StepDriver<Script>, calls: &mut Calls) -> Updates {
         let before = calls.len();
-        let outcome = driver.on_step(Vec::new(), &mut |updates, _actions| {
-            calls.push(updates);
-            Ok(())
+        let outcome = driver.on_step(Vec::new(), &mut |batch| {
+            calls.push(batch.updates);
+            Ok(batch.lanes.then(Vec::new))
         });
         assert_eq!(calls.len(), before + 1, "the game's step runs once a call");
         assert_eq!(calls.last(), Some(&outcome.updates));
@@ -765,10 +869,10 @@ pub(crate) mod tests {
         applied: &mut Vec<(Updates, Vec<Action>)>,
         applies: bool,
     ) -> Updates {
-        let outcome = driver.on_step(commands, &mut |updates, actions| {
-            applied.push((updates, actions.to_vec()));
+        let outcome = driver.on_step(commands, &mut |batch| {
+            applied.push((batch.updates, batch.actions.to_vec()));
             if applies {
-                Ok(())
+                Ok(batch.lanes.then(Vec::new))
             } else {
                 Err("the script took nothing".into())
             }
@@ -821,6 +925,84 @@ pub(crate) mod tests {
         );
         assert_eq!(d.phase(), &Phase::Running);
         assert!(d.take_log().iter().any(|l| l.contains("applied 1 action")));
+    }
+
+    fn begin_every(interval: u32) -> Begin {
+        Begin {
+            checkpoint_interval: interval,
+            ..begin()
+        }
+    }
+
+    #[test]
+    fn a_batch_ending_at_a_checkpoint_reports_the_lanes_the_game_read() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(3)));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Wait,
+        ]);
+        let (mut d, _) = driver(script);
+        let mut batches = Vec::new();
+        for _ in 0..2 {
+            d.on_step(Vec::new(), &mut |batch| {
+                batches.push((batch.updates, batch.lanes));
+                Ok(batch
+                    .lanes
+                    .then(|| vec![(3, "vehicles".to_owned()), (0, "net".to_owned())]))
+            });
+        }
+        assert_eq!(
+            batches,
+            [(Updates::Exactly(3), true), (Updates::Exactly(1), false)],
+            "the batch stops at step 3, a checkpoint, and asks for its lanes"
+        );
+        let checkpoints = &d.gate.checkpoints;
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].0, 3);
+        assert_eq!(
+            checkpoints[0].1,
+            lane_digests(&[(3, "vehicles".to_owned()), (0, "net".to_owned())])
+        );
+        assert_ne!(
+            checkpoints[0].1[0].digest, checkpoints[0].1[1].digest,
+            "each lane its own digest"
+        );
+        assert_eq!(d.phase(), &Phase::Running);
+    }
+
+    #[test]
+    fn a_checkpoint_without_the_worlds_lanes_holds_the_world() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(2)));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Run,
+            StepGate::Run,
+        ]);
+        let (mut d, _) = driver(script);
+        let outcome = d.on_step(Vec::new(), &mut |_batch| Ok(None));
+        assert_eq!(outcome.updates, Updates::Exactly(2), "the steps ran");
+        assert!(
+            matches!(d.phase(), Phase::Holding(why) if why.contains("lanes at the checkpoint after step 2")),
+            "{:?}",
+            d.phase()
+        );
+        assert!(d.gate.checkpoints.is_empty(), "nothing reported for them");
+        assert_eq!(d.gate.ran, 0);
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(0));
     }
 
     #[test]
