@@ -40,6 +40,12 @@ mod platform;
 pub mod step;
 pub mod worlds;
 
+/// The lobby as the in-game menu sees it (docs/LOBBY.md).
+pub mod lobby;
+/// The main-menu Multiplayer entry (docs/LOBBY.md): Windows x86-64 only.
+#[cfg(all(windows, target_arch = "x86_64"))]
+pub mod menu;
+
 /// Names the link to the launcher that started this game, and that
 /// launcher's process. The launcher always sets both; without them, the hook
 /// does nothing (D11).
@@ -70,11 +76,12 @@ pub fn bootstrap() {
     log.line("hook bootstrap starting");
 
     match resolve_build(&mut log, data_dir.as_deref()) {
-        BuildOutcome::Matched(profile) => {
+        BuildOutcome::Matched { profile, profiles } => {
             log.line(&format!(
-                "matched profile {:?} ({} targets)",
+                "matched profile {:?} ({} targets; {} matching in all)",
                 profile.name,
-                profile.targets.len()
+                profile.targets.len(),
+                profiles.len()
             ));
             match install::install(&profile, &link_name, Logger::open(data_dir.as_deref())) {
                 install::Installed::Yes { step_rva } => log.line(&format!(
@@ -85,6 +92,10 @@ pub fn bootstrap() {
                     log.line(&format!("multiplayer disabled (fail-closed): {reason}"));
                 }
             }
+            // The main menu's Multiplayer entry stands on its own: without
+            // the step gate it still opens, and says the launcher is not
+            // answering; without its own targets the menu is the game's.
+            install_menu(&profiles, &mut log, data_dir.as_deref());
         }
         BuildOutcome::FailedClosed(reason) => {
             log.line(&format!("multiplayer disabled (fail-closed): {reason}"));
@@ -94,9 +105,52 @@ pub fn bootstrap() {
     log.line("hook bootstrap complete");
 }
 
+/// Arms the main-menu Multiplayer entry (docs/LOBBY.md) from the matched
+/// profile. When a target is missing the menu stays the game's, and the
+/// reason is logged (fail-closed).
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+fn install_menu(profiles: &[Profile], log: &mut Logger, data_dir: Option<&Path>) {
+    // The menu's targets may live in any profile for this build: several can
+    // be installed side by side (one per feature), so each is tried in turn.
+    let mut reasons = Vec::new();
+    for profile in profiles {
+        match menu::resolve_targets(profile) {
+            Ok(targets) => {
+                let log_path = data_dir.map(|dir| dir.join("hook.log"));
+                // SAFETY: the launcher loaded the hook into the suspended game,
+                // so no game code runs yet, and the targets are profile-verified.
+                match unsafe { menu::install(&targets, log_path.as_deref()) } {
+                    Ok(()) => log.line(&format!(
+                        "main-menu Multiplayer entry armed from profile {:?} (loader at {:#x})",
+                        profile.name, targets.loadfile
+                    )),
+                    Err(error) => log.line(&format!("main-menu entry not armed: {error}")),
+                }
+                return;
+            }
+            Err(reason) => reasons.push(format!("{:?}: {reason}", profile.name)),
+        }
+    }
+    log.line(&format!(
+        "main-menu entry not armed (fail-closed): {}",
+        reasons.join("; ")
+    ));
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn install_menu(_profiles: &[Profile], log: &mut Logger, _data_dir: Option<&Path>) {
+    log.line("main-menu entry: Windows x86-64 only for now");
+}
+
 /// The result of trying to match the running build to a profile.
 enum BuildOutcome {
-    Matched(Profile),
+    Matched {
+        /// The profile the step gate is installed from.
+        profile: Profile,
+        /// Every profile that matches the build, `profile` first.
+        profiles: Vec<Profile>,
+    },
     FailedClosed(String),
 }
 
@@ -138,7 +192,10 @@ fn resolve_build(log: &mut Logger, data_dir: Option<&Path>) -> BuildOutcome {
     }
 
     match select_profile(&profiles, &identity) {
-        Some(profile) => BuildOutcome::Matched(profile.clone()),
+        Some(profile) => BuildOutcome::Matched {
+            profile: profile.clone(),
+            profiles: matching_profiles(&profiles, &identity),
+        },
         None => BuildOutcome::FailedClosed(format!(
             "no profile in {:?} or built in matches build {}",
             profiles_dir, identity.sha256
@@ -213,6 +270,17 @@ pub fn select_profile<'a>(
         .iter()
         .filter_map(|loaded| loaded.profile.as_ref().ok())
         .find(|profile| profile.verify_identity(identity).is_ok())
+}
+
+/// Every profile whose declared build identity matches the running build, in
+/// directory order (so the one [`select_profile`] picks comes first).
+pub fn matching_profiles(profiles: &[LoadedProfile], identity: &BuildIdentity) -> Vec<Profile> {
+    profiles
+        .iter()
+        .filter_map(|loaded| loaded.profile.as_ref().ok())
+        .filter(|profile| profile.verify_identity(identity).is_ok())
+        .cloned()
+        .collect()
 }
 
 /// The link to the launcher that started this game: [`LINK_ENV`]. `None`

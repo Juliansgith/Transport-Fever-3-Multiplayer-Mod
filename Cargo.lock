@@ -4444,6 +4444,8 @@ dependencies = [
  "ctor",
  "mlua",
  "ring",
+ "serde",
+ "serde_json",
  "tpf3mp-bridge",
  "tpf3mp-hookcore",
  "tpf3mp-ipc",
