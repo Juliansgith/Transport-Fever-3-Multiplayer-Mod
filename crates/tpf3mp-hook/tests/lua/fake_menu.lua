@@ -101,6 +101,20 @@ end
 react.useState = react.useRef
 function react.onStepTimer(fn) mount.timers[#mount.timers + 1] = fn end
 local LAYOUTS = { BoxLayout = true, FloatingLayout = true }
+-- A wrapper recipe's widget takes meta for its class only: the game
+-- asserted and closed on a window whose meta had a styleSheet ("Wrapper
+-- recipe must return child", 2026-09-30).
+function react.RegisterWrapperRecipe(name, wrapped, fn)
+	return setmetatable({ name = name }, { __call = function(_, params)
+		local node = fn(params)
+		assert(type(node) == "table" and node.view == wrapped.viewName,
+			"Wrapper recipe must return child: " .. name)
+		for key in pairs(node.params.meta or {}) do
+			assert(key == "class", "a wrapper recipe's meta may hold its class only, not " .. key .. ": " .. name)
+		end
+		return node
+	end })
+end
 function react.RegisterRecipe(name, fn)
 	return setmetatable({ name = name }, { __call = function(_, params)
 		local node = fn(params)
@@ -138,8 +152,10 @@ end
 
 for _i, view in ipairs({ "BoxLayout", "Component", "TextView", "Button", "ImageView", "TextInputField",
 		"ScrollArea", "ComboBox", "ComboBoxItem", "ProgressBar", "FloatingLayout", "FloatingLayoutChild",
-		"ShaderQuad" }) do
-	builtin[view] = function(params)
+		"ShaderQuad", "Window" }) do
+	-- A view is a recipe the game has: called, it gives the node; its name
+	-- says which view a wrapper recipe wraps.
+	builtin[view] = setmetatable({ viewName = view }, { __call = function(_, params)
 		whole(params.children, view)
 		whole(params.items, view)
 		sized(params, view)
@@ -147,7 +163,7 @@ for _i, view in ipairs({ "BoxLayout", "Component", "TextView", "Button", "ImageV
 			assert(LAYOUTS[params.layout.view], "a Component's layout must be a layout, not " .. tostring(params.layout.view))
 		end
 		return { view = view, params = params }
-	end
+	end })
 end
 
 -- Every text field and combo box has a width and a height, its own or its
@@ -356,4 +372,16 @@ function room_cards()
 		end
 	end)
 	return found
+end
+
+-- Clicks the card (Join, Host, a room) whose texts include `title`.
+function click_card(title)
+	for _i, card in ipairs(room_cards()) do
+		if card.text:find(title, 1, true) then
+			assert(card.enabled, "card disabled: " .. title)
+			card.click()
+			return render()
+		end
+	end
+	error("no card " .. title)
 end

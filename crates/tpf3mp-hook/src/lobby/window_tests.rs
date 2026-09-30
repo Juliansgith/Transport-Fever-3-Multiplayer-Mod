@@ -188,7 +188,11 @@ fn not_connected_it_connects_with_the_name_typed_to_the_launchers_server() {
     open(&lua, None);
     let shown = texts(&lua);
     assert!(shown.contains("Not connected"), "{shown}");
-    assert!(shown.contains("1  Connect"), "the steps: {shown}");
+    assert!(
+        shown.contains("Join a room") && shown.contains("Host a room"),
+        "the first page's two choices: {shown}"
+    );
+    assert!(!card_enabled(&lua, "Join a room"), "only once connected");
     call(&lua, "type_into", ("Ann", "Ada"));
     click(&lua, "Connect to EU");
     assert_eq!(
@@ -223,12 +227,7 @@ fn a_room_is_created_with_the_rules_players_and_save_picked() {
     let lua = menu();
     show(&lua, Some(&online()));
     open(&lua, None);
-    let shown = texts(&lua);
-    assert!(
-        shown.contains("Public rooms on EU"),
-        "the room list first: {shown}"
-    );
-    click(&lua, "Create a room");
+    call(&lua, "click_card", "Host a room");
     assert!(texts(&lua).contains("Private: invite only"));
     // The saves, the launcher's own first choice picked, and a way to load
     // a world by hand.
@@ -270,7 +269,7 @@ fn a_room_can_start_without_a_save_and_is_named_for_its_owner() {
         }),
     );
     open(&lua, None);
-    click(&lua, "Create a room");
+    call(&lua, "click_card", "Host a room");
     let (_, chosen): (Vec<String>, String) = lua
         .globals()
         .get::<Function>("offered")
@@ -301,7 +300,7 @@ fn a_room_is_joined_by_its_invite_with_its_password() {
     open(&lua, Some("join"));
     let shown = texts(&lua);
     assert!(
-        shown.contains("A friend's private room") && !shown.contains("Start from this save"),
+        shown.contains("Or join with an invite") && !shown.contains("Start from this save"),
         "the Join a friend card opens joining by invite: {shown}"
     );
     // Nothing typed: said, and nothing sent.
@@ -310,7 +309,7 @@ fn a_room_is_joined_by_its_invite_with_its_password() {
     assert!(texts(&lua).contains("Type the invite code"));
     call(&lua, "type_into", ("K7QM2X", " k7qm2x "));
     // The field without a placeholder: the room's password.
-    call(&lua, "type_into", ("", "pw"));
+    call(&lua, "type_into", ("Password, if it has one", "pw"));
     click(&lua, "Join room");
     assert_eq!(
         sent(&lua),
@@ -326,7 +325,7 @@ fn what_the_hook_refuses_is_shown_until_the_next_action() {
     let lua = menu();
     show(&lua, Some(&online()));
     open(&lua, None);
-    click(&lua, "Create a room");
+    call(&lua, "click_card", "Host a room");
     lua.globals()
         .set("REPLY", "error: that room name is too long")
         .unwrap();
@@ -343,6 +342,7 @@ fn what_the_hook_refuses_is_shown_until_the_next_action() {
             ..online()
         }),
     );
+    click(&lua, "Back");
     click(&lua, "Disconnect");
     call(&lua, "tick", ());
     assert!(texts(&lua).contains("no room has that invite"));
@@ -543,7 +543,25 @@ fn browsing(rooms: Vec<LobbyPublicRoom>, page: u16, more: bool) -> LobbyView {
     }
 }
 
+fn card_enabled(lua: &Lua, title: &str) -> bool {
+    all_cards(lua).iter().any(|card| {
+        card.get::<String>("text").unwrap().contains(title) && card.get::<bool>("enabled").unwrap()
+    })
+}
+
+/// The room cards shown: the first page's Join and Host are cards too, and
+/// are left out.
 fn cards(lua: &Lua) -> Vec<Table> {
+    all_cards(lua)
+        .into_iter()
+        .filter(|card| {
+            let text: String = card.get("text").unwrap();
+            !text.starts_with("Join a room") && !text.starts_with("Host a room")
+        })
+        .collect()
+}
+
+fn all_cards(lua: &Lua) -> Vec<Table> {
     let list: Table = lua
         .globals()
         .get::<Function>("room_cards")
@@ -560,6 +578,9 @@ fn the_window_asks_for_the_room_list_and_shows_each_room_as_a_card() {
     let lua = menu();
     show(&lua, Some(&online()));
     open(&lua, None);
+    assert!(sent_all(&lua).is_empty(), "the first page asks for no list");
+    call(&lua, "click_card", "Join a room");
+    call(&lua, "tick", ());
     assert_eq!(
         sent_all(&lua),
         [LobbyAction::ListRooms { page: 0 }],
@@ -629,7 +650,7 @@ fn a_room_with_a_password_asks_for_it_and_pages_move_on() {
             false,
         )),
     );
-    open(&lua, None);
+    open(&lua, Some("join"));
     sent_all(&lua);
     assert!(enabled(&lua, "Previous") && !enabled(&lua, "Next"));
     click(&lua, "Previous");
@@ -662,7 +683,7 @@ fn a_public_room_is_listed_with_its_saves_climate_and_year() {
     saves.set("mptest", save).unwrap();
     show(&lua, Some(&online()));
     open(&lua, None);
-    click(&lua, "Create a room");
+    call(&lua, "click_card", "Host a room");
     call(&lua, "choose", ("Who can find it", "public"));
     assert!(
         texts(&lua).contains("Listed for everyone on EU: Dry, 1900."),
@@ -682,4 +703,128 @@ fn a_public_room_is_listed_with_its_saves_climate_and_year() {
         })
     );
     assert_eq!(lua.globals().get::<u32>("READS").unwrap(), 1, "read once");
+}
+
+/// The window itself is a wrapper recipe in the mod's `main_page.tl`
+/// (Teal, which the stand-in cannot run): its widget's meta may hold its
+/// class only. The game asserted and closed on a styleSheet there
+/// ("Wrapper recipe must return child", 2026-09-30).
+#[test]
+fn the_menus_wrapper_recipes_pass_meta_for_their_class_only() {
+    let page = include_str!("../../../../mod/tpf3mp_1/content/gui/menu/main_page.tl");
+    let mut checked = 0;
+    for block in page.split("RegisterWrapperRecipe(").skip(1) {
+        let block = &block[..block.find("\nend)").expect("the recipe ends")];
+        for meta in block.split("meta = {").skip(1) {
+            let inside = &meta[..meta.find('}').expect("the meta table closes")];
+            let keys: Vec<&str> = inside
+                .split(',')
+                .filter_map(|entry| entry.split_once('=').map(|(key, _)| key.trim()))
+                .collect();
+            assert!(
+                keys.iter().all(|key| *key == "class"),
+                "a wrapper recipe's meta holds {keys:?}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "the Multiplayer window's meta was checked");
+}
+
+#[test]
+fn the_first_page_leads_to_join_or_host_and_back() {
+    let lua = menu();
+    show(&lua, Some(&online()));
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("Online on EU"), "{shown}");
+    assert!(!shown.contains("Room name") && !shown.contains("Public rooms on EU"));
+    call(&lua, "click_card", "Host a room");
+    assert!(texts(&lua).contains("Room name"));
+    click(&lua, "Back");
+    assert!(!texts(&lua).contains("Room name"));
+    call(&lua, "click_card", "Join a room");
+    assert!(texts(&lua).contains("Public rooms on EU"));
+    click(&lua, "Back");
+    assert!(texts(&lua).contains("Host a room"));
+    // In a room, the room's page, whatever was picked.
+    show(
+        &lua,
+        Some(&in_room(vec![member(1, "Ann", true, true, false)], true)),
+    );
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("Your room"));
+}
+
+#[test]
+fn your_mods_are_chosen_from_join_host_and_the_room() {
+    let lua = menu();
+    let mods = |view: LobbyView| LobbyView {
+        mods: BoundedVec::new(vec![
+            tpf3mp_bridge::LobbyMod {
+                id: Text::new("schbrongx_minimap").unwrap(),
+                name: Text::new("Minimap").unwrap(),
+                class: tpf3mp_bridge::LobbyModClass::Personal,
+                reason: Text::new("only what this player sees").unwrap(),
+                chosen: false,
+                choosable: true,
+            },
+            tpf3mp_bridge::LobbyMod {
+                id: Text::new("vehicles_pack").unwrap(),
+                name: Text::new("Vehicles").unwrap(),
+                class: tpf3mp_bridge::LobbyModClass::Shared,
+                reason: Text::new("every player needs it: it adds vehicles").unwrap(),
+                chosen: true,
+                choosable: false,
+            },
+        ])
+        .unwrap(),
+        room_mods: BoundedVec::new(vec![tpf3mp_bridge::LobbyRoomMod {
+            id: Text::new("trees_pack").unwrap(),
+            version: Text::new("2").unwrap(),
+            have: tpf3mp_bridge::LobbyHave::No,
+        }])
+        .unwrap(),
+        room_mods_more: 3,
+        ..view
+    };
+    show(&lua, Some(&mods(online())));
+    open(&lua, Some("join"));
+    click(&lua, "Your mods (0 chosen)");
+    let shown = texts(&lua);
+    for word in [
+        "Minimap",
+        "only you see it",
+        "Vehicles",
+        "every player needs it",
+        "trees_pack",
+        "You lack it",
+        "and 3 more",
+    ] {
+        assert!(shown.contains(word), "{word}: {shown}");
+    }
+    assert!(
+        !enabled(&lua, "Needed"),
+        "a shared mod cannot be turned off"
+    );
+    click(&lua, "Off");
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::ChooseMod {
+            id: Text::new("schbrongx_minimap").unwrap(),
+            chosen: true,
+        }]
+    );
+    click(&lua, "Back");
+    assert!(texts(&lua).contains("Public rooms on EU"));
+    // In the room's lobby too, but not once its game runs.
+    let mut room = mods(in_room(vec![member(1, "Ann", true, true, true)], true));
+    show(&lua, Some(&room));
+    call(&lua, "tick", ());
+    click(&lua, "Your mods (0 chosen)");
+    assert!(enabled(&lua, "Off"));
+    room.room.as_mut().unwrap().running = true;
+    show(&lua, Some(&room));
+    call(&lua, "tick", ());
+    assert!(!enabled(&lua, "Off"));
 }

@@ -416,6 +416,8 @@ end
 -- smaller, three to the window's width.
 local CARDS_PER_ROW = 3
 local CARD_WIDTH, CARD_HEIGHT = 272, 156
+-- The first page's two cards, Join and Host.
+local CHOICE_WIDTH, CHOICE_HEIGHT = 420, 240
 -- Polls between two asks for the room list while it is shown.
 local LIST_POLLS = 25
 
@@ -519,6 +521,34 @@ function lobby.saveDetails(name)
 	return read
 end
 
+-- A big choice of the first page (Join, Host), as a card in the main
+-- menu's style.
+function lobby.choiceCard(title, line, picture, onClick, enabled)
+	local card
+	if cards then
+		card = cards.CardButton{
+			bottomComponent = cards.makeCardLabelBottomComponent(title, line, nil, nil, true),
+			onClick = onClick,
+			tooltip = line,
+			images = { picture },
+			initialImageIndex = 1,
+			class = "small-rectangle-card",
+			enabled = enabled,
+			extraChildren = {},
+		}
+	else
+		card = builtin.Button{
+			meta = { enabled = enabled },
+			content = column({ icon(picture, CHOICE_HEIGHT - 70), label(title, "font-scale-title-3"), note(line) }),
+			onClick = onClick,
+		}
+	end
+	return builtin.Component{
+		meta = { styleSheet = style{ size = { CHOICE_WIDTH, CHOICE_HEIGHT } } },
+		layout = builtin.BoxLayout{ children = { card } },
+	}
+end
+
 -- One public room of the list, as a card in the game's own style: the
 -- picture of its map, its name, and players, companies and year under it.
 function lobby.roomCard(listed, onClick, enabled)
@@ -587,13 +617,13 @@ function lobby.content(onClose, focus)
 	local playersS = react.useState(DEFAULT_PLAYERS)
 	local rulesS = react.useState(nil)
 	local saveS = react.useState(nil)
-	-- The room browser: the tab shown, a public room's choice, the public
-	-- room with a password being joined, the save picked, and polls since
-	-- the room list was last asked for.
-	local tabS = react.useState(nil)
+	-- The page shown: "choose" (Join or Host), "join" (the public rooms
+	-- and an invite) or "host" (the room's settings); in a room, always the
+	-- room's. Your mods show over it while modsS is on.
+	local pageS = react.useState(nil)
+	local modsS = react.useState(false)
 	local publicS = react.useState("private")
 	local joiningS = react.useState(nil)
-	local pickedSaveRef = react.useRef("")
 	local listAtRef = react.useRef(LIST_POLLS)
 
 	-- What the view shows, in one string: when it changes, an action sent
@@ -607,6 +637,17 @@ function lobby.content(onClose, focus)
 			tostring(room and #room.members), tostring(me and me.ready), tostring(state.error),
 			tostring(state.notice), tostring(#(state.chat or {})),
 		}, "|")
+	end
+
+	-- The page `s` shows: the room's once in one; the first page until
+	-- connected; otherwise the one picked, or the one the card that opened
+	-- the window is about.
+	local function pageOf(s)
+		if s.room then return "room" end
+		if s.connection ~= "connected" then return "choose" end
+		local picked = pageS:old() or (focus == "join" and "join" or "choose")
+		if picked == "room" then return "choose" end
+		return picked
 	end
 
 	-- Poll the hook for the lobby a few times a second: the room and chat
@@ -626,8 +667,7 @@ function lobby.content(onClose, focus)
 			stateS:set(state)
 			-- The room list, while it is shown: asked for at once, then
 			-- every LIST_POLLS polls (the server allows one a second).
-			local browsing = state.connection == "connected" and not state.room and state.linked
-				and (tabS:old() or (focus == "join" and "invite" or "browse")) == "browse"
+			local browsing = state.linked and pageOf(state) == "join" and not modsS:old()
 			if browsing then
 				listAtRef:set(listAtRef:get() + 1)
 				if state.rooms == nil and listAtRef:get() >= 3 or listAtRef:get() >= LIST_POLLS then
@@ -654,37 +694,16 @@ function lobby.content(onClose, focus)
 
 	local busy = pendingS:old() ~= nil
 
-	-- The steps of playing together, and which is the player's now.
-	local function steps()
-		local room = state and state.room
-		local me = you(room)
-		local at
-		if not state or state.connection ~= "connected" then at = 1
-		elseif not room then at = 2
-		elseif room.phase ~= "playing" and not (me and me.ready) then at = 3
-		elseif room.phase ~= "playing" then at = 4
-		else at = 5 end
-		local words = { _("Connect"), _("Create or join a room"), _("Get ready"), _("Start"), _("Play") }
-		local children = {}
-		for i, word in ipairs(words) do
-			if i > 1 then children[#children + 1] = note("  >  ") end
-			local class = (i < at and "success") or (i == at and "info") or nil
-			children[#children + 1] = note(string.format("%d  %s", i, word), class)
-		end
-		return row(children)
-	end
-
 	-- The frame every view shares: the title and the connection, the steps,
 	-- a line for what went wrong, what is under way or what just happened,
 	-- the room's world when it is coming, the view, and a footer with the
 	-- view's buttons.
-	local function frame(status, body, footer)
+	local function frame(title, status, body, footer)
 		local children = {
-			-- The window's title says Multiplayer already.
 			row({
 				icon(ICON.multiplayer, 28),
 				gap(10),
-				steps(),
+				label(title, "font-scale-title-3"),
 				gui_react_util.makeHorizontalSpacer(),
 				status,
 			}),
@@ -735,6 +754,7 @@ function lobby.content(onClose, focus)
 	if not state then
 		local why = problemS:old()
 		return frame(
+			_("Multiplayer"),
 			note(_("Waiting for the hook...")),
 			label(why and (_("The hook did not answer: ") .. tostring(why)) or "", "font-scale-body, error"),
 			{ gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) }
@@ -743,44 +763,247 @@ function lobby.content(onClose, focus)
 
 	local canAct = state.linked and state.heard
 
-	-- Not connected: the connect form.
-	if state.connection ~= "connected" then
+	local connected = state.connection == "connected"
+	local room = state.room
+	local page = pageOf(state)
+	local disconnect = function() send({ action = "disconnect" }, _("Disconnecting...")) end
+
+	-- Where the player is, top right: online as whom, on which server.
+	local status
+	if connected then
+		status = row({
+			badge(_("Online"), "success"),
+			gap(8),
+			icon(ICON.player, 18),
+			gap(4),
+			label(tostring(state.name), "font-scale-body"),
+			note("  @ " .. serverName(state)),
+		})
+	elseif state.connection == "connecting" then
+		status = badge(_("Connecting"), "info")
+	else
+		status = badge(_("Not connected"), "warning")
+	end
+
+	local function back(to)
+		return button(_("Back"), function()
+			joiningS:set(nil)
+			pageS:set(to)
+		end)
+	end
+	local function modsButton()
+		local chosen = 0
+		for _i, m in ipairs(state.mods or {}) do
+			if m.chosen and m.choosable then chosen = chosen + 1 end
+		end
+		return button(string.format(_("Your mods (%d chosen)"), chosen), function() modsS:set(true) end, nil,
+			#(state.mods or {}) > 0 or #(state.room_mods or {}) > 0)
+	end
+
+	-- Your mods: over whichever page opened it, with Back to it.
+	if modsS:old() and page ~= "choose" then
+		local playing = room and room.phase == "playing"
+		local rows = {}
+		for _i, m in ipairs(state.mods or {}) do
+			local tone = (m.class == "shared" and "info") or (m.class == "carried" and "warning") or "success"
+			local cells = {}
+			if m.choosable then
+				cells[#cells + 1] = button(m.chosen and _("On") or _("Off"), function()
+					send({ action = "choose_mod", id = m.id, chosen = not m.chosen }, nil)
+				end, m.chosen and "primary" or "secondary", canAct and not playing, m.reason)
+			else
+				cells[#cells + 1] = button(_("Needed"), function() end, "secondary", false, m.reason)
+			end
+			cells[#cells + 1] = gap(10)
+			cells[#cells + 1] = label(m.name, m.choosable and "font-scale-body" or "font-scale-body, info")
+			cells[#cells + 1] = gap(8)
+			cells[#cells + 1] = badge(m.class == "shared" and _("every player needs it")
+				or m.class == "carried" and _("carried by the room") or _("only you see it"), tone)
+			rows[#rows + 1] = row(cells)
+			rows[#rows + 1] = gap(6)
+		end
+		if #rows == 0 then rows[1] = note(_("No mods installed besides the room's.")) end
+		local needs = {}
+		for _i, m in ipairs(state.room_mods or {}) do
+			local have = (m.have == "yes" and badge(_("You have it"), "success"))
+				or (m.have == "other_version" and badge(_("Another version"), "warning"))
+				or badge(_("You lack it"), "error")
+			needs[#needs + 1] = row({ label(m.id, "font-scale-body"), gap(6),
+				note(m.version ~= "" and ("v" .. m.version) or ""), gap(10), have })
+			needs[#needs + 1] = gap(4)
+		end
+		if (state.room_mods_more or 0) > 0 then
+			needs[#needs + 1] = note(string.format(_("and %d more"), state.room_mods_more))
+		end
+		local children = {
+			row({ button(_("Back"), function() modsS:set(false) end), gap(16),
+				heading(_("Your mods"), playing and _("The room's game has started: your choice holds for its next world.")
+					or _("Turn on the mods only you play with; the room's own every player needs.")) }),
+			builtin.ScrollArea{
+				meta = { styleSheet = style{ size = { WIDTH - 40, #needs > 0 and 200 or HEIGHT - 220 } } },
+				horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+				verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+				content = column(rows),
+			},
+		}
+		if #needs > 0 then
+			children[#children + 1] = gap(10)
+			children[#children + 1] = heading(_("The room's mods"), _("Every player needs these, from the room's start save."))
+			children[#children + 1] = builtin.ScrollArea{
+				meta = { styleSheet = style{ size = { WIDTH - 40, 140 } } },
+				horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+				verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+				content = column(needs),
+			}
+		end
+		return frame(_("Your mods"), status, column(children),
+			{ gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) })
+	end
+
+	-- The first page: connect, then Join or Host.
+	if page == "choose" then
 		local connecting = state.connection == "connecting"
 		local function connect()
 			local typed = name:get()
 			if typed == nil or typed:match("^%s*$") then typed = state.name end
 			send({ action = "connect", name = typed }, _("Connecting to ") .. serverName(state) .. "...")
 		end
-		return frame(
-			connecting and badge(_("Connecting"), "info") or badge(_("Not connected"), "warning"),
-			column({
-				heading(_("Play Transport Fever 3 together"),
-					string.format(_("Connect to %s, then create a room or join a friend's."), serverName(state))),
-				field(_("Your name, as the others see it"), name, state.name ~= "" and state.name or _("Your name"),
+		local top
+		if connected then
+			top = note(string.format(_("Online on %s. Join a room someone hosts, or host your own."), serverName(state)))
+		else
+			top = row({
+				label(_("Your name"), "font-scale-body"),
+				gap(8),
+				input(name, state.name ~= "" and state.name or _("Your name"), 260,
 					{ maxLength = 32, acceptOnFocusLoss = true }),
+				gap(10),
+				primary(connecting and _("Connecting...") or string.format(_("Connect to %s"), serverName(state)),
+					connect, canAct and not connecting and not busy),
+			})
+		end
+		return frame(
+			_("Play Transport Fever 3 together"),
+			status,
+			column({
+				top,
+				gap(24),
 				row({
-					primary(connecting and _("Connecting...") or string.format(_("Connect to %s"), serverName(state)),
-						connect, canAct and not connecting and not busy),
+					lobby.choiceCard(_("Join a room"),
+						_("Browse the public rooms, or join a friend's with its invite"),
+						"::/gui/menu/images/m05_ingame.tga", function() pageS:set("join") end, connected and canAct),
+					gap(24),
+					lobby.choiceCard(_("Host a room"),
+						_("Your room, from one of your saves: you start its game"),
+						"::/gui/menu/images/m02_ingame.tga", function() pageS:set("host") end, connected and canAct),
 				}),
 			}),
-			{ gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) }
+			{
+				connected and button(_("Disconnect"), disconnect, nil, canAct) or gap(1),
+				gui_react_util.makeHorizontalSpacer(),
+				button(_("Close"), onClose),
+			}
 		)
 	end
 
-	local status = row({
-		badge(_("Online"), "success"),
-		gap(8),
-		icon(ICON.player, 18),
-		gap(4),
-		label(tostring(state.name), "font-scale-body"),
-		note("  @ " .. serverName(state)),
-	})
+	local function joinBy(code, password)
+		code = (code or ""):gsub("%s", ""):upper()
+		if code == "" then
+			refusedS:set(_("Type the invite code a friend sent you."))
+			return
+		end
+		joiningS:set(nil)
+		send({ action = "join", invite = code, password = password or "" }, _("Joining the room..."))
+	end
 
-	local room = state.room
-	if not room then
-		-- Connected, no room: browse the public rooms, create one, or join
-		-- one by invite, one tab at a time.
-		local tab = tabS:old() or (focus == "join" and "invite" or "browse")
+	-- Join: the public rooms, as cards, and an invite.
+	if page == "join" then
+		local list = state.rooms
+		local found = list and list.list or {}
+		local at = list and list.page or 0
+		local function askPage(n)
+			listAtRef:set(0)
+			send({ action = "list_rooms", page = n }, nil)
+		end
+		local shown = {}
+		for _i, listed in ipairs(found) do
+			shown[#shown + 1] = lobby.roomCard(listed, function()
+				if listed.has_password then
+					joiningS:set({ invite = listed.invite, name = listed.name })
+				else
+					joinBy(listed.invite, "")
+				end
+			end, canAct and not busy)
+		end
+		local rows = {}
+		for first = 1, #shown, CARDS_PER_ROW do
+			local cells = {}
+			for i = first, math.min(first + CARDS_PER_ROW - 1, #shown) do
+				if i > first then cells[#cells + 1] = gap(12) end
+				cells[#cells + 1] = shown[i]
+			end
+			rows[#rows + 1] = row(cells)
+			rows[#rows + 1] = gap(12)
+		end
+		if #rows == 0 then
+			rows[1] = note(list and _("No public rooms right now. Host one, and make it public.")
+				or _("Asking the server for its rooms..."))
+		end
+		local children = {
+			row({
+				back("choose"),
+				gap(16),
+				heading(string.format(_("Public rooms on %s"), serverName(state)),
+					_("Click a room to join it.")),
+				gui_react_util.makeHorizontalSpacer(),
+				button(_("Previous"), function() askPage(at - 1) end, nil, canAct and at > 0),
+				gap(6),
+				button(_("Next"), function() askPage(at + 1) end, nil, canAct and list ~= nil and list.more),
+				gap(6),
+				button(_("Refresh"), function() askPage(at) end, nil, canAct),
+			}),
+			builtin.ScrollArea{
+				meta = { styleSheet = style{ size = { WIDTH - 40, HEIGHT - 290 } } },
+				horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+				verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+				content = column(rows),
+			},
+			gap(10),
+		}
+		local joining = joiningS:old()
+		if joining then
+			children[#children + 1] = row({
+				label(string.format(_("%s has a password:"), joining.name), "font-scale-body"),
+				gap(8),
+				input(joinPassword, _("Password"), 220, {
+					password = true, maxLength = 64,
+					onEnter = function(value) joinBy(joining.invite, value) end,
+				}),
+				gap(8),
+				primary(_("Join"), function() joinBy(joining.invite, joinPassword:get()) end, canAct and not busy),
+				gap(6),
+				button(_("Cancel"), function() joiningS:set(nil) end),
+			})
+		else
+			children[#children + 1] = row({
+				label(_("Or join with an invite:"), "font-scale-body"),
+				gap(8),
+				input(invite, "K7QM2X", 150, { maxLength = 128 }),
+				gap(8),
+				input(joinPassword, _("Password, if it has one"), 220, { password = true, maxLength = 64 }),
+				gap(8),
+				primary(_("Join room"), function() joinBy(invite:get(), joinPassword:get()) end, canAct and not busy),
+			})
+		end
+		return frame(_("Join a room"), status, column(children), {
+			modsButton(),
+			gui_react_util.makeHorizontalSpacer(),
+			button(_("Close"), onClose),
+		})
+	end
+
+	-- Host: the room's settings, and Create.
+	if page == "host" then
 		local rules = state.rules or {}
 		local rulesItems = {}
 		for i, offered in ipairs(rules) do
@@ -803,14 +1026,12 @@ function lobby.content(onClose, focus)
 			end
 			if pickedSave == "" and saves[1] then pickedSave = saves[1] end
 		end
-		pickedSaveRef:set(pickedSave)
 		local playersItems = {}
 		for n = MIN_PLAYERS, MAX_PLAYERS do
 			playersItems[#playersItems + 1] = { n, string.format(_("%d players"), n) }
 		end
 		local public = publicS:old() == "public"
 		local details = pickedSave ~= "" and lobby.saveDetails(pickedSave) or nil
-
 		local function create()
 			local named = roomName:get()
 			if named == nil or named:match("^%s*$") then
@@ -831,37 +1052,17 @@ function lobby.content(onClose, focus)
 			end
 			send(fields, _("Creating the room..."))
 		end
-		local function joinBy(code, password)
-			code = (code or ""):gsub("%s", ""):upper()
-			if code == "" then
-				refusedS:set(_("Type the invite code a friend sent you."))
-				return
-			end
-			joiningS:set(nil)
-			send({ action = "join", invite = code, password = password or "" }, _("Joining the room..."))
-		end
-
-		local tabs = {}
-		for _i, entry in ipairs({
-			{ "browse", _("Public rooms") },
-			{ "create", _("Create a room") },
-			{ "invite", _("Join with an invite") },
-		}) do
-			tabs[#tabs + 1] = button(entry[2], function() tabS:set(entry[1]) end,
-				entry[1] == tab and "primary" or "secondary")
-		end
-
-		local body
-		if tab == "create" then
-			local where = public
-				and (details and details.map ~= ""
-					and string.format(_("Listed for everyone on %s: %s, %s."), serverName(state),
-						lobby.climateName(details.map), details.year > 0 and tostring(details.year) or _("year unknown"))
-					or string.format(_("Listed for everyone on %s."), serverName(state)))
-				or _("Only players you send the invite to can find it.")
-			body = row({
+		local where = public
+			and (details and details.map ~= ""
+				and string.format(_("Listed for everyone on %s: %s, %s."), serverName(state),
+					lobby.climateName(details.map), details.year > 0 and tostring(details.year) or _("year unknown"))
+				or string.format(_("Listed for everyone on %s."), serverName(state)))
+			or _("Only players you send the invite to can find it.")
+		return frame(_("Host a room"), status, column({
+			row({ back("choose"), gap(16),
+				heading(_("Host a room"), _("You own it: you start its game, and can remove players.")) }),
+			row({
 				column({
-					heading(_("Create a room"), _("You own it: you start its game, and can remove players.")),
 					field(_("Room name"), roomName, string.format(_("%s's room"), state.name), { maxLength = 48 }),
 					choice(_("Start from this save"), pickedSave, saveItems, function(value) saveS:set(value) end,
 						pickedSave ~= "" and _("Every player's game loads it from the menu when you start.")
@@ -870,7 +1071,6 @@ function lobby.content(onClose, focus)
 				}, style{ size = { LEFT, AUTO } }),
 				gap(30),
 				column({
-					gap(40),
 					choice(_("Who can find it"), public and "public" or "private", {
 						{ "private", _("Private: invite only") },
 						{ "public", _("Public: in the room list") },
@@ -878,93 +1078,14 @@ function lobby.content(onClose, focus)
 					#rulesItems > 1 and choice(_("Rules"), pickedRules or rulesItems[1][1], rulesItems,
 						function(value) rulesS:set(value) end, explainRules) or gap(1),
 					field(_("Password (optional)"), createPassword, "", { password = true, maxLength = 64 }),
-					row({ primary(_("Create room"), create, canAct and not busy) }),
 				}, style{ size = { RIGHT, AUTO } }),
-			})
-		elseif tab == "invite" then
-			body = column({
-				heading(_("Join with an invite"), _("A friend's private room: ask them for its invite.")),
-				field(_("Invite code"), invite, "K7QM2X", { maxLength = 128 }),
-				field(_("Password (if the room has one)"), joinPassword, "", { password = true, maxLength = 64 }),
-				row({ primary(_("Join room"), function() joinBy(invite:get(), joinPassword:get()) end, canAct and not busy) }),
-			}, style{ size = { RIGHT, AUTO } })
-		else
-			local list = state.rooms
-			local found = list and list.list or {}
-			local page = list and list.page or 0
-			local function askPage(at)
-				listAtRef:set(0)
-				send({ action = "list_rooms", page = at }, nil)
-			end
-			local cards = {}
-			for _i, listed in ipairs(found) do
-				cards[#cards + 1] = lobby.roomCard(listed, function()
-					if listed.has_password then
-						joiningS:set({ invite = listed.invite, name = listed.name })
-					else
-						joinBy(listed.invite, "")
-					end
-				end, canAct and not busy)
-			end
-			local rows = {}
-			for first = 1, #cards, CARDS_PER_ROW do
-				local cells = {}
-				for i = first, math.min(first + CARDS_PER_ROW - 1, #cards) do
-					if i > first then cells[#cells + 1] = gap(12) end
-					cells[#cells + 1] = cards[i]
-				end
-				rows[#rows + 1] = row(cells)
-				rows[#rows + 1] = gap(12)
-			end
-			if #rows == 0 then
-				rows[1] = note(list and _("No public rooms right now. Create one, and make it public.")
-					or _("Asking the server for its rooms..."))
-			end
-			local children = {
-				row({
-					heading(string.format(_("Public rooms on %s"), serverName(state)),
-						_("Click a room to join it. Private rooms join with an invite.")),
-					gui_react_util.makeHorizontalSpacer(),
-					button(_("Previous"), function() askPage(page - 1) end, nil, canAct and page > 0),
-					gap(6),
-					button(_("Next"), function() askPage(page + 1) end, nil, canAct and list ~= nil and list.more),
-					gap(6),
-					button(_("Refresh"), function() askPage(page) end, nil, canAct),
-				}),
-				builtin.ScrollArea{
-					meta = { styleSheet = style{ size = { WIDTH - 40, HEIGHT - 250 } } },
-					horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
-					verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
-					content = column(rows),
-				},
-			}
-			local joining = joiningS:old()
-			if joining then
-				children[#children + 1] = gap(8)
-				children[#children + 1] = row({
-					label(string.format(_("%s has a password:"), joining.name), "font-scale-body"),
-					gap(8),
-					input(joinPassword, _("Password"), 220, {
-						password = true, maxLength = 64,
-						onEnter = function(value) joinBy(joining.invite, value) end,
-					}),
-					gap(8),
-					primary(_("Join"), function() joinBy(joining.invite, joinPassword:get()) end, canAct and not busy),
-					gap(6),
-					button(_("Cancel"), function() joiningS:set(nil) end),
-				})
-			end
-			body = column(children)
-		end
-		return frame(
-			status,
-			column({ row(spaced(tabs, 6)), gap(12), body }),
-			{
-				button(_("Disconnect"), function() send({ action = "disconnect" }, _("Disconnecting...")) end, nil, canAct),
-				gui_react_util.makeHorizontalSpacer(),
-				button(_("Close"), onClose),
-			}
-		)
+			}),
+		}), {
+			modsButton(),
+			gui_react_util.makeHorizontalSpacer(),
+			button(_("Close"), onClose),
+			primary(_("Create room"), create, canAct and not busy),
+		})
 	end
 
 	-- In a room: players on the left, chat on the right.
@@ -1070,7 +1191,7 @@ function lobby.content(onClose, focus)
 		}),
 	}, style{ size = { RIGHT, AUTO } })
 
-	local footer = {}
+	local footer = { modsButton() }
 	if confirm and confirm.kind == "leave" then
 		footer[#footer + 1] = label(_("Leave the room?"), "font-scale-body, warning")
 		footer[#footer + 1] = button(_("Leave"), function() send({ action = "leave" }, _("Leaving the room...")) end,
@@ -1102,7 +1223,7 @@ function lobby.content(onClose, focus)
 		end
 	end
 
-	return frame(status, row({ players, gap(30), chat }), footer)
+	return frame(_("Your room"), status, row({ players, gap(30), chat }), footer)
 end
 
 -- The live line under a Multiplayer card on the main menu, from the lobby

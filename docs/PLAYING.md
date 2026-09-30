@@ -131,21 +131,25 @@ window too.
    the right of its own: **Multiplayer**, which says under its title where
    you are (not connected, online on EU, your room and how many are ready),
    and **Join a friend**. The top bar has a **Multiplayer** button too,
-   next to Settings. Each opens the Multiplayer window; **Join a friend**
-   opens it with joining first. The window shows the steps along its top:
-   connect, create or join a room, get ready, start, play.
-3. **Connect.** Type the name others will see, or keep the one the
-   launcher remembers, and press **Connect to EU**. The server is the
-   launcher's; there is none to type.
-4. **Find a room, create one, or join with an invite**: three tabs.
-   - **Public rooms** (the first): the rooms their owners made public, as
-     cards like the main menu's, each with the picture of its map's
-     climate, its name, players out of its limit, companies and the
-     game's year, **Playing** once its game runs, and a lock if it has a
-     password. Click one to join it; one with a password asks for it
-     first. **Previous**, **Next** and **Refresh** page through the list,
-     which also refreshes itself every ten seconds.
-   - **Create a room**: a **room name** (your name's room if you leave it
+   next to Settings. Each opens the Multiplayer window, one page at a
+   time; **Join a friend** opens it on the Join page.
+3. **Connect.** The first page: type the name others will see, or keep the
+   one the launcher remembers, and press **Connect to EU** (the server is
+   the launcher's; there is none to type). Then it offers two big cards:
+   **Join a room** and **Host a room**. Each opens its page, and **Back**
+   returns to this one.
+4. **Join a room, or host one.**
+   - **Join a room**: the rooms their owners made public, as cards like
+     the main menu's, each with the picture of its map's climate, its
+     name, players out of its limit, companies and the game's year,
+     **Playing** once its game runs, and a lock if it has a password.
+     Click one to join it; one with a password asks for it first.
+     **Previous**, **Next** and **Refresh** page through the list, which
+     also refreshes itself every ten seconds. Under it, **Or join with an
+     invite**: the **invite code** a friend sent you, such as `K7QM2X`
+     (upper or lower case), the room's password if it has one, and **Join
+     room**. A private room is joined only this way.
+   - **Host a room**: a **room name** (your name's room if you leave it
      empty); **Start from this save**, one of your saves, newest first, or
      **None: I load a world myself**; **Players**, 2 to 16; **Who can find
      it**: **Private**, invite only (the default), or **Public**, in the
@@ -154,10 +158,12 @@ window too.
      economy, as in single player; a description says what the others
      are); and an optional **password**. Then **Create room**. You own the
      room: you start its game and can remove players.
-   - **Join with an invite** (what **Join a friend** opens): the **invite
-     code** a friend sent you, such as `K7QM2X` (upper or lower case), the
-     room's **password** if it has one, and **Join room**. A private room
-     is joined only this way.
+   - **Your mods**, at the bottom of both pages and of the room's: the
+     mods you have installed. Turn on or off those only you play with
+     (only you see them); those every player needs are marked so and stay
+     as the room has them. In a room, it also lists the room's own mods,
+     from its start save, and whether you have each. You can change your
+     choice until the room's game starts.
 5. **The room.** On the left, the room's name (a lock if it has a
    password), its **invite code** to send your friends, and its players,
    each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
@@ -180,7 +186,7 @@ window too.
 
 What the window says:
 
-- A line under the steps says what is under way ("Creating the room...")
+- A line under the page's title says what is under way ("Creating the room...")
   until the launcher answers, then what happened. Anything refused, such
   as a wrong invite, a full room or a name that is too long, shows in red
   there, and the button can be pressed again.
