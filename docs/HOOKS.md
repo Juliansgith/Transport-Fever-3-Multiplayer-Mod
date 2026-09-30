@@ -1528,6 +1528,21 @@ over at their addresses in the process. Piece 1 has run in the game
 (2026-09-30, three games of one room, below) and was rebuilt from what that
 showed; what follows marks what is tested only off the game.
 
+**The game scripts' `math.random` is never reseeded through a Lua state the
+hook remembers** (changed twice on 2026-09-30). The first cut called
+`math.randomseed` from `ecs::Engine::Update` in every state its registrar
+detour had marked, assuming two per world. A world load makes and frees
+many, one registration group per loader thread; after a rebase the roster
+held two freed states, and the next reseed crashed the game in
+`lua_getfield`. The second had the mod's game script seed its own state at
+the start of its `update` (`tpf3mp_native.seed`, `seeds::current_seed`):
+safe, but the game runs its game scripts on a pool of states (piece 1), so
+that seeded only the state the mod's script ran in that update, not the one
+`reforestation.script.tl` ran in. Now the hook reseeds each script call in
+the state the engine hands that call, on the thread about to run it (piece
+1). The registrar detour is gone; the mod's own call stays and adds
+nothing.
+
 `crates/tpf3mp-hook/src/seeds.rs` is TF3's counterpart for the seeds the
 survey (`investigation/TPF3_RNG_2026-09-29.md`, items 5 to 7) found are
 not functions of the room's state. Three independent pieces, each failing

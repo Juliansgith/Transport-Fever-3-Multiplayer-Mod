@@ -200,6 +200,15 @@ function Link:world()
 	pcall(self.native.world)
 end
 
+-- The seed for math.randomseed in this update: the room step's, or nil
+-- outside the room's steps (or from a hook without it).
+function Link:seed()
+	if type(self.native.seed) ~= "function" then return nil end
+	local ok, seed = pcall(self.native.seed)
+	if ok and type(seed) == "number" then return seed end
+	return nil
+end
+
 -- Whether this update is the last of a batch that ends at a checkpoint:
 -- the world's lanes are read now, after it.
 function Link:checkpoint()

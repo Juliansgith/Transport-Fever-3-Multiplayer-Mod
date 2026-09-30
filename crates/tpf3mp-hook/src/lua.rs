@@ -604,6 +604,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"world", native_world),
                 (b"room", native_room),
                 (b"checkpoint", native_checkpoint),
+                (b"seed", native_seed),
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
                 (b"built", native_built),
@@ -1202,6 +1203,24 @@ unsafe extern "C-unwind" fn native_checkpoint(l: State) -> c_int {
     };
     // SAFETY: a C function's stack has LUA_MINSTACK free slots.
     unsafe { (api.pushboolean)(l, c_int::from(due)) };
+    1
+}
+
+/// `seed()`: the seed for `math.randomseed` in the running update, the
+/// room step's (`crate::seeds::current_seed`), or nil outside the room's
+/// steps. The game script asks at the start of its `update` and seeds its
+/// own state, on the game's thread.
+unsafe extern "C-unwind" fn native_seed(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        match crate::seeds::current_seed() {
+            Some(seed) => (api.pushnumber)(l, f64::from(seed)),
+            None => (api.pushnil)(l),
+        }
+    }
     1
 }
 
