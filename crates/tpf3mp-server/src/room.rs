@@ -2116,13 +2116,22 @@ impl Room {
         }
         game.saves.wanted = waiting;
         let offered = game.saves.current.as_ref().map(Agreed::id);
+        let mut slow = Vec::new();
         for (index, (feed, stream_from)) in feeds {
             let member = &mut self.members[index];
             let Some(link) = &member.link else {
                 continue;
             };
+            let was_streaming = member.streaming;
             member.streaming = link.turns.try_send(feed).is_ok();
             if !member.streaming {
+                // A member already playing whose queue is full would get
+                // neither its old stream nor the world: as any slow
+                // consumer, it is disconnected, reconnects and is handed
+                // the world then.
+                if was_streaming {
+                    slow.push(index);
+                }
                 continue;
             }
             if matches!(member.needs, Needs::Rebase { .. }) {
@@ -2138,6 +2147,9 @@ impl Room {
                 member.pace = Pace::CatchingUp(None);
             }
             member.stream_from = stream_from;
+        }
+        for index in slow {
+            self.drop_link(index, true);
         }
     }
 
