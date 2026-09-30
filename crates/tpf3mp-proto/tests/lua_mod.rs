@@ -2934,3 +2934,313 @@ fn a_window_hears_of_what_its_command_made_once_its_world_has_it() {
          is answered as failed"
     );
 }
+
+/// The GUI of a room with vehicles 500 and 501 bound to ids 3 and 4, each a
+/// locomotive (model 41, bought at game time 1000) and a coach (model 42,
+/// bought at 2000), as their TRANSPORT_VEHICLE components have them; 502 is
+/// a vehicle the registry has no id for.
+const FAKE_TRAINS_GUI: &str = r#"
+api.cmd.makeVehicleReplaceCmd = function(vehicle, config)
+    return { kind = 'replace', vehicle = vehicle, config = config }
+end
+api.type = { ComponentType = { GAME_SCRIPT = 7, TRANSPORT_VEHICLE = 4 } }
+local function train()
+    return { transportVehicleConfig = { vehicles = {
+        { part = { modelId = 41 }, purchaseTime = 1000 },
+        { part = { modelId = 42 }, purchaseTime = 2000 },
+    } } }
+end
+api.engine = {
+    getComponent = function(e, kind)
+        if kind == 7 and e == 77 then return { state = { registry = {
+            vehicles = { next = 5, bound = { { 3, 500 }, { 4, 501 } } },
+            lines = { next = 0, bound = {} }, groups = { next = 0, bound = {} } } } } end
+        if kind == 4 and (e == 500 or e == 501 or e == 502) then return train() end
+    end,
+    system = {
+        gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == 'tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs' then return 77 end return -1 end },
+    },
+}
+local NAMES = { [41] = 'vehicle/train/loco.mdl', [42] = 'vehicle/waggon/coach.mdl' }
+api.res = { modelRep = { getName = function(id) return NAMES[id] end } }
+-- A part as the store hands it on: the vehicle's own, or new, bought at
+-- the GUI's game time (HandleVehicleChanges sets it before it sends).
+function PART(model, purchased, reversed)
+    return { part = { modelId = model, reversed = reversed == true,
+                      compartment2loadConfig = { { loadConfigIndex = 0, cargoTypeId = 0 } },
+                      color = { x = 1, y = 0.5, z = 0 } },
+             purchaseTime = purchased, autoLoadConfig = { true } }
+end
+"#;
+
+/// The GUI with FAKE_TRAINS_GUI, in the room's game.
+fn trains_gui() -> Lua {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(FAKE_TRAINS_GUI).exec().unwrap();
+    lua.load("M = mount(loadPlugin()) M.step() HOOK.room = true")
+        .exec()
+        .unwrap();
+    lua
+}
+
+#[test]
+fn a_group_replacement_goes_to_the_room_vehicle_by_vehicle_by_canonical_ids() {
+    let lua = trains_gui();
+    // The vehicle window's "modify" on two trains at once, as
+    // vehicle_react_util.tl sends it: one command per vehicle, no callback.
+    // The first keeps its locomotive (turned round) and coach and gets a
+    // new coach; the second has its own two parts the other way round.
+    lua.load(
+        "local first = { vehicles = { PART(41, 1000, true), PART(42, 2000), PART(42, 5000) }, \
+                         vehicleGroups = { 1, 1, 1 }, muFileNames = { '', '', '' } } \
+         local second = { vehicles = { PART(42, 2000), PART(41, 1000) }, \
+                          vehicleGroups = { 1, 1 }, muFileNames = { '', '' } } \
+         api.cmd.sendCommand(api.cmd.makeVehicleReplaceCmd(500, first)) \
+         api.cmd.sendCommand(api.cmd.makeVehicleReplaceCmd(501, second)) \
+         M.step()",
+    )
+    .exec()
+    .unwrap();
+    let (handed, sent): (usize, usize) = lua.load("return #HOOK.commands, #SENT").eval().unwrap();
+    assert_eq!(handed, 2, "every vehicle of the group goes to the room");
+    assert_eq!(sent, 0, "none is sent here: the room orders it");
+    let captured: String = lua
+        .load(
+            "local out = {} \
+             for _, c in ipairs(HOOK.commands) do \
+                 local r = c.ReplaceVehicle local parts = {} \
+                 for _, p in ipairs(r.consist) do \
+                     parts[#parts + 1] = p.part.model .. (p.part.reversed and '<' or '>') \
+                         .. tostring(p.kept) end \
+                 out[#out + 1] = r.vehicle .. '=' .. table.concat(parts, ',') \
+                     .. '/' .. #r.groups .. '/' .. r.consist[1].part.color.g end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        captured,
+        "3=vehicle/train/loco.mdl<0,vehicle/waggon/coach.mdl>1,vehicle/waggon/coach.mdl>nil/3/0.5 \
+         4=vehicle/waggon/coach.mdl>1,vehicle/train/loco.mdl>0/2/0.5",
+        "by canonical id; a part the vehicle has is kept by its index, a bought one is new"
+    );
+}
+
+#[test]
+fn a_replacement_the_room_cannot_name_is_refused_with_why() {
+    let lua = trains_gui();
+    // A vehicle with no canonical id; a model with no name; no parts.
+    lua.load(
+        "CALLED = nil \
+         api.cmd.sendCommand(api.cmd.makeVehicleReplaceCmd(502, { vehicles = { PART(41, 1000) }, \
+             vehicleGroups = { 1 }, muFileNames = { '' } }), function(_, ok) CALLED = ok end) \
+         api.cmd.sendCommand(api.cmd.makeVehicleReplaceCmd(500, { vehicles = { PART(99, 5000) }, \
+             vehicleGroups = { 1 }, muFileNames = { '' } })) \
+         api.cmd.sendCommand(api.cmd.makeVehicleReplaceCmd(500, { vehicles = {}, \
+             vehicleGroups = {}, muFileNames = {} })) \
+         M.step()",
+    )
+    .exec()
+    .unwrap();
+    let (handed, sent, called): (usize, usize, bool) = lua
+        .load("return #HOOK.commands, #SENT, CALLED")
+        .eval()
+        .unwrap();
+    assert_eq!((handed, sent), (0, 0), "nothing goes anywhere");
+    assert!(!called, "a callback hears it failed");
+    assert_eq!(
+        shown(&lua).as_deref(),
+        Some("Not in multiplayer yet: replacing vehicles")
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for why in [
+        "(1 so far): a vehicle the room cannot name",
+        "(2 so far): a vehicle model the room cannot name",
+        "(3 so far): a replacement of no vehicles",
+    ] {
+        let line = format!("refused the player's makeVehicleReplaceCmd in the room's game {why}");
+        assert!(logged.contains(&line), "{line} not in {logged:?}");
+    }
+}
+
+#[test]
+fn a_replacement_with_a_callback_hears_the_vehicle_as_it_is_after() {
+    let lua = trains_gui();
+    lua.load(
+        "api.engine.entityExists = function() return true end \
+         HEARD = nil \
+         api.cmd.sendCommand(api.cmd.makeVehicleReplaceCmd(500, { vehicles = { PART(41, 1000) }, \
+             vehicleGroups = { 1 }, muFileNames = { '' } }), function(data, ok, entities) \
+             HEARD = data.vehicleEntity .. ':' .. tostring(ok) .. ':' .. entities[1][1] \
+                 .. ':' .. #data.config.vehicles end) \
+         M.step() \
+         HOOK.results = { { ticket = 1, ok = true, entity = 500 } } M.step()",
+    )
+    .exec()
+    .unwrap();
+    let heard: String = lua.load("return HEARD").eval().unwrap();
+    assert_eq!(heard, "500:true:500:1");
+}
+
+/// FAKE_FLEET's vehicle 401 as a train: a locomotive (model 41) bought at
+/// 1000 and worn to 0.7, and a coach (42). A replacement is sent as the
+/// game's command; REPLACE_AS makes the game give the vehicle a new entity.
+const FAKE_TRAINS: &str = r#"
+REPLACE_AS = nil
+OWN = { [401] = {
+    { part = { modelId = 41 }, purchaseTime = 1000, maintenanceState = 0.7, maintenanceChange = 0.01 },
+    { part = { modelId = 42 }, purchaseTime = 2000, maintenanceState = 0.9, maintenanceChange = 0.02 },
+} }
+local component = api.engine.getComponent
+api.engine.getComponent = function(e, kind)
+    local c = component(e, kind)
+    if c and kind == api.type.ComponentType.TRANSPORT_VEHICLE then
+        c.transportVehicleConfig = { vehicles = OWN[e] or {} }
+    end
+    return c
+end
+local find = api.res.modelRep.find
+api.res.modelRep.find = function(name)
+    if name == 'vehicle/train/loco.mdl' then return 41 end
+    if name == 'vehicle/waggon/coach.mdl' then return 42 end
+    return find(name)
+end
+api.cmd.makeVehicleReplaceCmd = function(vehicle, config)
+    return { replace = { vehicle = vehicle, config = config }, vehicleEntity = vehicle }
+end
+local send = api.cmd.sendCommand
+api.cmd.sendCommand = function(command, ...)
+    if command.replace and REPLACE_AS then
+        for i, e in ipairs(VEHICLES) do
+            if e == command.replace.vehicle then table.remove(VEHICLES, i) break end
+        end
+        VEHICLES[#VEHICLES + 1] = REPLACE_AS
+        command.made = REPLACE_AS
+    end
+    send(command, ...)
+end
+"#;
+
+/// A replacement of `vehicle`: its locomotive kept (as part `kept`) and
+/// turned, as `loco`; its coach left out, and a new coach of model `coach`.
+fn replace_train(vehicle: u32, loco: &str, kept: u32, coach: &str) -> String {
+    format!(
+        "{{ ReplaceVehicle = {{ vehicle = {vehicle}, \
+            consist = {{ \
+                {{ part = {{ model = '{loco}', reversed = true, loads = {{}}, \
+                            color = {{ r = 1, g = 0, b = 0 }} }}, kept = {kept} }}, \
+                {{ part = {{ model = '{coach}', reversed = false, \
+                            loads = {{ {{ config = 1, cargo = 0 }} }}, color = {{ r = 0, g = 0, b = 1 }} }} }} }}, \
+            groups = {{ 1, 1 }}, multiple_units = {{ '', '' }} }} }}"
+    )
+}
+
+const LOCO: &str = "vehicle/train/loco.mdl";
+const COACH: &str = "vehicle/waggon/coach.mdl";
+
+/// The game script in a room whose first update bound 401 and 402 to
+/// vehicles 0 and 1, with `setup` run before the room orders `batch`.
+fn replay(setup: &str, batch: &[String]) -> Lua {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(FAKE_TRAINS).exec().unwrap();
+    lua.load(format!(
+        "HOOK.room = true UPDATE({{}}, STATE, 0.2) {setup} \
+         HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+        batch.join(", ")
+    ))
+    .exec()
+    .unwrap();
+    lua
+}
+
+#[test]
+fn every_game_replaces_the_vehicle_with_its_own_parts_kept_and_new_ones_bought() {
+    let lua = replay("", &[replace_train(0, LOCO, 0, COACH)]);
+    let sent: String = lua
+        .load(
+            "local r = SENT[1].replace local out = { r.vehicle } \
+             for _, p in ipairs(r.config.vehicles) do \
+                 out[#out + 1] = p.part.modelId .. (p.part.reversed and '<' or '>') .. p.purchaseTime \
+                     .. '@' .. tostring(p.maintenanceState) .. '/' .. tostring(p.autoLoadConfig[1]) end \
+             out[#out + 1] = r.config.vehicleGroups[2] .. r.config.muFileNames[2] \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        sent, "401 41<1000@0.7/nil 42>777000@nil/true 1",
+        "the locomotive keeps its purchase time and wear, turned as the player chose; \
+         the coach is bought now"
+    );
+    let (applied, id, next, logged): (String, u32, u32, Vec<String>) = lua
+        .load(
+            "local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua') \
+             local reg = STATE.value.registry local a = HOOK.applied[1] \
+             return tostring(a.ok) .. ':' .. tostring(a.entity), registry.id(reg, 'vehicles', 401), \
+                 reg.vehicles.next, HOOK.logged",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(applied, "true:401", "the vehicle is itself still");
+    assert_eq!((id, next), (0, 2), "it keeps its id; no id is used up");
+    assert!(
+        logged.contains(&"replacing vehicle 0 (entity 401): 2 part(s), 1 kept".to_owned()),
+        "{logged:?}"
+    );
+}
+
+#[test]
+fn a_vehicle_the_game_makes_anew_keeps_its_id() {
+    let lua = replay("REPLACE_AS = 450", &[replace_train(0, LOCO, 0, COACH)]);
+    let named: String = lua
+        .load(
+            "local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua') \
+             local reg = STATE.value.registry \
+             return table.concat({ tostring(HOOK.applied[1].entity), registry.id(reg, 'vehicles', 450), \
+                 tostring(registry.id(reg, 'vehicles', 401)), registry.id(reg, 'vehicles', 402), \
+                 reg.vehicles.next }, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        named, "450 0 nil 1 2",
+        "vehicle-0 names the new entity; the old is gone, and no new id is made"
+    );
+}
+
+#[test]
+fn a_replacement_that_does_not_fit_this_world_is_applied_nowhere() {
+    // Keeping a part of another model, a part the vehicle does not have; a
+    // model this game lacks; a vehicle with no id.
+    let lua = replay(
+        "",
+        &[
+            replace_train(0, COACH, 0, COACH),
+            replace_train(0, LOCO, 5, COACH),
+            replace_train(0, LOCO, 0, "vehicle/waggon/tender.mdl"),
+            replace_train(9, LOCO, 0, COACH),
+        ],
+    );
+    let (sent, why): (usize, Vec<String>) = lua
+        .load(
+            "local why = {} for _, a in ipairs(HOOK.applied) do \
+                 why[#why + 1] = tostring(a.ok) .. ': ' .. tostring(a.why) end \
+             return #SENT, why",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(sent, 0, "nothing sent");
+    assert_eq!(
+        why,
+        [
+            "false: part 1 keeps a part of another model",
+            "false: part 1 keeps a part the vehicle does not have",
+            "false: no vehicle model vehicle/waggon/tender.mdl",
+            "false: no vehicles 9 in this world",
+        ]
+    );
+}

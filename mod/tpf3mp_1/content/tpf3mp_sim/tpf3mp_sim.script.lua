@@ -133,13 +133,26 @@ function data()
 				if work.actions then l:replaying(true) end
 				for i, action in ipairs(work.actions or {}) do
 					local ok, why, made = apply.run(action, { registry = reg })
+					local name = next(action)
+					-- What it changed keeps its id on whatever entity it is
+					-- now, bound before the sync would retire it.
+					local keeps = ok and apply.KEEPS[name] or nil
+					if keeps then
+						local id = type(action[name]) == "table" and action[name][keeps.field]
+						if made then
+							registry.rebind(reg, keeps.kind, id, made)
+						else
+							l:log("action " .. i .. " of this step left " .. keeps.kind .. " " .. tostring(id)
+								.. " as nothing this game could name")
+						end
+					end
 					-- What it made, bound at once, for the player who ordered
 					-- it: as the game answered the command, else as the
 					-- registry found it.
-					local kind = ok and apply.CREATES[next(action)] or nil
+					local kind = ok and apply.CREATES[name] or nil
 					local fresh
 					reg, fresh = registry.sync(reg, (kind and made) and { [kind] = { made } } or nil)
-					local entity = kind and made or nil
+					local entity = (kind or keeps) and made or nil
 					for _, f in ipairs((kind and not entity) and fresh or {}) do
 						if f[1] == kind then entity = f[3] break end
 					end

@@ -25,8 +25,8 @@ use tpf3mp_proto::{
     Event, EventBody, FixedBytes, LaneDigest, PlayerId,
     action::{
         Action, Bulldoze, CompanyId, CompanyOp, ConstructionBuild, ConstructionRef, EdgeEnds,
-        LineChange, LineId, LoanOp, Network, Polyline, Pos, Resolve, Structure, Terraform,
-        VehicleChange,
+        LineChange, LineId, LoanOp, Network, Polyline, Pos, ReplaceVehicle, Resolve, Structure,
+        Terraform, VehicleChange,
     },
 };
 
@@ -407,6 +407,7 @@ impl State {
                 }
                 Ok(())
             }
+            Action::ReplaceVehicle(replace) => self.replace(replace, company),
             Action::PlaceStop(stop) => {
                 let key = self.find_edge(net(stop.edge.network), &stop.edge.ends)?;
                 let at = p(&stop.at);
@@ -857,6 +858,71 @@ impl State {
         }
     }
 
+    /// A vehicle's consist swapped for another, as TF3's vehicle window
+    /// does: the company's own vehicle, a consist of cars whose groups add
+    /// up to it, each kept car one of the vehicle's own of the same model,
+    /// kept once. New cars are paid for, cars left out are sold at half; the
+    /// vehicle keeps its id and its line.
+    fn replace(&mut self, replace: &ReplaceVehicle, company: u32) -> Result<(), Refusal> {
+        let [id] = self.own_vehicles(std::iter::once(replace.vehicle.0), company)?[..] else {
+            unreachable!("one vehicle named, one checked")
+        };
+        if replace.consist.is_empty() {
+            refuse!("a replacement of no cars");
+        }
+        let grouped: usize = replace.groups.iter().map(|g| usize::from(*g)).sum();
+        if grouped != replace.consist.len() || replace.groups.contains(&0) {
+            refuse!(
+                "groups of {grouped} cars for a consist of {}",
+                replace.consist.len()
+            );
+        }
+        if replace.multiple_units.len() != replace.groups.len() {
+            refuse!(
+                "{} multiple units for {} groups",
+                replace.multiple_units.len(),
+                replace.groups.len()
+            );
+        }
+        let old = &self.vehicles[&id].consist;
+        let mut kept = BTreeSet::new();
+        for (index, part) in replace.consist.iter().enumerate() {
+            let Some(from) = part.kept else { continue };
+            match old.get(usize::from(from)) {
+                None => refuse!("car {index} keeps car {from}, which vehicle-{id} does not have"),
+                Some(model) if model != part.part.model.as_str() => {
+                    refuse!(
+                        "car {index} keeps car {from}, a {model}, as a {}",
+                        part.part.model
+                    )
+                }
+                Some(_) => {}
+            }
+            if !kept.insert(from) {
+                refuse!("car {from} kept twice");
+            }
+        }
+        let bought = i64::try_from(replace.consist.len() - kept.len()).unwrap_or(i64::MAX);
+        let sold = i64::try_from(old.len() - kept.len()).unwrap_or(i64::MAX);
+        // Net of what the cars left out bring: a negative charge pays in.
+        self.charge(
+            company,
+            VEHICLE_COST
+                .saturating_mul(bought)
+                .saturating_sub(VEHICLE_COST.saturating_mul(sold) / 2),
+        )?;
+        let vehicle = self.vehicles.get_mut(&id).expect("checked above");
+        vehicle.consist = replace
+            .consist
+            .iter()
+            .map(|part| part.part.model.as_str().to_owned())
+            .collect();
+        vehicle.load = vehicle
+            .load
+            .min(CAR_CAPACITY.saturating_mul(u32::try_from(vehicle.consist.len()).unwrap_or(0)));
+        Ok(())
+    }
+
     fn own_vehicles(
         &self,
         ids: impl Iterator<Item = u32>,
@@ -1237,6 +1303,87 @@ mod tests {
         );
         assert_eq!(world.observe().money[0], Some(START_MONEY));
         assert_eq!(world.ignored().len(), 1);
+    }
+
+    /// A replacement is the company's own vehicle's, keeps only cars the
+    /// vehicle has, each once and of its own model, and pays for the cars it
+    /// buys net of those it leaves out; the vehicle keeps its id.
+    #[test]
+    fn a_replacement_keeps_the_vehicles_own_cars_and_pays_for_new_ones() {
+        use crate::regress::library::{
+            BUS_DEPOT, LOCOMOTIVE, WAGON, at, buy, construction, replace,
+        };
+
+        let (one, two) = (PlayerId(FixedBytes([1; 32])), PlayerId(FixedBytes([2; 32])));
+        let mut world = ModelWorld::new(1);
+        for (seq, (player, name)) in [(one, "p1"), (two, "p2")].into_iter().enumerate() {
+            world.apply(&event(
+                seq as u64 + 1,
+                EventBody::PlayerJoined {
+                    player,
+                    name: Text::new(name).unwrap(),
+                    platform: Platform::current(),
+                },
+            ));
+        }
+        act(
+            &mut world,
+            3,
+            one,
+            &construction(BUS_DEPOT, at(0, 0), "Yard"),
+        );
+        act(
+            &mut world,
+            4,
+            one,
+            &buy(BUS_DEPOT, at(0, 0), &[LOCOMOTIVE, WAGON]),
+        );
+        let money = world.observe().money[0].unwrap();
+        let refusals = [
+            // Someone else's vehicle; one that is not there.
+            (two, replace(0, &[(LOCOMOTIVE, Some(0))])),
+            (one, replace(5, &[(LOCOMOTIVE, Some(0))])),
+            // No cars; a car the vehicle does not have; another model kept;
+            // a car kept twice.
+            (one, replace(0, &[])),
+            (one, replace(0, &[(LOCOMOTIVE, Some(2))])),
+            (one, replace(0, &[(WAGON, Some(0))])),
+            (one, replace(0, &[(WAGON, Some(1)), (WAGON, Some(1))])),
+        ];
+        for (seq, (player, action)) in refusals.iter().enumerate() {
+            act(&mut world, 5 + seq as u64, *player, action);
+        }
+        let why: Vec<String> = world.ignored().iter().map(|(_, w)| w.clone()).collect();
+        assert_eq!(
+            why,
+            [
+                "vehicle-0 is company-0's".to_owned(),
+                "no vehicle-5".to_owned(),
+                "a replacement of no cars".to_owned(),
+                "car 0 keeps car 2, which vehicle-0 does not have".to_owned(),
+                format!("car 0 keeps car 0, a {LOCOMOTIVE}, as a {WAGON}"),
+                "car 1 kept twice".to_owned(),
+            ]
+        );
+        assert_eq!(
+            world.observe().money[0],
+            Some(money),
+            "refusals cost nothing"
+        );
+        // The locomotive kept, the coach left out, two new coaches: two
+        // bought, one sold at half.
+        act(
+            &mut world,
+            20,
+            one,
+            &replace(0, &[(LOCOMOTIVE, Some(0)), (WAGON, None), (WAGON, None)]),
+        );
+        assert_eq!(world.ignored().len(), 6, "{:?}", world.ignored());
+        assert_eq!(
+            world.observe().money[0],
+            Some(money - 2 * VEHICLE_COST + VEHICLE_COST / 2)
+        );
+        assert_eq!(world.state.vehicles[&0].consist.len(), 3);
     }
 
     /// A street drawn onto another's middle, as TF3's street tool proposes

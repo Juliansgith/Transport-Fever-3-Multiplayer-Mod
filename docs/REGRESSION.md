@@ -106,7 +106,7 @@ actions, which the `refusals` scenario checks one reason at a time.
 
 Scenarios live in `crates/tpf3mp-testkit/src/regress/library.rs`, built
 with small helpers (`road`, `track`, `construction`, `buy`, `line`,
-`assign`, `place_stop`, `bulldoze_*`, `terraform`, `company`):
+`assign`, `replace`, `place_stop`, `bulldoze_*`, `terraform`, `company`):
 
 ```rust
 Script::default()

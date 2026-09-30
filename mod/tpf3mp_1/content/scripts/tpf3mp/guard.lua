@@ -66,6 +66,7 @@ guard.CARRY = {
 		error("the " .. tostring(id) .. " script's " .. tostring(name) .. " event", 0)
 	end,
 	makeVehicleBuyCmd = by("vehicleBuy"),
+	makeVehicleReplaceCmd = by("vehicleReplace"),
 	makeVehicleSetLineCmd = by("vehicleSetLine"),
 	makeVehicleSellCmd = by("vehicleSell"),
 	makeVehicleSetStoppedByUserCmd = by("vehicleStop"),
@@ -86,6 +87,12 @@ guard.RESULT = {
 		return { resultVehicleEntity = entity, playerEntity = args[1], depotEntity = args[2], config = args[3] }
 	end,
 	makeLineCreateCmd = function(entity) return { resultEntity = entity } end,
+	-- The game's windows send a replacement without a callback (build 40408,
+	-- vehicle_react_util.tl); one that has one hears the vehicle as it is
+	-- after (VehicleReplaceCommandData, api/tealdef/api/cmd.d.tl).
+	makeVehicleReplaceCmd = function(entity, args)
+		return { vehicleEntity = entity, config = args[2] }
+	end,
 }
 
 -- What the player is told a refused kind is, where "this" would not do.

@@ -1000,7 +1000,24 @@ reference of its own to either. Once linked, the GUI wraps every
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
     file and position, the consist part by part, as the store configured
     it), selling, putting on a line, and the vehicle window's stop, start,
-    to the depot (sold there or not), reverse and depart;
+    to the depot (sold there or not), reverse and depart; replacing
+    (`makeVehicleReplaceCmd`, the vehicle window's "modify" and the store's
+    "replace", `ReplaceVehicle`). The store sends one command per vehicle,
+    a group's vehicles one by one, and none with a callback
+    (`vehicle_react_util.tl`, `HandleVehicleChanges`, build 40408); a
+    vehicle whose new consist is empty it sells instead. A part the player
+    left in the consist is the vehicle's own, its purchase time kept; the
+    store bought the rest (purchase time 0, set to the GUI's game time
+    before it sends). So the capture marks a part kept when it is one of
+    the vehicle's own of the same model and purchase time, each matched
+    once, and every game gives a kept part the purchase time and wear it
+    has there, a new one the game time of the update it applies in. The
+    vehicle keeps its canonical id: the game script binds the id to the
+    entity the vehicle is after the command (the command's result
+    entities, its data's `vehicleEntity`, else the vehicle itself; TF3's
+    API says the vehicle is replaced and its command data has no result
+    field, so the same entity is INFERRED), before the registry's sync
+    would retire it;
   - lines: creating, changing (the line whole, as the line manager built
     it: stops, terminals, loading rules), deleting, renaming and
     recolouring.

@@ -10,9 +10,9 @@ use tpf3mp_proto::{
         Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConsistPart,
         ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeRef, EditLine, LineChange,
         LineData, LineId, LineStop, Link, LoadMode, Network, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
-        Terminal, Terraform, TerrainCell, Tint, TrackBuild, Tram, Transform, UnitDir, VehicleId,
-        Vertex,
+        Polyline, Pos, Pos2, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
+        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TrackBuild, Tram,
+        Transform, UnitDir, VehicleId, Vertex,
     },
 };
 
@@ -164,6 +164,30 @@ pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
                     reversed: false,
                     loads: BoundedVec::empty(),
                     color: Tint { r: 0, g: 0, b: 0 },
+                })
+                .collect(),
+        ),
+        groups: list(vec![u8::try_from(consist.len()).expect("a short consist")]),
+        multiple_units: list(vec![text("")]),
+    })
+}
+
+/// A vehicle's consist replaced: each car a model and, for one the vehicle
+/// has already, the index of the car it keeps.
+pub fn replace(vehicle: u32, consist: &[(&str, Option<u8>)]) -> Action {
+    Action::ReplaceVehicle(ReplaceVehicle {
+        vehicle: VehicleId(vehicle),
+        consist: list(
+            consist
+                .iter()
+                .map(|(model, kept)| ReplacedPart {
+                    part: ConsistPart {
+                        model: text(model),
+                        reversed: false,
+                        loads: BoundedVec::empty(),
+                        color: Tint { r: 0, g: 0, b: 0 },
+                    },
+                    kept: *kept,
                 })
                 .collect(),
         ),
@@ -463,11 +487,33 @@ fn rail_line_scenario() -> Scenario {
         })
         .run(3_000)
         .expect(Check::DeliveredAtLeast(1))
+        // The second train lengthened in the vehicle window: its own cars
+        // kept, a coach bought; it stays vehicle-1, on its line.
+        .act(
+            0,
+            replace(
+                1,
+                &[
+                    (LOCOMOTIVE, Some(0)),
+                    (WAGON, Some(1)),
+                    (WAGON, Some(2)),
+                    (WAGON, None),
+                ],
+            ),
+        )
+        .expect_all([
+            Check::Vehicles(2),
+            Check::Line {
+                line: LineId(0),
+                stops: 2,
+                vehicles: 2,
+            },
+        ])
         .act(0, bulldoze_edges(track_net, &[(far, mid)]))
         .expect_all([Check::TrackEdges(3), Check::Ignored(0)])
         .scenario(
             "rail-line",
-            "lay track with a switch, a bridge and a level crossing, build stations and a yard, run two trains",
+            "lay track with a switch, a bridge and a level crossing, build stations and a yard, run two trains, lengthen one",
             true,
             1,
         )
@@ -688,6 +734,7 @@ fn refusals_scenario() -> Scenario {
         .act(0, road(vec![node(at(3000, 3000), Network::Street), new(a)]))
         .act(0, line("Nowhere", &[4, 5]))
         .act(0, assign(&[7], None, Some(0)))
+        .act(0, replace(7, &[(BUS, None)]))
         .act(0, construction(BUS_STATION, at(0, 20), "Station"))
         .act(0, buy(BUS_STATION, at(0, 20), &[BUS]))
         .act(
@@ -705,7 +752,7 @@ fn refusals_scenario() -> Scenario {
             road(vec![split(a, Network::Street, a, b), new(at(0, 300))]),
         )
         .expect_all([
-            Check::Ignored(10),
+            Check::Ignored(11),
             Check::StreetEdges(1),
             Check::TrackEdges(0),
             Check::Stations(1),
