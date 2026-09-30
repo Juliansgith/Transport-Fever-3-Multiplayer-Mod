@@ -132,6 +132,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                     banner: None,
                 }])
                 .unwrap(),
+                competitive: false,
             }),
             chat: BoundedVec::new(vec![LobbyLine {
                 from: Text::new("Ann").unwrap(),

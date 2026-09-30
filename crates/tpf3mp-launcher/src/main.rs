@@ -306,6 +306,7 @@ fn auto_room(
                     rules: None,
                     start_save: None,
                     listing: None,
+                    competitive: false,
                 })
                 .await
             {
@@ -591,6 +592,7 @@ mod tests {
                     banner: None,
                 })
                 .collect(),
+            competitive: false,
         }
     }
 

@@ -651,6 +651,25 @@ function lobby.memberCard(member, playing)
 		MEMBER_WIDTH, MEMBER_HEIGHT, ready and { ready } or {})
 end
 
+-- The pictures of the Host page's play styles. Co-op: the busy harbour of
+-- the game's Campaign card, many vessels sharing one port. Competitive: the
+-- rusted-out truck left in the desert on the loading screen of the
+-- campaign's third mission, a built-in mod of the game; its path is the
+-- mod's own (INFERRED to load at the main menu as the campaign's pictures
+-- do).
+local COOP_PICTURE = "::/gui/menu/images/campaign.tga"
+local COMPETITIVE_PICTURE = "urbangames_campaign_mission_03::/gui/mission/m03_loadscreen.tga"
+lobby.COOP_PICTURE = COOP_PICTURE
+lobby.COMPETITIVE_PICTURE = COMPETITIVE_PICTURE
+
+-- One play style as a card: picked, it says so.
+function lobby.styleCard(competitive, picked, onClick, enabled)
+	local title = competitive and _("Competitive") or _("Co-op")
+	return pictureCard(competitive and COMPETITIVE_PICTURE or COOP_PICTURE,
+		picked and ("> " .. title) or title,
+		picked and _("Picked") or nil, nil, onClick, enabled, 190, 104)
+end
+
 -- A big choice of the first page (Join, Host), as a card in the main
 -- menu's style.
 function lobby.choiceCard(title, line, picture, onClick, enabled)
@@ -686,7 +705,8 @@ function lobby.roomCard(listed, onClick, enabled)
 	local line = string.format(_("%d/%d players · %d %s · %s"), listed.players, listed.max_players,
 		listed.companies, listed.companies == 1 and _("company") or _("companies"),
 		listed.year > 0 and tostring(listed.year) or _("year unknown"))
-	local right = listed.running and _("Playing") or lobby.climateName(listed.map)
+	local right = (listed.competitive and _("Competitive") or _("Co-op")) .. " · "
+		.. (listed.running and _("Playing") or lobby.climateName(listed.map))
 	local lock = listed.has_password and builtin.FloatingLayoutChild{
 		h = 0.95,
 		v = 0.06,
@@ -762,6 +782,8 @@ function lobby.content(onClose, focus)
 	local serverText = react.useRef(nil)
 	local serverErrorS = react.useState(nil)
 	local publicS = react.useState("private")
+	-- The Host page's play style: co-op (false) or competitive.
+	local competitiveS = react.useState(false)
 	local joiningS = react.useState(nil)
 	local listAtRef = react.useRef(LIST_POLLS)
 
@@ -1286,6 +1308,7 @@ function lobby.content(onClose, focus)
 				rules = pickedRules or "",
 				start_save = pickedSave,
 				public = public,
+				competitive = competitiveS:old() == true,
 			}
 			if public then
 				fields.map = details and details.map or ""
@@ -1312,6 +1335,17 @@ function lobby.content(onClose, focus)
 				}, style{ size = { LEFT, AUTO } }),
 				gap(30),
 				column({
+					note(_("How you play")),
+					gap(4),
+					row({
+						lobby.styleCard(false, competitiveS:old() ~= true, function() competitiveS:set(false) end, canAct),
+						gap(12),
+						lobby.styleCard(true, competitiveS:old() == true, function() competitiveS:set(true) end, canAct),
+					}),
+					gap(4),
+					note(competitiveS:old() and _("Each player founds a company of their own in the game.")
+						or _("Everyone plays for the room's one company.")),
+					gap(10),
 					choice(_("Who can find it"), public and "public" or "private", {
 						{ "private", _("Private: invite only") },
 						{ "public", _("Public: in the room list") },
@@ -1374,7 +1408,9 @@ function lobby.content(onClose, focus)
 		row({
 			label(room.name, "font-scale-title-3"),
 			gap(8),
-			room.has_password and icon(ICON.lock, 18) or gap(0),
+			room.has_password and icon(ICON.lock, 18) or gap(1),
+			gap(8),
+			badge(room.competitive and _("Competitive") or _("Co-op"), room.competitive and "warning" or "success"),
 			gui_react_util.makeHorizontalSpacer(),
 		}),
 		gap(6),

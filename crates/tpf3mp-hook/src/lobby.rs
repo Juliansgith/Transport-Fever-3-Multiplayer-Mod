@@ -82,6 +82,8 @@ pub struct Room {
     pub max_players: u32,
     pub has_password: bool,
     pub members: Vec<Member>,
+    /// Co-op (`false`) or competitive.
+    pub competitive: bool,
 }
 
 /// One line of the room's chat.
@@ -202,6 +204,9 @@ enum WindowAction {
         map: String,
         #[serde(default)]
         year: u16,
+        /// Competitive rather than co-op.
+        #[serde(default)]
+        competitive: bool,
     },
     ListRooms {
         #[serde(default)]
@@ -298,6 +303,7 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
             public,
             map,
             year,
+            competitive,
         } => LobbyAction::Create {
             room: text(&room, "room name")?,
             max_players: u8::try_from(max_players).unwrap_or(u8::MAX),
@@ -314,6 +320,7 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
                     })
                 })
                 .transpose()?,
+            competitive,
         },
         WindowAction::ListRooms { page } => LobbyAction::ListRooms { page },
         WindowAction::Join {
@@ -468,6 +475,7 @@ impl LobbyState {
                 you_own: room.you_own,
                 max_players: u32::from(room.max_players),
                 has_password: room.has_password,
+                competitive: room.competitive,
                 members: room
                     .members
                     .iter()
@@ -622,7 +630,7 @@ impl LobbyState {
                 ));
                 for room in list.rooms.iter() {
                     out.push_str(&format!(
-                        " {{ invite = {}, name = {}, rules = {}, players = {}, max_players = {}, has_password = {}, running = {}, map = {}, year = {}, companies = {} }},",
+                        " {{ invite = {}, name = {}, rules = {}, players = {}, max_players = {}, has_password = {}, running = {}, map = {}, year = {}, companies = {}, competitive = {} }},",
                         lua_str(room.invite.as_str()),
                         lua_str(room.name.as_str()),
                         lua_str(room.rules.as_str()),
@@ -632,7 +640,8 @@ impl LobbyState {
                         room.running,
                         lua_str(room.map.as_str()),
                         room.year,
-                        room.companies
+                        room.companies,
+                        room.competitive
                     ));
                 }
                 out.push_str(" } }");
@@ -681,13 +690,14 @@ impl LobbyState {
             None => out.push_str(", room = nil"),
             Some(room) => {
                 out.push_str(&format!(
-                    ", room = {{ name = {}, invite = {}, phase = {}, you_own = {}, max_players = {}, has_password = {}, members = {{",
+                    ", room = {{ name = {}, invite = {}, phase = {}, you_own = {}, max_players = {}, has_password = {}, competitive = {}, members = {{",
                     lua_str(&room.name),
                     lua_str(&room.invite),
                     lua_str(&room.phase),
                     room.you_own,
                     room.max_players,
-                    room.has_password
+                    room.has_password,
+                    room.competitive
                 ));
                 for member in &room.members {
                     out.push_str(&format!(
@@ -822,6 +832,7 @@ mod tests {
                 rules: None,
                 start_save: None,
                 listing: None,
+                competitive: false,
             }),
             "without a save named, the launcher's own, and private"
         );
@@ -836,6 +847,7 @@ mod tests {
                 rules: Some(Text::new("native").unwrap()),
                 start_save: Some(Text::new("mptest").unwrap()),
                 listing: None,
+                competitive: false,
             })
         );
         assert!(matches!(
@@ -964,6 +976,7 @@ mod tests {
                     banner: None,
                 }])
                 .unwrap(),
+                competitive: false,
             }),
             chat: BoundedVec::new(vec![LobbyLine {
                 from: Text::new("Bo").unwrap(),
@@ -1017,6 +1030,7 @@ mod tests {
                     map: Text::new("temperate").unwrap(),
                     year: 1850,
                     companies: 1,
+                    competitive: false,
                 }])
                 .unwrap(),
             }),

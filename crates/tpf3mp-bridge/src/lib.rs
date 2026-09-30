@@ -54,8 +54,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// and the launcher's default to [`LobbyView`], and
 /// [`LobbyAction::SetServer`]; 16 the players' banners: each
 /// [`LobbyMember::banner`], the player's own ([`LobbyView::banner`]) and
-/// [`LobbyAction::SetBanner`].
-pub const BRIDGE_VERSION: u32 = 16;
+/// [`LobbyAction::SetBanner`]; 17 a room's play style, co-op or
+/// competitive ([`LobbyRoom::competitive`], in [`LobbyAction::Create`] and
+/// the room list).
+pub const BRIDGE_VERSION: u32 = 17;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -267,6 +269,7 @@ pub struct LobbyPublicRoom {
     /// The game's year; 0 unknown.
     pub year: u16,
     pub companies: u8,
+    pub competitive: bool,
 }
 
 /// What a public room's list entry says of its world.
@@ -348,6 +351,8 @@ pub struct LobbyRoom {
     pub max_players: u8,
     pub has_password: bool,
     pub members: BoundedVec<LobbyMember, { MAX_ROOM_MEMBERS as usize }>,
+    /// Co-op (`false`) or competitive (`true`).
+    pub competitive: bool,
 }
 
 /// One member of the room, as its lobby shows it.
@@ -395,6 +400,8 @@ pub enum LobbyAction {
         /// `Some` lists the room in the server's room list; `None` keeps it
         /// private.
         listing: Option<LobbyListing>,
+        /// Competitive rather than co-op.
+        competitive: bool,
     },
     /// Asks for page `page` of the server's public rooms.
     ListRooms {
@@ -655,6 +662,7 @@ mod tests {
                 max_players: 64,
                 has_password: true,
                 members: BoundedVec::new((0..MAX_ROOM_MEMBERS).map(member).collect()).unwrap(),
+                competitive: false,
             }),
             chat: BoundedVec::new(vec![line; MAX_LOBBY_CHAT]).unwrap(),
             rules: BoundedVec::new(vec![
@@ -712,6 +720,7 @@ mod tests {
                         map: Text::new("m".repeat(32)).unwrap(),
                         year: u16::MAX,
                         companies: u8::MAX,
+                        competitive: true,
                     };
                     tpf3mp_proto::ROOMS_PER_PAGE
                 ])
@@ -731,6 +740,7 @@ mod tests {
                 map: Text::new("temperate").unwrap(),
                 year: 1850,
             }),
+            competitive: true,
         });
         assert_eq!(
             decode::<ToAgent>(&encode(&action).unwrap()).unwrap(),

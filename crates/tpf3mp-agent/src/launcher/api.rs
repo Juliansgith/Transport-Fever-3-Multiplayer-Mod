@@ -82,6 +82,10 @@ pub enum Action {
         /// see and join; `None`, the default, keeps it private.
         #[serde(default)]
         listing: Option<Listing>,
+        /// Competitive (each player for a company of their own) rather
+        /// than co-op, the default.
+        #[serde(default)]
+        competitive: bool,
     },
     /// Asks the server for page `page` of its public rooms
     /// ([`State::rooms`]).
@@ -162,6 +166,7 @@ pub struct PublicRoom {
     pub map: String,
     pub year: u16,
     pub companies: u8,
+    pub competitive: bool,
 }
 
 impl RoomList {
@@ -183,6 +188,7 @@ impl RoomList {
                     map: room.listing.map.as_str().to_owned(),
                     year: room.listing.year,
                     companies: room.listing.companies,
+                    competitive: room.competitive,
                 })
                 .collect(),
         }
@@ -418,6 +424,8 @@ pub struct Room {
     pub max_players: u8,
     pub has_password: bool,
     pub members: Vec<Member>,
+    /// Co-op (`false`) or competitive (`true`), as its owner chose.
+    pub competitive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -537,6 +545,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
                     banner: member.banner.as_ref().map(|id| id.as_str().to_owned()),
                 })
                 .collect(),
+            competitive: room.competitive,
         }
     });
     let (world, bytes, total) = match status.world {
@@ -692,6 +701,7 @@ mod tests {
                 rules: Some("native".into()),
                 start_save: None,
                 listing: None,
+                competitive: false,
             }
         );
         let action: Action = serde_json::from_str(

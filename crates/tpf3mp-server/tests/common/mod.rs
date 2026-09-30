@@ -156,6 +156,7 @@ pub fn room(name: &str, settings: RoomSettings) -> CreateRoom {
         settings,
         rules: None,
         listing: None,
+        competitive: false,
     }
 }
 

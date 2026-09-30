@@ -917,6 +917,7 @@ impl<B: Backend> LauncherApp<B> {
                     rules: self.rules.clone(),
                     start_save: None,
                     listing: None,
+                    competitive: false,
                 });
             }
             Form::Join => {

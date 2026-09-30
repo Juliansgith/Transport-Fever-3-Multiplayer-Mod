@@ -1887,6 +1887,7 @@ mod tests {
             phase: RoomPhase::Running,
             settings: RoomSettings::DEFAULT,
             members: vec![member(1, "Ann", true), member(2, "Bo", false)],
+            competitive: false,
         };
         let info = room_info(&room);
         assert_eq!(info.name.as_str(), "Sunday line");

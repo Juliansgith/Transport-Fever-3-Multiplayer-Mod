@@ -662,6 +662,7 @@ async fn act(
             rules,
             start_save,
             listing,
+            competitive,
         } => {
             let current = connected.as_ref().ok_or("connect to a server first")?;
             let rules = match rules.as_deref().map(str::trim) {
@@ -701,6 +702,7 @@ async fn act(
                     year: listing.year,
                     companies: 1,
                 }),
+                competitive,
             };
             let (invite, room) = current
                 .client

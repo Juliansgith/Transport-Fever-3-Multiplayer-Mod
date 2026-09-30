@@ -203,6 +203,7 @@ fn room(phase: Phase, members: Vec<Member>) -> Room {
         max_players: 4,
         has_password: false,
         members,
+        competitive: false,
     }
 }
 

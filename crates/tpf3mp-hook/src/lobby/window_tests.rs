@@ -153,6 +153,7 @@ fn in_room(members: Vec<LobbyMember>, you_own: bool) -> LobbyView {
             max_players: 4,
             has_password: true,
             members: BoundedVec::new(members).unwrap(),
+            competitive: false,
         }),
         chat: BoundedVec::new(vec![LobbyLine {
             from: Text::new("Bob").unwrap(),
@@ -254,6 +255,7 @@ fn a_room_is_created_with_the_rules_players_and_save_picked() {
             rules: Some(Text::new("canonical").unwrap()),
             start_save: Some(Text::new("mptest").unwrap()),
             listing: None,
+            competitive: false,
         }]
     );
     assert!(texts(&lua).contains("Creating the room..."));
@@ -541,6 +543,7 @@ fn public_room(name: &str, map: &str, players: u8, password: bool) -> LobbyPubli
         map: Text::new(map).unwrap(),
         year: 1873,
         companies: 2,
+        competitive: false,
     }
 }
 
@@ -1034,4 +1037,59 @@ fn a_banner_is_picked_from_the_first_page() {
     assert!(texts(&lua).contains("Yours"));
     click(&lua, "Default");
     assert_eq!(sent(&lua), [LobbyAction::SetBanner { banner: None }]);
+}
+
+#[test]
+fn the_host_picks_co_op_or_competitive_from_two_pictures() {
+    let lua = menu();
+    show(&lua, Some(&online()));
+    open(&lua, None);
+    call(&lua, "click_card", "Host a room");
+    let styles: Vec<(String, String)> = all_cards(&lua)
+        .iter()
+        .map(|card| {
+            (
+                card.get::<String>("text").unwrap(),
+                card.get::<String>("picture").unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        styles
+            .iter()
+            .any(|(text, picture)| text.starts_with("> Co-op")
+                && picture == "::/gui/menu/images/campaign.tga"),
+        "co-op is picked first: {styles:?}"
+    );
+    assert!(
+        styles
+            .iter()
+            .any(|(text, picture)| text.starts_with("Competitive")
+                && picture.ends_with("m03_loadscreen.tga"))
+    );
+    call(&lua, "click_card", "Competitive");
+    assert!(texts(&lua).contains("Each player founds a company of their own"));
+    click(&lua, "Create room");
+    let actions: [LobbyAction; 1] = sent(&lua).try_into().unwrap();
+    let [LobbyAction::Create { competitive, .. }] = actions else {
+        panic!("not a create")
+    };
+    assert!(competitive);
+}
+
+#[test]
+fn a_rooms_play_style_shows_in_the_room_and_the_list() {
+    let lua = menu();
+    let mut view = in_room(vec![member(1, "Ann", true, true, true)], true);
+    view.room.as_mut().unwrap().competitive = true;
+    show(&lua, Some(&view));
+    open(&lua, None);
+    assert!(texts(&lua).contains("Competitive"));
+    let mut listed = public_room("Race", "dry", 2, false);
+    listed.competitive = true;
+    show(&lua, Some(&browsing(vec![listed], 0, false)));
+    call(&lua, "tick", ());
+    call(&lua, "render", "join");
+    let text: String = cards(&lua)[0].get("text").unwrap();
+    assert!(text.contains("Competitive"), "{text}");
 }

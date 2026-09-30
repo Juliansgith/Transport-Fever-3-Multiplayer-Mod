@@ -182,7 +182,10 @@ window too.
      joined only this way.
    - **Host a room**: a **room name** (your name's room if you leave it
      empty); **Start from this save**, one of your saves, newest first, or
-     **None: I load a world myself**; **Players**, 2 to 16; **Who can find
+     **None: I load a world myself**; **Players**, 2 to 16; **How you
+     play**, two pictures: **Co-op**, everyone for the room's one company,
+     or **Competitive**, each player founding a company of their own in
+     the game; **Who can find
      it**: **Private**, invite only (the default), or **Public**, in the
      room list, with your save's climate and year; the **Rules**, when the
      server offers more than one (`native` is the game's own rules and

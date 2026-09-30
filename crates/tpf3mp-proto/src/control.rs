@@ -243,6 +243,8 @@ pub struct ListedRoom {
     pub has_password: bool,
     pub phase: RoomPhase,
     pub listing: RoomListing,
+    /// The room's play style, as its owner chose it ([`CreateRoom::competitive`]).
+    pub competitive: bool,
 }
 
 /// A page of the room list.
@@ -267,6 +269,12 @@ pub struct CreateRoom {
     /// it and its invite; `None`, the default, keeps it private: joined
     /// only by an invite its members pass on.
     pub listing: Option<RoomListing>,
+    /// The play style the owner means the room for: `false` co-op (every
+    /// player for the room's one company, as a room starts, D21), `true`
+    /// competitive (each player for a company of their own). The server
+    /// only carries it: players see it and found their companies in the
+    /// game as D21 lets them.
+    pub competitive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -433,6 +441,8 @@ pub struct RoomView {
     pub phase: RoomPhase,
     pub settings: RoomSettings,
     pub members: Vec<MemberView>,
+    /// The play style ([`CreateRoom::competitive`]).
+    pub competitive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

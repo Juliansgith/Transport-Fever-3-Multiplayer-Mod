@@ -203,6 +203,7 @@ impl Directory {
                 env: self.env.clone(),
                 share,
                 listing: request.listing.clone(),
+                competitive: request.competitive,
             },
             owner,
         );
@@ -312,6 +313,7 @@ impl Directory {
                         has_password: summary.has_password,
                         phase: summary.phase,
                         listing,
+                        competitive: summary.competitive,
                     })
                 })
                 .collect()

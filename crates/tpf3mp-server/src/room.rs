@@ -691,6 +691,9 @@ pub(crate) struct Room {
     closed: bool,
     /// What the room list shows of the room.
     summary: SharedSummary,
+    /// The play style its owner chose; not logged, so a restored room is
+    /// co-op.
+    competitive: bool,
 }
 
 /// What every room of a server shares.
@@ -747,6 +750,7 @@ pub(crate) struct Summary {
     pub(crate) max_players: u8,
     pub(crate) has_password: bool,
     pub(crate) phase: RoomPhase,
+    pub(crate) competitive: bool,
     /// `Some` for a public room: what its owner declared. `None` keeps the
     /// room out of every list. A room restored after a restart is private
     /// until created again: its log keeps no listing and no invite.
@@ -768,6 +772,8 @@ pub(crate) struct RoomSpec {
     pub(crate) share: RoomShare,
     /// `Some` lists the room publicly.
     pub(crate) listing: Option<RoomListing>,
+    /// The play style its owner chose (`CreateRoom::competitive`).
+    pub(crate) competitive: bool,
 }
 
 impl Room {
@@ -800,6 +806,7 @@ impl Room {
             snapshots: spec.env.snapshots,
             start_world: None,
             closed: false,
+            competitive: spec.competitive,
             summary: Arc::new(std::sync::Mutex::new(Summary {
                 name: Text::lossy(""),
                 rules: Text::lossy(""),
@@ -808,6 +815,7 @@ impl Room {
                 max_players: 0,
                 has_password: false,
                 phase: RoomPhase::Lobby,
+                competitive: false,
                 listing: spec.listing,
             })),
         };
@@ -1068,6 +1076,7 @@ impl Room {
             snapshots: env.snapshots,
             start_world: None,
             closed: false,
+            competitive: false,
             // Private after a restart: the log keeps no listing.
             summary: Arc::new(std::sync::Mutex::new(Summary {
                 name: Text::lossy(""),
@@ -1077,6 +1086,7 @@ impl Room {
                 max_players: 0,
                 has_password: false,
                 phase: RoomPhase::Running,
+                competitive: false,
                 listing: None,
             })),
         };
@@ -1105,6 +1115,7 @@ impl Room {
         summary.players = u8::try_from(self.members.len()).unwrap_or(u8::MAX);
         summary.max_players = self.max_players;
         summary.has_password = self.secrets.password_tag.is_some();
+        summary.competitive = self.competitive;
         summary.phase = match self.phase {
             Phase::Lobby => RoomPhase::Lobby,
             Phase::Running(_) => RoomPhase::Running,
@@ -1167,6 +1178,7 @@ impl Room {
                     banner: member.banner.clone(),
                 })
                 .collect(),
+            competitive: self.competitive,
         }
     }
 

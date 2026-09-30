@@ -143,6 +143,12 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   refused (`UnknownBanner`). The launcher sends it on every connection.
   Rooms do not log banners: a restored room shows the defaults until each
   player says again.
+- **Play style** (protocol 11). The owner creates a room co-op (every
+  player for the room's one company, as a room starts, D21) or competitive
+  (`CreateRoom::competitive`: each player for a company of their own). The
+  server only carries it, in the room view and the room list; players
+  found their companies in the game as D21 lets them. Not logged: a
+  restored room is co-op.
 - **Updates.** Members receive the full room view (`RoomUpdate`) whenever it
   changes. Updates and responses are independent messages: a `RoomUpdate`
   caused by a request can arrive before that request's `Response`.

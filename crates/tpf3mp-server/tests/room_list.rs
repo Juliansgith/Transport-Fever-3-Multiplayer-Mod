@@ -25,6 +25,7 @@ fn listing(map: &str, year: u16) -> RoomListing {
 fn public(name: &str, map: &str, year: u16) -> CreateRoom {
     CreateRoom {
         listing: Some(listing(map, year)),
+        competitive: false,
         ..room(name, FAST)
     }
 }
@@ -176,4 +177,45 @@ impl RateLimited for Result<RoomPage, ClientError> {
             Err(error) => panic!("{error}"),
         }
     }
+}
+
+#[tokio::test]
+async fn a_rooms_play_style_is_carried_to_its_members_and_the_list() {
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    let bob = server.client("bob").await;
+    let (invite, created) = ann
+        .client
+        .create_room(CreateRoom {
+            competitive: true,
+            ..public("Race", "dry", 1900)
+        })
+        .await
+        .unwrap();
+    assert!(created.competitive);
+    assert!(
+        bob.client
+            .join_room(join(&invite))
+            .await
+            .unwrap()
+            .competitive
+    );
+    let page = server
+        .client("cat")
+        .await
+        .client
+        .list_rooms(0)
+        .await
+        .unwrap();
+    assert!(page.rooms[0].competitive);
+    // A room is co-op unless its owner says otherwise.
+    let (_, plain) = server
+        .client("dan")
+        .await
+        .client
+        .create_room(room("plain", FAST))
+        .await
+        .unwrap();
+    assert!(!plain.competitive);
+    server.shut_down().await;
 }

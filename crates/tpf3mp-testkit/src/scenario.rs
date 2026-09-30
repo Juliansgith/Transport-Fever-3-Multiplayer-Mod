@@ -155,6 +155,7 @@ async fn seat(
             settings,
             rules,
             listing: None,
+            competitive: false,
         })
         .await?;
     for client in others {

@@ -121,6 +121,7 @@ fn in_room(members: Vec<Member>, you_own: bool) -> State {
             max_players: 4,
             has_password: false,
             members,
+            competitive: false,
         }),
         ..State::default()
     }
@@ -199,6 +200,7 @@ fn a_room_is_created_with_the_rules_the_host_picks() {
             rules: Some("native".into()),
             start_save: None,
             listing: None,
+            competitive: false,
         }]
     );
 }

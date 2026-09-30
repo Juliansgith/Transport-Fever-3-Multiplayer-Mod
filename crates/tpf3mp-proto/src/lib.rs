@@ -65,8 +65,10 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// that needs it ([`Secret`]) and orders the intent with the password's seal
 /// ([`Seal`]), for companies' passwords; version 9 lists public rooms
 /// ([`Request::ListRooms`], [`CreateRoom::listing`]); version 10 carries
-/// each member's banner ([`Request::SetBanner`], [`MemberView::banner`]).
-pub const PROTOCOL_VERSION: u32 = 10;
+/// each member's banner ([`Request::SetBanner`], [`MemberView::banner`]);
+/// version 11 a room's play style ([`CreateRoom::competitive`],
+/// [`RoomView::competitive`]).
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

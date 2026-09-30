@@ -817,6 +817,7 @@ mod tests {
                 max_players: 4,
                 has_password: false,
                 members,
+                competitive: false,
             }),
             ..State::default()
         }

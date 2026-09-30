@@ -245,6 +245,7 @@ async fn run(command: Command) -> Result<()> {
                     settings: RoomSettings::DEFAULT,
                     rules: rules.map(Text::new).transpose().context("rules")?,
                     listing: None,
+                    competitive: false,
                 })
                 .await?;
             println!("invite: {invite}");

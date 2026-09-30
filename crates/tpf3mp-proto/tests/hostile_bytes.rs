@@ -80,6 +80,7 @@ fn room_view() -> RoomView {
                 banner: None,
             },
         ],
+        competitive: false,
     }
 }
 
@@ -137,6 +138,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                     year: 1850,
                     companies: 2,
                 }),
+                competitive: true,
             }),
         },
         ClientMessage::Request {

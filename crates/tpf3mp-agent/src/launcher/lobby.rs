@@ -68,6 +68,7 @@ pub(crate) fn view(state: &State) -> LobbyView {
                 .collect(),
         )
         .unwrap_or_default(),
+        competitive: room.competitive,
     });
     LobbyView {
         banner: state.banner.as_deref().and_then(banner),
@@ -194,6 +195,7 @@ pub(crate) fn view(state: &State) -> LobbyView {
                         map: Text::lossy(&room.map),
                         year: room.year,
                         companies: room.companies,
+                        competitive: room.competitive,
                     })
                     .collect(),
             )
@@ -227,6 +229,7 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
             rules,
             start_save,
             listing,
+            competitive,
         } => Action::Create {
             room: room.as_str().to_owned(),
             max_players,
@@ -237,6 +240,7 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
                 map: listing.map.as_str().to_owned(),
                 year: listing.year,
             }),
+            competitive,
         },
         LobbyAction::ListRooms { page } => Action::ListRooms { page },
         LobbyAction::Join { invite, password } => Action::Join {
@@ -530,6 +534,7 @@ pub(crate) mod tests {
                         banner: None,
                     },
                 ],
+                competitive: false,
             }),
             chat: (0..50)
                 .map(|n| ChatLine {
@@ -689,6 +694,7 @@ pub(crate) mod tests {
                         map: Text::lossy("dry"),
                         year: 1900,
                     }),
+                    competitive: false,
                 },
                 &state
             ),
@@ -702,6 +708,7 @@ pub(crate) mod tests {
                     map: "dry".into(),
                     year: 1900,
                 }),
+                competitive: false,
             }
         );
         assert_eq!(
