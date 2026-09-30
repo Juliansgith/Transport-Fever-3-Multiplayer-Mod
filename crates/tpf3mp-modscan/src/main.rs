@@ -37,6 +37,9 @@ struct Args {
     /// One JSON report per line instead of text.
     #[arg(long)]
     json: bool,
+    /// Print the mods a save lists, and stop.
+    #[arg(long)]
+    save: Option<PathBuf>,
 }
 
 /// The mods under `path`: itself, if it has a mod.json, else each folder in
@@ -74,6 +77,20 @@ fn mods_in(path: &Path) -> Vec<PathBuf> {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    if let Some(save) = &args.save {
+        return match tpf3mp_modscan::save::mods(save) {
+            Ok(mods) => {
+                for m in mods {
+                    println!("{}\t{}\t{}", m.id, m.source, m.name);
+                }
+                ExitCode::SUCCESS
+            }
+            Err(why) => {
+                eprintln!("{why}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let mut dirs: Vec<PathBuf> = args.paths.iter().flat_map(|p| mods_in(p)).collect();
     if args.installed {
         let found = roots::installed(&roots::default_roots(args.game.as_deref(), &args.steam));
