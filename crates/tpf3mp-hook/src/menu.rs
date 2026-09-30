@@ -108,9 +108,39 @@ pub fn install_api(api: MenuApi) -> bool {
 /// loading something already (the menu's own sign of it: the progress
 /// monitor's task, `gui/menu/main_menu.tl`), or why it could not.
 pub const CHUNK: &str = r#"
-local here, gone = ...
+local here, gone, plan = ...
 local number
 local sentinel = setmetatable({}, { __gc = function() if number then gone(number) end end })
+-- A save whose details are being read, for the mods it lists.
+local reading
+local function savegameId(theApp, name)
+	local id = api.type.SavegameId.new()
+	id.path = ""
+	id.saveGameName = name
+	id.saveGameNamespace = theApp.SaveGameNamespace.getSavegame()
+	return id
+end
+-- The save's details with the mods the room's world loads with in this
+-- game, nil for the save's own, or nil and why it cannot load.
+local function withMods(theApp, data)
+	local names = {}
+	for _, m in ipairs(data.info.mods or {}) do names[#names + 1] = m.name end
+	local list = plan(table.concat(names, "\n"))
+	if list == nil then return nil end
+	local modRep = theApp.getUserProfile():getModRep()
+	local mods = {}
+	for name in string.gmatch(list, "[^\n]+") do
+		local m = api.type.ModId.new()
+		m.name = name
+		if not modRep:exists(m) then
+			return nil, "the room's world needs the mod " .. name .. ", which is not installed"
+		end
+		mods[#mods + 1] = m
+	end
+	local info = api.type.SaveGameDetails.new(data.info)
+	info.mods = mods
+	return info
+end
 local function load(name)
 	local keep = sentinel
 	local found, theApp = pcall(function() return app end)
@@ -121,12 +151,28 @@ local function load(name)
 		busy = task ~= nil and task ~= ""
 	end)
 	if busy then return "busy" end
+	local info = nil
+	if plan and plan() then
+		-- The room's mods, not the save's: its details first, read by the
+		-- game in the background; asked again until they are.
+		if reading == nil or reading.name ~= name then
+			local ok, async = pcall(theApp.getSavegameInfo, savegameId(theApp, name))
+			if not ok then return "reading the save's mods failed: " .. tostring(async) end
+			reading = { name = name, async = async }
+		end
+		if not reading.async:isCompleted() then return "busy" end
+		local data = reading.async:get()
+		reading = nil
+		if data == nil or data.info == nil then
+			return "the save's mods did not read: " .. tostring(data and data.errorMsg)
+		end
+		local ok, made, why = pcall(withMods, theApp, data)
+		if not ok then return "the room's mods for the save failed: " .. tostring(made) end
+		if made == nil and why then return why end
+		info = made
+	end
 	local ok, err = pcall(function()
-		local id = api.type.SavegameId.new()
-		id.path = ""
-		id.saveGameName = name
-		id.saveGameNamespace = theApp.SaveGameNamespace.getSavegame()
-		theApp.loadGame(id, false, nil)
+		theApp.loadGame(savegameId(theApp, name), false, info)
 	end)
 	if ok then return "started" end
 	return "app.loadGame failed: " .. tostring(err)
@@ -244,7 +290,8 @@ pub unsafe fn adopt(l: State) -> Result<bool, String> {
         }
         (api.pushcclosure)(l, native_here as CFunction, 0);
         (api.pushcclosure)(l, native_gone as CFunction, 0);
-        let status = (menu.pcallk)(l, 2, 0, 0, 0, std::ptr::null());
+        (api.pushcclosure)(l, lua::native_mods as CFunction, 0);
+        let status = (menu.pcallk)(l, 3, 0, 0, 0, std::ptr::null());
         if status != 0 {
             let why = string_at_top(api, l).unwrap_or_default();
             (api.settop)(l, top);
@@ -644,6 +691,84 @@ pub(crate) mod tests {
             "load keeps it alive"
         );
         assert!(!CHUNK.contains("setWaitForStartReadyGame"));
-        assert!(CHUNK.contains("theApp.loadGame(id, false, nil)"));
+        assert!(CHUNK.contains("theApp.loadGame(savegameId(theApp, name), false, info)"));
+    }
+
+    /// The menu's save details and mods, for a load with the room's mods:
+    /// `SAVED` is the mods the save lists, `INSTALLED` those this player
+    /// has, `READY` whether the game has read the save's details yet.
+    const FAKE_MODS: &str = r#"
+        SAVED = { 'vehicles_pack', 'tpf3mp_1', 'owner_minimap' }
+        INSTALLED = { vehicles_pack = true, tpf3mp_1 = true, my_colours = true }
+        READY = false
+        api.type.ModId = { new = function() return {} end }
+        api.type.SaveGameDetails = { new = function(info)
+            local copy = {} for k, v in pairs(info) do copy[k] = v end return copy end }
+        app.getSavegameInfo = function(id)
+            local mods = {}
+            for i, name in ipairs(SAVED) do mods[i] = { name = name } end
+            return { isCompleted = function() return READY end,
+                     get = function() return { errorMsg = '', info = { mods = mods, modParams = {} } } end }
+        end
+        app.getUserProfile = function() return { getModRep = function() return {
+            exists = function(_, m) return INSTALLED[m.name] == true end } end } end
+        local load = app.loadGame
+        app.loadGame = function(id, isMapEditor, info)
+            load(id, isMapEditor, info)
+            if info then
+                local names = {} for _, m in ipairs(info.mods) do names[#names + 1] = m.name end
+                LOADS[#LOADS] = LOADS[#LOADS] .. '|' .. table.concat(names, ',')
+            end
+        end"#;
+
+    #[test]
+    fn with_the_rooms_lists_the_menu_loads_the_save_with_the_rooms_mods_and_mine() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        menu51();
+        forget_all();
+        fn to<const N: usize>(l: &[&str]) -> tpf3mp_proto::BoundedVec<tpf3mp_bridge::ModName, N> {
+            tpf3mp_proto::BoundedVec::new(
+                l.iter()
+                    .map(|n| tpf3mp_proto::Text::new(*n).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        }
+        lua::set_mods(Some(tpf3mp_bridge::ModLists {
+            shared: to(&["vehicles_pack"]),
+            personal: to(&["my_colours"]),
+        }));
+        let menu = Lua::new();
+        menu.run(FAKE_MENU).unwrap();
+        menu.run(FAKE_MODS).unwrap();
+        assert_eq!(unsafe { adopt(menu.state()) }, Ok(true));
+        // The game reads the save's details in the background: asked again.
+        assert_eq!(unsafe { serve("tpf3mp_room_7") }, Some(Served::Busy));
+        assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
+        menu.run("READY = true").unwrap();
+        assert_eq!(unsafe { serve("tpf3mp_room_7") }, Some(Served::Started));
+        let loaded = menu.run("return LOADS[1]").unwrap();
+        assert!(
+            loaded.ends_with("|vehicles_pack,tpf3mp_1,my_colours"),
+            "the owner's minimap left out, this player's colours added: {loaded}"
+        );
+
+        // A shared mod this player lacks: the world cannot load here.
+        menu.run("INSTALLED.vehicles_pack = nil").unwrap();
+        assert_eq!(
+            unsafe { serve("tpf3mp_room_8") },
+            Some(Served::Failed(
+                "the room's world needs the mod vehicles_pack, which is not installed".into()
+            ))
+        );
+
+        // Without the room's lists, the save's own mods, as before.
+        lua::set_mods(None);
+        assert_eq!(unsafe { serve("tpf3mp_room_9") }, Some(Served::Started));
+        assert_eq!(
+            menu.run("return LOADS[#LOADS]"),
+            Ok("tpf3mp_room_9||savegame|false|nil".into())
+        );
+        forget_all();
     }
 }

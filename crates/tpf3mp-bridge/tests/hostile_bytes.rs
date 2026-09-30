@@ -48,6 +48,10 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             checkpoint_interval: 50,
             saves: Text::new("C:/Users/player/TPF3-MP/worlds/saves").unwrap(),
             player: PlayerId(FixedBytes([7; 32])),
+            mods: Some(tpf3mp_bridge::ModLists {
+                shared: BoundedVec::new(vec![Text::new("vehicles_pack").unwrap()]).unwrap(),
+                personal: BoundedVec::new(vec![Text::new("minimap").unwrap()]).unwrap(),
+            }),
         },
         ToHook::Apply(Event {
             seq: 12,

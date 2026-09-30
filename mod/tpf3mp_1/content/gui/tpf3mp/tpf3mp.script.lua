@@ -39,7 +39,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "geom", "roads", "engine", "registry", "companies", "capture", "bridge", "guard" }
+	local MODULES = { "geom", "roads", "engine", "registry", "companies", "capture", "bridge", "guard", "worldload" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -282,30 +282,33 @@ function data()
 		followMyCompany()
 	end
 
+	-- The room's world being loaded (tpf3mp/worldload.lua), a frame at a
+	-- time while the game reads the save's mods.
+	local loading
+
 	-- Does what the hook asks: saving the world under the name it gives, or
-	-- loading the room's world from the game's save folder.
+	-- loading the room's world from the game's save folder, with the room's
+	-- mods (docs/MODS.md).
 	local function serve()
 		if not link then return end
 		local request = link:poll()
-		if not request then return end
-		if request.save then
+		if request and request.save then
 			local name = request.save
 			local ok, err = pcall(app.saveGame, name, function()
 				link:saved(name, true)
 			end, false, true)
 			if not ok then link:saved(name, false, tostring(err)) end
-		elseif request.load then
-			local ok, err = pcall(function()
-				local id = api.type.SavegameId.new()
-				id.path = ""
-				id.saveGameName = request.load
-				id.saveGameNamespace = app.SaveGameNamespace.getSavegame()
-				app.loadGame(id, false, nil)
-			end)
-			if ok then
+		elseif request and request.load then
+			loading = require("tpf3mp.worldload").new(request.load)
+		end
+		if loading then
+			local done, why = require("tpf3mp.worldload").step(loading, app, api, link)
+			if done == "busy" then return end
+			loading = nil
+			if done == "started" then
 				link:log("loading the room's world")
 			else
-				link:log("loading the room's world failed: " .. tostring(err))
+				link:log("loading the room's world failed: " .. tostring(why))
 			end
 		end
 	end

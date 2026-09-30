@@ -23,6 +23,7 @@
 //! link; the game-specific part of the hook only implements [`Game`].
 
 mod gate;
+pub mod mods;
 mod session;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -33,13 +34,15 @@ use tpf3mp_proto::{
 };
 
 pub use gate::{Gate, GateError, Gated};
+pub use mods::{ModLists, ModName, Plan};
 pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, StepGate};
 
 /// Version of these messages. Both sides send it first and refuse a peer
 /// that speaks another. 7 added [`ToAgent::WorldUp`]; 8 added
 /// [`ToAgent::MenuUp`]; 9 added the main menu's Multiplayer window's
-/// [`ToHook::Lobby`] and [`ToAgent::Lobby`].
-pub const BRIDGE_VERSION: u32 = 9;
+/// [`ToHook::Lobby`] and [`ToAgent::Lobby`]; 10 added the mods the room's
+/// world loads with to [`ToHook::Begin`].
+pub const BRIDGE_VERSION: u32 = 10;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -67,6 +70,11 @@ pub enum ToHook {
         checkpoint_interval: u32,
         saves: Text<MAX_PATH>,
         player: PlayerId,
+        /// The mods the room's worlds load with in this game: the room's
+        /// shared ones and this player's personal ones ([`mods::plan`]).
+        /// `None` when the agent does not know this player's mods: a world
+        /// then loads with the mods its save lists.
+        mods: Option<ModLists>,
     },
     /// Apply this event before running step `event.step`.
     Apply(Event),

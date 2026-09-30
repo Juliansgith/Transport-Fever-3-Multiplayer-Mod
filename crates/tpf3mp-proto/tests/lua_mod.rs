@@ -205,7 +205,8 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.guard",
             "tpf3mp.registry",
             "tpf3mp.roads",
-            "tpf3mp.ui"
+            "tpf3mp.ui",
+            "tpf3mp.worldload"
         ]
     );
 }
@@ -598,6 +599,84 @@ fn the_gui_loads_the_rooms_world_from_the_save_folder() {
     assert_eq!(loaded, "|tpf3mp_room_77|savegame|false");
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
     assert_eq!(logged.last().unwrap(), "loading the room's world");
+}
+
+/// The hook's `mods` as the room's lists make it (crates/tpf3mp-bridge,
+/// `mods::plan`), and the game's save details, mods and ModId, for a load
+/// with the room's mods (docs/MODS.md).
+const FAKE_MODS: &str = r#"
+SHARED = { vehicles_pack = true }
+MINE = { 'my_colours' }
+tpf3mp_native.mods = function(list)
+    if list == nil then return true end
+    local keep, dropped, added = {}, {}, {}
+    for name in string.gmatch(list, '[^\n]+') do
+        if SHARED[name] or name == 'tpf3mp_1' or name == MINE[1] then keep[#keep + 1] = name
+        else dropped[#dropped + 1] = name end
+    end
+    keep[#keep + 1] = MINE[1] added[1] = MINE[1]
+    return table.concat(keep, '\n'), table.concat(dropped, '\n'), table.concat(added, '\n')
+end
+SAVED = { 'vehicles_pack', 'tpf3mp_1', 'owner_minimap' }
+INSTALLED = { vehicles_pack = true, tpf3mp_1 = true, my_colours = true }
+READY = false
+api.type.ModId = { new = function() return {} end }
+api.type.SaveGameDetails = { new = function(info)
+    local copy = {} for k, v in pairs(info) do copy[k] = v end return copy end }
+app.getSavegameInfo = function(id)
+    local mods = {}
+    for i, name in ipairs(SAVED) do mods[i] = { name = name } end
+    return { isCompleted = function() return READY end,
+             get = function() return { errorMsg = '', info = { mods = mods } } end }
+end
+app.getUserProfile = function() return { getModRep = function() return {
+    exists = function(_, m) return INSTALLED[m.name] == true end } end } end
+local load = app.loadGame
+app.loadGame = function(id, isMapEditor, info)
+    load(id, isMapEditor, info)
+    local names = {}
+    for _, m in ipairs(info and info.mods or {}) do names[#names + 1] = m.name end
+    APP.loads[#APP.loads].mods = table.concat(names, ',')
+end
+"#;
+
+#[test]
+fn the_gui_loads_the_rooms_world_with_the_rooms_mods_and_its_own() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_APP).exec().unwrap();
+    lua.load(FAKE_MODS).exec().unwrap();
+    lua.load(
+        "M = mount(loadPlugin()) M.step() HOOK.request = { load = 'tpf3mp_room_77' } M.step()",
+    )
+    .exec()
+    .unwrap();
+    // The game reads the save's details over a few frames.
+    let loads: usize = lua.load("M.step() return #APP.loads").eval().unwrap();
+    assert_eq!(loads, 0);
+    let (name, mods): (String, String) = lua
+        .load("READY = true M.step() return APP.loads[1].id.saveGameName, APP.loads[1].mods")
+        .eval()
+        .unwrap();
+    assert_eq!(name, "tpf3mp_room_77");
+    assert_eq!(
+        mods, "vehicles_pack,tpf3mp_1,my_colours",
+        "the owner's minimap left out, this player's colours added"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert_eq!(logged.last().unwrap(), "loading the room's world");
+
+    // A shared mod this player lacks: not loaded, and said why.
+    lua.load("INSTALLED.vehicles_pack = nil HOOK.request = { load = 'tpf3mp_room_78' } M.step()")
+        .exec()
+        .unwrap();
+    let (loads, logged): (usize, Vec<String>) =
+        lua.load("return #APP.loads, HOOK.logged").eval().unwrap();
+    assert_eq!(loads, 1);
+    assert_eq!(
+        logged.last().unwrap(),
+        "loading the room's world failed: the room's world needs the mod vehicles_pack, which is not installed"
+    );
 }
 
 #[test]

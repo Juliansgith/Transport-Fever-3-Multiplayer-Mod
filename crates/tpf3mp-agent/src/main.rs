@@ -135,9 +135,15 @@ struct Game {
 impl Game {
     /// What this player's game runs.
     fn manifest(&self) -> Result<ContentManifest> {
+        Ok(self.split()?.manifest)
+    }
+
+    /// This player's mods sorted for the room: the shared ones it declares,
+    /// and the lists the room's worlds load with.
+    fn split(&self) -> Result<content::Split> {
         let installed = tpf3mp_agent::steam::find(tpf3mp_agent::steam::TRANSPORT_FEVER_3);
         let build = launcher::setup::game_build(self.game_build.as_deref(), installed.as_ref());
-        Ok(content::manifest(&build, self.mods.as_deref())?)
+        launcher::setup::split_mods(&build, self.mods.as_deref(), installed.as_ref())
     }
 
     fn open_worlds(&self, link: &str) -> Result<Worlds> {
@@ -402,6 +408,7 @@ async fn play(client: Client, events: Events, game: &Game, rejoin: Rejoin) -> Re
     println!("waiting for the game on link {name}");
     let options = BridgeOptions {
         worlds: Some(game.open_worlds(name)?),
+        mods: game.split()?.lists,
         ..BridgeOptions::default()
     };
     let mut bridge = Bridge::new(link, options);

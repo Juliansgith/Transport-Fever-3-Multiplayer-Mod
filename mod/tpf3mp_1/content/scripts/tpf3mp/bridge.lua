@@ -53,6 +53,14 @@
 --     dumped  = function(lane, entry), -- optional; one entry of a lane
 --                                   -- dumped, for hook.log -> true | false
 --                                   -- (no more taken)
+--     mods    = function(list),     -- optional; the mods to load a save
+--                                   -- whose mods are `list` (names, one a
+--                                   -- line) with -> list, left out, added
+--                                   -- (the same way) | nil without the
+--                                   -- room's lists; mods() alone -> true
+--                                   -- | nil: whether the room gave them
+--     personal = function(),        -- optional; this player's personal
+--                                   -- mods (names, one a line) | nil
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -270,6 +278,43 @@ function Link:dumped(lane, entry)
 	if type(self.native.dumped) ~= "function" then return false end
 	local ok, taken = pcall(self.native.dumped, lane, tostring(entry))
 	return ok and taken == true
+end
+
+-- Names in a text, one a line.
+local function lines(text)
+	local out = {}
+	if type(text) ~= "string" then return out end
+	for name in string.gmatch(text, "[^\n]+") do out[#out + 1] = name end
+	return out
+end
+
+-- Whether the room gave the mods its worlds load with (docs/MODS.md); false
+-- from a hook without `mods` (it is optional).
+function Link:hasMods()
+	if type(self.native.mods) ~= "function" then return false end
+	local ok, known = pcall(self.native.mods)
+	return ok and known == true
+end
+
+-- The mods to load a save whose mods are `names` with, as a list of names,
+-- then those left out and those added; nil when the room gave no lists (the
+-- save loads with its own).
+function Link:mods(names)
+	if type(self.native.mods) ~= "function" then return nil end
+	local ok, plan, dropped, added = pcall(self.native.mods, table.concat(names, "\n"))
+	if not ok or type(plan) ~= "string" then return nil end
+	return lines(plan), lines(dropped), lines(added)
+end
+
+-- This player's personal mods, by name, as a set; an empty set from a hook
+-- without `personal` or without the room's lists.
+function Link:personal()
+	local set = {}
+	if type(self.native.personal) ~= "function" then return set end
+	local ok, text = pcall(self.native.personal)
+	if not ok then return set end
+	for _, name in ipairs(lines(text)) do set[name] = true end
+	return set
 end
 
 -- The game script begins (true) or ends applying the room's actions.
