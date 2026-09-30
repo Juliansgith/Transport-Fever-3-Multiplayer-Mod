@@ -155,6 +155,7 @@ pub fn room(name: &str, settings: RoomSettings) -> CreateRoom {
         password: None,
         settings,
         rules: None,
+        listing: None,
     }
 }
 

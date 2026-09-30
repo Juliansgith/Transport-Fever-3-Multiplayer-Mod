@@ -894,6 +894,7 @@ impl<B: Backend> LauncherApp<B> {
                     password: non_empty(&self.create_password),
                     rules: self.rules.clone(),
                     start_save: None,
+                    listing: None,
                 });
             }
             Form::Join => {

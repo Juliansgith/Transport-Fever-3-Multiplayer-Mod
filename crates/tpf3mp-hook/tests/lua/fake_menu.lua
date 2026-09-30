@@ -34,7 +34,41 @@ api = {
 	type = {
 		Vec2f = { new = function(x, y) return { x = x, y = y } end },
 		Vec4f = { new = function(a, b, c, d) return { a, b, c, d } end },
+		SavegameId = { new = function() return {} end },
+		-- A save's metadata.date, read as the game's Load Game page does.
+		Date = { new = function(date) return { year = date } end },
 	},
+}
+
+-- The game's saves and climates, as the menu's app gives them. SAVES maps
+-- a save's name to its climate resource and year; READS counts the saves
+-- read.
+SAVES = {}
+READS = 0
+app = {
+	SaveGameNamespace = { getSavegame = function() return "savegame" end },
+	findAllSavegames = function(namespace)
+		local found = {}
+		for name in pairs(SAVES) do found[#found + 1] = { saveName = name, path = "saves/" .. name .. ".sav" } end
+		return found
+	end,
+	getSavegameInfo = function(id)
+		READS = READS + 1
+		local save = assert(SAVES[id.saveGameName], "no save " .. tostring(id.saveGameName))
+		return {
+			isCompleted = function() return true end,
+			get = function()
+				return { info = {
+					configDict = { { "climate", save.climate }, { "seed", "1" } },
+					metadata = { date = save.year, startYear = save.year },
+				} }
+			end,
+		}
+	end,
+	res = { climateRep = {
+		find = function(res) return res == "::/climates/dry/dry.clima" and 3 or -1 end,
+		get = function(id) return { desc = { name = "Dry", icon = "::/climates/dry/icon.tga" } } end,
+	} },
 }
 
 -- The hook's answers, as crates/tpf3mp-hook/src/menu_entry.rs gives them.
@@ -103,7 +137,8 @@ local function sized(params, what)
 end
 
 for _i, view in ipairs({ "BoxLayout", "Component", "TextView", "Button", "ImageView", "TextInputField",
-		"ScrollArea", "ComboBox", "ComboBoxItem", "ProgressBar", "FloatingLayout" }) do
+		"ScrollArea", "ComboBox", "ComboBoxItem", "ProgressBar", "FloatingLayout", "FloatingLayoutChild",
+		"ShaderQuad" }) do
 	builtin[view] = function(params)
 		whole(params.children, view)
 		whole(params.items, view)
@@ -146,11 +181,37 @@ local button_react_util = {
 	end,
 }
 
+-- The main menu's card button, as menu_icon_react_util.tl builds it: a
+-- recipe (so it returns a layout) around a Button.
+CARD_CLICKS = {}
+local menu_icon_react_util = {
+	makeCardLabelBottomComponent = function(title, description, right)
+		local children = {
+			builtin.TextView{ text = title },
+			description and builtin.TextView{ text = description } or builtin.TextView{ text = "" },
+			right and builtin.TextView{ text = right } or builtin.TextView{ text = "" },
+		}
+		return builtin.FloatingLayout{ children = children }
+	end,
+}
+menu_icon_react_util.CardButton = react.RegisterRecipe("CardButton", function(params)
+	return builtin.BoxLayout{ children = {
+		builtin.Button{
+			meta = { tooltip = params.tooltip, enabled = params.enabled, class = "main-menu-card, " .. tostring(params.class) },
+			content = builtin.Component{ layout = builtin.FloatingLayout{ children = { params.bottomComponent } } },
+			onClick = params.onClick,
+			card = true,
+			images = params.images,
+		},
+	} }
+end)
+
 local modules = {
 	["::/gui/main/react.lua"] = react,
 	["::/gui/main/builtin.lua"] = builtin,
 	["::/gui/main/gui_react_util.tl"] = gui_react_util,
 	["::/gui/main/button_react_util.tl"] = button_react_util,
+	["::/gui/menu/menu_icon_react_util.tl"] = menu_icon_react_util,
 }
 function ug_require(path)
 	return assert(modules[path], "no module " .. path)
@@ -275,4 +336,24 @@ function offered(caption)
 		end
 	end)
 	return values, chosen
+end
+
+-- The room cards shown: each the texts on it, its picture and its click.
+function room_cards()
+	local found = {}
+	walk(tree, function(node)
+		if node.view == "Button" and node.params.card then
+			local texts = {}
+			walk(node.params.content, function(inner)
+				if inner.view == "TextView" then texts[#texts + 1] = inner.params.text end
+			end)
+			found[#found + 1] = {
+				text = table.concat(texts, "\n"),
+				picture = node.params.images[1],
+				click = node.params.onClick,
+				enabled = node.params.meta.enabled ~= false,
+			}
+		end
+	end)
+	return found
 end

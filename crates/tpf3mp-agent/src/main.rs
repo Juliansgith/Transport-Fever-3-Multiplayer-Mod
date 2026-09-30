@@ -244,6 +244,7 @@ async fn run(command: Command) -> Result<()> {
                     password: password.clone(),
                     settings: RoomSettings::DEFAULT,
                     rules: rules.map(Text::new).transpose().context("rules")?,
+                    listing: None,
                 })
                 .await?;
             println!("invite: {invite}");

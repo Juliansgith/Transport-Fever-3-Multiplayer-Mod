@@ -65,6 +65,9 @@ const LOBBY_TICK: Duration = Duration::from_millis(100);
 /// How often the player's saves are looked at again, for the game's window
 /// to offer as a room's start save.
 const SAVES_TICK: Duration = Duration::from_secs(5);
+/// How long the launcher watches a game link it finds already made for
+/// another launcher's heartbeat, before taking it.
+const LINK_HELD_WAIT: Duration = Duration::from_millis(350);
 
 /// What a launcher needs.
 #[derive(Debug, Clone)]
@@ -369,6 +372,16 @@ type Idle = Option<IdleLink<tpf3mp_ipc::Link>>;
 /// Opens the link the game's hook attaches to (D11: the launcher names it in
 /// the game's environment), as a new generation.
 fn open_link(config: &LauncherConfig) -> Result<IdleLink<tpf3mp_ipc::Link>, String> {
+    // Another launcher running with the same link would lose its game to
+    // this one, and each game would show the other launcher's lobby.
+    if let Some(pid) = tpf3mp_ipc::Link::held_by_another_agent(&config.link, LINK_HELD_WAIT) {
+        let message = format!(
+            "another TPF3-MP launcher (process {pid}) uses the game link {}: start this launcher with its own --game-link, or close the other",
+            config.link
+        );
+        warn!(%message);
+        return Err(message);
+    }
     tpf3mp_ipc::Link::create(
         &tpf3mp_ipc::Config::new(&config.link),
         tpf3mp_ipc::Role::Agent,
@@ -392,7 +405,11 @@ async fn control(
     // before a room is chosen, and its menu's window talks to the launcher
     // over it (D17).
     let mut idle: Idle = open_link(&config)
-        .inspect_err(|error| warn!(%error, "the game's link opens with the first room instead"))
+        .inspect_err(|error| {
+            warn!(%error, "the game's link opens with the first room instead");
+            // Said in the window too: two launchers on one link cross.
+            shared.view().error = Some(error.clone());
+        })
         .ok();
     let mut tick = tokio::time::interval(LOBBY_TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -564,6 +581,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::ChooseMod { .. } => "choose_mod",
         Action::Diagnostics { .. } => "diagnostics",
         Action::LaunchGame => "launch_game",
+        Action::ListRooms { .. } => "list_rooms",
     }
 }
 
@@ -629,6 +647,7 @@ async fn act(
             password,
             rules,
             start_save,
+            listing,
         } => {
             let current = connected.as_ref().ok_or("connect to a server first")?;
             let rules = match rules.as_deref().map(str::trim) {
@@ -661,6 +680,13 @@ async fn act(
                 password: password_text(password)?,
                 settings: config.room_settings,
                 rules,
+                // A public room starts with one company, the save's own
+                // (D21); its owner says when there are more.
+                listing: listing.map(|listing| tpf3mp_proto::RoomListing {
+                    map: Text::lossy(listing.map.trim()),
+                    year: listing.year,
+                    companies: 1,
+                }),
             };
             let (invite, room) = current
                 .client
@@ -750,6 +776,16 @@ async fn act(
                     .status()
                     .notice("the mods you choose now load with the room's next world".to_owned());
             }
+            Ok(())
+        }
+        Action::ListRooms { page } => {
+            let current = connected.as_ref().ok_or("connect to a server first")?;
+            let page = current
+                .client
+                .list_rooms(page)
+                .await
+                .map_err(|error| error.to_string())?;
+            shared.view().rooms = Some(api::RoomList::of(&page));
             Ok(())
         }
         Action::Diagnostics { on } => {

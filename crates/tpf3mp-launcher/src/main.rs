@@ -283,6 +283,7 @@ fn auto_room(
                     password: None,
                     rules: None,
                     start_save: None,
+                    listing: None,
                 })
                 .await
             {

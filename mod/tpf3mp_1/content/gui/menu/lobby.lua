@@ -409,6 +409,162 @@ local function heading(text, sub)
 	return column(children)
 end
 
+-- The room browser --------------------------------------------------------------
+
+-- Cards a row of the room list holds, and a card's size: the game's
+-- new-game climate cards (`small-rectangle-card`, 316 by 181) a little
+-- smaller, three to the window's width.
+local CARDS_PER_ROW = 3
+local CARD_WIDTH, CARD_HEIGHT = 272, 156
+-- Polls between two asks for the room list while it is shown.
+local LIST_POLLS = 25
+
+-- The game's own card button and label, as its main menu builds them; nil
+-- if the game has none, and a plain button with a picture is drawn instead.
+local cards = (function()
+	local ok, util = pcall(ug_require, "::/gui/menu/menu_icon_react_util.tl")
+	if ok and type(util) == "table" and util.CardButton and util.makeCardLabelBottomComponent then
+		return util
+	end
+	return nil
+end)()
+
+-- The game's pictures of each climate on its main menu's New Game card,
+-- for a climate whose own description has no picture.
+local CLIMATE_PICTURES = {
+	temperate = "::/gui/menu/images/temperate_ingame.tga",
+	subarctic = "::/gui/menu/images/subarctic_ingame.tga",
+	tropical = "::/gui/menu/images/tropical_ingame.tga",
+	dry = "::/gui/menu/images/dry_ingame.tga",
+}
+local UNKNOWN_PICTURE = "::/gui/menu/images/m05_ingame.tga"
+
+-- The game's description of the climate `map` names (`temperate`), if it
+-- has one: what its New Game page shows, its name and its picture.
+local function climate(map)
+	if type(map) ~= "string" or map == "" then return nil end
+	local ok, desc = pcall(function()
+		local rep = app.res.climateRep
+		local id = rep.find("::/climates/" .. map .. "/" .. map .. ".clima")
+		if id == nil or id < 0 then return nil end
+		return rep.get(id).desc
+	end)
+	return ok and desc or nil
+end
+
+-- The climate's name, as players read it.
+function lobby.climateName(map)
+	local desc = climate(map)
+	if desc and type(desc.name) == "string" and desc.name ~= "" then return desc.name end
+	if type(map) ~= "string" or map == "" then return _("Unknown map") end
+	return (map:gsub("^%l", string.upper))
+end
+
+-- The picture of the climate `map` names.
+function lobby.climatePicture(map)
+	local desc = climate(map)
+	if desc and type(desc.icon) == "string" and desc.icon ~= "" then return desc.icon end
+	return CLIMATE_PICTURES[map] or UNKNOWN_PICTURE
+end
+
+-- A save's climate and year, as the game's Load Game page reads them
+-- (savegame_react_util.tl): the save's configDict "climate" and its
+-- metadata's date. Read once, in the background (app.getSavegameInfo);
+-- until then, or when the game cannot say, the map is "" and the year 0.
+local saveDetailsRead = {}
+local function yearOf(metadata)
+	local ok, year = pcall(function() return api.type.Date.new(metadata.date).year end)
+	if ok and type(year) == "number" and year > 1000 and year < 3000 then return math.floor(year) end
+	if type(metadata.startYear) == "number" and metadata.startYear > 1000 then return math.floor(metadata.startYear) end
+	return 0
+end
+function lobby.saveDetails(name)
+	local read = saveDetailsRead[name]
+	if not read then
+		read = { map = "", year = 0 }
+		saveDetailsRead[name] = read
+		local ok, async = pcall(function()
+			local namespace = app.SaveGameNamespace.getSavegame()
+			for _i, info in ipairs(app.findAllSavegames(namespace) or {}) do
+				if info.saveName == name or info.saveName == name .. ".sav" then
+					local id = api.type.SavegameId.new()
+					id.path = info.path
+					id.saveGameName = info.saveName
+					id.saveGameNamespace = namespace
+					return app.getSavegameInfo(id)
+				end
+			end
+			return nil
+		end)
+		read.async = ok and async or nil
+		if not ok then say("the save " .. tostring(name) .. " could not be read: " .. tostring(async)) end
+	end
+	if read.async then
+		local ok, done = pcall(function() return read.async:isCompleted() end)
+		if ok and done then
+			local got, data = pcall(function() return read.async:get() end)
+			read.async = nil
+			if got and data and data.info then
+				for _i, pair in ipairs(data.info.configDict or {}) do
+					if pair[1] == "climate" and type(pair[2]) == "string" then
+						read.map = pair[2]:match("([%w_]+)%.clima$") or pair[2]
+					end
+				end
+				if data.info.metadata then read.year = yearOf(data.info.metadata) end
+			end
+		elseif not ok then
+			read.async = nil
+		end
+	end
+	return read
+end
+
+-- One public room of the list, as a card in the game's own style: the
+-- picture of its map, its name, and players, companies and year under it.
+function lobby.roomCard(listed, onClick, enabled)
+	local title = listed.name
+	local line = string.format(_("%d/%d players · %d %s · %s"), listed.players, listed.max_players,
+		listed.companies, listed.companies == 1 and _("company") or _("companies"),
+		listed.year > 0 and tostring(listed.year) or _("year unknown"))
+	local right = listed.running and _("Playing") or lobby.climateName(listed.map)
+	local lock = listed.has_password and builtin.FloatingLayoutChild{
+		h = 0.95,
+		v = 0.06,
+		item = builtin.ImageView{
+			meta = { mouseTransparent = true, styleSheet = style{ size = { 24, 24 } } },
+			path = ICON.lock,
+		},
+	} or nil
+	local card
+	if cards then
+		card = cards.CardButton{
+			bottomComponent = cards.makeCardLabelBottomComponent(title, line, right, nil, false),
+			onClick = onClick,
+			tooltip = listed.has_password and _("Has a password") or _("Join this room"),
+			images = { lobby.climatePicture(listed.map) },
+			initialImageIndex = 1,
+			class = "small-rectangle-card",
+			enabled = enabled,
+			extraChildren = lock and { lock } or {},
+		}
+	else
+		card = builtin.Button{
+			meta = { enabled = enabled },
+			content = column({
+				icon(lobby.climatePicture(listed.map), CARD_HEIGHT - 60),
+				label(title, "font-scale-body"),
+				note(line),
+				note(right),
+			}),
+			onClick = onClick,
+		}
+	end
+	return builtin.Component{
+		meta = { styleSheet = style{ size = { CARD_WIDTH, CARD_HEIGHT } } },
+		layout = builtin.BoxLayout{ children = { card } },
+	}
+end
+
 -- The window's content, rendered inside the Tpf3mpLobbyWindow recipe. ------
 
 -- `focus` is what the card that opened the window is about: "join" puts
@@ -431,6 +587,14 @@ function lobby.content(onClose, focus)
 	local playersS = react.useState(DEFAULT_PLAYERS)
 	local rulesS = react.useState(nil)
 	local saveS = react.useState(nil)
+	-- The room browser: the tab shown, a public room's choice, the public
+	-- room with a password being joined, the save picked, and polls since
+	-- the room list was last asked for.
+	local tabS = react.useState(nil)
+	local publicS = react.useState("private")
+	local joiningS = react.useState(nil)
+	local pickedSaveRef = react.useRef("")
+	local listAtRef = react.useRef(LIST_POLLS)
 
 	-- What the view shows, in one string: when it changes, an action sent
 	-- has been answered.
@@ -460,6 +624,17 @@ function lobby.content(onClose, focus)
 				end
 			end
 			stateS:set(state)
+			-- The room list, while it is shown: asked for at once, then
+			-- every LIST_POLLS polls (the server allows one a second).
+			local browsing = state.connection == "connected" and not state.room and state.linked
+				and (tabS:old() or (focus == "join" and "invite" or "browse")) == "browse"
+			if browsing then
+				listAtRef:set(listAtRef:get() + 1)
+				if state.rooms == nil and listAtRef:get() >= 3 or listAtRef:get() >= LIST_POLLS then
+					listAtRef:set(0)
+					act({ action = "list_rooms", page = state.rooms and state.rooms.page or 0 })
+				end
+			end
 		elseif problemS:old() ~= why then
 			problemS:set(why)
 		end
@@ -603,7 +778,9 @@ function lobby.content(onClose, focus)
 
 	local room = state.room
 	if not room then
-		-- Connected, no room: create one or join one, side by side.
+		-- Connected, no room: browse the public rooms, create one, or join
+		-- one by invite, one tab at a time.
+		local tab = tabS:old() or (focus == "join" and "invite" or "browse")
 		local rules = state.rules or {}
 		local rulesItems = {}
 		for i, offered in ipairs(rules) do
@@ -626,62 +803,162 @@ function lobby.content(onClose, focus)
 			end
 			if pickedSave == "" and saves[1] then pickedSave = saves[1] end
 		end
+		pickedSaveRef:set(pickedSave)
 		local playersItems = {}
 		for n = MIN_PLAYERS, MAX_PLAYERS do
 			playersItems[#playersItems + 1] = { n, string.format(_("%d players"), n) }
 		end
+		local public = publicS:old() == "public"
+		local details = pickedSave ~= "" and lobby.saveDetails(pickedSave) or nil
 
 		local function create()
 			local named = roomName:get()
 			if named == nil or named:match("^%s*$") then
 				named = string.format(_("%s's room"), state.name)
 			end
-			send({
+			local fields = {
 				action = "create",
 				room = named,
 				password = createPassword:get() or "",
 				max_players = playersS:old(),
 				rules = pickedRules or "",
 				start_save = pickedSave,
-			}, _("Creating the room..."))
+				public = public,
+			}
+			if public then
+				fields.map = details and details.map or ""
+				fields.year = details and details.year or 0
+			end
+			send(fields, _("Creating the room..."))
 		end
-		local function join()
-			local code = (invite:get() or ""):gsub("%s", ""):upper()
+		local function joinBy(code, password)
+			code = (code or ""):gsub("%s", ""):upper()
 			if code == "" then
 				refusedS:set(_("Type the invite code a friend sent you."))
 				return
 			end
-			send({ action = "join", invite = code, password = joinPassword:get() or "" }, _("Joining the room..."))
+			joiningS:set(nil)
+			send({ action = "join", invite = code, password = password or "" }, _("Joining the room..."))
 		end
 
-		local createColumn = column({
-			heading(_("Create a room"), _("You own it: you start its game, and can remove players.")),
-			field(_("Room name"), roomName, string.format(_("%s's room"), state.name), { maxLength = 48 }),
-			choice(_("Start from this save"), pickedSave, saveItems, function(value) saveS:set(value) end,
-				pickedSave ~= "" and _("Every player's game loads it from the menu when you start.")
-					or _("Load a world in the game once in the room: it is saved for everyone.")),
-			row({
-				choice(_("Players"), playersS:old(), playersItems, function(value) playersS:set(value) end),
-			}),
-			#rulesItems > 1 and choice(_("Rules"), pickedRules or rulesItems[1][1], rulesItems,
-				function(value) rulesS:set(value) end, explainRules) or gap(0),
-			field(_("Password (optional)"), createPassword, "", { password = true, maxLength = 64 }),
-			row({ primary(_("Create room"), create, canAct and not busy) }),
-		}, style{ size = { LEFT, AUTO } })
+		local tabs = {}
+		for _i, entry in ipairs({
+			{ "browse", _("Public rooms") },
+			{ "create", _("Create a room") },
+			{ "invite", _("Join with an invite") },
+		}) do
+			tabs[#tabs + 1] = button(entry[2], function() tabS:set(entry[1]) end,
+				entry[1] == tab and "primary" or "secondary")
+		end
 
-		local joinColumn = column({
-			heading(_("Join a room"), _("Rooms are private: ask a friend for their invite.")),
-			field(_("Invite code"), invite, "K7QM2X", { maxLength = 128, onEnter = nil }),
-			field(_("Password (if the room has one)"), joinPassword, "", { password = true, maxLength = 64 }),
-			row({ primary(_("Join room"), join, canAct and not busy) }),
-			gap(16),
-			note(string.format(_("%s lists no rooms: an invite is the way in."), serverName(state))),
-		}, style{ size = { RIGHT, AUTO } })
-
-		local columns = focus == "join" and { joinColumn, gap(40), createColumn } or { createColumn, gap(40), joinColumn }
+		local body
+		if tab == "create" then
+			local where = public
+				and (details and details.map ~= ""
+					and string.format(_("Listed for everyone on %s: %s, %s."), serverName(state),
+						lobby.climateName(details.map), details.year > 0 and tostring(details.year) or _("year unknown"))
+					or string.format(_("Listed for everyone on %s."), serverName(state)))
+				or _("Only players you send the invite to can find it.")
+			body = row({
+				column({
+					heading(_("Create a room"), _("You own it: you start its game, and can remove players.")),
+					field(_("Room name"), roomName, string.format(_("%s's room"), state.name), { maxLength = 48 }),
+					choice(_("Start from this save"), pickedSave, saveItems, function(value) saveS:set(value) end,
+						pickedSave ~= "" and _("Every player's game loads it from the menu when you start.")
+							or _("Load a world in the game once in the room: it is saved for everyone.")),
+					choice(_("Players"), playersS:old(), playersItems, function(value) playersS:set(value) end),
+				}, style{ size = { LEFT, AUTO } }),
+				gap(30),
+				column({
+					gap(40),
+					choice(_("Who can find it"), public and "public" or "private", {
+						{ "private", _("Private: invite only") },
+						{ "public", _("Public: in the room list") },
+					}, function(value) publicS:set(value) end, where),
+					#rulesItems > 1 and choice(_("Rules"), pickedRules or rulesItems[1][1], rulesItems,
+						function(value) rulesS:set(value) end, explainRules) or gap(1),
+					field(_("Password (optional)"), createPassword, "", { password = true, maxLength = 64 }),
+					row({ primary(_("Create room"), create, canAct and not busy) }),
+				}, style{ size = { RIGHT, AUTO } }),
+			})
+		elseif tab == "invite" then
+			body = column({
+				heading(_("Join with an invite"), _("A friend's private room: ask them for its invite.")),
+				field(_("Invite code"), invite, "K7QM2X", { maxLength = 128 }),
+				field(_("Password (if the room has one)"), joinPassword, "", { password = true, maxLength = 64 }),
+				row({ primary(_("Join room"), function() joinBy(invite:get(), joinPassword:get()) end, canAct and not busy) }),
+			}, style{ size = { RIGHT, AUTO } })
+		else
+			local list = state.rooms
+			local found = list and list.list or {}
+			local page = list and list.page or 0
+			local function askPage(at)
+				listAtRef:set(0)
+				send({ action = "list_rooms", page = at }, nil)
+			end
+			local cards = {}
+			for _i, listed in ipairs(found) do
+				cards[#cards + 1] = lobby.roomCard(listed, function()
+					if listed.has_password then
+						joiningS:set({ invite = listed.invite, name = listed.name })
+					else
+						joinBy(listed.invite, "")
+					end
+				end, canAct and not busy)
+			end
+			local rows = {}
+			for first = 1, #cards, CARDS_PER_ROW do
+				local cells = {}
+				for i = first, math.min(first + CARDS_PER_ROW - 1, #cards) do
+					if i > first then cells[#cells + 1] = gap(12) end
+					cells[#cells + 1] = cards[i]
+				end
+				rows[#rows + 1] = row(cells)
+				rows[#rows + 1] = gap(12)
+			end
+			if #rows == 0 then
+				rows[1] = note(list and _("No public rooms right now. Create one, and make it public.")
+					or _("Asking the server for its rooms..."))
+			end
+			local children = {
+				row({
+					heading(string.format(_("Public rooms on %s"), serverName(state)),
+						_("Click a room to join it. Private rooms join with an invite.")),
+					gui_react_util.makeHorizontalSpacer(),
+					button(_("Previous"), function() askPage(page - 1) end, nil, canAct and page > 0),
+					gap(6),
+					button(_("Next"), function() askPage(page + 1) end, nil, canAct and list ~= nil and list.more),
+					gap(6),
+					button(_("Refresh"), function() askPage(page) end, nil, canAct),
+				}),
+				builtin.ScrollArea{
+					meta = { styleSheet = style{ size = { WIDTH - 40, HEIGHT - 250 } } },
+					horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+					verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+					content = column(rows),
+				},
+			}
+			local joining = joiningS:old()
+			if joining then
+				children[#children + 1] = gap(8)
+				children[#children + 1] = row({
+					label(string.format(_("%s has a password:"), joining.name), "font-scale-body"),
+					gap(8),
+					input(joinPassword, _("Password"), 220, {
+						password = true, maxLength = 64,
+						onEnter = function(value) joinBy(joining.invite, value) end,
+					}),
+					gap(8),
+					primary(_("Join"), function() joinBy(joining.invite, joinPassword:get()) end, canAct and not busy),
+					gap(6),
+					button(_("Cancel"), function() joiningS:set(nil) end),
+				})
+			end
+			body = column(children)
+		end
 		return frame(
 			status,
-			row(columns),
+			column({ row(spaced(tabs, 6)), gap(12), body }),
 			{
 				button(_("Disconnect"), function() send({ action = "disconnect" }, _("Disconnecting...")) end, nil, canAct),
 				gui_react_util.makeHorizontalSpacer(),

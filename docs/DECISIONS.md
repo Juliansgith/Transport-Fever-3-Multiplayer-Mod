@@ -889,3 +889,35 @@ refused), which the owner settles. "The room's required mods from Mod Hub
 IDs" stands. No "mods round" in which the host sends its mods to joiners was
 found in the code or the docs of `dev` (2026-09-30); if one is planned, it
 would send the shared mods only.
+
+## D26 (2026-09-30, *proposed*): a room's owner may list it publicly
+
+*Proposed for the owner (Juliansgith) to decide; not in force until
+approved.* The user asked on 2026-09-30 for a room browser in the game's
+Multiplayer window: "a scrollable list where the buttons are the map type
+the host picks, shows the lobby name, number of players/number of
+companies and what year it is".
+
+- **Private stays the default.** A room is joined by the invite its
+  members pass on, as D13 has it, unless its owner creates it **public**
+  (`CreateRoom::listing`). Nothing about a private room is ever listed.
+- **A public room's invite is public.** The server's list
+  (`ListRooms`, 20 a page) gives each public room's invite, name, rules,
+  players and limit, whether it has a password, its phase, and what its
+  owner declares: the map's climate, the game's year and its companies.
+  A password still guards a public room.
+- **Kept in memory only.** The server stores a public room's invite beside
+  the room, never in its log, so a room restored after a restart is
+  private again, and its log gives no invite away (D13).
+- **Bounded and rate-limited.** A page holds at most 20 rooms; a connection
+  asks for one page a second, with a burst of five.
+
+This narrows D13's "invites cannot be used to probe which rooms exist" to
+private rooms: a public room is meant to be found.
+
+Rejected:
+
+- **Public by default**: invites were private until now, and players who
+  shared one with friends did not agree to strangers joining.
+- **Listing without the invite, joining by room id**: a second way into a
+  room beside the invite, for the same result.

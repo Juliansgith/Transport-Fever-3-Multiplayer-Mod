@@ -5,8 +5,8 @@
 
 use mlua::{Function, Lua, Table};
 use tpf3mp_bridge::{
-    LobbyAction, LobbyConnection, LobbyLine, LobbyMember, LobbyRoom, LobbyRules, LobbyView,
-    LobbyWorld,
+    LobbyAction, LobbyConnection, LobbyLine, LobbyListing, LobbyMember, LobbyPublicRoom, LobbyRoom,
+    LobbyRoomList, LobbyRules, LobbyView, LobbyWorld,
 };
 use tpf3mp_proto::{BoundedVec, FixedBytes, PlayerId, Text};
 
@@ -74,8 +74,17 @@ fn has_button(lua: &Lua, label: &str) -> bool {
         .is_some()
 }
 
-/// What the window sent, as the hook parses it; and forgets it.
+/// What the window sent, as the hook parses it, but the room list it asks
+/// for by itself; and forgets it.
 fn sent(lua: &Lua) -> Vec<LobbyAction> {
+    sent_all(lua)
+        .into_iter()
+        .filter(|action| !matches!(action, LobbyAction::ListRooms { .. }))
+        .collect()
+}
+
+/// Everything the window sent, as the hook parses it; and forgets it.
+fn sent_all(lua: &Lua) -> Vec<LobbyAction> {
     let list: Table = lua.globals().get("SENT").unwrap();
     let actions = list
         .sequence_values::<String>()
@@ -215,8 +224,12 @@ fn a_room_is_created_with_the_rules_players_and_save_picked() {
     show(&lua, Some(&online()));
     open(&lua, None);
     let shown = texts(&lua);
-    assert!(shown.contains("Create a room") && shown.contains("Join a room"));
-    assert!(shown.contains("EU lists no rooms"), "{shown}");
+    assert!(
+        shown.contains("Public rooms on EU"),
+        "the room list first: {shown}"
+    );
+    click(&lua, "Create a room");
+    assert!(texts(&lua).contains("Private: invite only"));
     // The saves, the launcher's own first choice picked, and a way to load
     // a world by hand.
     let (values, chosen): (Vec<String>, String) = lua
@@ -240,6 +253,7 @@ fn a_room_is_created_with_the_rules_players_and_save_picked() {
             password: None,
             rules: Some(Text::new("canonical").unwrap()),
             start_save: Some(Text::new("mptest").unwrap()),
+            listing: None,
         }]
     );
     assert!(texts(&lua).contains("Creating the room..."));
@@ -256,6 +270,7 @@ fn a_room_can_start_without_a_save_and_is_named_for_its_owner() {
         }),
     );
     open(&lua, None);
+    click(&lua, "Create a room");
     let (_, chosen): (Vec<String>, String) = lua
         .globals()
         .get::<Function>("offered")
@@ -286,16 +301,15 @@ fn a_room_is_joined_by_its_invite_with_its_password() {
     open(&lua, Some("join"));
     let shown = texts(&lua);
     assert!(
-        shown.find("Join a room") < shown.find("Create a room"),
-        "the Join a friend card puts joining first"
+        shown.contains("A friend's private room") && !shown.contains("Start from this save"),
+        "the Join a friend card opens joining by invite: {shown}"
     );
     // Nothing typed: said, and nothing sent.
     click(&lua, "Join room");
     assert!(sent(&lua).is_empty());
     assert!(texts(&lua).contains("Type the invite code"));
     call(&lua, "type_into", ("K7QM2X", " k7qm2x "));
-    // The first field without a placeholder: joining's password, as joining
-    // comes first.
+    // The field without a placeholder: the room's password.
     call(&lua, "type_into", ("", "pw"));
     click(&lua, "Join room");
     assert_eq!(
@@ -312,6 +326,7 @@ fn what_the_hook_refuses_is_shown_until_the_next_action() {
     let lua = menu();
     show(&lua, Some(&online()));
     open(&lua, None);
+    click(&lua, "Create a room");
     lua.globals()
         .set("REPLY", "error: that room name is too long")
         .unwrap();
@@ -500,4 +515,171 @@ fn the_cards_say_where_the_player_is() {
         line(Some(&online()), true, "joinLine"),
         "With the invite code they send you"
     );
+}
+
+fn public_room(name: &str, map: &str, players: u8, password: bool) -> LobbyPublicRoom {
+    LobbyPublicRoom {
+        invite: Text::new(format!("INV{}", name.len())).unwrap(),
+        name: Text::new(name).unwrap(),
+        rules: Text::new("native").unwrap(),
+        players,
+        max_players: 4,
+        has_password: password,
+        running: false,
+        map: Text::new(map).unwrap(),
+        year: 1873,
+        companies: 2,
+    }
+}
+
+fn browsing(rooms: Vec<LobbyPublicRoom>, page: u16, more: bool) -> LobbyView {
+    LobbyView {
+        rooms: Some(LobbyRoomList {
+            page,
+            rooms: BoundedVec::new(rooms).unwrap(),
+            more,
+        }),
+        ..online()
+    }
+}
+
+fn cards(lua: &Lua) -> Vec<Table> {
+    let list: Table = lua
+        .globals()
+        .get::<Function>("room_cards")
+        .unwrap()
+        .call(())
+        .unwrap();
+    list.sequence_values::<Table>()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn the_window_asks_for_the_room_list_and_shows_each_room_as_a_card() {
+    let lua = menu();
+    show(&lua, Some(&online()));
+    open(&lua, None);
+    assert_eq!(
+        sent_all(&lua),
+        [LobbyAction::ListRooms { page: 0 }],
+        "asked for at once"
+    );
+    assert!(texts(&lua).contains("Asking the server for its rooms"));
+    show(
+        &lua,
+        Some(&browsing(
+            vec![
+                public_room("Dry run", "dry", 2, false),
+                public_room("Snowy", "subarctic", 1, true),
+                public_room("Somewhere", "", 3, false),
+                public_room("Fourth", "temperate", 1, false),
+            ],
+            0,
+            true,
+        )),
+    );
+    call(&lua, "tick", ());
+    let shown = cards(&lua);
+    assert_eq!(shown.len(), 4);
+    let first = &shown[0];
+    let text: String = first.get("text").unwrap();
+    assert!(text.contains("Dry run"), "{text}");
+    assert!(text.contains("2/4 players · 2 companies · 1873"), "{text}");
+    assert!(text.contains("Dry"), "the climate's own name: {text}");
+    assert_eq!(
+        first.get::<String>("picture").unwrap(),
+        "::/climates/dry/icon.tga",
+        "the climate's own picture"
+    );
+    assert_eq!(
+        shown[1].get::<String>("picture").unwrap(),
+        "::/gui/menu/images/subarctic_ingame.tga",
+        "the menu's picture of it"
+    );
+    assert_eq!(
+        shown[2].get::<String>("picture").unwrap(),
+        "::/gui/menu/images/m05_ingame.tga",
+        "a map it does not know"
+    );
+    // A room without a password joins with a click.
+    first
+        .get::<Function>("click")
+        .unwrap()
+        .call::<()>(())
+        .unwrap();
+    call(&lua, "render", ());
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Join {
+            invite: Text::new("INV7").unwrap(),
+            password: None,
+        }]
+    );
+}
+
+#[test]
+fn a_room_with_a_password_asks_for_it_and_pages_move_on() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&browsing(
+            vec![public_room("Snowy", "subarctic", 1, true)],
+            1,
+            false,
+        )),
+    );
+    open(&lua, None);
+    sent_all(&lua);
+    assert!(enabled(&lua, "Previous") && !enabled(&lua, "Next"));
+    click(&lua, "Previous");
+    assert_eq!(sent_all(&lua), [LobbyAction::ListRooms { page: 0 }]);
+    cards(&lua)[0]
+        .get::<Function>("click")
+        .unwrap()
+        .call::<()>(())
+        .unwrap();
+    call(&lua, "render", ());
+    assert!(sent(&lua).is_empty(), "the password first");
+    assert!(texts(&lua).contains("Snowy has a password"));
+    call(&lua, "type_into", ("Password", "pw"));
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Join {
+            invite: Text::new("INV5").unwrap(),
+            password: Some(Text::new("pw").unwrap()),
+        }]
+    );
+}
+
+#[test]
+fn a_public_room_is_listed_with_its_saves_climate_and_year() {
+    let lua = menu();
+    let saves: Table = lua.globals().get("SAVES").unwrap();
+    let save = lua.create_table().unwrap();
+    save.set("climate", "::/climates/dry/dry.clima").unwrap();
+    save.set("year", 1900).unwrap();
+    saves.set("mptest", save).unwrap();
+    show(&lua, Some(&online()));
+    open(&lua, None);
+    click(&lua, "Create a room");
+    call(&lua, "choose", ("Who can find it", "public"));
+    assert!(
+        texts(&lua).contains("Listed for everyone on EU: Dry, 1900."),
+        "{}",
+        texts(&lua)
+    );
+    click(&lua, "Create room");
+    let actions: [LobbyAction; 1] = sent(&lua).try_into().unwrap();
+    let [LobbyAction::Create { listing, .. }] = actions else {
+        panic!("not a create")
+    };
+    assert_eq!(
+        listing,
+        Some(LobbyListing {
+            map: Text::new("dry").unwrap(),
+            year: 1900,
+        })
+    );
+    assert_eq!(lua.globals().get::<u32>("READS").unwrap(), 1, "read once");
 }

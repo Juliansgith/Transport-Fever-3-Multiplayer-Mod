@@ -12,9 +12,10 @@
 
 use tpf3mp_bridge::{
     BRIDGE_VERSION, LobbyAction, LobbyConnection, LobbyHave, LobbyLine, LobbyMember, LobbyMod,
-    LobbyModClass, LobbyRoom, LobbyRoomMod, LobbyRules, LobbyView, LobbyWorld, MAX_LOBBY_CHAT,
-    MAX_LOBBY_MODS, MAX_LOBBY_ROOM_MODS, MAX_LOBBY_RULES, MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName,
-    SaveName, ToAgent, ToHook, check_version, decode, encode,
+    LobbyModClass, LobbyPublicRoom, LobbyRoom, LobbyRoomList, LobbyRoomMod, LobbyRules, LobbyView,
+    LobbyWorld, MAX_LOBBY_CHAT, MAX_LOBBY_MODS, MAX_LOBBY_ROOM_MODS, MAX_LOBBY_RULES,
+    MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName, SaveName, ToAgent, ToHook, check_version, decode,
+    encode,
 };
 use tpf3mp_proto::{BoundedVec, Text};
 use tracing::{debug, info, warn};
@@ -171,6 +172,29 @@ pub(crate) fn view(state: &State) -> LobbyView {
         .unwrap_or_default(),
         room_mods_more: u32::try_from(state.room_mods.len().saturating_sub(MAX_LOBBY_ROOM_MODS))
             .unwrap_or(u32::MAX),
+        rooms: state.rooms.as_ref().map(|list| LobbyRoomList {
+            page: list.page,
+            more: list.more,
+            rooms: BoundedVec::new(
+                list.rooms
+                    .iter()
+                    .take(tpf3mp_proto::ROOMS_PER_PAGE)
+                    .map(|room| LobbyPublicRoom {
+                        invite: Text::lossy(&room.invite),
+                        name: Text::lossy(&room.name),
+                        rules: Text::lossy(&room.rules),
+                        players: room.players,
+                        max_players: room.max_players,
+                        has_password: room.has_password,
+                        running: room.running,
+                        map: Text::lossy(&room.map),
+                        year: room.year,
+                        companies: room.companies,
+                    })
+                    .collect(),
+            )
+            .unwrap_or_default(),
+        }),
     }
 }
 
@@ -197,13 +221,19 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
             password,
             rules,
             start_save,
+            listing,
         } => Action::Create {
             room: room.as_str().to_owned(),
             max_players,
             password: password.map(|password| password.as_str().to_owned()),
             rules: rules.map(|rules| rules.as_str().to_owned()),
             start_save: start_save.map(|save| save.as_str().to_owned()),
+            listing: listing.map(|listing| api::Listing {
+                map: listing.map.as_str().to_owned(),
+                year: listing.year,
+            }),
         },
+        LobbyAction::ListRooms { page } => Action::ListRooms { page },
         LobbyAction::Join { invite, password } => Action::Join {
             invite: invite.as_str().to_owned(),
             password: password.map(|password| password.as_str().to_owned()),
@@ -632,6 +662,10 @@ pub(crate) mod tests {
                     password: None,
                     rules: Some(Text::lossy("native")),
                     start_save: Some(Text::lossy("mptest")),
+                    listing: Some(tpf3mp_bridge::LobbyListing {
+                        map: Text::lossy("dry"),
+                        year: 1900,
+                    }),
                 },
                 &state
             ),
@@ -641,7 +675,15 @@ pub(crate) mod tests {
                 password: None,
                 rules: Some("native".into()),
                 start_save: Some("mptest".into()),
+                listing: Some(api::Listing {
+                    map: "dry".into(),
+                    year: 1900,
+                }),
             }
+        );
+        assert_eq!(
+            action(LobbyAction::ListRooms { page: 2 }, &state),
+            Action::ListRooms { page: 2 }
         );
         let bo = PlayerId(FixedBytes([2; 32]));
         assert_eq!(

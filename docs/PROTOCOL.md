@@ -116,6 +116,24 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   the same way (`BadInvite`), so invites cannot be used to probe which
   rooms exist. An address that sends 20 of those in 10 minutes gets
   `RateLimited` for every join until the 10 minutes are up.
+- **The room list** (protocol 9, D26 proposed). A room is **private**
+  unless its owner creates it with a `listing` (`CreateRoom::listing`):
+  the map type (the climate's name, such as `temperate`, up to 32 bytes),
+  the game's year and the number of companies, as the owner's client
+  declares them. `ListRooms { page }` answers `Rooms(RoomPage)`: up to 20
+  public rooms a page (`ROOMS_PER_PAGE`), those in their lobby first, then
+  the fuller, then by name, with `more` when a later page has more. Each
+  entry gives the room's **invite**, name, rules, players and limit,
+  whether it has a password, its phase and its listing: a public room's
+  invite is for anyone to join with, and its password still guards it. A
+  private room is never listed, and its invite never leaves the server
+  but as the answer to its creator. The server keeps a public room's
+  invite in memory only: a room restored after a restart is private. The
+  owner updates the listing with `DescribeRoom(RoomListing)`, such as the
+  year and companies once the game runs; anyone else gets `NotOwner`, and
+  a private room `NotListed`. A connection may ask for one page a second,
+  with a burst of five (`RateLimited` beyond), within its general request
+  limit.
 - **Updates.** Members receive the full room view (`RoomUpdate`) whenever it
   changes. Updates and responses are independent messages: a `RoomUpdate`
   caused by a request can arrive before that request's `Response`.

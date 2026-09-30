@@ -163,6 +163,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             }])
             .unwrap(),
             room_mods_more: 0,
+            rooms: None,
         })),
     ];
     let to_agent = [

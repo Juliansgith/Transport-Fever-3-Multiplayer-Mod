@@ -625,6 +625,17 @@ impl Client {
         }
     }
 
+    /// Page `page` of the server's public rooms.
+    pub async fn list_rooms(&self, page: u16) -> Result<tpf3mp_proto::RoomPage, ClientError> {
+        match self
+            .request(tpf3mp_proto::Request::ListRooms { page })
+            .await?
+        {
+            tpf3mp_proto::Response::Rooms(page) => Ok(page),
+            _ => Err(ClientError::UnexpectedResponse),
+        }
+    }
+
     pub async fn join_room(&self, join: JoinRoom) -> Result<RoomView, ClientError> {
         match self.request(Request::JoinRoom(join)).await? {
             Response::RoomJoined(room) => Ok(room),

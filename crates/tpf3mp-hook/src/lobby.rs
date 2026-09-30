@@ -25,7 +25,8 @@ use std::{
 
 use serde::Deserialize;
 use tpf3mp_bridge::{
-    LobbyAction, LobbyConnection, LobbyHave, LobbyModClass, LobbyView, LobbyWorld, ModName,
+    LobbyAction, LobbyConnection, LobbyHave, LobbyListing, LobbyModClass, LobbyRoomList, LobbyView,
+    LobbyWorld, ModName,
 };
 use tpf3mp_proto::{FixedBytes, PlayerId, Text};
 
@@ -154,6 +155,8 @@ pub struct LobbyState {
     pub room_mods: Vec<RoomMod>,
     /// The room's shared mods beyond `room_mods`.
     pub room_mods_more: u32,
+    /// The page of public rooms last asked for.
+    pub rooms: Option<LobbyRoomList>,
 }
 
 /// What the window sends, as JSON: the tag `action` plus the fields, e.g.
@@ -180,6 +183,18 @@ enum WindowAction {
         /// Absent for the launcher's own start save; empty for none.
         #[serde(default)]
         start_save: Option<String>,
+        /// Lists the room in the server's room list.
+        #[serde(default)]
+        public: bool,
+        /// The start save's climate and year, for the list.
+        #[serde(default)]
+        map: String,
+        #[serde(default)]
+        year: u16,
+    },
+    ListRooms {
+        #[serde(default)]
+        page: u16,
     },
     Join {
         invite: String,
@@ -258,6 +273,9 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
             password: given,
             rules,
             start_save,
+            public,
+            map,
+            year,
         } => LobbyAction::Create {
             room: text(&room, "room name")?,
             max_players: u8::try_from(max_players).unwrap_or(u8::MAX),
@@ -266,7 +284,16 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
             start_save: start_save
                 .map(|save| text::<{ tpf3mp_bridge::MAX_SAVE_NAME }>(&save, "save name"))
                 .transpose()?,
+            listing: public
+                .then(|| {
+                    Ok::<_, String>(LobbyListing {
+                        map: text(&map, "map")?,
+                        year,
+                    })
+                })
+                .transpose()?,
         },
+        WindowAction::ListRooms { page } => LobbyAction::ListRooms { page },
         WindowAction::Join {
             invite,
             password: given,
@@ -304,6 +331,7 @@ pub fn kind(action: &LobbyAction) -> &'static str {
         LobbyAction::Chat { .. } => "chat",
         LobbyAction::Leave => "leave",
         LobbyAction::ChooseMod { .. } => "choose_mod",
+        LobbyAction::ListRooms { .. } => "list_rooms",
     }
 }
 
@@ -363,6 +391,7 @@ impl LobbyState {
             mods: Vec::new(),
             room_mods: Vec::new(),
             room_mods_more: 0,
+            rooms: None,
         }
     }
 
@@ -490,6 +519,7 @@ impl LobbyState {
                 })
                 .collect(),
             room_mods_more: view.room_mods_more,
+            rooms: view.rooms.clone(),
         }
     }
 
@@ -528,7 +558,32 @@ impl LobbyState {
                 lua_str(&rules.description)
             ));
         }
-        out.push_str(" }, saves = {");
+        match &self.rooms {
+            None => out.push_str(" }, rooms = nil"),
+            Some(list) => {
+                out.push_str(&format!(
+                    " }}, rooms = {{ page = {}, more = {}, list = {{",
+                    list.page, list.more
+                ));
+                for room in list.rooms.iter() {
+                    out.push_str(&format!(
+                        " {{ invite = {}, name = {}, rules = {}, players = {}, max_players = {}, has_password = {}, running = {}, map = {}, year = {}, companies = {} }},",
+                        lua_str(room.invite.as_str()),
+                        lua_str(room.name.as_str()),
+                        lua_str(room.rules.as_str()),
+                        room.players,
+                        room.max_players,
+                        room.has_password,
+                        room.running,
+                        lua_str(room.map.as_str()),
+                        room.year,
+                        room.companies
+                    ));
+                }
+                out.push_str(" } }");
+            }
+        }
+        out.push_str(", saves = {");
         for save in &self.saves {
             out.push(' ');
             out.push_str(&lua_str(save));
@@ -710,8 +765,9 @@ mod tests {
                 password: None,
                 rules: None,
                 start_save: None,
+                listing: None,
             }),
-            "without a save named, the launcher's own"
+            "without a save named, the launcher's own, and private"
         );
         assert_eq!(
             parse_action(
@@ -723,7 +779,16 @@ mod tests {
                 password: None,
                 rules: Some(Text::new("native").unwrap()),
                 start_save: Some(Text::new("mptest").unwrap()),
+                listing: None,
             })
+        );
+        assert!(matches!(
+            parse_action(r#"{"action":"create","room":"Alps","public":true,"map":"dry","year":1900}"#),
+            Ok(LobbyAction::Create { listing: Some(LobbyListing { ref map, year: 1900 }), .. }) if map.as_str() == "dry"
+        ));
+        assert_eq!(
+            parse_action(r#"{"action":"list_rooms","page":1}"#),
+            Ok(LobbyAction::ListRooms { page: 1 })
         );
         assert!(
             matches!(
@@ -852,6 +917,23 @@ mod tests {
             }])
             .unwrap(),
             room_mods_more: 2,
+            rooms: Some(tpf3mp_bridge::LobbyRoomList {
+                page: 0,
+                more: false,
+                rooms: BoundedVec::new(vec![tpf3mp_bridge::LobbyPublicRoom {
+                    invite: Text::new("K7QM2X").unwrap(),
+                    name: Text::new("Open \"alps\"").unwrap(),
+                    rules: Text::new("native").unwrap(),
+                    players: 2,
+                    max_players: 4,
+                    has_password: true,
+                    running: false,
+                    map: Text::new("temperate").unwrap(),
+                    year: 1850,
+                    companies: 1,
+                }])
+                .unwrap(),
+            }),
         }
     }
 
