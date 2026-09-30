@@ -620,7 +620,13 @@ pub struct PlaceStop {
     /// The edge's direction at `at` on the originator; a receiver whose edge
     /// runs the other way flips `left`.
     pub direction: UnitDir,
+    /// The stop's construction (Transport Fever 3 builds a stop as one,
+    /// e.g. `stations/street/small_stops/small_new.con`).
     pub model: ResName,
+    /// A stop on both sides at once (a `_twosided` construction): `left`
+    /// names the side the originator's tool put first.
+    #[serde(default)]
+    pub two_sided: bool,
 }
 
 /// One terrain cell: the height it is set to and the height it had, in
@@ -813,11 +819,17 @@ pub enum Action {
     VehicleOp(VehicleOp),
     ReplaceVehicle(ReplaceVehicle),
     Prospect(Prospect),
+    /// A notification's popup played its first sound: the game's
+    /// Notifications script marks it so (its `initialSound` event), in every
+    /// game, so the sound is not played again.
+    NotificationSeen {
+        notification: u32,
+    },
     /// Taking a company rank the company has reached: what TF3's company
     /// window sends the company growth script (`Companies` `applyLevel`,
     /// `game_mechanics/company/company.tl`), the rank being `level` there.
     /// The acting player's company takes it. Appended under schema version
-    /// 9: the variants before it keep their bytes.
+    /// 9, after `NotificationSeen`: the variants before it keep their bytes.
     ApplyRank {
         /// The rank to take, 1 to 15 in the game.
         level: u8,
@@ -1084,7 +1096,7 @@ mod tests {
             rank.to_payload().unwrap().as_bytes(),
             [
                 9,  // schema version
-                16, // Action::ApplyRank, appended under schema version 9
+                17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
         );

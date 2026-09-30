@@ -597,6 +597,8 @@ impl State {
                 LoanOp::Repay { loan } => self.charge(company, loan.amount.max(0)),
             },
             Action::Prospect(prospect) => self.prospect(prospect, company),
+            // A notification's sound played: nothing the model keeps.
+            Action::NotificationSeen { .. } => Ok(()),
             Action::ApplyRank { level } => self.apply_rank(company, *level),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }

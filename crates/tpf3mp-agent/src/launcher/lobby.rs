@@ -11,13 +11,14 @@
 //! the link over already greeted, and gives it back when it ends.
 
 use tpf3mp_bridge::{
-    BRIDGE_VERSION, LobbyAction, LobbyConnection, LobbyLine, LobbyMember, LobbyRoom, LobbyView,
-    MAX_LOBBY_CHAT, ToAgent, ToHook, check_version, decode, encode,
+    BRIDGE_VERSION, LobbyAction, LobbyConnection, LobbyLine, LobbyMember, LobbyRoom, LobbyRules,
+    LobbyView, LobbyWorld, MAX_LOBBY_CHAT, MAX_LOBBY_RULES, MAX_LOBBY_SAVES, MAX_SAVE_NAME,
+    SaveName, ToAgent, ToHook, check_version, decode, encode,
 };
 use tpf3mp_proto::{BoundedVec, Text};
 use tracing::{debug, info, warn};
 
-use super::api::{self, Action, Connection, MemberContent, Phase, State};
+use super::api::{self, Action, Connection, MemberContent, Phase, State, World};
 use crate::bridge::{BridgeFault, HookLink};
 
 /// The lobby the menu's window shows, from what the launcher shows.
@@ -83,7 +84,50 @@ pub(crate) fn view(state: &State) -> LobbyView {
         notice: state.notices.last().map(|notice| Text::lossy(notice)),
         room,
         chat: BoundedVec::new(chat).unwrap_or_default(),
+        rules: BoundedVec::new(
+            state
+                .rules
+                .iter()
+                .take(MAX_LOBBY_RULES)
+                .map(|rules| LobbyRules {
+                    name: Text::lossy(&rules.name),
+                    description: Text::lossy(&rules.description),
+                })
+                .collect(),
+        )
+        .unwrap_or_default(),
+        saves: BoundedVec::new(
+            state
+                .saves
+                .iter()
+                .filter_map(|name| save(name))
+                .take(MAX_LOBBY_SAVES)
+                .collect(),
+        )
+        .unwrap_or_default(),
+        start_save: state.start_save.as_deref().and_then(save),
+        world: match state.game.world {
+            World::None => LobbyWorld::None,
+            World::Fetching => LobbyWorld::Fetching {
+                bytes: state.game.bytes,
+                total: state.game.total,
+            },
+            World::Loading => LobbyWorld::Loading,
+            World::Playing => LobbyWorld::Playing,
+        },
+        differences: state
+            .content_diff
+            .as_ref()
+            .map(|diff| Text::lossy(&diff.summary)),
     }
+}
+
+/// A save's name as the window lists it; a name too long to name whole is
+/// left out, since a shortened one would name no save.
+fn save(name: &str) -> Option<SaveName> {
+    (name.len() <= MAX_SAVE_NAME)
+        .then(|| Text::new(name).ok())
+        .flatten()
 }
 
 /// The launcher action a button of the menu's window stands for. Connect
@@ -99,11 +143,14 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
             room,
             max_players,
             password,
+            rules,
+            start_save,
         } => Action::Create {
             room: room.as_str().to_owned(),
             max_players,
             password: password.map(|password| password.as_str().to_owned()),
-            rules: None,
+            rules: rules.map(|rules| rules.as_str().to_owned()),
+            start_save: start_save.map(|save| save.as_str().to_owned()),
         },
         LobbyAction::Join { invite, password } => Action::Join {
             invite: invite.as_str().to_owned(),
@@ -200,7 +247,7 @@ impl<L: HookLink> IdleLink<L> {
             }
         }
         if self.build.is_some() && self.told.as_ref() != Some(lobby) {
-            let bytes = encode(&ToHook::Lobby(lobby.clone()))?;
+            let bytes = encode(&ToHook::Lobby(Box::new(lobby.clone())))?;
             if self.link.send(&bytes)? {
                 self.told = Some(lobby.clone());
             }
@@ -219,7 +266,7 @@ pub(crate) mod tests {
     use tpf3mp_proto::{FixedBytes, PlayerId};
 
     use super::*;
-    use crate::launcher::{ChatLine, Member, Room};
+    use crate::launcher::{ChatLine, Differences, Game, Member, Room, RulesChoice};
 
     /// Both ends of a link in memory: what each side sent the other.
     #[derive(Clone, Default)]
@@ -300,20 +347,26 @@ pub(crate) mod tests {
                 ToHook::Hello {
                     version: BRIDGE_VERSION
                 },
-                ToHook::Lobby(lobby("Ann"))
+                ToHook::Lobby(Box::new(lobby("Ann")))
             ]
         );
         // Unchanged, it is not sent again; changed, it is.
         idle.pump(&lobby("Ann")).unwrap();
         assert!(fake.hook_hears().is_empty());
         idle.pump(&lobby("Ann B")).unwrap();
-        assert_eq!(fake.hook_hears(), vec![ToHook::Lobby(lobby("Ann B"))]);
+        assert_eq!(
+            fake.hook_hears(),
+            vec![ToHook::Lobby(Box::new(lobby("Ann B")))]
+        );
 
         // Given back by a session, the lobby goes out again at once.
         let (link, build) = idle.into_parts();
         let mut idle = IdleLink::resumed(link, build);
         idle.pump(&lobby("Ann B")).unwrap();
-        assert_eq!(fake.hook_hears(), vec![ToHook::Lobby(lobby("Ann B"))]);
+        assert_eq!(
+            fake.hook_hears(),
+            vec![ToHook::Lobby(Box::new(lobby("Ann B")))]
+        );
     }
 
     #[test]
@@ -378,6 +431,26 @@ pub(crate) mod tests {
                     you: false,
                 })
                 .collect(),
+            rules: vec![RulesChoice {
+                name: "native".into(),
+                description: "The game's own economy".into(),
+            }],
+            saves: vec![
+                "mptest".into(),
+                "x".repeat(MAX_SAVE_NAME + 1),
+                "older".into(),
+            ],
+            start_save: Some("mptest".into()),
+            game: Game {
+                world: World::Fetching,
+                bytes: 10,
+                total: 40,
+                ..Game::default()
+            },
+            content_diff: Some(Differences {
+                summary: "you lack stations 3".into(),
+                ..Differences::default()
+            }),
             ..State::default()
         }
     }
@@ -389,7 +462,7 @@ pub(crate) mod tests {
         assert_eq!(view.server.as_str(), "EU", "as players see it");
         assert_eq!(view.error.as_ref().unwrap().as_str(), "that room is full");
         assert_eq!(view.notice.as_ref().unwrap().as_str(), "new", "the newest");
-        assert!(encode(&ToHook::Lobby(view.clone())).is_ok());
+        assert!(encode(&ToHook::Lobby(Box::new(view.clone()))).is_ok());
         let room = view.room.unwrap();
         assert!(!room.running && room.you_own);
         assert_eq!(room.invite.unwrap().as_str(), "K7QM2X");
@@ -400,6 +473,21 @@ pub(crate) mod tests {
             view.chat.last().unwrap().text.as_str(),
             "line 49",
             "the newest"
+        );
+        assert_eq!(view.rules[0].name.as_str(), "native");
+        let saves: Vec<&str> = view.saves.iter().map(Text::as_str).collect();
+        assert_eq!(saves, ["mptest", "older"], "a name too long is left out");
+        assert_eq!(view.start_save.as_ref().unwrap().as_str(), "mptest");
+        assert_eq!(
+            view.world,
+            LobbyWorld::Fetching {
+                bytes: 10,
+                total: 40
+            }
+        );
+        assert_eq!(
+            view.differences.as_ref().unwrap().as_str(),
+            "you lack stations 3"
         );
     }
 
@@ -424,6 +512,8 @@ pub(crate) mod tests {
                     room: Text::lossy("Alps"),
                     max_players: 4,
                     password: None,
+                    rules: Some(Text::lossy("native")),
+                    start_save: Some(Text::lossy("mptest")),
                 },
                 &state
             ),
@@ -431,7 +521,8 @@ pub(crate) mod tests {
                 room: "Alps".into(),
                 max_players: 4,
                 password: None,
-                rules: None,
+                rules: Some("native".into()),
+                start_save: Some("mptest".into()),
             }
         );
         let bo = PlayerId(FixedBytes([2; 32]));

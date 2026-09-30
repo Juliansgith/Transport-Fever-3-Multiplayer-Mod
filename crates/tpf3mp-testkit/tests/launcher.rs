@@ -445,6 +445,7 @@ async fn a_window_drives_the_launcher_in_process() {
             max_players: 2,
             password: None,
             rules: None,
+            start_save: None,
         })
         .await
         .unwrap();
@@ -502,6 +503,7 @@ async fn a_room_made_after_leaving_one_can_start() {
         max_players: 1,
         password: None,
         rules: None,
+        start_save: None,
     };
     handle.act(create()).await.unwrap();
     handle.act(Action::Leave).await.unwrap();
@@ -622,6 +624,7 @@ async fn a_launcher_with_its_own_server_plays_there_alone() {
             max_players: 2,
             password: None,
             rules: None,
+            start_save: None,
         })
         .await
         .unwrap();
@@ -733,6 +736,8 @@ async fn a_game_at_its_main_menu_plays_the_lobby_through_the_launcher() {
                 room: Text::new("menu room").unwrap(),
                 max_players: 2,
                 password: None,
+                rules: None,
+                start_save: None,
             },
         );
         let view = wait_for(&mut session, "the room", &|view| view.room.is_some());

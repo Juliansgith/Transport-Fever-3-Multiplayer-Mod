@@ -5,7 +5,7 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 11,                 -- bridge.VERSION; anything else is refused
+--     version = 12,                 -- bridge.VERSION; anything else is refused
 --     command = function(action, password), -- the player acted: an action
 --                                   -- table, for the room to order, and a
 --                                   -- company's password for joining or
@@ -56,6 +56,10 @@
 --     dumped  = function(lane, entry), -- optional; one entry of a lane
 --                                   -- dumped, for hook.log -> true | false
 --                                   -- (no more taken)
+--     note    = function(key, value), -- a short string one of the game's
+--                                   -- Lua states notes for the others ("" to
+--                                   -- forget); note(key) reads it -> string
+--                                   -- | nil
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -79,8 +83,10 @@
 
 local bridge = {}
 
--- 11: company passwords: `command` takes a password beside the action,
+-- 12: company passwords: `command` takes a password beside the action,
 -- which the room seals, and `take` hands each action's seal third;
+-- 11: `note`, a short string one of the game's Lua states notes for the
+-- others (the two were each 11 on their own branches);
 -- 10: companies: `take` also names who sent each action, `status` each
 -- player's id (`id`, `me_id`);
 -- 9: the Multiplayer window: the room, its chat (`status`, `chat`, `say`);
@@ -93,7 +99,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 11
+bridge.VERSION = 12
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -196,6 +202,18 @@ end
 
 function Link:log(line)
 	pcall(self.native.log, tostring(line))
+end
+
+-- Notes `value` (a string; "" forgets it) under `key` for the game's other
+-- Lua states, or, without a value, reads what one noted: a string or nil.
+function Link:note(key, value)
+	if value ~= nil then
+		pcall(self.native.note, tostring(key), tostring(value))
+		return nil
+	end
+	local ok, noted = pcall(self.native.note, tostring(key))
+	if ok and type(noted) == "string" then return noted end
+	return nil
 end
 
 -- What the hook asks of the game, once: { save = name }, { load = name },

@@ -37,6 +37,11 @@ pub(crate) struct View {
     /// Whether the player's log goes to the server; `None` when this
     /// launcher has no diagnostics to send.
     pub(crate) diagnostics: Option<bool>,
+    /// The player's saves, newest first, as last looked at.
+    pub(crate) saves: Vec<String>,
+    /// The save rooms this player creates start from, unless they pick
+    /// another.
+    pub(crate) start_save: Option<String>,
 }
 
 /// Something the player asks for.
@@ -55,6 +60,12 @@ pub enum Action {
         /// One of the server's rules; the default without.
         #[serde(default)]
         rules: Option<String>,
+        /// One of the player's saves (`State::saves`), by name, that the
+        /// room starts from: every game loads it from its menu. Without,
+        /// the launcher's own start save, if it has one; empty, none, and
+        /// the owner's game loads a world and saves it for the room.
+        #[serde(default)]
+        start_save: Option<String>,
     },
     Join {
         invite: String,
@@ -121,6 +132,12 @@ pub struct State {
     /// Whether lines of this launcher's log, redacted, go to the server
     /// ("Diagnostics" in PROTOCOL.md); `None` when it sends none at all.
     pub diagnostics: Option<bool>,
+    /// The player's saves, newest first: what a room they create can start
+    /// from ([`Action::Create`]).
+    pub saves: Vec<String>,
+    /// The save rooms this player creates start from unless they pick
+    /// another: the launcher's `--start-save`, or the one last picked.
+    pub start_save: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -394,6 +411,8 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         notices: status.notices.iter().cloned().collect(),
         announcement: status.announcement.clone(),
         diagnostics: view.diagnostics,
+        saves: view.saves.clone(),
+        start_save: view.start_save.clone(),
     }
 }
 
@@ -465,8 +484,17 @@ mod tests {
                 max_players: 4,
                 password: None,
                 rules: Some("native".into()),
+                start_save: None,
             }
         );
+        let action: Action = serde_json::from_str(
+            r#"{"action":"create","room":"R","max_players":4,"password":null,"start_save":"mptest"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            action,
+            Action::Create { start_save: Some(save), .. } if save == "mptest"
+        ));
         let action: Action = serde_json::from_str(r#"{"action":"start"}"#).unwrap();
         assert_eq!(action, Action::Start);
         assert!(serde_json::from_str::<Action>(r#"{"action":"format_disk"}"#).is_err());

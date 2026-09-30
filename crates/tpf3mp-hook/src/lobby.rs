@@ -24,7 +24,7 @@ use std::{
 };
 
 use serde::Deserialize;
-use tpf3mp_bridge::{LobbyAction, LobbyConnection, LobbyView};
+use tpf3mp_bridge::{LobbyAction, LobbyConnection, LobbyView, LobbyWorld};
 use tpf3mp_proto::{FixedBytes, PlayerId, Text};
 
 use crate::step::StepHandler;
@@ -87,8 +87,15 @@ pub struct ChatLine {
     pub you: bool,
 }
 
+/// Rules a room can be played by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rules {
+    pub name: String,
+    pub description: String,
+}
+
 /// Everything the lobby window shows.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LobbyState {
     pub connection: Connection,
     pub server: String,
@@ -104,6 +111,19 @@ pub struct LobbyState {
     pub linked: bool,
     /// Whether the launcher has said anything yet.
     pub heard: bool,
+    /// The rules the server offers new rooms, its default first.
+    pub rules: Vec<Rules>,
+    /// The player's saves, newest first.
+    pub saves: Vec<String>,
+    /// The save offered first for a new room.
+    pub start_save: Option<String>,
+    /// The room's world in this game: `none`, `fetching`, `loading` or
+    /// `playing`, and while fetching, bytes of the total so far.
+    pub world: &'static str,
+    pub bytes: u64,
+    pub total: u64,
+    /// How this game differs from the room's, while it does.
+    pub differences: Option<String>,
 }
 
 /// What the window sends, as JSON: the tag `action` plus the fields, e.g.
@@ -124,6 +144,12 @@ enum WindowAction {
         max_players: u32,
         #[serde(default)]
         password: String,
+        /// Empty for the server's default.
+        #[serde(default)]
+        rules: String,
+        /// Absent for the launcher's own start save; empty for none.
+        #[serde(default)]
+        start_save: Option<String>,
     },
     Join {
         invite: String,
@@ -196,10 +222,16 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
             room,
             max_players,
             password: given,
+            rules,
+            start_save,
         } => LobbyAction::Create {
             room: text(&room, "room name")?,
             max_players: u8::try_from(max_players).unwrap_or(u8::MAX),
             password: password(&given)?,
+            rules: Some(text(&rules, "rules name")?).filter(|rules| !rules.as_str().is_empty()),
+            start_save: start_save
+                .map(|save| text::<{ tpf3mp_bridge::MAX_SAVE_NAME }>(&save, "save name"))
+                .transpose()?,
         },
         WindowAction::Join {
             invite,
@@ -262,6 +294,12 @@ fn lua_opt(text: Option<&str>) -> String {
     text.map_or_else(|| "nil".to_owned(), lua_str)
 }
 
+impl Default for LobbyState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LobbyState {
     /// The empty lobby: not connected, no room, nothing said, no launcher.
     /// Usable in a `static`.
@@ -276,6 +314,13 @@ impl LobbyState {
             chat: Vec::new(),
             linked: false,
             heard: false,
+            rules: Vec::new(),
+            saves: Vec::new(),
+            start_save: None,
+            world: "none",
+            bytes: 0,
+            total: 0,
+            differences: None,
         }
     }
 
@@ -338,6 +383,41 @@ impl LobbyState {
                 .collect(),
             linked,
             heard: true,
+            rules: view
+                .rules
+                .iter()
+                .map(|rules| Rules {
+                    name: rules.name.as_str().to_owned(),
+                    description: rules.description.as_str().to_owned(),
+                })
+                .collect(),
+            saves: view
+                .saves
+                .iter()
+                .map(|save| save.as_str().to_owned())
+                .collect(),
+            start_save: view
+                .start_save
+                .as_ref()
+                .map(|save| save.as_str().to_owned()),
+            world: match view.world {
+                LobbyWorld::None => "none",
+                LobbyWorld::Fetching { .. } => "fetching",
+                LobbyWorld::Loading => "loading",
+                LobbyWorld::Playing => "playing",
+            },
+            bytes: match view.world {
+                LobbyWorld::Fetching { bytes, .. } => bytes,
+                _ => 0,
+            },
+            total: match view.world {
+                LobbyWorld::Fetching { total, .. } => total,
+                _ => 0,
+            },
+            differences: view
+                .differences
+                .as_ref()
+                .map(|text| text.as_str().to_owned()),
         }
     }
 
@@ -358,6 +438,31 @@ impl LobbyState {
         out.push_str(if self.linked { "true" } else { "false" });
         out.push_str(", heard = ");
         out.push_str(if self.heard { "true" } else { "false" });
+        out.push_str(", start_save = ");
+        out.push_str(&lua_opt(self.start_save.as_deref()));
+        out.push_str(", differences = ");
+        out.push_str(&lua_opt(self.differences.as_deref()));
+        out.push_str(&format!(
+            ", world = {}, bytes = {}, total = {}",
+            lua_str(self.world),
+            self.bytes,
+            self.total
+        ));
+        out.push_str(", rules = {");
+        for rules in &self.rules {
+            out.push_str(&format!(
+                " {{ name = {}, description = {} }},",
+                lua_str(&rules.name),
+                lua_str(&rules.description)
+            ));
+        }
+        out.push_str(" }, saves = {");
+        for save in &self.saves {
+            out.push(' ');
+            out.push_str(&lua_str(save));
+            out.push(',');
+        }
+        out.push_str(" }");
         out.push_str(", chat = {");
         for line in &self.chat {
             out.push_str(&format!(
@@ -485,8 +590,11 @@ pub(crate) fn reset() {
 }
 
 #[cfg(test)]
+mod window_tests;
+
+#[cfg(test)]
 mod tests {
-    use tpf3mp_bridge::{LobbyLine, LobbyMember, LobbyRoom};
+    use tpf3mp_bridge::{LobbyLine, LobbyMember, LobbyRoom, LobbyRules};
     use tpf3mp_proto::BoundedVec;
 
     use super::*;
@@ -506,7 +614,36 @@ mod tests {
                 room: Text::new("Alps").unwrap(),
                 max_players: 8,
                 password: None,
+                rules: None,
+                start_save: None,
+            }),
+            "without a save named, the launcher's own"
+        );
+        assert_eq!(
+            parse_action(
+                r#"{"action":"create","room":"Alps","max_players":4,"rules":"native","start_save":"mptest"}"#
+            ),
+            Ok(LobbyAction::Create {
+                room: Text::new("Alps").unwrap(),
+                max_players: 4,
+                password: None,
+                rules: Some(Text::new("native").unwrap()),
+                start_save: Some(Text::new("mptest").unwrap()),
             })
+        );
+        assert!(
+            matches!(
+                parse_action(r#"{"action":"create","room":"Alps","start_save":""}"#),
+                Ok(LobbyAction::Create { start_save: Some(save), .. }) if save.as_str().is_empty()
+            ),
+            "an empty save: none"
+        );
+        let long = "s".repeat(tpf3mp_bridge::MAX_SAVE_NAME + 1);
+        assert!(
+            parse_action(&format!(
+                r#"{{"action":"create","room":"Alps","start_save":"{long}"}}"#
+            ))
+            .is_err()
         );
         assert_eq!(
             parse_action(r#"{"action":"join","invite":"K7QM2X","password":"pw"}"#),
@@ -582,6 +719,22 @@ mod tests {
                 you: false,
             }])
             .unwrap(),
+            rules: BoundedVec::new(vec![LobbyRules {
+                name: Text::new("native").unwrap(),
+                description: Text::new("The game's own economy").unwrap(),
+            }])
+            .unwrap(),
+            saves: BoundedVec::new(vec![
+                Text::new("mptest").unwrap(),
+                Text::new("Güterzug").unwrap(),
+            ])
+            .unwrap(),
+            start_save: Some(Text::new("mptest").unwrap()),
+            world: LobbyWorld::Fetching {
+                bytes: 5_000_000,
+                total: 20_000_000,
+            },
+            differences: None,
         }
     }
 
@@ -623,6 +776,21 @@ mod tests {
         let chat: mlua::Table = state.get("chat").unwrap();
         let line: mlua::Table = chat.get(1).unwrap();
         assert_eq!(line.get::<String>("text").unwrap(), "hi");
+        let saves: mlua::Table = state.get("saves").unwrap();
+        assert_eq!(saves.get::<String>(2).unwrap(), "Güterzug");
+        assert_eq!(state.get::<String>("start_save").unwrap(), "mptest");
+        let rules: mlua::Table = state.get("rules").unwrap();
+        let first: mlua::Table = rules.get(1).unwrap();
+        assert_eq!(first.get::<String>("name").unwrap(), "native");
+        assert_eq!(state.get::<String>("world").unwrap(), "fetching");
+        assert_eq!(state.get::<u64>("bytes").unwrap(), 5_000_000);
+        assert_eq!(state.get::<u64>("total").unwrap(), 20_000_000);
+        assert!(
+            state
+                .get::<Option<String>>("differences")
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// A step driver that records what the window handed it and answers

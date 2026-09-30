@@ -62,6 +62,9 @@ const GAME_POLL: Duration = Duration::from_millis(500);
 /// How often the launcher's lobby is worked out for the game's window and
 /// the game's link served while no room session holds it.
 const LOBBY_TICK: Duration = Duration::from_millis(100);
+/// How often the player's saves are looked at again, for the game's window
+/// to offer as a room's start save.
+const SAVES_TICK: Duration = Duration::from_secs(5);
 
 /// What a launcher needs.
 #[derive(Debug, Clone)]
@@ -250,6 +253,7 @@ impl Shared {
                 player: Some(config.identity.player()),
                 installed: config.installed.clone(),
                 diagnostics: config.diagnostics.as_ref().map(|recorder| recorder.is_on()),
+                start_save: config.start_save.as_deref().and_then(save_name),
                 ..View::default()
             }),
             status: SharedStatus::default(),
@@ -330,8 +334,16 @@ async fn control(
         .ok();
     let mut tick = tokio::time::interval(LOBBY_TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut saves_tick = tokio::time::interval(SAVES_TICK);
+    saves_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            _ = saves_tick.tick() => {
+                let saves = tokio::task::spawn_blocking(crate::steam::list_saves)
+                    .await
+                    .unwrap_or_default();
+                shared.view().saves = saves;
+            }
             action = actions.recv() => {
                 let Some((action, reply)) = action else {
                     return;
@@ -548,12 +560,22 @@ async fn act(
             max_players,
             password,
             rules,
+            start_save,
         } => {
             let current = connected.as_ref().ok_or("connect to a server first")?;
             let rules = match rules.as_deref().map(str::trim) {
                 None | Some("") => None,
                 Some(name) => Some(Text::new(name).map_err(|_| "no such rules".to_owned())?),
             };
+            // Before the room exists: a save that cannot be found creates
+            // no room.
+            let listed = shared.view().saves.clone();
+            let start_world = start_world(
+                start_save.as_deref(),
+                &listed,
+                config.start_save.as_ref(),
+                crate::steam::find_save,
+            )?;
             let create = CreateRoom {
                 name: Text::new(room.trim())
                     .map_err(|_| "that room name is too long".to_owned())?,
@@ -568,6 +590,10 @@ async fn act(
                 .await
                 .map_err(|error| error.to_string())?;
             shared.status().room = Some(room);
+            if let Some(picked) = start_save.filter(|picked| !picked.trim().is_empty()) {
+                // Offered first next time.
+                shared.view().start_save = Some(picked.trim().to_owned());
+            }
             begin_session(
                 shared,
                 config,
@@ -576,6 +602,7 @@ async fn act(
                 idle,
                 invite,
                 create.password,
+                start_world,
             )
         }
         Action::Join { invite, password } => {
@@ -719,8 +746,40 @@ fn launch_game(
     Ok(())
 }
 
+/// The save a room this player creates starts from: the one `picked` names,
+/// which must be one of the player's `listed` saves (a name, never a path:
+/// the game's window names it), none when `picked` is empty, and the
+/// launcher's own `default` when nothing was picked.
+fn start_world(
+    picked: Option<&str>,
+    listed: &[String],
+    default: Option<&PathBuf>,
+    find: impl Fn(&str) -> Result<PathBuf, String>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(picked) = picked.map(str::trim) else {
+        return Ok(default.cloned());
+    };
+    if picked.is_empty() {
+        return Ok(None);
+    }
+    if !listed.iter().any(|name| name == picked) {
+        return Err(format!("there is no save {picked} in your save folder"));
+    }
+    find(picked).map(Some)
+}
+
+/// A save's name, as the game's save list shows it: its file name without
+/// `.sav`.
+fn save_name(file: &Path) -> Option<String> {
+    file.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_owned)
+}
+
 /// Hands the connection to a bridge, which runs the room from its lobby to
-/// the end of its game, and plays it through the game's hook.
+/// the end of its game, and plays it through the game's hook. A room this
+/// player owns starts from `start_world`, if it names a save.
+#[allow(clippy::too_many_arguments)]
 fn begin_session(
     shared: &Arc<Shared>,
     config: &LauncherConfig,
@@ -729,6 +788,7 @@ fn begin_session(
     idle: &mut Idle,
     invite: Invite,
     password: Option<Text<64>>,
+    start_world: Option<PathBuf>,
 ) -> Result<(), String> {
     let Connected {
         client,
@@ -760,7 +820,7 @@ fn begin_session(
         status: Some(Arc::clone(&shared.status)),
         lobby: Some(shared.lobby.clone()),
         // A room this player created starts from the save named for it.
-        start_world: config.start_save.clone().filter(|_| owned),
+        start_world: start_world.filter(|_| owned),
         ..BridgeOptions::default()
     };
     let rejoin = Rejoin {
@@ -965,7 +1025,16 @@ async fn join(
         Err(error) => return Err(error.to_string()),
     };
     shared.status().room = Some(room);
-    begin_session(shared, config, connected, session, idle, invite, password)
+    begin_session(
+        shared,
+        config,
+        connected,
+        session,
+        idle,
+        invite,
+        password,
+        config.start_save.clone(),
+    )
 }
 
 /// How the game differs from a room that refused it, if the room says so
@@ -1264,6 +1333,37 @@ mod tests {
         // A launcher that started no game waits on none.
         let none = tokio::time::timeout(Duration::from_millis(50), game_exit(&mut None)).await;
         assert!(none.is_err());
+    }
+
+    #[test]
+    fn a_room_starts_from_a_listed_save_picked_by_name_or_the_launchers_own() {
+        let listed = vec!["mptest".to_owned(), "older".to_owned()];
+        let default = PathBuf::from("launcher.sav");
+        let find = |name: &str| Ok(PathBuf::from(format!("/saves/{name}.sav")));
+        assert_eq!(
+            start_world(Some(" mptest "), &listed, Some(&default), find),
+            Ok(Some(PathBuf::from("/saves/mptest.sav")))
+        );
+        assert_eq!(
+            start_world(None, &listed, Some(&default), find),
+            Ok(Some(default.clone())),
+            "nothing picked: the launcher's own"
+        );
+        assert_eq!(start_world(None, &listed, None, find), Ok(None));
+        assert_eq!(
+            start_world(Some(""), &listed, Some(&default), find),
+            Ok(None),
+            "none picked: the owner's game loads a world itself"
+        );
+        // Only a save the player was offered, by its name.
+        assert!(start_world(Some("other"), &listed, None, find).is_err());
+        assert!(start_world(Some("C:/Windows/win.ini"), &listed, None, find).is_err());
+        let gone = |_: &str| Err("no save".to_owned());
+        assert!(start_world(Some("mptest"), &listed, None, gone).is_err());
+        assert_eq!(
+            save_name(Path::new("/x/y/twomptest.sav")).as_deref(),
+            Some("twomptest")
+        );
     }
 
     #[test]

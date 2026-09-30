@@ -49,10 +49,11 @@ with your friends in one world, each with your own company or sharing one.
    TPF3-MP.
 3. **Start the launcher**, `TPF3-MP.exe`. The first time, Windows may warn
    about an unknown app: choose **More info**, then **Run anyway**.
-4. **Connect** with the name others will see, then **create a room** and
-   send the invite, or **join** with the invite a friend sent you.
-5. **Start Transport Fever 3 from the launcher**, press **Ready**, and play
-   once the room's owner starts the game.
+4. **Start Transport Fever 3 from the launcher.**
+5. **Click Multiplayer** on the game's main menu: connect with the name
+   others will see, then **create a room** from one of your saves and send
+   the invite, or **join** with the invite a friend sent you. You are
+   ready by yourself; play once the room's owner starts the game.
 
 Only a game the launcher starts joins the room; started from Steam,
 Transport Fever 3 is the plain game, with nothing of TPF3-MP in it.

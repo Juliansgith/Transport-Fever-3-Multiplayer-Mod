@@ -74,6 +74,12 @@ guard.CARRY = {
 				error("a rank of " .. tostring(level), 0)
 			end
 			return { ApplyRank = { level = level } }
+		elseif id == "Notifications" and name == "initialSound" and type(param) == "table"
+			and type(param.notificationId) == "number" and param.notificationId >= 0
+			and param.notificationId == math.floor(param.notificationId) then
+			-- A popup played a notification's first sound (the game's
+			-- notification_popups.tl): marked so in every game.
+			return { NotificationSeen = { notification = param.notificationId } }
 		end
 		-- Which event, for the log.
 		error("the " .. tostring(id) .. " script's " .. tostring(name) .. " event", 0)
