@@ -122,6 +122,10 @@ local function run(command)
 	return true
 end
 
+-- For the game script's own commands (tpf3mp/companies.lua's monthly loan
+-- payments): the same send, which answers what the game made.
+apply.send = send
+
 local require_companies
 
 -- The action running now: `ctx` as apply.run was given it. Its `company` is
@@ -1010,9 +1014,16 @@ end
 -- Loans go through the loan script's own events, with the parameters the
 -- game's finance window sends (game_mechanics/finance/finances_loan_gui.tl):
 -- here they run at once, in every game at the same update.
-function HANDLERS.Loan(op)
+function HANDLERS.Loan(op, ctx)
+	-- Another company's loans are the room's (tpf3mp/companies.lua): on the
+	-- terms the game offers, booked to that company.
 	if company() ~= api.engine.util.getPlayer() then
-		return false, "Not in multiplayer yet: loans for a company other than the room's first"
+		local roster = ctx and ctx.roster
+		local mine = roster and companiesModule.byEntity(roster, company())
+		if not mine then return false, "the acting company is not in the room's roster" end
+		if op.Take then return companiesModule.borrow(roster, mine.id, op.Take.offer, send, api) end
+		if op.Repay then return companiesModule.repay(roster, mine.id, op.Repay.loan and op.Repay.loan.id, send, api) end
+		return false, "a loan is taken or paid back"
 	end
 	if op.Take then
 		return run(api.cmd.makeScriptingSendEventCmd("", "Loan", "Obtain",

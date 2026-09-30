@@ -157,6 +157,17 @@ function companies.mayTouch(roster, company, entity, api, what)
 	return false, "the " .. (what or "thing") .. " belongs to " .. name
 end
 
+-- Whether anything is owned by the player entity `entity`; nil when this
+-- game cannot list what players own.
+function companies.owns(api, entity)
+	local found = false
+	local ok = pcall(api.engine.forEachEntityWithComponent, function(_, c)
+		if not found and type(c) == "table" and c.player == entity then found = true end
+	end, api.type.ComponentType.PLAYER_OWNED)
+	if not ok then return nil end
+	return found
+end
+
 local function trimmed(name)
 	if type(name) ~= "string" then return nil end
 	name = name:gsub("^%s+", ""):gsub("%s+$", "")
@@ -197,6 +208,138 @@ local function made(data, entities, field)
 	e = type(first) == "table" and first[1] or nil
 	if type(e) == "number" and e >= 0 then return e end
 	return nil
+end
+
+-- ------------------------------------------------------------- loans
+--
+-- The game's loan script (::/game_mechanics/finance/loan.gs) keeps the
+-- loans of the room's first company only: it books them to the save's own
+-- player. Another company's loans are the room's: taken on the same terms
+-- the game offers (the loan script's availableLoans), booked to that
+-- company as the game books a loan (a LOAN journal entry, which raises the
+-- account's balance and its loan alike, seen on build 40408), and paid back
+-- month by month as an annuity, the interest booked as INTEREST and the
+-- rest as LOAN, until nothing is owed; or all at once.
+--
+--   roster.loans = { { id =, company =, amount =, remaining =, months =,
+--                      paid =, rate = (a month), payment = }, ... }
+--   roster.nextLoan = n
+--   roster.month = the last month whose payments were booked
+
+-- The month of the game's calendar now, counted from the game's start; nil
+-- where the game does not say.
+function companies.monthNow(api)
+	local ok, month = pcall(function()
+		local gt = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME)
+		local length = api.util.getDefaultMonthDuration()
+		if type(length) ~= "number" or length <= 0 or type(gt.gameTime) ~= "number" then return nil end
+		return math.floor(gt.gameTime / length), length
+	end)
+	if ok then return month end
+	return nil
+end
+
+local function monthLength(api)
+	local ok, length = pcall(api.util.getDefaultMonthDuration)
+	if ok and type(length) == "number" and length > 0 then return length end
+	return nil
+end
+
+-- Books `amount` (negative: taken from it) to the company `entity`, as a
+-- LOAN or INTEREST entry.
+local function book(api, send, entity, amount, kind)
+	local entry = api.type.JournalEntry.new()
+	entry.amount = amount
+	entry.time = -1
+	entry.category.type = api.type.JournalEntry.Type[kind]
+	send(api.cmd.makeJournalBookAssetCmd(entity, entry))
+end
+
+-- The monthly payment that pays `amount` back in `months` at `rate` a month.
+local function annuity(amount, rate, months)
+	if rate <= 0 then return math.ceil(amount / months) end
+	return math.ceil(amount * rate / (1 - (1 + rate) ^ -months))
+end
+
+-- The loans of company `id`.
+function companies.loansOf(roster, id)
+	local out = {}
+	for _, loan in ipairs(roster.loans or {}) do
+		if loan.company == id then out[#out + 1] = loan end
+	end
+	return out
+end
+
+-- Company `id` takes the loan `terms` (the loan script's own: amount, the
+-- duration in the game's milliseconds, the interest a year as a fraction).
+function companies.borrow(roster, id, terms, send, api)
+	local c = companies.find(roster, id)
+	if not c or c.gone then return false, "there is no such company" end
+	local amount = type(terms) == "table" and tonumber(terms.amount)
+	local duration = type(terms) == "table" and tonumber(terms.duration)
+	local percentage = type(terms) == "table" and tonumber(terms.percentage) or 0
+	if not amount or amount <= 0 or not duration or duration <= 0 then return false, "a loan needs an amount and a duration" end
+	local length = monthLength(api)
+	if not length then return false, "this game does not say how long a month is" end
+	local months = math.max(1, math.floor(duration / length + 0.5))
+	local rate = math.max(0, percentage) / 12
+	amount = math.floor(amount)
+	book(api, send, c.entity, amount, "LOAN")
+	roster.loans = roster.loans or {}
+	roster.nextLoan = (roster.nextLoan or 1)
+	roster.loans[#roster.loans + 1] = { id = roster.nextLoan, company = id, amount = amount, remaining = amount,
+		months = months, paid = 0, rate = rate, payment = annuity(amount, rate, months) }
+	roster.nextLoan = roster.nextLoan + 1
+	roster.month = roster.month or companies.monthNow(api)
+	return true
+end
+
+-- Company `id` pays loan `loanId` back, all that is still owed.
+function companies.repay(roster, id, loanId, send, api)
+	for i, loan in ipairs(roster.loans or {}) do
+		if loan.id == loanId and loan.company == id then
+			local c = companies.find(roster, id)
+			book(api, send, c.entity, -loan.remaining, "LOAN")
+			table.remove(roster.loans, i)
+			return true
+		end
+	end
+	return false, "the company has no such loan"
+end
+
+-- Books every month since the last one booked: each loan's payment, its
+-- interest and the part that pays the loan down. Returns how many months.
+function companies.chargeMonths(roster, month, send, api)
+	if type(month) ~= "number" then return 0 end
+	if roster.month == nil then roster.month = month return 0 end
+	local months = 0
+	while roster.month < month do
+		roster.month = roster.month + 1
+		months = months + 1
+		local keep = {}
+		for _, loan in ipairs(roster.loans or {}) do
+			local c = companies.find(roster, loan.company)
+			local interest = math.floor(loan.remaining * loan.rate + 0.5)
+			local principal = math.min(loan.remaining, math.max(0, loan.payment - interest))
+			if loan.paid + 1 >= loan.months then principal = loan.remaining end
+			if c then
+				if interest > 0 then book(api, send, c.entity, -interest, "INTEREST") end
+				if principal > 0 then book(api, send, c.entity, -principal, "LOAN") end
+			end
+			loan.remaining = loan.remaining - principal
+			loan.paid = loan.paid + 1
+			if loan.remaining > 0 then keep[#keep + 1] = loan end
+		end
+		roster.loans = keep
+	end
+	return months
+end
+
+-- Whether a month's payments are due: a company owes something and a month
+-- has begun since the last booked.
+function companies.due(roster, month)
+	return type(roster) == "table" and type(month) == "number" and roster.month ~= nil
+		and month > roster.month and #(roster.loans or {}) > 0
 end
 
 -- Applies one `CompanyOp` for `player`. `send(command)` runs a command at
@@ -247,11 +390,21 @@ function companies.run(roster, player, op, send, api)
 		c.color = color
 		return true, nil, c.id
 	elseif kind == "Delete" then
+		-- Its last player dissolves it, when it owns nothing, and plays for
+		-- the room's first company again (tpf3mp_testkit's regression model
+		-- has the same rule).
 		local c = companies.find(roster, body)
 		if not c or c.gone then return false, "there is no company " .. tostring(body) end
 		if c.id == 0 then return false, "the room's first company stays" end
-		if #companies.members(roster, c.id) > 0 then return false, "only a company nobody plays for is dissolved" end
+		if not memberOf(roster, player, c.id) then return false, "only its players dissolve a company" end
+		if #companies.members(roster, c.id) > 1 then return false, "others still play for " .. c.name end
+		local owns = companies.owns(api, c.entity)
+		if owns == nil then return false, "this game cannot tell what " .. c.name .. " owns" end
+		if owns then return false, c.name .. " still owns something" end
 		c.gone = true
+		for i, m in ipairs(roster.members) do
+			if m.player == player then table.remove(roster.members, i) break end
+		end
 		return true, nil, c.id
 	end
 	return false, "a company operation of no kind"

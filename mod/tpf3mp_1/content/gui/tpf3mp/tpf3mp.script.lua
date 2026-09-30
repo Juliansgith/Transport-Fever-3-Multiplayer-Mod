@@ -218,6 +218,50 @@ function data()
 		return true
 	end
 
+	-- The player entity of the company this player plays for, in the room's
+	-- game (tpf3mp/companies.lua), or nil: outside the room, before the
+	-- roster is read, and for the room's first company, which is the save's
+	-- own player anyway.
+	local function myCompany()
+		local shared = ui()
+		local status, roster = shared.status, shared.companies
+		if not status or not roster or not status.me_id then return nil end
+		for _, m in ipairs(roster.members or {}) do
+			if m.player == status.me_id then
+				for _, c in ipairs(roster.list or {}) do
+					if c.id == m.company then return c.entity end
+				end
+			end
+		end
+		return nil
+	end
+
+	-- The GUI's "my company": TF3's windows ask api.engine.util.getPlayer()
+	-- whose money to show, what is the player's own and what is "Foreign"
+	-- (entity_window/eow_extension_util.tl), and every GUI script looks it up
+	-- when it runs. In this GUI state it answers the company this player
+	-- plays for; the game scripts' states keep the game's own answer, the
+	-- save's player, so the simulation is the same in every game. What the
+	-- player then does goes to the room as ever and is booked to their
+	-- company there (tpf3mp/apply.lua), whatever the GUI named.
+	local function followMyCompany()
+		local ok, util = pcall(function() return api.engine.util end)
+		if not ok or type(util) ~= "table" or type(util.getPlayer) ~= "function" then
+			link:log("the GUI's company cannot follow the player's: no api.engine.util.getPlayer")
+			return
+		end
+		local original = util.getPlayer
+		local replaced = pcall(function()
+			util.getPlayer = function(...)
+				local mine = myCompany()
+				if mine then return mine end
+				return original(...)
+			end
+		end)
+		link:log(replaced and "the GUI's company follows the player's"
+			or "the GUI's company cannot follow the player's: api.engine.util is read-only")
+	end
+
 	local function start()
 		local ok, why = installModules()
 		if not ok then
@@ -238,6 +282,7 @@ function data()
 		link:log("the GUI is linked")
 		say("linked to the hook")
 		guardCommands()
+		followMyCompany()
 	end
 
 	-- Does what the hook asks: saving the world under the name it gives, or
@@ -308,17 +353,35 @@ function data()
 		local state = scriptState()
 		local roster = state and state.companies
 		if type(roster) ~= "table" or type(roster.list) ~= "table" then return nil, "" end
-		local out, sign = { list = {}, members = roster.members or {} }, {}
+		local out, sign = { list = {}, members = roster.members or {}, loans = roster.loans or {} }, {}
+		-- The loans the game offers now (its loan script's), which another
+		-- company takes on the same terms.
+		pcall(function()
+			local e = api.engine.system.gameScriptSystem.getEntityForGameScript("::/game_mechanics/finance/loan.gs")
+			local c = type(e) == "number" and e >= 0 and api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT)
+			local offers = c and c.state and c.state.availableLoans
+			if type(offers) == "table" then out.offers = offers end
+		end)
+		for _, offer in ipairs(out.offers or {}) do sign[#sign + 1] = tostring(offer.type) .. tostring(offer.amount) end
+		for _, loan in ipairs(out.loans) do sign[#sign + 1] = loan.id .. ":" .. loan.remaining end
 		for _, c in ipairs(roster.list) do
 			if not c.gone then
-				local balance
+				local balance, owed, name
 				pcall(function()
 					local account = api.engine.getComponent(c.entity, api.type.ComponentType.ACCOUNT)
 					balance = account and account.balance
+					owed = account and account.loan
 				end)
-				out.list[#out.list + 1] = { id = c.id, entity = c.entity, name = c.name, color = c.color, balance = balance }
+				-- The name the game shows (the player entity's NAME, which a
+				-- rename sets), else the roster's.
+				pcall(function()
+					local n = api.engine.getComponent(c.entity, api.type.ComponentType.NAME)
+					if n and type(n.name) == "string" and n.name ~= "" then name = n.name end
+				end)
+				out.list[#out.list + 1] = { id = c.id, entity = c.entity, name = name or c.name, color = c.color,
+					balance = balance, owed = owed }
 				local color = type(c.color) == "table" and c.color or {}
-				sign[#sign + 1] = table.concat({ c.id, c.name, tostring(balance),
+				sign[#sign + 1] = table.concat({ c.id, name or c.name, tostring(balance), tostring(owed),
 					tostring(color[1]), tostring(color[2]), tostring(color[3]) }, ":")
 			end
 		end
@@ -377,10 +440,10 @@ function data()
 
 	-- A company operation for the room, from the window. What became of it
 	-- comes back with the player's other actions (follow the ticket).
-	local function companyOp(shared, op, doing)
+	local function companyOp(shared, op, doing, action)
 		local l = shared.link
 		if not l then return end
-		local ok, ticket = l:command({ CompanyOp = op })
+		local ok, ticket = l:command(action or { CompanyOp = op })
 		if ok then
 			shared.asked = shared.asked or {}
 			shared.asked[ticket] = doing
@@ -433,8 +496,9 @@ function data()
 				}
 			end
 			children[#children + 1] = builtin.TextView{
-				text = "  " .. tostring(c.name) .. "  " .. money(c.balance) .. "  " .. who
-					.. (c.id == mine and "  (yours)" or ""),
+				text = "  " .. tostring(c.name) .. "  " .. money(c.balance)
+					.. ((type(c.owed) == "number" and c.owed > 0) and (" (owes " .. money(c.owed) .. ")") or "")
+					.. "  " .. who .. (c.id == mine and "  (yours)" or ""),
 			}
 			if c.id ~= mine then
 				children[#children + 1] = builtin.Button{
@@ -442,13 +506,14 @@ function data()
 					content = builtin.TextView{ text = "Join" },
 					onClick = function() companyOp(shared, { Join = c.id }, "Joining " .. c.name) end,
 				}
-				if not names[c.id] and c.id ~= 0 then
-					children[#children + 1] = builtin.Button{
-						meta = { tooltip = "Dissolve " .. tostring(c.name) .. ": nobody plays for it" },
-						content = builtin.TextView{ text = "Dissolve" },
-						onClick = function() companyOp(shared, { Delete = c.id }, "Dissolving " .. c.name) end,
-					}
-				end
+			elseif c.id ~= 0 and #(names[c.id] or {}) <= 1 then
+				-- Its last player dissolves it, once it owns nothing.
+				children[#children + 1] = builtin.Button{
+					meta = { tooltip = "Dissolve " .. tostring(c.name) .. " once it owns nothing,"
+						.. " and play for the room's first company again" },
+					content = builtin.TextView{ text = "Dissolve" },
+					onClick = function() companyOp(shared, { Delete = c.id }, "Dissolving " .. c.name) end,
+				}
 			end
 			rows[#rows + 1] = builtin.BoxLayout{ orientation = builtin.type.Orientation.Horizontal, children = children }
 		end
@@ -488,6 +553,49 @@ function data()
 				companyOp(shared, { Create = { name = text } }, "Founding " .. text)
 				drafts.found:set("")
 			end)
+		-- Another company's loans are the room's (tpf3mp/companies.lua), on
+		-- the terms the game offers; the first company's are in the game's
+		-- own finance window.
+		if mine ~= 0 then
+			local loans = {}
+			for _, loan in ipairs(roster.loans or {}) do if loan.company == mine then loans[#loans + 1] = loan end end
+			for _, loan in ipairs(loans) do
+				rows[#rows + 1] = builtin.BoxLayout{
+					orientation = builtin.type.Orientation.Horizontal,
+					children = {
+						builtin.TextView{ text = "  Loan: " .. money(loan.remaining) .. " owed of " .. money(loan.amount)
+							.. ", " .. money(loan.payment) .. " a month, " .. (loan.months - loan.paid) .. " months left" },
+						builtin.Button{
+							meta = { tooltip = "Pay back what is still owed now" },
+							content = builtin.TextView{ text = "Repay" },
+							onClick = function()
+								companyOp(shared, nil, "Repaying " .. money(loan.remaining), { Loan = { Repay = { loan = {
+									type = "Custom", amount = loan.amount, duration = 1, percentage = 0, id = loan.id } } } })
+							end,
+						},
+					},
+				}
+			end
+			local offers = {}
+			for _, offer in ipairs(roster.offers or {}) do
+				if type(offer) == "table" and type(offer.amount) == "number" then
+					offers[#offers + 1] = builtin.Button{
+						meta = { tooltip = string.format("Borrow %s at %g%% a year", money(offer.amount),
+							(offer.percentage or 0) * 100) },
+						content = builtin.TextView{ text = "Borrow " .. money(offer.amount) },
+						onClick = function()
+							local terms = { type = offer.type, amount = offer.amount, duration = offer.duration,
+								percentage = offer.percentage }
+							companyOp(shared, nil, "Borrowing " .. money(offer.amount),
+								{ Loan = { Take = { next = terms, offer = terms } } })
+						end,
+					}
+				end
+			end
+			if #offers > 0 then
+				rows[#rows + 1] = builtin.BoxLayout{ orientation = builtin.type.Orientation.Horizontal, children = offers }
+			end
+		end
 		if shared.companyNote then line(shared.companyNote) end
 	end
 

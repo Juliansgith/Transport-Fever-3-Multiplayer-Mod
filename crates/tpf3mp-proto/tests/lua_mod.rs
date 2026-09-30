@@ -525,7 +525,8 @@ fn with_the_hook_the_gui_links_once() {
         .unwrap();
     assert_eq!(
         logged,
-        "the GUI is linked|the guard is on 4 command factories"
+        "the GUI is linked|the guard is on 4 command factories|\
+         the GUI's company cannot follow the player's: no api.engine.util.getPlayer"
     );
     let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
     assert_eq!(worlds, 1, "the world's GUI started once");
@@ -4038,6 +4039,9 @@ fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
             engine = {
                 util = { getPlayer = function() return 25 end },
                 getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+                forEachEntityWithComponent = function(fn, kind)
+                    for e, c in pairs(COMP[kind] or {}) do fn(e, c) end
+                end,
             },
             type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2 },
                      Vec3f = { new = function(x, y, z) return { x, y, z } end } },
@@ -4120,27 +4124,6 @@ fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
         ),
         "0.2"
     );
-    // A company somebody plays for is not dissolved, nor the first; an empty
-    // one is, and cannot be joined after.
-    assert_eq!(
-        eval("local ok, why = C.run(R, D, { Delete = 1 }, send, api) return why"),
-        "only a company nobody plays for is dissolved"
-    );
-    assert_eq!(
-        eval("local ok, why = C.run(R, D, { Delete = 0 }, send, api) return why"),
-        "the room's first company stays"
-    );
-    assert_eq!(
-        eval(
-            "C.run(R, A, { Join = 0 }, send, api) C.run(R, B, { Join = 0 }, send, api) \
-             return tostring(C.run(R, D, { Delete = 1 }, send, api)) .. ' ' .. #C.live(R)"
-        ),
-        "true 1"
-    );
-    assert_eq!(
-        eval("local ok, why = C.run(R, A, { Join = 1 }, send, api) return why"),
-        "there is no company 1"
-    );
     // What another company owns is refused, naming it; its own and no
     // one's are not.
     assert_eq!(
@@ -4156,6 +4139,39 @@ fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
              .. tostring(C.mayTouch(R, 25, 703, api))"
         ),
         "truetruetrue"
+    );
+    // Its last player dissolves a company that owns nothing, and plays for
+    // the first again; nobody dissolves the first.
+    assert_eq!(
+        eval("local ok, why = C.run(R, D, { Delete = 1 }, send, api) return why"),
+        "only its players dissolve a company"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, A, { Delete = 1 }, send, api) return why"),
+        "others still play for Blue Line"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, D, { Delete = 0 }, send, api) return why"),
+        "the room's first company stays"
+    );
+    assert_eq!(
+        eval(
+            "C.run(R, B, { Join = 0 }, send, api) \
+             local ok, why = C.run(R, A, { Delete = 1 }, send, api) return why"
+        ),
+        "Blue Line still owns something"
+    );
+    assert_eq!(
+        eval(
+            "COMP[2][700] = nil \
+             return tostring(C.run(R, A, { Delete = 1 }, send, api)) .. ' ' .. #C.live(R) \
+             .. ' ' .. C.of(R, A).id"
+        ),
+        "true 1 0"
+    );
+    assert_eq!(
+        eval("local ok, why = C.run(R, A, { Join = 1 }, send, api) return why"),
+        "there is no company 1"
     );
     // At most MAX companies.
     assert_eq!(
@@ -4174,13 +4190,31 @@ fn what_a_player_does_is_booked_to_their_company() {
     let (lua, _script) = engine();
     lua.load(
         r#"
+        -- A month is 1000 ms of game time here.
+        GAME_T = 0
+        api.type.ComponentType.GAME_TIME = 99
+        api.engine.util.getWorld = function() return 1 end
+        api.engine.getComponent = function(e, kind)
+            if kind == 99 then return { gameTime = GAME_T } end
+        end
+        api.util = { getDefaultMonthDuration = function() return 1000 end }
+        api.type.JournalEntry = { new = function() return { category = {} } end,
+                                  Type = { LOAN = 'LOAN', INTEREST = 'INTEREST' } }
+        api.cmd.makeJournalBookAssetCmd = function(e, entry) return { journal = entry, entity = e } end
         A, B = string.rep("a", 64), string.rep("b", 64)
         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A }
         UPDATE({}, STATE, 0.2)
-        -- A's loan, and B's (who plays for the first company).
-        HOOK.batch = { { Loan = { Take = { next = {}, offer = {} } } },
-                       { Loan = { Take = { next = {}, offer = {} } } } }
+        -- A's loan, for Rival: 1200 over 12 months at 12 % a year; and B's,
+        -- who plays for the first company, through the game's loan script.
+        OFFER = { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }
+        HOOK.batch = { { Loan = { Take = { next = OFFER, offer = OFFER } } },
+                       { Loan = { Take = { next = OFFER, offer = OFFER } } } }
         HOOK.origins = { A, B }
+        UPDATE({}, STATE, 0.2)
+        -- A month later, Rival pays its first instalment, with no action,
+        -- in the room's game.
+        HOOK.room = true
+        GAME_T = 1000
         UPDATE({}, STATE, 0.2)
         "#,
     )
@@ -4197,24 +4231,23 @@ fn what_a_player_does_is_booked_to_their_company() {
         roster, "2 Rival 901 1",
         "the roster is saved with the world"
     );
-    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
-    assert!(
-        logged.contains(
-            &"action 1 of this step was not applied: Not in multiplayer yet: loans for a company other than the room's first"
-                .to_owned()
-        ),
-        "{logged:?}"
-    );
     let sent: String = lua
         .load(
             "local out = {} for _, c in ipairs(SENT) do \
-                 out[#out + 1] = c.addPlayer or (c.event and c.event.name) or '?' end \
+                 out[#out + 1] = c.addPlayer or (c.event and c.event.name) \
+                     or (c.journal and (c.journal.category.type .. c.journal.amount .. '@' .. c.entity)) or '?' end \
              return table.concat(out, ',')",
         )
         .eval()
         .unwrap();
     assert_eq!(
-        sent, "Rival,Obtain",
-        "the company, then B's loan for the first company"
+        sent, "Rival,LOAN1200@901,Obtain,INTEREST-12@901,LOAN-95@901",
+        "the company; Rival's loan booked to it, B's through the loan script; \
+         a month later Rival's instalment of 107: 12 interest, 95 paid down"
     );
+    let loan: String = lua
+        .load("local l = STATE.value.companies.loans[1] return l.remaining .. ' ' .. l.paid .. '/' .. l.months")
+        .eval()
+        .unwrap();
+    assert_eq!(loan, "1105 1/12");
 }

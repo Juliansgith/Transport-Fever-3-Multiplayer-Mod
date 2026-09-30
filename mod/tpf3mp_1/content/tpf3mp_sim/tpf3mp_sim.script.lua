@@ -236,14 +236,18 @@ function data()
 			-- the registry gained a kind.
 			local saved = state and state.get and state:get()
 			local begin = l:room() and (type(saved) ~= "table" or registry.incomplete(saved.registry))
-			if not actions and not checkpoint and not begin then return nil end
-			return { actions = actions, origins = origins, checkpoint = checkpoint, begin = begin }
+			-- A month begun since the companies' loans were last charged.
+			local month = companies.monthNow(api)
+			local monthly = l:room() and type(saved) == "table" and companies.due(saved.companies, month)
+			if not actions and not checkpoint and not begin and not monthly then return nil end
+			return { actions = actions, origins = origins, checkpoint = checkpoint, begin = begin,
+				monthly = monthly and month or nil }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
 			local l = linked()
 			if not l or type(work) ~= "table" then return end
-			if work.actions or work.begin then
+			if work.actions or work.begin or work.monthly then
 				local saved = state:get()
 				if type(saved) ~= "table" then saved = {} end
 				local reg, _, failed = registry.sync(saved.registry)
@@ -299,6 +303,10 @@ function data()
 					end
 				end
 				if work.actions then l:replaying(false) end
+				if work.monthly then
+					local ok, why = pcall(companies.chargeMonths, roster, work.monthly, apply.send, api)
+					if not ok then l:log("the companies' loans were not charged: " .. tostring(why)) end
+				end
 				saved.registry = reg
 				saved.companies = roster
 				state:set(saved)
