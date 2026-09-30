@@ -140,6 +140,9 @@ type AdvanceFn = unsafe extern "system" fn(usize, usize, usize, usize);
 /// Where the paused path's call goes: in the room's game nothing; otherwise
 /// the game's own advance with the arguments the step passed.
 unsafe extern "system" fn paused_advance(engine: usize, entity: usize, update: usize, r9: usize) {
+    // The redirect's own work: the game's advance, when passed on, is not
+    // the hook's.
+    let timer = crate::perf::time(crate::perf::Piece::PausedTick);
     let decision = decide(ROOM.load(Ordering::Acquire), update & 0xff != 0);
     let advance = ADVANCE_AT.load(Ordering::Acquire);
     if decision == Advance::Hold || advance == 0 {
@@ -153,6 +156,7 @@ unsafe extern "system" fn paused_advance(engine: usize, entity: usize, update: u
         return;
     }
     PASSED.fetch_add(1, Ordering::Relaxed);
+    drop(timer);
     // SAFETY: the advance the profile resolved, and the redirect's install
     // checked the call reached, called with the registers the step set up.
     let advance: AdvanceFn = unsafe { std::mem::transmute::<usize, AdvanceFn>(advance) };

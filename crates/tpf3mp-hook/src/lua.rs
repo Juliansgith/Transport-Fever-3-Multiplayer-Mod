@@ -1265,6 +1265,7 @@ unsafe extern "C-unwind" fn native_lanes(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
+    let _timer = crate::perf::time(crate::perf::Piece::Lanes);
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let due = {
             let batch = &shared().batch;
@@ -1482,6 +1483,7 @@ unsafe extern "C-unwind" fn native_dump(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
+    let _timer = crate::perf::time(crate::perf::Piece::LaneDump);
     let order = {
         let mut shared = shared();
         let batch = &mut shared.batch;
@@ -1550,6 +1552,7 @@ unsafe extern "C-unwind" fn native_dumped(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
+    let _timer = crate::perf::time(crate::perf::Piece::LaneDump);
     // SAFETY: Lua calls this with its own state; its arguments are on it.
     let (lane, entry) = unsafe { (number_arg(api, l, 1), string_arg(api, l, 2, MAX_DUMP_LINE)) };
     let taken = match (lane, entry) {

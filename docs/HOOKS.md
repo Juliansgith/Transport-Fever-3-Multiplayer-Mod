@@ -1788,10 +1788,10 @@ on hand-written functions in the test binary.
 
 | survey item | fix | site (RVA) | what it does |
 |---|---|---|---|
-| 1, land-vehicle reservation order | `land-vehicle-order` | `ecs::LandVehicleMoveSystem::Update2/shuffle` (`0xac1b70`) | sorts the vector of vehicles that want track by entity id before the engine's seeded shuffle |
+| 1, land-vehicle reservation order | `land-vehicle-order` | `ecs::LandVehicleMoveSystem::Update2/shuffle` (`0xac1b70`) | sorts the vector of vehicles that want track by entity id before the engine's seeded shuffle (kill switch `TPF3MP_HOOK_LAND_VEHICLE_ORDER=0`) |
 | 2, ship and aircraft claim order | `order-measure` | `EdgeReservationManager::Reserve` (`0x255c2e0`), `Reserve_simple` (`0x255c160`) | measured only, when `TPF3MP_HOOK_MEASURE_ORDER` is set |
 | 3, road edge entries | `road-entry-order` | `EdgeUseManager::Add` (`0x255e940`), `AddRange` (`0x255cc70`) | keeps each edge's entries in entity order after every append (kill switch `TPF3MP_HOOK_ROAD_ENTRY_ORDER=0`) |
-| 4, vehicles at a stop | `vehicles-at-stop-order` | `ecs::SimEntityAtTerminalSystem::Update/vehicles at stop` (`0xb0e35c`) | sorts the vehicles at a line stop by entity id before the boarding loop |
+| 4, vehicles at a stop | `vehicles-at-stop-order` | `ecs::SimEntityAtTerminalSystem::Update/vehicles at stop` (`0xb0e35c`) | sorts the vehicles at a line stop by entity id before the boarding loop (kill switch `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER=0`) |
 | 5, platform choice | `platform-order` | `ecs::TransportVehicleSystem::Update2/visit` (`0xb8bccb`), `FindNextFreeTerminal/candidate sort` (`0xb85430`) | asks the vehicles for a free platform in entity order, and puts the candidate terminals in one order before their cost sort (kill switch `TPF3MP_HOOK_PLATFORM_ORDER=0`) |
 
 **The mid-function splice** (`tpf3mp_hookcore::detour::Splice`) is what
@@ -1935,13 +1935,37 @@ could not beat. The fix detours `Add` and `AddRange` whole (both profile
 targets already), runs the engine's, and then sorts, by entity id, the
 entries of the edges it touched: `Add`'s one edge, `AddRange`'s path
 edges `from..=to` (its seventh and eighth arguments). An edge's list is
-found as `GetOrAddEdgeData` finds it: the data at `[this+0x18]`, its
-entity-to-slot index `[+0]..[+8]` (`int32`s), its slots
-`[+0x18]..[+0x20]` (72 bytes each), the slot's edges `[slot]..[slot+8]`
-(32 bytes each), the entries vector at `edge+8`; every bound is checked
-and a shape that does not fit is a refusal for that edge. A list already
-in order (the common case: one vehicle, or ids appended ascending) is one
-scan. Both appenders must be detoured, or none sorts. The callbacks run
+found as `GetOrAddEdgeData` finds it: from the manager's data (an
+`EdgeUseManagerData`), its entity-to-slot index `[+0]..[+8]` (`int32`s),
+its slots `[+0x18]..[+0x20]` (72 bytes each), the slot's edges
+`[slot]..[slot+8]` (32 bytes each), the entries vector at `edge+8`; every
+bound is checked and a shape that does not fit is a refusal for that edge.
+The two appenders are handed the data differently: `Add`'s `this` is the
+manager, whose data is at `[this+0x18]` (`Add` reads it through the
+copy-on-write getter `0x255f0b0`, which answers `[this+0x18]`), while
+`AddRange`'s `this` *is* the data (its one caller, `0x255edc0`, calls the
+getter and passes the answer on; the manager is its ninth argument, and
+the fix checks that `[manager+0x18]` names the data it was given).
+Until 2026-09-30 the fix read `[this+0x18]` in `AddRange` too, which is
+the data's slot vector, so every vehicle append was refused with "the
+edge's entity has no slot" (the only refusal in the three-player
+playtest's hook.log, about 70% of the appends) and the vehicles' lists
+were never sorted; the persons' (`Add`) were.
+
+Each append reads the eight words to an edge's entries through one
+`image::Probe`: the committed regions it finds are remembered for that
+call, so a region costs one `VirtualQuery` per append instead of one per
+word (13 per edge before). The sort is `road::place`, in place: one scan
+finds how far the list is strictly ascending; a list kept sorted is then
+either whole (nothing written) or out of order only in the entry just
+appended, which is moved into place by binary search; anything else is
+sorted whole through a reused buffer. It gives exactly the order of the
+reference `road::entry_order` (checked on random lists in the tests),
+refuses the same lists, and writes nothing when it refuses. On the
+development PC one append to an edge of 2 to 32 entries went from about
+5 µs to 0.7 µs (`order::splice_tests::road_append_bench`), the sort alone
+from 94 to 31 ns at 2 entries and 508 to 117 ns at 128
+(`order::tests::road_sort_bench`). Both appenders must be detoured, or none sorts. The callbacks run
 serially at the end of a modification (INFERRED from their callers, the
 engine's node-added dispatch), so the sort writes nothing a reader is
 walking. The `AddRange` detour takes all nine arguments (the ninth at the
@@ -1977,6 +2001,14 @@ visit order (deferred lambdas). Two sites, each on its own:
   search that starts at the current terminal and wraps around, break
   equal costs the same way in every game.
 
+Both sites allocate nothing in the common case: the visit site scans the
+list in place and copies it only when it is out of entity order, into a
+buffer kept from update to update (`platform::sort_records`); the
+candidates are checked and, if need be, sorted in place
+(`platform::sort_candidates_in_place`). Each gives exactly the order of
+the reference functions (`visit_order`, `candidate_order`), checked on
+random inputs in the tests.
+
 With `TPF3MP_HOOK_MEASURE_ORDER` set, the `visits` lane hashes the
 engine's visit order before the fix each update, `candidates` counts the
 candidate sorts that changed something, and `road` hashes each checked
@@ -2007,6 +2039,81 @@ directly; a lane that differs names the container. The hashes are FNV-1a
 64 over the raw values, so an entity id that legitimately differs shows
 too; TF3's ids are expected equal (the survey), and the `reordered`
 counts say whether the sorts changed anything.
+
+### What the hook costs: the `perf:` lines
+
+`crates/tpf3mp-hook/src/perf.rs` times the hook's per-update work where
+it runs, and the game's own `GameSim::Step` around the step detour's call
+of the original, so the one can be set against the other. Each timed call
+reads the clock twice (`Instant`, which is `QueryPerformanceCounter` on
+Windows) and adds its nanoseconds and one call to two atomics; no call is
+sampled. A timed call costs about 56 ns with the timing on and under 1 ns
+off (`perf::tests::a_timed_call_costs_two_clock_reads`, release build, on
+the development PC); at a few thousand timed calls a second that is a few
+tenths of a millisecond a second, so the timing is **on by default**.
+`TPF3MP_HOOK_PERF=0` (or `off`) in the game's environment turns it and its
+lines off; hook.log says which at install (`perf: timing the hook's
+work, ...` or `perf: timing off (...)`).
+
+Every 10 seconds of wall time, after a call of the step, two lines go to
+hook.log (nothing while no step runs, at the main menu):
+
+```
+perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step)
+perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
+```
+
+The first line: the window's length; the game's step, its total time,
+that time per second of wall time, its calls (batches) and the
+simulation updates run (`ecs::Engine::Update` calls, counted by the seeds'
+per-update detour, so `0` without it), and the step's time per update;
+then the hook: the sum of every piece below, per second, and as a share
+of the game's step time. Each piece of the second line is
+`<name> <calls>/<total ms>/<mean µs>` over the window:
+
+| piece | what is timed | calls are |
+|---|---|---|
+| `road-entry` | `road-entry-order`'s sort after `EdgeUseManager::Add` or `AddRange` (the engine's append is not counted) | appends |
+| `platform-visit` | `platform-order`'s visit site: the copy and sort at the loop's first iteration, the redirect at every one | iterations of the chooser's loop (one per vehicle per update) |
+| `platform-candidates` | `platform-order`'s candidate sort | `FindNextFreeTerminal` sorts |
+| `land-vehicle` | `land-vehicle-order`'s sort | reservation updates |
+| `vehicles-at-stop` | `vehicles-at-stop-order`'s sort | stop lookups |
+| `reseed` | the per-call reseed of the game scripts (update, postUpdate, handleEvent), its checks and `math.randomseed` | script calls |
+| `paused-tick` | the paused-tick redirect's decision (the game's own advance, when passed on, is not counted) | paused frames |
+| `lanes` | `tpf3mp_native.lanes(t)`: the lanes' text read off the Lua stack at a checkpoint (the mod's own reading of the world is Lua, inside the game's step) | checkpoints |
+| `lane-dump` | `dump()` and `dumped(lane, entry)` | calls |
+| `gate` | the step detour's own work around the game's step: the room's session, the driver, the lane digests, the log | step calls |
+
+The line ends with the road fix's refusals in the window, by reason.
+
+Reading them: every piece but `gate` runs inside the game's step, so the
+game's step time includes it; `gate` runs around it. `reseed` runs on the
+threads that run the game scripts, which may run side by side, so its
+total is time spent on those threads, not wall time; the share is then an
+upper bound of what the hook adds to a frame. A share of a few percent is
+the hook's; a game step that takes more per update with the same world is
+the game's.
+
+**A/B the fixes.** Every piece has a kill switch in the game's
+environment (the launcher's environment reaches the game). Run the same
+save with and without one, a minute or more each, and compare the first
+lines' `ms/update` and the piece's total:
+
+| switch (`0`, `off`, `false` or `no`) | turns off |
+|---|---|
+| `TPF3MP_HOOK_ROAD_ENTRY_ORDER` | `road-entry-order` |
+| `TPF3MP_HOOK_PLATFORM_ORDER` | `platform-order`, both sites |
+| `TPF3MP_HOOK_LAND_VEHICLE_ORDER` | `land-vehicle-order` |
+| `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER` | `vehicles-at-stop-order` |
+| `TPF3MP_HOOK_PAUSED_TICK` | the paused-tick redirect |
+| `TPF3MP_HOOK_SCRIPT_RESEED` | the game scripts' per-call reseed (the per-update detour stays, so the mod's own `tpf3mp_native.seed` still works) |
+| `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |
+| `TPF3MP_HOOK_MEASURE_ORDER` | (unset by default) the order measurement, which adds its own detours and hashing when set |
+| `TPF3MP_HOOK_PERF` | the timing and these lines |
+
+Each switch changes what the game computes, so a game with one off
+diverges from a room whose other games have it on: A/B in a room where
+every game has the same switches, or alone.
 
 ## Release-day procedure: adding a target for a new build
 

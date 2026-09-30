@@ -96,6 +96,9 @@ static GAME_TIME: AtomicUsize = AtomicUsize::new(0);
 /// The room's step the last batch ended at: a batch that does not start
 /// right after it (a world loaded) logs its counters too.
 static LAST_STEP_RUN: AtomicU64 = AtomicU64::new(u64::MAX);
+/// The time of the game's own step inside the step detour's call running
+/// now (`crate::perf`): the detour's time less this is the gate's.
+static STEP_GAME_NANOS: AtomicU64 = AtomicU64::new(0);
 /// When the game's step last ran, in milliseconds since [`EPOCH`]; 0 never.
 static LAST_STEP: AtomicU64 = AtomicU64::new(0);
 static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -270,8 +273,14 @@ unsafe fn run_step(
     };
     UPDATES.store(answer, Ordering::Release);
     crate::ticks::set_room(room);
+    let started = crate::perf::start();
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
+    if let Some(started) = started {
+        let nanos = crate::perf::nanos_since(started);
+        crate::perf::game_step(nanos);
+        STEP_GAME_NANOS.fetch_add(nanos, Ordering::Relaxed);
+    }
     crate::ticks::set_room(false);
     UPDATES.store(OWN_SPEED, Ordering::Release);
 }
@@ -299,6 +308,8 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     // SAFETY: ORIGINAL holds the trampoline InlineDetour::install returned
     // for this function, which keeps the game's own ABI.
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
+    let started = crate::perf::start();
+    STEP_GAME_NANOS.store(0, Ordering::Relaxed);
     LAST_STEP.store(now_ms(), Ordering::Release);
     // The step's speed call sets it again for this call.
     GAME_TIME.store(0, Ordering::Release);
@@ -367,6 +378,18 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         if !ran {
             // SAFETY: as above.
             unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
+        }
+    }
+    if let Some(started) = started {
+        let total = crate::perf::nanos_since(started);
+        let game = STEP_GAME_NANOS.swap(0, Ordering::Relaxed);
+        crate::perf::add(crate::perf::Piece::Gate, total.saturating_sub(game));
+        // Once a window: the timing's two lines (their own write is the
+        // next window's gate).
+        if let Some(lines) = crate::perf::tick(std::time::Instant::now()) {
+            for line in lines {
+                log_line(&line);
+            }
         }
     }
 }
@@ -593,6 +616,15 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     for target in &mut absolute.targets {
         target.address = target.address.saturating_add(base as u64);
     }
+    log_line(&if crate::perf::configure_from_env() {
+        format!(
+            "perf: timing the hook's work, two lines every {} s ({}=0 turns it off)",
+            crate::perf::WINDOW.as_secs(),
+            crate::perf::ENV
+        )
+    } else {
+        format!("perf: timing off ({} says so)", crate::perf::ENV)
+    });
     crate::seeds::install(&absolute);
     log_line(&crate::ticks::install(&absolute));
     for outcome in crate::order::install(&absolute) {

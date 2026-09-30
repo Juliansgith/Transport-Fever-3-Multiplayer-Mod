@@ -117,6 +117,13 @@ pub const TOWN_DEVELOP_TARGET: &str = "TownDevelopAt::Apply";
 /// [`Batch::town_apply`].
 pub const TOWN_DEVELOP_RESEED: bool = false;
 
+/// Set to `0` (or `off`) in the game's environment, the game scripts'
+/// calls (update, postUpdate, handleEvent) are not detoured and not
+/// reseeded: the kill switch, for timing the reseed against the game
+/// (docs/HOOKS.md, "What the hook costs"). The per-update detour stays, so
+/// the mod's own `tpf3mp_native.seed` still knows the step.
+pub const SCRIPT_RESEED_ENV: &str = "TPF3MP_HOOK_SCRIPT_RESEED";
+
 /// The salt of the game scripts' seeds, before the call's kind and the
 /// script's entity ([`script_salt`]).
 pub const GAME_SCRIPT_SALT: u32 = 0;
@@ -899,6 +906,7 @@ mod native {
     ///
     /// `update`: `_Do_call(functor, lua::State*& rdx, GameScriptData& r8)`.
     extern "C" fn before_update_call_c(functor: usize, state_ref: usize, _data: usize, _d: usize) {
+        let _timer = crate::perf::time(crate::perf::Piece::Reseed);
         let _ = catch_unwind(|| {
             if let (Some(state), Some(entity)) = (word(state_ref), entity(functor, UPDATE_ENTITY)) {
                 before_script_call(state, ScriptCall::Update, entity, false);
@@ -913,6 +921,7 @@ mod native {
         _data: usize,
         _d: usize,
     ) {
+        let _timer = crate::perf::time(crate::perf::Piece::Reseed);
         let _ = catch_unwind(|| {
             if let (Some(state), Some(entity)) =
                 (word(state_ref), entity(functor, POST_UPDATE_ENTITY))
@@ -925,6 +934,7 @@ mod native {
     /// `handleEvent`: `operator()(captures, lua::State* rdx, GameScriptData&
     /// r8)`; an event with its own seed is the engine's to seed.
     extern "C" fn before_event_call_c(captures: usize, state: usize, _data: usize, _d: usize) {
+        let _timer = crate::perf::time(crate::perf::Piece::Reseed);
         let _ = catch_unwind(|| {
             let Some(own_seed) = captures.checked_add(EVENT_SEED).and_then(word) else {
                 return;
@@ -936,6 +946,7 @@ mod native {
     }
 
     extern "C" fn before_update_c(_engine: usize, _b: usize, _c: usize, _d: usize) {
+        crate::perf::update();
         let _ = catch_unwind(before_update);
     }
 
@@ -997,6 +1008,7 @@ mod native {
     }
 
     fn install_script_reseed(resolved: &ResolvedProfile) {
+        let wanted = crate::ticks::wanted(std::env::var(SCRIPT_RESEED_ENV).ok().as_deref());
         let calls = [
             (
                 UPDATE_CALL_TARGET,
@@ -1010,7 +1022,12 @@ mod native {
             ),
             (EVENT_CALL_TARGET, event_call_thunk, &EVENT_CALL_ORIGINAL),
         ];
-        for (target, thunk, original) in calls {
+        if !wanted {
+            log::line(&format!(
+                "seeds: {SCRIPT_RESEED_ENV} says so; the game scripts' calls are not reseeded, their math.random is the game's own"
+            ));
+        }
+        for (target, thunk, original) in calls.into_iter().filter(|_| wanted) {
             match detour(resolved, target, thunk, original) {
                 Ok(()) => log::line(&format!(
                     "seeds: detour installed on {target}; each game script's call there is reseeded from the room's step in the state that runs it"
