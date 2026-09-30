@@ -1055,7 +1055,8 @@ impl<G: RoomGate> StepDriver<G> {
     ///
     /// - before the room begins a game, it reads whether it did, and tells
     ///   the agent the game is at its menu, once per arrival
-    ///   ([`RoomGate::menu_up`]), which marks a guest ready;
+    ///   ([`RoomGate::menu_up`]), which marks a guest ready, and the owner
+    ///   once the room has the save it starts from;
     /// - in the room's game, it starts a load of the room's save from the
     ///   menu ([`LoadFrom::Menu`]) and waits for it as the step does; the
     ///   step takes the loaded world once it runs;
@@ -1072,7 +1073,7 @@ impl<G: RoomGate> StepDriver<G> {
                 Ok(None) => {
                     match self.gate.menu_up(self.menus) {
                         Ok(true) => self.log.push(format!(
-                            "the game is at its main menu (arrival {}): told the agent, which marks a guest ready",
+                            "the game is at its main menu (arrival {}): told the agent, which marks a guest ready, or the owner once the room has the save it starts from",
                             self.menus
                         )),
                         Ok(false) => {}

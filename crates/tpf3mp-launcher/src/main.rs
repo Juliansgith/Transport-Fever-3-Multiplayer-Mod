@@ -77,6 +77,16 @@ struct AutoRoom {
     #[arg(long, value_name = "SAVE")]
     auto_load: Option<String>,
 
+    /// The name of a save in the game's save folder, such as `mptest`, or
+    /// the path of a save file, that rooms this launcher creates start
+    /// from. The launcher hands it to the room in the lobby, and every
+    /// game, this one too, loads it from its main menu when the room's game
+    /// starts; this player is marked ready at the menu once the room has
+    /// it. Instead of --auto-load, which has this game load the world and
+    /// save it for the room.
+    #[arg(long, value_name = "SAVE", conflicts_with = "auto_load")]
+    start_save: Option<String>,
+
     /// The folder the game's hook keeps its log and profiles in, instead of
     /// the per-user one. With --game-link, --listen, --identity and
     /// --worlds, several games run on one PC without a sandbox, each with
@@ -135,6 +145,13 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         config
             .game_env
             .push((tpf3mp_ipc::AUTO_LOAD_ENV.to_owned(), save.clone()));
+    }
+    if let Some(save) = &args.auto.start_save {
+        let file = tpf3mp_agent::steam::find_save(save)
+            .map_err(anyhow::Error::msg)
+            .context("finding the save rooms start from (--start-save)")?;
+        info!(file = %file.display(), "rooms this launcher creates start from this save");
+        config.start_save = Some(file);
     }
     if let Some(dir) = &args.auto.game_data_dir {
         std::fs::create_dir_all(dir).context("making the game's data folder")?;
@@ -288,7 +305,9 @@ fn auto_room(
                 return;
             };
             // Start once everyone is in and ready (auto-ready marks each
-            // player once their save's world is up).
+            // player once their save's world is up, or their game waits at
+            // its menu for the room's world; with --start-save, the owner
+            // once the room has that save too).
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 let Some(room) = handle.state().room else {
@@ -473,6 +492,22 @@ mod tests {
         assert!(guest.auto.auto_play && guest.auto.auto_load.is_none());
         let plain = parse(&[]).unwrap();
         assert!(!plain.auto.auto_play && plain.auto.auto_load.is_none());
+        let starting = parse(&[
+            "--auto-create",
+            "test",
+            "--invite-file",
+            "i",
+            "--auto-play",
+            "--start-save",
+            "twomptest",
+        ])
+        .unwrap();
+        assert_eq!(starting.auto.start_save.as_deref(), Some("twomptest"));
+        assert!(starting.auto.auto_load.is_none());
+        assert!(
+            parse(&["--start-save", "a", "--auto-load", "b"]).is_err(),
+            "the game loads the save itself, or every game loads it from the room"
+        );
         let apart = parse(&["--game-data-dir", "games/cat"]).unwrap();
         assert_eq!(
             apart.auto.game_data_dir.as_deref(),

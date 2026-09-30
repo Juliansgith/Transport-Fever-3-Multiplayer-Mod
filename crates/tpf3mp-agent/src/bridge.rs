@@ -106,6 +106,12 @@ pub struct BridgeOptions {
     pub status: Option<SharedStatus>,
     /// The launcher's lobby, for the game's main-menu window (D17).
     pub lobby: Option<LobbyLink>,
+    /// A save of the player's own that the room's game starts from, when
+    /// this player owns the room: the bridge hands it to the room in the
+    /// lobby (`Request::StartWorld`), and every game, this one too, loads
+    /// it from its main menu when the game starts. Without it, the owner's
+    /// game has the world up and saves it for the room once the game began.
+    pub start_world: Option<PathBuf>,
 }
 
 /// The launcher's lobby as a bridge passes it on: the lobby to show the
@@ -128,6 +134,7 @@ impl Default for BridgeOptions {
             worlds: None,
             status: None,
             lobby: None,
+            start_world: None,
         }
     }
 }
@@ -309,6 +316,29 @@ enum Done {
         snapshot: SnapshotId,
         result: Result<u64, String>,
     },
+    /// The save the room starts from is cut into the store.
+    StartCut {
+        result: Result<(ManifestId, SavedWorld), String>,
+    },
+    /// The room would not take the save it was to start from.
+    StartRefused { error: String },
+}
+
+/// Where the save the room starts from stands, when this player hands one
+/// over (see [`BridgeOptions::start_world`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartWorld {
+    /// None to hand over, or no longer: the room's game began, or handing
+    /// it over failed and the room starts as without one.
+    None,
+    /// Named, waiting for the room's lobby with this player as its owner.
+    Named,
+    /// Being cut into the store.
+    Cutting,
+    /// Told to the room, which asks for it and receives it.
+    Told(SnapshotId),
+    /// The room has it: every game loads it when the game starts.
+    Uploaded(SnapshotId),
 }
 
 /// Saves of this game the store keeps, newest last: the room asks for the
@@ -352,6 +382,11 @@ pub struct Bridge<L> {
     saved: VecDeque<ManifestId>,
     /// The world last received.
     received: Option<ManifestId>,
+    /// The save the room starts from, when this player hands one over.
+    start: StartWorld,
+    /// Its snapshot, kept in the store for the upload and for this game's
+    /// own load of it.
+    start_kept: Option<ManifestId>,
     /// What a front end asks of the session.
     controls: Option<mpsc::Receiver<Control>>,
     /// The room as the server last showed it: the game's Multiplayer window
@@ -400,6 +435,12 @@ impl<L: HookLink> Bridge<L> {
             fetch: None,
             saved: VecDeque::new(),
             received: None,
+            start: if options.start_world.is_some() {
+                StartWorld::Named
+            } else {
+                StartWorld::None
+            },
+            start_kept: None,
             controls: None,
             room: None,
             room_phase: options.status.as_ref().and_then(|status| {
@@ -490,6 +531,7 @@ impl<L: HookLink> Bridge<L> {
             self.link.heartbeat();
             self.check_hook(now)?;
             self.read_hook(client).await?;
+            self.hand_over_start_world(client);
             self.report_progress(client, now).await?;
             self.lobby_news();
             // Turns wait while the world they continue is being fetched.
@@ -674,7 +716,7 @@ impl<L: HookLink> Bridge<L> {
     /// and the room is in its lobby. See [`Bridge::world_up`].
     fn ready_for_world(&mut self, client: &Client) {
         let world = self.world_up;
-        if world <= self.readied {
+        if world <= self.readied || self.start_world_on_its_way(client) {
             return;
         }
         let lobby = match self.room_phase {
@@ -699,10 +741,13 @@ impl<L: HookLink> Bridge<L> {
     /// The game is at its main menu, arrived there for the `menu`th time,
     /// and can load the room's world from there: in the room's lobby, a
     /// player other than the room's owner is marked ready, as by the Ready
-    /// button, once per arrival. The owner is not: the room's first world is
-    /// the owner's, which their game saves for the room from a world it has
-    /// up. Nor is anyone whose agent keeps no worlds, as it could not fetch
-    /// the room's. Otherwise as [`Bridge::world_up`].
+    /// button, once per arrival. So is the owner once the room has the save
+    /// the owner handed over to start from ([`BridgeOptions::start_world`]):
+    /// the owner's game then loads it from the menu as every other does.
+    /// Without one the owner is not: the room's first world is the owner's,
+    /// which their game saves for the room from a world it has up. Nor is
+    /// anyone whose agent keeps no worlds, as it could not fetch the room's.
+    /// Otherwise as [`Bridge::world_up`].
     fn menu_up(&mut self, menu: u64, client: &Client) {
         if menu <= self.menu_up {
             debug!(menu, "a menu arrival already told");
@@ -716,7 +761,7 @@ impl<L: HookLink> Bridge<L> {
     /// for it and the room is in its lobby. See [`Bridge::menu_up`].
     fn ready_at_menu(&mut self, client: &Client) {
         let menu = self.menu_up;
-        if menu <= self.menu_readied {
+        if menu <= self.menu_readied || self.start_world_on_its_way(client) {
             return;
         }
         let lobby = match self.room_phase {
@@ -735,7 +780,7 @@ impl<L: HookLink> Bridge<L> {
         let Some(owner) = self.room_owner else {
             return;
         };
-        if owner == client.player() {
+        if owner == client.player() && !matches!(self.start, StartWorld::Uploaded(_)) {
             info!(
                 menu,
                 "the game is at its main menu, but the room plays its owner's world: load it to be ready"
@@ -762,6 +807,58 @@ impl<L: HookLink> Bridge<L> {
             );
         });
         self.request(client, Request::SetReady(true));
+    }
+
+    /// Whether this player owns the room and the save it starts from is
+    /// still on its way there: readiness waits for it, undecided, since the
+    /// room cannot start before it arrives.
+    fn start_world_on_its_way(&self, client: &Client) -> bool {
+        matches!(
+            self.start,
+            StartWorld::Named | StartWorld::Cutting | StartWorld::Told(_)
+        ) && self.room_owner == Some(client.player())
+            && !self.begun
+    }
+
+    /// Hands the room the save it starts from, once in the room's lobby
+    /// with this player as its owner: cut into the store off this task,
+    /// then told to the room (see [`Bridge::on_done`]), which asks for it.
+    /// Once the room's game began, the room plays what it has.
+    fn hand_over_start_world(&mut self, client: &Client) {
+        if self.start != StartWorld::Named {
+            return;
+        }
+        if self.begun {
+            self.start = StartWorld::None;
+            return;
+        }
+        if self.room_phase != Some(RoomPhase::Lobby) || self.room_owner != Some(client.player()) {
+            return;
+        }
+        let (Some(worlds), Some(file)) = (
+            self.options.worlds.clone(),
+            self.options.start_world.clone(),
+        ) else {
+            warn!("a save to start the room from, but this agent keeps no worlds to hand it over");
+            self.start = StartWorld::None;
+            return;
+        };
+        info!(file = %file.display(), "handing the room the save it starts from");
+        self.status(|status| {
+            status.notice(format!(
+                "the room starts from your save {}: handing it over",
+                file.display()
+            ));
+        });
+        self.start = StartWorld::Cutting;
+        let done = self.done_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = worlds
+                .ingest_copy(&file)
+                .map(|(manifest, world)| (manifest.id(), world))
+                .map_err(|error| format!("cannot read the save {}: {error}", file.display()));
+            let _ = done.send(Done::StartCut { result });
+        });
     }
 
     /// The game saved its world at a save event: cut the save into the
@@ -1002,12 +1099,77 @@ impl<L: HookLink> Bridge<L> {
                     }
                 }
             }
-            Done::Uploaded { snapshot, result } => match result {
-                Ok(bytes) => info!(%snapshot, bytes, "uploaded a save the room asked for"),
-                Err(error) => warn!(%snapshot, %error, "uploading a save failed"),
-            },
+            Done::Uploaded { snapshot, result } => {
+                let starting = self.start == StartWorld::Told(snapshot);
+                match result {
+                    Ok(bytes) if starting => {
+                        info!(%snapshot, bytes, "uploaded the save the room starts from; the game waits at its menu to load it with everyone");
+                        self.start = StartWorld::Uploaded(snapshot);
+                        self.status(|status| {
+                            status.notice(
+                                "the room has your save: every game loads it from its main menu when the game starts",
+                            );
+                        });
+                        self.ready_for_world(client);
+                        self.ready_at_menu(client);
+                    }
+                    Ok(bytes) => info!(%snapshot, bytes, "uploaded a save the room asked for"),
+                    Err(error) if starting => {
+                        self.start_failed(&format!("uploading it failed: {error}"), client);
+                    }
+                    Err(error) => warn!(%snapshot, %error, "uploading a save failed"),
+                }
+            }
+            Done::StartCut { result } => {
+                if self.start != StartWorld::Cutting {
+                    return Ok(None);
+                }
+                match result {
+                    Ok((id, world)) => {
+                        info!(snapshot = %world.snapshot, bytes = world.size, "told the room the save it starts from");
+                        self.start_kept = Some(id);
+                        self.start = StartWorld::Told(world.snapshot);
+                        self.tell_start_world(client, world);
+                    }
+                    Err(error) => self.start_failed(&error, client),
+                }
+            }
+            Done::StartRefused { error } => {
+                if matches!(self.start, StartWorld::Told(_)) {
+                    self.start_failed(&format!("the room refused it: {error}"), client);
+                }
+            }
         }
         Ok(None)
+    }
+
+    /// Tells the room the save it starts from, on a task of its own: the
+    /// room asks for it with [`ClientEvent::Upload`].
+    fn tell_start_world(&self, client: &Client, world: SavedWorld) {
+        let requests = client.requests();
+        let done = self.done_tx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = requests.done(Request::StartWorld(world)).await {
+                let _ = done.send(Done::StartRefused {
+                    error: error.to_string(),
+                });
+            }
+        });
+    }
+
+    /// Handing over the save the room starts from failed: the room starts
+    /// as without one, from the owner's world up.
+    fn start_failed(&mut self, why: &str, client: &Client) {
+        warn!(reason = why, "the room cannot start from the save named");
+        self.start = StartWorld::None;
+        self.status(|status| {
+            status.notice(format!(
+                "the room cannot start from your save ({why}); load the world the room will play instead"
+            ));
+        });
+        // Readiness waited for the save; it is decided as without one now.
+        self.ready_for_world(client);
+        self.ready_at_menu(client);
     }
 
     /// Starts fetching the world a stream starts from. Whatever the game
@@ -1178,7 +1340,13 @@ impl<L: HookLink> Bridge<L> {
         let Some(worlds) = self.options.worlds.clone() else {
             return;
         };
-        let keep: Vec<ManifestId> = self.saved.iter().copied().chain(self.received).collect();
+        let keep: Vec<ManifestId> = self
+            .saved
+            .iter()
+            .copied()
+            .chain(self.received)
+            .chain(self.start_kept)
+            .collect();
         tokio::task::spawn_blocking(move || {
             if let Err(error) = worlds.keep_only(&keep) {
                 debug!(%error, "cannot tidy the world store");

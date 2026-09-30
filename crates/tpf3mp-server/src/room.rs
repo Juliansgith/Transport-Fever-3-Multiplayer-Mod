@@ -172,6 +172,13 @@ pub(crate) enum RoomCommand {
         player: PlayerId,
         reply: Reply,
     },
+    /// The owner names the world the game starts from, a save its client
+    /// holds; the room asks for it at once.
+    StartWorld {
+        player: PlayerId,
+        world: SavedWorld,
+        reply: Reply,
+    },
     SetSpeed {
         player: PlayerId,
         speed: Speed,
@@ -459,6 +466,22 @@ enum Phase {
     Running(Box<Game>),
 }
 
+/// The world a room's game starts from, when its owner handed one over in
+/// the lobby (`Request::StartWorld`) instead of having its game save one
+/// once the game began.
+enum StartWorld {
+    /// Asked of the owner, not received yet.
+    Asked {
+        world: SavedWorld,
+        from: PlayerId,
+        asked: Instant,
+        /// Whether the owner opened its stream.
+        receiving: bool,
+    },
+    /// In the store, held by the room.
+    Held(Arc<Manifest>),
+}
+
 struct Game {
     pacer: Pacer,
     speed: Speed,
@@ -573,6 +596,9 @@ pub(crate) struct Room {
     /// The server's snapshots; `None` if it keeps none, and then nobody can
     /// join a running game.
     snapshots: Option<Arc<Snapshots>>,
+    /// In the lobby: the world the owner handed over for the game to start
+    /// from, if any.
+    start_world: Option<StartWorld>,
     closed: bool,
 }
 
@@ -659,6 +685,7 @@ impl Room {
             content: None,
             game_content: None,
             snapshots: spec.env.snapshots,
+            start_world: None,
             closed: false,
         };
         room.members.push(Member::new(owner));
@@ -912,6 +939,7 @@ impl Room {
             content,
             game_content,
             snapshots: env.snapshots,
+            start_world: None,
             closed: false,
         }))
     }
@@ -1025,6 +1053,13 @@ impl Room {
             RoomCommand::Start { player, reply } => {
                 let result = self.start(player);
                 self.answer_and_broadcast(reply, result);
+            }
+            RoomCommand::StartWorld {
+                player,
+                world,
+                reply,
+            } => {
+                let _ = reply.send(self.ask_for_start_world(player, world));
             }
             RoomCommand::SetSpeed {
                 player,
@@ -1348,8 +1383,85 @@ impl Room {
         }
         if self.owner == player {
             self.owner = self.members[0].player;
+            // The world the old owner handed over goes with them: the new
+            // owner's is the room's now.
+            self.drop_start_world();
         }
         self.broadcast_view();
+    }
+
+    /// The owner names the world the game starts from (`Request::StartWorld`):
+    /// the room asks the owner to upload it, unless it has it already. It
+    /// replaces any world named before.
+    fn ask_for_start_world(
+        &mut self,
+        player: PlayerId,
+        world: SavedWorld,
+    ) -> Result<(), RequestError> {
+        if player != self.owner {
+            return Err(RequestError::NotOwner);
+        }
+        if matches!(self.phase, Phase::Running(_)) {
+            return Err(RequestError::GameRunning);
+        }
+        if self.snapshots.is_none() {
+            return Err(RequestError::WorldsNotKept);
+        }
+        let same = match &self.start_world {
+            Some(StartWorld::Asked { world: asked, .. }) => asked.snapshot == world.snapshot,
+            Some(StartWorld::Held(manifest)) => bulk::snapshot_id(&manifest.id()) == world.snapshot,
+            None => false,
+        };
+        if same {
+            return Ok(());
+        }
+        self.drop_start_world();
+        let Some(index) = self.members.iter().position(|m| m.player == player) else {
+            return Err(RequestError::NotInRoom);
+        };
+        info!(room = %self.id, snapshot = %world.snapshot, bytes = world.size, "the owner hands over the world the game starts from");
+        self.start_world = Some(StartWorld::Asked {
+            world,
+            from: player,
+            asked: Instant::now(),
+            receiving: false,
+        });
+        self.push(
+            index,
+            ServerMessage::Upload {
+                event: 0,
+                snapshot: world.snapshot,
+            },
+        );
+        Ok(())
+    }
+
+    /// Forgets the world the owner handed over, giving back the room's hold
+    /// on it.
+    fn drop_start_world(&mut self) {
+        if let (Some(StartWorld::Held(manifest)), Some(snapshots)) =
+            (self.start_world.take(), &self.snapshots)
+        {
+            release_in_background(Arc::clone(snapshots), vec![manifest.id()]);
+        }
+    }
+
+    /// Gives up on a world the owner was asked for that did not start
+    /// arriving in time. An upload under way has the bulk stream's own
+    /// limits.
+    fn expire_start_world(&mut self, now: Instant) {
+        if let Some(StartWorld::Asked {
+            asked,
+            receiving: false,
+            world,
+            ..
+        }) = &self.start_world
+            && now.saturating_duration_since(*asked) >= UPLOAD_START
+        {
+            warn!(room = %self.id, snapshot = %world.snapshot, "the owner did not upload the world the game starts from");
+            metrics::increment(&self.metrics.uploads_failed);
+            self.start_world = None;
+        }
     }
 
     fn start(&mut self, player: PlayerId) -> Result<(), RequestError> {
@@ -1371,6 +1483,13 @@ impl Room {
         {
             return Err(RequestError::ContentMismatch);
         }
+        if matches!(self.start_world, Some(StartWorld::Asked { .. })) {
+            return Err(RequestError::StartWorldPending);
+        }
+        let start_world = match self.start_world.take() {
+            Some(StartWorld::Held(manifest)) => Some(manifest),
+            _ => None,
+        };
         let mut game = Game::new(self.settings, new_history());
         // The log starts by naming everyone at the table, in join order, so a
         // replay of the log alone reproduces membership.
@@ -1393,18 +1512,20 @@ impl Room {
         let open = game.turn_start(self.id, self.settings, &self.rules, &first, None);
         self.content = first_content;
         self.game_content = self.members[0].declared.clone();
-        // With snapshots, the owner's world is everyone's: the owner loads
-        // it, the room saves it before the first step, and every other
-        // player loads that save. Worlds generated on each machine could
-        // differ between platforms. Everyone still holds the clock until
-        // loaded.
+        // With snapshots, the owner's world is everyone's. Handed over in
+        // the lobby, every player loads it at once, the owner too. Otherwise
+        // the owner's game loads it, the room saves it before the first
+        // step, and every player loads that save. Worlds generated on each
+        // machine could differ between platforms. Everyone still holds the
+        // clock until loaded.
         let shared_world = self.snapshots.is_some();
+        let from_start_world = start_world.is_some();
         let owner = self.owner;
         for member in &mut self.members {
             member.pace = Pace::Loading;
             member.stream_from = 1;
             member.streaming = false;
-            if shared_world && member.player != owner {
+            if shared_world && (from_start_world || member.player != owner) {
                 member.needs = Needs::World;
                 continue;
             }
@@ -1421,12 +1542,25 @@ impl Room {
         }
         let history = game.history();
         self.phase = Phase::Running(Box::new(game));
-        if shared_world && self.members.len() > 1 {
+        self.open_log(history);
+        if let Some(manifest) = start_world {
+            // The world stands before the first turn: a stream from it is
+            // the game's first. The room's hold on it passes to its slot.
+            let point = SavePoint {
+                event: 0,
+                after_turn: 0,
+                history,
+                sealed_through: 0,
+            };
+            if let Phase::Running(game) = &mut self.phase {
+                game.saves.last_point = Some(point);
+            }
+            self.promote(Agreed { manifest, point });
+        } else if shared_world && self.members.len() > 1 {
             // Save as soon as the owner has loaded.
             self.offer_worlds(Instant::now());
         }
-        self.open_log(history);
-        info!(room = %self.id, players = self.members.len(), shared_world, "game started");
+        info!(room = %self.id, players = self.members.len(), shared_world, from_start_world, "game started");
         metrics::increment(&self.metrics.games_started);
         Ok(())
     }
@@ -1920,8 +2054,26 @@ impl Room {
             .members
             .iter()
             .any(|m| m.player == player && m.link.as_ref().is_some_and(|l| l.id == link));
-        let Phase::Running(game) = &mut self.phase else {
-            return false;
+        let game = match &mut self.phase {
+            Phase::Running(game) => game,
+            Phase::Lobby => {
+                return match &mut self.start_world {
+                    Some(StartWorld::Asked {
+                        world,
+                        from,
+                        receiving,
+                        ..
+                    }) if linked
+                        && *from == player
+                        && world.snapshot == *snapshot
+                        && !*receiving =>
+                    {
+                        *receiving = true;
+                        true
+                    }
+                    _ => false,
+                };
+            }
         };
         match &mut game.saves.upload {
             Some(upload)
@@ -1944,6 +2096,10 @@ impl Room {
         result: Result<Arc<Manifest>, String>,
         now: Instant,
     ) {
+        if matches!(self.phase, Phase::Lobby) {
+            self.start_world_uploaded(player, snapshot, result);
+            return;
+        }
         let Phase::Running(game) = &mut self.phase else {
             return;
         };
@@ -1972,6 +2128,39 @@ impl Room {
                 game.saves.failed_uploader(player);
                 self.ask_for_upload(upload.point, upload.rest, now);
             }
+        }
+    }
+
+    /// An upload in the lobby ended: the world the game starts from, if it
+    /// is the one the room asked for. The room takes over the hold the
+    /// upload took; one it no longer wants goes back.
+    fn start_world_uploaded(
+        &mut self,
+        player: PlayerId,
+        snapshot: SnapshotId,
+        result: Result<Arc<Manifest>, String>,
+    ) {
+        let asked = matches!(
+            &self.start_world,
+            Some(StartWorld::Asked { world, from, .. })
+                if *from == player && world.snapshot == snapshot
+        );
+        match (asked, result) {
+            (true, Ok(manifest)) => {
+                info!(room = %self.id, %player, %snapshot, bytes = manifest.total_size(), "received the world the game starts from");
+                self.start_world = Some(StartWorld::Held(manifest));
+            }
+            (true, Err(error)) => {
+                warn!(room = %self.id, %player, %snapshot, %error, "the upload of the world the game starts from failed");
+                metrics::increment(&self.metrics.uploads_failed);
+                self.start_world = None;
+            }
+            (false, Ok(manifest)) => {
+                if let Some(snapshots) = &self.snapshots {
+                    release_in_background(Arc::clone(snapshots), vec![manifest.id()]);
+                }
+            }
+            (false, Err(_)) => {}
         }
     }
 
@@ -2319,6 +2508,7 @@ impl Room {
         if let (Some(snapshots), Phase::Running(game)) = (&self.snapshots, &self.phase) {
             release_in_background(Arc::clone(snapshots), game.saves.held());
         }
+        self.drop_start_world();
     }
 
     /// Frees lobby seats whose connection is gone. A lobby seat is not held
@@ -2343,6 +2533,7 @@ impl Room {
         if self.closed {
             return;
         }
+        self.expire_start_world(now);
         self.decide_waiting_rounds(now);
         self.demote_stalled(now);
         self.run_saves(now);

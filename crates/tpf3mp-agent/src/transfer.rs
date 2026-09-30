@@ -71,13 +71,20 @@ impl Worlds {
     /// Cuts a save the game wrote into the store, and deletes the file: the
     /// store holds it now. Blocking.
     pub fn ingest(&self, file: &Path) -> io::Result<(Manifest, SavedWorld)> {
+        let taken = self.ingest_copy(file)?;
+        // The game may still hold the file open; the store has what it needs.
+        let _ = fs::remove_file(file);
+        Ok(taken)
+    }
+
+    /// Cuts a copy of a save into the store and leaves the file alone: a
+    /// player's own save, such as the one a room starts from. Blocking.
+    pub fn ingest_copy(&self, file: &Path) -> io::Result<(Manifest, SavedWorld)> {
         let source = BufReader::new(fs::File::open(file)?);
         let manifest = self
             .store
             .ingest(source, ChunkParams::DEFAULT)
             .map_err(io::Error::other)?;
-        // The game may still hold the file open; the store has what it needs.
-        let _ = fs::remove_file(file);
         let world = SavedWorld {
             snapshot: bulk::snapshot_id(&manifest.id()),
             size: manifest.total_size(),

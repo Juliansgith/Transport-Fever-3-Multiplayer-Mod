@@ -132,6 +132,7 @@ fn launcher_config(
         hook: None,
         game_exe: None,
         game_env: Vec::new(),
+        start_save: None,
         listen: "127.0.0.1:0".parse().unwrap(),
         server: None,
         server_fixed: false,
@@ -190,6 +191,7 @@ async fn two_players_play_a_room_from_their_launchers() {
             target_step: 300,
             drift_at: None,
             patience: WAIT,
+            at_menu: false,
         })
     });
     let ann = Launcher::start(ann_config).await.unwrap();

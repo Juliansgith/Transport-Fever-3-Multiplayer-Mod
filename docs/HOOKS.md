@@ -344,9 +344,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   - `Load { file, next_step }`: load a world, then run `next_step`.
     Without a file, the game loads the world the player chose to start
     from: the owner's, or everyone's on a server that keeps no snapshots.
-    With one, a save the room agreed on: the owner's world at the start,
-    or the room's latest for a player who joins a running game, could no
-    longer resume, or is rebased after diverging. Everything sent before
+    With one, a save the room agreed on: the owner's world at the start
+    (the save the owner named for the room, or the one the owner's game
+    saved), or the room's latest for a player who joins a running game,
+    could no longer resume, or is rebased after diverging. Everything sent before
     a load is void.
   - `Apply(event)`: apply this event before its step. A `Save` event is not
     applied: the session saves the world there (see below).
@@ -399,9 +400,11 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     counts the game's arrivals at its menu since the hook began; each is
     told once per room session, so again to the launcher's next room. In
     the room's lobby the agent marks a player other than the room's owner
-    ready, once per arrival, if it keeps worlds; never the owner, whose
-    game must have the world everyone plays up to save it for the room.
-    Otherwise as `WorldUp`. Bridge version 8.
+    ready, once per arrival, if it keeps worlds. The owner only once the
+    room has the save the owner named for it to start from
+    (`BridgeOptions::start_world`, the launcher's `--start-save`); without
+    one never, as the owner's game must have the world everyone plays up
+    to save it for the room. Otherwise as `WorldUp`. Bridge version 8.
   - `Lobby(LobbyAction)`: the player pressed a button of the main menu's
     Multiplayer window: connect (a name; the server is the launcher's,
     D12), disconnect, create, join, ready, start, kick, chat or leave. The
@@ -837,10 +840,15 @@ game, so the worlds stay alike. The native build tools come next.
 
 ### The room's world
 
-A room plays its owner's world. On a server that keeps worlds, the room
-has the owner's game save it before step 1, and every other player's game
-loads that save; a player who joins later loads the room's latest one
-("The first world" in [PROTOCOL.md](PROTOCOL.md)). Transport Fever 3 saves and loads only through its GUI's
+A room plays its owner's world. On a server that keeps worlds, the owner
+names a save before the room starts (the launcher's `--start-save`), which
+the owner's agent reads from the game's save folder and hands to the room
+in its lobby: no game is involved, every game waits at its main menu, and
+all of them, the owner's too, load that save from there when the room
+starts. Without one, the room has the owner's game, with its world up,
+save it before step 1, and every player's game loads that save. A player
+who joins later loads the room's latest one ("The first world" in
+[PROTOCOL.md](PROTOCOL.md)). Transport Fever 3 saves and loads only through its GUI's
 script API (`app.saveGame`, `app.loadGame`) and only in its own save
 folder, so the hook asks the mod's GUI for both
 (`crates/tpf3mp-hook/src/worlds.rs`,
@@ -901,8 +909,10 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   saving the room's world before that world's first step (both measured
   2026-09-30). Back at the menu after a world, the player loads any save,
   as before. Before the room begins, `on_menu` reads `Begin` and tells
-  the agent `MenuUp` once per arrival, which marks a guest ready and keeps
-  the hook's heartbeat going at the menu; in the room's game it answers a
+  the agent `MenuUp` once per arrival, which marks a guest ready (and the
+  room's owner, once the room has the save the owner named for it to start
+  from: PROTOCOL.md, "The first world") and keeps the hook's heartbeat
+  going at the menu; in the room's game it answers a
   `Load` with a file by copying the save into the folder as above and
   loading it from the menu, as the menu's own Load Game page does:
   `api.type.SavegameId.new()` with the name and the `savegame` namespace
@@ -928,8 +938,8 @@ room's steps run on, as for a load from the GUI.
 
 What the menu leaves to a world up: a `Load` without a file (the owner's
 world, or everyone's on a server that keeps no worlds), and a `Save` the
-room orders. The owner's game therefore still needs its world up to start
-the room: the menu logs `at the main menu: the room plays the world this
+room orders. Without a save named to start from, the owner's game
+therefore still needs its world up to start the room: the menu logs `at the main menu: the room plays the world this
 game starts from ...` once, and takes nothing. Without the menu's targets
 (all five optional in the profile) or an adopted state, nothing of this
 runs: hook.log says `the main menu cannot load the room's world (fail

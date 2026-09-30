@@ -57,8 +57,10 @@ pub use turn::{Event, EventBody, Turn, TurnMessage, TurnStart};
 /// hosts choose the rules a room is played by; version 3 declares a game's
 /// mods by name, so players learn which differ; version 4 carries the
 /// operator's notices; version 5 lets clients send their diagnostics;
-/// version 6 makes invites and session IDs six-character codes.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// version 6 makes invites and session IDs six-character codes; version 7
+/// lets a room's owner hand the room the world it starts from
+/// ([`Request::StartWorld`]).
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
