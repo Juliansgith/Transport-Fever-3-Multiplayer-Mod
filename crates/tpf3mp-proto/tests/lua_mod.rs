@@ -199,40 +199,50 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     lua.load(FAKE_HOOK).exec().unwrap();
     lua.load(FAKE_CMD).exec().unwrap();
     lua.load(
-        "HOOK.room = true          HOOK.status = { room = 'Sunday line', speed = 200, players = {              { name = 'Julian', connected = true, owner = true, me = false },              { name = 'Sam', connected = true, owner = false, me = true } } }          HOOK.heard = { { from = 'Julian', text = 'the bus is late' } }          BAR = mount(loadPlugin()) BAR.step() BAR.render()          WINDOW = mount(loadPlugin(nil, 'Tpf3mpWindow', 'ModEntryPointExtension'))",
+        "HOOK.room = true \
+         HOOK.status = { room = 'Sunday line', speed = 200, players = { \
+             { name = 'Julian', connected = true, owner = true, me = false }, \
+             { name = 'Sam', connected = true, owner = false, me = true } } } \
+         HOOK.heard = { { from = 'Julian', text = 'the bus is late' } } \
+         BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+         MODS = mount(loadPlugin(nil, 'Tpf3mpButton', 'MainModButtonAreaExtension')) \
+         function texts() \
+             local out = {} \
+             for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                 if v.view == 'TextView' then out[#out + 1] = v.params.text end \
+             end \
+             return out \
+         end",
     )
     .exec()
-    .unwrap_or_else(|error| panic!("{error}
-{}", log(&lua)));
-    // The game bar: the room in one line, and a new chat line.
-    let (label, window): (String, usize) = lua
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    // The game bar: the room in one line, and a new chat line; the button
+    // in the mods' button area says the same new line; no window yet.
+    let (label, button, open): (String, String, bool) = lua
         .load(
-            "local v = views(BAR.layout)              local button = v[1]              return button.params.content.params.text, #views(WINDOW.render())",
+            "return views(BAR.layout)[1].params.content.params.text, \
+                    views(MODS.layout)[1].params.content.params.text, \
+                    WINDOWS.Tpf3mpWindow ~= nil",
         )
         .eval()
         .unwrap();
     assert_eq!(label, "Multiplayer: Sunday line · 2/2 playing · 2x · 1 new");
-    assert_eq!(window, 0, "closed until the button is pressed");
-    // The button in the mods' button area says the same new line.
-    let button: String = lua
-        .load(
-            "MODS = mount(loadPlugin(nil, 'Tpf3mpButton', 'MainModButtonAreaExtension')) \
-             return views(MODS.layout)[1].params.content.params.text",
-        )
-        .eval()
-        .unwrap();
     assert_eq!(button, "Multiplayer (1)");
-    // The button opens the window: the room, its players, the chat.
-    let texts: Vec<String> = lua
+    assert!(!open, "closed until a button is pressed");
+    // The game bar's button opens the window in the game's window
+    // container: the room, its players, the chat.
+    let (title, texts): (String, Vec<String>) = lua
         .load(
-            "views(BAR.layout)[1].params.onClick()              WINDOW.step()              local out = {}              for _, v in ipairs(views(WINDOW.render())) do                  if v.view == 'Window' then out[#out + 1] = 'window: ' .. v.params.title end                  if v.view == 'TextView' then out[#out + 1] = v.params.text end              end              return out",
+            "views(BAR.layout)[1].params.onClick() \
+             WINDOWS.Tpf3mpWindow.step() \
+             return WINDOWS.Tpf3mpWindow.layout.params.title, texts()",
         )
         .eval()
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(title, "Multiplayer");
     assert_eq!(
         texts,
         [
-            "window: Multiplayer",
             "Room: Sunday line",
             "Speed: 2x",
             "Worlds match",
@@ -249,11 +259,80 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     // What the player types goes to the room.
     let said: Vec<String> = lua
         .load(
-            "for _, v in ipairs(views(WINDOW.layout)) do                  if v.view == 'TextInputField' then v.params.onValueChange('on my way') end              end              return HOOK.said",
+            "for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.layout)) do \
+                 if v.view == 'TextInputField' then v.params.onValueChange('on my way') end \
+             end \
+             return HOOK.said",
         )
         .eval()
         .unwrap();
     assert_eq!(said, ["on my way"]);
+    // The other button closes it, and opens it again; so does the window's
+    // own close button.
+    let (closed, reopened, closed_by_itself): (bool, bool, bool) = lua
+        .load(
+            "views(MODS.layout)[1].params.onClick() \
+             local closed = WINDOWS.Tpf3mpWindow == nil \
+             views(MODS.layout)[1].params.onClick() \
+             local reopened = WINDOWS.Tpf3mpWindow ~= nil \
+             WINDOWS.Tpf3mpWindow.layout.params.onClose() \
+             return closed, reopened, WINDOWS.Tpf3mpWindow == nil",
+        )
+        .eval()
+        .unwrap();
+    assert!(closed && reopened && closed_by_itself);
+}
+
+#[test]
+fn only_the_newest_chat_lines_show_in_the_window() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let chat: Vec<String> = lua
+        .load(
+            "HOOK.room = true \
+             HOOK.status = { room = 'r', players = {} } \
+             for i = 1, 60 do HOOK.heard[i] = { from = 'Sam', text = 'line ' .. i } end \
+             BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+             views(BAR.layout)[1].params.onClick() \
+             local out, after = {}, false \
+             for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                 if v.view == 'TextView' and after and v.params.text ~= 'Send' then out[#out + 1] = v.params.text end \
+                 if v.view == 'TextView' and v.params.text == 'Chat' then after = true end \
+             end \
+             return out",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let expected: Vec<String> = (49..=60).map(|i| format!("Sam: line {i}")).collect();
+    assert_eq!(chat, expected);
+}
+
+#[test]
+fn a_window_the_game_will_not_show_is_said_in_the_game_bar() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (shown, open): (String, bool) = lua
+        .load(
+            "HOOK.room = true \
+             HOOK.status = { room = 'r', players = {} } \
+             BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+             ug_require('::/gui/main/game_react_globals.tl').getDefaultWindowApi = function() error('no window container') end \
+             views(BAR.layout)[1].params.onClick() \
+             BAR.step() BAR.render() \
+             local v = views(BAR.layout) \
+             return v[#v].params.text, package.loaded['tpf3mp.ui'].open",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(shown, "The Multiplayer window did not open");
+    assert!(!open);
+    assert!(
+        log(&lua).contains("the Multiplayer window did not open: "),
+        "{}",
+        log(&lua)
+    );
 }
 
 /// The names in package.loaded, sorted.

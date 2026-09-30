@@ -344,7 +344,8 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   - `Apply(event)`: apply this event before its step. A `Save` event is not
     applied: the session saves the world there (see below).
   - `Release { through }`: steps up to and including this one may run.
-  - `Speed`: the room's speed, for display only.
+  - `Speed`: the room's speed, for display only: sent with the game's
+    first turn, whatever the speed, and whenever it changes.
   - `Diverged`, `Refused`: tell the player.
   - `Chat { from, text }`: a member of the room said something. Sent only
     once the game has begun; talk in the lobby stays in the launcher.

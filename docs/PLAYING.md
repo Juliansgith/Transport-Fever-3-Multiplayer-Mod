@@ -134,10 +134,11 @@ protected folder such as Program Files.
 
 - **The Multiplayer window.** In the room's game the game bar shows the
   room in one line: its name, how many players are in the game, its speed,
-  and new chat. Click it for the Multiplayer window: the room's players
-  (the host, you, anyone away), its speed, whether your world matches the
-  room's, and the room's chat, where you can write to everyone. Rooms,
-  invites and starting the game stay in the launcher.
+  and new chat. Click it, or the Multiplayer button among the mods'
+  buttons, for the Multiplayer window: the room's players (the host, you,
+  anyone away), its speed, whether your world matches the room's, and the
+  room's newest chat, where you can write to everyone. Rooms, invites and
+  starting the game stay in the launcher.
 - **Speed and pause.** The room's owner sets the room's speed, pause
   included, with the game's own speed buttons, and everyone's game runs at
   it. Anyone else's speed buttons do not change the room's speed: the

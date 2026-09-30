@@ -306,7 +306,9 @@ pub struct Bridge<L> {
     world: World,
     /// Whether the game has loaded a world since the last load was ordered.
     loaded: bool,
-    speed: Speed,
+    /// The room's speed as the hook was last told it; none before the
+    /// first turn.
+    speed: Option<Speed>,
     /// Commands the hook has sent; numbers each one's intent.
     commands: u64,
     /// The last step the game ran, or before any, the step before its
@@ -350,7 +352,7 @@ impl<L: HookLink> Bridge<L> {
             begun: false,
             world: World::Ready,
             loaded: false,
-            speed: Speed::NORMAL,
+            speed: None,
             commands: 0,
             progress: None,
             reported: None,
@@ -672,10 +674,8 @@ impl<L: HookLink> Bridge<L> {
                 if let Some(playout) = &mut self.playout {
                     playout.on_turn(follower.sealed_through(), follower.speed(), Instant::now());
                 }
-                if follower.speed() != self.speed {
-                    self.speed = follower.speed();
-                    self.outbox.push_back(ToHook::Speed(self.speed));
-                    let speed = self.speed;
+                if let Some(speed) = speed_news(&mut self.speed, follower.speed()) {
+                    self.outbox.push_back(ToHook::Speed(speed));
                     self.status(|status| status.speed = speed);
                 }
             }
@@ -1004,6 +1004,17 @@ pub(crate) struct Outbox {
 
 /// About how much the outbox holds before the bridge stops taking turns.
 const OUTBOX_BYTES: usize = 16 << 20;
+
+/// The speed to tell the hook after a turn at `now`: the turn's, unless
+/// the hook was last told it. The first turn always tells it, so the game's
+/// Multiplayer window shows a room at normal speed too.
+fn speed_news(told: &mut Option<Speed>, now: Speed) -> Option<Speed> {
+    if *told == Some(now) {
+        return None;
+    }
+    *told = Some(now);
+    Some(now)
+}
 
 /// The room as the game's Multiplayer window shows it: its name, owner and
 /// members, at most as many as a room holds.
@@ -1367,6 +1378,19 @@ mod tests {
             playout.on_turn(follower.sealed_through(), follower.speed(), now);
         }
         (follower, playout)
+    }
+
+    #[test]
+    fn the_game_hears_the_rooms_speed_from_its_first_turn() {
+        let mut told = None;
+        assert_eq!(
+            speed_news(&mut told, Speed::NORMAL),
+            Some(Speed::NORMAL),
+            "even at normal speed"
+        );
+        assert_eq!(speed_news(&mut told, Speed::NORMAL), None, "once");
+        assert_eq!(speed_news(&mut told, Speed(400)), Some(Speed(400)));
+        assert_eq!(speed_news(&mut told, Speed::PAUSED), Some(Speed::PAUSED));
     }
 
     #[test]
