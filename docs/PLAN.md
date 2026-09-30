@@ -19,7 +19,7 @@ Flag each of these when a task asks for it:
 | an ask like | conflicts with | instead |
 |---|---|---|
 | Steam networking, peer-to-peer, a player hosting, a player's game as the truth | D2, D4: the server orders every turn; no player is the host | Rooms on the project's server |
-| Joining a room from the game without the launcher, a Multiplayer entry that works in a game Steam started | D11: the hook runs only in a game the launcher started | An in-game panel for a game the launcher started (D17, after release) |
+| Joining a room from the game without the launcher, a Multiplayer entry that works in a game Steam started | D11: the hook runs only in a game the launcher started | *Changed:* the main menu's Multiplayer entry in a game the launcher started, which drives that launcher (D17, amended 2026-09-30) |
 | Typing or choosing a server, following an invite to its server | D12: one server, built in | `--server` for development only |
 | A proxy DLL (`alut.dll`), files in the game's folder, an installer `.bat` that patches the game | D9, D11 | The readable install scripts put in the mod alone; the launcher injects the hook |
 | An action sent to other games before its channel was checked (a "strict" flag off meaning "send it unchecked") | Fail closed (AGENTS.md) | Off means the action is refused in a multiplayer game; see Part 3 |
@@ -27,7 +27,7 @@ Flag each of these when a task asks for it:
 | Long invites or support IDs, or one code for both | D13 | Six-character codes, separate for a room and a session |
 | Engine entity IDs on the wire | D8: positions in millimetres, resource names, canonical IDs | |
 | A web view for the launcher (Tauri, WebView2, WebKitGTK), or another launcher | D20: a native egui window, in the look of tearded's launcher | Change the look in `theme.rs` and `app.rs` |
-| A Dev track, choosing or going back to versions, the room moved into the game | Held until after launch by the owner (D20; D17, D18, D19) | Ask the owner first |
+| A Dev track, choosing or going back to versions | Held until after launch by the owner (D20; D18, D19). *Changed:* the room moved into the game is no longer held (D17, amended 2026-09-30) | Ask the owner first |
 | Writing or changing a decision, or settling a question left open for the owner | The owner decides (AGENTS.md) | A pull request the owner approves |
 | Logging an invite code bare | D13: codes cannot be spotted in a log line | `invite=<code>`, which redaction hides |
 
@@ -195,8 +195,9 @@ Dev C (building):
 - [ ] *Changed:* an in-game Multiplayer panel for a game the launcher
   started: the room, its players, chat and whether the worlds match. Not
   a way to join without the launcher, and no Steam networking (D2, D11).
-  Moving the lobby itself into the game (D17) is held until after launch
-  (D20).
+  *Changed:* moving the lobby itself into the game (D17) is no longer
+  held: the owner lifted the hold on 2026-09-30 (the item under Part 4,
+  "the room in the game").
 
 **Test A** (the gate to Part 3):
 
@@ -309,8 +310,12 @@ Dev C:
   (towns, industries, network, stations, camera, click to move, companies
   and industry types); then the terrain picture rendered by the hook; in a
   room, other players' cameras and builds.
-- [ ] *Held* (D17, D20): the room in the game. Connecting, rooms, the
-  lobby and chat in an in-game panel. The owner decides after launch.
+- [ ] *Changed:* (D17, the hold lifted by the owner on 2026-09-30): the
+  room in the game. The main menu's Multiplayer window connects, creates
+  and joins rooms, shows the players and their ready marks, chats and
+  starts the room's game, through the launcher that started the game
+  (docs/LOBBY.md). Built; tick once seen working in the real game
+  (investigation/TPF3_INGAME_MENU_2026-09-30.md, section 6).
 - [ ] *Held* (D18, D19, D20): choosing versions and tracks, and a Dev
   track of untested builds. The owner decides after launch, once `dev`
   takes reviewed pull requests only.

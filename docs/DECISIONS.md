@@ -514,6 +514,27 @@ takes the player's choices; the launcher carries the connection.
 
 This replaces PLAN.md's in-game panel that "hands a code to the launcher".
 
+**Amended 2026-09-30, by the owner: the hold is lifted.** The owner
+(Juliansgith) asked on 2026-09-30 for the in-game multiplayer menu to work
+now: the room's lobby moves into the game now, not after release. D20's
+hold stays on D18 and D19 only.
+
+- **What moves.** The Multiplayer entry on the game's main menu
+  ([LOBBY.md](LOBBY.md)) opens a window that connects to the server,
+  creates a room or joins one by invite, shows the room's players and
+  their ready marks, chats, gets ready and, for the room's owner, starts
+  the room's game. It is built on the game's own menu (its Lua, reached by
+  the hook), not on a game bar plugin.
+- **How.** The window is another front end of the launcher: its buttons
+  are the launcher's actions, carried over the link between hook and agent
+  (bridge version 7, [HOOKS.md](HOOKS.md), "The main menu's Multiplayer
+  window"). The launcher still starts the game with the hook and holds the
+  connection; it now starts the game before a room is chosen, and keeps
+  everything it did, so a menu the hook cannot reach costs the player
+  nothing.
+- **D11 stays.** Only a game the launcher started has the hook, and so the
+  entry; a game Steam started shows nothing of TPF3-MP.
+
 ## D18 (2026-09-27): players choose their version and track
 
 *Held by the owner until after launch (D20).*
