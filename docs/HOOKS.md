@@ -1655,8 +1655,9 @@ on hand-written functions in the test binary.
 |---|---|---|---|
 | 1, land-vehicle reservation order | `land-vehicle-order` | `ecs::LandVehicleMoveSystem::Update2/shuffle` (`0xac1b70`) | sorts the vector of vehicles that want track by entity id before the engine's seeded shuffle |
 | 2, ship and aircraft claim order | `order-measure` | `EdgeReservationManager::Reserve` (`0x255c2e0`), `Reserve_simple` (`0x255c160`) | measured only, when `TPF3MP_HOOK_MEASURE_ORDER` is set |
-| 3, road edge entries | `order-measure` | `EdgeUseManager::Add` (`0x255e940`), `AddRange` (`0x255cc70`) | measured only; the fix waits for a clean site (plan below) |
+| 3, road edge entries | `road-entry-order` | `EdgeUseManager::Add` (`0x255e940`), `AddRange` (`0x255cc70`) | keeps each edge's entries in entity order after every append (kill switch `TPF3MP_HOOK_ROAD_ENTRY_ORDER=0`) |
 | 4, vehicles at a stop | `vehicles-at-stop-order` | `ecs::SimEntityAtTerminalSystem::Update/vehicles at stop` (`0xb0e35c`) | sorts the vehicles at a line stop by entity id before the boarding loop |
+| 5, platform choice | `platform-order` | `ecs::TransportVehicleSystem::Update2/visit` (`0xb8bccb`), `FindNextFreeTerminal/candidate sort` (`0xb85430`) | asks the vehicles for a free platform in entity order, and puts the candidate terminals in one order before their cost sort (kill switch `TPF3MP_HOOK_PLATFORM_ORDER=0`) |
 
 **The mid-function splice** (`tpf3mp_hookcore::detour::Splice`) is what
 the two fixes hook with. A whole-function detour cannot reach a point in
@@ -1772,36 +1773,94 @@ the ships and aircraft are next, and the fix is the node-list canon
 (TPF2's `step` site, `family_canon.h`: every family's node list in entity
 order at each `ecs::Engine::Update`, `0x2bb8a50`).
 
-**Road edge entries** (item 3) is measured, not changed. TF3's
-`EdgeUseManager` keeps 20-byte entries per edge (`{int32 vehicleEntity,
-int32 component, float back, float front, bool forward}`), appended by
-`Add` (`0x255e940`, persons: its one caller is `PersonMoveSystem`) and by
-`AddRange` (`0x255cc70`, vehicles: 2.3 KB, with its own inlined push), and
-consumed by two first-minimum searches (`0x255f340`, `0x255ef60`: `vcomiss;
-jbe`, the first entry wins an exact tie) and `GetNext`. TPF2's patch
-re-sorted the entries after its single `Add`; here there are two appenders
-and the range one's inlined push is not a clean site, and whether anything
-holds a position into `entries` (`GetPos01sDEBUG`, `RemoveRange` walk
-them) was not established. So the `appends` lane hashes every `Add`
-(edge id, entity, component, bounds) and every `AddRange` (its raw
-integer arguments and the edges vector's bytes) per update. **Plan**: if
-the `p` lane or the `appends` lane splits with vehicles queued at stops,
-splice in after each appender's push (`Add`'s at `0x255ea6d`, the `add
-qword ptr [rcx+8], 0x14`; `AddRange`'s to be located) or detour
-`GetOrAddEdgeData`'s callers, and keep each edge's entries in entity
-order, after reading `0x25605b0`..`0x2561950` for held positions.
+**Road edge entries** (item 3, `road-entry-order`; TPF2's `roadentries`).
+TF3's `EdgeUseManager` keeps 20-byte entries per edge (`{int32 entity,
+int32 component, float back, float front, bool forward}`), consumed by
+the nearest-occupant searches (`0x255f340`, `0x255ef60`: `vcomiss; jbe`,
+the first entry wins an exact tie), `GetNext` (`0x255f760`) and the claim
+loop's first-blocked search (`0x255afd0`). The fix is **sort on add**,
+because every writer of an edge's list was read and none reorders it:
+
+| writer | what it does to the list | label |
+|---|---|---|
+| `Add` `0x255e940` (persons; from `PersonMoveSystem`'s node-added callback, `0xaec8e6`) | asserts the entity is not there, then `push_back` (`0x255ea6d`, or the grow path `0x1cf220`) | SEEN |
+| `AddRange` `0x255cc70` (vehicles; from `LandVehicleMoveSystem`'s node-added callback via `0x255edc0`) | per path edge `from..=to`: updates the vehicle's entry in place if it has one, else `push_back` (`0x255cde9`, `0x255cedb`, `0x255cffe`) | SEEN |
+| `Remove` `0x2561440` (`PersonMoveSystem` node-removed) | find, `memmove` the tail down one entry | SEEN |
+| `RemoveRange` `0x2561690` (`LandVehicleMoveSystem` node-removed) | the same per path edge | SEEN |
+| `RemoveEntity` `0x2561510` (`TransportNetworkSystem` node-removed) | drops a deleted edge's data whole | SEEN |
+| `GetOrAddEdgeData` `0x255d5a0`/`0x255d740`, `VectorMap::Add` `0x255e860` | grow the slot and edge vectors, moving each entries vector whole | SEEN |
+| the copy-on-write copy (`0x255f0b0` -> `0x255e2d0`) | copies the data, order kept | INFERRED |
+| the readers (`0x255ef60`, `0x255f340`, `0x255f760`, `0x255ff70`, `0x2560270`, `0x2560ef0`, `0x2561160`, `GetPos01sDEBUG`) | read only (their callees: position getters) | SEEN |
+
+So a list is append order (history while running, registration order
+after a load, since the lists are rebuilt through the node-added
+callbacks) and nothing else moves an entry; a list sorted after each
+append stays sorted, with no cost per update, which a per-update sort
+could not beat. The fix detours `Add` and `AddRange` whole (both profile
+targets already), runs the engine's, and then sorts, by entity id, the
+entries of the edges it touched: `Add`'s one edge, `AddRange`'s path
+edges `from..=to` (its seventh and eighth arguments). An edge's list is
+found as `GetOrAddEdgeData` finds it: the data at `[this+0x18]`, its
+entity-to-slot index `[+0]..[+8]` (`int32`s), its slots
+`[+0x18]..[+0x20]` (72 bytes each), the slot's edges `[slot]..[slot+8]`
+(32 bytes each), the entries vector at `edge+8`; every bound is checked
+and a shape that does not fit is a refusal for that edge. A list already
+in order (the common case: one vehicle, or ids appended ascending) is one
+scan. Both appenders must be detoured, or none sorts. The callbacks run
+serially at the end of a modification (INFERRED from their callers, the
+engine's node-added dispatch), so the sort writes nothing a reader is
+walking. The `AddRange` detour takes all nine arguments (the ninth at the
+caller's `[rsp+0x48]`); the measurement's earlier detour forwarded eight.
+
+**Platform choice** (`platform-order`; investigation/TPF3_TRAIN_PRIORITY_2026-09-30.md,
+"Platforms"). `ecs::TransportVehicleSystem::Update2` (`0xb8bae0`) walks its
+node list (8-byte `{entity, TransportVehicle index}` records at
+`[[this+8]]`, as many as the update's `int` argument, spilled at
+`[rbp+0x5b0]`) and, for each vehicle en route with its decision flag set,
+calls `FindNextFreeTerminal` (`0xb84e20`, its one caller, `0xb8bea1`); a
+choice is stored for the rest of the update in a copy of the allocation
+map (`StoreTerminalAllocation` `0xb8b960`), so a vehicle visited later
+sees what earlier ones took, and the path changes are applied later in
+visit order (deferred lambdas). Two sites, each on its own:
+
+- *visit* (`0xb8bccb`): the loop reloads the list's begin into `rdi`
+  every iteration (`mov rax,[r13+8]; mov rdi,[rax]`) and reads only
+  `[rsi+rdi]` and `[rsi+rdi+4]`; `rdi` is set anew after the loop
+  (`0xb8c22f`). At the first iteration (`rsi` 0) the hook copies the
+  list, checks that its length is the count, and sorts the copy by
+  entity id; at every iteration it points `rdi` at the copy. The engine's
+  list is never written (its index into it stays valid), and the same
+  vehicles are visited, in entity order. A list already sorted is left
+  alone; a list that does not match the count, or that moves during the
+  loop, is refused and the engine's order stands.
+- *candidates* (`0xb85430`): `FindNextFreeTerminal` gathers 12-byte
+  candidates from `LineSystem`'s per-stop table and `std::sort`s them by a
+  cost it looks up per candidate (`0xb85453`, a float-only comparator), so
+  equal costs keep an introsort order that depends on the input's. The
+  hook puts `[r13, r14)` in one canonical order first (by the
+  station and terminal words, then the first), so the sort, and the
+  search that starts at the current terminal and wraps around, break
+  equal costs the same way in every game.
+
+With `TPF3MP_HOOK_MEASURE_ORDER` set, the `visits` lane hashes the
+engine's visit order before the fix each update, `candidates` counts the
+candidate sorts that changed something, and `road` hashes each checked
+edge's id and its entities in the order kept.
 
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
-inherits it; a number above 1 is the interval, default 100 updates), five
+inherits it; a number above 1 is the interval, default 100 updates), three
 whole-function detours install: `ecs::Engine::Update` (`0x2bb8a50`, the
 per-step engine advance, one caller: `GameSim::Step`'s iteration loop;
 its `dt` rides in `xmm1`, which the detour's float parameter forwards)
-counts updates and closes each one's lanes, and the four functions above
-feed them. Every `interval` updates one line goes to hook.log:
+counts updates and closes each one's lanes, and the two `Reserve`
+overloads feed the `claims` lane. `EdgeUseManager::Add` and `AddRange`
+feed `appends` from the road entry fix's detours, which install while
+measuring even with that fix switched off. The fixes' sites feed the
+other lanes. Every `interval` updates one line goes to hook.log:
 
 ```
-order measure: updates 201..=300: claims=<fnv64>/<n> appends=<fnv64>/<n> land=<fnv64>/<calls> reordered <n> seeds=<fnv64> nodes=<fnv64>/<n> vehstop=<fnv64>/<calls> reordered <n>
+order measure: updates 201..=300: claims=<fnv64>/<n> appends=<fnv64>/<n> land=<fnv64>/<calls> reordered <n> seeds=<fnv64> nodes=<fnv64>/<n> vehstop=<fnv64>/<calls> reordered <n> visits=<fnv64>/<updates> reordered <n> candidates=<reordered>/<sorts> road=<fnv64>/<edges> reordered <n>
 ```
 
 Updates are numbered from the room's step once the step driver has

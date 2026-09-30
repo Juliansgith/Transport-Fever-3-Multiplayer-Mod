@@ -16,11 +16,14 @@
 //!    a line sampled by the seed's value logs both for two games to diff.
 //! 2. **Ship and aircraft claim order** ([`measure`]): measured through the
 //!    reservation manager, as TPF2 did, before anything is changed.
-//! 3. **Road edge entries** ([`measure`]): the append calls are measured;
-//!    the fix waits for a clean site (the plan is in docs/HOOKS.md).
+//! 3. **Road edge entries** ([`road`]): each edge's entries kept in entity
+//!    order after every append (every other writer keeps order). A fix.
 //! 4. **Vehicles at a stop** ([`terminal`]): sorted by entity id where the
 //!    boarding loop reads them, TPF2's `vehstop`. A fix. The unload deques
 //!    (TPF2's `unload`) are not located in TF3 yet.
+//! 5. **Platform choice** ([`platform`]): the vehicles asked for a free
+//!    platform in entity order, and the candidate terminals in one order
+//!    before their cost sort. A fix.
 //!
 //! Every fix has the same shape: the profile must resolve its site, the
 //! bytes there must be exactly what the fix expects (the resolver checks
@@ -33,6 +36,8 @@
 //! cost nothing otherwise.
 
 #![allow(unsafe_code)]
+// Elsewhere the fixes are not installed, so their code is unused there.
+#![cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
 
 use std::sync::{
     Mutex,
@@ -76,6 +81,9 @@ impl std::fmt::Display for Outcome {
 pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
     let measuring = measure::configure_from_env();
     let mut outcomes = vec![land_vehicle::install(resolved), terminal::install(resolved)];
+    let wanted = |env: &str| crate::ticks::wanted(std::env::var(env).ok().as_deref());
+    outcomes.extend(platform::install(resolved, wanted(platform::TOGGLE_ENV)));
+    outcomes.extend(road::install(resolved, wanted(road::TOGGLE_ENV), measuring));
     outcomes.extend(measure::install(resolved, measuring));
     outcomes
 }
@@ -595,6 +603,737 @@ pub mod terminal {
     }
 }
 
+/// Sorts `keys` ascending and reports what that came to: `Ok(None)` when
+/// they already were strictly ascending, the permutation otherwise, a
+/// refusal when two share a key (not a total order of lockstep state).
+fn canonical_permutation<K: Ord + Copy>(keys: &[K]) -> Result<Option<Vec<usize>>, &'static str> {
+    if keys.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Ok(None);
+    }
+    let mut order: Vec<usize> = (0..keys.len()).collect();
+    order.sort_by_key(|&i| keys[i]);
+    if order.windows(2).any(|pair| keys[pair[0]] == keys[pair[1]]) {
+        return Err("two entries name one entity");
+    }
+    Ok(Some(order))
+}
+
+/// The platform choice (investigation/TPF3_TRAIN_PRIORITY_2026-09-30.md,
+/// "Platforms"). `ecs::TransportVehicleSystem::Update2` (`0xb8bae0`) walks
+/// its node list (8-byte records `{entity, TransportVehicle index}` at
+/// `[[this+8]]`, as many as its `int` argument says) and asks
+/// `FindNextFreeTerminal` (`0xb84e20`) for each en-route vehicle, and a
+/// choice is stored for the rest of the update, so a vehicle visited later
+/// sees what an earlier one took. Two sites, each on its own:
+///
+/// - **visit**: at the loop head, after the engine loads the list's begin
+///   into `rdi`, the hook points `rdi` at a copy of the list sorted by
+///   entity id, built at the loop's first iteration. The loop only reads
+///   `[rdi+rsi]` and `[rdi+rsi+4]` and reloads `rdi` every iteration, and
+///   `rdi` is set anew after the loop, so the engine's list is never
+///   written: it visits the same vehicles, in entity order.
+/// - **candidates**: right before `FindNextFreeTerminal` `std::sort`s its
+///   candidate terminals by cost (`0xb85453`; the comparator looks each
+///   cost up in a map and compares floats only, so equal costs keep an
+///   introsort order that depends on the input's), the 12-byte candidates
+///   are put in one canonical order, so equal costs break the same way in
+///   every game.
+pub mod platform {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    pub const FIX: &str = "platform-order";
+    /// Set to `0` (or `off`), both sites stay out.
+    pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_PLATFORM_ORDER";
+    /// `mov rcx,[r13+0x10]; movsxd rax,[rsi+rdi+4]; imul rbx,rax,0x1e8`,
+    /// right after `mov rax,[r13+8]; mov rdi,[rax]`.
+    pub const VISIT_SITE: &str = "ecs::TransportVehicleSystem::Update2/visit";
+    pub const VISIT_EXPECTED: [u8; 16] = [
+        0x49, 0x8B, 0x4D, 0x10, // mov rcx, [r13+0x10]
+        0x48, 0x63, 0x44, 0x3E, 0x04, // movsxd rax, [rsi+rdi+4]
+        0x48, 0x69, 0xD8, 0xE8, 0x01, 0x00, 0x00, // imul rbx, rax, 0x1e8
+    ];
+    pub const VISIT_STEAL: usize = 9;
+    /// `mov rcx,r14; sub rcx,r13; mov rax,rdi; imul rcx`: the candidates
+    /// are `[r13, r14)`, the sort's call follows.
+    pub const CANDIDATES_SITE: &str = "FindNextFreeTerminal/candidate sort";
+    pub const CANDIDATES_EXPECTED: [u8; 12] = [
+        0x49, 0x8B, 0xCE, // mov rcx, r14
+        0x49, 0x2B, 0xCD, // sub rcx, r13
+        0x48, 0x8B, 0xC7, // mov rax, rdi
+        0x48, 0xF7, 0xE9, // imul rcx
+    ];
+    pub const CANDIDATES_STEAL: usize = 6;
+    /// Update2's `int` argument, the node count, spilled at `[rbp+0x5b0]`.
+    const COUNT: i64 = 0x5b0;
+    pub const RECORD_LEN: u64 = 8;
+    pub const CANDIDATE_LEN: u64 = 12;
+    pub const MAX_RECORDS: u64 = 1 << 20;
+    pub const MAX_CANDIDATES: u64 = 1 << 12;
+
+    static VISIT_BROKEN: AtomicBool = AtomicBool::new(false);
+    static VISIT_REFUSALS: Refusals = Refusals::new();
+    static VISIT_CALLS: AtomicU64 = AtomicU64::new(0);
+    static VISIT_REORDERS: AtomicU64 = AtomicU64::new(0);
+    static CANDIDATE_BROKEN: AtomicBool = AtomicBool::new(false);
+    static CANDIDATE_REFUSALS: Refusals = Refusals::new();
+    static CANDIDATE_CALLS: AtomicU64 = AtomicU64::new(0);
+    static CANDIDATE_REORDERS: AtomicU64 = AtomicU64::new(0);
+
+    /// The loop being walked on this thread: the engine's list, and the
+    /// sorted copy `rdi` is pointed at while `active`.
+    #[derive(Default)]
+    struct Visit {
+        list: u64,
+        count: u64,
+        sorted: Vec<u64>,
+        active: bool,
+    }
+
+    thread_local! {
+        static VISIT: RefCell<Visit> = RefCell::new(Visit::default());
+    }
+
+    pub fn install(resolved: &ResolvedProfile, wanted: bool) -> Vec<Outcome> {
+        if !wanted {
+            return vec![Outcome {
+                fix: FIX,
+                installed: false,
+                reason: format!("{TOGGLE_ENV} says so; the engine's visit and tie order stand"),
+            }];
+        }
+        vec![
+            splice(
+                resolved,
+                VISIT_SITE,
+                &VISIT_EXPECTED,
+                VISIT_STEAL,
+                visit_hook,
+                "the vehicles are asked for a free platform in entity order",
+            ),
+            splice(
+                resolved,
+                CANDIDATES_SITE,
+                &CANDIDATES_EXPECTED,
+                CANDIDATES_STEAL,
+                candidates_hook,
+                "the candidate terminals are in one order before the cost sort",
+            ),
+        ]
+    }
+
+    fn splice(
+        resolved: &ResolvedProfile,
+        name: &str,
+        expected: &[u8],
+        steal: usize,
+        hook: tpf3mp_hookcore::detour::SpliceHook,
+        what: &str,
+    ) -> Outcome {
+        let off = |reason: String| Outcome {
+            fix: FIX,
+            installed: false,
+            reason,
+        };
+        let Some(site) = resolved.get(name) else {
+            return off(format!("the profile has no {name:?}"));
+        };
+        // SAFETY: a site inside a function the profile resolved and
+        // prologue-checked, installed before any world exists; nothing
+        // branches into the stolen bytes past the first (tpfre xrefs, noted
+        // in the profile); the hook never unwinds (`guarded`).
+        match unsafe { Splice::install(site.address as usize as *mut u8, expected, steal, hook) } {
+            Ok(splice) => {
+                let _kept = std::mem::ManuallyDrop::new(splice);
+                Outcome {
+                    fix: FIX,
+                    installed: true,
+                    reason: format!("{name} at {:#x}: {what}", site.address),
+                }
+            }
+            Err(error) => off(format!("{name} at {:#x}: {error}", site.address)),
+        }
+    }
+
+    /// The visit order the fix gives: the records by entity id (the low
+    /// dword), each whole; `None` when they already are in it.
+    pub fn visit_order(records: &[u64]) -> Result<Option<Vec<u64>>, &'static str> {
+        let keys: Vec<i32> = records.iter().map(|r| *r as u32 as i32).collect();
+        Ok(canonical_permutation(&keys)?.map(|order| order.iter().map(|&i| records[i]).collect()))
+    }
+
+    /// The candidates' canonical order: by station, terminal and the first
+    /// word, as unsigned words; `None` when they already are in it. Equal
+    /// candidates are interchangeable, so any tie among them is harmless.
+    pub fn candidate_order(candidates: &[[u32; 3]]) -> Option<Vec<[u32; 3]>> {
+        let key = |c: &[u32; 3]| (c[1], c[2], c[0]);
+        if candidates.windows(2).all(|p| key(&p[0]) <= key(&p[1])) {
+            return None;
+        }
+        let mut sorted = candidates.to_vec();
+        sorted.sort_by_key(key);
+        Some(sorted)
+    }
+
+    pub(super) unsafe extern "system" fn visit_hook(regs: *mut SavedRegs) {
+        guarded(FIX, &VISIT_BROKEN, || {
+            // SAFETY: the stub's block, held until the hook returns.
+            let regs = unsafe { &mut *regs };
+            VISIT.with(|visit| {
+                let mut visit = visit.borrow_mut();
+                if regs.rsi == 0 {
+                    // The loop's first iteration: rax is the node-list
+                    // holder, rdi its begin, just loaded.
+                    *visit = Visit::default();
+                    let n = VISIT_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+                    match begin_loop(regs.rbp, regs.rax, regs.rdi) {
+                        Ok((records, before, sorted)) => {
+                            if let Some(sorted) = sorted {
+                                let reorders = VISIT_REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
+                                if reorders <= 3 {
+                                    log::line(&format!(
+                                        "order fix {FIX}: {} vehicles asked for platforms in entity order (update #{n})",
+                                        records
+                                    ));
+                                }
+                                *visit = Visit {
+                                    list: regs.rdi,
+                                    count: records,
+                                    sorted,
+                                    active: true,
+                                };
+                                measure::note_visits(&before, Sorted::Reordered);
+                            } else {
+                                measure::note_visits(&before, Sorted::Unchanged);
+                            }
+                        }
+                        Err(why) => VISIT_REFUSALS.note(FIX, why),
+                    }
+                    if n == 1 || n.is_multiple_of(1 << 14) {
+                        log::line(&format!(
+                            "order fix {FIX}: visit alive, updates={n} reordered={} refused={}",
+                            VISIT_REORDERS.load(Ordering::Relaxed),
+                            VISIT_REFUSALS.count.load(Ordering::Relaxed)
+                        ));
+                    }
+                }
+                if !visit.active {
+                    return;
+                }
+                if regs.rsi / RECORD_LEN >= visit.count || regs.rdi != visit.list {
+                    // Not the loop the copy was made for: the engine's own
+                    // list from here, said once (never seen; the list is not
+                    // changed inside the loop).
+                    visit.active = false;
+                    VISIT_REFUSALS.note(FIX, "the node list changed inside the loop");
+                    return;
+                }
+                regs.rdi = visit.sorted.as_ptr() as u64;
+            });
+        });
+    }
+
+    /// Reads the node list through the frame: the record count, the ids in
+    /// the engine's order, and the sorted copy when it differs.
+    #[allow(clippy::type_complexity)]
+    fn begin_loop(
+        rbp: u64,
+        holder: u64,
+        begin: u64,
+    ) -> Result<(u64, Vec<i32>, Option<Vec<u64>>), &'static str> {
+        let count: i32 = rbp
+            .checked_add_signed(COUNT)
+            .and_then(read)
+            .ok_or("the node count is unreadable")?;
+        let count = u64::try_from(count).map_err(|_| "a negative node count")?;
+        if count > MAX_RECORDS {
+            return Err("more vehicles than any world holds");
+        }
+        let stored: u64 = read(holder).ok_or("the node list is unreadable")?;
+        let end: u64 = holder
+            .checked_add(8)
+            .and_then(read)
+            .ok_or("the node list's end is unreadable")?;
+        if stored != begin || end < begin || end - begin != count * RECORD_LEN {
+            return Err("the node list is not the count's whole records");
+        }
+        if count < 2 {
+            return Ok((count, Vec::new(), None));
+        }
+        let len = usize::try_from(count * RECORD_LEN).map_err(|_| "the list is too long")?;
+        if !readable(begin, len) {
+            return Err("the node records are unreadable");
+        }
+        // SAFETY: `len` readable bytes at `begin`, whole 8-byte records.
+        let records: Vec<u64> = (0..count)
+            .map(|i| unsafe { std::ptr::read_unaligned((begin + i * RECORD_LEN) as *const u64) })
+            .collect();
+        let before: Vec<i32> = records.iter().map(|r| *r as u32 as i32).collect();
+        Ok((count, before, visit_order(&records)?))
+    }
+
+    pub(super) unsafe extern "system" fn candidates_hook(regs: *mut SavedRegs) {
+        guarded(FIX, &CANDIDATE_BROKEN, || {
+            // SAFETY: the stub's block, held until the hook returns.
+            let regs = unsafe { &*regs };
+            let n = CANDIDATE_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+            match sort_candidates(regs.r13, regs.r14) {
+                Ok(sorted) => {
+                    if sorted == Sorted::Reordered {
+                        CANDIDATE_REORDERS.fetch_add(1, Ordering::Relaxed);
+                    }
+                    measure::note_candidates(sorted);
+                }
+                Err(why) => CANDIDATE_REFUSALS.note(FIX, why),
+            }
+            if n == 1 || n.is_multiple_of(1 << 16) {
+                log::line(&format!(
+                    "order fix {FIX}: candidates alive, sorts={n} reordered={} refused={}",
+                    CANDIDATE_REORDERS.load(Ordering::Relaxed),
+                    CANDIDATE_REFUSALS.count.load(Ordering::Relaxed)
+                ));
+            }
+        });
+    }
+
+    fn sort_candidates(begin: u64, end: u64) -> Result<Sorted, &'static str> {
+        if end < begin || !(end - begin).is_multiple_of(CANDIDATE_LEN) {
+            return Err("the candidates are not whole entries");
+        }
+        let count = (end - begin) / CANDIDATE_LEN;
+        if count > MAX_CANDIDATES {
+            return Err("more candidates than a station has");
+        }
+        if count < 2 {
+            return Ok(Sorted::Unchanged);
+        }
+        let len = usize::try_from(count * CANDIDATE_LEN).map_err(|_| "too many candidates")?;
+        if !readable(begin, len) {
+            return Err("the candidates are unreadable");
+        }
+        // SAFETY: `len` readable bytes at `begin`, whole 12-byte entries.
+        let candidates: Vec<[u32; 3]> = (0..count)
+            .map(|i| unsafe {
+                std::ptr::read_unaligned((begin + i * CANDIDATE_LEN) as *const [u32; 3])
+            })
+            .collect();
+        let Some(sorted) = candidate_order(&candidates) else {
+            return Ok(Sorted::Unchanged);
+        };
+        for (i, candidate) in sorted.iter().enumerate() {
+            // SAFETY: the same span, on the engine's thread, before its sort
+            // reads it.
+            unsafe {
+                std::ptr::write_unaligned(
+                    (begin + i as u64 * CANDIDATE_LEN) as *mut [u32; 3],
+                    *candidate,
+                )
+            };
+        }
+        Ok(Sorted::Reordered)
+    }
+}
+
+/// The vehicles on a road or track edge (the survey's item 3; TPF2's
+/// `roadentries`). `transport::EdgeUseManager` keeps, per edge, a vector
+/// of 20-byte entries `{int32 entity, int32 component, float back, float
+/// front, bool forward}`, and its nearest-occupant searches (`0x255f340`,
+/// `0x255ef60`) keep the first entry on an exact tie, so two games whose
+/// entries are in different orders can pick a different leader. Every
+/// writer, read in the binary:
+///
+/// - `Add` (`0x255e940`, persons, from `PersonMoveSystem`'s node-added
+///   callback) and `AddRange` (`0x255cc70`, vehicles, from
+///   `LandVehicleMoveSystem`'s): `push_back`, or an in-place update of an
+///   entry the vehicle already has;
+/// - `Remove` (`0x2561440`) and `RemoveRange` (`0x2561690`): find, then
+///   `memmove` the tail down: order kept;
+/// - `RemoveEntity` (`0x2561510`): drops a whole edge;
+/// - `GetOrAddEdgeData`: grows an edge list, moving the vectors whole.
+///
+/// So the entries are append order, which is history while running and
+/// registration order after a load; nothing else reorders them. Sorting
+/// each touched edge's entries by entity id right after every append keeps
+/// every list canonical with no cost per update: the fix detours `Add` and
+/// `AddRange` whole, runs the engine's, then sorts the edges it touched
+/// (`Add`'s one edge; `AddRange`'s path edges `from..=to`).
+pub mod road {
+    use super::*;
+
+    pub const FIX: &str = "road-entry-order";
+    /// Set to `0` (or `off`), the entries keep the engine's order (the
+    /// measurement still installs the detours when it is on).
+    pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_ROAD_ENTRY_ORDER";
+    pub const ADD: &str = measure::EDGE_USE_ADD;
+    pub const ADD_RANGE: &str = measure::EDGE_USE_ADD_RANGE;
+    /// One entry: the entity id first.
+    pub const ENTRY_LEN: u64 = 20;
+    /// One edge's data: its length (a float), then the entries vector.
+    pub const EDGE_DATA_LEN: u64 = 32;
+    /// One edge entity's slot: its edges vector first.
+    pub const SLOT_LEN: u64 = 72;
+    /// An `EdgeId`: entity, index, direction.
+    pub const EDGE_ID_LEN: u64 = 12;
+    pub const MAX_ENTRIES: u64 = 1 << 16;
+    pub const MAX_PATH: u64 = 1 << 20;
+
+    static SORTING: AtomicBool = AtomicBool::new(false);
+    static BROKEN: AtomicBool = AtomicBool::new(false);
+    static REFUSALS: Refusals = Refusals::new();
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static REORDERS: AtomicU64 = AtomicU64::new(0);
+    static ADD_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+    static ADD_RANGE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+
+    /// `Add(this, &edgeId, entity, component, {back, front})`, five
+    /// arguments; three more slots are forwarded, unused.
+    type AddFn =
+        unsafe extern "system" fn(usize, usize, usize, usize, usize, usize, usize, usize) -> usize;
+    /// `AddRange(this, entity, component, &pathEdges, currentIndex,
+    /// {back, front}, from, to, context)`: nine arguments (the last at the
+    /// caller's `[rsp+0x48]`, read as `[rbp+0x140]` in the function).
+    type AddRangeFn = unsafe extern "system" fn(
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+    ) -> usize;
+
+    /// Installs the two detours when the fix is wanted or the measurement
+    /// is on (the `appends` lane is fed from here).
+    pub fn install(resolved: &ResolvedProfile, wanted: bool, measuring: bool) -> Vec<Outcome> {
+        if !wanted && !measuring {
+            return vec![Outcome {
+                fix: FIX,
+                installed: false,
+                reason: format!(
+                    "{TOGGLE_ENV} says so and nothing is measured; the entries keep the engine's order"
+                ),
+            }];
+        }
+        let mut outcomes = Vec::new();
+        let targets: [(&str, *const u8, &AtomicUsize); 2] = [
+            (ADD, add as *const u8, &ADD_ORIGINAL),
+            (ADD_RANGE, add_range as *const u8, &ADD_RANGE_ORIGINAL),
+        ];
+        let mut installed = 0;
+        for (name, detour, original) in targets {
+            let Some(target) = resolved.get(name) else {
+                outcomes.push(Outcome {
+                    fix: FIX,
+                    installed: false,
+                    reason: format!("the profile has no {name:?}"),
+                });
+                continue;
+            };
+            // SAFETY: a function the profile resolved and prologue-checked,
+            // detoured before any world exists; each detour has the target's
+            // ABI with every argument forwarded (integer and pointer
+            // registers; the floats ride in stack slots, forwarded whole).
+            match unsafe { InlineDetour::install(target.address as usize as *mut u8, detour) } {
+                Ok(detoured) => {
+                    original.store(detoured.trampoline() as usize, Ordering::Release);
+                    let _kept = std::mem::ManuallyDrop::new(detoured);
+                    installed += 1;
+                    outcomes.push(Outcome {
+                        fix: FIX,
+                        installed: wanted,
+                        reason: format!(
+                            "{name} at {:#x} detoured: {}",
+                            target.address,
+                            if wanted {
+                                "the edge lists it appends to are kept in entity order"
+                            } else {
+                                "measured only"
+                            }
+                        ),
+                    });
+                }
+                Err(error) => outcomes.push(Outcome {
+                    fix: FIX,
+                    installed: false,
+                    reason: format!("{name} at {:#x}: {error}", target.address),
+                }),
+            }
+        }
+        // Both appenders or neither: one sorted and one not is no order.
+        if wanted && installed == 2 {
+            SORTING.store(true, Ordering::Release);
+        } else if wanted {
+            outcomes.push(Outcome {
+                fix: FIX,
+                installed: false,
+                reason: "not both appenders are detoured; the entries keep the engine's order"
+                    .to_owned(),
+            });
+        }
+        outcomes
+    }
+
+    /// The order the fix keeps: the entries by entity id, each whole;
+    /// `None` when they already are in it.
+    pub fn entry_order(
+        entries: &[[u8; ENTRY_LEN as usize]],
+    ) -> Result<Option<Vec<[u8; ENTRY_LEN as usize]>>, &'static str> {
+        let keys: Vec<i32> = entries
+            .iter()
+            .map(|e| i32::from_le_bytes([e[0], e[1], e[2], e[3]]))
+            .collect();
+        Ok(canonical_permutation(&keys)?.map(|order| order.iter().map(|&i| entries[i]).collect()))
+    }
+
+    /// The entries vector (`&begin`) of the edge `edge_id` names, through
+    /// the manager's data the way `GetOrAddEdgeData` (`0x255d5a0`) walks it:
+    /// the data at `[this+0x18]`; its entity-to-slot index `[+0]..[+8]`
+    /// (int32s); its slots `[+0x18]..[+0x20]` (72 bytes each); the slot's
+    /// edges `[slot]..[slot+8]` (32 bytes each); the entries at `edge+8`.
+    fn entries_of(this: u64, edge_id: u64) -> Result<u64, &'static str> {
+        let (entity, index): (i32, i32) = (
+            read(edge_id).ok_or("the edge id is unreadable")?,
+            edge_id
+                .checked_add(4)
+                .and_then(read)
+                .ok_or("the edge id is unreadable")?,
+        );
+        let entity = u64::try_from(entity).map_err(|_| "a negative edge entity")?;
+        let index = u64::try_from(index).map_err(|_| "a negative edge index")?;
+        let data: u64 = this
+            .checked_add(0x18)
+            .and_then(read)
+            .ok_or("the manager's data is unreadable")?;
+        let slots_of: u64 = read(data).ok_or("the slot index is unreadable")?;
+        let slots_end: u64 = data
+            .checked_add(8)
+            .and_then(read)
+            .ok_or("the slot index is unreadable")?;
+        if slots_end < slots_of || entity >= (slots_end - slots_of) / 4 {
+            return Err("the edge's entity has no slot");
+        }
+        let slot: i32 = read(slots_of + entity * 4).ok_or("the slot index is unreadable")?;
+        let slot = u64::try_from(slot).map_err(|_| "the edge's entity has no slot")?;
+        let slots: u64 = data
+            .checked_add(0x18)
+            .and_then(read)
+            .ok_or("the slots are unreadable")?;
+        let slots_last: u64 = data
+            .checked_add(0x20)
+            .and_then(read)
+            .ok_or("the slots are unreadable")?;
+        if slots_last < slots
+            || !(slots_last - slots).is_multiple_of(SLOT_LEN)
+            || slot >= (slots_last - slots) / SLOT_LEN
+        {
+            return Err("the slots are not whole slots");
+        }
+        let at = slots + slot * SLOT_LEN;
+        let edges: u64 = read(at).ok_or("the slot's edges are unreadable")?;
+        let edges_end: u64 = read(at + 8).ok_or("the slot's edges are unreadable")?;
+        if edges_end < edges
+            || !(edges_end - edges).is_multiple_of(EDGE_DATA_LEN)
+            || index >= (edges_end - edges) / EDGE_DATA_LEN
+        {
+            return Err("the edge index is past the slot's edges");
+        }
+        Ok(edges + index * EDGE_DATA_LEN + 8)
+    }
+
+    /// Sorts the entries of the edge `edge_id` names by entity id, in place.
+    pub(crate) fn sort_edge(this: u64, edge_id: u64) -> Result<Sorted, &'static str> {
+        let vector = entries_of(this, edge_id)?;
+        let begin: u64 = read(vector).ok_or("the entries are unreadable")?;
+        let end: u64 = vector
+            .checked_add(8)
+            .and_then(read)
+            .ok_or("the entries are unreadable")?;
+        if end < begin || !(end - begin).is_multiple_of(ENTRY_LEN) {
+            return Err("the entries are not whole entries");
+        }
+        let count = (end - begin) / ENTRY_LEN;
+        if count > MAX_ENTRIES {
+            return Err("more entries on one edge than any world holds");
+        }
+        let len = usize::try_from(count * ENTRY_LEN).map_err(|_| "too many entries")?;
+        if !readable(begin, len) {
+            return Err("the entries are unreadable");
+        }
+        // SAFETY: `len` readable bytes at `begin`, whole 20-byte entries.
+        let entries: Vec<[u8; ENTRY_LEN as usize]> = (0..count)
+            .map(|i| unsafe {
+                std::ptr::read_unaligned((begin + i * ENTRY_LEN) as *const [u8; ENTRY_LEN as usize])
+            })
+            .collect();
+        let order = entry_order(&entries)?;
+        let kept = order.as_ref().unwrap_or(&entries);
+        if measure::enabled() {
+            let edge: [u8; EDGE_ID_LEN as usize] =
+                read(edge_id).ok_or("the edge id is unreadable")?;
+            let ids: Vec<i32> = kept
+                .iter()
+                .map(|e| i32::from_le_bytes([e[0], e[1], e[2], e[3]]))
+                .collect();
+            let sorted = if order.is_some() {
+                Sorted::Reordered
+            } else {
+                Sorted::Unchanged
+            };
+            measure::note_road(&edge, &ids, sorted);
+        }
+        let Some(order) = order else {
+            return Ok(Sorted::Unchanged);
+        };
+        for (i, entry) in order.iter().enumerate() {
+            // SAFETY: the same span, on the thread that just appended to it,
+            // inside the engine's own call chain (the node-added callbacks
+            // run serially at the end of a modification).
+            unsafe {
+                std::ptr::write_unaligned(
+                    (begin + i as u64 * ENTRY_LEN) as *mut [u8; ENTRY_LEN as usize],
+                    *entry,
+                )
+            };
+        }
+        Ok(Sorted::Reordered)
+    }
+
+    fn sorted(this: u64, edge_ids: impl Iterator<Item = u64>) {
+        guarded(FIX, &BROKEN, || {
+            let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+            for edge_id in edge_ids {
+                match sort_edge(this, edge_id) {
+                    Ok(Sorted::Reordered) => {
+                        let reorders = REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
+                        if reorders <= 3 {
+                            log::line(&format!(
+                                "order fix {FIX}: an edge's entries put in entity order (append #{n})"
+                            ));
+                        }
+                    }
+                    Ok(Sorted::Unchanged) => {}
+                    Err(why) => REFUSALS.note(FIX, why),
+                }
+            }
+            if n == 1 || n.is_multiple_of(1 << 16) {
+                log::line(&format!(
+                    "order fix {FIX}: alive, appends={n} reordered={} refused={}",
+                    REORDERS.load(Ordering::Relaxed),
+                    REFUSALS.count.load(Ordering::Relaxed)
+                ));
+            }
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe extern "system" fn add(
+        this: usize,
+        edge_id: usize,
+        entity: usize,
+        component: usize,
+        bounds: usize,
+        s6: usize,
+        s7: usize,
+        s8: usize,
+    ) -> usize {
+        if measure::enabled() {
+            measure::note_add(
+                edge_id as u64,
+                entity as u32,
+                component as u32,
+                bounds as u64,
+            );
+        }
+        let original = ADD_ORIGINAL.load(Ordering::Acquire);
+        if original == 0 {
+            return 0;
+        }
+        // SAFETY: the trampoline of the function this detour replaced, every
+        // argument forwarded.
+        let original: AddFn = unsafe { std::mem::transmute::<usize, AddFn>(original) };
+        let result = unsafe { original(this, edge_id, entity, component, bounds, s6, s7, s8) };
+        if SORTING.load(Ordering::Acquire) {
+            sorted(this as u64, std::iter::once(edge_id as u64));
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe extern "system" fn add_range(
+        this: usize,
+        entity: usize,
+        component: usize,
+        path: usize,
+        current: usize,
+        bounds: usize,
+        from: usize,
+        to: usize,
+        context: usize,
+    ) -> usize {
+        if measure::enabled() {
+            // The context is an address: not hashed.
+            measure::note_add_range(
+                [
+                    entity as u32,
+                    component as u32,
+                    current as u32,
+                    bounds as u32,
+                    from as u32,
+                    to as u32,
+                ],
+                path as u64,
+            );
+        }
+        let original = ADD_RANGE_ORIGINAL.load(Ordering::Acquire);
+        if original == 0 {
+            return 0;
+        }
+        // SAFETY: as for `add`, the ninth argument included.
+        let original: AddRangeFn = unsafe { std::mem::transmute::<usize, AddRangeFn>(original) };
+        let result = unsafe {
+            original(
+                this, entity, component, path, current, bounds, from, to, context,
+            )
+        };
+        if SORTING.load(Ordering::Acquire) {
+            match path_edges(path as u64, from as u32 as i32, to as u32 as i32) {
+                Ok(edges) => sorted(this as u64, edges),
+                Err(why) => REFUSALS.note(FIX, why),
+            }
+        }
+        result
+    }
+
+    /// The addresses of `path[from..=to]`'s edge ids, checked against the
+    /// path vector's bounds.
+    fn path_edges(
+        path: u64,
+        from: i32,
+        to: i32,
+    ) -> Result<impl Iterator<Item = u64>, &'static str> {
+        let (from, to) = (
+            u64::try_from(from).map_err(|_| "a negative path range")?,
+            u64::try_from(to).map_err(|_| "a negative path range")?,
+        );
+        let begin: u64 = read(path).ok_or("the path is unreadable")?;
+        let end: u64 = path
+            .checked_add(8)
+            .and_then(read)
+            .ok_or("the path is unreadable")?;
+        if end < begin || !(end - begin).is_multiple_of(EDGE_ID_LEN) {
+            return Err("the path is not whole edge ids");
+        }
+        let len = (end - begin) / EDGE_ID_LEN;
+        if to < from || to >= len || len > MAX_PATH {
+            return Err("the path range is past the path");
+        }
+        Ok((from..=to).map(move |i| begin + i * EDGE_ID_LEN))
+    }
+}
+
 /// The measurement (survey items 2 and 3, and the two fixes' own evidence):
 /// with [`MEASURE_ENV`] set, whole-function detours on the reservation
 /// manager's two `Reserve` overloads, the road-edge appenders and
@@ -640,6 +1379,20 @@ pub mod measure {
         pub vehicles_at_stop: Fnv1a,
         pub vehicle_stop_calls: u64,
         pub vehicle_stop_reorders: u64,
+        /// The platform chooser's visit order as the engine had it
+        /// ([`super::platform`]), one hash per update.
+        pub visits: Fnv1a,
+        pub visit_calls: u64,
+        pub visit_reorders: u64,
+        /// The terminal candidates put in canonical order before the cost
+        /// sort, and how many of those sorts changed something.
+        pub candidate_sorts: u64,
+        pub candidate_reorders: u64,
+        /// Each edge whose entries the road fix checked after an append
+        /// ([`super::road`]): its id and its entities in the order kept.
+        pub road: Fnv1a,
+        pub road_sorts: u64,
+        pub road_reorders: u64,
     }
 
     impl Lanes {
@@ -658,13 +1411,21 @@ pub mod measure {
                 vehicles_at_stop: Fnv1a::new(),
                 vehicle_stop_calls: 0,
                 vehicle_stop_reorders: 0,
+                visits: Fnv1a::new(),
+                visit_calls: 0,
+                visit_reorders: 0,
+                candidate_sorts: 0,
+                candidate_reorders: 0,
+                road: Fnv1a::new(),
+                road_sorts: 0,
+                road_reorders: 0,
             }
         }
 
         /// One log line: the update it closes and every lane.
         pub fn line(&self, update: u64, interval: u64) -> String {
             format!(
-                "order measure: updates {}..={update}: claims={:016x}/{} appends={:016x}/{} land={:016x}/{} reordered {} seeds={:016x} nodes={:016x}/{} vehstop={:016x}/{} reordered {}",
+                "order measure: updates {}..={update}: claims={:016x}/{} appends={:016x}/{} land={:016x}/{} reordered {} seeds={:016x} nodes={:016x}/{} vehstop={:016x}/{} reordered {} visits={:016x}/{} reordered {} candidates={}/{} road={:016x}/{} reordered {}",
                 update.saturating_sub(interval.saturating_sub(1)),
                 self.claims.0,
                 self.claim_count,
@@ -679,6 +1440,14 @@ pub mod measure {
                 self.vehicles_at_stop.0,
                 self.vehicle_stop_calls,
                 self.vehicle_stop_reorders,
+                self.visits.0,
+                self.visit_calls,
+                self.visit_reorders,
+                self.candidate_reorders,
+                self.candidate_sorts,
+                self.road.0,
+                self.road_sorts,
+                self.road_reorders,
             )
         }
     }
@@ -696,8 +1465,6 @@ pub mod measure {
     static LANES: Mutex<Lanes> = Mutex::new(Lanes::new());
     static RESERVE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
     static RESERVE_SIMPLE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-    static ADD_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-    static ADD_RANGE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
     static UPDATE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
     /// Reads [`MEASURE_ENV`]; `true` when measuring.
@@ -771,6 +1538,50 @@ pub mod measure {
         }
         if sorted == Sorted::Reordered {
             lanes.vehicle_stop_reorders += 1;
+        }
+    }
+
+    pub(super) fn note_visits(before: &[i32], sorted: Sorted) {
+        if !enabled() {
+            return;
+        }
+        let mut lanes = lanes();
+        lanes.visit_calls += 1;
+        lanes.visits.write_u32(before.len() as u32);
+        for id in before {
+            lanes.visits.write_u32(*id as u32);
+        }
+        if sorted == Sorted::Reordered {
+            lanes.visit_reorders += 1;
+        }
+    }
+
+    pub(super) fn note_candidates(sorted: Sorted) {
+        if !enabled() {
+            return;
+        }
+        let mut lanes = lanes();
+        lanes.candidate_sorts += 1;
+        if sorted == Sorted::Reordered {
+            lanes.candidate_reorders += 1;
+        }
+    }
+
+    /// One edge the road fix checked: its id and the entities on it in the
+    /// order they are kept.
+    pub(super) fn note_road(edge: &[u8], kept: &[i32], sorted: Sorted) {
+        if !enabled() {
+            return;
+        }
+        let mut lanes = lanes();
+        lanes.road_sorts += 1;
+        lanes.road.write(edge);
+        lanes.road.write_u32(kept.len() as u32);
+        for id in kept {
+            lanes.road.write_u32(*id as u32);
+        }
+        if sorted == Sorted::Reordered {
+            lanes.road_reorders += 1;
         }
     }
 
@@ -937,58 +1748,6 @@ pub mod measure {
         unsafe { original(this, engine, type_index, entity, path, from, to, s7) }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    unsafe extern "system" fn edge_use_add(
-        this: usize,
-        edge_id: usize,
-        entity: usize,
-        component: usize,
-        bounds: usize,
-        s5: usize,
-        s6: usize,
-        s7: usize,
-    ) -> usize {
-        note_add(
-            edge_id as u64,
-            entity as u32,
-            component as u32,
-            bounds as u64,
-        );
-        let original = ADD_ORIGINAL.load(Ordering::Acquire);
-        if original == 0 {
-            return 0;
-        }
-        // SAFETY: as above.
-        let original: Fn8 = unsafe { std::mem::transmute::<usize, Fn8>(original) };
-        unsafe { original(this, edge_id, entity, component, bounds, s5, s6, s7) }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    unsafe extern "system" fn edge_use_add_range(
-        this: usize,
-        a2: usize,
-        a3: usize,
-        edges: usize,
-        a5: usize,
-        a6: usize,
-        a7: usize,
-        a8: usize,
-    ) -> usize {
-        note_add_range(
-            [
-                a2 as u32, a3 as u32, a5 as u32, a6 as u32, a7 as u32, a8 as u32,
-            ],
-            edges as u64,
-        );
-        let original = ADD_RANGE_ORIGINAL.load(Ordering::Acquire);
-        if original == 0 {
-            return 0;
-        }
-        // SAFETY: as above.
-        let original: Fn8 = unsafe { std::mem::transmute::<usize, Fn8>(original) };
-        unsafe { original(this, a2, a3, edges, a5, a6, a7, a8) }
-    }
-
     unsafe extern "system" fn engine_update(engine: usize, dt: f64, a3: usize, a4: usize) -> usize {
         update_begins();
         let original = UPDATE_ORIGINAL.load(Ordering::Acquire);
@@ -1014,19 +1773,15 @@ pub mod measure {
         }
         let interval = INTERVAL.load(Ordering::Acquire);
         let mut outcomes = Vec::new();
-        let targets: [(&str, *const u8, &AtomicUsize); 5] = [
+        // `EdgeUseManager::Add` and `AddRange` are detoured by the road
+        // entry fix ([`super::road`]), which feeds the `appends` lane too.
+        let targets: [(&str, *const u8, &AtomicUsize); 3] = [
             (ENGINE_UPDATE, engine_update as *const u8, &UPDATE_ORIGINAL),
             (RESERVE, reserve as *const u8, &RESERVE_ORIGINAL),
             (
                 RESERVE_SIMPLE,
                 reserve_simple as *const u8,
                 &RESERVE_SIMPLE_ORIGINAL,
-            ),
-            (EDGE_USE_ADD, edge_use_add as *const u8, &ADD_ORIGINAL),
-            (
-                EDGE_USE_ADD_RANGE,
-                edge_use_add_range as *const u8,
-                &ADD_RANGE_ORIGINAL,
             ),
         ];
         for (name, detour, original) in targets {
@@ -1141,6 +1896,14 @@ mod tests {
             land_vehicle::EXPECTED.to_vec()
         );
         assert_eq!(prologue(terminal::SITE), terminal::EXPECTED.to_vec());
+        assert_eq!(
+            prologue(platform::VISIT_SITE),
+            platform::VISIT_EXPECTED.to_vec()
+        );
+        assert_eq!(
+            prologue(platform::CANDIDATES_SITE),
+            platform::CANDIDATES_EXPECTED.to_vec()
+        );
         for name in [
             land_vehicle::RECORDS,
             terminal::GETTER,
@@ -1257,10 +2020,81 @@ mod tests {
         assert!(!off[0].installed);
         assert!(off[0].reason.contains(MEASURE_ENV));
         let on = measure::install(&resolved, true);
-        assert_eq!(on.len(), 5, "one outcome per measured function");
+        assert_eq!(on.len(), 3, "one outcome per measured function");
         assert!(
             on.iter()
                 .all(|o| !o.installed && o.reason.contains("the profile has no"))
+        );
+        // The platform fix: both sites, each off on its own; and its switch.
+        let platform = platform::install(&resolved, true);
+        assert_eq!(platform.len(), 2);
+        assert!(platform.iter().all(|o| !o.installed));
+        let switched = platform::install(&resolved, false);
+        assert!(switched[0].reason.contains(platform::TOGGLE_ENV));
+        // The road fix: no appenders, no sorting; switched off and not
+        // measuring, nothing is hooked.
+        let road = road::install(&resolved, true, false);
+        assert!(road.iter().all(|o| !o.installed), "{road:?}");
+        assert!(road.iter().any(|o| o.reason.contains("not both appenders")));
+        let road = road::install(&resolved, false, false);
+        assert_eq!(road.len(), 1);
+        assert!(road[0].reason.contains(road::TOGGLE_ENV));
+    }
+
+    #[test]
+    fn the_visit_order_is_by_entity_with_each_record_whole() {
+        // {entity, TransportVehicle index} records.
+        let record = |entity: u32, index: u32| u64::from(entity) | (u64::from(index) << 32);
+        let records = [record(30, 0), record(10, 1), record(20, 2)];
+        assert_eq!(
+            platform::visit_order(&records).unwrap(),
+            Some(vec![record(10, 1), record(20, 2), record(30, 0)])
+        );
+        assert_eq!(
+            platform::visit_order(&[record(1, 5), record(2, 4)]).unwrap(),
+            None
+        );
+        assert_eq!(platform::visit_order(&[]).unwrap(), None);
+        assert_eq!(
+            platform::visit_order(&[record(7, 0), record(7, 1)]),
+            Err("two entries name one entity")
+        );
+    }
+
+    #[test]
+    fn candidates_with_equal_costs_reach_the_sort_in_one_order() {
+        // {word, station, terminal}: the cost is looked up by the engine,
+        // so the order is by station and terminal, whatever came first.
+        let a = [9, 100, 2];
+        let b = [3, 100, 1];
+        let c = [1, 50, 7];
+        let one = platform::candidate_order(&[a, b, c]).unwrap();
+        let other = platform::candidate_order(&[b, c, a]).unwrap();
+        assert_eq!(one, vec![c, b, a]);
+        assert_eq!(one, other, "two games' orders end up the same");
+        assert_eq!(platform::candidate_order(&[c, b, a]), None);
+        assert_eq!(platform::candidate_order(&[a]), None);
+    }
+
+    #[test]
+    fn road_entries_are_kept_in_entity_order_each_whole() {
+        let entry = |entity: i32, tag: u8| {
+            let mut e = [tag; road::ENTRY_LEN as usize];
+            e[..4].copy_from_slice(&entity.to_le_bytes());
+            e
+        };
+        let entries = [entry(40, 1), entry(12, 2), entry(33, 3)];
+        assert_eq!(
+            road::entry_order(&entries).unwrap(),
+            Some(vec![entry(12, 2), entry(33, 3), entry(40, 1)])
+        );
+        assert_eq!(
+            road::entry_order(&[entry(1, 0), entry(2, 0)]).unwrap(),
+            None
+        );
+        assert_eq!(
+            road::entry_order(&[entry(5, 0), entry(5, 1)]),
+            Err("two entries name one entity")
         );
     }
 }
@@ -1448,5 +2282,145 @@ mod splice_tests {
         );
         // SAFETY: nothing runs the fixture now.
         unsafe { splice.detach() }.unwrap();
+    }
+
+    /// The platform chooser's loop head, as the engine has it: `this` in
+    /// r13 (`[this+8]` the node-list holder), the count at `[rbp+0x5b0]`,
+    /// the byte offset of the iteration in rsi. The fixture returns the
+    /// entity the iteration reads at `[rsi+rdi]` after the site.
+    #[test]
+    fn the_visit_hook_walks_the_node_list_in_entity_order_without_writing_it() {
+        let mut memory = vec![0u8; 0x1000];
+        let base = memory.as_mut_ptr() as u64;
+        let put = |memory: &mut Vec<u8>, at: usize, value: u64| {
+            memory[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        const THIS: usize = 0x100;
+        const HOLDER: usize = 0x140;
+        const RECORDS: usize = 0x200;
+        const RBP: usize = 0x300;
+        // {entity, index}: 30, 10, 20.
+        for (i, (entity, index)) in [(30u32, 0u32), (10, 1), (20, 2)].into_iter().enumerate() {
+            let at = RECORDS + i * 8;
+            memory[at..at + 4].copy_from_slice(&entity.to_le_bytes());
+            memory[at + 4..at + 8].copy_from_slice(&index.to_le_bytes());
+        }
+        put(&mut memory, THIS + 8, base + HOLDER as u64);
+        put(&mut memory, HOLDER, base + RECORDS as u64);
+        put(&mut memory, HOLDER + 8, base + RECORDS as u64 + 24);
+        memory[RBP + 0x5b0..RBP + 0x5b4].copy_from_slice(&3i32.to_le_bytes());
+        // push rbp; push r13; push rsi; push rdi; push rbx; mov rbp, imm64;
+        // mov r13, imm64; mov rsi, rcx; mov rax, [r13+8]; mov rdi, [rax];
+        // <site>; mov eax, [rsi+rdi]; pop rbx; pop rdi; pop rsi; pop r13;
+        // pop rbp; ret
+        let mut code = vec![0x55, 0x41, 0x55, 0x56, 0x57, 0x53, 0x48, 0xBD];
+        code.extend_from_slice(&(base + RBP as u64).to_le_bytes());
+        code.extend_from_slice(&[0x49, 0xBD]);
+        code.extend_from_slice(&(base + THIS as u64).to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x89, 0xCE, 0x49, 0x8B, 0x45, 0x08, 0x48, 0x8B, 0x38]);
+        let site_at = code.len();
+        code.extend_from_slice(&platform::VISIT_EXPECTED);
+        code.extend_from_slice(&[0x8B, 0x04, 0x3E, 0x5B, 0x5F, 0x5E, 0x41, 0x5D, 0x5D, 0xC3]);
+        let page = fixture(&code);
+        // SAFETY: the page holds a function of one integer argument.
+        let fun: extern "C" fn(u64) -> u32 =
+            unsafe { std::mem::transmute::<usize, extern "C" fn(u64) -> u32>(page) };
+        let walk = || (0..3).map(|i| fun(i * 8)).collect::<Vec<u32>>();
+        assert_eq!(walk(), vec![30, 10, 20], "the engine's own order");
+
+        // SAFETY: the fixture is this test's own code, not running now.
+        let splice = unsafe {
+            Splice::install(
+                (page + site_at) as *mut u8,
+                &platform::VISIT_EXPECTED,
+                platform::VISIT_STEAL,
+                platform::visit_hook,
+            )
+        }
+        .unwrap();
+        assert_eq!(walk(), vec![10, 20, 30], "visited in entity order");
+        let records: Vec<u8> = memory[RECORDS..RECORDS + 24].to_vec();
+        assert_eq!(
+            &records[..4],
+            &30u32.to_le_bytes(),
+            "the list is not written"
+        );
+        // A count that is not the list's: the engine's own order stands.
+        memory[RBP + 0x5b0..RBP + 0x5b4].copy_from_slice(&2i32.to_le_bytes());
+        assert_eq!(fun(0), 30);
+        // SAFETY: nothing runs the fixture now.
+        unsafe { splice.detach() }.unwrap();
+        drop(memory);
+    }
+
+    /// `EdgeUseManager`'s data as `GetOrAddEdgeData` walks it, built in
+    /// memory: the entries of edge (entity 1, index 1) are sorted in place.
+    #[test]
+    fn the_road_sort_finds_an_edges_entries_and_puts_them_in_entity_order() {
+        let mut memory = vec![0u8; 0x800];
+        let base = memory.as_mut_ptr() as u64;
+        let put = |memory: &mut Vec<u8>, at: usize, value: u64| {
+            memory[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        let int = |memory: &mut Vec<u8>, at: usize, value: i32| {
+            memory[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        const DATA: usize = 0x100;
+        const INDEX: usize = 0x200;
+        const SLOTS: usize = 0x300;
+        const EDGES: usize = 0x400;
+        const ENTRIES: usize = 0x500;
+        const EDGE_ID: usize = 0x600;
+        put(&mut memory, 0x18, base + DATA as u64);
+        put(&mut memory, DATA, base + INDEX as u64);
+        put(&mut memory, DATA + 8, base + INDEX as u64 + 12);
+        put(&mut memory, DATA + 0x18, base + SLOTS as u64);
+        put(&mut memory, DATA + 0x20, base + SLOTS as u64 + 2 * 72);
+        // Entity 0 has no slot, entity 1 slot 1, entity 2 slot 0.
+        for (i, slot) in [-1, 1, 0].into_iter().enumerate() {
+            int(&mut memory, INDEX + i * 4, slot);
+        }
+        put(&mut memory, SLOTS + 72, base + EDGES as u64);
+        put(&mut memory, SLOTS + 72 + 8, base + EDGES as u64 + 2 * 32);
+        put(&mut memory, EDGES + 32 + 8, base + ENTRIES as u64);
+        put(
+            &mut memory,
+            EDGES + 32 + 0x10,
+            base + ENTRIES as u64 + 3 * 20,
+        );
+        for (i, entity) in [40, 12, 33].into_iter().enumerate() {
+            int(&mut memory, ENTRIES + i * 20, entity);
+            memory[ENTRIES + i * 20 + 16] = i as u8;
+        }
+        int(&mut memory, EDGE_ID, 1);
+        int(&mut memory, EDGE_ID + 4, 1);
+        let entities = |memory: &Vec<u8>| {
+            (0..3)
+                .map(|i| {
+                    let at = ENTRIES + i * 20;
+                    let id = i32::from_le_bytes(memory[at..at + 4].try_into().unwrap());
+                    (id, memory[at + 16])
+                })
+                .collect::<Vec<_>>()
+        };
+        let sorted = road::sort_edge(base, base + EDGE_ID as u64);
+        assert_eq!(sorted, Ok(Sorted::Reordered));
+        assert_eq!(entities(&memory), vec![(12, 1), (33, 2), (40, 0)]);
+        assert_eq!(
+            road::sort_edge(base, base + EDGE_ID as u64),
+            Ok(Sorted::Unchanged)
+        );
+        // An edge whose entity has no slot, and one past its slot's edges.
+        int(&mut memory, EDGE_ID, 0);
+        assert_eq!(
+            road::sort_edge(base, base + EDGE_ID as u64),
+            Err("the edge's entity has no slot")
+        );
+        int(&mut memory, EDGE_ID, 1);
+        int(&mut memory, EDGE_ID + 4, 2);
+        assert_eq!(
+            road::sort_edge(base, base + EDGE_ID as u64),
+            Err("the edge index is past the slot's edges")
+        );
     }
 }
