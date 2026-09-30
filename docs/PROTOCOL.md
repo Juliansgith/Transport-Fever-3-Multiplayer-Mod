@@ -329,9 +329,16 @@ joins a running game, one who can no longer resume, and one whose world
 diverged all receive the room's latest agreed snapshot, then follow the
 turns since it. Only a server configured with a snapshot store does this.
 
-**Everyone loads it.** Whenever the room hands a snapshot to a member, it
-hands the same snapshot to every member playing, which reload it too, so
-every game plays from the same loaded save. A game that keeps its own world
+**Everyone loads it.** Whenever the room hands a snapshot to a member,
+every game plays from the same loaded save afterwards. A member playing
+another world reloads it too. One whose game already plays that very
+snapshot (it loaded it and has followed the same turns since) needs nothing,
+so a newcomer handed the world the others play leaves them undisturbed. A
+member that cannot take it at that moment (away, or not reading its turns,
+which disconnects it as a slow consumer) owes it, and is handed it when it
+next can, even when it comes back resuming its stream. A restart forgets
+which snapshot each game loaded, so after one they all load the next one
+handed out. A game that keeps its own world
 numbers its entities differently from one that loaded a save (Transport
 Fever 3 build 40408: saving and loading renumbers some, and the free ids
 go back into a first-in, first-out queue in another order), and the
