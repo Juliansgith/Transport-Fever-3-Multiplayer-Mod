@@ -159,7 +159,11 @@ window too.
    one the launcher remembers, and press **Connect to EU** (the server is
    the launcher's; there is none to type). Then it offers two big cards:
    **Join a room** and **Host a room**. Each opens its page, and **Back**
-   returns to this one.
+   returns to this one. **Server...**, at its bottom, shows the server you play
+   on, marked (default) when it is the launcher's own; type another
+   (`host:port`) and **Use this server**, or **Reset to default**.
+   Changing it disconnects you and connects to the new one, and an
+   invite only joins rooms on your own server. Not while in a room.
 4. **Join a room, or host one.**
    - **Join a room**: the rooms their owners made public, as cards like
      the main menu's, each with the picture of its map's climate, its

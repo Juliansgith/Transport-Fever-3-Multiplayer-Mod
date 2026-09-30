@@ -622,6 +622,11 @@ function lobby.content(onClose, focus)
 	-- room's. Your mods show over it while modsS is on.
 	local pageS = react.useState(nil)
 	local modsS = react.useState(false)
+	-- The server page, from the first page: whether it shows, the address
+	-- typed, and why the launcher refused the last one.
+	local serverS = react.useState(false)
+	local serverText = react.useRef(nil)
+	local serverErrorS = react.useState(nil)
 	local publicS = react.useState("private")
 	local joiningS = react.useState(nil)
 	local listAtRef = react.useRef(LIST_POLLS)
@@ -635,7 +640,7 @@ function lobby.content(onClose, focus)
 		return table.concat({
 			tostring(state.connection), tostring(room and room.name), tostring(room and room.phase),
 			tostring(room and #room.members), tostring(me and me.ready), tostring(state.error),
-			tostring(state.notice), tostring(#(state.chat or {})),
+			tostring(state.notice), tostring(#(state.chat or {})), tostring(state.server_address),
 		}, "|")
 	end
 
@@ -860,6 +865,53 @@ function lobby.content(onClose, focus)
 			{ gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) })
 	end
 
+	-- The server this launcher plays on, from the first page: shown,
+	-- changed, or put back to the launcher's own. Not while in a room.
+	if serverS:old() and page == "choose" then
+		local onDefault = state.server_address == state.server_default
+		if serverText:get() == nil then serverText:set(state.server_address or "") end
+		local usable = canAct and not room and not busy
+		local function use(address)
+			local refused = act({ action = "set_server", server = address })
+			serverErrorS:set(refused)
+			refusedS:set(nil)
+			if not refused then
+				serverText:set(address ~= "" and address or nil)
+				pendingS:set({ _("Changing the server..."), PENDING_POLLS, signature(stateS:old()) })
+			end
+		end
+		-- The launcher's own errors show at the top, as on every page.
+		local problem = serverErrorS:old()
+		local children = {
+			row({
+				button(_("Back"), function()
+					serverS:set(false)
+					serverErrorS:set(nil)
+					serverText:set(nil)
+				end),
+				gap(16),
+				heading(_("Server"), string.format(_("Now: %s%s"), serverName(state),
+					onDefault and _(" (default)") or (" (" .. tostring(state.server_address) .. ")"))),
+			}),
+			field(_("Server address (host:port)"), serverText, state.server_default ~= "" and state.server_default or "host:port",
+				{ maxLength = 128, onEnter = function(value) if usable then use(value) end end }),
+			problem and label(problem, "font-scale-body, error") or gap(1),
+			gap(8),
+		}
+		local buttons = {
+			primary(_("Use this server"), function() use(serverText:get() or "") end, usable),
+		}
+		if not onDefault then
+			buttons[#buttons + 1] = gap(8)
+			buttons[#buttons + 1] = button(_("Reset to default"), function() use("") end, nil, usable)
+		end
+		children[#children + 1] = row(buttons)
+		children[#children + 1] = gap(12)
+		children[#children + 1] = note(_("Changing the server disconnects you and connects to the new one. Invites only join rooms on your own server."))
+		return frame(_("Server"), status, column(children, style{ size = { LEFT + 100, AUTO } }),
+			{ gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) })
+	end
+
 	-- The first page: connect, then Join or Host.
 	if page == "choose" then
 		local connecting = state.connection == "connecting"
@@ -900,6 +952,8 @@ function lobby.content(onClose, focus)
 			}),
 			{
 				connected and button(_("Disconnect"), disconnect, nil, canAct) or gap(1),
+				gap(8),
+				button(_("Server..."), function() serverS:set(true) end, nil, canAct),
 				gui_react_util.makeHorizontalSpacer(),
 				button(_("Close"), onClose),
 			}

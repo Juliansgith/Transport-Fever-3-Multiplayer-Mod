@@ -828,3 +828,70 @@ fn your_mods_are_chosen_from_join_host_and_the_room() {
     call(&lua, "tick", ());
     assert!(!enabled(&lua, "Off"));
 }
+
+#[test]
+fn the_server_is_shown_changed_and_put_back_from_the_first_page() {
+    let lua = menu();
+    let on = |address: &str| LobbyView {
+        server_address: Text::new(address).unwrap(),
+        server_default: Text::new("relay.example:29470").unwrap(),
+        ..online()
+    };
+    show(&lua, Some(&on("relay.example:29470")));
+    open(&lua, None);
+    click(&lua, "Server...");
+    let shown = texts(&lua);
+    assert!(shown.contains("Now: EU (default)"), "{shown}");
+    assert!(shown.contains("Invites only join rooms on your own server."));
+    assert!(
+        !has_button(&lua, "Reset to default"),
+        "already on the default"
+    );
+    // The launcher refuses an address it cannot use: said under the field.
+    lua.globals()
+        .set(
+            "REPLY",
+            "error: the server must be host:port, such as play.example:29470",
+        )
+        .unwrap();
+    call(&lua, "type_into", ("relay.example:29470", "nonsense"));
+    assert!(texts(&lua).contains("the server must be host:port"));
+    lua.globals().set("REPLY", "ok").unwrap();
+    call(
+        &lua,
+        "type_into",
+        ("relay.example:29470", "lan.example:29470"),
+    );
+    assert!(
+        !enabled(&lua, "Use this server"),
+        "not again while it changes"
+    );
+    let asked = sent(&lua);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(
+        asked[1],
+        LobbyAction::SetServer {
+            server: Text::new("lan.example:29470").unwrap()
+        }
+    );
+    // On another server: Reset puts the default back.
+    show(&lua, Some(&on("lan.example:29470")));
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("(lan.example:29470)"));
+    click(&lua, "Reset to default");
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::SetServer {
+            server: Text::new("").unwrap()
+        }]
+    );
+    // Not from a room: the room's page is shown, and no server page.
+    show(
+        &lua,
+        Some(&LobbyView {
+            ..in_room(vec![member(1, "Ann", true, true, true)], true)
+        }),
+    );
+    call(&lua, "tick", ());
+    assert!(!has_button(&lua, "Use this server"));
+}
