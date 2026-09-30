@@ -160,7 +160,8 @@ window too.
    the launcher's; there is none to type). Then it offers two big cards:
    **Join a room** and **Host a room**. Each opens its page, and **Back**
    returns to this one. **Server...**, at its bottom, shows the server you play
-   on, marked (default) when it is the launcher's own; type another
+   on by its name, marked (default) when it is the launcher's own (the
+   window never shows a server's address, but in this field); type another
    (`host:port`) and **Use this server**, or **Reset to default**.
    Changing it disconnects you and connects to the new one, and an
    invite only joins rooms on your own server. Not while in a room.
@@ -171,10 +172,11 @@ window too.
      **Playing** once its game runs, and a lock if it has a password.
      Click one to join it; one with a password asks for it first.
      **Previous**, **Next** and **Refresh** page through the list, which
-     also refreshes itself every ten seconds. Under it, **Or join with an
-     invite**: the **invite code** a friend sent you, such as `K7QM2X`
-     (upper or lower case), the room's password if it has one, and **Join
-     room**. A private room is joined only this way.
+     also refreshes itself every ten seconds. **Join with code**, at
+     the top, opens a small popup for a friend's room: the **invite code**
+     they sent you, such as `K7QM2X` (upper or lower case), the room's
+     password if it has one, and **Join** or **Cancel**. A private room is
+     joined only this way.
    - **Host a room**: a **room name** (your name's room if you leave it
      empty); **Start from this save**, one of your saves, newest first, or
      **None: I load a world myself**; **Players**, 2 to 16; **Who can find

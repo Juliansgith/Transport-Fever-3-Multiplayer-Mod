@@ -111,17 +111,19 @@ local function safeContent(onClose : function(), focus : string) : TreeNodeId
 end
 
 local Tpf3mpLobbyWindow = react.RegisterWrapperRecipe("Tpf3mpLobbyWindow", builtin.Window, function(param : Tpf3mpLobbyWindowParam) : TreeNodeId
-	-- Centred on the given point: the window's top-left corner goes half
-	-- its size up and left of it (lobby.lua's WIDTH, HEIGHT, plus the
-	-- title bar). A wrapper recipe may pass meta only for its class: a
-	-- styleSheet with anchorPoint made the game assert and close
-	-- ("Wrapper recipe must return child", 2026-09-30).
+	-- Centred on the screen at any resolution, as the game centres its mod
+	-- validation report (mod_manager_react_util.tl): by that window's class,
+	-- whose rule in the game's style sheet (mod_browser.css.lua,
+	-- "Window!validation-report-dialog") sets anchorPoint and gravity to
+	-- 0.5, 0.5 and nothing else. A wrapper recipe may pass meta only for its
+	-- class: a styleSheet with anchorPoint made the game assert and close
+	-- ("Wrapper recipe must return child", 2026-09-30). initialX and
+	-- initialY are shares of the screen for the window's anchor point, so
+	-- none is given: the class's gravity places it.
 	return builtin.Window{
 		title = _("Multiplayer"),
 		id = "window.tpf3mp.lobby",
-		meta = { class = "fade-in" },
-		initialX = param.pos and (param.pos.x - 460) or nil,
-		initialY = param.pos and (param.pos.y - 320) or nil,
+		meta = { class = "fade-in, validation-report-dialog" },
 		movable = false,
 		closable = true,
 		onClose = param.onClose,

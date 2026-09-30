@@ -294,23 +294,34 @@ fn a_room_can_start_without_a_save_and_is_named_for_its_owner() {
 }
 
 #[test]
-fn a_room_is_joined_by_its_invite_with_its_password() {
+fn a_room_is_joined_with_a_code_from_its_popup() {
     let lua = menu();
     show(&lua, Some(&online()));
     open(&lua, Some("join"));
     let shown = texts(&lua);
     assert!(
-        shown.contains("Or join with an invite") && !shown.contains("Start from this save"),
-        "the Join a friend card opens joining by invite: {shown}"
+        shown.contains("Public rooms on EU") && !shown.contains("Invite code"),
+        "the Join page shows only the public rooms: {shown}"
     );
+    click(&lua, "Join with code");
+    let shown = texts(&lua);
+    assert!(
+        shown.contains("Invite code") && !shown.contains("Public rooms on EU"),
+        "the popup over the list: {shown}"
+    );
+    // Cancel closes it.
+    click(&lua, "Cancel");
+    assert!(texts(&lua).contains("Public rooms on EU"));
+    click(&lua, "Join with code");
     // Nothing typed: said, and nothing sent.
-    click(&lua, "Join room");
+    click(&lua, "Join");
     assert!(sent(&lua).is_empty());
     assert!(texts(&lua).contains("Type the invite code"));
+    click(&lua, "Join with code");
     call(&lua, "type_into", ("K7QM2X", " k7qm2x "));
     // The field without a placeholder: the room's password.
-    call(&lua, "type_into", ("Password, if it has one", "pw"));
-    click(&lua, "Join room");
+    call(&lua, "type_into", ("", "pw"));
+    click(&lua, "Join");
     assert_eq!(
         sent(&lua),
         [LobbyAction::Join {
@@ -877,7 +888,11 @@ fn the_server_is_shown_changed_and_put_back_from_the_first_page() {
     // On another server: Reset puts the default back.
     show(&lua, Some(&on("lan.example:29470")));
     call(&lua, "tick", ());
-    assert!(texts(&lua).contains("(lan.example:29470)"));
+    let shown = texts(&lua);
+    assert!(
+        shown.contains("Now: another server") && !shown.contains("lan.example"),
+        "the address only in the field: {shown}"
+    );
     click(&lua, "Reset to default");
     assert_eq!(
         sent(&lua),
@@ -894,4 +909,33 @@ fn the_server_is_shown_changed_and_put_back_from_the_first_page() {
     );
     call(&lua, "tick", ());
     assert!(!has_button(&lua, "Use this server"));
+}
+
+#[test]
+fn no_server_address_shows_in_the_window() {
+    let lua = menu();
+    let mut view = LobbyView {
+        server: Text::new("127.0.0.1:29470").unwrap(),
+        error: Some(Text::new("cannot reach 127.0.0.1:29470: timed out").unwrap()),
+        ..online()
+    };
+    show(&lua, Some(&view));
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(!shown.contains("127.0.0.1"), "{shown}");
+    assert!(shown.contains("another server"), "{shown}");
+    assert!(
+        shown.contains("cannot reach the server: timed out"),
+        "{shown}"
+    );
+    // An invite with the server before its code shows the code alone.
+    view = in_room(vec![member(1, "Ann", true, true, true)], true);
+    view.room.as_mut().unwrap().invite = Some(Text::new("play.example:29470 K7QM2X").unwrap());
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    let shown = texts(&lua);
+    assert!(
+        shown.contains("K7QM2X") && !shown.contains("play.example"),
+        "{shown}"
+    );
 }

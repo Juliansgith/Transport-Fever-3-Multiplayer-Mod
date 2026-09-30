@@ -173,9 +173,41 @@ local function sizeText(bytes)
 	return string.format("%d B", bytes)
 end
 
+-- The server's name as the window shows it: never its address. The
+-- launcher names its default server ("EU"); any other is "another server",
+-- as a name that looks like host:port or an IP address is.
 local function serverName(state)
-	if state.server and state.server ~= "" then return state.server end
-	return _("the TPF3-MP server")
+	local name = state.server
+	local elsewhere = state.server_default and state.server_default ~= ""
+		and state.server_address and state.server_address ~= state.server_default
+	if elsewhere or type(name) ~= "string" or name == "" then
+		return elsewhere and _("another server") or _("the TPF3-MP server")
+	end
+	if name:find(":%d+$") or name:find("^%d+%.%d+%.%d+%.%d+") or name:find("^%[") then
+		return _("another server")
+	end
+	return name
+end
+lobby.serverName = serverName
+
+-- `text` with any server address in it (an IP address, host:port) put as
+-- "the server": the window names servers, never their addresses.
+local function hideAddress(text)
+	if type(text) ~= "string" then return text end
+	text = text:gsub("%[[%x:]+%]:%d+", _("the server"))
+	text = text:gsub("%d+%.%d+%.%d+%.%d+:%d+", _("the server"))
+	text = text:gsub("%d+%.%d+%.%d+%.%d+", _("the server"))
+	text = text:gsub("[%w%-]+%.[%w%.%-]+:%d+", _("the server"))
+	text = text:gsub("localhost:%d+", _("the server"))
+	return text
+end
+lobby.hideAddress = hideAddress
+
+-- A room's invite code alone: without its own server, the launcher puts
+-- the server's address before the code.
+local function inviteCode(invite)
+	if type(invite) ~= "string" then return "" end
+	return invite:match("(%S+)%s*$") or invite
 end
 
 local function you(room)
@@ -622,6 +654,8 @@ function lobby.content(onClose, focus)
 	-- room's. Your mods show over it while modsS is on.
 	local pageS = react.useState(nil)
 	local modsS = react.useState(false)
+	-- The Join page's Join with code popup.
+	local codeS = react.useState(focus == "code")
 	-- The server page, from the first page: whether it shows, the address
 	-- typed, and why the launcher refused the last one.
 	local serverS = react.useState(false)
@@ -714,13 +748,13 @@ function lobby.content(onClose, focus)
 			}),
 			gap(10),
 		}
-		local problem = refusedS:old() or (state and state.error)
+		local problem = hideAddress(refusedS:old() or (state and state.error))
 		if problem then
 			children[#children + 1] = row({ icon(ICON.alert, 18), gap(6), label(problem, "font-scale-body, error") })
 		elseif pendingS:old() then
 			children[#children + 1] = row({ icon(ICON.loading, 18), gap(6), label(pendingS:old()[1], "font-scale-body, info") })
 		elseif state and state.notice then
-			children[#children + 1] = note(state.notice)
+			children[#children + 1] = note(hideAddress(state.notice))
 		else
 			children[#children + 1] = gap(18)
 		end
@@ -891,7 +925,7 @@ function lobby.content(onClose, focus)
 				end),
 				gap(16),
 				heading(_("Server"), string.format(_("Now: %s%s"), serverName(state),
-					onDefault and _(" (default)") or (" (" .. tostring(state.server_address) .. ")"))),
+					onDefault and _(" (default)") or "")),
 			}),
 			field(_("Server address (host:port)"), serverText, state.server_default ~= "" and state.server_default or "host:port",
 				{ maxLength = 128, onEnter = function(value) if usable then use(value) end end }),
@@ -1015,6 +1049,11 @@ function lobby.content(onClose, focus)
 				button(_("Next"), function() askPage(at + 1) end, nil, canAct and list ~= nil and list.more),
 				gap(6),
 				button(_("Refresh"), function() askPage(at) end, nil, canAct),
+				gap(6),
+				button(_("Join with code"), function()
+					joiningS:set(nil)
+					codeS:set(true)
+				end, nil, canAct),
 			}),
 			builtin.ScrollArea{
 				meta = { styleSheet = style{ size = { WIDTH - 40, HEIGHT - 290 } } },
@@ -1038,18 +1077,28 @@ function lobby.content(onClose, focus)
 				gap(6),
 				button(_("Cancel"), function() joiningS:set(nil) end),
 			})
-		else
-			children[#children + 1] = row({
-				label(_("Or join with an invite:"), "font-scale-body"),
-				gap(8),
-				input(invite, "K7QM2X", 150, { maxLength = 128 }),
-				gap(8),
-				input(joinPassword, _("Password, if it has one"), 220, { password = true, maxLength = 64 }),
-				gap(8),
-				primary(_("Join room"), function() joinBy(invite:get(), joinPassword:get()) end, canAct and not busy),
-			})
 		end
-		return frame(_("Join a room"), status, column(children), {
+		local body = column(children)
+		-- Join with code: a popup over the room list, with the invite, a
+		-- password and Join or Cancel.
+		if codeS:old() then
+			body = column({
+				row({
+					heading(_("Join with code"), _("A friend's room: the invite code they sent you, and its password if it has one.")),
+				}),
+				field(_("Invite code"), invite, "K7QM2X", { maxLength = 128 }),
+				field(_("Password (if the room has one)"), joinPassword, "", { password = true, maxLength = 64 }),
+				row({
+					primary(_("Join"), function()
+						codeS:set(false)
+						joinBy(invite:get(), joinPassword:get())
+					end, canAct and not busy),
+					gap(8),
+					button(_("Cancel"), function() codeS:set(false) end),
+				}),
+			}, style{ size = { LEFT, AUTO }, padding = { 16, 16, 16, 16 } })
+		end
+		return frame(_("Join a room"), status, body, {
 			modsButton(),
 			gui_react_util.makeHorizontalSpacer(),
 			button(_("Close"), onClose),
@@ -1192,7 +1241,7 @@ function lobby.content(onClose, focus)
 		gap(6),
 		row({
 			note(_("Invite code  ")),
-			label(room.invite ~= "" and room.invite or "-", "font-scale-title-4, info"),
+			label(room.invite ~= "" and inviteCode(room.invite) or "-", "font-scale-title-4, info"),
 		}),
 		note(_("Send it to friends: they join with it from their game's Multiplayer window.")),
 		gap(10),
@@ -1306,7 +1355,7 @@ end)
 function lobby.joinLine(state)
 	local room = state and state.room
 	if room and room.invite ~= "" then
-		return string.format(_("Your room: invite %s"), room.invite)
+		return string.format(_("Your room: invite %s"), inviteCode(room.invite))
 	end
 	return _("With the invite code they send you")
 end
