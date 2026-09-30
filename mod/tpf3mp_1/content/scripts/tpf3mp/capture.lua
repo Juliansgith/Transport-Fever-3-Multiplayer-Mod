@@ -262,6 +262,8 @@ end
 --   ctx.depot(e) -> { file =, at = { x, y, z } } of the depot's
 --                   construction, or nil
 --   ctx.model(id) -> a vehicle model's file name, or nil
+--   ctx.town(e)   -> a town's canonical id, or nil
+--   ctx.player()  -> the player's company entity, or nil
 --
 -- Each returns the action table, or raises why the room cannot carry it.
 
@@ -398,6 +400,42 @@ end
 
 function capture.lineDestroy(ctx, lineEntity)
 	return { EditLine = { line = lineOf(ctx, lineEntity), change = "Delete" } }
+end
+
+-- ------------------------------------------------------------ prospecting
+--
+-- The construction menu's prospection (gui/construction/
+-- construction_react_util.tl, ProspectionActionRecipe.onSelect): the event
+-- `Companies` `spawnIndustry` to the company script, with the player's
+-- company, the town picked, the industry types, the permit and the cargo
+-- (investigation/TPF3_PROSPECTING_2026-09-30.md). The types keep the order
+-- the menu listed them in, which the game's shuffle depends on.
+function capture.prospect(ctx, param)
+	if type(param) ~= "table" then error("a prospection it cannot read", 0) end
+	local player = ctx.player and ctx.player()
+	if player == nil or get(param, "companyEntity") ~= player then
+		error("prospecting for another company", 0)
+	end
+	local cargo = get(param, "cargoType")
+	if type(cargo) ~= "string" or cargo == "" then error("a prospection for no cargo", 0) end
+	local permit = get(param, "permitKey")
+	if permit ~= nil and type(permit) ~= "string" then error("a permit it cannot read", 0) end
+	local types = get(param, "types")
+	local n = length(types)
+	if n == nil or n == 0 then error("a prospection that can find no industry", 0) end
+	local industries = {}
+	for i = 1, n do
+		local t = get(types, i)
+		if type(t) ~= "string" or t == "" then error("an industry type it cannot read", 0) end
+		industries[i] = t
+	end
+	local town = ctx.town and ctx.town(get(param, "townEntity")) or nil
+	return { Prospect = {
+		town = named("a town the room cannot name", town),
+		cargo = cargo,
+		industries = industries,
+		permit = permit,
+	} }
 end
 
 -- Renaming and recolouring: lines so far.

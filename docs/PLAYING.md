@@ -214,6 +214,13 @@ protected folder such as Program Files.
   which you notice as a short pause, like an autosave.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
+- **Prospecting.** Prospect for resources near a town from the
+  construction menu as usual: every player's game starts the prospection
+  together, a moment after your click, and uses your company's permit.
+  When it ends, months later, every game finds the same industry at the
+  same place, or nothing, and says so in the same notification. Taking a
+  new company rank, greening an industry and marketing campaigns are not
+  in multiplayer yet.
 - **Roads, tracks, stations and depots.** Build them with the game's own
   street, track and construction tools: every player's game builds them
   together, a moment after your click, and your company pays as usual. A

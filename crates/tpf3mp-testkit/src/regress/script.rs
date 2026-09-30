@@ -58,6 +58,11 @@ pub enum Check {
         money: i64,
     },
     TerrainCells(usize),
+    /// Prospections under way.
+    Prospections(usize),
+    /// Industries prospecting found: whether one is found is the
+    /// simulation's draw, so a scenario bounds them.
+    IndustriesAtMost(usize),
 }
 
 impl Check {
@@ -115,6 +120,10 @@ impl Check {
                 found => Some(format!("actor {actor} plays for {found:?}")),
             },
             Self::TerrainCells(n) => count("terrain cells", *n, seen.terrain_cells),
+            Self::Prospections(n) => count("prospections", *n, seen.prospections),
+            Self::IndustriesAtMost(n) => {
+                (seen.industries > *n).then(|| format!("{} industries found", seen.industries))
+            }
         }
     }
 }
@@ -151,6 +160,8 @@ impl fmt::Display for Check {
                 company: None,
             } => write!(f, "actor {actor} has no company"),
             Self::TerrainCells(n) => write!(f, "{n} terrain cells set"),
+            Self::Prospections(n) => write!(f, "{n} prospections under way"),
+            Self::IndustriesAtMost(n) => write!(f, "at most {n} industries found"),
         }
     }
 }

@@ -393,7 +393,7 @@ two-sided stop, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (6; 5 always named a first stop, 4 had no construction connections, 3 TPF2's
+`ACTION_SCHEMA_VERSION` (7; 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
 vehicles and lines, 2 no edge kinds or removed nodes, 1 no road style). The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
@@ -411,7 +411,9 @@ command carried as text travels here as typed, bounded fields.
   bridge and tunnel types, construction files, vehicle and stop models;
 - **canonical ids** (`CompanyId`, `LineId`, `VehicleId`, `StationId`),
   which the server assigns to what an action creates and each replica maps
-  to its own entity.
+  to its own entity; and `TownId`, for the towns that come with the room's
+  world, which every replica binds in entity order at the room's first
+  update (docs/HOOKS.md, "The player's commands").
 
 The acting company is not in the action: the server knows whose command it
 is.
@@ -435,6 +437,7 @@ appended.
 | `CompanyOp` | create, join, rename or delete a company |
 | `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
 | `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (sold there or not), reverse, depart |
+| `Prospect` | prospecting near a town: the town, the cargo, the industry types that may be found in the originator's menu's order, and the company permit it uses. The outcome is not in it: every game's company script draws it from the game time, months later, alike ([investigation](../investigation/TPF3_PROSPECTING_2026-09-30.md)) |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:

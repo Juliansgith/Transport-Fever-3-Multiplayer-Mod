@@ -53,14 +53,18 @@ end
 -- nil, or an error, for one it does not carry, which is then refused.
 guard.CARRY = {
 	-- The finance window's loans (finances_loan_gui.tl): the loan script's
-	-- events, with the loans as the script keeps them.
-	makeScriptingSendEventCmd = function(_ctx, _src, id, name, param)
+	-- events, with the loans as the script keeps them. The construction
+	-- menu's prospecting: the company script's spawnIndustry
+	-- (capture.prospect).
+	makeScriptingSendEventCmd = function(ctx, _src, id, name, param)
 		if id == "Loan" and type(param) == "table" then
 			if name == "Obtain" and type(param[1]) == "table" and type(param[2]) == "table" then
 				return { Loan = { Take = { next = param[1], offer = param[2] } } }
 			elseif name == "Repay" and type(param[2]) == "table" then
 				return { Loan = { Repay = { loan = param[2] } } }
 			end
+		elseif id == "Companies" and name == "spawnIndustry" then
+			return capture().prospect(ctx, param)
 		end
 		-- Which event, for the log.
 		error("the " .. tostring(id) .. " script's " .. tostring(name) .. " event", 0)

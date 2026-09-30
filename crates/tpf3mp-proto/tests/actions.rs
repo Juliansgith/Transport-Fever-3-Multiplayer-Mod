@@ -13,9 +13,9 @@ use tpf3mp_proto::{
         ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeKind, EdgeRef,
         EditLine, Fraction, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp,
         LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeRef, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
-        Terminal, Terraform, TerrainCell, Tint, TrackBuild, Tram, Transform, UnitDir,
-        VehicleChange, VehicleId, VehicleOp, Vertex,
+        Polyline, Pos, Pos2, Prospect, Resolve, RoadBuild, StationId, StopRules, Structure,
+        Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
+        UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -370,6 +370,14 @@ fn samples() -> Vec<Action> {
             vehicle: VehicleId(2),
             change: VehicleChange::Depart,
         }),
+        Action::Prospect(Prospect {
+            town: TownId(4),
+            cargo: text("::/cargos/coal/coal.cargo"),
+            industries: list(vec![text("coal_mine"), text("coal_mine_large")]),
+            permit: Some(text(
+                "game_mechanics/company/explorations/exploration_coal.res",
+            )),
+        }),
     ]
 }
 
@@ -388,13 +396,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=13.
+    // Every top-level variant is sampled: postcard tags them 0..=14.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=13).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=14).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

@@ -884,6 +884,31 @@ function HANDLERS.Loan(op)
 	return false, "a loan is taken or paid back"
 end
 
+-- Prospecting goes through the company script's own event, with the
+-- parameters the construction menu sends it (gui/construction/
+-- construction_react_util.tl): here it runs at once, in every game at the
+-- same update, so every game's company script keeps the same prospection
+-- from the same game time, and months later draws the same outcome and
+-- builds the same industry at the same place: it seeds its draws, and the
+-- game its placement, from the game time
+-- (investigation/TPF3_PROSPECTING_2026-09-30.md). The company is the
+-- player's, as the menu names it; the industry types go in the order the
+-- originator's menu listed them.
+function HANDLERS.Prospect(p, ctx)
+	local town = entityOf(ctx, "towns", p.town)
+	local types = seq(p.industries)
+	if #types == 0 then error("a prospection that can find no industry", 0) end
+	log("prospecting for " .. tostring(p.cargo) .. " near town-" .. tostring(p.town) .. " (" .. tostring(town)
+		.. "): " .. table.concat(types, ", "))
+	return run(api.cmd.makeScriptingSendEventCmd("", "Companies", "spawnIndustry", {
+		companyEntity = api.engine.util.getPlayer(),
+		townEntity = town,
+		types = types,
+		permitKey = p.permit,
+		cargoType = p.cargo,
+	}))
+end
+
 -- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the
 -- actions that name vehicles, lines and station groups. Returns true, nil
 -- and the entity it made (for the kinds in CREATES, where the game said),

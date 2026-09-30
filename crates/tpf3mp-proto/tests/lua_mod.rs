@@ -2934,3 +2934,274 @@ fn a_window_hears_of_what_its_command_made_once_its_world_has_it() {
          is answered as failed"
     );
 }
+
+/// The construction menu's prospection, as it sends it to the company
+/// script (`construction_react_util.tl`, `ProspectionActionRecipe`): coal
+/// near town 7, the industry types in the menu's order.
+const SPAWN_INDUSTRY: &str = "{ companyEntity = 25, townEntity = 7, \
+    types = { 'coal_mine_large', 'coal_mine' }, \
+    permitKey = 'game_mechanics/company/explorations/exploration_coal.res', \
+    cargoType = '::/cargos/coal/coal.cargo' }";
+
+#[test]
+fn a_prospection_goes_to_the_room_by_its_towns_id_and_its_types_in_order() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    // The GUI reads the game script's registry from its state: town 7 is
+    // town-3.
+    lua.load(
+        "api.type = { ComponentType = { GAME_SCRIPT = 7 } } \
+         api.engine = { \
+             util = { getPlayer = function() return 25 end }, \
+             getComponent = function(e, kind) \
+                 if kind == 7 and e == 77 then return { state = { registry = { \
+                     vehicles = { next = 0, bound = {} }, lines = { next = 0, bound = {} }, \
+                     groups = { next = 0, bound = {} }, towns = { next = 4, bound = { { 3, 7 } } }, \
+                     industries = { next = 0, bound = {} } } } } end \
+             end, \
+             system = { gameScriptSystem = { getEntityForGameScript = function(name) \
+                 if name == 'tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs' then return 77 end return -1 end } }, \
+         } \
+         M = mount(loadPlugin()) M.step() HOOK.room = true",
+    )
+    .exec()
+    .unwrap();
+    lua.load(format!(
+        "UNLOCKED = nil \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'spawnIndustry', {SPAWN_INDUSTRY}), \
+             function() UNLOCKED = true end) \
+         M.step()"
+    ))
+    .exec()
+    .unwrap();
+    let (sent, handed, unlocked): (usize, usize, bool) = lua
+        .load("return #SENT, #HOOK.commands, UNLOCKED ~= nil")
+        .eval()
+        .unwrap();
+    assert_eq!(sent, 0, "not run here: the room orders it for every game");
+    assert_eq!(handed, 1, "handed to the room, through the schema");
+    assert!(
+        !unlocked,
+        "the menu's permits stay reserved until it ran here"
+    );
+    let prospect: String = lua
+        .load(
+            "local p = HOOK.commands[1].Prospect \
+             return table.concat({ p.town, p.cargo, p.industries[1], p.industries[2], p.permit }, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        prospect,
+        "3|::/cargos/coal/coal.cargo|coal_mine_large|coal_mine|\
+         game_mechanics/company/explorations/exploration_coal.res"
+    );
+    // This game applied it: the menu hears so and gives back its reservation.
+    lua.load("HOOK.results = { { ticket = 1, ok = true } } M.step()")
+        .exec()
+        .unwrap();
+    assert!(lua.load("return UNLOCKED == true").eval::<bool>().unwrap());
+
+    // A town the room cannot name, another company's prospection, or one
+    // that can find nothing, is refused, and says why.
+    lua.load(format!(
+        "local p = {SPAWN_INDUSTRY} p.townEntity = 8 \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'spawnIndustry', p)) \
+         local q = {SPAWN_INDUSTRY} q.companyEntity = 26 \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'spawnIndustry', q)) \
+         local r = {SPAWN_INDUSTRY} r.types = {{}} \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'spawnIndustry', r)) \
+         M.step()"
+    ))
+    .exec()
+    .unwrap();
+    let (sent, handed): (usize, usize) = lua.load("return #SENT, #HOOK.commands").eval().unwrap();
+    assert_eq!((sent, handed), (0, 1));
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for why in [
+        "a town the room cannot name",
+        "prospecting for another company",
+        "a prospection that can find no industry",
+    ] {
+        assert!(
+            logged
+                .iter()
+                .any(|l| l.contains("makeScriptingSendEventCmd") && l.ends_with(why)),
+            "{why}: {logged:?}"
+        );
+    }
+    // The company's other events stay refused.
+    lua.load(
+        "api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'applyLevel', { level = 2 }))",
+    )
+    .exec()
+    .unwrap();
+    let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
+    assert_eq!(handed, 1);
+}
+
+/// Towns and industries for the prospecting tests, over the stand-in engine
+/// state: towns 7 and 5, and a coal mine whose INDUSTRY part 931 is in
+/// construction 930.
+const FAKE_TOWNS: &str = r#"
+local CT = { CONSTRUCTION = 2, TOWN = 12, INDUSTRY = 13, GAME_TIME = 10 }
+api.type.ComponentType = CT
+TOWNS, PARTS = { 7, 5 }, { 931 }
+CONS = { [930] = { fileName = 'industry/coal_mine.con',
+                   transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 1234.5, -250.25, 10, 1 } } }
+api.engine.getEntitiesWithComponent = function(kind)
+    if kind == CT.TOWN then return TOWNS end
+    if kind == CT.INDUSTRY then return PARTS end
+    return {}
+end
+api.engine.getComponent = function(e, kind)
+    if kind == CT.CONSTRUCTION then return CONS[e] end
+    if kind == CT.TOWN then for _, t in ipairs(TOWNS) do if t == e then return {} end end end
+end
+api.engine.system = {
+    lineSystem = { getLines = function() return {} end },
+    streetConnectorSystem = { getConstructionEntityForSubconstruction = function(part)
+        if part == 931 then return 930 end
+        if part == 941 then return 940 end
+        return -1
+    end },
+}
+"#;
+
+#[test]
+fn every_game_prospects_through_the_company_scripts_own_event() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_TOWNS).exec().unwrap();
+    // The room's first update binds the towns, lowest entity first: 5 is
+    // town-0, 7 town-1. Then the room's prospection near town-1, and one
+    // near a town this world has not.
+    lua.load(
+        "HOOK.room = true UPDATE({}, STATE, 0.2) \
+         HOOK.batch = { { Prospect = { town = 1, cargo = '::/cargos/coal/coal.cargo', \
+             industries = { 'coal_mine_large', 'coal_mine' }, permit = 'coal.res' } }, \
+             { Prospect = { town = 9, cargo = 'c', industries = { 'x' } } } } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let event: String = lua
+        .load(
+            "local e = SENT[1].event local p = e.param \
+             return table.concat({ e.src, e.id, e.name, p.companyEntity, p.townEntity, \
+                 p.types[1], p.types[2], #p.types, p.permitKey, p.cargoType }, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        event,
+        "|Companies|spawnIndustry|25|7|coal_mine_large|coal_mine|2|coal.res|::/cargos/coal/coal.cargo",
+        "the player's company, town 7, the types in order"
+    );
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = a.i .. ':' .. tostring(a.ok) .. ':' .. tostring(a.why) end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied, "1:true:nil 2:false:no towns 9 in this world",
+        "a town this world has not is refused, the same in every game"
+    );
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 1);
+    // The industry that stood at the start is industry-0.
+    let first: u32 = lua
+        .load(
+            "return ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua').id(STATE.value.registry, 'industries', 930)",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(first, 0);
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.contains(
+            &"prospecting for ::/cargos/coal/coal.cargo near town-1 (7): coal_mine_large, coal_mine"
+                .to_owned()
+        ),
+        "{logged:?}"
+    );
+}
+
+#[test]
+fn a_prospection_found_is_said_and_its_industry_named_alike_in_every_game() {
+    let (lua, script) = engine();
+    lua.load(FAKE_TOWNS).exec().unwrap();
+    let handle: Function = script.get("handleEvent").unwrap();
+    lua.globals().set("HANDLE", handle).unwrap();
+    // Subscribed to the company script's two events.
+    lua.load("HOOK.room = true UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    assert!(
+        lua.load("return STATE.subscribed.startProspection and STATE.subscribed.endProspection")
+            .eval::<bool>()
+            .unwrap()
+    );
+    // As the company script sends them: begun, one found nothing, and one
+    // found a new industry (part 941 of construction 940).
+    lua.load(
+        "HANDLE({}, STATE, '', 'Company', 'startProspection', \
+             { entity = 7, initiatedTimestamp = 3600000, cargoType = 'coal' }) \
+         HANDLE({}, STATE, '', 'Company', 'endProspection', \
+             { entity = { entity = 5, index = 0 }, initiatedTimestamp = 100, cargoType = 'grain', success = false }) \
+         PARTS = { 931, 941 } \
+         CONS[940] = { fileName = 'industry/coal_mine_large.con', \
+                       transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, -40, 80.04, 3, 1 } } \
+         HANDLE({}, STATE, '', 'Company', 'endProspection', \
+             { entity = { entity = 7, index = 0 }, initiatedTimestamp = 3600000, cargoType = 'coal', success = true }) \
+         HANDLE({}, STATE, '', 'Loan', 'endProspection', { success = true })",
+    )
+    .exec()
+    .unwrap();
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let said: Vec<&String> = logged
+        .iter()
+        .filter(|l| l.starts_with("prospecting"))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "prospecting began: coal near town-1 at game time 3600000",
+            "prospecting ended: grain near town-0, begun at game time 100, found nothing",
+            "prospecting ended: coal near town-1, begun at game time 3600000, \
+             found industry-1 industry/coal_mine_large.con at (-40.0, 80.0)",
+        ]
+    );
+    let named: u32 = lua
+        .load(
+            "return ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua').id(STATE.value.registry, 'industries', 940)",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(named, 1, "bound in the saved registry at once");
+}
+
+#[test]
+fn a_registry_from_an_older_mod_gains_the_towns_at_the_rooms_next_update() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_TOWNS).exec().unwrap();
+    lua.load(
+        "STATE.value = { registry = { vehicles = { next = 2, bound = {} }, \
+             lines = { next = 0, bound = {} }, groups = { next = 0, bound = {} } } } \
+         HOOK.room = true UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let (town, vehicles): (u32, u32) = lua
+        .load(
+            "local reg = STATE.value.registry \
+             return ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua').id(reg, 'towns', 7), reg.vehicles.next",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!((town, vehicles), (1, 2), "the towns bound, the rest kept");
+    let work: mlua::Value = lua.load("return UPDATE({}, STATE, 0.2)").eval().unwrap();
+    assert!(work.is_nil(), "once");
+}
