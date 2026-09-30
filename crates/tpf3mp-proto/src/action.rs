@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 9;
+pub const ACTION_SCHEMA_VERSION: u32 = 10;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -604,7 +604,7 @@ pub enum VehicleChange {
     /// Waits at its stops until told to leave (true), or leaves by the
     /// line's own rules again (false): the game's manual departure, which a
     /// timetable mod holds and releases vehicles with (docs/MODS.md).
-    /// Appended under schema version 9: the variants before it keep their
+    /// Appended under schema version 10: the variants before it keep their
     /// bytes.
     ManualDeparture(bool),
 }
@@ -626,7 +626,13 @@ pub struct PlaceStop {
     /// The edge's direction at `at` on the originator; a receiver whose edge
     /// runs the other way flips `left`.
     pub direction: UnitDir,
+    /// The stop's construction (Transport Fever 3 builds a stop as one,
+    /// e.g. `stations/street/small_stops/small_new.con`).
     pub model: ResName,
+    /// A stop on both sides at once (a `_twosided` construction): `left`
+    /// names the side the originator's tool put first.
+    #[serde(default)]
+    pub two_sided: bool,
 }
 
 /// One terrain cell: the height it is set to and the height it had, in
@@ -795,6 +801,12 @@ pub enum Action {
     VehicleOp(VehicleOp),
     ReplaceVehicle(ReplaceVehicle),
     Prospect(Prospect),
+    /// A notification's popup played its first sound: the game's
+    /// Notifications script marks it so (its `initialSound` event), in every
+    /// game, so the sound is not played again.
+    NotificationSeen {
+        notification: u32,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -936,8 +948,8 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                9, // schema version
-                5, // Action::SellVehicle
+                10, // schema version
+                5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
         );
@@ -979,8 +991,8 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                9, // schema version
-                1, // Action::BuildTrack
+                10, // schema version
+                1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
                 1, 2, 0, 1, 0, // (-1, 1, 0) zigzag, Resolve::Node(Street)
@@ -1012,7 +1024,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                9,  // schema version
+                10, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1030,7 +1042,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                9,  // schema version
+                10, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1045,7 +1057,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                9,  // schema version
+                10, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1059,10 +1071,10 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                9,  // schema version
+                10, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
-                4,  // VehicleChange::ManualDeparture, appended under schema version 9
+                4,  // VehicleChange::ManualDeparture, appended under schema version 10
                 1,  // held
             ]
         );
