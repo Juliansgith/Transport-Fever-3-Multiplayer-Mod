@@ -24,8 +24,12 @@
 //! dispatcher's case minus one), and a `WorldBuildProposal` payload's
 //! `playerInitiated` at +0x3d2. A build whose profile has not these targets
 //! installs nothing here, and the GUI keeps refusing the tools.
+//!
+//! Only Windows x64 installs the detours ([`install`]); elsewhere they are
+//! built for the tests alone.
 
 #![allow(unsafe_code)]
+#![cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
