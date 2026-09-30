@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::pattern::{Pattern, PatternError, ScanError};
-use crate::pe::PeHeaders;
+use crate::pe::{PeHeaders, Section};
 
 /// Identifies one exact game build.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,9 +103,12 @@ impl TargetSpec {
 pub struct Profile {
     pub name: String,
     pub build: BuildIdentity,
-    /// The image base the target addresses are expressed against (informational).
+    /// The image base the target addresses are expressed against (informational:
+    /// [`resolve`] returns RVAs, and the module's real base comes from the
+    /// loader).
     pub image_base: Option<u64>,
-    /// The section a resolver is expected to scan, e.g. `.text` (informational).
+    /// The section to scan, and that a target may be patched in. Load-bearing:
+    /// [`Profile::code_region`] uses it, defaulting to [`DEFAULT_REGION`].
     pub region: Option<String>,
     pub targets: Vec<TargetSpec>,
 }
@@ -206,7 +209,31 @@ impl Profile {
         }
         Ok(())
     }
+
+    /// The section this profile expects to scan, and that a hook may patch.
+    ///
+    /// `region` names it, and [`DEFAULT_REGION`] when the profile is silent, so
+    /// the field is load-bearing rather than documentation. A section the image
+    /// does not have, or one the image does not mark
+    /// [`executable`](crate::pe::Section::is_executable), is a [`Refusal`]: a
+    /// signature that matched in a data section matched in the wrong place, and
+    /// patching it would not be the function the target is named after.
+    pub fn code_region<'a>(&self, pe: &'a PeHeaders) -> Result<&'a Section, Refusal> {
+        let name = self.region.as_deref().unwrap_or(DEFAULT_REGION);
+        let section = pe.section(name).ok_or_else(|| Refusal::NoRegion {
+            region: name.to_owned(),
+        })?;
+        if !section.is_executable() {
+            return Err(Refusal::RegionNotExecutable {
+                region: name.to_owned(),
+            });
+        }
+        Ok(section)
+    }
 }
+
+/// The section a profile scans when it does not name one.
+pub const DEFAULT_REGION: &str = ".text";
 
 /// A target located and verified within an image.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +271,12 @@ pub enum Refusal {
         expected_sha256: String,
         actual_sha256: String,
     },
+    #[error("the image has no section named {region:?} to scan")]
+    NoRegion { region: String },
+    #[error(
+        "the image's {region:?} section is not marked executable, so a target there cannot be patched"
+    )]
+    RegionNotExecutable { region: String },
     #[error("required target {target:?} was not found")]
     Missing { target: String },
     #[error("target {target:?} matched {count} times; the signature is not unique")]
@@ -337,6 +370,7 @@ pub fn resolve(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawProfile {
     name: String,
     image_base: Option<u64>,
@@ -346,7 +380,14 @@ struct RawProfile {
     targets: Vec<RawTarget>,
 }
 
+// `deny_unknown_fields` on all three: a profile may only carry keys this build
+// understands. A key an older resolver silently drops could be a check that
+// makes resolution stricter, and dropping it would install a hook the profile
+// meant to gate. Unknown keys are a refusal, in the fail-closed spirit of the
+// rest of this file.
+
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawBuild {
     sha256: String,
     size: Option<u64>,
@@ -354,6 +395,7 @@ struct RawBuild {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawTarget {
     name: String,
     signature: String,
@@ -583,5 +625,122 @@ prologue = "91"
             Profile::from_toml(toml),
             Err(ProfileError::DuplicateTarget { .. })
         ));
+    }
+
+    /// A profile carries only keys this build understands. A key an older
+    /// resolver drops could be a check that makes resolution stricter, and
+    /// dropping it would install a hook the profile meant to gate.
+    #[test]
+    fn an_unknown_key_is_refused_rather_than_ignored() {
+        for (what, toml) in [
+            (
+                "a top-level key",
+                r#"
+name = "x"
+future_check = "prologue-only"
+[build]
+sha256 = "00"
+[[target]]
+name = "t"
+signature = "90"
+prologue = "90"
+"#,
+            ),
+            (
+                "a misspelled required",
+                r#"
+name = "x"
+[build]
+sha256 = "00"
+[[target]]
+name = "t"
+signature = "90"
+prologue = "90"
+requried = false
+"#,
+            ),
+            (
+                "a misspelled offset",
+                r#"
+name = "x"
+[build]
+sha256 = "00"
+[[target]]
+name = "t"
+signature = "90"
+prologue = "90"
+ofset = 5
+"#,
+            ),
+            (
+                "a build key",
+                r#"
+name = "x"
+[build]
+sha256 = "00"
+pe_timestmap = 1
+[[target]]
+name = "t"
+signature = "90"
+prologue = "90"
+"#,
+            ),
+        ] {
+            match Profile::from_toml(toml) {
+                Err(ProfileError::Toml(_)) => {}
+                other => panic!("{what} was accepted: {other:?}"),
+            }
+        }
+    }
+
+    /// A section with no code, or not marked executable, is refused: a
+    /// signature matching in a data section matched in the wrong place.
+    #[test]
+    fn only_an_executable_region_is_scanned() {
+        let image_of = |name: &str, characteristics: u32| PeHeaders {
+            machine: 0x8664,
+            timestamp: 0,
+            image_base: 0x1_4000_0000,
+            size_of_image: 0x8000,
+            sections: vec![Section {
+                name: name.to_owned(),
+                virtual_address: 0x1000,
+                virtual_size: 0x2000,
+                pointer_to_raw_data: 0x400,
+                size_of_raw_data: 0x2000,
+                characteristics,
+            }],
+        };
+        // 0x6000_0020: readable, executable, code. 0x4000_0040: readable,
+        // writable, initialised data.
+        let code = image_of(".text", 0x6000_0020);
+        let data = image_of(".text", 0x4000_0040);
+        let wrong_name = image_of(".rdata", 0x6000_0020);
+        let profile = Profile::from_toml(SAMPLE).unwrap();
+
+        // The region's name is honoured, and an executable section is taken.
+        assert_eq!(
+            profile.code_region(&code).map(|s| s.name.as_str()),
+            Ok(".text")
+        );
+
+        // The same section without IMAGE_SCN_MEM_EXECUTE.
+        assert_eq!(
+            profile.code_region(&data),
+            Err(Refusal::RegionNotExecutable {
+                region: ".text".into()
+            })
+        );
+
+        // An image whose named region it does not have.
+        let other =
+            Profile::from_toml(&SAMPLE.replace("region = \".text\"", "region = \".pdata\""))
+                .unwrap();
+        assert_eq!(
+            other.code_region(&wrong_name),
+            Err(Refusal::NoRegion {
+                region: ".pdata".into()
+            })
+        );
     }
 }

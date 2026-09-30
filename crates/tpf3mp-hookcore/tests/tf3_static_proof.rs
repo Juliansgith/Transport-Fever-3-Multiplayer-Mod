@@ -79,7 +79,9 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     }
     let image = std::fs::read(&exe).unwrap();
     let pe = PeHeaders::parse(&image).unwrap();
-    let text = pe.section(".text").expect("a .text section");
+    // The region the profile names, which must be executable: this also proves
+    // the real build marks its .text as such.
+    let text = profile.code_region(&pe).expect("an executable .text");
     let text_bytes = text.raw(&image).expect(".text raw bytes");
     let base = u64::from(text.virtual_address);
 

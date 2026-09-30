@@ -20,5 +20,6 @@ pub mod profile;
 
 pub use pattern::{Pattern, PatternError, ScanError};
 pub use profile::{
-    BuildIdentity, Profile, ProfileError, Refusal, ResolvedProfile, ResolvedTarget, TargetSpec,
+    BuildIdentity, DEFAULT_REGION, Profile, ProfileError, Refusal, ResolvedProfile, ResolvedTarget,
+    TargetSpec,
 };

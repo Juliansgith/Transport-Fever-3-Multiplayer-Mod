@@ -272,7 +272,12 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     // SAFETY: the first page of a mapped module holds its headers.
     let head = unsafe { std::slice::from_raw_parts(base as *const u8, 0x1000) };
     let pe = PeHeaders::parse(head).map_err(|error| format!("the game's headers: {error:?}"))?;
-    let text = pe.section(".text").ok_or("the game has no .text section")?;
+    // The section the profile says to scan, and only if the image marks it
+    // executable: a signature matching in a data section is a match in the
+    // wrong place, and patching it would not be the function the profile names.
+    let text = profile
+        .code_region(&pe)
+        .map_err(|refusal| format!("the profile's region here: {refusal:?}"))?;
     // SAFETY: .text is mapped at base + its virtual address for its virtual
     // size, and is only read here.
     let code = unsafe {

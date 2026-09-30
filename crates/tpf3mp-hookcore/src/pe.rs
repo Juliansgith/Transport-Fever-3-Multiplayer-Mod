@@ -21,6 +21,15 @@ pub enum PeError {
     Truncated,
 }
 
+/// `IMAGE_SCN_MEM_EXECUTE`: the section may hold code and be executed.
+///
+/// From the PE specification's `IMAGE_SECTION_HEADER.Characteristics`. A hook
+/// patches a function it is about to call, so the section a target resolves in
+/// has to be marked executable; a signature that matched in a data section is a
+/// match in the wrong place, and patching it would not be the function the
+/// target is named after.
+pub const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+
 /// One section header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
@@ -29,6 +38,8 @@ pub struct Section {
     pub virtual_size: u32,
     pub pointer_to_raw_data: u32,
     pub size_of_raw_data: u32,
+    /// The section header's `Characteristics` flags (PE specification).
+    pub characteristics: u32,
 }
 
 impl Section {
@@ -37,6 +48,11 @@ impl Section {
         let start = self.pointer_to_raw_data as usize;
         let end = start.checked_add(self.size_of_raw_data as usize)?;
         image.get(start..end)
+    }
+
+    /// Whether the image marks this section as holding executable code.
+    pub fn is_executable(&self) -> bool {
+        self.characteristics & IMAGE_SCN_MEM_EXECUTE != 0
     }
 }
 
@@ -88,6 +104,7 @@ impl PeHeaders {
                 virtual_address: read_u32(image, entry + 12).ok_or(PeError::Truncated)?,
                 size_of_raw_data: read_u32(image, entry + 16).ok_or(PeError::Truncated)?,
                 pointer_to_raw_data: read_u32(image, entry + 20).ok_or(PeError::Truncated)?,
+                characteristics: read_u32(image, entry + 36).ok_or(PeError::Truncated)?,
             });
         }
         Ok(Self {
@@ -151,6 +168,8 @@ mod tests {
         image[table + 12..table + 16].copy_from_slice(&0x1000u32.to_le_bytes()); // virtual addr
         image[table + 16..table + 20].copy_from_slice(&0x2000u32.to_le_bytes()); // raw size
         image[table + 20..table + 24].copy_from_slice(&0x400u32.to_le_bytes()); // raw ptr
+        // Readable, executable, code: what a `.text` carries in a real image.
+        image[table + 36..table + 40].copy_from_slice(&(0x6000_0020u32).to_le_bytes()); // characteristics
         image
     }
 
@@ -164,6 +183,23 @@ mod tests {
         let text = pe.section(".text").unwrap();
         assert_eq!(text.virtual_address, 0x1000);
         assert_eq!(text.pointer_to_raw_data, 0x400);
+        assert!(
+            text.is_executable(),
+            "a .text carrying IMAGE_SCN_MEM_EXECUTE is executable"
+        );
+    }
+
+    #[test]
+    fn a_data_section_is_not_executable() {
+        let mut image = tiny_pe();
+        let table = 0x80 + 4 + 20 + 0xF0;
+        // The same header without IMAGE_SCN_MEM_EXECUTE: a readable, writable
+        // data section, which is what a signature must never be patched in.
+        image[table + 36..table + 40].copy_from_slice(&0x4000_0040u32.to_le_bytes());
+        let pe = PeHeaders::parse(&image).unwrap();
+        let text = pe.section(".text").unwrap();
+        assert_eq!(text.characteristics, 0x4000_0040);
+        assert!(!text.is_executable());
     }
 
     #[test]
