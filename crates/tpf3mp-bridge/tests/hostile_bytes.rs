@@ -109,6 +109,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             server: Text::new("EU").unwrap(),
             server_address: Text::new("tpf3mp.example.org:29470").unwrap(),
             server_default: Text::new("tpf3mp.example.org:29470").unwrap(),
+            banner: Some(Text::new("m03").unwrap()),
             name: Text::new("Ann").unwrap(),
             error: None,
             notice: Some(Text::new("created the room").unwrap()),
@@ -128,6 +129,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                     owner: true,
                     you: true,
                     same_content: Some(true),
+                    banner: None,
                 }])
                 .unwrap(),
             }),

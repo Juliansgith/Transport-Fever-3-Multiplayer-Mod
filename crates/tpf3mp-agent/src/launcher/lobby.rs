@@ -61,6 +61,7 @@ pub(crate) fn view(state: &State) -> LobbyView {
                             MemberContent::Differs => Some(false),
                             MemberContent::Unknown => None,
                         },
+                        banner: member.banner.as_deref().and_then(banner),
                     })
                 })
                 .take(usize::from(tpf3mp_proto::MAX_ROOM_MEMBERS))
@@ -69,6 +70,7 @@ pub(crate) fn view(state: &State) -> LobbyView {
         .unwrap_or_default(),
     });
     LobbyView {
+        banner: state.banner.as_deref().and_then(banner),
         connection: match state.connection {
             Connection::Disconnected => LobbyConnection::Disconnected,
             Connection::Connecting => LobbyConnection::Connecting,
@@ -257,7 +259,17 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
         LobbyAction::SetServer { server } => Action::SetServer {
             server: server.as_str().to_owned(),
         },
+        LobbyAction::SetBanner { banner } => Action::SetBanner {
+            banner: banner.map(|id| id.as_str().to_owned()),
+        },
     }
+}
+
+/// A banner id as the window may show it: one of the known ones.
+fn banner(id: &str) -> Option<tpf3mp_proto::BannerId> {
+    tpf3mp_proto::is_banner(id)
+        .then(|| Text::new(id).ok())
+        .flatten()
 }
 
 /// The game's link while no room session holds it.
@@ -504,6 +516,7 @@ pub(crate) mod tests {
                         owner: true,
                         you: true,
                         content: MemberContent::Same,
+                        banner: None,
                     },
                     Member {
                         id: "not a player".into(),
@@ -514,6 +527,7 @@ pub(crate) mod tests {
                         owner: false,
                         you: false,
                         content: MemberContent::Unknown,
+                        banner: None,
                     },
                 ],
             }),
@@ -693,6 +707,17 @@ pub(crate) mod tests {
         assert_eq!(
             action(LobbyAction::ListRooms { page: 2 }, &state),
             Action::ListRooms { page: 2 }
+        );
+        assert_eq!(
+            action(
+                LobbyAction::SetBanner {
+                    banner: Some(Text::lossy("dry"))
+                },
+                &state
+            ),
+            Action::SetBanner {
+                banner: Some("dry".into())
+            }
         );
         let bo = PlayerId(FixedBytes([2; 32]));
         assert_eq!(

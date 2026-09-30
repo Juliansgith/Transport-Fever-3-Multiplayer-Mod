@@ -129,6 +129,9 @@ pub struct ConnectOptions {
     /// Where the lines of this player's log wait to go to the server
     /// ("Diagnostics" in PROTOCOL.md). `None` sends none.
     pub diagnostics: Option<diagnostics::Recorder>,
+    /// The banner this player shows in rooms, told the server on every
+    /// connection (`Request::SetBanner`); `None` for the default.
+    pub banner: Option<tpf3mp_proto::BannerId>,
 }
 
 impl ConnectOptions {
@@ -164,6 +167,7 @@ impl ConnectOptions {
             route: Route::Udp,
             fallback_after: FALLBACK_AFTER,
             diagnostics: None,
+            banner: None,
         }
     }
 }
@@ -523,6 +527,18 @@ async fn connect_within(
                 connection.closed().await;
             },
         ));
+    }
+    if let Some(banner) = options.banner.clone() {
+        // Before anything else this connection asks, on the same stream.
+        let requests = requests.clone();
+        tokio::spawn(async move {
+            if let Err(error) = requests
+                .request(tpf3mp_proto::Request::SetBanner(Some(banner)))
+                .await
+            {
+                tracing::debug!(%error, "the server did not take the banner");
+            }
+        });
     }
     Ok((
         Client {

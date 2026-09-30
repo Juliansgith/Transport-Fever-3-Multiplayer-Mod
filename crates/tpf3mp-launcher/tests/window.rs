@@ -96,6 +96,7 @@ fn member(name: &str, owner: bool, you: bool, ready: bool) -> Member {
         owner,
         you,
         content: MemberContent::Same,
+        banner: None,
     }
 }
 

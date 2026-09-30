@@ -11,6 +11,8 @@ use crate::bridge::{Status, WorldStatus};
 /// What the launcher itself knows, next to the session's [`Status`].
 #[derive(Debug, Default)]
 pub(crate) struct View {
+    /// The banner this player picked, if any.
+    pub(crate) banner: Option<String>,
     pub(crate) server: Option<String>,
     /// The server is the one this launcher plays on: no invite goes
     /// elsewhere (D12).
@@ -115,6 +117,12 @@ pub enum Action {
     /// The player's server setting: play on `server`, a `host:port`, from
     /// now on; empty goes back to the default ([`State::server_default`]).
     /// Remembered; reconnects there if connected; refused in a room.
+    /// Shows this banner in rooms: one of `tpf3mp_proto::BANNERS`, or
+    /// `None` for the default. Remembered for next time.
+    SetBanner {
+        #[serde(default)]
+        banner: Option<String>,
+    },
     SetServer {
         server: String,
     },
@@ -186,6 +194,8 @@ impl RoomList {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct State {
     pub name: String,
+    /// The banner this player picked, if any ([`Action::SetBanner`]).
+    pub banner: Option<String>,
     /// This player's short ID, as others see it.
     pub player: Option<String>,
     pub server: Option<String>,
@@ -429,6 +439,8 @@ pub struct Member {
     pub you: bool,
     /// Whether this member's game matches the owner's.
     pub content: MemberContent,
+    /// The banner the member picked, if any (`tpf3mp_proto::BANNERS`).
+    pub banner: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -522,6 +534,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
                         (Some(_), Some(_)) => MemberContent::Differs,
                         _ => MemberContent::Unknown,
                     },
+                    banner: member.banner.as_ref().map(|id| id.as_str().to_owned()),
                 })
                 .collect(),
         }
@@ -544,6 +557,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
     };
     State {
         name: view.name.clone(),
+        banner: view.banner.clone(),
         player: you.map(|player| player.to_string()),
         server: view.server.clone(),
         server_fixed: view.server_fixed,

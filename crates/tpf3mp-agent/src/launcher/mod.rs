@@ -273,6 +273,10 @@ impl Shared {
                 server_default: config.default_server.clone(),
                 server_name: config.server_name.clone(),
                 name: config.name.clone(),
+                banner: config
+                    .remember
+                    .as_deref()
+                    .and_then(|file| Remembered::load(file).banner),
                 player: Some(config.identity.player()),
                 installed: config.installed.clone(),
                 diagnostics: config.diagnostics.as_ref().map(|recorder| recorder.is_on()),
@@ -591,6 +595,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::LaunchGame => "launch_game",
         Action::ListRooms { .. } => "list_rooms",
         Action::SetServer { .. } => "set_server",
+        Action::SetBanner { .. } => "set_banner",
     }
 }
 
@@ -796,6 +801,34 @@ async fn act(
                 .map_err(|error| error.to_string())?;
             shared.view().rooms = Some(api::RoomList::of(&page));
             Ok(())
+        }
+        Action::SetBanner { banner } => {
+            let banner = banner
+                .map(|id| id.trim().to_owned())
+                .filter(|id| !id.is_empty());
+            let id = match &banner {
+                Some(id) if tpf3mp_proto::is_banner(id) => Some(Text::lossy(id)),
+                Some(_) => return Err("there is no such banner".into()),
+                None => None,
+            };
+            shared.view().banner.clone_from(&banner);
+            if let Some(file) = &config.remember {
+                let mut remembered = Remembered::load(file);
+                remembered.banner = banner;
+                if let Err(error) = remembered.save(file) {
+                    warn!(%error, "cannot remember the banner for next time");
+                }
+            }
+            match (session.as_ref(), connected.as_ref()) {
+                (Some(_), _) => forward(session, bridge::Control::Banner(id)).await,
+                (None, Some(current)) => current
+                    .client
+                    .request(tpf3mp_proto::Request::SetBanner(id))
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                (None, None) => Ok(()),
+            }
         }
         Action::SetServer { server } => {
             set_server(shared, config, &server, connected, session).await
@@ -1247,6 +1280,9 @@ pub struct Remembered {
     /// The personal mods the player chose, by id (docs/MODS.md).
     #[serde(default)]
     pub mods: Option<Vec<String>>,
+    /// The banner the player picked ([`Action::SetBanner`]).
+    #[serde(default)]
+    pub banner: Option<String>,
 }
 
 impl Remembered {
@@ -1491,6 +1527,13 @@ async fn connect_options(
         .map_err(|error| error.to_string())?;
     // Every connection sends the recorder's lines, the rejoins' too.
     options.diagnostics.clone_from(&config.diagnostics);
+    // And shows the player's banner, the rejoins too.
+    options.banner = config
+        .remember
+        .as_deref()
+        .and_then(|file| Remembered::load(file).banner)
+        .and_then(|banner| Text::new(banner).ok())
+        .filter(|banner| tpf3mp_proto::is_banner(banner.as_str()));
     Ok(options)
 }
 
@@ -1569,6 +1612,7 @@ mod tests {
             chosen_server: Some("play.example.net:29470".into()),
             diagnostics: Some(false),
             mods: Some(vec!["schbrongx_minimap".into()]),
+            banner: Some("m03".into()),
         };
         remembered.save(&file).unwrap();
         assert_eq!(Remembered::load(&file), remembered);
@@ -1584,6 +1628,7 @@ mod tests {
                 chosen_server: None,
                 diagnostics: None,
                 mods: None,
+                banner: None,
                 ..remembered
             }
         );

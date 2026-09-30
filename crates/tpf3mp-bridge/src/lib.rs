@@ -52,8 +52,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// [`LobbyAction::ListRooms`] and a room's listing to
 /// [`LobbyAction::Create`]; 15 the server setting: the server's address
 /// and the launcher's default to [`LobbyView`], and
-/// [`LobbyAction::SetServer`].
-pub const BRIDGE_VERSION: u32 = 15;
+/// [`LobbyAction::SetServer`]; 16 the players' banners: each
+/// [`LobbyMember::banner`], the player's own ([`LobbyView::banner`]) and
+/// [`LobbyAction::SetBanner`].
+pub const BRIDGE_VERSION: u32 = 16;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -153,6 +155,8 @@ pub struct LobbyView {
     /// The launcher's default server, `host:port`, which the setting's
     /// "Reset to default" goes back to; empty without one.
     pub server_default: Text<128>,
+    /// The banner this player picked, if any.
+    pub banner: Option<tpf3mp_proto::BannerId>,
     /// The player's name.
     pub name: Text<32>,
     /// What went wrong last, until something succeeds.
@@ -303,6 +307,7 @@ impl Default for LobbyView {
             server: Text::lossy(""),
             server_address: Text::lossy(""),
             server_default: Text::lossy(""),
+            banner: None,
             name: Text::lossy(""),
             error: None,
             notice: None,
@@ -357,6 +362,8 @@ pub struct LobbyMember {
     /// Whether this member's game matches the owner's: `None` while either
     /// has not said.
     pub same_content: Option<bool>,
+    /// The banner this member picked (`tpf3mp_proto::BANNERS`), if any.
+    pub banner: Option<tpf3mp_proto::BannerId>,
 }
 
 /// One line of the room's chat.
@@ -421,6 +428,10 @@ pub enum LobbyAction {
     /// in a room. Invites never change the server: only this does (D12).
     SetServer {
         server: Text<128>,
+    },
+    /// Show this banner in rooms; `None` for the default.
+    SetBanner {
+        banner: Option<tpf3mp_proto::BannerId>,
     },
 }
 
@@ -619,6 +630,7 @@ mod tests {
             owner: n == 0,
             you: n == 1,
             same_content: Some(true),
+            banner: None,
         };
         let line = LobbyLine {
             from: Text::new("y".repeat(32)).unwrap(),
@@ -630,6 +642,7 @@ mod tests {
             server: Text::new("s".repeat(128)).unwrap(),
             server_address: Text::new("a".repeat(128)).unwrap(),
             server_default: Text::new("d".repeat(128)).unwrap(),
+            banner: Some(Text::new("b".repeat(16)).unwrap()),
             name: Text::new("n".repeat(32)).unwrap(),
             error: Some(Text::new("e".repeat(256)).unwrap()),
             notice: Some(Text::new("o".repeat(256)).unwrap()),

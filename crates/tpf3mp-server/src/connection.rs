@@ -331,6 +331,8 @@ struct Client {
     diagnostics: TokenBucket,
     /// Bytes of diagnostics this session has had kept.
     diagnostics_kept: u64,
+    /// The banner this player picked, for the rooms it joins.
+    banner: Option<tpf3mp_proto::BannerId>,
 }
 
 impl Client {
@@ -368,6 +370,7 @@ impl Client {
             intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
             diagnostics: TokenBucket::new(DIAGNOSTICS_PER_SECOND, DIAGNOSTICS_BURST),
             diagnostics_kept: 0,
+            banner: None,
         }
     }
 
@@ -491,6 +494,7 @@ impl Client {
             platform: self.hello.platform,
             link: self.link.clone(),
             content: self.content.clone(),
+            banner: self.banner.clone(),
         }
     }
 
@@ -615,6 +619,30 @@ impl Client {
                 .await
             }
             Request::Diagnostics(batch) => self.keep_diagnostics(&batch),
+            Request::SetBanner(banner) => {
+                if banner
+                    .as_ref()
+                    .is_some_and(|id| !tpf3mp_proto::is_banner(id.as_str()))
+                {
+                    return Err(RequestError::UnknownBanner);
+                }
+                self.banner.clone_from(&banner);
+                if self.room.is_none() {
+                    return Ok(Response::Done);
+                }
+                match self
+                    .in_room(|player, reply| RoomCommand::SetBanner {
+                        player,
+                        banner,
+                        reply,
+                    })
+                    .await
+                {
+                    // The room closed meanwhile: kept for the next.
+                    Err(RequestError::NotInRoom) => Ok(Response::Done),
+                    result => result,
+                }
+            }
             Request::ListRooms { page } => Ok(Response::Rooms(self.shared.directory.list(page))),
             Request::DescribeRoom(listing) => {
                 self.in_room(|player, reply| RoomCommand::Describe {

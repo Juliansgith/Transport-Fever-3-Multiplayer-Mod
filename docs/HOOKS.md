@@ -375,7 +375,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     the room's world is in this game (`world`: none, fetching with its
     bytes, loading, playing) and how the game differs from the room's.
     Since bridge version 14 it carries the page of the server's public
-    rooms last asked for (`rooms`). Since bridge version 15 it carries the
+    rooms last asked for (`rooms`). Since version 16 each member carries the banner they
+    picked, and the view the player's own (`banner`); `SetBanner` sets it
+    (`set_banner` from the window, empty for the default). Since bridge version 15 it carries the
     server's address (`server_address`) and the launcher's default server
     (`server_default`), for the server setting.
   - `End`: the session is over. Sent only once the room's game has begun:

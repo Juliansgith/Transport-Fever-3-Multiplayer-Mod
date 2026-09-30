@@ -157,6 +157,7 @@ fn member(
         owner,
         you,
         content,
+        banner: None,
     }
 }
 

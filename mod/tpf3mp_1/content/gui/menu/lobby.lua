@@ -553,6 +553,104 @@ function lobby.saveDetails(name)
 	return read
 end
 
+-- Banners ---------------------------------------------------------------------
+
+-- The pictures players show in rooms: the server's set of banner ids
+-- (tpf3mp_proto::BANNERS, in its order), each one of the game's own
+-- pictures: its campaign's and climates' menu cards, the map editor's and
+-- the mods', the main menu's and its loading screens.
+local BANNERS = {
+	{ "m01", "::/gui/menu/images/m01_ingame.tga" },
+	{ "m02", "::/gui/menu/images/m02_ingame.tga" },
+	{ "m03", "::/gui/menu/images/m03_ingame.tga" },
+	{ "m04", "::/gui/menu/images/m04_ingame.tga" },
+	{ "m05", "::/gui/menu/images/m05_ingame.tga" },
+	{ "m06", "::/gui/menu/images/m06_ingame.tga" },
+	{ "m07", "::/gui/menu/images/m07_ingame.tga" },
+	{ "m08", "::/gui/menu/images/m08_ingame.tga" },
+	{ "temperate", "::/gui/menu/images/temperate_ingame.tga" },
+	{ "subarctic", "::/gui/menu/images/subarctic_ingame.tga" },
+	{ "tropical", "::/gui/menu/images/tropical_ingame.tga" },
+	{ "dry", "::/gui/menu/images/dry_ingame.tga" },
+	{ "mapeditor", "::/gui/menu/images/mapeditor_ingame.tga" },
+	{ "mapeditor2", "::/gui/menu/images/mapeditor_ingame_2.tga" },
+	{ "mod01", "::/gui/menu/images/mod01_ingame.tga" },
+	{ "mod02", "::/gui/menu/images/mod02_ingame.tga" },
+	{ "main", "::/gui/menu/images/main.tga" },
+	{ "loadgame", "::/gui/menu/images/loadgame.tga" },
+	{ "loading1", "::/gui/menu/images/loading_background_1.tga" },
+	{ "loading2", "::/gui/menu/images/loading_background_2.tga" },
+	{ "loading3", "::/gui/menu/images/loading_background_3.tga" },
+	{ "loading4", "::/gui/menu/images/loading_background_4.tga" },
+}
+lobby.BANNERS = BANNERS
+local BANNER_PATH = {}
+for _i, banner in ipairs(BANNERS) do BANNER_PATH[banner[1]] = banner[2] end
+
+-- The banner a player shows: the one they picked, or one chosen from their
+-- key (its first eight hex digits, modulo the set), the same in every
+-- player's game.
+function lobby.bannerOf(member)
+	if member.banner and BANNER_PATH[member.banner] then return member.banner end
+	local n = tonumber(tostring(member.id or ""):sub(1, 8), 16) or 0
+	return BANNERS[(n % #BANNERS) + 1][1]
+end
+function lobby.bannerPicture(id)
+	return BANNER_PATH[id] or BANNERS[1][2]
+end
+
+-- A room member's size as a card, two to a row of the players' column.
+local MEMBER_WIDTH, MEMBER_HEIGHT = 228, 128
+
+-- A picture card in the main menu's style: title and a line under it, a
+-- word on the right; `onClick` nil for a card that only shows.
+local function pictureCard(picture, title, line, right, onClick, enabled, width, height, marks)
+	local card
+	if cards then
+		card = cards.CardButton{
+			bottomComponent = cards.makeCardLabelBottomComponent(title, line, right, nil, false),
+			onClick = onClick or function() end,
+			tooltip = title,
+			images = { picture },
+			initialImageIndex = 1,
+			class = "small-rectangle-card",
+			enabled = enabled ~= false,
+			extraChildren = marks or {},
+		}
+	else
+		card = builtin.Button{
+			meta = { enabled = enabled ~= false },
+			content = column({ icon(picture, height - 60), label(title, "font-scale-body"), note(line or "") }),
+			onClick = onClick or function() end,
+		}
+	end
+	return builtin.Component{
+		meta = { styleSheet = style{ size = { width, height } } },
+		layout = builtin.BoxLayout{ children = { card } },
+	}
+end
+lobby.pictureCard = pictureCard
+
+-- A room member as a card: their banner, name, and what marks them.
+function lobby.memberCard(member, playing)
+	local marks = {}
+	if member.owner then marks[#marks + 1] = _("Owner") end
+	if not member.connected then marks[#marks + 1] = _("Away") end
+	if not playing then marks[#marks + 1] = member.ready and _("Ready") or _("Not ready") end
+	if member.content == "differs" then marks[#marks + 1] = _("Other mods") end
+	local ready = member.ready and not playing and builtin.FloatingLayoutChild{
+		h = 0.95,
+		v = 0.06,
+		item = builtin.ImageView{
+			meta = { mouseTransparent = true, styleSheet = style{ size = { 22, 22 } } },
+			path = ICON.ready,
+		},
+	} or nil
+	return pictureCard(lobby.bannerPicture(lobby.bannerOf(member)), member.name,
+		table.concat(marks, " · "), member.you and _("You") or nil, nil, true,
+		MEMBER_WIDTH, MEMBER_HEIGHT, ready and { ready } or {})
+end
+
 -- A big choice of the first page (Join, Host), as a card in the main
 -- menu's style.
 function lobby.choiceCard(title, line, picture, onClick, enabled)
@@ -654,6 +752,8 @@ function lobby.content(onClose, focus)
 	-- room's. Your mods show over it while modsS is on.
 	local pageS = react.useState(nil)
 	local modsS = react.useState(false)
+	-- The banner picker, from the first page.
+	local bannerS = react.useState(false)
 	-- The Join page's Join with code popup.
 	local codeS = react.useState(focus == "code")
 	-- The server page, from the first page: whether it shows, the address
@@ -899,6 +999,42 @@ function lobby.content(onClose, focus)
 			{ gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) })
 	end
 
+	-- Your banner, from the first page: the picture the others see on your
+	-- card in a room. A click picks one; Default goes back to the one your
+	-- key gives.
+	if bannerS:old() and page == "choose" then
+		local rows, cellsRow = {}, {}
+		for _i, banner in ipairs(BANNERS) do
+			local picked = state.banner == banner[1]
+			if #cellsRow > 0 then cellsRow[#cellsRow + 1] = gap(10) end
+			cellsRow[#cellsRow + 1] = pictureCard(banner[2], picked and _("Yours") or " ", nil, nil, function()
+				send({ action = "set_banner", banner = banner[1] }, nil)
+			end, canAct, 196, 110)
+			if #cellsRow >= 7 then
+				rows[#rows + 1] = row(cellsRow)
+				rows[#rows + 1] = gap(10)
+				cellsRow = {}
+			end
+		end
+		if #cellsRow > 0 then rows[#rows + 1] = row(cellsRow) end
+		return frame(_("Your banner"), status, column({
+			row({
+				button(_("Back"), function() bannerS:set(false) end),
+				gap(16),
+				heading(_("Your banner"), _("The picture the others see on your card in a room.")),
+				gui_react_util.makeHorizontalSpacer(),
+				button(_("Default"), function() send({ action = "set_banner", banner = "" }, nil) end, nil,
+					canAct and state.banner ~= nil and state.banner ~= ""),
+			}),
+			builtin.ScrollArea{
+				meta = { styleSheet = style{ size = { WIDTH - 40, HEIGHT - 220 } } },
+				horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+				verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+				content = column(rows),
+			},
+		}), { gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) })
+	end
+
 	-- The server this launcher plays on, from the first page: shown,
 	-- changed, or put back to the launcher's own. Not while in a room.
 	if serverS:old() and page == "choose" then
@@ -988,6 +1124,8 @@ function lobby.content(onClose, focus)
 				connected and button(_("Disconnect"), disconnect, nil, canAct) or gap(1),
 				gap(8),
 				button(_("Server..."), function() serverS:set(true) end, nil, canAct),
+				gap(8),
+				button(_("Your banner"), function() bannerS:set(true) end, nil, canAct),
 				gui_react_util.makeHorizontalSpacer(),
 				button(_("Close"), onClose),
 			}
@@ -1195,41 +1333,42 @@ function lobby.content(onClose, focus)
 	local me = you(room)
 	local playing = room.phase == "playing"
 	local confirm = confirmS:old()
+	-- The players as cards of their banners, two to a row; for the owner,
+	-- a Remove under each other player's, asked first.
 	local memberRows = {}
+	local cells = {}
+	local function flush()
+		if #cells > 0 then
+			memberRows[#memberRows + 1] = row(cells)
+			memberRows[#memberRows + 1] = gap(10)
+			cells = {}
+		end
+	end
 	for _i, member in ipairs(room.members) do
-		local cells = {
-			icon(member.ready and ICON.ready or ICON.away, 18),
-			gap(8),
-			label(member.name, member.you and "font-scale-body, info" or "font-scale-body"),
-		}
-		local function tag(text, tone)
-			cells[#cells + 1] = gap(6)
-			cells[#cells + 1] = badge(text, tone)
-		end
-		if member.owner then tag(_("Owner"), "info") end
-		if member.you then tag(_("You"), "info") end
-		if not member.connected then tag(_("Away"), "warning") end
-		if not playing then
-			if member.ready then tag(_("Ready"), "success") else tag(_("Not ready"), "warning") end
-		end
-		if member.content == "differs" then tag(_("Other mods"), "error") end
-		cells[#cells + 1] = gui_react_util.makeHorizontalSpacer()
+		local parts = { lobby.memberCard(member, playing) }
 		if room.you_own and not member.you then
+			parts[#parts + 1] = gap(4)
 			if confirm and confirm.kind == "kick" and confirm.id == member.id then
-				cells[#cells + 1] = button(_("Remove"), function()
-					send({ action = "kick", player = member.id }, string.format(_("Removing %s..."), member.name))
-				end, "primary", canAct)
-				cells[#cells + 1] = gap(4)
-				cells[#cells + 1] = button(_("Keep"), function() confirmS:set(nil) end)
+				parts[#parts + 1] = row({
+					button(_("Remove"), function()
+						send({ action = "kick", player = member.id }, string.format(_("Removing %s..."), member.name))
+					end, "primary", canAct),
+					gap(4),
+					button(_("Keep"), function() confirmS:set(nil) end),
+				})
 			else
-				cells[#cells + 1] = button_react_util.makeIconButton(nil, ICON.kick, function()
-					confirmS:set({ kind = "kick", id = member.id, name = member.name })
-				end, string.format(_("Remove %s from the room"), member.name))
+				parts[#parts + 1] = row({
+					button_react_util.makeIconButton(nil, ICON.kick, function()
+						confirmS:set({ kind = "kick", id = member.id, name = member.name })
+					end, string.format(_("Remove %s from the room"), member.name)),
+				})
 			end
 		end
-		memberRows[#memberRows + 1] = row(cells, style{ size = { LEFT, 34 } })
-		memberRows[#memberRows + 1] = gap(4)
+		if #cells > 0 then cells[#cells + 1] = gap(12) end
+		cells[#cells + 1] = column(parts)
+		if #cells >= 3 then flush() end
 	end
+	flush()
 
 	local roomHeader = column({
 		row({
@@ -1252,7 +1391,12 @@ function lobby.content(onClose, focus)
 	local players = column({
 		roomHeader,
 		heading(_("Players")),
-		column(memberRows),
+		builtin.ScrollArea{
+			meta = { styleSheet = style{ size = { LEFT, HEIGHT - 330 } } },
+			horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+			verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+			content = column(memberRows),
+		},
 	}, style{ size = { LEFT, AUTO } })
 
 	local lines = state.chat or {}

@@ -170,6 +170,47 @@ pub enum Request {
     /// as the game's year and its companies once it runs. A private room
     /// stays private (`NotListed`).
     DescribeRoom(RoomListing),
+    /// The picture this player shows in rooms, one of [`BANNERS`] by id;
+    /// `None` for their default. Kept for the connection, and shown to the
+    /// room this player is in at once. Unknown ids are refused
+    /// (`UnknownBanner`).
+    SetBanner(Option<BannerId>),
+}
+
+/// A player's banner: one of [`BANNERS`], by id.
+pub type BannerId = Text<16>;
+
+/// The banners players pick from: short ids, each standing for one of the
+/// game's own pictures (the window maps them; the server only checks the
+/// id). A player who picks none shows one chosen from their key.
+pub const BANNERS: &[&str] = &[
+    "m01",
+    "m02",
+    "m03",
+    "m04",
+    "m05",
+    "m06",
+    "m07",
+    "m08",
+    "temperate",
+    "subarctic",
+    "tropical",
+    "dry",
+    "mapeditor",
+    "mapeditor2",
+    "mod01",
+    "mod02",
+    "main",
+    "loadgame",
+    "loading1",
+    "loading2",
+    "loading3",
+    "loading4",
+];
+
+/// Whether `id` names one of [`BANNERS`].
+pub fn is_banner(id: &str) -> bool {
+    BANNERS.contains(&id)
 }
 
 /// Most rooms a page of the room list holds.
@@ -295,6 +336,8 @@ pub enum RequestError {
     StartWorldPending,
     /// The room is private: it is in no list to describe.
     NotListed,
+    /// No such banner (see [`BANNERS`]).
+    UnknownBanner,
 }
 
 impl fmt::Display for RequestError {
@@ -325,6 +368,7 @@ impl fmt::Display for RequestError {
                 "the save the room starts from is still being uploaded; start once it is there"
             }
             Self::NotListed => "the room is private, so it is in no list",
+            Self::UnknownBanner => "there is no such banner",
         })
     }
 }
@@ -405,6 +449,8 @@ pub struct MemberView {
     pub ready: bool,
     pub content: Option<ContentFingerprint>,
     pub connected: bool,
+    /// The banner this player picked, if any.
+    pub banner: Option<BannerId>,
 }
 
 /// A client's game traffic, carried on the control stream.

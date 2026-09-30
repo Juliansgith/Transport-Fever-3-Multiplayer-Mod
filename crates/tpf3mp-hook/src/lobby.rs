@@ -67,6 +67,8 @@ pub struct Member {
     /// Whether the player's game matches the owner's: `same`, `differs` or
     /// `unknown`.
     pub content: String,
+    /// The banner the player picked, if any: empty for their default.
+    pub banner: String,
 }
 
 /// The room the player is in.
@@ -130,6 +132,8 @@ pub struct LobbyState {
     /// The launcher's default server, which `set_server` with an empty
     /// server goes back to; empty without one.
     pub server_default: String,
+    /// The banner this player picked: empty for their default.
+    pub banner: String,
     pub name: String,
     /// The last thing that went wrong, for the window to show.
     pub error: Option<String>,
@@ -228,6 +232,11 @@ enum WindowAction {
     SetServer {
         #[serde(default)]
         server: String,
+    },
+    /// Empty for the default.
+    SetBanner {
+        #[serde(default)]
+        banner: String,
     },
 }
 
@@ -330,6 +339,13 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
         WindowAction::SetServer { server } => LobbyAction::SetServer {
             server: text(&server, "server")?,
         },
+        WindowAction::SetBanner { banner } => LobbyAction::SetBanner {
+            banner: match banner.trim() {
+                "" => None,
+                id if tpf3mp_proto::is_banner(id) => Some(text(id, "banner")?),
+                _ => return Err("there is no such banner".to_owned()),
+            },
+        },
     })
 }
 
@@ -349,6 +365,7 @@ pub fn kind(action: &LobbyAction) -> &'static str {
         LobbyAction::ChooseMod { .. } => "choose_mod",
         LobbyAction::ListRooms { .. } => "list_rooms",
         LobbyAction::SetServer { .. } => "set_server",
+        LobbyAction::SetBanner { .. } => "set_banner",
     }
 }
 
@@ -393,6 +410,7 @@ impl LobbyState {
             server: String::new(),
             server_address: String::new(),
             server_default: String::new(),
+            banner: String::new(),
             name: String::new(),
             error: None,
             notice: None,
@@ -431,6 +449,11 @@ impl LobbyState {
             server: view.server.as_str().to_owned(),
             server_address: view.server_address.as_str().to_owned(),
             server_default: view.server_default.as_str().to_owned(),
+            banner: view
+                .banner
+                .as_ref()
+                .map(|id| id.as_str().to_owned())
+                .unwrap_or_default(),
             name: view.name.as_str().to_owned(),
             error: view.error.as_ref().map(|text| text.as_str().to_owned()),
             notice: view.notice.as_ref().map(|text| text.as_str().to_owned()),
@@ -461,6 +484,11 @@ impl LobbyState {
                             None => "unknown",
                         }
                         .to_owned(),
+                        banner: member
+                            .banner
+                            .as_ref()
+                            .map(|id| id.as_str().to_owned())
+                            .unwrap_or_default(),
                     })
                     .collect(),
             }),
@@ -555,6 +583,8 @@ impl LobbyState {
         out.push_str(&lua_str(&self.server_address));
         out.push_str(", server_default = ");
         out.push_str(&lua_str(&self.server_default));
+        out.push_str(", banner = ");
+        out.push_str(&lua_str(&self.banner));
         out.push_str(", name = ");
         out.push_str(&lua_str(&self.name));
         out.push_str(", error = ");
@@ -661,14 +691,15 @@ impl LobbyState {
                 ));
                 for member in &room.members {
                     out.push_str(&format!(
-                        " {{ id = {}, name = {}, ready = {}, owner = {}, you = {}, connected = {}, content = {} }},",
+                        " {{ id = {}, name = {}, ready = {}, owner = {}, you = {}, connected = {}, content = {}, banner = {} }},",
                         lua_str(&member.id),
                         lua_str(&member.name),
                         member.ready,
                         member.owner,
                         member.you,
                         member.connected,
-                        lua_str(&member.content)
+                        lua_str(&member.content),
+                        lua_str(&member.banner)
                     ));
                 }
                 out.push_str(" } }");
@@ -815,6 +846,17 @@ mod tests {
             parse_action(r#"{"action":"list_rooms","page":1}"#),
             Ok(LobbyAction::ListRooms { page: 1 })
         );
+        assert_eq!(
+            parse_action(r#"{"action":"set_banner","banner":"dry"}"#),
+            Ok(LobbyAction::SetBanner {
+                banner: Some(Text::new("dry").unwrap())
+            })
+        );
+        assert_eq!(
+            parse_action(r#"{"action":"set_banner","banner":""}"#),
+            Ok(LobbyAction::SetBanner { banner: None })
+        );
+        assert!(parse_action(r#"{"action":"set_banner","banner":"selfie"}"#).is_err());
         assert!(
             matches!(
                 parse_action(r#"{"action":"create","room":"Alps","start_save":""}"#),
@@ -899,6 +941,7 @@ mod tests {
             server: Text::new("EU").unwrap(),
             server_address: Text::new("eu.example.org:29470").unwrap(),
             server_default: Text::new("relay.example.org:29470").unwrap(),
+            banner: None,
             name: Text::new("Ann").unwrap(),
             error: None,
             notice: Some(Text::new("created the room").unwrap()),
@@ -918,6 +961,7 @@ mod tests {
                     owner: true,
                     you: true,
                     same_content: None,
+                    banner: None,
                 }])
                 .unwrap(),
             }),

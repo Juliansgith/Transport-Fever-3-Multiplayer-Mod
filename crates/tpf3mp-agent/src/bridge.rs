@@ -177,6 +177,8 @@ pub enum Control {
     Speed(Speed),
     Kick(PlayerId),
     Chat(ChatText),
+    /// Show this banner in the room from now on.
+    Banner(Option<tpf3mp_proto::BannerId>),
     /// Leave the room, which ends the session.
     Leave,
     /// The game the front end started has exited. Once its hook attached,
@@ -1296,6 +1298,7 @@ impl<L: HookLink> Bridge<L> {
             Control::Speed(speed) => Request::SetSpeed(speed),
             Control::Kick(player) => Request::Kick(player),
             Control::Chat(text) => Request::Chat(text),
+            Control::Banner(banner) => Request::SetBanner(banner),
             Control::Leave => {
                 if let Err(error) = client.leave_room().await {
                     debug!(%error, "leaving the room failed; ending the session anyway");
@@ -1872,6 +1875,7 @@ mod tests {
             ready: true,
             content: None,
             connected,
+            banner: None,
         };
         let room = RoomView {
             id: RoomId(FixedBytes([7; 16])),

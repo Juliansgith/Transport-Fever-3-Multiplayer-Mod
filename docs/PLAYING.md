@@ -165,6 +165,9 @@ window too.
    (`host:port`) and **Use this server**, or **Reset to default**.
    Changing it disconnects you and connects to the new one, and an
    invite only joins rooms on your own server. Not while in a room.
+   **Your banner**, next to it, picks the picture the others see on your
+   card in a room, from the game's own pictures; **Default** goes back to
+   the one chosen for you. The launcher remembers it.
 4. **Join a room, or host one.**
    - **Join a room**: the rooms their owners made public, as cards like
      the main menu's, each with the picture of its map's climate, its
@@ -193,8 +196,8 @@ window too.
      from its start save, and whether you have each. You can change your
      choice until the room's game starts.
 5. **The room.** On the left, the room's name (a lock if it has a
-   password), its **invite code** to send your friends, and its players,
-   each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
+   password), its **invite code** to send your friends, and its players
+   as picture cards of their banners, each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
    and **Other mods** when their game differs from the owner's. On the
    right, the room's chat: type and press Enter or **Send**.
 6. **Get ready.** At the main menu you are marked ready by yourself: a

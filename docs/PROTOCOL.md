@@ -134,6 +134,15 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   a private room `NotListed`. A connection may ask for one page a second,
   with a burst of five (`RateLimited` beyond), within its general request
   limit.
+- **Banners** (protocol 10). A player shows a banner in rooms: one of a
+  fixed set of short ids (`tpf3mp_proto::BANNERS`, each standing for one
+  of the game's own pictures), or none for a default the game picks from
+  the player's key. `SetBanner(Some(id))` or `SetBanner(None)` sets it for
+  the connection, and for the room the player is in at once; the room view
+  gives each member's (`MemberView::banner`). An id not in the set is
+  refused (`UnknownBanner`). The launcher sends it on every connection.
+  Rooms do not log banners: a restored room shows the defaults until each
+  player says again.
 - **Updates.** Members receive the full room view (`RoomUpdate`) whenever it
   changes. Updates and responses are independent messages: a `RoomUpdate`
   caused by a request can arrive before that request's `Response`.

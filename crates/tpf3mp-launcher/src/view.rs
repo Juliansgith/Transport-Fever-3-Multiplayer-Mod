@@ -793,6 +793,7 @@ mod tests {
             ready,
             connected: true,
             content: MemberContent::Same,
+            banner: None,
         }
     }
 

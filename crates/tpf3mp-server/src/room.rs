@@ -18,11 +18,11 @@ use tokio::{
 };
 use tpf3mp_net::{bulk, close};
 use tpf3mp_proto::{
-    ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN, FixedBytes,
-    IntentRejection, Invite, LaneDigest, MemberView, Payload, Platform, PlayerId, RequestError,
-    Resume, RoomId, RoomListing, RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, Seal,
-    Secret, ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
-    WorldOffer, decode_frame, encode_frame,
+    BannerId, ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN,
+    FixedBytes, IntentRejection, Invite, LaneDigest, MemberView, Payload, Platform, PlayerId,
+    RequestError, Resume, RoomId, RoomListing, RoomPhase, RoomSettings, RoomView, RulesName,
+    SavedWorld, Seal, Secret, ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn,
+    TurnMessage, TurnStart, WorldOffer, decode_frame, encode_frame,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -122,6 +122,8 @@ pub(crate) struct NewMember {
     pub(crate) link: MemberLink,
     /// What the player's game runs, if the player declared it.
     pub(crate) content: Option<Arc<Declared>>,
+    /// The banner the player picked (`Request::SetBanner`), if any.
+    pub(crate) banner: Option<BannerId>,
 }
 
 /// What a player's game runs, as the player declared it.
@@ -198,6 +200,12 @@ pub(crate) enum RoomCommand {
     Chat {
         player: PlayerId,
         text: ChatText,
+        reply: Reply,
+    },
+    /// A member picked another banner.
+    SetBanner {
+        player: PlayerId,
+        banner: Option<BannerId>,
         reply: Reply,
     },
     /// The owner of a public room says what the room list shows of it.
@@ -471,6 +479,9 @@ struct Member {
     player: PlayerId,
     name: Text<32>,
     platform: Platform,
+    /// The banner the player picked; not logged, so a restored room shows
+    /// the default until the player says again.
+    banner: Option<BannerId>,
     ready: bool,
     content: Option<ContentFingerprint>,
     /// The manifest behind `content`, when this connection declared it.
@@ -963,6 +974,7 @@ impl Room {
                 player,
                 name,
                 platform,
+                banner: None,
                 ready: true,
                 content,
                 declared: None,
@@ -1152,6 +1164,7 @@ impl Room {
                     ready: member.ready,
                     content: member.content,
                     connected: member.link.is_some(),
+                    banner: member.banner.clone(),
                 })
                 .collect(),
         }
@@ -1249,6 +1262,19 @@ impl Room {
                 reply,
             } => {
                 let _ = reply.send(self.chat(player, text));
+            }
+            RoomCommand::SetBanner {
+                player,
+                banner,
+                reply,
+            } => {
+                let result = self
+                    .members
+                    .iter_mut()
+                    .find(|member| member.player == player)
+                    .map(|member| member.banner = banner)
+                    .ok_or(RequestError::NotInRoom);
+                self.answer_and_broadcast(reply, result);
             }
             RoomCommand::Describe {
                 player,
@@ -2945,6 +2971,7 @@ impl Member {
             player: new.player,
             name: new.name,
             platform: new.platform,
+            banner: new.banner,
             ready: false,
             content: new.content.as_ref().map(|declared| declared.fingerprint),
             declared: new.content,
@@ -4146,6 +4173,7 @@ mod tests {
             player: PlayerId(FixedBytes([0; 32])),
             name: Text::new("t").unwrap(),
             platform: Platform::current(),
+            banner: None,
             ready: false,
             content: None,
             declared: None,

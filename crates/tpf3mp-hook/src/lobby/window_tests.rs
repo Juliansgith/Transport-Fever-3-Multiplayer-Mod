@@ -112,6 +112,7 @@ fn member(n: u8, name: &str, owner: bool, you: bool, ready: bool) -> LobbyMember
         owner,
         you,
         same_content: Some(true),
+        banner: None,
     }
 }
 
@@ -938,4 +939,99 @@ fn no_server_address_shows_in_the_window() {
         shown.contains("K7QM2X") && !shown.contains("play.example"),
         "{shown}"
     );
+}
+
+#[test]
+fn the_windows_banners_are_the_servers_in_its_order() {
+    let lua = menu();
+    let lobby: Table = lua.globals().get("LOBBY").unwrap();
+    let banners: Table = lobby.get("BANNERS").unwrap();
+    let ids: Vec<String> = banners
+        .sequence_values::<Table>()
+        .map(|banner| banner.unwrap().get::<String>(1).unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        tpf3mp_proto::BANNERS,
+        "the default is the same in every game"
+    );
+}
+
+#[test]
+fn the_players_show_as_cards_of_their_banners_or_their_default() {
+    let lua = menu();
+    let mut ann = member(1, "Ann", true, true, true);
+    ann.banner = Some(Text::new("dry").unwrap());
+    let bob = member(0x2a, "Bob", false, false, false);
+    show(&lua, Some(&in_room(vec![ann, bob], true)));
+    open(&lua, None);
+    let cards = all_cards(&lua);
+    let find = |name: &str| {
+        cards
+            .iter()
+            .find(|card| card.get::<String>("text").unwrap().starts_with(name))
+            .unwrap_or_else(|| panic!("no card for {name}"))
+            .clone()
+    };
+    let ann_card = find("Ann");
+    assert_eq!(
+        ann_card.get::<String>("picture").unwrap(),
+        "::/gui/menu/images/dry_ingame.tga",
+        "her pick"
+    );
+    let text: String = ann_card.get("text").unwrap();
+    assert!(
+        text.contains("Owner") && text.contains("Ready") && text.contains("You"),
+        "{text}"
+    );
+    // Bob's default, from his key: 0x2a2a2a2a modulo the set.
+    let n = 0x2a2a_2a2a_usize % tpf3mp_proto::BANNERS.len();
+    let bob_card = find("Bob");
+    let expected: String = lua
+        .load(format!(
+            "return LOBBY.bannerPicture(\"{}\")",
+            tpf3mp_proto::BANNERS[n]
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(bob_card.get::<String>("picture").unwrap(), expected);
+    assert!(
+        bob_card
+            .get::<String>("text")
+            .unwrap()
+            .contains("Not ready")
+    );
+}
+
+#[test]
+fn a_banner_is_picked_from_the_first_page() {
+    let lua = menu();
+    show(&lua, Some(&online()));
+    open(&lua, None);
+    click(&lua, "Your banner");
+    let cards = all_cards(&lua);
+    assert_eq!(cards.len(), tpf3mp_proto::BANNERS.len());
+    assert!(!enabled(&lua, "Default"), "already the default");
+    cards[3]
+        .get::<Function>("click")
+        .unwrap()
+        .call::<()>(())
+        .unwrap();
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::SetBanner {
+            banner: Some(Text::new(tpf3mp_proto::BANNERS[3]).unwrap())
+        }]
+    );
+    show(
+        &lua,
+        Some(&LobbyView {
+            banner: Some(Text::new(tpf3mp_proto::BANNERS[3]).unwrap()),
+            ..online()
+        }),
+    );
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("Yours"));
+    click(&lua, "Default");
+    assert_eq!(sent(&lua), [LobbyAction::SetBanner { banner: None }]);
 }
