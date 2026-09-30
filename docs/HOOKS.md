@@ -805,11 +805,18 @@ context the game builds for free.
 Three tools build through the room so far:
 
 - **The construction tool** (`constructionBuilder`): a proposal of one
-  construction and nothing else (a station, a depot, any construction
-  placed on its own) becomes a `BuildConstruction`, with the file, the
-  transform, the parameters flattened and the game's name for it. A
-  construction built with roads, several at once, or one replacing another
-  is refused.
+  construction (a station, a depot, anything the tool places) becomes a
+  `BuildConstruction`, with the file, the transform, the parameters
+  flattened and the game's name for it. The streets in its proposal are
+  the construction's own: its script adds them (a depot's entrance, whose
+  end snaps onto the street beside it, the street rebuilt through the new
+  junction), and the game makes them again from the construction the room
+  builds. So are the town buildings in its way, which the replay clears
+  again (`gatherBuildings`, and `gatherFields` for fields). Several
+  constructions at once, or one replacing a construction that is not a town
+  building (a module edit), is refused. Before sending, the replay asks the
+  game's verdict (`makeProposalData`) and refuses what it calls critical,
+  with its reasons.
 - **The street and track tools** (`streetBuilder`, `trackBuilder`): the
   proposal becomes a `BuildRoad` or `BuildTrack`, as the tool made it, by
   positions (docs/BUILDING.md, "The action schema"): the nodes and edges it
@@ -831,8 +838,10 @@ a maintenance building placed with the construction tool in the guest's
 game was stopped there, handed to the room, and built in both games in the
 same update; both accounts paid its $180,336, and the room found no
 divergence. The same for a street across open ground ($71,820), a street
-onto an existing junction ($94,231) and a track across open ground
-($22,054).
+onto an existing junction ($94,231), a street onto another's middle, a
+track across open ground ($22,054), a track across a street, and a bus
+depot snapped onto a town street, clearing three town buildings
+($825,816): identical in both games, towns included.
 
 ### The world's lanes
 

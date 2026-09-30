@@ -92,19 +92,32 @@ function capture.transform(m)
 	}
 end
 
--- One construction placed on its own: the construction tool's stations,
--- depots and the rest (tpf3mp_proto action::ConstructionBuild). Returns the
--- action table, or nil and why the room cannot carry it yet.
+-- One construction placed with the construction tool: stations, depots and
+-- the rest (tpf3mp_proto action::ConstructionBuild). Returns the action
+-- table, or nil and why the room cannot carry it yet.
+--
+-- The streets in the proposal are the construction's own: its script adds
+-- them (a depot's entrance, constructionutil.addEdges, with a node that
+-- snaps onto a street beside it), and the game makes them again, snapping
+-- included, from the construction the room builds. So only the
+-- construction travels.
 function capture.construction(proposal)
 	local street = get(proposal, "proposal")
 	for _, list in ipairs({ "addedNodes", "addedSegments", "removedNodes", "removedSegments",
 		"edgeObjectsToAdd" }) do
-		local n = length(street and get(street, list))
-		if n == nil then return nil, "a proposal it cannot read" end
-		if n > 0 then return nil, "a construction built with roads" end
+		if length(street and get(street, list)) == nil then return nil, "a proposal it cannot read" end
 	end
-	if (length(get(proposal, "toRemove")) or 1) > 0 then
-		return nil, "a construction that replaces another"
+	-- Constructions in the way: town buildings the placement clears, which
+	-- the replay clears again (gatherBuildings), or a construction replaced
+	-- (a module edit), which the room does not carry yet.
+	local toRemove = get(proposal, "toRemove")
+	local removed = length(toRemove)
+	if removed == nil then return nil, "a proposal it cannot read" end
+	for i = 1, removed do
+		local c = api.engine.getComponent(get(toRemove, i), api.type.ComponentType.CONSTRUCTION)
+		if (length(c and get(c, "townBuildings")) or 0) == 0 then
+			return nil, "a construction that replaces another"
+		end
 	end
 	local toAdd = get(proposal, "toAdd")
 	if length(toAdd) ~= 1 then return nil, "more than one construction at once" end

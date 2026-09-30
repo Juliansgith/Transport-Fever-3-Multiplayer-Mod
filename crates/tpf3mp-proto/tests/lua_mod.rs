@@ -952,13 +952,13 @@ fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
              return table.concat({ e.fileName, e.name, e.playerEntity,
                  t[1][1], t[1][2], t[2][1], t[4][1], t[4][2], t[4][3], t[4][4],
                  e.params.seed, e.params.modules[3801].name, e.params.paramX, tostring(e.params.lit),
-                 tostring(c.ignoreErrors), tostring(c.playerInitiated), tostring(c.context.player),                  tostring(c.context.gatherBuildings) }, '|')",
+                 tostring(c.ignoreErrors), tostring(c.playerInitiated), tostring(c.context.player),                  tostring(c.context.gatherBuildings), tostring(c.context.gatherFields) }, '|')",
         )
         .eval()
         .unwrap();
     assert_eq!(
         built,
-        "depot/road_depot_era_a.con|Depot|25|0|1|-1|1250.5|-300|20|1|1234|depot/module.module|2.5|true|false|true|25|true"
+        "depot/road_depot_era_a.con|Depot|25|0|1|-1|1250.5|-300|20|1|1234|depot/module.module|2.5|true|false|true|25|true|true"
     );
     // Subscribed to its console event, linked once.
     assert!(
@@ -1048,8 +1048,6 @@ fn a_construction_the_tool_placed_becomes_the_rooms_action() {
             "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
              local out = {{}} \
              local function why(p) local _, r = capture.construction(p) out[#out + 1] = r end \
-             local roads = {CONSTRUCTION_PROPOSAL} roads.proposal.addedSegments = {{ {{}} }} \
-             why(roads) \
              local two = {CONSTRUCTION_PROPOSAL} two.toAdd[2] = two.toAdd[1] \
              why(two) \
              local unnamed = {CONSTRUCTION_PROPOSAL} unnamed.toAdd[1].name = '' \
@@ -1060,14 +1058,45 @@ fn a_construction_the_tool_placed_becomes_the_rooms_action() {
         ))
         .eval()
         .unwrap();
-    assert_eq!(refusals[0], "a construction built with roads");
-    assert_eq!(refusals[1], "more than one construction at once");
-    assert_eq!(refusals[2], "an unnamed construction");
+    assert_eq!(refusals[0], "more than one construction at once");
+    assert_eq!(refusals[1], "an unnamed construction");
     assert!(
-        refusals[3].contains("parameter f is a function"),
+        refusals[2].contains("parameter f is a function"),
         "{}",
-        refusals[3]
+        refusals[2]
     );
+    // A depot's entrance street is its own: the game makes it again from
+    // the construction, so the construction alone travels.
+    let (file, ok): (String, bool) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local depot = {CONSTRUCTION_PROPOSAL} \
+             depot.proposal.addedNodes = {{ {{ entity = -1 }}, {{ entity = -2 }} }} \
+             depot.proposal.addedSegments = {{ {{ entity = -3 }} }} \
+             local action = capture.construction(depot) \
+             return action.BuildConstruction.file, schema_check(action)"
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(file, "::/depots/road/road_maint_station.con");
+    assert!(ok);
+    // Town buildings in the way go, as the replay clears them again; a
+    // player's construction replaced does not travel.
+    let (cleared, replaced): (bool, String) = lua
+        .load(format!(
+            "api.type.ComponentType = {{ CONSTRUCTION = 2 }} \
+             local CONSTRUCTIONS = {{ [5618] = {{ townBuildings = {{ 9001 }} }}, [77] = {{ townBuildings = {{}} }} }} \
+             api.engine.getComponent = function(e, kind) return CONSTRUCTIONS[e] end \
+             local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local town = {CONSTRUCTION_PROPOSAL} town.toRemove = {{ 5618 }} \
+             local own = {CONSTRUCTION_PROPOSAL} own.toRemove = {{ 5618, 77 }} \
+             local _, why = capture.construction(own) \
+             return capture.construction(town) ~= nil, why"
+        ))
+        .eval()
+        .unwrap();
+    assert!(cleared);
+    assert_eq!(replaced, "a construction that replaces another");
 }
 
 #[test]

@@ -82,6 +82,24 @@ local function run(command)
 	return true
 end
 
+-- Builds `proposal` as the player's own build. The game's verdict first, as
+-- its tools ask it: a build it would refuse (a collision, too steep, not
+-- enough money) fails here with its reasons, the same in every game, and is
+-- never sent; sent without a callback, a refused build would fail unseen.
+local function buildProposal(proposal, context)
+	local proposals = api.engine.util.proposal
+	if proposals and proposals.makeProposalData then
+		local data = proposals.makeProposalData(proposal, context)
+		local state = data and data.errorState
+		if state and state.critical then
+			local messages = {}
+			for _, m in ipairs(state.messages or {}) do messages[#messages + 1] = tostring(m) end
+			error("the game refuses the build: " .. table.concat(messages, "; "), 0)
+		end
+	end
+	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, false, true))
+end
+
 local HANDLERS = {}
 
 function HANDLERS.BuildConstruction(build)
@@ -104,7 +122,8 @@ function HANDLERS.BuildConstruction(build)
 	local context = api.type.Context.new()
 	context.player = api.engine.util.getPlayer()
 	context.gatherBuildings = true
-	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, false, true))
+	context.gatherFields = true
+	return buildProposal(proposal, context)
 end
 
 -- ---------------------------------------------------------------- roads
@@ -399,19 +418,7 @@ local function buildNetwork(network, templateName, style, polyline)
 		.. " -c" .. table.concat(configsToRemove, ",")
 	log("building " .. table.concat(shape, " "))
 
-	-- The game's verdict first, as its tools ask it: a build it refuses
-	-- fails here with its reasons, and is never sent.
-	local proposals = api.engine.util.proposal
-	if proposals and proposals.makeProposalData then
-		local data = proposals.makeProposalData(proposal, context)
-		local state = data and data.errorState
-		if state and state.critical then
-			local messages = {}
-			for _, m in ipairs(state.messages or {}) do messages[#messages + 1] = tostring(m) end
-			error("the game refuses the build: " .. table.concat(messages, "; "), 0)
-		end
-	end
-	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, false, true))
+	return buildProposal(proposal, context)
 end
 
 function HANDLERS.BuildRoad(road)
