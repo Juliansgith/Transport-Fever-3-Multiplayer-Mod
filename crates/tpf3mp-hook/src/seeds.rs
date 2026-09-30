@@ -64,7 +64,7 @@
 
 use std::{
     ffi::{c_char, c_int, c_void},
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::catch_unwind,
     sync::{
         Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -224,8 +224,6 @@ fn once(flag: &AtomicBool, message: &str) {
 static UPDATE_HOOKED: AtomicBool = AtomicBool::new(false);
 static MISMATCH_LOGGED: AtomicBool = AtomicBool::new(false);
 static ROSTER_LOGGED: AtomicBool = AtomicBool::new(false);
-static NO_API_LOGGED: AtomicBool = AtomicBool::new(false);
-static NO_STATES_LOGGED: AtomicBool = AtomicBool::new(false);
 static EXTRA_UPDATE_LOGGED: AtomicBool = AtomicBool::new(false);
 static TOWN_OUTSIDE_LOGGED: AtomicBool = AtomicBool::new(false);
 
@@ -472,70 +470,45 @@ pub unsafe fn reseed_state(api: &SeedApi, state: State, seed: u32) -> Result<(),
     }
 }
 
-/// Reseeds every game-script state for `step`. On the simulation thread,
-/// before the update's systems run.
-fn reseed_game_scripts(step: u64) {
-    let Some(api) = SEED_API.get() else {
-        once(
-            &NO_API_LOGGED,
-            "seeds: the profile lacks the Lua functions the reseed calls, so the game-script states are not reseeded",
-        );
-        return;
-    };
-    let seed = seed_for(step, GAME_SCRIPT_SALT);
-    let mut roster = lock(&ROSTER);
-    if roster.marked.is_empty() {
-        once(
-            &NO_STATES_LOGGED,
-            &format!(
-                "seeds: no game-script state is marked ({GAME_SCRIPT_TARGET} never ran); the per-step reseed covers nothing"
-            ),
-        );
-        return;
-    }
-    for marked in roster.marked.iter_mut().filter(|m| !m.failed) {
-        let state = marked.state as State;
-        // SAFETY: a game-script state the game's registrar marked, reseeded
-        // on the simulation thread between updates, when the game itself
-        // runs it (ecs::GameScriptSystem::Update, inside ecs::Engine::Update
-        // on this thread) and nothing else does.
-        let outcome = catch_unwind(AssertUnwindSafe(|| unsafe {
-            reseed_state(api, state, seed)
-        }));
-        match outcome {
-            Ok(Ok(())) => {
-                marked.reseeds += 1;
-                if marked.reseeds <= LOG_FIRST || step.is_multiple_of(LOG_EVERY) {
-                    log::line(&format!(
-                        "seeds: step {step}: math.randomseed({seed}) in game-script state {:#x} (reseed #{})",
-                        marked.state, marked.reseeds
-                    ));
-                }
-            }
-            Ok(Err(reason)) => {
-                marked.failed = true;
-                log::line(&format!(
-                    "seeds: step {step}: reseeding game-script state {:#x} failed: {reason}; that state is not reseeded again",
-                    marked.state
-                ));
-            }
-            Err(_) => {
-                marked.failed = true;
-                log::line(&format!(
-                    "seeds: step {step}: reseeding game-script state {:#x} panicked; that state is not reseeded again",
-                    marked.state
-                ));
-            }
-        }
-    }
+/// The seed of the room step the running update belongs to, for the mod's
+/// game script to hand `math.randomseed` ([`current_seed`]); [`NO_SEED`]
+/// outside the room's steps.
+static CURRENT_SEED: AtomicU64 = AtomicU64::new(NO_SEED);
+const NO_SEED: u64 = u64::MAX;
+/// How many updates had a seed to offer, for the log.
+static RESEEDS_OFFERED: AtomicU64 = AtomicU64::new(0);
+
+/// The seed for the game script's `math.random` in the running update: the
+/// room step's, or `None` outside the room's steps. The mod's game script
+/// asks for it at the start of its `update` (`tpf3mp_native.seed`) and seeds
+/// its own state, on the game's thread, so the hook never calls into a Lua
+/// state it would have to know is still alive. The hook once did, from a
+/// roster of states its registrar detour saw, and after a rebase that
+/// roster held states the world load had freed: the next reseed crashed the
+/// game in `lua_getfield` (2026-09-30, three-player playtest).
+pub fn current_seed() -> Option<u32> {
+    let seed = CURRENT_SEED.load(Ordering::Acquire);
+    u32::try_from(seed).ok()
 }
 
 /// An update of the simulation begins (the `ecs::Engine::Update` detour,
-/// on the simulation thread): reseed the game-script states for its step.
+/// on the simulation thread): offer the game script its step's seed.
 fn before_update() {
     let step = lock(&BATCH).next_update();
+    CURRENT_SEED.store(
+        step.map_or(NO_SEED, |step| u64::from(seed_for(step, GAME_SCRIPT_SALT))),
+        Ordering::Release,
+    );
     match step {
-        Some(step) => reseed_game_scripts(step),
+        Some(step) => {
+            let reseeds = RESEEDS_OFFERED.fetch_add(1, Ordering::Relaxed) + 1;
+            if reseeds <= LOG_FIRST || step.is_multiple_of(LOG_EVERY) {
+                log::line(&format!(
+                    "seeds: step {step}: the game script's math.random is seeded with {} (seed #{reseeds})",
+                    seed_for(step, GAME_SCRIPT_SALT)
+                ));
+            }
+        }
         None => {
             if lock(&BATCH).count > 0 {
                 once(
@@ -969,6 +942,11 @@ mod native {
     }
 
     pub(super) fn install(resolved: &ResolvedProfile) {
+        install_script_reseed(resolved);
+        install_srand(resolved);
+    }
+
+    fn install_script_reseed(resolved: &ResolvedProfile) {
         match detour(
             resolved,
             GAME_SCRIPT_TARGET,
@@ -993,6 +971,9 @@ mod native {
                 "seeds: no per-update hook ({error}); the game-script math.random is not reseeded"
             )),
         }
+    }
+
+    fn install_srand(resolved: &ResolvedProfile) {
         let srand = match resolve_srand() {
             Ok(address) => {
                 SRAND.store(address, Ordering::SeqCst);
@@ -1132,6 +1113,22 @@ mod tests {
         let report = roster_report();
         assert!(report.contains("0x1000 from test"), "{report}");
         assert!(report.contains("covers []"), "{report}");
+    }
+
+    #[test]
+    fn each_released_update_offers_its_steps_seed_and_nothing_else_does() {
+        let _serial = lock(&SERIAL);
+        before_updates(Some(5), Updates::Exactly(2));
+        before_update();
+        assert_eq!(current_seed(), Some(seed_for(5, GAME_SCRIPT_SALT)));
+        before_update();
+        assert_eq!(current_seed(), Some(seed_for(6, GAME_SCRIPT_SALT)));
+        // An update the room did not release, and the game's own speed.
+        before_update();
+        assert_eq!(current_seed(), None);
+        before_updates(None, Updates::Own);
+        before_update();
+        assert_eq!(current_seed(), None);
     }
 
     #[test]

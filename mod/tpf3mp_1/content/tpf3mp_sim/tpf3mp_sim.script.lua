@@ -215,6 +215,10 @@ function data()
 		update = function(_params, state, _dt)
 			local l = linked()
 			if not l then return nil end
+			-- The room step's seed for this state's math.random, the same in
+			-- every game at the same step (crates/tpf3mp-hook/src/seeds.rs).
+			local seed = l:seed()
+			if seed then math.randomseed(seed) end
 			if not subscribed and state and state.subscribeToEvent then
 				subscribed = true
 				for _, event in ipairs(EVENTS) do state:subscribeToEvent(event) end

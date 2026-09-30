@@ -1438,6 +1438,19 @@ Ported onto dev from `feat/steam-hook-on-dev` (971c48c, as merged in
 over at their addresses in the process. **None of it has run in the game
 yet**: what follows marks what is tested only off the game.
 
+**The game-script `math.random` reseed runs in the mod's own game script**
+(changed 2026-09-30, after a crash seen in the game). The hook first called
+`math.randomseed` itself, from `ecs::Engine::Update`, in every Lua state its
+registrar detour had marked, assuming two per world. A world load makes and
+frees many, one registration group per loader thread. After a rebase, the
+roster held two freed states, and the next reseed crashed the game in
+`lua_getfield`. Now the `ecs::Engine::Update` detour only records the seed
+of the room step the update belongs to (`seeds::current_seed`). The mod's
+game script asks for it at the start of its `update` (`tpf3mp_native.seed`,
+nil outside the room's steps) and calls `math.randomseed` in its own live
+state, on the game's thread. The hook no longer calls into any Lua state it
+remembers. The registrar detour still marks states, for the log only.
+
 `crates/tpf3mp-hook/src/seeds.rs` is TF3's counterpart for the seeds the
 survey (`investigation/TPF3_RNG_2026-09-29.md`, items 5 to 7) found are
 not functions of the room's state. Three independent pieces, each failing
