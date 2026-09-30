@@ -161,13 +161,19 @@ end
 
 -- Whether anything is owned by the player entity `entity`; nil when this
 -- game cannot list what players own.
+-- The callback is given the entity only (build 40408; TPF2's also had the
+-- component), so each one's owner is read, and never raises: an error in the
+-- callback ends the game.
 function companies.owns(api, entity)
-	local found = false
-	local ok = pcall(api.engine.forEachEntityWithComponent, function(_, c)
-		if not found and type(c) == "table" and c.player == entity then found = true end
+	local owned = {}
+	local ok = pcall(api.engine.forEachEntityWithComponent, function(e)
+		owned[#owned + 1] = e
 	end, api.type.ComponentType.PLAYER_OWNED)
 	if not ok then return nil end
-	return found
+	for _, e in ipairs(owned) do
+		if companies.ownerOf(api, e) == entity then return true end
+	end
+	return false
 end
 
 local function trimmed(name)
@@ -221,6 +227,49 @@ end
 -- Whether vehicles take their company's colour: more than one company.
 function companies.painting(roster)
 	return type(roster) == "table" and #companies.live(roster) > 1
+end
+
+-- The index of the palette colour `color` is ({ r, g, b }, within what a
+-- float keeps of it), or nil for any other colour. A vehicle painted in it
+-- has its marker on the map in it too (gui/tpf3mp/tpf3mp.css.lua has a
+-- class for each).
+function companies.swatch(color)
+	if type(color) ~= "table" then return nil end
+	for i, p in ipairs(companies.PALETTE) do
+		local same = true
+		for k = 1, 3 do
+			local v = color[k]
+			if type(v) ~= "number" then return nil end
+			if math.abs(v - p[k]) > 0.01 then same = false end
+		end
+		if same then return i end
+	end
+	return nil
+end
+
+-- The style class of the markers of vehicles in palette colour `index`.
+function companies.markerClass(index)
+	return "tpf3mp-company-" .. tostring(index)
+end
+
+-- The mod's game script, by the names the game gives it: game scripts are
+-- entities, named by their file (the game's loan window finds the loan
+-- script so).
+companies.SCRIPTS = { "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs", "tpf3mp_1::/tpf3mp_sim.gs" }
+
+-- The mod's game script's state as the game keeps it (the roster is its
+-- `companies`), read from any GUI Lua state; nil before there is one.
+function companies.scriptState(api)
+	for _, name in ipairs(companies.SCRIPTS) do
+		local ok, state = pcall(function()
+			local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(name)
+			if type(entity) ~= "number" or entity < 0 then return nil end
+			local c = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+			return c and c.state
+		end)
+		if ok and type(state) == "table" then return state end
+	end
+	return nil
 end
 
 -- Paints `vehicle` in company `c`'s colour.

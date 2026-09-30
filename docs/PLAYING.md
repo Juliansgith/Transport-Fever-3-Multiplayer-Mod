@@ -241,8 +241,9 @@ protected folder such as Program Files.
   your things as yours. A new company starts with no money: borrow on the
   terms the game offers in the Multiplayer window, which also shows its
   loans and pays them back (the game's finance window keeps the room's
-  first company's loans). With more than one company, vehicles wear their
-  company's colour, and a new colour repaints them.
+  first company's loans). With more than one company, vehicles and their
+  markers on the map wear their company's colour, and a new colour
+  repaints them.
 - **Achievements.** A game with TPF3-MP active still earns achievements:
   the mod keeps them on, as the game lets a mod do. This holds even when
   the save has other mods that would switch them off.

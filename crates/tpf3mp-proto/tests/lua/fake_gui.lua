@@ -29,6 +29,14 @@ end
 function react.RegisterWrapperRecipe(name, wrapped, fn)
 	return { name = name, wraps = wrapped, fn = fn }
 end
+function react.RegisterRecipe(name, fn)
+	return { name = name, fn = fn }
+end
+-- Runs the recipe a replacement replaced, in the replacement's render, as
+-- gui/main/react.lua does.
+function react.CallOriginalRecipe(recipe, ...)
+	return recipe.fn(...)
+end
 function react.useRef(initial)
 	-- The same ref on every render of one mount, as React keeps it.
 	local m = current
@@ -87,12 +95,30 @@ function windows.removeAllWindows(recipe)
 end
 local game_react_globals = { getDefaultWindowApi = function() return windows end }
 
+-- A state read from the engine now and on later steps: here, on every
+-- render.
+local engine_react_util = {}
+function engine_react_util.useStepStateTimer(get)
+	local state = react.useRef(nil)
+	state.value = get(state.value)
+	function state:old() return self.value end
+	return state
+end
+
+-- The game's recipe for a thing's marker on the map: it names the entity.
+local hud_icon_toolbox = {}
+hud_icon_toolbox.HudIconMasterGame = react.RegisterRecipe("HudIconMasterGame", function(params)
+	return { view = "Marker", params = { entity = params.entity } }
+end)
+
 local GAME = {
 	["::/gui/main/react.lua"] = react,
 	["::/gui/main/builtin.lua"] = builtin,
 	["::/gui/game_bar/game_bar_widgets.tl"] = game_bar_widgets,
 	["::/gui/main/main_mod_button_area.tl"] = main_mod_button_area,
 	["::/gui/main/game_react_globals.tl"] = game_react_globals,
+	["::/gui/main/engine_react_util.tl"] = engine_react_util,
+	["::/gui/main/hud_icon_toolbox.tl"] = hud_icon_toolbox,
 }
 
 -- The mod whose files mod_source reads: ours, or the one MOD_ID names.

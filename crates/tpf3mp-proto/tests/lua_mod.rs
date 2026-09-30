@@ -112,7 +112,19 @@ fn every_resource_names_a_script_the_mod_has() {
             + prefix.len();
         let target = &text[start..];
         let target = &target[..target.find('"').unwrap()];
-        let (script, recipe) = target.split_once('@').unwrap();
+        // A plugin names "script@recipe"; a replacement config names its
+        // script and, apart, the function the game calls (doReplaceFn).
+        let (script, recipe) = match target.split_once('@') {
+            Some(named) => named,
+            None => {
+                let key = "doReplaceFn = \"";
+                let at = text
+                    .find(key)
+                    .unwrap_or_else(|| panic!("{resource} names no recipe or doReplaceFn"))
+                    + key.len();
+                (target, &text[at..at + text[at..].find('"').unwrap()])
+            }
+        };
         assert!(
             files.contains(&format!("{script}.lua")),
             "{resource} names {script}.lua, which is not in content/"
@@ -4039,8 +4051,10 @@ fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
             engine = {
                 util = { getPlayer = function() return 25 end },
                 getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+                -- The entity only, as build 40408 calls the function (seen
+                -- in its console: the second argument is nil).
                 forEachEntityWithComponent = function(fn, kind)
-                    for e, c in pairs(COMP[kind] or {}) do fn(e, c) end
+                    for e in pairs(COMP[kind] or {}) do fn(e) end
                 end,
             },
             type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2 },
@@ -4325,7 +4339,7 @@ fn a_companys_colour_repaints_its_vehicles() {
                     local keys = {}
                     for e in pairs(COMP[kind] or {}) do keys[#keys + 1] = e end
                     table.sort(keys)
-                    for _, e in ipairs(keys) do fn(e, COMP[kind][e]) end
+                    for _, e in ipairs(keys) do fn(e) end
                 end,
             },
             type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2, TRANSPORT_VEHICLE = 4 },
@@ -4363,4 +4377,137 @@ fn a_companys_colour_repaints_its_vehicles() {
         painted, "true 500:0.5,502:0.5",
         "Rival's two vehicles, not the first company's"
     );
+}
+
+/// A vehicle's marker on the map wears its company's colour: the mod
+/// replaces the game's marker recipe with one that, while the room has more
+/// than one company, puts the marker of a vehicle painted in a company
+/// colour in that colour's class (the room paints a company's vehicles so),
+/// as TPF2's vehicle icons followed the vehicle's paint, and leaves every
+/// other marker as the game made it.
+#[test]
+fn a_vehicles_marker_wears_its_companys_colour() {
+    let lua = gui();
+    lua.load(
+        r#"
+        -- Vehicles by their first part's colour, as build 40408 gives it (a
+        -- float's digits; -1 for the model's own colours).
+        local function painted(x, y, z)
+            return { transportVehicleConfig = { vehicles = { { part = { color = { x = x, y = y, z = z } } } } } }
+        end
+        COMP = { [4] = {
+            [500] = painted(0.12999999523163, 0.41999998688698, 0.85000002384186), -- blue
+            [501] = painted(0.80000001192093, 0.15999999642372, 0.11999999731779), -- red
+            [502] = painted(0.9, 0.9, 0.9),                                        -- a player's own
+            [503] = painted(-1, -1, -1),                                           -- unpainted
+        } }
+        -- The roster is in the mod's game script's state (entity 77).
+        ROSTER = nil
+        api = {
+            engine = {
+                getComponent = function(e, kind)
+                    if kind == 7 then return e == 77 and { state = { companies = ROSTER } } or nil end
+                    return COMP[kind] and COMP[kind][e]
+                end,
+                system = { gameScriptSystem = { getEntityForGameScript = function(name)
+                    return name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" and 77 or -1
+                end } },
+            },
+            type = { ComponentType = { TRANSPORT_VEHICLE = 4, GAME_SCRIPT = 7 } },
+        }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        local script = "gui/tpf3mp/company_markers.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        local exported = data()
+        local toolbox = ug_require("::/gui/main/hud_icon_toolbox.tl")
+        exported.replace({ ReplaceRecipe = function(original, replacement)
+            assert(original == toolbox.HudIconMasterGame, "replaces the game's marker")
+            MARKER = replacement
+        end })
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        -- The game script's companies, a while later (the game gives a new
+        -- table on each read).
+        function companies(list) ROSTER = { list = list, members = {} } CLOCK = CLOCK + 5 end
+        -- The HUD takes only a layout from a marker's recipe (build 40408:
+        -- "Recipe child must be a layout"), so the game's marker is always
+        -- inside one.
+        function marker(entity)
+            local node = mount(MARKER, { entity = entity }).layout
+            assert(node.layout == "BoxLayout", "a marker's recipe gives a layout")
+            local inner = node.params.children[1]
+            assert(#node.params.children == 1 and inner.view == "Marker", "around the game's marker")
+            local class = node.params.meta and node.params.meta.class
+            return (class and (class .. " around ") or "") .. "game's " .. inner.params.entity
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let marker = |entity: i64| -> String {
+        lua.load(format!("return marker({entity})"))
+            .eval()
+            .unwrap_or_else(|error| panic!("{entity}: {error}"))
+    };
+    // No roster yet, and one company: the game's markers.
+    assert_eq!(marker(500), "game's 500");
+    lua.load("companies({ { id = 0, entity = 25, color = C.PALETTE[1] } })")
+        .exec()
+        .unwrap();
+    assert_eq!(
+        marker(500),
+        "game's 500",
+        "one company: as in single player"
+    );
+    // Two companies: a vehicle in a company colour wears it.
+    lua.load(
+        "companies({ { id = 0, entity = 25, color = C.PALETTE[1] },                      { id = 1, entity = 901, color = C.PALETTE[2] } })",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(marker(500), "tpf3mp-company-2 around game's 500");
+    assert_eq!(marker(501), "tpf3mp-company-1 around game's 501");
+    // Any other paint, no paint, and what is no vehicle: the game's.
+    assert_eq!(marker(502), "game's 502");
+    assert_eq!(marker(503), "game's 503");
+    assert_eq!(marker(600), "game's 600");
+    // The roster is read again only every two seconds: a company dissolved
+    // shows once it is read, back to the game's markers.
+    lua.load(
+        "ROSTER = { members = {}, list = { ROSTER.list[1],                     { id = 1, entity = 901, color = C.PALETTE[2], gone = true } } }",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(marker(500), "tpf3mp-company-2 around game's 500");
+    lua.load("CLOCK = CLOCK + 2").exec().unwrap();
+    assert_eq!(marker(500), "game's 500");
+
+    // The style sheet has a class for every colour of the palette.
+    let classes: String = lua
+        .load(
+            r#"
+            local rules = {}
+            local ssu = { makeAdder = function(result)
+                return function(selector, style) result[#result + 1] = selector end
+            end }
+            local real = require
+            require = function(path)
+                if path == "::/gui/main/stylesheetutil.lua" then return ssu end
+                return ug_require(path)
+            end
+            local css = "gui/tpf3mp/tpf3mp.css.lua"
+            assert(loadstring(mod_source(css), "@" .. css))()
+            local result = data()
+            require = real
+            return table.concat(result, "|")
+            "#,
+        )
+        .eval()
+        .unwrap();
+    for i in 1..=8 {
+        assert!(
+            classes.contains(&format!("!tpf3mp-company-{i} VehicleItem::Icon")),
+            "{classes}"
+        );
+    }
 }

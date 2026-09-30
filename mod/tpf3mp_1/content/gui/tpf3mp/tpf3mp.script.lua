@@ -96,21 +96,11 @@ function data()
 		end
 	end
 
-	-- The mod's game script's registry (tpf3mp/registry.lua), read from the
-	-- script's state as the game keeps it: game scripts are entities, named
-	-- by their file (the loan window reads the loan script so).
-	local SCRIPT_NAMES = { MOD .. "::/tpf3mp_sim/tpf3mp_sim.gs", MOD .. "::/tpf3mp_sim.gs" }
+	-- The mod's game script's state as the game keeps it
+	-- (tpf3mp/companies.lua), which holds its registry (tpf3mp/registry.lua)
+	-- and its companies. Read once the modules are loaded.
 	local function scriptState()
-		for _, name in ipairs(SCRIPT_NAMES) do
-			local ok, state = pcall(function()
-				local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(name)
-				if type(entity) ~= "number" or entity < 0 then return nil end
-				local c = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
-				return c and c.state
-			end)
-			if ok and type(state) == "table" then return state end
-		end
-		return nil
+		return require("tpf3mp.companies").scriptState(api)
 	end
 	local function registryNow()
 		local state = scriptState()

@@ -1131,6 +1131,23 @@ state, which the game saves with the world:
   company's colour (`makeEntitySetColorCmd`), and a new colour repaints the
   company's vehicles, in the engine's own order. With one company the
   game's colours stay, as in single player.
+- *Markers.* Painting colours a vehicle's body and its pictures in the
+  game's windows, not its marker on the map: build 40408 draws every
+  vehicle's marker alike, a white glyph on a dark tile
+  (`HudIconManager.cpp`, `gui/main/internal_hud.css.lua`), where TPF2's
+  followed the vehicle's paint. `gui/tpf3mp/company_markers.res.lua`, a
+  `react-replacement-config`, replaces the game's marker recipe
+  (`hud_icon_toolbox.HudIconMasterGame`) with one that calls it and, while
+  the room has more than one company, puts the marker of a vehicle painted
+  in a company colour in that colour's class; `gui/tpf3mp/tpf3mp.css.lua`
+  colours the tile of each class. Seen on build 40408: the HUD renders
+  markers on its worker threads ("Main Pool" in the log), each with a Lua
+  state of its own where the Multiplayer plugin does not run and a
+  vehicle's `PLAYER_OWNED` reads empty; so each reads the roster from the
+  game script's state (every 2 seconds) and the vehicle's first part's
+  colour, and the HUD takes only a layout from the recipe ("Recipe child
+  must be a layout"). The game's log says what became of the markers
+  (`[tpf3mp] company markers: ...`).
 - *The GUI's company.* TF3's windows ask `api.engine.util.getPlayer()`
   whose money to show and what is the player's own ("Foreign" otherwise).
   In the GUI state the mod replaces it (a callable table on build 40408,
