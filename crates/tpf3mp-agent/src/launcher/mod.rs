@@ -109,6 +109,12 @@ pub struct LauncherConfig {
     /// playtests, such as the save the hook loads at the main menu
     /// ([`tpf3mp_ipc::AUTO_LOAD_ENV`]).
     pub game_env: Vec<(String, String)>,
+    /// A save the rooms this player creates start from: handed to the room
+    /// in its lobby, and loaded by every game from its main menu when the
+    /// game starts, this player's too (see `BridgeOptions::start_world`).
+    /// Without it, the owner's game loads the world and saves it for the
+    /// room once the game began.
+    pub start_save: Option<PathBuf>,
 }
 
 /// A running launcher.
@@ -737,18 +743,24 @@ fn begin_session(
     };
     let (controls, controls_rx) = mpsc::channel(ACTION_QUEUE);
     // A fresh status for the new session, with the room already known.
-    {
+    let owned = {
         let mut status = shared.status();
         let room = status.room.take();
+        let owned = room
+            .as_ref()
+            .is_some_and(|room| room.owner == config.identity.player());
         *status = Status {
             room,
             ..Status::default()
         };
-    }
+        owned
+    };
     let bridge_options = BridgeOptions {
         worlds: Some(config.worlds.clone()),
         status: Some(Arc::clone(&shared.status)),
         lobby: Some(shared.lobby.clone()),
+        // A room this player created starts from the save named for it.
+        start_world: config.start_save.clone().filter(|_| owned),
         ..BridgeOptions::default()
     };
     let rejoin = Rejoin {

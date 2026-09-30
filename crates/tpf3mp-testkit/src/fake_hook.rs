@@ -32,6 +32,10 @@ pub struct FakeHookConfig {
     pub drift_at: Option<u64>,
     /// How long to wait for the agent to appear, or to beat again.
     pub patience: Duration,
+    /// Wait at the main menu until the room's game begins, saying so
+    /// (`ToAgent::MenuUp`), as a game started before its room does: the
+    /// agent marks the player ready there.
+    pub at_menu: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +107,14 @@ pub fn spawn(config: FakeHookConfig) -> JoinHandle<Result<HookReport, HookError>
 
 fn run(config: &FakeHookConfig) -> Result<HookReport, HookError> {
     let mut session = Session::attach(&config.link_name, "fake hook", config.patience)?;
-    session.wait_for_begin()?;
+    if config.at_menu {
+        while session.try_begin()?.is_none() {
+            session.menu_up(1)?;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    } else {
+        session.wait_for_begin()?;
+    }
     let mut game = ToyGame {
         world: ToyWorld::new(config.world_seed),
         applied: 0,

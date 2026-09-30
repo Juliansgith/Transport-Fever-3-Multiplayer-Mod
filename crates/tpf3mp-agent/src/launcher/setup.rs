@@ -257,6 +257,7 @@ impl LauncherArgs {
             link: self.game_link.clone(),
             worlds: open_worlds(self.worlds.as_deref(), self.worlds_gib, &self.game_link)?,
             room_settings: RoomSettings::DEFAULT,
+            start_save: None,
         })
     }
 }

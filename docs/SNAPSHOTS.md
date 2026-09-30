@@ -466,7 +466,12 @@ How the duties this crate leaves to its users are met:
   with `recompress_received`, and keeps it only after `ChunkSink::retain`
   verified the whole file. Which save to fetch is decided by the room's
   save round, from lane digests, never by one client's say. Only a member
-  whose stream carried the save may report on it.
+  whose stream carried the save may report on it. The one exception is
+  the world a room starts from, which the owner may hand over in the lobby
+  (`Request::StartWorld`): the owner chooses the room's first world either
+  way, and before the first step there are no lanes to compare it with.
+  It is received and verified like any upload, and only the owner is asked
+  for it.
 - **What the server cannot check.** The server does not run the game, so
   it cannot tell whether the bytes a player uploads are the world its lane
   digests describe. A player who reports the room's lanes and uploads

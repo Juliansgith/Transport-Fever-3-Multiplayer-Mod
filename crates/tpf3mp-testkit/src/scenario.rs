@@ -13,14 +13,15 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use tpf3mp_agent::{
-    Client, ConnectOptions, Events, Route, Worlds,
+    Client, ClientError, ConnectOptions, Events, Requests, Route, Worlds,
     bridge::{self, Bridge, BridgeEnd, BridgeFault, BridgeOptions, Rejoin},
     connect,
 };
 use tpf3mp_ipc::{Config as LinkConfig, Link, Role};
 use tpf3mp_net::{Identity, ServerTrust, tunnel::TunnelUrl};
 use tpf3mp_proto::{
-    ContentManifest, CreateRoom, Invite, JoinRoom, RoomSettings, RulesName, Speed, Text,
+    ContentManifest, CreateRoom, Invite, JoinRoom, Request, RequestError, RoomSettings, RulesName,
+    Speed, Text,
 };
 
 use crate::{
@@ -124,6 +125,22 @@ pub(crate) async fn seat_and_start(
     settings: RoomSettings,
     rules: Option<RulesName>,
 ) -> Result<Invite> {
+    let invite = seat(clients, max_players, settings, rules).await?;
+    for client in clients {
+        client.set_ready(true).await?;
+    }
+    clients[0].start_game().await?;
+    Ok(invite)
+}
+
+/// Seats every client in one room, as [`seat_and_start`] does, without
+/// marking anyone ready or starting the game.
+async fn seat(
+    clients: &[&Client],
+    max_players: usize,
+    settings: RoomSettings,
+    rules: Option<RulesName>,
+) -> Result<Invite> {
     let Some((owner, others)) = clients.split_first() else {
         bail!("a room needs at least one player");
     };
@@ -148,10 +165,6 @@ pub(crate) async fn seat_and_start(
             })
             .await?;
     }
-    for client in clients {
-        client.set_ready(true).await?;
-    }
-    owner.start_game().await?;
     Ok(invite)
 }
 
@@ -166,6 +179,13 @@ pub struct BridgedPlan {
     /// Where each player keeps its worlds, in a directory of its own name.
     /// Without it, players can neither save for the room nor join late.
     pub worlds: Option<PathBuf>,
+    /// A save the room starts from, which the owner's agent hands over in
+    /// the lobby (`BridgeOptions::start_world`). The games then wait at
+    /// their main menus, each player is marked ready there by its agent,
+    /// the owner once the room has the save, and the room starts once all
+    /// are. Without it, everyone is marked ready and the room starts at
+    /// once, from the owner's world.
+    pub start_world: Option<PathBuf>,
 }
 
 pub struct BridgedPlayer {
@@ -220,8 +240,13 @@ pub async fn play_bridged_room(plan: BridgedPlan) -> Result<Vec<HookReport>> {
         starting.push((options, client, events));
     }
     let seated: Vec<&Client> = starting.iter().map(|(_, client, _)| client).collect();
-    let invite = seat_and_start(&seated, plan.players.len(), plan.settings, None).await?;
-    let started = tokio::time::Instant::now();
+    let (invite, owner) = if plan.start_world.is_some() {
+        let invite = seat(&seated, plan.players.len(), plan.settings, None).await?;
+        (invite, seated.first().map(|owner| owner.requests()))
+    } else {
+        let invite = seat_and_start(&seated, plan.players.len(), plan.settings, None).await?;
+        (invite, None)
+    };
 
     let mut games: Vec<Option<(Hook, BridgeTask)>> = plan.players.iter().map(|_| None).collect();
     let starters = plan
@@ -229,11 +254,20 @@ pub async fn play_bridged_room(plan: BridgedPlan) -> Result<Vec<HookReport>> {
         .iter()
         .enumerate()
         .filter(|(_, player)| player.join_after.is_none());
-    for ((index, player), (options, client, events)) in starters.zip(starting) {
+    for (seat, ((index, player), connection)) in starters.zip(starting).enumerate() {
+        let start_world = plan.start_world.clone().filter(|_| seat == 0);
         games[index] = Some(play_through_hook(
-            &plan, player, &invite, options, client, events,
+            &plan,
+            player,
+            &invite,
+            connection,
+            start_world,
         )?);
     }
+    if let Some(owner) = owner {
+        start_when_ready(&owner, plan.deadline).await?;
+    }
+    let started = tokio::time::Instant::now();
     let mut late: Vec<(usize, &BridgedPlayer, Duration)> = plan
         .players
         .iter()
@@ -257,7 +291,11 @@ pub async fn play_bridged_room(plan: BridgedPlan) -> Result<Vec<HookReport>> {
             .await
             .context("joining the running game")?;
         games[index] = Some(play_through_hook(
-            &plan, player, &invite, options, client, events,
+            &plan,
+            player,
+            &invite,
+            (options, client, events),
+            None,
         )?);
     }
 
@@ -284,14 +322,32 @@ pub async fn play_bridged_room(plan: BridgedPlan) -> Result<Vec<HookReport>> {
 type Hook = std::thread::JoinHandle<Result<HookReport, fake_hook::HookError>>;
 type BridgeTask = tokio::task::JoinHandle<Result<BridgeEnd, BridgeFault>>;
 
+/// Starts once every player is marked ready, their agents deciding: the
+/// room refuses until then, and while the world it starts from is still on
+/// its way.
+async fn start_when_ready(owner: &Requests, deadline: Duration) -> Result<()> {
+    let give_up = tokio::time::Instant::now() + deadline;
+    loop {
+        match owner.done(Request::StartGame).await {
+            Ok(()) => return Ok(()),
+            Err(ClientError::Refused(
+                RequestError::NotAllReady | RequestError::StartWorldPending,
+            )) if tokio::time::Instant::now() < give_up => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => return Err(error).context("starting the room's game"),
+        }
+    }
+}
+
 /// Starts a player's fake game and the bridge between it and its client.
+/// With `start_world`, this player owns the room and hands it that save.
 fn play_through_hook(
     plan: &BridgedPlan,
     player: &BridgedPlayer,
     invite: &Invite,
-    options: ConnectOptions,
-    client: Client,
-    events: Events,
+    (options, client, events): (ConnectOptions, Client, Events),
+    start_world: Option<PathBuf>,
 ) -> Result<(Hook, BridgeTask)> {
     let rejoin = Rejoin {
         options,
@@ -317,10 +373,14 @@ fn play_through_hook(
         target_step: player.target_step,
         drift_at: player.drift_at,
         patience: plan.deadline,
+        // A room that starts from a save starts with the games at their
+        // menus; late joiners arrive at a running game.
+        at_menu: plan.start_world.is_some() && player.join_after.is_none(),
     });
     let bridge = tokio::spawn(async move {
         let options = BridgeOptions {
             worlds,
+            start_world,
             ..BridgeOptions::default()
         };
         let mut bridge = Bridge::new(link, options);

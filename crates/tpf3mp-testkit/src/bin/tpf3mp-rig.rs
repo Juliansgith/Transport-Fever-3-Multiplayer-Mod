@@ -260,6 +260,7 @@ async fn run(args: Args) -> Result<ExitCode> {
             hook: None,
             game_exe: None,
             game_env: Vec::new(),
+            start_save: None,
             link: link.clone(),
             worlds,
             room_settings,
