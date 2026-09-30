@@ -406,21 +406,33 @@ a local Transport Fever 2 that is not the pinned build 35924.
 
 **Building is blocked on this machine, and it is the machine, not the repository.** VERIFIED:
 
-- `cargo build` and `cargo test` fail on every Rust **build script** with
-  `could not execute process … (never executed)` / `Zugriff verweigert (os error 5)`.
-- The linked `build-script-build.exe` exists, is the right size, and cannot be opened for
-  reading, copied, or have its ACL read. A garbage `.exe` written into the same directory is
-  readable and, if valid, runs — so the block is content-based, not path-based. It reproduces
-  with `CARGO_TARGET_DIR` moved elsewhere.
+- `cargo build` and `cargo test` fail on Rust **build scripts**, intermittently, with
+  `Zugriff verweigert (os error 5)`. The exact failure is not execution but the rename cargo
+  performs once a build script has been linked:
+
+  ```
+  error: failed to link or copy `.../build_script_build-2e3b8ca32dbd3e41.exe`
+                       to `.../build-script-build.exe`
+  Caused by: Zugriff verweigert (os error 5)
+  ```
+
+  A security product holds the freshly written file for as long as it takes to scan it, and
+  cargo loses that race. Evidence that it is a scan and not a rule: a copied, signed system
+  binary (`C:\Windows\System32\where.exe`) in the same directory reads and runs fine; a
+  garbage `.exe` of the same length is readable; and the blocked file is readable a minute
+  later. It reproduces with `CARGO_TARGET_DIR` moved elsewhere, and it is intermittent — a
+  debug build of `tpf3mp-hookcore` got through on a second attempt.
 - Windows Defender is **off** (`RealTimeProtectionEnabled: False`; `WinDefend` and `WdNisSvc`
   stopped). There is no Smart App Control state key, no WDAC policy and no AppLocker policy.
-- The blocker is **`Surfshark.AntivirusService`, running**: a filesystem minifilter denying read
-  and execute on freshly-linked unsigned binaries.
+- The blocker is **`Surfshark.AntivirusService`, running**: a filesystem minifilter holding
+  newly-linked unsigned binaries.
+- Consequence for a contributor on that machine: `cargo test` does not run reliably, and a
+  release build of 185 crates does not get through. Excluding the repository, or `target/`,
+  fixes it. **No security setting was changed here.**
 
-No security setting was changed. To unblock locally, exclude the repository (or `target/`) in
-Surfshark Antivirus, or pause it while building. The knock-on effect is that `cargo test` cannot
-run on that PC at all, which also affects `fmt` and `clippy` checks that must compile build
-scripts.
+The parts that did get built are therefore verified as far as they went: `tpf3mp-hookcore` is
+29 unit + 3 fixture + 2 + 2 integration tests green, and `cargo fmt --all` and
+`cargo clippy -p tpf3mp-hookcore --all-targets -- -D warnings` are clean.
 
 **Not attempted:** anything requiring the game to run. The game was not launched, and nothing in
 its folder was modified.
