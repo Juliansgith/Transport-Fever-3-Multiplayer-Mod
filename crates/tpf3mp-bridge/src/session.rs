@@ -20,8 +20,8 @@ use tpf3mp_proto::{
 };
 
 use crate::{
-    BRIDGE_VERSION, BridgeError, Gate, GateError, Gated, MAX_MESSAGE, RoomInfo, ToAgent, ToHook,
-    check_version, decode, encode,
+    BRIDGE_VERSION, BridgeError, Gate, GateError, Gated, LobbyAction, LobbyView, MAX_MESSAGE,
+    RoomInfo, ToAgent, ToHook, check_version, decode, encode,
 };
 
 /// How long to sleep between polls while waiting for the agent.
@@ -176,6 +176,8 @@ pub struct Session {
     /// The menu arrival last told, and the link generation it was told on
     /// ([`Session::menu_up`]).
     menu_told: Option<(u32, u64)>,
+    /// The launcher's lobby as last heard, until the menu's window takes it.
+    lobby_view: Option<LobbyView>,
 }
 
 /// Where the session is before its room's game begins, and after.
@@ -240,6 +242,7 @@ impl Session {
             lobby: Lobby::Waiting,
             world_between_rooms: None,
             menu_told: None,
+            lobby_view: None,
         };
         session.send(&ToAgent::Hello {
             version: BRIDGE_VERSION,
@@ -342,6 +345,7 @@ impl Session {
                     self.lobby = Lobby::left();
                     return Ok(None);
                 }
+                ToHook::Lobby(view) => self.lobby_view = Some(view),
                 _ => return Err(SessionError::Unexpected("something before the game began")),
             }
         }
@@ -506,6 +510,7 @@ impl Session {
                 | ToHook::Speed(_)
                 | ToHook::Chat { .. }
                 | ToHook::Room(_)
+                | ToHook::Lobby(_)
                 | ToHook::Refused { .. }
                 | ToHook::Diverged { .. } => self.handle(message, game)?,
                 other => {
@@ -586,6 +591,52 @@ impl Session {
         self.send(&ToAgent::Chat { text })
     }
 
+    /// Hands the launcher an action the player took in the main menu's
+    /// Multiplayer window (D17).
+    pub fn lobby_act(&mut self, action: LobbyAction) -> Result<(), SessionError> {
+        self.send(&ToAgent::Lobby(action))
+    }
+
+    /// The launcher's lobby, if the agent sent a new one since the last
+    /// call. The session keeps it from whatever read it: the step gate, the
+    /// wait for the room's game, or [`Session::poll_lobby`].
+    pub fn take_lobby(&mut self) -> Option<LobbyView> {
+        self.lobby_view.take()
+    }
+
+    /// Without blocking, for a game at its main menu, where no step reads
+    /// the link: reads what the agent sent before the room's game, keeping
+    /// the lobby. It stops at the first message the game must see at its
+    /// gate (the room's `Begin`, or its end), which stays for
+    /// [`Session::try_begin`]. After the room's game ended nothing more is
+    /// followed, and only the lobby is kept. Between rooms, and while the
+    /// hellos on the next room's link are exchanged, [`Session::try_begin`]
+    /// alone reads the link.
+    pub fn poll_lobby(&mut self) -> Result<(), SessionError> {
+        self.link.heartbeat();
+        let ended = self.gate.ended();
+        let reads = match self.lobby {
+            Lobby::Waiting => true,
+            Lobby::Begun => ended,
+            Lobby::Left { .. } | Lobby::Greeting => false,
+        };
+        if !reads || self.peeked.is_some() {
+            return Ok(());
+        }
+        while let Some(message) = self.try_recv()? {
+            match message {
+                ToHook::Lobby(view) => self.lobby_view = Some(view),
+                ToHook::Chat { .. } | ToHook::Room(_) => {}
+                _ if ended => {}
+                other => {
+                    self.peeked = Some(other);
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The step the game runs next.
     pub fn next_step(&self) -> u64 {
         self.gate.next_step()
@@ -626,6 +677,7 @@ impl Session {
             Gated::Ended(reason) => game.notice(Notice::Ended(reason)),
             Gated::Chat { from, text } => game.notice(Notice::Chat { from, text }),
             Gated::Room(room) => game.notice(Notice::Room(room)),
+            Gated::Lobby(view) => self.lobby_view = Some(view),
             Gated::Nothing => {}
         }
         Ok(())
@@ -958,6 +1010,95 @@ mod tests {
             Err(SessionError::Unexpected(_))
         ));
         drop(old);
+    }
+
+    /// A session past the hellos, before any room's game, with the agent's
+    /// end.
+    fn at_the_menu(tag: &str) -> (Session, Link) {
+        let name = format!("test.session.{tag}.{}", std::process::id());
+        let agent = Link::create(&Config::new(name.clone()), Role::Agent).unwrap();
+        say(
+            &agent,
+            &ToHook::Hello {
+                version: BRIDGE_VERSION,
+            },
+        );
+        let session = Session::attach(&name, "test", Duration::from_secs(10)).unwrap();
+        (session, agent)
+    }
+
+    fn lobby_view(name: &str) -> LobbyView {
+        LobbyView {
+            name: Text::new(name).unwrap(),
+            ..LobbyView::default()
+        }
+    }
+
+    #[test]
+    fn at_the_menu_the_lobby_is_read_and_the_rooms_game_waits_for_its_gate() {
+        let (mut session, agent) = at_the_menu("menu-lobby");
+        assert_eq!(session.take_lobby(), None);
+        say(&agent, &ToHook::Lobby(lobby_view("first")));
+        say(&agent, &ToHook::Lobby(lobby_view("second")));
+        say(&agent, &begin(50));
+        say(&agent, &ToHook::Lobby(lobby_view("after the begin")));
+        say(
+            &agent,
+            &ToHook::Load {
+                file: None,
+                next_step: 1,
+            },
+        );
+        session.poll_lobby().unwrap();
+        assert_eq!(
+            session.take_lobby(),
+            Some(lobby_view("second")),
+            "the newest"
+        );
+        assert_eq!(session.take_lobby(), None, "once");
+        // The room's Begin was left where it was: the game takes it at its
+        // gate, and the lobby behind it too.
+        session.poll_lobby().unwrap();
+        assert_eq!(session.take_lobby(), None);
+        assert!(session.try_begin().unwrap().is_some());
+        let mut world = World::default();
+        assert!(matches!(
+            session.poll_step(&mut world).unwrap(),
+            StepGate::Load(_)
+        ));
+        assert_eq!(session.take_lobby(), Some(lobby_view("after the begin")));
+        // Once the game began, only its gate reads the link.
+        say(&agent, &ToHook::Lobby(lobby_view("in the game")));
+        session.poll_lobby().unwrap();
+        assert_eq!(session.take_lobby(), None);
+        session.loaded(1).unwrap();
+        say(&agent, &ToHook::Release { through: 1 });
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        assert_eq!(session.take_lobby(), Some(lobby_view("in the game")));
+        assert!(world.notices.is_empty(), "the lobby is not the game's");
+    }
+
+    #[test]
+    fn after_the_rooms_game_ended_the_menu_still_hears_the_lobby() {
+        let (mut session, agent, mut world) = playing("ended-lobby", 50);
+        say(
+            &agent,
+            &ToHook::End {
+                reason: Text::lossy("over"),
+            },
+        );
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Ended);
+        say(&agent, &begin(50));
+        say(&agent, &ToHook::Lobby(lobby_view("next room")));
+        session.poll_lobby().unwrap();
+        assert_eq!(session.take_lobby(), Some(lobby_view("next room")));
+    }
+
+    #[test]
+    fn the_players_lobby_actions_go_to_the_agent() {
+        let (mut session, agent) = at_the_menu("lobby-act");
+        session.lobby_act(LobbyAction::Start).unwrap();
+        assert_eq!(heard(&agent), ToAgent::Lobby(LobbyAction::Start));
     }
 
     #[test]

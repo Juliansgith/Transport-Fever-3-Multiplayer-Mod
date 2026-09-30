@@ -278,6 +278,8 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         for text in lua::take_said() {
             driver.say(text);
         }
+        // The main menu's Multiplayer window, whose lobby the step just read.
+        crate::lobby::exchange(driver.as_mut());
         IN_ROOM.store(driver.in_room(), Ordering::Release);
         lua::set_in_room(driver.in_room());
         let chosen = CHOSEN.load(Ordering::Acquire);
@@ -300,6 +302,35 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         if !ran {
             // SAFETY: as above.
             unsafe { run_step(original, Updates::Exactly(0), this, a, b, c) };
+        }
+    }
+}
+
+/// The main menu's Multiplayer window asks (crate::menu_entry): its actions
+/// go to the launcher and its lobby comes back through the step driver,
+/// which at the menu is the only reader of the link. Never waits for the
+/// driver: the step's detour holds it only while a step runs, and exchanges
+/// the lobby itself after it.
+pub(crate) fn lobby_pump() {
+    let Ok(mut guard) = DRIVER.try_lock() else {
+        return;
+    };
+    let Some(driver) = guard.as_mut() else {
+        drop(guard);
+        crate::lobby::unlinked();
+        return;
+    };
+    let lines = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::lobby::exchange(driver.as_mut());
+        driver.take_log()
+    }))
+    .unwrap_or_default();
+    drop(guard);
+    if !lines.is_empty()
+        && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
+    {
+        for line in lines {
+            log.line(&line);
         }
     }
 }

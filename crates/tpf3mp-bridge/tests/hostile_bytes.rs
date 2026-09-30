@@ -9,7 +9,10 @@ use std::fmt::Debug;
 
 use proptest::{collection::vec, prelude::*, sample::Index};
 use serde::{Serialize, de::DeserializeOwned};
-use tpf3mp_bridge::{RoomInfo, RoomMember, ToAgent, ToHook, decode, encode};
+use tpf3mp_bridge::{
+    LobbyAction, LobbyConnection, LobbyLine, LobbyMember, LobbyRoom, LobbyView, RoomInfo,
+    RoomMember, ToAgent, ToHook, decode, encode,
+};
 use tpf3mp_proto::{
     BoundedVec, Event, EventBody, FixedBytes, IntentRejection, LaneDigest, Payload, PlayerId,
     Speed, Text,
@@ -93,6 +96,38 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             ])
             .unwrap(),
         }),
+        ToHook::Lobby(LobbyView {
+            connection: LobbyConnection::Connected,
+            server: Text::new("EU").unwrap(),
+            name: Text::new("Ann").unwrap(),
+            error: None,
+            notice: Some(Text::new("created the room").unwrap()),
+            room: Some(LobbyRoom {
+                name: Text::new("Sunday line").unwrap(),
+                rules: Text::new("native").unwrap(),
+                invite: Some(Text::new("K7QM2X").unwrap()),
+                running: false,
+                you_own: true,
+                max_players: 4,
+                has_password: false,
+                members: BoundedVec::new(vec![LobbyMember {
+                    player: PlayerId(FixedBytes([1; 32])),
+                    name: Text::new("Ann").unwrap(),
+                    ready: true,
+                    connected: true,
+                    owner: true,
+                    you: true,
+                    same_content: Some(true),
+                }])
+                .unwrap(),
+            }),
+            chat: BoundedVec::new(vec![LobbyLine {
+                from: Text::new("Ann").unwrap(),
+                text: Text::new("gg").unwrap(),
+                you: true,
+            }])
+            .unwrap(),
+        }),
     ];
     let to_agent = [
         ToAgent::Hello {
@@ -122,6 +157,10 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         ToAgent::Speed {
             speed: Speed::PAUSED,
         },
+        ToAgent::Lobby(LobbyAction::Join {
+            invite: Text::new("tpf3mp.example.org:29470 K7QM2X").unwrap(),
+            password: Some(Text::new("pw").unwrap()),
+        }),
     ];
     let mut samples: Vec<(Check, Vec<u8>)> = Vec::new();
     samples.extend(

@@ -3,7 +3,7 @@
 use thiserror::Error;
 use tpf3mp_proto::{ChatText, Event, IntentRejection, Speed, Text};
 
-use crate::{MAX_PATH, RoomInfo, ToHook};
+use crate::{LobbyView, MAX_PATH, RoomInfo, ToHook};
 
 /// Stands before every step the game runs. The game may run its next step
 /// once the agent has released it; until then the hook reads messages and
@@ -56,6 +56,8 @@ pub enum Gated {
     Chat { from: Text<32>, text: ChatText },
     /// Show the room as it stands.
     Room(RoomInfo),
+    /// Keep the launcher's lobby for the main menu's window.
+    Lobby(LobbyView),
     /// Nothing to do but check [`Gate::may_run`] again.
     Nothing,
 }
@@ -142,7 +144,9 @@ impl Gate {
 
     /// Handles one message read while the game waits before its next step.
     pub fn on_message(&mut self, message: ToHook) -> Result<Gated, GateError> {
-        if self.loading && !matches!(message, ToHook::End { .. }) {
+        // The lobby is for the menu's window and changes nothing here: it
+        // may come at any time, a load included.
+        if self.loading && !matches!(message, ToHook::End { .. } | ToHook::Lobby(_)) {
             return Err(GateError::Loading);
         }
         match message {
@@ -181,6 +185,7 @@ impl Gate {
             }
             ToHook::Chat { from, text } => Ok(Gated::Chat { from, text }),
             ToHook::Room(room) => Ok(Gated::Room(room)),
+            ToHook::Lobby(view) => Ok(Gated::Lobby(view)),
             ToHook::Hello { .. } => Err(GateError::Unexpected("a hello")),
             ToHook::Begin { .. } => Err(GateError::Unexpected("the start of a game")),
         }

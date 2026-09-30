@@ -37,8 +37,9 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 
 /// Version of these messages. Both sides send it first and refuse a peer
 /// that speaks another. 7 added [`ToAgent::WorldUp`]; 8 added
-/// [`ToAgent::MenuUp`].
-pub const BRIDGE_VERSION: u32 = 8;
+/// [`ToAgent::MenuUp`]; 9 added the main menu's Multiplayer window's
+/// [`ToHook::Lobby`] and [`ToAgent::Lobby`].
+pub const BRIDGE_VERSION: u32 = 9;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -101,6 +102,123 @@ pub enum ToHook {
     /// The room as it stands, for the game's Multiplayer window: sent when
     /// the game begins and whenever the room changes.
     Room(RoomInfo),
+    /// The launcher's lobby as it stands, for the main menu's Multiplayer
+    /// window (D17): sent whenever it changes, before, during and after a
+    /// room's game. Only the latest counts.
+    Lobby(LobbyView),
+}
+
+/// Most chat lines a [`LobbyView`] carries: the newest.
+pub const MAX_LOBBY_CHAT: usize = 40;
+
+/// What the main menu's Multiplayer window shows: the launcher's connection,
+/// room and chat, as the launcher window shows them (D17).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyView {
+    pub connection: LobbyConnection,
+    /// The server the launcher plays on, as players see it.
+    pub server: Text<128>,
+    /// The player's name.
+    pub name: Text<32>,
+    /// What went wrong last, until something succeeds.
+    pub error: Option<Text<256>>,
+    /// The newest thing the player should know.
+    pub notice: Option<Text<256>>,
+    pub room: Option<LobbyRoom>,
+    /// The room's chat, oldest first.
+    pub chat: BoundedVec<LobbyLine, MAX_LOBBY_CHAT>,
+}
+
+impl Default for LobbyView {
+    /// Not connected, no room, nothing said.
+    fn default() -> Self {
+        Self {
+            connection: LobbyConnection::Disconnected,
+            server: Text::lossy(""),
+            name: Text::lossy(""),
+            error: None,
+            notice: None,
+            room: None,
+            chat: BoundedVec::empty(),
+        }
+    }
+}
+
+/// Whether the launcher is connected to its server.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LobbyConnection {
+    #[default]
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+/// The room the player is in, as its lobby shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyRoom {
+    pub name: Text<48>,
+    pub rules: RulesName,
+    /// What to send friends.
+    pub invite: Option<Text<128>>,
+    /// The room's game has begun.
+    pub running: bool,
+    pub you_own: bool,
+    pub max_players: u8,
+    pub has_password: bool,
+    pub members: BoundedVec<LobbyMember, { MAX_ROOM_MEMBERS as usize }>,
+}
+
+/// One member of the room, as its lobby shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyMember {
+    pub player: PlayerId,
+    pub name: Text<32>,
+    pub ready: bool,
+    pub connected: bool,
+    pub owner: bool,
+    pub you: bool,
+    /// Whether this member's game matches the owner's: `None` while either
+    /// has not said.
+    pub same_content: Option<bool>,
+}
+
+/// One line of the room's chat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyLine {
+    pub from: Text<32>,
+    pub text: ChatText,
+    pub you: bool,
+}
+
+/// What the player asks for in the main menu's Multiplayer window: the
+/// launcher's own actions (D17). The launcher carries them out as if its
+/// window had asked, on the server it plays on (D12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LobbyAction {
+    Connect {
+        name: Text<32>,
+    },
+    Disconnect,
+    Create {
+        room: Text<48>,
+        max_players: u8,
+        password: Option<Text<64>>,
+    },
+    Join {
+        invite: Text<128>,
+        password: Option<Text<64>>,
+    },
+    Ready {
+        ready: bool,
+    },
+    Start,
+    Kick {
+        player: PlayerId,
+    },
+    Chat {
+        text: ChatText,
+    },
+    Leave,
 }
 
 /// The room as the game's Multiplayer window shows it.
@@ -161,6 +279,8 @@ pub enum ToAgent {
     /// keeps worlds; the owner's game needs a world up, to save it for the
     /// room.
     MenuUp { menu: u64 },
+    /// The player asked for this in the main menu's Multiplayer window.
+    Lobby(LobbyAction),
 }
 
 #[derive(Debug, Error)]
@@ -275,6 +395,53 @@ mod tests {
             decode::<ToAgent>(&vec![0; MAX_MESSAGE + 1]),
             Err(BridgeError::TooLarge(_))
         ));
+    }
+
+    #[test]
+    fn the_fullest_lobby_fits_in_one_message() {
+        let member = |n: u8| LobbyMember {
+            player: tpf3mp_proto::PlayerId(FixedBytes([n; 32])),
+            name: Text::new("x".repeat(32)).unwrap(),
+            ready: true,
+            connected: true,
+            owner: n == 0,
+            you: n == 1,
+            same_content: Some(true),
+        };
+        let line = LobbyLine {
+            from: Text::new("y".repeat(32)).unwrap(),
+            text: Text::new("z".repeat(280)).unwrap(),
+            you: false,
+        };
+        let view = ToHook::Lobby(LobbyView {
+            connection: LobbyConnection::Connected,
+            server: Text::new("s".repeat(128)).unwrap(),
+            name: Text::new("n".repeat(32)).unwrap(),
+            error: Some(Text::new("e".repeat(256)).unwrap()),
+            notice: Some(Text::new("o".repeat(256)).unwrap()),
+            room: Some(LobbyRoom {
+                name: Text::new("r".repeat(48)).unwrap(),
+                rules: Text::new("native").unwrap(),
+                invite: Some(Text::new("i".repeat(128)).unwrap()),
+                running: false,
+                you_own: true,
+                max_players: 64,
+                has_password: true,
+                members: BoundedVec::new((0..MAX_ROOM_MEMBERS).map(member).collect()).unwrap(),
+            }),
+            chat: BoundedVec::new(vec![line; MAX_LOBBY_CHAT]).unwrap(),
+        });
+        let bytes = encode(&view).unwrap();
+        assert_eq!(decode::<ToHook>(&bytes).unwrap(), view);
+        let action = ToAgent::Lobby(LobbyAction::Create {
+            room: Text::new("Alps").unwrap(),
+            max_players: 4,
+            password: None,
+        });
+        assert_eq!(
+            decode::<ToAgent>(&encode(&action).unwrap()).unwrap(),
+            action
+        );
     }
 
     #[test]

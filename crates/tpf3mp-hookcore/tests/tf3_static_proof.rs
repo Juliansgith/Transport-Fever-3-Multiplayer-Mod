@@ -74,6 +74,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("CGame::CGame::lambda_3", 0x11c6c0),
     ("TownDevelopAt::Apply", 0x9dedf0),
     ("lua_getfield", 0x2fbdb90),
+    ("lua_loadfile", 0x2fa1d50),
 ];
 
 #[test]
