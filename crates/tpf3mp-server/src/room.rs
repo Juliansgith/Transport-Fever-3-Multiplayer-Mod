@@ -20,8 +20,8 @@ use tpf3mp_net::{bulk, close};
 use tpf3mp_proto::{
     ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN, FixedBytes,
     IntentRejection, Invite, LaneDigest, MemberView, Payload, Platform, PlayerId, RequestError,
-    Resume, RoomId, RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, Seal, Secret,
-    ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
+    Resume, RoomId, RoomListing, RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, Seal,
+    Secret, ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
     WorldOffer, decode_frame, encode_frame,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
@@ -198,6 +198,12 @@ pub(crate) enum RoomCommand {
     Chat {
         player: PlayerId,
         text: ChatText,
+        reply: Reply,
+    },
+    /// The owner of a public room says what the room list shows of it.
+    Describe {
+        player: PlayerId,
+        listing: RoomListing,
         reply: Reply,
     },
     Intent {
@@ -672,6 +678,8 @@ pub(crate) struct Room {
     /// from, if any.
     start_world: Option<StartWorld>,
     closed: bool,
+    /// What the room list shows of the room.
+    summary: SharedSummary,
 }
 
 /// What every room of a server shares.
@@ -717,6 +725,26 @@ pub(crate) enum RecoverError {
     Rules(String),
 }
 
+/// What the room list shows of a room, kept current by the room (on every
+/// change its members see) for the directory to read without asking it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Summary {
+    pub(crate) name: Text<48>,
+    pub(crate) rules: RulesName,
+    pub(crate) owner: PlayerId,
+    pub(crate) players: u8,
+    pub(crate) max_players: u8,
+    pub(crate) has_password: bool,
+    pub(crate) phase: RoomPhase,
+    /// `Some` for a public room: what its owner declared. `None` keeps the
+    /// room out of every list. A room restored after a restart is private
+    /// until created again: its log keeps no listing and no invite.
+    pub(crate) listing: Option<RoomListing>,
+}
+
+/// A room's [`Summary`], shared with the directory.
+pub(crate) type SharedSummary = Arc<std::sync::Mutex<Summary>>;
+
 pub(crate) struct RoomSpec {
     pub(crate) id: RoomId,
     pub(crate) name: Text<48>,
@@ -727,6 +755,8 @@ pub(crate) struct RoomSpec {
     pub(crate) ruleset: Box<dyn Ruleset>,
     pub(crate) env: RoomEnv,
     pub(crate) share: RoomShare,
+    /// `Some` lists the room publicly.
+    pub(crate) listing: Option<RoomListing>,
 }
 
 impl Room {
@@ -759,8 +789,19 @@ impl Room {
             snapshots: spec.env.snapshots,
             start_world: None,
             closed: false,
+            summary: Arc::new(std::sync::Mutex::new(Summary {
+                name: Text::lossy(""),
+                rules: Text::lossy(""),
+                owner: owner.player,
+                players: 0,
+                max_players: 0,
+                has_password: false,
+                phase: RoomPhase::Lobby,
+                listing: spec.listing,
+            })),
         };
         room.members.push(Member::new(owner));
+        room.refresh_summary();
         room
     }
 
@@ -981,7 +1022,7 @@ impl Room {
         // A log compacted just before the restart is not compacted again at
         // once.
         let compact_at = next_compaction(log.written(), env.compact_log_at);
-        Ok(Some(Self {
+        let room = Self {
             id: start.id,
             name: start.name,
             rules: start.rules,
@@ -1015,11 +1056,64 @@ impl Room {
             snapshots: env.snapshots,
             start_world: None,
             closed: false,
-        }))
+            // Private after a restart: the log keeps no listing.
+            summary: Arc::new(std::sync::Mutex::new(Summary {
+                name: Text::lossy(""),
+                rules: Text::lossy(""),
+                owner,
+                players: 0,
+                max_players: 0,
+                has_password: false,
+                phase: RoomPhase::Running,
+                listing: None,
+            })),
+        };
+        room.refresh_summary();
+        Ok(Some(room))
     }
 
     pub(crate) fn id(&self) -> RoomId {
         self.id
+    }
+
+    /// What the room list shows of this room, kept current.
+    pub(crate) fn summary(&self) -> SharedSummary {
+        Arc::clone(&self.summary)
+    }
+
+    /// Brings [`Self::summary`] up to date with the room.
+    fn refresh_summary(&self) {
+        let mut summary = self
+            .summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        summary.name.clone_from(&self.name);
+        summary.rules.clone_from(&self.rules);
+        summary.owner = self.owner;
+        summary.players = u8::try_from(self.members.len()).unwrap_or(u8::MAX);
+        summary.max_players = self.max_players;
+        summary.has_password = self.secrets.password_tag.is_some();
+        summary.phase = match self.phase {
+            Phase::Lobby => RoomPhase::Lobby,
+            Phase::Running(_) => RoomPhase::Running,
+        };
+    }
+
+    /// The owner of a public room updates what the list shows of it.
+    fn describe(&mut self, player: PlayerId, listing: RoomListing) -> Result<(), RequestError> {
+        if !self.members.iter().any(|member| member.player == player) {
+            return Err(RequestError::NotInRoom);
+        }
+        if player != self.owner {
+            return Err(RequestError::NotOwner);
+        }
+        let mut summary = self
+            .summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shown = summary.listing.as_mut().ok_or(RequestError::NotListed)?;
+        *shown = listing;
+        Ok(())
     }
 
     /// The tag of the room's invite, which the directory finds it by.
@@ -1155,6 +1249,13 @@ impl Room {
                 reply,
             } => {
                 let _ = reply.send(self.chat(player, text));
+            }
+            RoomCommand::Describe {
+                player,
+                listing,
+                reply,
+            } => {
+                let _ = reply.send(self.describe(player, listing));
             }
             RoomCommand::IsMember { player, reply } => {
                 let member = self.members.iter().any(|m| m.player == player);
@@ -2750,6 +2851,7 @@ impl Room {
     }
 
     fn broadcast_view(&mut self) {
+        self.refresh_summary();
         let view = self.view();
         for index in 0..self.members.len() {
             self.push(index, ServerMessage::RoomUpdate(view.clone()));

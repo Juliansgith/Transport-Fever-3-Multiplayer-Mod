@@ -133,17 +133,27 @@ window too.
 3. **Connect.** Type the name others will see, or keep the one the
    launcher remembers, and press **Connect to EU**. The server is the
    launcher's; there is none to type.
-4. **Create a room**, on the left, or **join one**, on the right.
-   - To create one: a **room name** (your name's room if you leave it
+4. **Find a room, create one, or join with an invite**: three tabs.
+   - **Public rooms** (the first): the rooms their owners made public, as
+     cards like the main menu's, each with the picture of its map's
+     climate, its name, players out of its limit, companies and the
+     game's year, **Playing** once its game runs, and a lock if it has a
+     password. Click one to join it; one with a password asks for it
+     first. **Previous**, **Next** and **Refresh** page through the list,
+     which also refreshes itself every ten seconds.
+   - **Create a room**: a **room name** (your name's room if you leave it
      empty); **Start from this save**, one of your saves, newest first, or
-     **None: I load a world myself**; **Players**, 2 to 16; the **Rules**,
-     when the server offers more than one (`native` is the game's own rules
-     and economy, as in single player; a description says what the others
+     **None: I load a world myself**; **Players**, 2 to 16; **Who can find
+     it**: **Private**, invite only (the default), or **Public**, in the
+     room list, with your save's climate and year; the **Rules**, when the
+     server offers more than one (`native` is the game's own rules and
+     economy, as in single player; a description says what the others
      are); and an optional **password**. Then **Create room**. You own the
      room: you start its game and can remove players.
-   - To join one: the **invite code** a friend sent you, such as `K7QM2X`
-     (upper or lower case), the room's **password** if it has one, and
-     **Join room**. The server lists no rooms: an invite is the way in.
+   - **Join with an invite** (what **Join a friend** opens): the **invite
+     code** a friend sent you, such as `K7QM2X` (upper or lower case), the
+     room's **password** if it has one, and **Join room**. A private room
+     is joined only this way.
 5. **The room.** On the left, the room's name (a lock if it has a
    password), its **invite code** to send your friends, and its players,
    each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,

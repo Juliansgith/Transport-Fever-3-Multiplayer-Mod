@@ -130,6 +130,11 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 password: Some(Text::new("secret").unwrap()),
                 settings: RoomSettings::DEFAULT,
                 rules: Some(Text::new("tpf2mp").unwrap()),
+                listing: Some(tpf3mp_proto::RoomListing {
+                    map: Text::new("temperate").unwrap(),
+                    year: 1850,
+                    companies: 2,
+                }),
             }),
         },
         ClientMessage::Request {

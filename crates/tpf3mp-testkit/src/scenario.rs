@@ -154,6 +154,7 @@ async fn seat(
             password: None,
             settings,
             rules,
+            listing: None,
         })
         .await?;
     for client in others {

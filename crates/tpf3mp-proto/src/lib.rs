@@ -35,10 +35,10 @@ pub use content::{
 };
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, ChatText, ClientMessage, ContentFingerprint, CreateRoom,
-    GameMessage, Hello, IntentRejection, JoinRoom, LaneDigest, MAX_CHECKPOINT_LANES,
-    MAX_ROOM_MEMBERS, MemberView, Reject, RejectReason, Request, RequestError, Response, Resume,
-    RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage, Speed,
-    Welcome,
+    GameMessage, Hello, IntentRejection, JoinRoom, LaneDigest, ListedRoom, MAX_CHECKPOINT_LANES,
+    MAX_ROOM_MEMBERS, MemberView, ROOMS_PER_PAGE, Reject, RejectReason, Request, RequestError,
+    Response, Resume, RoomListing, RoomPage, RoomPhase, RoomSettings, RoomView, RulesName,
+    RulesOffer, Secret, ServerMessage, Speed, Welcome,
 };
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText,
@@ -62,8 +62,9 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// lets a room's owner hand the room the world it starts from
 /// ([`Request::StartWorld`]); version 8 carries a password beside the intent
 /// that needs it ([`Secret`]) and orders the intent with the password's seal
-/// ([`Seal`]), for companies' passwords.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// ([`Seal`]), for companies' passwords; version 9 lists public rooms
+/// ([`Request::ListRooms`], [`CreateRoom::listing`]).
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

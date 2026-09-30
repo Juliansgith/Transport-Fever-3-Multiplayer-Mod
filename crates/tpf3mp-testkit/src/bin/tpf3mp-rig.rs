@@ -383,6 +383,7 @@ async fn set_up_room(args: &Args, server: &str, players: &[Player]) -> Result<()
             password: None,
             rules: args.rules.clone(),
             start_save: None,
+            listing: None,
         },
     )
     .await?;

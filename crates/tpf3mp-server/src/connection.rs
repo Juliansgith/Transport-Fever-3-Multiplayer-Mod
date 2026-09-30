@@ -52,6 +52,10 @@ const REQUESTS_PER_SECOND: u32 = 10;
 const REQUEST_BURST: u32 = 20;
 /// Of those, attempts to join a room.
 const JOINS_PER_SECOND: u32 = 1;
+/// Pages of the room list a connection may ask for: one a second, with a
+/// burst of five, so a browser can page ahead without scraping the server.
+const LISTS_PER_SECOND: u32 = 1;
+const LIST_BURST: u32 = 5;
 const JOIN_BURST: u32 = 5;
 /// Diagnostics requests, on a budget of their own so that they never make
 /// a player's other requests wait or fail.
@@ -321,6 +325,7 @@ struct Client {
     turns: Option<mpsc::Receiver<TurnFeed>>,
     requests: TokenBucket,
     joins: TokenBucket,
+    lists: TokenBucket,
     progress: TokenBucket,
     intents: TokenBucket,
     diagnostics: TokenBucket,
@@ -358,6 +363,7 @@ impl Client {
             turns: Some(turns_rx),
             requests: TokenBucket::new(REQUESTS_PER_SECOND, REQUEST_BURST),
             joins: TokenBucket::new(JOINS_PER_SECOND, JOIN_BURST),
+            lists: TokenBucket::new(LISTS_PER_SECOND, LIST_BURST),
             progress: TokenBucket::new(PROGRESS_PER_SECOND, PROGRESS_BURST),
             intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
             diagnostics: TokenBucket::new(DIAGNOSTICS_PER_SECOND, DIAGNOSTICS_BURST),
@@ -440,13 +446,17 @@ impl Client {
                 ClientMessage::Hello(_) => return Err(Violation::SecondHello),
                 ClientMessage::Request { id, request } => {
                     let joining = matches!(request, Request::JoinRoom(_));
+                    let listing = matches!(request, Request::ListRooms { .. });
                     let result = if let Request::Diagnostics(batch) = &request {
                         if self.diagnostics.take(now, 1) {
                             self.keep_diagnostics(batch)
                         } else {
                             Err(RequestError::RateLimited)
                         }
-                    } else if !self.requests.take(now, 1) || (joining && !self.joins.take(now, 1)) {
+                    } else if !self.requests.take(now, 1)
+                        || (joining && !self.joins.take(now, 1))
+                        || (listing && !self.lists.take(now, 1))
+                    {
                         Err(RequestError::RateLimited)
                     } else {
                         self.request(request).await
@@ -605,6 +615,15 @@ impl Client {
                 .await
             }
             Request::Diagnostics(batch) => self.keep_diagnostics(&batch),
+            Request::ListRooms { page } => Ok(Response::Rooms(self.shared.directory.list(page))),
+            Request::DescribeRoom(listing) => {
+                self.in_room(|player, reply| RoomCommand::Describe {
+                    player,
+                    listing,
+                    reply,
+                })
+                .await
+            }
             Request::StartWorld(world) => {
                 if self.shared.snapshots.is_none() {
                     return Err(RequestError::WorldsNotKept);

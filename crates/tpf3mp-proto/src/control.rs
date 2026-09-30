@@ -6,7 +6,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ContentDiff, ContentManifest, Platform, Text,
+    BoundedVec, ContentDiff, ContentManifest, Platform, Text,
     bytes::{FixedBytes, Payload},
     ids::{Invite, PlayerId, RoomId, SessionId, Signature},
     snapshot::{SavedWorld, SnapshotId},
@@ -160,6 +160,57 @@ pub enum Request {
     /// every member loads it, the owner too. Declaring another replaces it.
     /// Only on a server that keeps snapshots.
     StartWorld(SavedWorld),
+    /// The server's list of public rooms (those created with a
+    /// [`CreateRoom::listing`]), [`ROOMS_PER_PAGE`] a page from `page` 0.
+    /// Answered with [`Response::Rooms`]. A private room is never listed.
+    ListRooms {
+        page: u16,
+    },
+    /// The owner of a public room says what the list shows of it now, such
+    /// as the game's year and its companies once it runs. A private room
+    /// stays private (`NotListed`).
+    DescribeRoom(RoomListing),
+}
+
+/// Most rooms a page of the room list holds.
+pub const ROOMS_PER_PAGE: usize = 20;
+
+/// What the room list shows of a public room besides what the server knows
+/// itself: what its owner declares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomListing {
+    /// The world's map type: its climate, as the game names it, such as
+    /// `temperate` (`::/climates/temperate/temperate.clima`); empty when
+    /// the owner's game did not say.
+    pub map: Text<32>,
+    /// The game's year: the start year until the owner says another; 0
+    /// when unknown.
+    pub year: u16,
+    /// The companies playing in the room's game.
+    pub companies: u8,
+}
+
+/// One public room, as the room list shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListedRoom {
+    /// The room's invite: a public room's is for anyone to join with.
+    pub invite: Invite,
+    pub name: Text<48>,
+    pub rules: RulesName,
+    pub players: u8,
+    pub max_players: u8,
+    pub has_password: bool,
+    pub phase: RoomPhase,
+    pub listing: RoomListing,
+}
+
+/// A page of the room list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomPage {
+    pub page: u16,
+    pub rooms: BoundedVec<ListedRoom, ROOMS_PER_PAGE>,
+    /// Whether a later page has more.
+    pub more: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +222,10 @@ pub struct CreateRoom {
     /// One of the rules the server offers (see [`Welcome::rules`]), or its
     /// default.
     pub rules: Option<RulesName>,
+    /// `Some` lists the room in the server's room list, where anyone sees
+    /// it and its invite; `None`, the default, keeps it private: joined
+    /// only by an invite its members pass on.
+    pub listing: Option<RoomListing>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,6 +256,7 @@ pub enum Response {
     RoomCreated { invite: Invite, room: RoomView },
     RoomJoined(RoomView),
     Done,
+    Rooms(RoomPage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +293,8 @@ pub enum RequestError {
     WorldsNotKept,
     /// The world the room starts from is still on its way to the server.
     StartWorldPending,
+    /// The room is private: it is in no list to describe.
+    NotListed,
 }
 
 impl fmt::Display for RequestError {
@@ -266,6 +324,7 @@ impl fmt::Display for RequestError {
             Self::StartWorldPending => {
                 "the save the room starts from is still being uploaded; start once it is there"
             }
+            Self::NotListed => "the room is private, so it is in no list",
         })
     }
 }

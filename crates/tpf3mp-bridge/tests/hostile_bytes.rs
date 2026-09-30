@@ -147,6 +147,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 total: 1 << 24,
             },
             differences: Some(Text::new("you lack stations 3").unwrap()),
+            rooms: None,
         })),
     ];
     let to_agent = [

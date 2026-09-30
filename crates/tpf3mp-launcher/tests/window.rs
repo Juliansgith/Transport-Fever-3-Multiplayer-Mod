@@ -194,6 +194,7 @@ fn a_room_is_created_with_the_rules_the_host_picks() {
             password: None,
             rules: Some("native".into()),
             start_save: None,
+            listing: None,
         }]
     );
 }

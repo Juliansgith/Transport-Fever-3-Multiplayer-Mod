@@ -46,8 +46,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// ([`ToAgent::Command`]'s `secret`) and a seal in each ordered command
 /// (protocol 8); 12 added the mods the room's world loads with to
 /// [`ToHook::Begin`]. (The lobby's, the passwords' and the mods' changes
-/// were each 10 on their own branches.)
-pub const BRIDGE_VERSION: u32 = 12;
+/// were each 10 on their own branches.) 13 added the server's public rooms
+/// to [`LobbyView`] ([`LobbyView::rooms`]), [`LobbyAction::ListRooms`] and
+/// a room's listing to [`LobbyAction::Create`].
+pub const BRIDGE_VERSION: u32 = 13;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -162,6 +164,44 @@ pub struct LobbyView {
     pub world: LobbyWorld,
     /// How this player's game differs from the room's, while it does.
     pub differences: Option<Text<256>>,
+    /// The page of the server's public rooms last asked for
+    /// ([`LobbyAction::ListRooms`]), while connected.
+    pub rooms: Option<LobbyRoomList>,
+}
+
+/// A page of the server's public rooms.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyRoomList {
+    pub page: u16,
+    pub rooms: BoundedVec<LobbyPublicRoom, { tpf3mp_proto::ROOMS_PER_PAGE }>,
+    /// A later page has more.
+    pub more: bool,
+}
+
+/// One public room, as the room browser shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyPublicRoom {
+    pub invite: Text<128>,
+    pub name: Text<48>,
+    pub rules: RulesName,
+    pub players: u8,
+    pub max_players: u8,
+    pub has_password: bool,
+    pub running: bool,
+    /// The climate, such as `temperate`; empty unknown.
+    pub map: Text<32>,
+    /// The game's year; 0 unknown.
+    pub year: u16,
+    pub companies: u8,
+}
+
+/// What a public room's list entry says of its world.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyListing {
+    /// The climate of the start save, such as `temperate`.
+    pub map: Text<32>,
+    /// The start save's year; 0 unknown.
+    pub year: u16,
 }
 
 /// Rules a room can be played by, as the server offers them.
@@ -201,6 +241,7 @@ impl Default for LobbyView {
             start_save: None,
             world: LobbyWorld::None,
             differences: None,
+            rooms: None,
         }
     }
 }
@@ -269,6 +310,13 @@ pub enum LobbyAction {
         /// The save the room starts from, which every game loads from its
         /// menu; without, the launcher's own (`--start-save`), if any.
         start_save: Option<SaveName>,
+        /// `Some` lists the room in the server's room list; `None` keeps it
+        /// private.
+        listing: Option<LobbyListing>,
+    },
+    /// Asks for page `page` of the server's public rooms.
+    ListRooms {
+        page: u16,
     },
     Join {
         invite: Text<128>,
@@ -524,6 +572,26 @@ mod tests {
                 total: u64::MAX,
             },
             differences: Some(Text::new("d".repeat(256)).unwrap()),
+            rooms: Some(LobbyRoomList {
+                page: u16::MAX,
+                rooms: BoundedVec::new(vec![
+                    LobbyPublicRoom {
+                        invite: Text::new("i".repeat(128)).unwrap(),
+                        name: Text::new("n".repeat(48)).unwrap(),
+                        rules: Text::new("r".repeat(32)).unwrap(),
+                        players: u8::MAX,
+                        max_players: u8::MAX,
+                        has_password: true,
+                        running: true,
+                        map: Text::new("m".repeat(32)).unwrap(),
+                        year: u16::MAX,
+                        companies: u8::MAX,
+                    };
+                    tpf3mp_proto::ROOMS_PER_PAGE
+                ])
+                .unwrap(),
+                more: true,
+            }),
         }));
         let bytes = encode(&view).unwrap();
         assert_eq!(decode::<ToHook>(&bytes).unwrap(), view);
@@ -533,6 +601,10 @@ mod tests {
             password: None,
             rules: Some(Text::new("native").unwrap()),
             start_save: Some(Text::new("mptest").unwrap()),
+            listing: Some(LobbyListing {
+                map: Text::new("temperate").unwrap(),
+                year: 1850,
+            }),
         });
         assert_eq!(
             decode::<ToAgent>(&encode(&action).unwrap()).unwrap(),

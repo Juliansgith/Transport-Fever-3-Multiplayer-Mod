@@ -374,6 +374,8 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (newest 40, by name) and the one offered first (`start_save`), where
     the room's world is in this game (`world`: none, fetching with its
     bytes, loading, playing) and how the game differs from the room's.
+    Since bridge version 13 it carries the page of the server's public
+    rooms last asked for (`rooms`).
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.
@@ -423,7 +425,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     version 9). Since version 10, create also names the rules and the save
     the room starts from: one of the saves the window was offered, by name
     only (never a path); absent for the launcher's own `--start-save`,
-    empty for none.
+    empty for none. Since version 13, create also carries a room's
+    listing (its climate and year, for a public room) and `ListRooms {
+    page }` asks for a page of the server's public rooms.
   - `Log`: a line for the agent's log.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the

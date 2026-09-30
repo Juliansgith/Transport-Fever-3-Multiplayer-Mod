@@ -42,6 +42,8 @@ pub(crate) struct View {
     /// The save rooms this player creates start from, unless they pick
     /// another.
     pub(crate) start_save: Option<String>,
+    /// The page of public rooms last asked for, while connected.
+    pub(crate) rooms: Option<RoomList>,
 }
 
 /// Something the player asks for.
@@ -66,6 +68,15 @@ pub enum Action {
         /// the owner's game loads a world and saves it for the room.
         #[serde(default)]
         start_save: Option<String>,
+        /// `Some` lists the room in the server's room list for anyone to
+        /// see and join; `None`, the default, keeps it private.
+        #[serde(default)]
+        listing: Option<Listing>,
+    },
+    /// Asks the server for page `page` of its public rooms
+    /// ([`State::rooms`]).
+    ListRooms {
+        page: u16,
     },
     Join {
         invite: String,
@@ -88,6 +99,67 @@ pub enum Action {
     },
     /// Starts Transport Fever 3 with TPF3-MP's hook in it, for this room.
     LaunchGame,
+}
+
+/// What a public room's list entry says of its world, as the creating
+/// player's game read it from the start save.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Listing {
+    /// The climate, such as `temperate`.
+    #[serde(default)]
+    pub map: String,
+    /// The start year; 0 unknown.
+    #[serde(default)]
+    pub year: u16,
+}
+
+/// A page of the server's public rooms.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RoomList {
+    pub page: u16,
+    pub rooms: Vec<PublicRoom>,
+    /// A later page has more.
+    pub more: bool,
+}
+
+/// One public room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicRoom {
+    pub invite: String,
+    pub name: String,
+    pub rules: String,
+    pub players: u8,
+    pub max_players: u8,
+    pub has_password: bool,
+    pub running: bool,
+    pub map: String,
+    pub year: u16,
+    pub companies: u8,
+}
+
+impl RoomList {
+    pub(crate) fn of(page: &tpf3mp_proto::RoomPage) -> Self {
+        Self {
+            page: page.page,
+            more: page.more,
+            rooms: page
+                .rooms
+                .iter()
+                .map(|room| PublicRoom {
+                    invite: room.invite.to_string(),
+                    name: room.name.as_str().to_owned(),
+                    rules: room.rules.as_str().to_owned(),
+                    players: room.players,
+                    max_players: room.max_players,
+                    has_password: room.has_password,
+                    running: room.phase == RoomPhase::Running,
+                    map: room.listing.map.as_str().to_owned(),
+                    year: room.listing.year,
+                    companies: room.listing.companies,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Everything a launcher front end shows: the web page reads it as JSON,
@@ -138,6 +210,9 @@ pub struct State {
     /// The save rooms this player creates start from unless they pick
     /// another: the launcher's `--start-save`, or the one last picked.
     pub start_save: Option<String>,
+    /// The page of the server's public rooms last asked for
+    /// ([`Action::ListRooms`]).
+    pub rooms: Option<RoomList>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -413,6 +488,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         diagnostics: view.diagnostics,
         saves: view.saves.clone(),
         start_save: view.start_save.clone(),
+        rooms: view.rooms.clone().filter(|_| view.connected),
     }
 }
 
@@ -485,6 +561,7 @@ mod tests {
                 password: None,
                 rules: Some("native".into()),
                 start_save: None,
+                listing: None,
             }
         );
         let action: Action = serde_json::from_str(
