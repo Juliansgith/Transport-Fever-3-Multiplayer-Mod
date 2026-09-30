@@ -60,7 +60,8 @@ use std::{
 
 use ring::digest::{SHA256, digest};
 use tpf3mp_bridge::{
-    Begin, Game, LobbyAction, LobbyView, Notice, SaveOrder, Session, SessionError, StepGate,
+    Begin, Game, LobbyAction, LobbyView, ModLists, Notice, SaveOrder, Session, SessionError,
+    StepGate,
 };
 use tpf3mp_proto::{
     ChatText, Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Seal, Secret, Speed,
@@ -154,6 +155,8 @@ pub trait GameControl: Send {
     fn room_notice(&mut self, notice: &Notice);
     /// Tells the game's Multiplayer window which player is this game's.
     fn set_me(&mut self, player: PlayerId);
+    /// The mods the room's worlds load with (`ToHook::Begin`'s `mods`).
+    fn set_mods(&mut self, mods: Option<ModLists>);
     /// The number of a world whose GUI started with the mod linked, since
     /// the last call, if one did: the latest. Once.
     fn world_up(&mut self) -> Option<u64>;
@@ -932,6 +935,18 @@ impl<G: RoomGate> StepDriver<G> {
         self.checkpoint_interval = u64::from(begin.checkpoint_interval).max(1);
         self.game.me = Some(begin.player);
         self.control.set_me(begin.player);
+        match &begin.mods {
+            Some(mods) => self.log.push(format!(
+                "the room's worlds load with the {} shared mods and this player's {} personal ones",
+                mods.shared.len(),
+                mods.personal.len()
+            )),
+            None => self.log.push(
+                "no mod lists from the launcher: the room's worlds load with their saves' mods"
+                    .into(),
+            ),
+        }
+        self.control.set_mods(begin.mods.clone());
         self.phase = Phase::Running;
     }
 
@@ -1359,6 +1374,7 @@ pub(crate) mod tests {
         pub(crate) load_failure: Option<String>,
         pub(crate) room_notices: Vec<Notice>,
         pub(crate) me: Option<PlayerId>,
+        pub(crate) mods: Option<ModLists>,
         pub(crate) world_up: Option<u64>,
     }
 
@@ -1393,6 +1409,9 @@ pub(crate) mod tests {
         fn set_me(&mut self, player: PlayerId) {
             self.state.lock().unwrap().me = Some(player);
         }
+        fn set_mods(&mut self, mods: Option<ModLists>) {
+            self.state.lock().unwrap().mods = mods;
+        }
         fn world_up(&mut self) -> Option<u64> {
             self.state.lock().unwrap().world_up.take()
         }
@@ -1422,6 +1441,7 @@ pub(crate) mod tests {
             checkpoint_interval: 50,
             saves: PathBuf::from("saves"),
             player: ME,
+            mods: None,
         }
     }
 

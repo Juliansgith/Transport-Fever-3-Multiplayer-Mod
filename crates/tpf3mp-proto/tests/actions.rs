@@ -389,6 +389,10 @@ fn samples() -> Vec<Action> {
             vehicle: VehicleId(2),
             change: VehicleChange::Depart,
         }),
+        Action::VehicleOp(VehicleOp {
+            vehicle: VehicleId(2),
+            change: VehicleChange::ManualDeparture(true),
+        }),
         Action::ReplaceVehicle(replacement()),
         Action::Prospect(Prospect {
             town: TownId(4),

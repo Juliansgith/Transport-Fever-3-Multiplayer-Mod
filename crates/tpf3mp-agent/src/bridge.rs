@@ -23,8 +23,8 @@ use tokio::{
     task::AbortHandle,
 };
 use tpf3mp_bridge::{
-    BridgeError, LobbyAction, LobbyView, MAX_MESSAGE, MAX_PATH, RoomInfo, RoomMember, ToAgent,
-    ToHook, check_version, decode, encode,
+    BridgeError, LobbyAction, LobbyView, MAX_MESSAGE, MAX_PATH, ModLists, RoomInfo, RoomMember,
+    ToAgent, ToHook, check_version, decode, encode,
 };
 use tpf3mp_net::close;
 use tpf3mp_proto::{
@@ -112,6 +112,11 @@ pub struct BridgeOptions {
     /// it from its main menu when the game starts. Without it, the owner's
     /// game has the world up and saves it for the room once the game began.
     pub start_world: Option<PathBuf>,
+    /// This player's mods for the room's worlds: the shared ones it
+    /// declared and its personal ones (`crate::content::split`), handed to
+    /// the hook when the game begins. Without them a world loads with the
+    /// mods its save lists.
+    pub mods: Option<ModLists>,
 }
 
 /// The launcher's lobby as a bridge passes it on: the lobby to show the
@@ -135,6 +140,7 @@ impl Default for BridgeOptions {
             status: None,
             lobby: None,
             start_world: None,
+            mods: None,
         }
     }
 }
@@ -948,6 +954,7 @@ impl<L: HookLink> Bridge<L> {
                         checkpoint_interval: start.checkpoint_interval,
                         saves: path_text(&saves)?,
                         player: client.player(),
+                        mods: self.options.mods.clone(),
                     });
                     if let Some(room) = &self.room {
                         self.outbox.push_back(ToHook::Room(room_info(room)));
@@ -1445,7 +1452,15 @@ impl Outbox {
                 ..
             }) => payload.len(),
             ToHook::Load { file, .. } => file.as_ref().map_or(0, |file| file.as_str().len()),
-            ToHook::Begin { rules, saves, .. } => rules.as_str().len() + saves.as_str().len(),
+            ToHook::Begin {
+                rules, saves, mods, ..
+            } => {
+                rules.as_str().len()
+                    + saves.as_str().len()
+                    + mods
+                        .as_ref()
+                        .map_or(0, |m| (m.shared.len() + m.personal.len()) * 97)
+            }
             ToHook::Diverged { lanes, .. } => lanes.len() * 2,
             ToHook::Chat { from, text } => from.as_str().len() + text.as_str().len(),
             ToHook::Room(room) => room.members.len() * 64,

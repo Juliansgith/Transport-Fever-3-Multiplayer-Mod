@@ -91,7 +91,7 @@ use std::{
     },
 };
 
-use tpf3mp_bridge::{Notice, RoomInfo};
+use tpf3mp_bridge::{ModLists, Notice, Plan, RoomInfo};
 use tpf3mp_proto::{
     ChatText, Payload, PlayerId, Seal, Secret, Text,
     action::{Action, CompanyOp},
@@ -279,6 +279,9 @@ struct Shared {
     load_failure: Option<String>,
     /// The room, for the game's Multiplayer window ([`notice`]).
     room: RoomStatus,
+    /// The mods the room's worlds load with, from the room's `Begin`
+    /// ([`set_mods`]).
+    mods: Option<ModLists>,
     /// What one of the game's Lua states noted for the others (`note()`),
     /// by key, at most [`MAX_NOTES`].
     notes: Vec<(String, String)>,
@@ -340,6 +343,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     told: 0,
     menu_load: None,
     load_failure: None,
+    mods: None,
     notes: Vec::new(),
 });
 
@@ -648,6 +652,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"say", native_say),
                 (b"dump", native_dump),
                 (b"dumped", native_dumped),
+                (b"mods", native_mods),
+                (b"personal", native_personal),
                 (b"note", native_note),
             ] {
                 push_str(api, l, name);
@@ -1124,6 +1130,105 @@ pub fn notice(notice: &Notice) {
 /// The local player, as the room's `Begin` names it.
 pub fn set_me(player: PlayerId) {
     shared().room.me = Some(player);
+}
+
+/// The mods the room's worlds load with, as the room's `Begin` gives them:
+/// `mods()` plans each load with them (docs/MODS.md).
+pub fn set_mods(mods: Option<ModLists>) {
+    shared().mods = mods;
+}
+
+/// Longest list of a save's mods `mods()` reads, in bytes.
+const MAX_MOD_LIST: usize = 256 * 1024;
+/// What separates the names in `mods()`'s lists.
+const NEWLINE: &str = "\n";
+
+/// What to load a save listing `save` (one mod name a line) with, or `None`
+/// without the room's lists; said in the hook's log.
+pub fn plan_mods(save: &str) -> Option<Plan> {
+    let lists = shared().mods.clone()?;
+    let save: Vec<String> = save
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let plan = tpf3mp_bridge::mods::plan(&save, &lists);
+    let named = |list: &[String]| {
+        if list.is_empty() {
+            "none".to_owned()
+        } else {
+            list.join(", ")
+        }
+    };
+    log(format!(
+        "the room's world loads with {} mods: {}; left out, another player's or in no list: {}; this player's own added: {}",
+        plan.mods.len(),
+        named(&plan.mods),
+        named(&plan.dropped),
+        named(&plan.added)
+    ));
+    Some(plan)
+}
+
+/// `personal()`: this player's personal mods, one name a line, or nil
+/// without the room's lists: the guards keep their commands to the room.
+unsafe extern "C-unwind" fn native_personal(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let names = shared().mods.as_ref().map(|mods| {
+        mods.personal
+            .iter()
+            .map(|m| m.as_str())
+            .collect::<Vec<_>>()
+            .join(NEWLINE)
+    });
+    // SAFETY: a C function's call has room for its result.
+    unsafe {
+        match names {
+            Some(names) => push_str(api, l, names.as_bytes()),
+            None => (api.pushnil)(l),
+        }
+    }
+    1
+}
+
+/// `mods(list)`: the mods to load a save with, given the save's (one name a
+/// line): that list, then what it left out and what it added, the same way;
+/// `nil` when the room gave no lists, and the save then loads with its own.
+/// `mods()` alone says whether the room gave lists (`true` or `nil`). The
+/// main menu's load gets it too (`crate::menu`).
+pub(crate) unsafe extern "C-unwind" fn native_mods(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread; a C
+    // function's call has room for its results.
+    unsafe {
+        if (api.gettop)(l) < 1 {
+            if shared().mods.is_some() {
+                (api.pushboolean)(l, 1);
+            } else {
+                (api.pushnil)(l);
+            }
+            return 1;
+        }
+    }
+    // SAFETY: Lua calls this with its own state, on its thread.
+    let save = unsafe { string_arg(api, l, 1, MAX_MOD_LIST) }.unwrap_or_default();
+    let Some(plan) = plan_mods(&save) else {
+        // SAFETY: a C function's call has room for its results.
+        unsafe { (api.pushnil)(l) };
+        return 1;
+    };
+    // SAFETY: as above.
+    unsafe {
+        for list in [&plan.mods, &plan.dropped, &plan.added] {
+            push_str(api, l, list.join(NEWLINE).as_bytes());
+        }
+    }
+    3
 }
 
 /// What the player said in the Multiplayer window since the last call, for

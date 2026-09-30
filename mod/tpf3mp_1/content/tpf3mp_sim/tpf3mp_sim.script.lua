@@ -139,6 +139,83 @@ function data()
 		return { action = action, shape = shape }
 	end
 
+	-- The guard on what this player's personal mods' game scripts send, in
+	-- this state (tpf3mp/modguard.lua): put on once the link is.
+	local function guardPersonalMods(companiesModule, registryModule)
+		local okModule, modguard = pcall(ug_require, MOD .. "::/scripts/tpf3mp/modguard.lua")
+		local okCmd, cmd = pcall(function() return api.cmd end)
+		if not okModule or type(modguard) ~= "table" or not okCmd then
+			link:log("the personal mods' guard is not on: " .. tostring(modguard))
+			return
+		end
+		if type(debug) ~= "table" or type(debug.getinfo) ~= "function" then
+			-- Without the stack no command can be told to be a personal
+			-- mod's: fail closed is not possible here, so say it loudly
+			-- when this player has any.
+			if next(link:personal()) ~= nil then
+				link:log("the personal mods' guard is not on: this state has no debug.getinfo, "
+					.. "so a personal mod's game script would act in this game alone")
+			end
+			return
+		end
+		-- This player's personal mods, read again every so often: the room's
+		-- lists come with its Begin, perhaps after this state linked.
+		local personal, reads = {}, 0
+		local function isPersonal(mod)
+			reads = reads - 1
+			if reads <= 0 then
+				personal, reads = link:personal(), 200
+			end
+			return personal[mod] == true
+		end
+		local function registryNow()
+			local state = companiesModule.scriptState(api)
+			return state and state.registry
+		end
+		local function idOf(kind)
+			return function(entity) return registryModule.id(registryNow(), kind, entity) end
+		end
+		-- The company this player acts for: theirs in the roster, else the
+		-- game's player.
+		local function myCompany()
+			local state = companiesModule.scriptState(api)
+			local roster = state and state.companies
+			local status = link:status()
+			local me = status and status.me_id
+			if roster and me then
+				for _, m in ipairs(roster.members or {}) do
+					if m.player == me then
+						for _, c in ipairs(roster.list or {}) do
+							if c.id == m.company then return c.entity, roster end
+						end
+					end
+				end
+			end
+			local ok, player = pcall(function() return api.engine.util.getPlayer() end)
+			return ok and player or nil, roster
+		end
+		local wrapped, why = modguard.install(cmd, {
+			inRoom = function() return link:room() end,
+			personal = isPersonal,
+			command = function(action) return link:command(action) end,
+			context = { vehicle = idOf("vehicles"), line = idOf("lines"), group = idOf("groups"),
+				town = idOf("towns") },
+			mayTouch = function(entity)
+				local company, roster = myCompany()
+				return companiesModule.mayTouch(roster, company, entity, api, "thing")
+			end,
+			now = function()
+				local ok, t = pcall(function()
+					return api.engine.getComponent(api.engine.util.getWorld(),
+						api.type.ComponentType.GAME_TIME).gameTime
+				end)
+				return ok and t or 0
+			end,
+			log = function(line) link:log(line) end,
+		})
+		if not wrapped then link:log("the personal mods' guard is not on: " .. tostring(why)) end
+	end
+
 	local function linked()
 		if not tried then
 			tried = true
@@ -164,7 +241,10 @@ function data()
 				registry = registryModule
 				companies = companiesModule
 				progression = progressionModule
-				if link then link:log("the game script is linked") end
+				if link then
+					link:log("the game script is linked")
+					guardPersonalMods(companiesModule, registryModule)
+				end
 			end
 		end
 		return link

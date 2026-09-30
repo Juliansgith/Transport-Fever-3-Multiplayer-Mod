@@ -91,8 +91,12 @@ pub struct LauncherConfig {
     pub identity: Arc<Identity>,
     /// The name the page offers first.
     pub name: String,
-    /// What this player's game runs, declared on every connection.
+    /// What this player's game runs, declared on every connection: the
+    /// build and the shared mods (`crate::content::split`).
     pub content: ContentManifest,
+    /// This player's mods for the room's worlds, shared and personal, when
+    /// it listed them (`BridgeOptions::mods`).
+    pub mods: Option<tpf3mp_bridge::ModLists>,
     /// Transport Fever 3 as Steam installed it, if it did.
     pub installed: Option<crate::steam::Installed>,
     /// The shared-memory link the game's hook opens.
@@ -821,6 +825,7 @@ fn begin_session(
         lobby: Some(shared.lobby.clone()),
         // A room this player created starts from the save named for it.
         start_world: start_world.filter(|_| owned),
+        mods: config.mods.clone(),
         ..BridgeOptions::default()
     };
     let rejoin = Rejoin {

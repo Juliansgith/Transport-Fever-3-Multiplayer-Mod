@@ -207,7 +207,8 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.progression",
             "tpf3mp.registry",
             "tpf3mp.roads",
-            "tpf3mp.ui"
+            "tpf3mp.ui",
+            "tpf3mp.worldload"
         ]
     );
 }
@@ -612,6 +613,84 @@ fn the_gui_loads_the_rooms_world_from_the_save_folder() {
     assert_eq!(loaded, "|tpf3mp_room_77|savegame|false");
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
     assert_eq!(logged.last().unwrap(), "loading the room's world");
+}
+
+/// The hook's `mods` as the room's lists make it (crates/tpf3mp-bridge,
+/// `mods::plan`), and the game's save details, mods and ModId, for a load
+/// with the room's mods (docs/MODS.md).
+const FAKE_MODS: &str = r#"
+SHARED = { vehicles_pack = true }
+MINE = { 'my_colours' }
+tpf3mp_native.mods = function(list)
+    if list == nil then return true end
+    local keep, dropped, added = {}, {}, {}
+    for name in string.gmatch(list, '[^\n]+') do
+        if SHARED[name] or name == 'tpf3mp_1' or name == MINE[1] then keep[#keep + 1] = name
+        else dropped[#dropped + 1] = name end
+    end
+    keep[#keep + 1] = MINE[1] added[1] = MINE[1]
+    return table.concat(keep, '\n'), table.concat(dropped, '\n'), table.concat(added, '\n')
+end
+SAVED = { 'vehicles_pack', 'tpf3mp_1', 'owner_minimap' }
+INSTALLED = { vehicles_pack = true, tpf3mp_1 = true, my_colours = true }
+READY = false
+api.type.ModId = { new = function() return {} end }
+api.type.SaveGameDetails = { new = function(info)
+    local copy = {} for k, v in pairs(info) do copy[k] = v end return copy end }
+app.getSavegameInfo = function(id)
+    local mods = {}
+    for i, name in ipairs(SAVED) do mods[i] = { name = name } end
+    return { isCompleted = function() return READY end,
+             get = function() return { errorMsg = '', info = { mods = mods } } end }
+end
+app.getUserProfile = function() return { getModRep = function() return {
+    exists = function(_, m) return INSTALLED[m.name] == true end } end } end
+local load = app.loadGame
+app.loadGame = function(id, isMapEditor, info)
+    load(id, isMapEditor, info)
+    local names = {}
+    for _, m in ipairs(info and info.mods or {}) do names[#names + 1] = m.name end
+    APP.loads[#APP.loads].mods = table.concat(names, ',')
+end
+"#;
+
+#[test]
+fn the_gui_loads_the_rooms_world_with_the_rooms_mods_and_its_own() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_APP).exec().unwrap();
+    lua.load(FAKE_MODS).exec().unwrap();
+    lua.load(
+        "M = mount(loadPlugin()) M.step() HOOK.request = { load = 'tpf3mp_room_77' } M.step()",
+    )
+    .exec()
+    .unwrap();
+    // The game reads the save's details over a few frames.
+    let loads: usize = lua.load("M.step() return #APP.loads").eval().unwrap();
+    assert_eq!(loads, 0);
+    let (name, mods): (String, String) = lua
+        .load("READY = true M.step() return APP.loads[1].id.saveGameName, APP.loads[1].mods")
+        .eval()
+        .unwrap();
+    assert_eq!(name, "tpf3mp_room_77");
+    assert_eq!(
+        mods, "vehicles_pack,tpf3mp_1,my_colours",
+        "the owner's minimap left out, this player's colours added"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert_eq!(logged.last().unwrap(), "loading the room's world");
+
+    // A shared mod this player lacks: not loaded, and said why.
+    lua.load("INSTALLED.vehicles_pack = nil HOOK.request = { load = 'tpf3mp_room_78' } M.step()")
+        .exec()
+        .unwrap();
+    let (loads, logged): (usize, Vec<String>) =
+        lua.load("return #APP.loads, HOOK.logged").eval().unwrap();
+    assert_eq!(loads, 1);
+    assert_eq!(
+        logged.last().unwrap(),
+        "loading the room's world failed: the room's world needs the mod vehicles_pack, which is not installed"
+    );
 }
 
 #[test]
@@ -3514,6 +3593,231 @@ fn without_callbacks_the_registry_alone_finds_what_an_action_made() {
             .iter()
             .any(|l| l == "action 1 of this step made no vehicles this game could name"),
         "{logged:?}"
+    );
+}
+
+/// A personal timetable mod's game script (docs/MODS.md): its holds and
+/// releases of its own company's vehicles go to the room, once each; what
+/// the game's own scripts and shared mods send runs as before.
+#[test]
+fn a_personal_mods_game_script_hands_its_holds_to_the_room() {
+    let lua = gui();
+    let (sent, handed, wrapped, logged): (String, Vec<String>, u32, Vec<String>) = lua
+        .load(
+            r#"
+            local modguard = ug_require('tpf3mp_1::/scripts/tpf3mp/modguard.lua')
+            SENT, HANDED, LOGGED, CALLERS, NOW, ROOM = {}, {}, {}, {}, 0, true
+            local cmd = {
+                makeVehicleSetManualDepartureCmd = function(v, m) return { kind = 'manual', v = v, m = m } end,
+                makeVehicleTryToDepartCmd = function(v) return { kind = 'depart', v = v } end,
+                makeScriptingSendEventCmd = function() return { kind = 'event' } end,
+                makeVehicleSellCmd = function() return { kind = 'sell' } end,
+                sendCommand = function(c) SENT[#SENT + 1] = c.kind end,
+            }
+            local wrapped = modguard.install(cmd, {
+                inRoom = function() return ROOM end,
+                personal = function(mod) return mod == 'celmi_timetables' end,
+                callers = function() return CALLERS end,
+                command = function(a)
+                    local ok, why = schema_check(a)
+                    if not ok then error(why) end
+                    local c = a.VehicleOp.change
+                    if type(c) == 'table' then c = 'ManualDeparture=' .. tostring(c.ManualDeparture) end
+                    HANDED[#HANDED + 1] = a.VehicleOp.vehicle .. ':' .. c
+                    return true
+                end,
+                context = { vehicle = function(e) if e == 500 then return 7 elseif e == 600 then return 8 end end },
+                mayTouch = function(e)
+                    if e == 600 then return false, 'the vehicle belongs to Blue Line' end
+                    return true
+                end,
+                now = function() return NOW end,
+                log = function(line) LOGGED[#LOGGED + 1] = line end,
+            })
+            -- The game's own script and a shared mod: run here, as before.
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+            CALLERS = { 'auto_signals_1' }
+            cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(500))
+            -- The personal mod: a hold, the same hold again at once, a
+            -- release, and a hold again later.
+            CALLERS = { 'celmi_timetables' }
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, false))
+            NOW = 6000
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+            -- Another company's vehicle; its events; what it may not do.
+            cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(600))
+            cmd.sendCommand(cmd.makeScriptingSendEventCmd('', 'celmiTT_held', 'celmiTT_held', {}))
+            cmd.sendCommand(cmd.makeVehicleSellCmd({ 500 }))
+            -- Through a shared mod's helper, still the personal mod's.
+            CALLERS, NOW = { 'shared_lib', 'celmi_timetables' }, 20000
+            cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(500))
+            -- Outside the room's game, as the game would.
+            ROOM = false
+            cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(500))
+            return table.concat(SENT, ','), HANDED, wrapped, LOGGED
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(sent, "manual,depart,depart");
+    assert_eq!(
+        handed,
+        [
+            "7:ManualDeparture=true",
+            "7:ManualDeparture=false",
+            "7:ManualDeparture=true",
+            "7:Depart"
+        ]
+    );
+    assert_eq!(wrapped, 3, "the factories the fake api.cmd has");
+    let refused: Vec<&String> = logged.iter().filter(|l| !l.starts_with("handed")).collect();
+    assert_eq!(
+        refused,
+        [
+            "refused makeVehicleTryToDepartCmd for another company's: the vehicle belongs to Blue Line, from the personal mod celmi_timetables",
+            "dropped makeScriptingSendEventCmd (heard by this game's scripts only), from the personal mod celmi_timetables",
+            "refused a command no factory made, from the personal mod celmi_timetables",
+        ]
+    );
+    assert_eq!(
+        logged[0],
+        "handed makeVehicleSetManualDepartureCmd from the personal mod celmi_timetables to the room (1 so far)"
+    );
+}
+
+/// The GUI's guard (guard.lua) and the personal mods' guard (modguard.lua)
+/// each keep the sendCommand they found, so on one api.cmd, in either order,
+/// neither swallows the other: outside the room's game a command runs once;
+/// a personal mod's hold goes to the room once and does not run here; a
+/// command the room does not carry is refused once.
+#[test]
+fn the_gui_guard_and_the_personal_mods_guard_chain_in_either_order() {
+    let lua = gui();
+    for guard_first in [true, false] {
+        let (sent, handed, refused): (String, u32, u32) = lua
+            .load(format!(
+                r#"
+                local guard = ug_require('tpf3mp_1::/scripts/tpf3mp/guard.lua')
+                local modguard = ug_require('tpf3mp_1::/scripts/tpf3mp/modguard.lua')
+                -- The GUI state's modules, as its script puts them there.
+                package.loaded['tpf3mp.capture'] = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+                SENT, HANDED, REFUSED, CALLERS, ROOM = {{}}, 0, 0, {{}}, false
+                local cmd = {{
+                    makeVehicleSetManualDepartureCmd = function(v, m) return {{ kind = 'manual', v = v, m = m }} end,
+                    makeVehicleTryToDepartCmd = function(v) return {{ kind = 'depart', v = v }} end,
+                    makeScriptingSendEventCmd = function() return {{ kind = 'event' }} end,
+                    sendCommand = function(c) SENT[#SENT + 1] = c.kind end,
+                }}
+                local context = {{ vehicle = function(e) if e == 500 then return 7 end end }}
+                local function hand(a)
+                    local ok, why = schema_check(a)
+                    if not ok then error(why) end
+                    HANDED = HANDED + 1
+                    return true
+                end
+                local function onGuard()
+                    guard.install(cmd, {{
+                        inRoom = function() return ROOM end,
+                        command = hand,
+                        refused = function() REFUSED = REFUSED + 1 end,
+                        later = function(fn) fn() end,
+                        context = context,
+                        personal = function(mod) return mod == 'celmi_timetables' end,
+                        caller = function() return CALLERS[1] end,
+                    }})
+                end
+                local function onModguard()
+                    modguard.install(cmd, {{
+                        inRoom = function() return ROOM end,
+                        personal = function(mod) return mod == 'celmi_timetables' end,
+                        callers = function() return CALLERS end,
+                        command = hand,
+                        context = context,
+                        now = function() return 0 end,
+                        log = function() end,
+                    }})
+                end
+                if {guard_first} then onGuard() onModguard() else onModguard() onGuard() end
+                -- Outside the room's game: runs here, once.
+                cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(500))
+                ROOM = true
+                -- A personal mod's hold: to the room once, not run here.
+                CALLERS = {{ 'celmi_timetables' }}
+                cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+                -- A shared mod's event: the room carries none, refused once.
+                CALLERS = {{ 'auto_signals_1' }}
+                cmd.sendCommand(cmd.makeScriptingSendEventCmd('', 'x', 'y', {{}}))
+                return table.concat(SENT, ','), HANDED, REFUSED
+                "#
+            ))
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            (sent.as_str(), handed, refused),
+            ("depart", 1, 1),
+            "guard first: {guard_first}"
+        );
+    }
+}
+
+/// The GUI's guard names the mod a refused command came from, and lets a
+/// personal mod's event to its own game script through, in this game only.
+#[test]
+fn the_guard_names_the_mod_and_lets_a_personal_mods_events_reach_its_script() {
+    let lua = gui();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (callers, refused, sent): (String, Vec<String>, String) = lua
+        .load(
+            r#"
+            local guard = ug_require('tpf3mp_1::/scripts/tpf3mp/guard.lua')
+            local stack = { { source = '@::/gui/main/engine_react_util.tl' },
+                            { source = 'tpf3mp_1::/scripts/tpf3mp/guard.lua' },
+                            { source = '@celmi_timetables::/timetable/plugins/shared/helpers.script.tl' },
+                            { source = 'gw_big_city_1::/gui/x.script.tl' },
+                            { source = '@celmi_timetables::/timetable/x.tl' } }
+            local callers = table.concat(guard.callers(function(level) return stack[level] end), ',')
+            REFUSED, FROM = {}, 'celmi_timetables'
+            guard.install(api.cmd, {
+                inRoom = function() return true end,
+                refused = function(kind, why, from)
+                    REFUSED[#REFUSED + 1] = tostring(kind) .. ' ' .. tostring(from)
+                end,
+                later = function() end,
+                context = {},
+                personal = function(mod) return mod == 'celmi_timetables' end,
+                caller = function() return FROM end,
+            })
+            api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
+            FROM = 'gw_big_city_1'
+            api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
+            FROM = nil
+            api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
+            -- Made by the mod, sent by the game's own helper (a window's
+            -- commit): still the mod's.
+            FROM = 'celmi_timetables'
+            local made = api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setMinWait', {})
+            FROM = nil
+            api.cmd.sendCommand(made)
+            local sent = {}
+            for _, s in ipairs(SENT) do sent[#sent + 1] = s.command.kind .. ':' .. tostring(s.command.id) end
+            return callers, REFUSED, table.concat(sent, ',')
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(callers, "celmi_timetables,gw_big_city_1");
+    assert_eq!(
+        sent, "event:TimetablesEdit,event:TimetablesEdit",
+        "the personal mod's own events only"
+    );
+    assert_eq!(
+        refused,
+        [
+            "makeScriptingSendEventCmd gw_big_city_1",
+            "makeScriptingSendEventCmd nil"
+        ]
     );
 }
 

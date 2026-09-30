@@ -21,7 +21,7 @@ use tpf3mp_proto::{
 
 use crate::{
     BRIDGE_VERSION, BridgeError, Gate, GateError, Gated, LobbyAction, LobbyView, MAX_MESSAGE,
-    RoomInfo, ToAgent, ToHook, check_version, decode, encode,
+    ModLists, RoomInfo, ToAgent, ToHook, check_version, decode, encode,
 };
 
 /// How long to sleep between polls while waiting for the agent.
@@ -120,6 +120,8 @@ pub struct Begin {
     pub saves: PathBuf,
     /// The local player, as the room's events name the actor.
     pub player: PlayerId,
+    /// The mods the room's worlds load with (see `ToHook::Begin`).
+    pub mods: Option<ModLists>,
 }
 
 #[derive(Debug, Error)]
@@ -324,6 +326,7 @@ impl Session {
                     checkpoint_interval,
                     saves,
                     player,
+                    mods,
                 } => {
                     self.checkpoint_interval = u64::from(checkpoint_interval).max(1);
                     self.saves = PathBuf::from(saves.as_str());
@@ -334,6 +337,7 @@ impl Session {
                         checkpoint_interval,
                         saves: self.saves.clone(),
                         player,
+                        mods,
                     }));
                 }
                 // Talk in the lobby, and the lobby itself, are for the front
@@ -833,6 +837,7 @@ mod tests {
             checkpoint_interval,
             saves: Text::lossy("saves"),
             player: PlayerId(FixedBytes([1; 32])),
+            mods: None,
         }
     }
 
@@ -1198,6 +1203,7 @@ mod tests {
                 checkpoint_interval: 50,
                 saves: Text::lossy("saves"),
                 player: PlayerId(FixedBytes([1; 32])),
+                mods: None,
             },
         );
         assert!(session.try_begin().unwrap().is_some());

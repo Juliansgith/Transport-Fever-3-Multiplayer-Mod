@@ -839,3 +839,53 @@ Rejected:
 - **A pause-menu Multiplayer entry**: in the room's game the game bar's
   Multiplayer window has the room, and a copy of the pause menu is one
   more game file to carry over on every patch.
+
+## D25 (2026-09-30, *proposed*): players may differ in personal mods
+
+*Proposed, for the owner (Juliansgith) to approve or refuse. Nothing here is
+decided until then.*
+
+The user, on 2026-09-30: "scan a lua mod for what functions it calls and so
+long as it doesn't call any ones that could cause a desync, or if it does
+changes we cancel and replay them anyways", and of a timetable mod:
+"timetables would cancel and replay but only on the player's own vehicles,
+we just have to intercept certain lua functions."
+
+- A room's players must run the same **shared** mods, in the same version
+  and order, as now. They may differ in **personal** mods: mods that only
+  change what one player sees, whose every change to the world goes through
+  `api.cmd` from the GUI, where the room's guard carries it to every game or
+  refuses it ([MODS.md](MODS.md)).
+- A static scan (`tpf3mp-modscan`) sorts each listed mod, failing closed: a
+  mod it cannot read, or whose files it does not know, is shared. The room's
+  content check compares the shared mods alone.
+- Every game loads the room's world with the save's shared mods and its own
+  player's personal mods, leaving out other players' personal mods; nothing
+  is stripped from a save.
+- A game-script mod whose game scripts act only through commands the room
+  carries from them (a timetable mod, a line namer: **carried**) may be
+  personal once the measurements in MODS.md ("To measure in the game") pass:
+  its player's game alone runs it, its commands go to the room as actions
+  for that player's own company's vehicles and lines, and every game
+  applies them. Until then it is shared unless the player asks
+  (`--personal-game-scripts`).
+- `"cosmetic": true` in a mod's manifest decides nothing: mods that change
+  the world say it too.
+
+Rejected:
+
+- **Trust the scan alone**: Lua reaches anything by a name built at run
+  time; what the scan misses, the guards refuse.
+- **Trust "cosmetic"**: see above.
+- **Strip personal mods from the save before it is handed out**: the game
+  writes a save's mod list natively (`GameSaveCommandData.modDescs`); every
+  game choosing its own list at load needs no change to the save.
+- **Let a personal game-script mod act in its own game**: it would change
+  that world alone.
+
+Touches: PLAN.md, Part 3, "a rule for mods that send commands from the GUI",
+left open for the team: this proposes the guard's answer (carried, else
+refused), which the owner settles. "The room's required mods from Mod Hub
+IDs" stands. No "mods round" in which the host sends its mods to joiners was
+found in the code or the docs of `dev` (2026-09-30); if one is planned, it
+would send the shared mods only.

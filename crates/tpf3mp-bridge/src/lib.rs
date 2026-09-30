@@ -23,6 +23,7 @@
 //! link; the game-specific part of the hook only implements [`Game`].
 
 mod gate;
+pub mod mods;
 mod session;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -33,6 +34,7 @@ use tpf3mp_proto::{
 };
 
 pub use gate::{Gate, GateError, Gated};
+pub use mods::{ModLists, ModName, Plan};
 pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, StepGate};
 
 /// Version of these messages. Both sides send it first and refuse a peer
@@ -42,9 +44,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// world and differences to [`LobbyView`], and the rules and start save to
 /// [`LobbyAction::Create`]; 11 carries a password beside a command
 /// ([`ToAgent::Command`]'s `secret`) and a seal in each ordered command
-/// (protocol 8). (The lobby's and the passwords' changes were each 10 on
-/// their own branches.)
-pub const BRIDGE_VERSION: u32 = 11;
+/// (protocol 8); 12 added the mods the room's world loads with to
+/// [`ToHook::Begin`]. (The lobby's, the passwords' and the mods' changes
+/// were each 10 on their own branches.)
+pub const BRIDGE_VERSION: u32 = 12;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -72,6 +75,11 @@ pub enum ToHook {
         checkpoint_interval: u32,
         saves: Text<MAX_PATH>,
         player: PlayerId,
+        /// The mods the room's worlds load with in this game: the room's
+        /// shared ones and this player's personal ones ([`mods::plan`]).
+        /// `None` when the agent does not know this player's mods: a world
+        /// then loads with the mods its save lists.
+        mods: Option<ModLists>,
     },
     /// Apply this event before running step `event.step`.
     Apply(Event),

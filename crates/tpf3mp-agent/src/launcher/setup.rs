@@ -182,9 +182,16 @@ pub struct LauncherArgs {
     pub game_exe: Option<PathBuf>,
 
     /// A file listing the game's active mods in load order, one per line:
-    /// the mod's name, then its version.
+    /// the mod's name, then its version. Each is scanned: personal ones
+    /// (GUI mods) may differ between the room's players (docs/MODS.md).
     #[arg(long)]
     pub mods: Option<PathBuf>,
+
+    /// Count game-script mods whose commands the room carries (a timetable
+    /// mod, a line namer) as personal too. For playtests until the room
+    /// lets them differ (docs/MODS.md, proposed D25).
+    #[arg(long)]
+    pub personal_game_scripts: bool,
 
     /// Where worlds are kept. Defaults to the per-user data directory.
     #[arg(long)]
@@ -202,6 +209,43 @@ pub fn package_hook() -> Option<PathBuf> {
         .parent()?
         .join(tpf3mp_launch::HOOK_FILE);
     hook.is_file().then_some(hook)
+}
+
+/// This player's mods, sorted for the room (`content::split`): each listed
+/// mod looked for among those installed (Mod Hub's, the Steam accounts'
+/// local ones, the game's own) and scanned. What each mod was taken for
+/// goes to the log. `carried_personal`: game-script mods whose commands the
+/// room carries count as personal (`--personal-game-scripts`).
+pub fn split_mods(
+    game_build: &str,
+    mods: Option<&std::path::Path>,
+    installed: Option<&steam::Installed>,
+    carried_personal: bool,
+) -> Result<content::Split> {
+    let found = if mods.is_some() {
+        tpf3mp_modscan::roots::installed(&tpf3mp_modscan::roots::default_roots(
+            installed.map(|game| game.dir.as_path()),
+            &steam::steam_roots(),
+        ))
+    } else {
+        Vec::new()
+    };
+    let split = content::split(game_build, mods, &found, carried_personal)?;
+    for verdict in &split.verdicts {
+        tracing::info!(
+            "mod {} {} is {}: {}",
+            verdict.listed.id,
+            verdict.listed.version,
+            verdict.class,
+            verdict.why
+        );
+    }
+    if mods.is_some() && split.lists.is_none() {
+        tracing::warn!(
+            "more mods listed than the room's worlds can be loaded with; they load with their saves' mods"
+        );
+    }
+    Ok(split)
 }
 
 impl LauncherArgs {
@@ -225,6 +269,12 @@ impl LauncherArgs {
         // Next to the identity: the same player's last server and name.
         let remember = identity_file.with_file_name("launcher.json");
         let remembered = Remembered::load(&remember);
+        let split = split_mods(
+            &game_build(self.game_build.as_deref(), installed.as_ref()),
+            self.mods.as_deref(),
+            installed.as_ref(),
+            self.personal_game_scripts,
+        )?;
         Ok(LauncherConfig {
             // The launcher window sets it: it records the player's log.
             diagnostics: None,
@@ -249,10 +299,8 @@ impl LauncherArgs {
                 .clone()
                 .or(remembered.name)
                 .unwrap_or_else(|| "player".to_owned()),
-            content: content::manifest(
-                &game_build(self.game_build.as_deref(), installed.as_ref()),
-                self.mods.as_deref(),
-            )?,
+            content: split.manifest,
+            mods: split.lists,
             installed,
             link: self.game_link.clone(),
             worlds: open_worlds(self.worlds.as_deref(), self.worlds_gib, &self.game_link)?,

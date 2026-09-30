@@ -9,6 +9,12 @@ this page says so where it applies.
 - Transport Fever 3, the same build and mods as everyone in your room, in
   the same order. The room compares everyone's before a game starts, and
   tells you exactly which mods to add, remove or update if yours differ.
+  Mods that only change what you see (windows, overlays, a minimap: your
+  *personal* mods) may differ, when you list your mods with `--mods`: the
+  launcher scans each one and leaves those out of the comparison, and the
+  room's world loads with your personal mods and without other players'
+  ([MODS.md](MODS.md); proposed, D25). `tpf3mp-modscan --installed` says
+  which of your mods are personal, and why.
 - The TPF3-MP package for your system, from the project's releases:
   Windows x64, Linux x64 or macOS on Apple silicon. Players on different
   systems can share one room.
@@ -403,7 +409,7 @@ before sharing it publicly if you want to be sure.
 - **"Your game differs from the room's"**: the window lists what to change:
   the game build, the mods you lack, the mods the room does not run, and
   the mods you have in another version. Everyone needs the owner's build
-  and mods in the same order. In the room, a **differ** pill next to a
+  and shared mods in the same order; personal mods are not compared. In the room, a **differ** pill next to a
   player shows whose game differs from the owner's; each player sees their
   own list.
 - **"too many players are connected from this network"**: the server
