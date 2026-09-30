@@ -55,7 +55,7 @@ use std::{
 use ring::digest::{SHA256, digest};
 use tpf3mp_bridge::{Begin, Game, Notice, SaveOrder, Session, SessionError, StepGate};
 use tpf3mp_proto::{
-    Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Speed, action::Action,
+    ChatText, Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Speed, action::Action,
 };
 
 /// Most steps one call of the game's step runs, catching up with the room:
@@ -84,6 +84,8 @@ pub trait RoomGate {
     fn loaded(&mut self, next_step: u64) -> Result<(), SessionError>;
     fn request_speed(&mut self, speed: Speed) -> Result<(), SessionError>;
     fn command(&mut self, payload: Payload) -> Result<u64, SessionError>;
+    /// Says `text` to the room for the player.
+    fn chat(&mut self, text: ChatText) -> Result<(), SessionError>;
     fn saved(
         &mut self,
         game: &mut HookGame,
@@ -150,6 +152,9 @@ impl RoomGate for Session {
     }
     fn command(&mut self, payload: Payload) -> Result<u64, SessionError> {
         Session::command(self, payload)
+    }
+    fn chat(&mut self, text: ChatText) -> Result<(), SessionError> {
+        Session::chat(self, text)
     }
     fn saved(
         &mut self,
@@ -219,7 +224,11 @@ impl Game for HookGame {
         if let Notice::Refused { command, reason } = &notice {
             self.refused.push((*command, format!("{reason:?}")));
         }
-        self.notices.push(format!("{notice:?}"));
+        crate::lua::notice(&notice);
+        // The room and its chat are for the Multiplayer window, not the log.
+        if !matches!(notice, Notice::Room(_) | Notice::Chat { .. }) {
+            self.notices.push(format!("{notice:?}"));
+        }
     }
 }
 
@@ -244,6 +253,8 @@ pub trait StepHandler: Send {
     /// The speed the player picked in the game's speed row (the game's own
     /// speed: 0 paused, 1 for 1x, ...).
     fn chosen_speed(&mut self, speedup: u64);
+    /// See [`StepDriver::say`].
+    fn say(&mut self, text: ChatText);
 }
 
 impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
@@ -261,6 +272,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn chosen_speed(&mut self, speedup: u64) {
         StepDriver::chosen_speed(self, speedup);
+    }
+    fn say(&mut self, text: ChatText) {
+        StepDriver::say(self, text);
     }
 }
 
@@ -373,6 +387,20 @@ impl<G: RoomGate> StepDriver<G> {
             }
         }
         std::mem::take(&mut self.refused)
+    }
+
+    /// Says `text` to the room for the player, in the room's game only:
+    /// what the Multiplayer window's chat sends.
+    pub fn say(&mut self, text: ChatText) {
+        if self.phase != Phase::Running {
+            self.log
+                .push("the player said something outside the room's game; nobody heard".into());
+            return;
+        }
+        if let Err(error) = self.gate.chat(text) {
+            self.log
+                .push(format!("the room did not hear the player: {error}"));
+        }
     }
 
     /// The game's speed row says `speedup` (0 paused, 1 for 1x, ...). In the
@@ -547,6 +575,7 @@ impl<G: RoomGate> StepDriver<G> {
                     ));
                     self.checkpoint_interval = u64::from(begin.checkpoint_interval).max(1);
                     self.game.me = Some(begin.player);
+                    crate::lua::set_me(begin.player);
                     self.phase = Phase::Running;
                 }
                 Ok(None) => return Updates::Own,
@@ -751,6 +780,8 @@ pub(crate) mod tests {
         pub(crate) interval: u64,
         /// The lanes reported, by checkpoint step.
         pub(crate) checkpoints: Vec<(u64, Vec<LaneDigest>)>,
+        /// What the player said to the room.
+        pub(crate) said: Vec<ChatText>,
     }
 
     impl RoomGate for Script {
@@ -825,6 +856,10 @@ pub(crate) mod tests {
         fn command(&mut self, payload: Payload) -> Result<u64, SessionError> {
             self.commands.push(payload);
             Ok(self.commands.len() as u64 - 1)
+        }
+        fn chat(&mut self, text: ChatText) -> Result<(), SessionError> {
+            self.said.push(text);
+            Ok(())
         }
         fn saved(
             &mut self,
@@ -1335,6 +1370,31 @@ pub(crate) mod tests {
             Some(&Speed::MAX),
             "capped at the room's fastest"
         );
+    }
+
+    #[test]
+    fn what_the_player_says_reaches_the_room_in_its_game_only() {
+        let _serial = crate::lua::tests::SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        let (mut d, mut calls) = driver(script);
+        let text = |s: &str| ChatText::new(s).unwrap();
+        d.say(text("anyone there?"));
+        assert!(
+            d.gate.said.is_empty(),
+            "before the room's game, nobody hears"
+        );
+        assert!(
+            d.take_log()
+                .iter()
+                .any(|line| line.contains("outside the room's game")),
+            "and the log says so"
+        );
+        call(&mut d, &mut calls);
+        d.say(text("on my way"));
+        assert_eq!(d.gate.said, vec![text("on my way")]);
     }
 
     #[test]

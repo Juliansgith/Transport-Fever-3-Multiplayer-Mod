@@ -28,7 +28,8 @@ mod session;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tpf3mp_proto::{
-    ChatText, Event, IntentRejection, LaneDigest, Payload, PlayerId, RulesName, Speed, Text,
+    BoundedVec, ChatText, Event, IntentRejection, LaneDigest, MAX_ROOM_MEMBERS, Payload, PlayerId,
+    RulesName, Speed, Text,
 };
 
 pub use gate::{Gate, GateError, Gated};
@@ -36,7 +37,7 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 
 /// Version of these messages. Both sides send it first and refuse a peer
 /// that speaks another.
-pub const BRIDGE_VERSION: u32 = 5;
+pub const BRIDGE_VERSION: u32 = 6;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -96,6 +97,25 @@ pub enum ToHook {
     },
     /// A member of the room said something; `from` is their name.
     Chat { from: Text<32>, text: ChatText },
+    /// The room as it stands, for the game's Multiplayer window: sent when
+    /// the game begins and whenever the room changes.
+    Room(RoomInfo),
+}
+
+/// The room as the game's Multiplayer window shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomInfo {
+    pub name: Text<48>,
+    pub owner: PlayerId,
+    pub members: BoundedVec<RoomMember, { MAX_ROOM_MEMBERS as usize }>,
+}
+
+/// One member of the room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomMember {
+    pub player: PlayerId,
+    pub name: Text<32>,
+    pub connected: bool,
 }
 
 /// From the hook to the agent.

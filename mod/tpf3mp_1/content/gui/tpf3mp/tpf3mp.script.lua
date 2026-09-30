@@ -25,8 +25,15 @@
 -- game's log. Each step logs "[tpf3mp]" lines, so the log shows how far a
 -- game got on release day.
 --
--- The plugin draws nothing but that notice yet. The Multiplayer panel
--- (docs/PLAN.md) goes here.
+-- In the room's game the game bar also shows the room in one line (its
+-- name, who is there, its speed, whether the worlds match), a button that
+-- opens the Multiplayer window: the room, its players, its speed, whether
+-- this world matches the room's, and the room's chat, which the player can
+-- write to (docs/PLAN.md: the in-game Multiplayer panel for a game the
+-- launcher started; the lobby stays in the launcher). The window is a
+-- second plugin (ModEntryPointExtension, tpf3mp_window.res.lua); what both
+-- show is kept in package.loaded["tpf3mp.ui"], which the game bar plugin
+-- fills every frame from the hook (tpf3mp/bridge.lua: status, chat, say).
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
@@ -40,6 +47,20 @@ function data()
 
 	-- The link to the hook, once a world's GUI has found it.
 	local link = nil
+
+	-- What the Multiplayer window and the game bar show, shared by both
+	-- plugins: the room (link:status()), the chat so far, whether the window
+	-- is open, and a count that goes up whenever any of it changes; and the
+	-- link, which the game bar plugin makes: the game may run this file
+	-- once for each plugin, each with its own locals.
+	local function ui()
+		local shared = package.loaded["tpf3mp.ui"]
+		if type(shared) ~= "table" then
+			shared = { open = false, status = nil, lines = {}, unread = 0, version = 0 }
+			package.loaded["tpf3mp.ui"] = shared
+		end
+		return shared
+	end
 
 	-- Callbacks of refused commands, for the next frame, as the game would
 	-- call them.
@@ -186,6 +207,7 @@ function data()
 			return
 		end
 		link = found
+		ui().link = link
 		link:world()
 		link:log("the GUI is linked")
 		say("linked to the hook")
@@ -223,6 +245,57 @@ function data()
 	local react = ug_require "::/gui/main/react.lua"
 	local builtin = ug_require "::/gui/main/builtin.lua"
 	local game_bar_widgets = ug_require "::/gui/game_bar/game_bar_widgets.tl"
+	local mod_entry_point = ug_require "::/gui/main/mod_entry_point.tl"
+
+	-- Chat lines the window keeps, newest last.
+	local CHAT_LINES = 50
+	-- Frames between two readings of the room.
+	local STATUS_FRAMES = 15
+
+	-- The room's speed as the speed row says it.
+	local function speedText(speed)
+		if speed == nil then return "" end
+		if speed == 0 then return "paused" end
+		return string.format("%gx", speed / 100)
+	end
+
+	-- The room in one line, for the game bar.
+	local function summary(status)
+		local here, all = 0, 0
+		for _, p in ipairs(status.players or {}) do
+			all = all + 1
+			if p.connected then here = here + 1 end
+		end
+		local parts = { "Multiplayer: " .. tostring(status.room), here .. "/" .. all .. " playing" }
+		if status.speed then parts[#parts + 1] = speedText(status.speed) end
+		if status.diverged then parts[#parts + 1] = "resyncing" end
+		return table.concat(parts, " · ")
+	end
+
+	-- Reads the room and its chat from the hook into ui(): the room every
+	-- STATUS_FRAMES frames, the chat every frame.
+	local statusFrames = 0
+	local function follow()
+		if not link then return end
+		local shared = ui()
+		local changed = false
+		statusFrames = statusFrames - 1
+		if statusFrames <= 0 then
+			statusFrames = STATUS_FRAMES
+			local status = link:status()
+			local before = shared.status and summary(shared.status) .. tostring(#(shared.status.players or {}))
+			local after = status and summary(status) .. tostring(#(status.players or {}))
+			shared.status = status
+			if before ~= after then changed = true end
+		end
+		for _, line in ipairs(link:chat()) do
+			shared.lines[#shared.lines + 1] = tostring(line.from) .. ": " .. tostring(line.text)
+			if #shared.lines > CHAT_LINES then table.remove(shared.lines, 1) end
+			if not shared.open then shared.unread = shared.unread + 1 end
+			changed = true
+		end
+		if changed then shared.version = shared.version + 1 end
+	end
 
 	local Tpf3mpPlugin = react.RegisterPluginRecipe(game_bar_widgets.GameBarInfoDisplayExtension, "Tpf3mpPlugin", function()
 		-- Once per game: the ref lives as long as this plugin is mounted.
@@ -230,6 +303,9 @@ function data()
 		-- The refusal notice shown, or false, and the frames it has left.
 		local shown = react.useState(false)
 		local frames = react.useRef(0)
+		-- The room's version drawn, and the one last seen: a change redraws.
+		local room = react.useState(0)
+		local seen = react.useRef(0)
 		react.onStep(function()
 			if not started:get() then
 				started:set(true)
@@ -238,6 +314,12 @@ function data()
 			end
 			local ok, err = pcall(serve)
 			if not ok then say("serving the hook failed: " .. tostring(err)) end
+			local followed, why = pcall(follow)
+			if not followed then say("reading the room failed: " .. tostring(why)) end
+			if ui().version ~= seen:get() then
+				seen:set(ui().version)
+				room:set(ui().version)
+			end
 			runPending()
 			if link and guardedCmd then
 				local delivered, why = pcall(function()
@@ -257,8 +339,23 @@ function data()
 		-- Even empty, the layout keeps the plugin mounted, so onStep keeps
 		-- running.
 		local children = {}
+		local _ = room:old()
+		local shared = ui()
+		if shared.status then
+			local label = summary(shared.status)
+			if shared.unread > 0 then label = label .. " · " .. shared.unread .. " new" end
+			children[#children + 1] = builtin.Button{
+				meta = { tooltip = "Open the Multiplayer window" },
+				content = builtin.TextView{ text = label },
+				onClick = function()
+					shared.open = not shared.open
+					shared.unread = 0
+					shared.version = shared.version + 1
+				end,
+			}
+		end
 		if shown:old() then
-			children[1] = builtin.TextView{ text = shown:old() }
+			children[#children + 1] = builtin.TextView{ text = shown:old() }
 		end
 		return builtin.BoxLayout{
 			orientation = builtin.type.Orientation.Horizontal,
@@ -266,7 +363,96 @@ function data()
 		}
 	end)
 
+	-- The Multiplayer window: shown while ui().open, over the game.
+	local Tpf3mpWindow = react.RegisterPluginRecipe(mod_entry_point.ModEntryPointExtension, "Tpf3mpWindow", function()
+		local drawn = react.useState(0)
+		local draft = react.useRef("")
+		react.onStep(function()
+			local version = ui().version
+			if version ~= drawn:old() then drawn:set(version) end
+		end)
+		local shared = ui()
+		local status = shared.status
+		if not shared.open or not status then
+			return builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical, children = {} }
+		end
+		local function send(text)
+			local l = shared.link
+			if not l or type(text) ~= "string" or text:match("^%s*$") then return end
+			local ok, why = l:say(text)
+			if ok then
+				draft:set("")
+			else
+				shared.lines[#shared.lines + 1] = "(not sent: " .. tostring(why) .. ")"
+			end
+			shared.version = shared.version + 1
+		end
+		local rows = {}
+		local function line(text) rows[#rows + 1] = builtin.TextView{ text = text } end
+		line("Room: " .. tostring(status.room))
+		if status.speed then line("Speed: " .. speedText(status.speed)) end
+		if status.diverged then
+			line("Your world differed from the room's at step " .. tostring(status.diverged)
+				.. "; the room's is on its way")
+		else
+			line("Worlds match")
+		end
+		line("")
+		line("Players")
+		for _, p in ipairs(status.players or {}) do
+			local tags = {}
+			if p.owner then tags[#tags + 1] = "host" end
+			if p.me then tags[#tags + 1] = "you" end
+			if not p.connected then tags[#tags + 1] = "away" end
+			line("  " .. tostring(p.name) .. (#tags > 0 and (" (" .. table.concat(tags, ", ") .. ")") or ""))
+		end
+		line("")
+		line("Chat")
+		local chat = {}
+		for _, text in ipairs(shared.lines) do chat[#chat + 1] = builtin.TextView{ text = text } end
+		if #chat == 0 then chat[1] = builtin.TextView{ text = "Nobody said anything yet." } end
+		rows[#rows + 1] = builtin.ScrollArea{
+			horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+			verticalPolicy = builtin.type.ScrollBarPolicy.Simple,
+			content = builtin.Component{
+				layout = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical, children = chat },
+			},
+		}
+		rows[#rows + 1] = builtin.BoxLayout{
+			orientation = builtin.type.Orientation.Horizontal,
+			children = {
+				builtin.TextInputField{
+					placeholderText = "Say something to the room",
+					value = draft:get(),
+					maxLength = 280,
+					acceptOnFocusLoss = false,
+					onTyping = function(text) draft:set(text) end,
+					onValueChange = function(text) send(text) end,
+				},
+				builtin.Button{
+					content = builtin.TextView{ text = "Send" },
+					onClick = function() send(draft:get()) end,
+				},
+			},
+		}
+		return builtin.Window{
+			title = "Multiplayer",
+			closable = true,
+			movable = true,
+			initialX = 360,
+			initialY = 140,
+			onClose = function()
+				shared.open = false
+				shared.version = shared.version + 1
+			end,
+			content = builtin.Component{
+				layout = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical, children = rows },
+			},
+		}
+	end)
+
 	return {
 		Tpf3mpPlugin = Tpf3mpPlugin,
+		Tpf3mpWindow = Tpf3mpWindow,
 	}
 end

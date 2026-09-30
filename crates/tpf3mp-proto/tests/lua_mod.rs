@@ -187,9 +187,64 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.geom",
             "tpf3mp.guard",
             "tpf3mp.registry",
-            "tpf3mp.roads"
+            "tpf3mp.roads",
+            "tpf3mp.ui"
         ]
     );
+}
+
+#[test]
+fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "HOOK.room = true          HOOK.status = { room = 'Sunday line', speed = 200, players = {              { name = 'Julian', connected = true, owner = true, me = false },              { name = 'Sam', connected = true, owner = false, me = true } } }          HOOK.heard = { { from = 'Julian', text = 'the bus is late' } }          BAR = mount(loadPlugin()) BAR.step() BAR.render()          WINDOW = mount(loadPlugin(nil, 'Tpf3mpWindow', 'ModEntryPointExtension'))",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}
+{}", log(&lua)));
+    // The game bar: the room in one line, and a new chat line.
+    let (label, window): (String, usize) = lua
+        .load(
+            "local v = views(BAR.layout)              local button = v[1]              return button.params.content.params.text, #views(WINDOW.render())",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(label, "Multiplayer: Sunday line · 2/2 playing · 2x · 1 new");
+    assert_eq!(window, 0, "closed until the button is pressed");
+    // The button opens the window: the room, its players, the chat.
+    let texts: Vec<String> = lua
+        .load(
+            "views(BAR.layout)[1].params.onClick()              WINDOW.step()              local out = {}              for _, v in ipairs(views(WINDOW.render())) do                  if v.view == 'Window' then out[#out + 1] = 'window: ' .. v.params.title end                  if v.view == 'TextView' then out[#out + 1] = v.params.text end              end              return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        texts,
+        [
+            "window: Multiplayer",
+            "Room: Sunday line",
+            "Speed: 2x",
+            "Worlds match",
+            "",
+            "Players",
+            "  Julian (host)",
+            "  Sam (you)",
+            "",
+            "Chat",
+            "Julian: the bus is late",
+            "Send"
+        ]
+    );
+    // What the player types goes to the room.
+    let said: Vec<String> = lua
+        .load(
+            "for _, v in ipairs(views(WINDOW.layout)) do                  if v.view == 'TextInputField' then v.params.onValueChange('on my way') end              end              return HOOK.said",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(said, ["on my way"]);
 }
 
 /// The names in package.loaded, sorted.
@@ -206,9 +261,9 @@ fn loaded_names(lua: &Lua) -> Vec<String> {
 const FAKE_HOOK: &str = r#"
 HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, worlds = 0,
          room = false, checkpoint = false, lanes = nil, clicks = nil, replaying = {},
-         applied = {}, results = {} }
+         applied = {}, results = {}, status = nil, heard = {}, said = {} }
 tpf3mp_native = {
-    version = 8,
+    version = 9,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then
@@ -249,6 +304,17 @@ tpf3mp_native = {
         local results = HOOK.results
         HOOK.results = {}
         return results
+    end,
+    status = function() return HOOK.status end,
+    chat = function()
+        local heard = HOOK.heard
+        HOOK.heard = {}
+        return heard
+    end,
+    say = function(text)
+        if text:match('^%s*$') then return false, 'nothing to say' end
+        HOOK.said[#HOOK.said + 1] = text
+        return true
     end,
 }
 "#;
@@ -373,7 +439,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 8; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 9; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -466,7 +532,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 8, command = print, log = print })
+             why({ version = 9, command = print, log = print })
              return out",
         )
         .eval()
@@ -669,9 +735,10 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 8 }
+             local native = { version = 9 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
-                                  'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results' }) do
+                                  'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
+                                  'status', 'chat', 'say' }) do
                  native[n] = function() end
              end
              native.room = function() error('gone') end

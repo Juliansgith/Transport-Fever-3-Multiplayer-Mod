@@ -5,7 +5,7 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 8,                  -- bridge.VERSION; anything else is refused
+--     version = 9,                  -- bridge.VERSION; anything else is refused
 --     command = function(action),   -- the player acted: an action table, for
 --                                   -- the room to order -> true, ticket |
 --                                   -- false, why
@@ -32,6 +32,14 @@
 --     results = function(),         -- in the GUI: what became of the player's
 --                                   -- own actions since the last call,
 --                                   -- { { ticket =, ok =, entity =, why = } }
+--     status  = function(),         -- the room, for the Multiplayer window, or
+--                                   -- nil before its game: { room =, speed =,
+--                                   -- diverged =, players = { { name =,
+--                                   -- connected =, owner =, me = } } }
+--     chat    = function(),         -- what the room's members said since the
+--                                   -- last call, { { from =, text = } }
+--     say     = function(text),     -- says text to the room -> true |
+--                                   -- false, why
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -55,6 +63,7 @@
 
 local bridge = {}
 
+-- 9: the Multiplayer window: the room, its chat (`status`, `chat`, `say`);
 -- 8: the player hears what became of their actions (`command`'s ticket,
 -- `applied`, `results`);
 -- 7: the build tools through the room (`clicks`, `replaying`);
@@ -64,7 +73,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 8
+bridge.VERSION = 9
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -79,7 +88,8 @@ function bridge.attach(native)
 			.. ", the mod " .. bridge.VERSION
 	end
 	for _, name in ipairs({ "command", "take", "log", "poll", "saved", "world", "room",
-			"checkpoint", "lanes", "clicks", "replaying", "applied", "results" }) do
+			"checkpoint", "lanes", "clicks", "replaying", "applied", "results", "status", "chat",
+			"say" }) do
 		if type(native[name]) ~= "function" then
 			return nil, "the hook has no " .. name .. "()"
 		end
@@ -123,6 +133,31 @@ function Link:results()
 	local ok, results = pcall(self.native.results)
 	if not ok or type(results) ~= "table" then return {} end
 	return results
+end
+
+-- The room, for the Multiplayer window: { room =, speed =, diverged =,
+-- players = { { name =, connected =, owner =, me = } } }, or nil before its
+-- game.
+function Link:status()
+	local ok, status = pcall(self.native.status)
+	if not ok or type(status) ~= "table" then return nil end
+	return status
+end
+
+-- What the room's members said since the last call, oldest first:
+-- { { from =, text = } }.
+function Link:chat()
+	local ok, heard = pcall(self.native.chat)
+	if not ok or type(heard) ~= "table" then return {} end
+	return heard
+end
+
+-- Says `text` to the room for the player: true, or nil and why not.
+function Link:say(text)
+	local ok, said, why = pcall(self.native.say, tostring(text))
+	if not ok then return nil, tostring(said) end
+	if said ~= true then return nil, tostring(why or "the hook did not take it") end
+	return true
 end
 
 -- The actions the room ordered for this update, as a list, or nil.

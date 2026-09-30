@@ -20,13 +20,14 @@ use std::{
 use thiserror::Error;
 use tokio::{sync::mpsc, task::AbortHandle};
 use tpf3mp_bridge::{
-    BridgeError, MAX_MESSAGE, MAX_PATH, ToAgent, ToHook, check_version, decode, encode,
+    BridgeError, MAX_MESSAGE, MAX_PATH, RoomInfo, RoomMember, ToAgent, ToHook, check_version,
+    decode, encode,
 };
 use tpf3mp_net::close;
 use tpf3mp_proto::{
-    ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom, LaneDigest,
-    PlayerId, Request, RequestError, Resume, RoomView, SavedWorld, SessionId, SnapshotId, Speed,
-    Text, WorldOffer,
+    BoundedVec, ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom,
+    LaneDigest, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomView, SavedWorld,
+    SessionId, SnapshotId, Speed, Text, WorldOffer,
 };
 use tpf3mp_snapshot::ManifestId;
 use tracing::{debug, info, warn};
@@ -329,6 +330,9 @@ pub struct Bridge<L> {
     received: Option<ManifestId>,
     /// What a front end asks of the session.
     controls: Option<mpsc::Receiver<Control>>,
+    /// The room as the server last showed it: the game's Multiplayer window
+    /// shows it, and chat names its members.
+    room: Option<RoomView>,
 }
 
 impl<L: HookLink> Bridge<L> {
@@ -360,6 +364,7 @@ impl<L: HookLink> Bridge<L> {
             saved: VecDeque::new(),
             received: None,
             controls: None,
+            room: None,
         }
     }
 
@@ -630,6 +635,9 @@ impl<L: HookLink> Bridge<L> {
                         saves: path_text(&saves)?,
                         player: client.player(),
                     });
+                    if let Some(room) = &self.room {
+                        self.outbox.push_back(ToHook::Room(room_info(room)));
+                    }
                 }
                 let next_step = start.sealed_through.saturating_add(1);
                 match (start.world, &mut self.follower) {
@@ -701,7 +709,15 @@ impl<L: HookLink> Bridge<L> {
                 }
                 self.status(|status| push_bounded(&mut status.chat, (from, text)));
             }
-            ClientEvent::RoomUpdate(room) => self.status(|status| status.room = Some(room)),
+            ClientEvent::RoomUpdate(room) => {
+                // The game's Multiplayer window shows the room once the game
+                // began.
+                if self.begun {
+                    self.outbox.push_back(ToHook::Room(room_info(&room)));
+                }
+                self.room = Some(room.clone());
+                self.status(|status| status.room = Some(room));
+            }
             ClientEvent::Notice(text) => self.status(|status| status.announce(text.as_str())),
             ClientEvent::ContentDiff(diff) => self.status(|status| {
                 if let Some(diff) = &diff {
@@ -869,6 +885,15 @@ impl<L: HookLink> Bridge<L> {
 
     /// A member's name, as the room last announced it.
     fn name_of(&self, player: &PlayerId) -> Text<32> {
+        let own = self.room.as_ref().and_then(|room| {
+            room.members
+                .iter()
+                .find(|member| member.player == *player)
+                .map(|member| member.name.clone())
+        });
+        if let Some(name) = own {
+            return name;
+        }
         let known = self.options.status.as_ref().and_then(|status| {
             let status = status.lock().unwrap_or_else(PoisonError::into_inner);
             let room = status.room.as_ref()?;
@@ -980,6 +1005,26 @@ pub(crate) struct Outbox {
 /// About how much the outbox holds before the bridge stops taking turns.
 const OUTBOX_BYTES: usize = 16 << 20;
 
+/// The room as the game's Multiplayer window shows it: its name, owner and
+/// members, at most as many as a room holds.
+fn room_info(room: &RoomView) -> RoomInfo {
+    let members = room
+        .members
+        .iter()
+        .take(usize::from(MAX_ROOM_MEMBERS))
+        .map(|member| RoomMember {
+            player: member.player,
+            name: member.name.clone(),
+            connected: member.connected,
+        })
+        .collect();
+    RoomInfo {
+        name: room.name.clone(),
+        owner: room.owner,
+        members: BoundedVec::new(members).unwrap_or_default(),
+    }
+}
+
 impl Outbox {
     /// About how many bytes `message` takes.
     fn weight(message: &ToHook) -> usize {
@@ -992,6 +1037,7 @@ impl Outbox {
             ToHook::Begin { rules, saves, .. } => rules.as_str().len() + saves.as_str().len(),
             ToHook::Diverged { lanes, .. } => lanes.len() * 2,
             ToHook::Chat { from, text } => from.as_str().len() + text.as_str().len(),
+            ToHook::Room(room) => room.members.len() * 64,
             ToHook::End { reason } => reason.as_str().len(),
             _ => 0,
         };
@@ -1321,6 +1367,39 @@ mod tests {
             playout.on_turn(follower.sealed_through(), follower.speed(), now);
         }
         (follower, playout)
+    }
+
+    #[test]
+    fn the_game_sees_the_room_by_its_members_names() {
+        use tpf3mp_proto::{MemberView, Platform, RoomPhase, RoomSettings};
+        let member = |n: u8, name: &str, connected: bool| MemberView {
+            player: PlayerId(FixedBytes([n; 32])),
+            name: Text::new(name).unwrap(),
+            platform: Platform::current(),
+            ready: true,
+            content: None,
+            connected,
+        };
+        let room = RoomView {
+            id: RoomId(FixedBytes([7; 16])),
+            name: Text::new("Sunday line").unwrap(),
+            rules: Text::new("native").unwrap(),
+            owner: PlayerId(FixedBytes([1; 32])),
+            max_players: 4,
+            has_password: false,
+            phase: RoomPhase::Running,
+            settings: RoomSettings::DEFAULT,
+            members: vec![member(1, "Ann", true), member(2, "Bo", false)],
+        };
+        let info = room_info(&room);
+        assert_eq!(info.name.as_str(), "Sunday line");
+        assert_eq!(info.owner, room.owner);
+        let members: Vec<(&str, bool)> = info
+            .members
+            .iter()
+            .map(|m| (m.name.as_str(), m.connected))
+            .collect();
+        assert_eq!(members, [("Ann", true), ("Bo", false)]);
     }
 
     #[test]

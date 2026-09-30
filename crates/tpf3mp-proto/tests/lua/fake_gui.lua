@@ -46,20 +46,25 @@ function react.onStep(fn)
 	current.onStep = fn
 end
 
-local builtin = { type = { Orientation = { Horizontal = "Horizontal", Vertical = "Vertical" } } }
+local builtin = { type = {
+	Orientation = { Horizontal = "Horizontal", Vertical = "Vertical" },
+	ScrollBarPolicy = { Simple = "Simple", AlwaysOff = "AlwaysOff" },
+} }
 function builtin.BoxLayout(params)
 	return { layout = "BoxLayout", params = params }
 end
-function builtin.TextView(params)
-	return { view = "TextView", params = params }
+for _, view in ipairs({ "TextView", "Button", "ScrollArea", "Component", "TextInputField", "Window" }) do
+	builtin[view] = function(params) return { view = view, params = params } end
 end
 
 local game_bar_widgets = { GameBarInfoDisplayExtension = "GameBarInfoDisplayExtension" }
+local mod_entry_point = { ModEntryPointExtension = "ModEntryPointExtension" }
 
 local GAME = {
 	["::/gui/main/react.lua"] = react,
 	["::/gui/main/builtin.lua"] = builtin,
 	["::/gui/game_bar/game_bar_widgets.tl"] = game_bar_widgets,
+	["::/gui/main/mod_entry_point.tl"] = mod_entry_point,
 }
 
 -- The mod whose files mod_source reads: ours, or the one MOD_ID names.
@@ -96,16 +101,29 @@ function mount(recipe)
 end
 
 -- Runs a mod's entry script and returns its plugin, checking the name the
--- resource file gives: ours (tpf3mp.script@Tpf3mpPlugin) unless named.
-function loadPlugin(script, recipe)
+-- resource file gives and its extension point: ours
+-- (tpf3mp.script@Tpf3mpPlugin, on the game bar) unless named.
+function loadPlugin(script, recipe, extension)
 	script = script or "gui/tpf3mp/tpf3mp.script.lua"
 	recipe = recipe or "Tpf3mpPlugin"
+	extension = extension or "GameBarInfoDisplayExtension"
 	local entry = assert(loadstring(mod_source(script), "@" .. script))
 	entry()
 	local exported = data()
 	local plugin = assert(exported[recipe], "no " .. recipe)
-	assert(plugin.extension == "GameBarInfoDisplayExtension", "on another extension point")
+	assert(plugin.extension == extension, "on another extension point")
 	return plugin
+end
+
+-- The views a rendered layout holds, depth first, as { view =, params = }.
+function views(node, out)
+	out = out or {}
+	if type(node) ~= "table" then return out end
+	if node.view then out[#out + 1] = node end
+	local params = node.params or {}
+	for _, key in ipairs({ "content", "layout", "child" }) do views(params[key], out) end
+	for _, child in ipairs(params.children or {}) do views(child, out) end
+	return out
 end
 
 -- The lines the mod logged, one per line.

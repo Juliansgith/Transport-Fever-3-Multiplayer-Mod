@@ -348,6 +348,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   - `Diverged`, `Refused`: tell the player.
   - `Chat { from, text }`: a member of the room said something. Sent only
     once the game has begun; talk in the lobby stays in the launcher.
+  - `Room(RoomInfo)`: the room as it stands (its name, owner, and members
+    with their names and whether they are connected), for the game's
+    Multiplayer window: sent when the game begins and whenever the room
+    changes (bridge version 6).
   - `End`: the session is over.
 - **From the hook (`ToAgent`):**
   - `Hello`: always first, with the game build.
@@ -576,6 +580,16 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.applied(index, ok, entity, why)`: in the game script's
   `postUpdate`, after the batch's action `index` (from 1): whether it went,
   the entity it made, if any, and why not.
+- `tpf3mp_native.status()`: in the GUI: the room for the Multiplayer
+  window, `{ room =, speed =, diverged =, players = { { name =,
+  connected =, owner =, me = } } }`, or nil before the room's game. The
+  hook keeps what the room tells it (`Room`, `Speed`, `Diverged`), and
+  forgets the divergence when a world loads (bridge version 9).
+- `tpf3mp_native.chat()`: in the GUI: what the room's members said since
+  the last call, `{ { from =, text = } }`, oldest first, 64 lines at most.
+- `tpf3mp_native.say(text)`: in the GUI: says `text` (280 bytes at most,
+  trimmed) to the room for the player, `true` or `false` and why; the step
+  driver sends it (`Session::chat`) in the room's game only.
 - `tpf3mp_native.results()`: in the GUI: what became of the player's own
   actions since the last call, `{ { ticket =, ok =, entity =, why = } }`,
   oldest first. The step driver knows the player's own actions when the

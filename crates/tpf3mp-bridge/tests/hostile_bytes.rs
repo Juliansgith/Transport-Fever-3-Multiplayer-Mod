@@ -9,9 +9,10 @@ use std::fmt::Debug;
 
 use proptest::{collection::vec, prelude::*, sample::Index};
 use serde::{Serialize, de::DeserializeOwned};
-use tpf3mp_bridge::{ToAgent, ToHook, decode, encode};
+use tpf3mp_bridge::{RoomInfo, RoomMember, ToAgent, ToHook, decode, encode};
 use tpf3mp_proto::{
-    Event, EventBody, FixedBytes, IntentRejection, LaneDigest, Payload, PlayerId, Speed, Text,
+    BoundedVec, Event, EventBody, FixedBytes, IntentRejection, LaneDigest, Payload, PlayerId,
+    Speed, Text,
 };
 
 fn check<T>(bytes: &[u8])
@@ -75,6 +76,23 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             from: Text::new("Ann").unwrap(),
             text: Text::new("gg").unwrap(),
         },
+        ToHook::Room(RoomInfo {
+            name: Text::new("Sunday line").unwrap(),
+            owner: PlayerId(FixedBytes([1; 32])),
+            members: BoundedVec::new(vec![
+                RoomMember {
+                    player: PlayerId(FixedBytes([1; 32])),
+                    name: Text::new("Ann").unwrap(),
+                    connected: true,
+                },
+                RoomMember {
+                    player: PlayerId(FixedBytes([2; 32])),
+                    name: Text::new("Bo").unwrap(),
+                    connected: false,
+                },
+            ])
+            .unwrap(),
+        }),
     ];
     let to_agent = [
         ToAgent::Hello {
