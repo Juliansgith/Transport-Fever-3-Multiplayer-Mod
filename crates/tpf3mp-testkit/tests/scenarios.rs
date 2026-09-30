@@ -479,6 +479,18 @@ fn assert_worlds_agree(reports: &[tpf3mp_testkit::fake_hook::HookReport]) {
     }
 }
 
+/// Every game plays from the same loaded save: the last world each loaded is
+/// the same one (Transport Fever 3 numbers a loaded world's entities anew, so
+/// a game on another load would drift).
+fn assert_same_last_load(reports: &[tpf3mp_testkit::fake_hook::HookReport]) {
+    let loads: Vec<Option<u64>> = reports.iter().map(|report| report.last_load).collect();
+    assert!(loads[0].is_some(), "the games loaded a world: {loads:?}");
+    assert!(
+        loads.iter().all(|load| *load == loads[0]),
+        "every game's last load is the same save: {loads:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_player_joins_a_running_game_from_the_rooms_world() {
     let root = temp_dir("late-join");
@@ -495,8 +507,8 @@ async fn a_player_joins_a_running_game_from_the_rooms_world() {
         input_delay_ms: 60,
         checkpoint_interval: 20,
     };
-    // Long enough that the starters still play when the newcomer's world
-    // is handed on (they reload it too), however slow the machine.
+    // Long enough that the newcomer loads the room's world and catches up
+    // while the starters still play, however slow the machine.
     let mut players = saving_players(3, 2000);
     // The third player arrives two seconds in, after about 200 steps.
     players[2].join_after = Some(Duration::from_secs(2));
@@ -514,19 +526,17 @@ async fn a_player_joins_a_running_game_from_the_rooms_world() {
     .unwrap();
 
     assert_worlds_agree(&reports);
-    assert_eq!(
-        reports[2].received, 1,
-        "the newcomer loaded the room's world"
-    );
     // The owner's world, saved at the start, is everyone's: both starters
-    // loaded it, and loaded the newcomer's world with it when it came, so
-    // every game plays from the same loaded save.
+    // loaded it, and the newcomer loaded the same save and the turns since,
+    // so nobody else needed to reload. Every game plays from the same save.
     assert!(reports[0].saves >= 1, "the owner saved its world");
+    assert_same_last_load(&reports);
+    let received: Vec<usize> = reports.iter().map(|report| report.received).collect();
     assert_eq!(
-        reports[0].received, 2,
-        "the owner: the start, then the join"
+        received,
+        [1, 1, 1],
+        "each game loaded the room's world once, the newcomer's included"
     );
-    assert_eq!(reports[1].received, 2, "the other starter: the same");
     for report in &reports {
         assert!(report.diverged.is_empty(), "{:?}", report.diverged);
     }
@@ -573,6 +583,7 @@ async fn a_player_behind_a_udp_block_joins_late_through_the_tunnel() {
         reports[2].received, 1,
         "the newcomer loaded the room's world"
     );
+    assert_same_last_load(&reports);
     for report in &reports {
         assert!(report.diverged.is_empty(), "{:?}", report.diverged);
     }
@@ -621,6 +632,7 @@ async fn every_player_starts_from_the_owners_world() {
     .unwrap();
 
     assert_worlds_agree(&reports);
+    assert_same_last_load(&reports);
     let received: Vec<usize> = reports.iter().map(|report| report.received).collect();
     assert_eq!(
         received,
@@ -730,6 +742,7 @@ async fn a_diverged_replica_is_rebased_onto_the_agreed_world() {
     // the start.
     assert!(!reports[2].diverged.is_empty(), "the drift was noticed");
     assert_worlds_agree(&reports);
+    assert_same_last_load(&reports);
     for report in &reports {
         assert_eq!(report.received, 2, "the start, then one rebase");
     }
@@ -783,8 +796,10 @@ async fn a_restored_room_still_hands_on_its_world() {
 
     let reports = game.await.unwrap().unwrap();
     assert_worlds_agree(&reports);
-    // The second player loaded its world when it joined, and the third's
-    // with it; the third loaded one.
+    assert_same_last_load(&reports);
+    // The second player loaded the room's world when it joined. The room
+    // does not keep, across its restart, which world each game plays, so
+    // the others load the third player's with it; the third loaded one.
     assert_eq!(reports[1].received, 2);
     assert_eq!(reports[2].received, 1);
     second.stop().await;

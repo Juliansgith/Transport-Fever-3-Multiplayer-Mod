@@ -278,18 +278,7 @@ pub async fn play_bridged_room(plan: BridgedPlan) -> Result<Vec<HookReport>> {
     for (index, player, after) in late {
         tokio::time::sleep_until(started + after).await;
         let options = player.options(&plan)?;
-        let (client, events) = connect(options.clone())
-            .await
-            .context("connecting a late player")?;
-        client.declare_content(toy_content()).await?;
-        client
-            .join_room(JoinRoom {
-                invite,
-                password: None,
-                resume: None,
-            })
-            .await
-            .context("joining the running game")?;
+        let (client, events) = join_late(&options, &invite, plan.deadline).await?;
         games[index] = Some(play_through_hook(
             &plan,
             player,
@@ -317,6 +306,43 @@ pub async fn play_bridged_room(plan: BridgedPlan) -> Result<Vec<HookReport>> {
         bridge.abort();
     }
     Ok(reports)
+}
+
+/// Connects a late player and joins the running game, trying again after a
+/// failure until `patience` has passed, backing off as the agent's rejoin
+/// does: a server that restarts refuses connections until it is back.
+async fn join_late(
+    options: &ConnectOptions,
+    invite: &Invite,
+    patience: Duration,
+) -> Result<(Client, Events)> {
+    let deadline = tokio::time::Instant::now() + patience;
+    let mut backoff = Duration::from_millis(250);
+    loop {
+        let attempt = async {
+            let (client, events) = connect(options.clone())
+                .await
+                .context("connecting a late player")?;
+            client.declare_content(toy_content()).await?;
+            client
+                .join_room(JoinRoom {
+                    invite: *invite,
+                    password: None,
+                    resume: None,
+                })
+                .await
+                .context("joining the running game")?;
+            anyhow::Ok((client, events))
+        };
+        match attempt.await {
+            Ok(joined) => return Ok(joined),
+            Err(error) if tokio::time::Instant::now() + backoff >= deadline => return Err(error),
+            Err(_) => {
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(2));
+            }
+        }
+    }
 }
 
 type Hook = std::thread::JoinHandle<Result<HookReport, fake_hook::HookError>>;

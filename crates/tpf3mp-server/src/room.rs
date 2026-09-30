@@ -419,6 +419,10 @@ struct Member {
     needs: Needs,
     /// The snapshot this member's connection may fetch.
     offered: Option<SnapshotId>,
+    /// The world this member's game last loaded, as far as the room knows:
+    /// set when one goes out to it, kept when the player reconnects and
+    /// resumes (its game keeps playing that world), unknown after a restart.
+    loaded: Option<SnapshotId>,
     /// When the room last rebased this member.
     rebased: Option<Instant>,
     /// The first event of this member's turn stream: it can report only
@@ -863,6 +867,7 @@ impl Room {
                 chats: TokenBucket::new(CHATS_PER_SECOND, CHAT_BURST),
                 needs: Needs::Nothing,
                 offered: None,
+                loaded: None,
                 rebased: None,
                 stream_from: 0,
             })
@@ -1199,8 +1204,18 @@ impl Room {
                     self.tell_refused(&new);
                     return Err(RequestError::ContentMismatch);
                 }
-                // Without a world of this game, a player receives one.
-                Phase::Running(_) if resume.is_none() && self.snapshots.is_some() => Rejoin::World,
+                // Without a world of this game, a player receives one; so
+                // does one that owes a world the others loaded while it could
+                // not take it (it would otherwise resume its own).
+                Phase::Running(_)
+                    if rejoins_with_world(
+                        self.snapshots.is_some(),
+                        resume.is_some(),
+                        self.members[index].needs,
+                    ) =>
+                {
+                    Rejoin::World
+                }
                 Phase::Running(game) => {
                     Rejoin::Stream(game.resume_feed(self.id, self.settings, &self.rules, resume)?)
                 }
@@ -2288,11 +2303,29 @@ impl Room {
         // entities differently from one that loaded a save, and Transport
         // Fever 3's simulation depends on entity ids (a vehicle leaving a
         // depot starts at an offset made from its id).
+        // A member whose game already plays this very world needs nothing:
+        // it loaded it and followed the same turns since. One that cannot
+        // take it now (away, or not taking turns) owes it, and is handed it
+        // when it next can, even when it comes back resuming.
         if !feeds.is_empty() {
             let served: Vec<usize> = feeds.iter().map(|(index, _)| *index).collect();
-            for (index, member) in self.members.iter().enumerate() {
-                if served.contains(&index) || member.link.is_none() || !member.streaming {
+            let current = game.saves.current.as_ref().map(Agreed::id);
+            for (index, member) in self.members.iter_mut().enumerate() {
+                if served.contains(&index) {
                     continue;
+                }
+                match refeed(
+                    member.loaded,
+                    current,
+                    member.link.is_some(),
+                    member.streaming,
+                ) {
+                    Refeed::AlreadyOnIt => continue,
+                    Refeed::Owes => {
+                        member.needs = Needs::World;
+                        continue;
+                    }
+                    Refeed::Feed => {}
                 }
                 if let Some(feed) = game.saves.current.as_ref().and_then(|agreed| {
                     game.feed_from(self.id, self.settings, &self.rules, agreed)
@@ -2316,8 +2349,9 @@ impl Room {
             if !member.streaming {
                 // A member already playing whose queue is full would get
                 // neither its old stream nor the world: as any slow
-                // consumer, it is disconnected, reconnects and is handed
-                // the world then.
+                // consumer, it is disconnected, and it owes the world, so
+                // it is handed it when it reconnects.
+                member.needs = Needs::World;
                 if was_streaming {
                     slow.push(index);
                 }
@@ -2330,6 +2364,7 @@ impl Room {
             }
             member.needs = Needs::Nothing;
             member.offered = offered;
+            member.loaded = offered;
             // A player still loading the first world keeps holding the
             // clock; anyone else catches up.
             if member.pace != Pace::Loading {
@@ -2739,6 +2774,7 @@ impl Member {
             chats: TokenBucket::new(CHATS_PER_SECOND, CHAT_BURST),
             needs: Needs::Nothing,
             offered: None,
+            loaded: None,
             rebased: None,
             stream_from: 0,
         }
@@ -2826,6 +2862,44 @@ fn decide_round(round: &mut Round) -> Vec<(PlayerId, Vec<u16>)> {
 /// The lowest progress among members who pace the room, or `None` to hold
 /// the clock: while anyone is still loading, or when nobody is following.
 /// Only members that can hold the clock count (see [`holds_clock`]).
+/// What the room does, as a world goes out, for a member it was not handed
+/// to: every game plays from the same loaded world.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refeed {
+    /// Its game already plays this very world: it loaded it and has run the
+    /// same turns since.
+    AlreadyOnIt,
+    /// It plays another world, or one the room no longer knows (after a
+    /// restart): it loads this one with the others.
+    Feed,
+    /// It cannot take the world now (away, or not taking turns): it owes
+    /// it, and is handed it when it next can.
+    Owes,
+}
+
+fn refeed(
+    loaded: Option<SnapshotId>,
+    current: Option<SnapshotId>,
+    linked: bool,
+    streaming: bool,
+) -> Refeed {
+    if loaded == current {
+        Refeed::AlreadyOnIt
+    } else if !linked || !streaming {
+        Refeed::Owes
+    } else {
+        Refeed::Feed
+    }
+}
+
+/// Whether a returning player is handed a world rather than resuming its
+/// stream: it brings no turns of this game, or it owes a world the others
+/// loaded while it could not take it (resuming, it would play its own).
+/// Only a room that keeps worlds hands one.
+fn rejoins_with_world(keeps_worlds: bool, resuming: bool, needs: Needs) -> bool {
+    keeps_worlds && (!resuming || needs == Needs::World)
+}
+
 fn slowest_pacer(members: &[Member]) -> Option<u64> {
     let mut slowest: Option<u64> = None;
     for member in members.iter().filter(|m| holds_clock(m)) {
@@ -3842,6 +3916,43 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn a_world_goes_to_every_member_not_on_it_and_is_owed_by_one_that_cannot_take_it() {
+        let x = SnapshotId(FixedBytes([1; 32]));
+        let y = SnapshotId(FixedBytes([2; 32]));
+        // Already on the world handed out: nothing, linked or not.
+        assert_eq!(refeed(Some(y), Some(y), true, true), Refeed::AlreadyOnIt);
+        assert_eq!(refeed(Some(y), Some(y), false, false), Refeed::AlreadyOnIt);
+        // On another world, or one the room forgot in a restart: it loads
+        // this one with the others.
+        assert_eq!(refeed(Some(x), Some(y), true, true), Refeed::Feed);
+        assert_eq!(refeed(None, Some(y), true, true), Refeed::Feed);
+        // Away, or not taking turns: it owes the world.
+        assert_eq!(refeed(Some(x), Some(y), false, false), Refeed::Owes);
+        assert_eq!(refeed(Some(x), Some(y), true, false), Refeed::Owes);
+        assert_eq!(refeed(None, Some(y), false, false), Refeed::Owes);
+    }
+
+    #[test]
+    fn a_returning_player_that_owes_a_world_is_handed_it_even_resuming() {
+        assert!(
+            rejoins_with_world(true, false, Needs::Nothing),
+            "no turns of this game: a world"
+        );
+        assert!(
+            rejoins_with_world(true, true, Needs::World),
+            "owing a world: the world, not its own"
+        );
+        assert!(
+            !rejoins_with_world(true, true, Needs::Nothing),
+            "owing nothing: it resumes"
+        );
+        assert!(
+            !rejoins_with_world(false, false, Needs::World),
+            "a room that keeps no worlds hands none"
+        );
+    }
+
     fn test_member() -> Member {
         // A link needs a live QUIC connection. Pacing only reads `streaming`,
         // which the room keeps false whenever the link is gone.
@@ -3862,6 +3973,7 @@ mod tests {
             chats: TokenBucket::new(1, 1),
             needs: Needs::Nothing,
             offered: None,
+            loaded: None,
             rebased: None,
             stream_from: 0,
         }

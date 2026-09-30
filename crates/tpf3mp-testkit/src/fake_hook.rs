@@ -50,6 +50,9 @@ pub struct HookReport {
     pub money: Option<i64>,
     /// Worlds loaded from a save the room sent: a late join or a rebase.
     pub received: usize,
+    /// The step the last of those saves stood at (its load's next step):
+    /// games that last loaded the same save report the same.
+    pub last_load: Option<u64>,
     /// Saves the room asked for.
     pub saves: usize,
     /// The session ended before the target step.
@@ -126,12 +129,16 @@ fn run(config: &FakeHookConfig) -> Result<HookReport, HookError> {
     let mut ran = 0;
     let mut commands = 0;
     let mut received = 0;
+    let mut last_load = None;
     let mut ended = false;
     while ran < config.target_step {
         match session.before_step(&mut game)? {
             StepGate::Run => {}
             StepGate::Load(load) => {
-                received += usize::from(load.file.is_some());
+                if load.file.is_some() {
+                    received += 1;
+                    last_load = Some(load.next_step);
+                }
                 game.world = load_world(config, &load)?;
                 session.loaded(load.next_step)?;
                 ran = load.next_step - 1;
@@ -166,6 +173,7 @@ fn run(config: &FakeHookConfig) -> Result<HookReport, HookError> {
         diverged: game.diverged,
         money: game.world.ledger.money(&config.player),
         received,
+        last_load,
         saves: game.saves,
         ended,
     })
