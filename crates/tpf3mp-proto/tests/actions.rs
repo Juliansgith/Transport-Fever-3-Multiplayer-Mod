@@ -355,6 +355,16 @@ fn samples() -> Vec<Action> {
                 b: 850_000,
             },
         }),
+        Action::CompanyOp(CompanyOp::Lock(CompanyId(2))),
+        Action::CompanyOp(CompanyOp::Unlock(CompanyId(2))),
+        Action::CompanyOp(CompanyOp::Dismiss {
+            company: CompanyId(2),
+            player: text(&"ab".repeat(32)),
+        }),
+        Action::CompanyOp(CompanyOp::ShareStations {
+            company: CompanyId(2),
+            open: false,
+        }),
         Action::Loan(Box::new(LoanOp::Take {
             next: loan(7_000_000),
             offer: loan(5_000_000),

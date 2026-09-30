@@ -8,15 +8,19 @@
 //! the main thread and the game scripts' on a pool of simulation threads.
 //! So the table's functions share nothing but [`SHARED`], behind a lock:
 //!
-//! - `command(action)`: the player acted. The table is read into a
+//! - `command(action, password)`: the player acted. The table is read into a
 //!   [`LuaValue`] tree within [`MAX_DEPTH`] and [`MAX_NODES`], converted with
 //!   the schema ([`action_from_lua`]) and queued for the step gate, which
 //!   hands it to the room ([`take_commands`]). Returns `true` and a ticket,
 //!   or `false` and why: an action that was not queued must not happen at
 //!   all. The ticket comes back in `results()` when this game applies the
-//!   action, or when it never will.
+//!   action, or when it never will. A password, for joining or locking a
+//!   company only, goes with the action to the room, which seals it
+//!   ([`tpf3mp_proto::Secret`]); nothing here logs it.
 //! - `take()`: the actions the room ordered for this simulation update, as
-//!   tables ([`action_to_lua`]), or `nil`. The step gate begins a batch of
+//!   tables ([`action_to_lua`]), or `nil`; second, who sent each (64 hex
+//!   digits); third, each one's seal, `{ scope =, tag = }` (the tag as 64
+//!   hex digits), or `false`. The step gate begins a batch of
 //!   updates at the step the room ordered them for ([`begin_batch`]), and
 //!   the first update that asks gets them: the mod's game script asks in its
 //!   `update`, which the game runs once per simulation update, where a
@@ -87,11 +91,15 @@ use std::{
 
 use tpf3mp_bridge::{Notice, RoomInfo};
 use tpf3mp_proto::{
-    ChatText, Payload, PlayerId,
+    ChatText, Payload, PlayerId, Seal, Secret, Text,
+    action::{Action, CompanyOp},
     lua::{LuaValue, MAX_DEPTH, MAX_NODES, action_from_lua, action_to_lua},
 };
 
-use crate::{lanedump::DumpOrder, step::Ordered};
+use crate::{
+    lanedump::DumpOrder,
+    step::{Handed, Ordered},
+};
 
 /// A `lua_State`, never dereferenced here.
 pub type State = *mut c_void;
@@ -105,7 +113,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 10.0;
+pub const VERSION: f64 = 11.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -198,6 +206,8 @@ struct Batch {
     actions: Option<Vec<LuaValue>>,
     /// Who sent each of them, as `crate::lobby::hex` names players.
     origins: Vec<String>,
+    /// The seal each was ordered with, if any.
+    seals: Vec<Option<Seal>>,
     /// Each action's ticket, for the player's own.
     tickets: Vec<Option<u64>>,
     /// The updates it runs, and those a game script has begun (`take`).
@@ -232,8 +242,9 @@ struct Answer {
 }
 
 struct Shared {
-    /// Actions handed over, for the room, oldest first, with their tickets.
-    commands: VecDeque<(u64, Payload)>,
+    /// Actions handed over, for the room, oldest first, with their tickets
+    /// and the password each needs, if any.
+    commands: VecDeque<Handed>,
     /// The next ticket `command()` gives.
     next_ticket: u64,
     /// What became of the player's actions, for the GUI, oldest first.
@@ -293,6 +304,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     batch: Batch {
         actions: None,
         origins: Vec::new(),
+        seals: Vec::new(),
         tickets: Vec::new(),
         updates: 0,
         begun: 0,
@@ -340,8 +352,8 @@ pub fn in_room() -> bool {
 }
 
 /// The actions handed over since the last call, oldest first, with their
-/// tickets.
-pub fn take_commands() -> Vec<(u64, Payload)> {
+/// tickets and passwords.
+pub fn take_commands() -> Vec<Handed> {
     shared().commands.drain(..).collect()
 }
 
@@ -388,6 +400,7 @@ pub fn begin_batch(
             .iter()
             .map(|ordered| crate::lobby::hex(&ordered.player))
             .collect(),
+        seals: actions.iter().map(|ordered| ordered.seal).collect(),
         actions: (!tables.is_empty()).then_some(tables),
         updates,
         begun: 0,
@@ -803,7 +816,7 @@ unsafe extern "C-unwind" fn native_command(l: State) -> c_int {
     .unwrap_or_else(|_| Err("the hook failed reading the action".into()));
     // SAFETY: as above.
     unsafe { (api.settop)(l, top) };
-    let queued = read.and_then(|payload| {
+    let queued = read.and_then(|(payload, secret)| {
         let mut shared = shared();
         if shared.commands.len() >= MAX_WAITING {
             return Err(format!(
@@ -812,7 +825,7 @@ unsafe extern "C-unwind" fn native_command(l: State) -> c_int {
         }
         let ticket = shared.next_ticket;
         shared.next_ticket += 1;
-        shared.commands.push_back((ticket, payload));
+        shared.commands.push_back((ticket, payload, secret));
         Ok(ticket)
     });
     // SAFETY: as above; a C function's call has room for its results.
@@ -836,7 +849,7 @@ unsafe extern "C-unwind" fn native_command(l: State) -> c_int {
 /// # Safety
 ///
 /// Lua's own state, on its thread.
-unsafe fn command_from(api: &LuaApi, l: State) -> Result<Payload, String> {
+unsafe fn command_from(api: &LuaApi, l: State) -> Result<(Payload, Option<Secret>), String> {
     // SAFETY: the caller's.
     unsafe {
         if (api.gettop)(l) < 1 || (api.type_of)(l, 1) != TTABLE {
@@ -845,8 +858,72 @@ unsafe fn command_from(api: &LuaApi, l: State) -> Result<Payload, String> {
         let mut nodes = 0;
         let tree = read(api, l, 1, 0, &mut nodes)?;
         let action = action_from_lua(&tree).map_err(|error| error.to_string())?;
-        action.to_payload().map_err(|error| error.to_string())
+        let password = password_arg(api, l, 2)?;
+        let secret = password
+            .map(|password| secret_for(&action, password))
+            .transpose()?;
+        let payload = action.to_payload().map_err(|error| error.to_string())?;
+        Ok((payload, secret))
     }
+}
+
+/// The password argument at `index`: `nil`, or a string of 1 to 64 bytes of
+/// UTF-8, taken whole. Never logged, and an error never quotes it.
+///
+/// # Safety
+///
+/// Lua's own state, on its thread.
+unsafe fn password_arg(api: &LuaApi, l: State, index: c_int) -> Result<Option<Text<64>>, String> {
+    // SAFETY: the caller's.
+    unsafe {
+        if (api.gettop)(l) < index || (api.type_of)(l, index) == TNIL {
+            return Ok(None);
+        }
+        if (api.type_of)(l, index) != TSTRING {
+            return Err("a password is a string".into());
+        }
+        let mut len = 0;
+        let text = (api.tolstring)(l, index, &raw mut len);
+        if text.is_null() {
+            return Err("a password is a string".into());
+        }
+        let bytes = std::slice::from_raw_parts(text.cast::<u8>(), len);
+        let password = std::str::from_utf8(bytes).map_err(|_| "a password is text".to_owned())?;
+        if password.is_empty() {
+            return Err("a password needs at least one character".into());
+        }
+        Text::new(password)
+            .map(Some)
+            .map_err(|_| "a password is at most 64 bytes".into())
+    }
+}
+
+/// The secret a password makes for `action`: only joining or locking a
+/// company takes one, scoped to that company, so the room's seal fits it
+/// alone.
+fn secret_for(action: &Action, password: Text<64>) -> Result<Secret, String> {
+    match action {
+        Action::CompanyOp(CompanyOp::Join(company) | CompanyOp::Lock(company)) => Ok(Secret {
+            scope: u64::from(company.0),
+            password,
+        }),
+        _ => Err("a password goes only with joining or locking a company".into()),
+    }
+}
+
+/// A seal as the mod compares it: `{ scope =, tag = }`, the tag as 64
+/// lowercase hex digits, or `false` for an action ordered without one.
+fn seal_to_lua(seal: Option<&Seal>) -> LuaValue {
+    let Some(seal) = seal else {
+        return LuaValue::Boolean(false);
+    };
+    let tag: String = seal.tag.0.iter().map(|b| format!("{b:02x}")).collect();
+    #[allow(clippy::cast_precision_loss)]
+    let scope = seal.scope as f64;
+    LuaValue::Table(vec![
+        (LuaValue::string("scope"), LuaValue::Number(scope)),
+        (LuaValue::string("tag"), LuaValue::string(&tag)),
+    ])
 }
 
 /// `take()`.
@@ -854,11 +931,15 @@ unsafe extern "C-unwind" fn native_take(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
-    let (batch, origins) = {
+    let (batch, origins, seals) = {
         let mut shared = shared();
         shared.batch.begun = shared.batch.begun.saturating_add(1);
         let batch = shared.batch.actions.take();
-        (batch, shared.batch.origins.clone())
+        (
+            batch,
+            shared.batch.origins.clone(),
+            shared.batch.seals.clone(),
+        )
     };
     let Some(tables) = batch else {
         // SAFETY: Lua calls this with its own state, on its thread.
@@ -881,17 +962,25 @@ unsafe extern "C-unwind" fn native_take(l: State) -> c_int {
     let list = numbered(tables.clone());
     // Who sent each: the second value, which a mod before companies ignores.
     let senders = numbered(origins.iter().map(|hex| LuaValue::string(hex)).collect());
+    // The seal each was ordered with: the third value.
+    let sealed = numbered(
+        seals
+            .iter()
+            .map(|seal| seal_to_lua(seal.as_ref()))
+            .collect(),
+    );
     // SAFETY: as above.
     let top = unsafe { (api.gettop)(l) };
     let pushed = std::panic::catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: as above.
         unsafe {
             push(api, l, &list, 0)?;
-            push(api, l, &senders, 0)
+            push(api, l, &senders, 0)?;
+            push(api, l, &sealed, 0)
         }
     }));
     if matches!(pushed, Ok(Ok(()))) {
-        return 2;
+        return 3;
     }
     // Not handed over: the step gate finds them untaken and holds.
     shared().batch.actions = Some(tables);
@@ -1613,9 +1702,9 @@ pub(crate) mod tests {
     use mlua::ffi;
     use tpf3mp_bridge::RoomMember;
     use tpf3mp_proto::action::{
-        Action, ConstructionBuild, Param, ParamValue, Pos, Transform, VehicleId,
+        CompanyId, ConstructionBuild, Param, ParamValue, Pos, Transform, VehicleId,
     };
-    use tpf3mp_proto::{BoundedVec, FixedBytes, Speed, Text};
+    use tpf3mp_proto::{BoundedVec, FixedBytes, Speed};
 
     use super::*;
 
@@ -1857,6 +1946,7 @@ pub(crate) mod tests {
             action,
             ticket,
             player: PlayerId(FixedBytes([7; 32])),
+            seal: None,
         }
     }
 
@@ -2099,7 +2189,7 @@ pub(crate) mod tests {
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
                  type(tpf3mp_native.dump), type(tpf3mp_native.dumped)"
             ),
-            Ok("10|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("11|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -2130,6 +2220,89 @@ pub(crate) mod tests {
             Ok("2".into())
         );
         take_commands();
+    }
+
+    /// A company's password goes with joining or locking it, scoped to that
+    /// company, and with nothing else; nothing the hook says quotes it.
+    #[test]
+    fn command_takes_a_password_for_a_company_alone() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(
+            lua.run("return tpf3mp_native.command({ CompanyOp = { Join = 3 } }, 'hunter2')")
+                .map(|r| r.starts_with("true|")),
+            Ok(true)
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.command({ CompanyOp = { Lock = 4 } }, 'hunter3')")
+                .map(|r| r.starts_with("true|")),
+            Ok(true)
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.command({ CompanyOp = { Join = 5 } })")
+                .map(|r| r.starts_with("true|")),
+            Ok(true),
+            "joining an open company needs none"
+        );
+        let commands = take_commands();
+        let secrets: Vec<(u64, String)> = commands
+            .iter()
+            .filter_map(|(_, _, secret)| secret.as_ref())
+            .map(|s| (s.scope, s.password.as_str().to_owned()))
+            .collect();
+        assert_eq!(
+            secrets,
+            [(3, "hunter2".to_owned()), (4, "hunter3".to_owned())]
+        );
+        assert!(commands[2].2.is_none());
+        for (call, why) in [
+            (
+                "{ CompanyOp = { Rename = { company = 3, name = 'x' } } }, 'hunter2'",
+                "only with joining or locking",
+            ),
+            ("{ CompanyOp = { Join = 3 } }, ''", "at least one character"),
+            (
+                "{ CompanyOp = { Join = 3 } }, string.rep('p', 65)",
+                "at most 64 bytes",
+            ),
+            ("{ CompanyOp = { Join = 3 } }, 7", "a password is a string"),
+        ] {
+            let result = lua
+                .run(&format!(
+                    "local ok, reason = tpf3mp_native.command({call}) return ok, reason"
+                ))
+                .unwrap();
+            assert!(result.starts_with("false|"), "{call}: {result}");
+            assert!(result.contains(why), "{call}: {result}");
+            assert!(!result.contains("hunter2"), "{result}");
+        }
+        assert!(take_commands().is_empty());
+        assert!(take_log().iter().all(|line| !line.contains("hunter")));
+    }
+
+    /// `take()`'s third value: each action's seal, or `false`.
+    #[test]
+    fn take_hands_each_actions_seal_beside_it() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        let mut sealed = ordered(Action::CompanyOp(CompanyOp::Join(CompanyId(3))), None);
+        sealed.seal = Some(Seal {
+            scope: 3,
+            tag: FixedBytes([0xab; 32]),
+        });
+        begin_batch(&[sealed, ordered(depot_build(), None)], 1, false, None).unwrap();
+        assert_eq!(
+            lua.run(
+                "local actions, senders, seals = tpf3mp_native.take() \
+                 return #seals, seals[1].scope, seals[1].tag, tostring(seals[2])"
+            ),
+            Ok(format!("2|3|{}|false", "ab".repeat(32)))
+        );
+        assert_eq!(end_batch(), Ok(None));
     }
 
     fn player(n: u8) -> PlayerId {

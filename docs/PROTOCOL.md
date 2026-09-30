@@ -277,6 +277,21 @@ These travel on the control stream.
     names the player and the client sequence number, so the sender can match
     it.
   - Refused: only the sender gets `IntentRejected` with a reason.
+  - **Secrets** (version 8). An intent may carry a `Secret` beside its
+    payload: a password the action needs, such as a company's to join or
+    lock it (DECISIONS.md, D22, proposed), with a `scope`, the thing it is
+    for (the company's id). The server never orders, logs or relays the
+    password. It orders the intent with a `Seal` in its `Command` event
+    instead: HMAC-SHA256 under the server's key (`invite.key`'s) of the
+    room, the scope and the password, with the scope beside it. The same
+    password for the same company of the same room gives the same seal, so
+    every game compares the seal with the one it keeps; without the
+    server's key a seal can be neither reversed nor checked against a
+    guess, so it may stand in the room's log and in saves. Only the server
+    makes seals: a client's intent has no field for one. A `Secret`'s
+    `Debug` shows `<hidden>`. The server cannot tell a right password from
+    a wrong one, so it counts them all: 20 intents with a secret per member
+    in 10 minutes, then `IntentRejected(RateLimited)`.
 - **`Progress`**: the last step the client executed. It drives pacing.
 - **`Checkpoint`**: per-lane digests at every checkpoint step (a room
   setting). The server compares members' digests, as described in
@@ -513,8 +528,9 @@ players' diagnostics the same way.
   - a checkpoint with too many lanes.
 - **Rate limits.**
   - Intents, per player: 20 per second with a burst of 40, and 32 KiB of
-    payload per second with a burst of 256 KiB. Excess intents are answered
-    with `IntentRejected(RateLimited)`.
+    payload per second with a burst of 256 KiB, and 20 intents with a
+    secret in 10 minutes. Excess intents are answered with
+    `IntentRejected(RateLimited)`.
   - Requests, per connection: 10 per second with a burst of 20, of which
     joins 1 per second with a burst of 5. Excess requests are answered with
     `RateLimited`.

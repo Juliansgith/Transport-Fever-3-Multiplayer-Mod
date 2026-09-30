@@ -669,6 +669,65 @@ Rejected:
   Multiplayer's chips): choosing in the game lets a player change their
   mind, and a player who joins late chooses when they arrive.
 
+## D22 (PROPOSED, not decided, 2026-09-30): who may do what to a company, company passwords and shared stations
+
+**Status: proposed.** Written on feature branch `feat/company-play` on top
+of D21's pull request; it is not a decision until the owner (Juliansgith)
+approves it (AGENTS.md, "Decisions are the owner's").
+
+The ask, on 2026-09-30: "lets work some more on the ingame ui company
+switching picking colors company passwords, access control use other
+companies stations".
+
+- **A company's head.** The player who founded a company is its head while
+  they play for it; after that, the player who has played for it longest.
+  The room's first company is everyone's: it has no head.
+- **Who may do what.** Any of a company's players builds, buys, runs
+  lines, borrows and pays back, renames and recolours it (as D21). Its
+  head alone gives it a password, changes it or takes it away, sends a
+  player out of it (they play for the room's first company again; what
+  they built stays the company's), and opens or closes its stations to
+  other companies' lines. Its last player dissolves it once it owns
+  nothing (as D21). Anyone joins a company without a password, the room's
+  first always.
+- **A password to join.** Joining a company with a password needs it. The
+  player types it in the game; it travels beside the action to the server
+  and no further. The server orders the action with the password's seal,
+  an HMAC under its key bound to the room and the company, and every game
+  compares that seal with the one the company keeps. No game, log or save
+  ever holds the password, and the seal gives nothing away without the
+  server's key (as D13 keeps room passwords). A player may send 20
+  passwords in 10 minutes, as D13 holds room passwords to guessing.
+- **Enforced where every game checks the same way.** Every rule is checked
+  by every game when the room orders the action (`tpf3mp/companies.lua`),
+  so one game's window deciding otherwise changes nothing; the server
+  checks only what only it can, the password.
+- **Using another company's stations.** A company's lines may stop at
+  another company's stations: stopping changes nothing the station's
+  company owns (D21 forbids changing or removing it). Stations start
+  open; a company's head may close them to other companies' lines, and
+  every game then refuses a new or changed line that stops there. The
+  station's upkeep stays its owner's, and a line's fares and costs its
+  company's, as TPF2MP's shared stations kept them. A company's vehicles
+  still use its own depots.
+
+Rejected:
+
+- **The password in the action, hashed by the player's game**: a hash
+  every game can check is one any player can replay, or guess against
+  offline.
+- **The server tracking who plays for which company**: it would need the
+  game's own refusals (a company that still owns something cannot be
+  dissolved) to keep its copy right; the games know that, the server does
+  not.
+- **Every player a say, or only the founder for good**: a vote needs
+  rounds a room does not have; a founder who left would lock the company
+  forever.
+- **Sharing always on, or chosen station by station** (TPF2MP had always
+  on, with a list of companies per company): one switch per company is
+  what a player can see and understand; a list per company or station can
+  follow if players ask.
+
 ## D23 (proposed, 2026-09-30): a company's progression is its share of each town, by deliveries and rating
 
 **Proposed, not decided: the owner (Juliansgith) approves or changes it.**

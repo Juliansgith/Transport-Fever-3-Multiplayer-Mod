@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tpf3mp_proto::{
     BoundedVec, ChatText, Event, IntentRejection, LaneDigest, MAX_ROOM_MEMBERS, Payload, PlayerId,
-    RulesName, Speed, Text,
+    RulesName, Secret, Speed, Text,
 };
 
 pub use gate::{Gate, GateError, Gated};
@@ -38,8 +38,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// Version of these messages. Both sides send it first and refuse a peer
 /// that speaks another. 7 added [`ToAgent::WorldUp`]; 8 added
 /// [`ToAgent::MenuUp`]; 9 added the main menu's Multiplayer window's
-/// [`ToHook::Lobby`] and [`ToAgent::Lobby`].
-pub const BRIDGE_VERSION: u32 = 9;
+/// [`ToHook::Lobby`] and [`ToAgent::Lobby`]; 10 carries a password beside a
+/// command ([`ToAgent::Command`]'s `secret`) and a seal in each ordered
+/// command (protocol 8).
+pub const BRIDGE_VERSION: u32 = 10;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -244,8 +246,12 @@ pub enum ToAgent {
     Hello { version: u32, build: Text<64> },
     /// The world is loaded, and `next_step` is the first step it will run.
     Loaded { next_step: u64 },
-    /// The local player did something: have the room order it.
-    Command { payload: Payload },
+    /// The local player did something: have the room order it, with the
+    /// password it needs, if any (a company's), which the room seals.
+    Command {
+        payload: Payload,
+        secret: Option<Secret>,
+    },
     /// The game ran this step.
     Ran { step: u64 },
     /// The world's digests at a checkpoint step, taken after running it.
@@ -340,6 +346,7 @@ mod tests {
                 player: PlayerId(FixedBytes([1; 32])),
                 client_seq: 9,
                 payload: Payload::new(vec![4, 5, 6]).unwrap(),
+                seal: None,
             },
         });
         assert_eq!(
@@ -374,6 +381,10 @@ mod tests {
                 player: PlayerId(FixedBytes([0xff; 32])),
                 client_seq: u64::MAX,
                 payload: Payload::new(vec![0xab; MAX_PAYLOAD]).unwrap(),
+                seal: Some(tpf3mp_proto::Seal {
+                    scope: u64::MAX,
+                    tag: FixedBytes([0xff; 32]),
+                }),
             },
         });
         assert!(encode(&apply).is_ok());

@@ -249,7 +249,23 @@ protected folder such as Program Files.
   loans and pays them back (the game's finance window keeps the room's
   first company's loans). With more than one company, vehicles and their
   markers on the map wear their company's colour, and a new colour
-  repaints them.
+  repaints them. The colour button offers the companies' colours first,
+  then the game's own.
+- **Your company's head, passwords and stations** (proposed, D22). The
+  player who founded a company is its head while they play for it; after
+  that, whoever has played for it longest. The Multiplayer window shows
+  each company's head. The head can give the company a password: then
+  others join it only by typing the password next to its Join button.
+  The password goes to the server, which keeps it from every game and
+  every log; nobody, the head included, can read it back, so share it
+  the way you share a room's. The head can also remove or change the
+  password, send a player back to the room's first company, and close
+  the company's stations to other companies' lines. Stations start open:
+  your lines may stop at another company's station, and the line manager
+  offers it, until its head closes them. You still cannot change or
+  remove another company's station, and your vehicles use your own
+  depots. The room's first company is everyone's: it has no head and no
+  password. The game's company window renames your company too.
 - **Achievements.** A game with TPF3-MP active still earns achievements:
   the mod keeps them on, as the game lets a mod do. This holds even when
   the save has other mods that would switch them off.

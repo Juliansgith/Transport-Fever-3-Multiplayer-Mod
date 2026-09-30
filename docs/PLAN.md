@@ -278,6 +278,19 @@ Dev B:
   and no money is created in the switch. *Added (D21):* any split of the
   room's players, loans for every company, colours, and the GUI showing
   the player's own company.
+- [ ] *Added, proposed (D22, not decided; the owner approves):* who may do
+  what to a company: its head (founder, then the longest-standing player)
+  sets its password, sends players out and opens or closes its stations;
+  joining a company with a password needs it, sealed by the server and
+  never held by a game; the game's company window renames the company;
+  the colour chooser offers the game's colours too. Built on
+  `feat/company-play`; to see in a real game with three players.
+- [ ] *Added, proposed (D22, not decided):* a company's lines stop at
+  another company's open stations: the line manager offers them, and
+  every game refuses a line that stops at a closed company's station.
+  To see in a real game: pathing, boarding and fares of such a line, and
+  whether the line manager's ownership test is one shared module (the
+  mod assumes so).
 - [ ] *Proposed (D23), for the owner to approve:* company ranks. With one
   company the game's own, a rank the company window takes carried to every
   game (`ApplyRank`); with more, each company's score its share of each

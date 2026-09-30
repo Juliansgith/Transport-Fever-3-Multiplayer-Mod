@@ -5,13 +5,16 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 10,                 -- bridge.VERSION; anything else is refused
---     command = function(action),   -- the player acted: an action table, for
---                                   -- the room to order -> true, ticket |
---                                   -- false, why
+--     version = 11,                 -- bridge.VERSION; anything else is refused
+--     command = function(action, password), -- the player acted: an action
+--                                   -- table, for the room to order, and a
+--                                   -- company's password for joining or
+--                                   -- locking it, which the room seals
+--                                   -- -> true, ticket | false, why
 --     take    = function(),         -- in a game script's update: the actions
 --                                   -- the room ordered for this update, or nil,
---                                   -- and who sent each (64 hex digits)
+--                                   -- who sent each (64 hex digits), and each
+--                                   -- one's seal, { scope =, tag = } or false
 --     log     = function(line),     -- a line for hook.log
 --     poll    = function(),         -- in the GUI, every frame: what the hook
 --                                   -- asks, { save = name } or { load = name }
@@ -76,6 +79,8 @@
 
 local bridge = {}
 
+-- 11: company passwords: `command` takes a password beside the action,
+-- which the room seals, and `take` hands each action's seal third;
 -- 10: companies: `take` also names who sent each action, `status` each
 -- player's id (`id`, `me_id`);
 -- 9: the Multiplayer window: the room, its chat (`status`, `chat`, `say`);
@@ -88,7 +93,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 10
+bridge.VERSION = 11
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}
@@ -125,10 +130,13 @@ end
 -- Hands an action table to the room. Returns true and the action's ticket,
 -- which results() names when this game applies the action or never will; or
 -- nil and why not: an action that was not handed over must not be applied
--- locally either.
-function Link:command(action)
+-- locally either. `password`, for joining or locking a company only, goes to
+-- the room beside it, which orders the action with the password's seal; it
+-- is never logged, and no answer quotes it.
+function Link:command(action, password)
 	if type(action) ~= "table" then return nil, "an action is a table" end
-	local ok, result, reason = pcall(self.native.command, action)
+	if password ~= nil and type(password) ~= "string" then return nil, "a password is text" end
+	local ok, result, reason = pcall(self.native.command, action, password)
 	if not ok then return nil, "the hook refused: " .. tostring(result) end
 	if result ~= true then
 		return nil, "the hook refused the action: " .. tostring(reason or "no reason given")
@@ -175,13 +183,15 @@ function Link:say(text)
 	return true
 end
 
--- The actions the room ordered for this update, as a list, or nil; and who
--- sent each, a list of player ids (64 hex digits) beside it.
+-- The actions the room ordered for this update, as a list, or nil; who
+-- sent each, a list of player ids (64 hex digits) beside it; and the seal of
+-- the password each was sent with, { scope =, tag = }, or false.
 function Link:take()
-	local ok, actions, origins = pcall(self.native.take)
+	local ok, actions, origins, seals = pcall(self.native.take)
 	if not ok or type(actions) ~= "table" then return nil end
 	if type(origins) ~= "table" then origins = {} end
-	return actions, origins
+	if type(seals) ~= "table" then seals = {} end
+	return actions, origins, seals
 end
 
 function Link:log(line)

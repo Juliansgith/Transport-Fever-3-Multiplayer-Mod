@@ -373,7 +373,11 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
 - **From the hook (`ToAgent`):**
   - `Hello`: always first, with the game build.
   - `Loaded { next_step }`: the ordered world is loaded.
-  - `Command { payload }`: the player acted; the room orders it.
+  - `Command { payload, secret }`: the player acted; the room orders it.
+    `secret` is a company's password the action needs (joining or locking
+    a company), which the agent sends beside the intent and the room seals
+    (PROTOCOL.md, "Secrets"); the hook never logs it. Bridge version 10,
+    which also carries each ordered `Command`'s seal to the hook.
   - `Ran { step }`: the game ran this step.
   - `Checkpoint { step, lanes }`: digests at a checkpoint.
   - `Saved { event, lanes, file }`: the world as saved at a save event, and
@@ -658,8 +662,8 @@ for the table (`bridge.find`). Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
 `crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 10. The mod refuses any other.
-- `tpf3mp_native.command(action)`: an action table, in the game's units.
+- `tpf3mp_native.version`: 11. The mod refuses any other.
+- `tpf3mp_native.command(action, password)`: an action table, in the game's units.
   The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
   `MAX_DEPTH` and `MAX_NODES` (a function, userdata or a table as a key is
   refused), converts it with `action_from_lua` and queues
@@ -667,11 +671,16 @@ for the table (`bridge.find`). Its contract is in
   the room's game only. It returns `true` and a ticket, or `false` and why.
   `false` or an error means refused, and the mod does not apply the action
   locally either: every game applies it when the room orders it. The
-  ticket comes back in `results()`.
+  ticket comes back in `results()`. `password`, optional, is a company's
+  password, 1 to 64 bytes of text: only joining or locking a company takes
+  one, scoped to that company (`tpf3mp_proto::Secret`); it goes to the room
+  with the action and is never logged, and no refusal quotes it (version
+  11).
 - `tpf3mp_native.take()`: the actions the room ordered for this simulation
   update, as `action_to_lua` tables, or `nil` (below), and second, who
   sent each, a list of player ids (64 hex digits) beside it ("Companies"
-  below). A list's items are
+  below), and third, each one's seal, `{ scope =, tag = }` (the tag as 64
+  hex digits), or `false` (version 11). A list's items are
   in its table's array part, so `next` walks them in order. The game
   copies a list it is handed (a stop's loading flags, a consist's groups)
   into its own vector in the order `next` gives, and what a game script's
@@ -1110,7 +1119,8 @@ state, which the game saves with the world:
 - *Who acted.* The hook hands each ordered action to the game script with
   the player who sent it (the Lua link's version 10, `tpf3mp_native.version`:
   `take()` answers the actions
-  and, second, each one's sender as 64 hex digits; `status()` names each
+  and, second, each one's sender as 64 hex digits, and since version 11
+  third, each one's seal; `status()` names each
   player's `id` and the local one's `me_id`). The game script books the
   action to that player's company: `apply.lua` puts the company's player
   entity where it put the save's player before (a build's `Context.player`
@@ -1162,9 +1172,66 @@ state, which the game saves with the world:
   showed the new company's money, and another company's depot opened
   without its vehicle management.
 - *The Multiplayer window* lists the companies with their money and
-  players, the one the player plays for first with its colour to choose,
-  a name to change, loans to take and pay back, and each other company to
-  join.
+  players, the one the player plays for first with its colour to choose
+  (the game's colour chooser, `ColorChooserButton`, with the companies'
+  colours first and then the game's line colours and greys, as its vehicle
+  window offers them), a name to change, loans to take and pay back, and
+  each other company to join, with a password field (`passwordMode`, as
+  the game's own login form) for one that has a password. Each company
+  shows its head, and whether it has a password or has closed its
+  stations. The head of the player's company also sees its password to
+  set, change or remove, its stations to open or close, and a button to
+  send each other player out.
+- *The game's company window* renames the company by its title
+  (`game_mechanics/company/company.tl` sends `makeEntitySetNameCmd` on the
+  player entity `getPlayer()` answers, the player's company): the guard
+  captures a name or colour set on a company's player entity as that
+  company's `Rename` or `Recolor` (`capture.setName`, `setColor`, which
+  know companies by the GUI's roster), and every game checks it is the
+  player's own. The window has no extension point for more; the rest
+  stays in the Multiplayer window.
+- *Who may do what* (DECISIONS.md, D22, proposed), checked by every game
+  alike when the room orders it (`companies.run`): a company's players
+  build, buy, run lines, borrow, rename and recolour it (a colour of
+  fractions from 0 to 1 that no other company wears); its head, the
+  founder while they play for it and else the player who has played for
+  it longest (the roster's members are kept in the order they joined),
+  alone gives it a password (`CompanyOp::Lock`), takes it away
+  (`Unlock`), sends a player out (`Dismiss`: they play for the room's
+  first company again) and opens or closes its stations
+  (`ShareStations`). The room's first company is everyone's: no head, no
+  password, and its stations stay open. `hook.log` names why a refused
+  action was refused.
+- *Passwords.* The window hands the password to `command` beside the
+  action (`Join` or `Lock`), the hook sends it to the room beside the
+  intent (`tpf3mp_proto::Secret`, scoped to the company), and the server
+  orders the action with the password's seal, never the password
+  (PROTOCOL.md, "Secrets"). `take()` hands each action's seal third; a
+  `Lock` keeps it as the company's `lock`, and a `Join` of a company with a
+  lock needs a seal for that company equal to it ("joining X needs its
+  password", "the password for X is not right"). The roster keeps the seal
+  only, which is safe in a save: it cannot be checked against a guess
+  without the server's key. The window reads only whether a company has
+  one.
+- *Using another company's stations.* The game stops a line at any
+  station: build 40408's line and stop commands check that a stop names a
+  station and terminal the station group has, not who owns it (no owner
+  refusal among the exe's line errors; a stop is a station group, a
+  station index and a terminal, `api/tealdef/api/engine.d.tl`). Its line
+  manager offers only the player's own stations and those no one owns
+  (`gui/line_vehicle_mgmt/manager_window.tl`, at each click that adds or
+  moves a stop, asks `scripts/entity_util.tl`'s
+  `isOwnedByPlayerOrNotOwned`). In the GUI state the mod wraps that test so
+  it also takes a station group or station construction of a company that
+  keeps its stations open; `hook.log` says `the line manager offers other
+  companies' open stations`. That the line manager and the mod share one
+  `entity_util` table (one `ug_require` cache) is INFERRED. Every game
+  checks each stop of a new or changed line (`apply.lua`, `lineComponent`,
+  `companies.mayUse`) and refuses one at a closed company's station, naming
+  it. TPF2 had to patch a native station filter for this (TPF2MP's shared
+  stations); on TF3 the filter is Lua, and no native patch looks needed
+  (INFERRED: not seen in a game). A company's vehicles still use its own
+  depots, as TPF2MP left `FindPathToDepot`'s owner check alone.
 
 ### Prospecting
 

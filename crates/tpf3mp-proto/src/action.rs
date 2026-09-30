@@ -710,7 +710,31 @@ pub enum CompanyOp {
         company: CompanyId,
         color: Tint,
     },
+    /// The company's head gives it the password the intent carries beside
+    /// it (a [`crate::Secret`] whose scope is the company), or a new one:
+    /// joining it then needs the password. Every game keeps only the
+    /// password's seal. Appended under schema version 9, as the variants
+    /// after it.
+    Lock(CompanyId),
+    /// The company's head takes its password away: anyone may join again.
+    Unlock(CompanyId),
+    /// The company's head sends a player out of it: they play for the
+    /// room's first company again.
+    Dismiss {
+        company: CompanyId,
+        /// The player, as the mod names players: 64 lowercase hex digits.
+        player: PlayerHex,
+    },
+    /// The company's head opens its stations to other companies' lines, or
+    /// closes them. A company's stations start open.
+    ShareStations {
+        company: CompanyId,
+        open: bool,
+    },
 }
+
+/// A player as the mod names one: their id's 64 lowercase hex digits.
+pub type PlayerHex = Text<64>;
 
 /// A loan on its terms, as Transport Fever 3's loan script keeps it
 /// (`game_mechanics/finance/loan.d.tl`), field for field. Nothing in it
@@ -1064,6 +1088,30 @@ mod tests {
                 6,  // the rank
             ]
         );
+        // Appended under schema version 9: the company's head's own.
+        let cases: [(CompanyOp, &[u8]); 4] = [
+            (CompanyOp::Lock(CompanyId(2)), &[5, 2]),
+            (CompanyOp::Unlock(CompanyId(2)), &[6, 2]),
+            (
+                CompanyOp::Dismiss {
+                    company: CompanyId(2),
+                    player: Text::new("ab").unwrap(),
+                },
+                &[7, 2, 2, b'a', b'b'],
+            ),
+            (
+                CompanyOp::ShareStations {
+                    company: CompanyId(2),
+                    open: false,
+                },
+                &[8, 2, 0],
+            ),
+        ];
+        for (op, bytes) in cases {
+            let payload = Action::CompanyOp(op).to_payload().unwrap();
+            assert_eq!(payload.as_bytes()[..2], [9, 11]);
+            assert_eq!(&payload.as_bytes()[2..], bytes);
+        }
     }
 
     #[test]

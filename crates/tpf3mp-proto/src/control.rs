@@ -354,6 +354,10 @@ pub enum GameMessage {
     Intent {
         client_seq: u64,
         payload: Payload,
+        /// A password the intent needs, such as a company's: the server
+        /// seals it ([`crate::Seal`]) into the event it orders, and neither
+        /// logs nor relays the password itself.
+        secret: Option<Secret>,
     },
     /// The last step this client has executed.
     Progress {
@@ -370,6 +374,30 @@ pub enum GameMessage {
         lanes: Vec<LaneDigest>,
         world: Option<SavedWorld>,
     },
+}
+
+/// A password a player typed for an intent: a company's, to join it or to
+/// set it (docs/PROTOCOL.md, "Secrets"). It goes to the server beside the
+/// intent and no further: the server orders the intent with a
+/// [`crate::Seal`] of it, an HMAC under the server's key, which every game
+/// compares with the seal it keeps. `Debug` never shows the password, so a
+/// log line of the message gives nothing away.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Secret {
+    /// What the password is for, as the intent names it (a company's id).
+    /// The seal binds it, so a password sealed for one company fits no
+    /// other.
+    pub scope: u64,
+    pub password: Text<64>,
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Secret")
+            .field("scope", &self.scope)
+            .field("password", &"<hidden>")
+            .finish()
+    }
 }
 
 /// The digest of one lane of world state at a checkpoint.

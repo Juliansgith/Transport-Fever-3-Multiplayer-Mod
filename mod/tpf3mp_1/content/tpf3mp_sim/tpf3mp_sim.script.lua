@@ -237,7 +237,7 @@ function data()
 				subscribed = true
 				for _, event in ipairs(EVENTS) do state:subscribeToEvent(event) end
 			end
-			local actions, origins = l:take()
+			local actions, origins, seals = l:take()
 			local checkpoint = l:checkpoint()
 			-- The registry begins at the room's first update, the same in
 			-- every game (tpf3mp/registry.lua), or at the first update since
@@ -252,8 +252,8 @@ function data()
 			local quarter = progression.quarterNow(api)
 			local sample = l:room() and progression.due(saved, quarter)
 			if not actions and not checkpoint and not begin and not monthly and not sample then return nil end
-			return { actions = actions, origins = origins, checkpoint = checkpoint, begin = begin,
-				monthly = monthly and month or nil, sample = sample and quarter or nil }
+			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint,
+				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
@@ -279,12 +279,17 @@ function data()
 					-- Booked to the sender's company.
 					local player = work.origins and work.origins[i]
 					local company = player and companies.of(roster, player)
+					-- The seal of the password sent with it (a company's),
+					-- which the room made; never the password.
+					local seal = work.seals and work.seals[i] or nil
 					local ok, why, made = apply.run(action, {
 						registry = reg,
 						roster = roster,
 						player = player,
 						company = company and company.entity,
+						company = company and company.entity,
 						progression = prog,
+						seal = type(seal) == "table" and seal or nil,
 					})
 					local name = next(action)
 					-- What it changed keeps its id on whatever entity it is
@@ -315,6 +320,14 @@ function data()
 					l:applied(i, ok, entity, why)
 					if not ok then
 						l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
+					elseif name == "CompanyOp" then
+						-- What became of the room's companies, for the log: the
+						-- operation, whose, and whether a seal came with it;
+						-- never a seal itself.
+						local op = next(action.CompanyOp)
+						l:log("company: " .. tostring(op) .. " by " .. tostring(player):sub(1, 8)
+							.. (seal and " (with a password's seal)" or "") .. ": "
+							.. companies.describe(roster))
 					end
 				end
 				if work.actions then l:replaying(false) end

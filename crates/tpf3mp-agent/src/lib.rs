@@ -37,7 +37,8 @@ use tpf3mp_proto::{
     CONTROL_MAX_FRAME, ChatText, ClientMessage, ContentDiff, ContentManifest, CreateRoom,
     GameMessage, Hello, IntentRejection, Invite, JoinRoom, LaneDigest, PROTOCOL_VERSION, Payload,
     Platform, PlayerId, RejectReason, Request, RequestError, Response, RoomView, SavedWorld,
-    ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, Welcome,
+    Secret, ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
+    Welcome,
 };
 
 pub use follower::{Action, FollowError, TurnFollower};
@@ -667,9 +668,22 @@ impl Client {
     }
 
     pub async fn send_intent(&self, client_seq: u64, payload: Payload) -> Result<(), ClientError> {
+        self.send_intent_with(client_seq, payload, None).await
+    }
+
+    /// An intent with the password it needs, such as a company's: the room
+    /// orders it with the password's seal, never the password (PROTOCOL.md,
+    /// "Secrets").
+    pub async fn send_intent_with(
+        &self,
+        client_seq: u64,
+        payload: Payload,
+        secret: Option<Secret>,
+    ) -> Result<(), ClientError> {
         self.send(GameMessage::Intent {
             client_seq,
             payload,
+            secret,
         })
         .await
     }

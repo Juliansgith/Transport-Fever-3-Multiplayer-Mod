@@ -408,19 +408,22 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {},
          dump = nil, dumped = {} }
 tpf3mp_native = {
-    version = 10,
-    command = function(action)
+    version = 11,
+    command = function(action, password)
         local ok, why = schema_check(action)
         if ok then
             HOOK.commands[#HOOK.commands + 1] = action
+            -- What the hook would send the room beside it, by ticket.
+            HOOK.passwords = HOOK.passwords or {}
+            HOOK.passwords[#HOOK.commands] = password
             return true, #HOOK.commands
         end
         return ok, why
     end,
     take = function()
-        local batch, origins = HOOK.batch, HOOK.origins
-        HOOK.batch, HOOK.origins = nil, nil
-        return batch, origins
+        local batch, origins, seals = HOOK.batch, HOOK.origins, HOOK.seals
+        HOOK.batch, HOOK.origins, HOOK.seals = nil, nil, nil
+        return batch, origins, seals
     end,
     log = function(line) HOOK.logged[#HOOK.logged + 1] = line end,
     poll = function()
@@ -541,8 +544,9 @@ fn with_the_hook_the_gui_links_once() {
         "the GUI is linked|the guard is on 4 command factories|\
          the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)|\
          the company window shows the game's own rank only: the game's company progression did \
-         not load: fake_gui.lua:134: ug_require of an unknown path \
-         /game_mechanics/company/company_progression_util.tl"
+         not load: fake_gui.lua:144: ug_require of an unknown path \
+         /game_mechanics/company/company_progression_util.tl|\
+         the line manager offers other companies' open stations (1 entity_util table(s))"
     );
     let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
     assert_eq!(worlds, 1, "the world's GUI started once");
@@ -612,7 +616,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 10; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 11; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -705,7 +709,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 10, command = print, log = print })
+             why({ version = 11, command = print, log = print })
              return out",
         )
         .eval()
@@ -908,7 +912,7 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 10 }
+             local native = { version = 11 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
                                   'status', 'chat', 'say' }) do
@@ -4210,6 +4214,275 @@ fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
     );
 }
 
+/// Pure: who may do what to a company (DECISIONS.md, D22, proposed). A
+/// password is the room's seal of it; its head alone locks and unlocks it,
+/// sends players out and opens or closes its stations; the head's place
+/// passes to the longest-standing player when the founder leaves; the room's
+/// first company is everyone's.
+#[test]
+fn a_companys_head_locks_it_and_only_its_password_opens_it() {
+    let lua = gui();
+    lua.load(
+        r#"
+        COMP = { [2] = { [800] = { player = 901 }, [801] = { player = 25 }, [802] = {} } }
+        api = {
+            engine = {
+                util = { getPlayer = function() return 25 end },
+                getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+                forEachEntityWithComponent = function(fn, kind)
+                    for e in pairs(COMP[kind] or {}) do fn(e) end
+                end,
+            },
+            type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2, TRANSPORT_VEHICLE = 4 },
+                     Vec3f = { new = function(x, y, z) return { x, y, z } end } },
+            cmd = {
+                makeGameAddPlayerCmd = function(name, color) return { add = name } end,
+                makeEntitySetColorCmd = function(e, color) return { paint = e } end,
+            },
+        }
+        SENT, NEXT = {}, 900
+        function send(cmd)
+            SENT[#SENT + 1] = cmd
+            if cmd.add then NEXT = NEXT + 1 return { resultEntity = NEXT } end
+        end
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        JAMES, BOB, CAT = string.rep("a", 64), string.rep("b", 64), string.rep("c", 64)
+        R = C.ensure(nil, api)
+        function seal(scope, byte) return { scope = scope, tag = string.rep(byte, 64) } end
+        function why(player, op, s)
+            local ok, reason = C.run(R, player, op, send, api, s)
+            return ok and "ok" or reason
+        end
+        -- James founds Rival (company 1, entity 901).
+        C.run(R, JAMES, { Create = { name = 'Rival' } }, send, api)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    assert_eq!(eval("return C.head(R, 1)"), eval("return JAMES"));
+    // Only its head locks it, and only with the room's seal for it.
+    assert_eq!(
+        eval("return why(BOB, { Lock = 1 }, seal(1, 'e'))"),
+        "only the head of Rival gives a password to it"
+    );
+    assert_eq!(
+        eval("return why(JAMES, { Lock = 1 })"),
+        "a password for Rival comes sealed by the room"
+    );
+    assert_eq!(
+        eval("return why(JAMES, { Lock = 1 }, seal(2, 'e'))"),
+        "a password for Rival comes sealed by the room",
+        "a seal made for another company"
+    );
+    assert_eq!(eval("return why(JAMES, { Lock = 1 }, seal(1, 'e'))"), "ok");
+    // Joining it needs the password: none, a wrong one, then the right one.
+    assert_eq!(
+        eval("return why(BOB, { Join = 1 })"),
+        "joining Rival needs its password"
+    );
+    assert_eq!(
+        eval("return why(BOB, { Join = 1 }, seal(1, 'f'))"),
+        "the password for Rival is not right"
+    );
+    assert_eq!(eval("return why(BOB, { Join = 1 }, seal(1, 'e'))"), "ok");
+    assert_eq!(eval("return why(CAT, { Join = 1 }, seal(1, 'e'))"), "ok");
+    // A player is no head: Bob cannot send Cat out or close the stations.
+    assert_eq!(
+        eval("return why(BOB, { Dismiss = { company = 1, player = CAT } })"),
+        "only the head of Rival sends players out of it"
+    );
+    assert_eq!(
+        eval("return why(BOB, { ShareStations = { company = 1, open = false } })"),
+        "only the head of Rival closes the stations of it"
+    );
+    // The head sends Cat out: she plays for the first company again, and
+    // gets back in only with the password.
+    assert_eq!(
+        eval("return why(JAMES, { Dismiss = { company = 1, player = CAT } })"),
+        "ok"
+    );
+    assert_eq!(eval("return tostring(C.of(R, CAT).id)"), "0");
+    assert_eq!(
+        eval("return why(JAMES, { Dismiss = { company = 1, player = JAMES } })"),
+        "the head leaves by joining another company"
+    );
+    // James leaves: Bob, who has played for Rival longest, is its head now.
+    assert_eq!(eval("return why(JAMES, { Join = 0 })"), "ok");
+    assert_eq!(eval("return C.head(R, 1)"), eval("return BOB"));
+    assert_eq!(
+        eval("return why(BOB, { ShareStations = { company = 1, open = false } })"),
+        "ok"
+    );
+    assert_eq!(eval("return tostring(C.open(C.find(R, 1)))"), "false");
+    // The founder returns with the password, and heads it again.
+    assert_eq!(eval("return why(JAMES, { Join = 1 }, seal(1, 'e'))"), "ok");
+    assert_eq!(eval("return C.head(R, 1)"), eval("return JAMES"));
+    assert_eq!(eval("return why(JAMES, { Unlock = 1 })"), "ok");
+    assert_eq!(eval("return why(CAT, { Join = 1 })"), "ok");
+    // The room's first company is everyone's: no head, no password, and its
+    // stations stay open.
+    assert_eq!(eval("return tostring(C.head(R, 0))"), "nil");
+    assert_eq!(
+        eval("return why(JAMES, { Lock = 0 }, seal(0, 'e'))"),
+        "the room's first company is everyone's: nobody gives a password to it"
+    );
+    assert_eq!(
+        eval("return why(JAMES, { ShareStations = { company = 0, open = false } })"),
+        "the room's first company is everyone's: nobody closes the stations of it"
+    );
+    // Using a station: no one's, one's own and an open company's are fine;
+    // a closed company's is refused, naming it. Using is not changing.
+    assert_eq!(
+        eval(
+            "return tostring(C.mayUse(R, 25, 802, api)) .. tostring(C.mayUse(R, 901, 800, api)) \
+             .. tostring(C.mayUse(R, 901, 801, api))"
+        ),
+        "truetruetrue"
+    );
+    assert_eq!(
+        eval("local ok, why = C.mayUse(R, 25, 800, api) return tostring(ok) .. ' ' .. why"),
+        "false the station belongs to Rival, which keeps its stations to itself"
+    );
+    assert_eq!(
+        eval(
+            "why(JAMES, { ShareStations = { company = 1, open = true } }) return tostring(C.mayUse(R, 25, 800, api))"
+        ),
+        "true"
+    );
+    // A colour is fractions from 0 to 1, and no two companies wear one.
+    assert_eq!(
+        eval("return why(JAMES, { Recolor = { company = 1, color = { r = 2, g = 0, b = 0 } } })"),
+        "a colour is { r, g, b }, each from 0 to 1"
+    );
+    assert_eq!(
+        eval(
+            "local first = C.find(R, 0).color \
+             return why(JAMES, { Recolor = { company = 1, color = { r = first[1], g = first[2], b = first[3] } } })"
+        ),
+        "Company wears that colour already"
+    );
+}
+
+/// Through the game script: a line of one company stops at another's
+/// station while that one keeps its stations open, and is refused in every
+/// game once they are closed; a join travels with its seal.
+#[test]
+fn a_line_stops_at_another_companys_station_while_it_is_open() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        r#"
+        api.type.Line = { new = function() return { vehicleInfo = {} } end,
+            Stop = { new = function() return {} end }, StopConfig = { new = function() return {} end } }
+        api.type.StationTerminal = { new = function(s, t) return { station = s, terminal = t } end }
+        api.cmd.makeLineCreateCmd = function(name, color, player, line)
+            return { createLine = { name = name, color = color, player = player, line = line } } end
+        JAMES, BOB, CAT = string.rep("a", 64), string.rep("b", 64), string.rep("c", 64)
+        -- Station group 90 is Rival's (901); 91 is no company's.
+        OWNERS = {}
+        local get = api.engine.getComponent
+        api.type.ComponentType.PLAYER_OWNED = 55
+        api.engine.getComponent = function(e, kind)
+            if kind == 55 then return OWNERS[e] and { player = OWNERS[e] } or nil end
+            return get(e, kind)
+        end
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { JAMES }
+        UPDATE({}, STATE, 0.2)
+        RIVAL = STATE.value.companies.list[2]
+        HOOK.batch = { { CompanyOp = { Lock = RIVAL.id } } } HOOK.origins = { JAMES }
+        HOOK.seals = { { scope = RIVAL.id, tag = string.rep("e", 64) } }
+        UPDATE({}, STATE, 0.2)
+        HOOK.batch = { { CompanyOp = { Join = RIVAL.id } }, { CompanyOp = { Join = RIVAL.id } } }
+        HOOK.origins = { BOB, BOB }
+        HOOK.seals = { { scope = RIVAL.id, tag = string.rep("f", 64) }, { scope = RIVAL.id, tag = string.rep("e", 64) } }
+        UPDATE({}, STATE, 0.2)
+        HOOK.seals = nil
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+             return table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied, "true,true,false:the password for Rival is not right,true",
+        "founded, locked, a wrong password refused, the right one let in"
+    );
+    let members: String = lua
+        .load("local r = STATE.value.companies return #r.members .. ' ' .. r.members[2].company")
+        .eval()
+        .unwrap();
+    assert_eq!(members, "2 1");
+    // hook.log says what became of the companies, and never a seal.
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains(
+            "company: Lock by aaaaaaaa (with a password's seal): \
+             Company #0 (0 chose it); Rival #1 (1 chose it, head aaaaaaaa, password)"
+        ),
+        "{logged}"
+    );
+    assert!(
+        logged.contains("was not applied: the password for Rival is not right"),
+        "{logged}"
+    );
+    assert!(!logged.contains("eeeeeeee"), "{logged}");
+    // Cat, of the room's first company, runs a line from Rival's station 90
+    // to 91: allowed while Rival's stations are open, refused once its head
+    // closes them, in every game alike.
+    lua.load(
+        r#"
+        OWNERS[90] = RIVAL.entity
+        local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua')
+        local reg = STATE.value.registry
+        local ctx = { group = function(e) return registry.id(reg, 'groups', e) end,
+                      line = function(e) return registry.id(reg, 'lines', e) end }
+        local function stop(group) return { stationGroup = group, station = 0, terminal = 1,
+            alternativeTerminals = {}, loadMode = 0, minWaitingTime = 0, maxWaitingTime = 180,
+            maxAdditionalWaitingTime = 0, waypoints = {},
+            stopConfig = { load = {}, maxLoad = {}, forceUnload = false,
+                destroyForConfigChange = false, destroyForRefresh = false } } end
+        LINE_ACTION = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua').lineCreate(ctx, 'Shared',
+            { x = 0.8, y = 0.2, z = 0 }, 25, { stops = { stop(90), stop(91) }, customFilters = false,
+            reservationPriority = 0, vehicleInfo = { transportModes = { [3] = true } } })
+        HOOK.applied = {}
+        HOOK.batch = { LINE_ACTION } HOOK.origins = { CAT }
+        UPDATE({}, STATE, 0.2)
+        HOOK.batch = { { CompanyOp = { ShareStations = { company = RIVAL.id, open = false } } }, LINE_ACTION }
+        HOOK.origins = { JAMES, CAT }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let lines: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+             return table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        lines,
+        "true,true,false:stop 1: the station belongs to Rival, which keeps its stations to itself"
+    );
+}
+
 /// Through the game script: a player founds a company, and what they do is
 /// booked to it; the roster is kept in the script's state.
 #[test]
@@ -4333,6 +4606,169 @@ fn the_guis_company_is_the_one_the_player_plays_for() {
         logged.contains("the GUI's company follows the player's"),
         "{logged}"
     );
+}
+
+/// The Multiplayer window's companies (D22, proposed): the head of the
+/// player's company sets its password, opens or closes its stations and
+/// sends players out; another player joins a company with a password by
+/// typing it, and the password goes to the hook beside the action, never
+/// into the window's notes or the log. The line manager offers another
+/// company's station while that company keeps its stations open.
+#[test]
+fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        JAMES, BOB = string.rep("a", 64), string.rep("b", 64)
+        ROSTER = { next = 2,
+            list = { { id = 0, entity = 25, name = "First", color = { 0.8, 0.16, 0.12 } },
+                     { id = 1, entity = 901, name = "Rival", color = { 0.13, 0.42, 0.85 }, founder = JAMES } },
+            members = { { player = JAMES, company = 1 }, { player = BOB, company = 1 } } }
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = function() return 25 end }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = { GAME_SCRIPT = 7, STATION_GROUP = 9, CONSTRUCTION = 2, PLAYER_OWNED = 55 }
+        api.type.Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end }
+        -- Station group 90 is Rival's.
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+            if e == 90 and kind == 9 then return {} end
+            if e == 90 and kind == 55 then return { player = 901 } end
+        end
+        HOOK.room = true
+        function as(me)
+            HOOK.status = { room = "r", me_id = me, players = {
+                { name = "james", id = JAMES, me = me == JAMES, connected = true, owner = true },
+                { name = "bob", id = BOB, me = me == BOB, connected = true } } }
+        end
+        as(JAMES)
+        BAR = mount(loadPlugin())
+        for _ = 1, 20 do BAR.step() end
+        BAR.render()
+        views(BAR.layout)[1].params.onClick()
+        function window() WINDOWS.Tpf3mpWindow.step() return WINDOWS.Tpf3mpWindow.render() end
+        function find(view, pick)
+            for _, v in ipairs(views(window())) do
+                if v.view == view and pick(v.params) then return v.params end
+            end
+        end
+        function button(label)
+            return find("Button", function(p) return p.content and p.content.params.text == label end)
+        end
+        function texts()
+            local out = {}
+            for _, v in ipairs(views(window())) do
+                if v.view == 'TextView' then out[#out + 1] = v.params.text end
+            end
+            return table.concat(out, "\n")
+        end
+        function last() return HOOK.commands[#HOOK.commands], HOOK.passwords[#HOOK.commands] end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}\n{}", log(&lua)))
+    };
+    assert!(
+        eval("return texts()").contains("Rival  james (you), bob  (yours, head: james)"),
+        "{}",
+        eval("return texts()")
+    );
+    // The head types a password: it goes beside the action, and the field
+    // hides it.
+    assert_eq!(
+        eval(
+            "local f = find('TextInputField', function(p) return p.passwordMode end) \
+             f.onValueChange('s3cret') \
+             local action, password = last() \
+             return f.placeholderText .. '|' .. action.CompanyOp.Lock .. '|' .. password"
+        ),
+        "A password to join|1|s3cret"
+    );
+    assert!(!eval("return texts()").contains("s3cret"));
+    // The head closes the stations and sends Bob out.
+    assert_eq!(
+        eval(
+            "button('Close').onClick() \
+             local close = last().CompanyOp.ShareStations \
+             button('Send out').onClick() \
+             local out = last().CompanyOp.Dismiss \
+             return tostring(close.open) .. '|' .. out.player"
+        ),
+        format!("false|{}", "b".repeat(64))
+    );
+    // The line manager offers Rival's station while its stations are open.
+    assert_eq!(
+        eval(
+            "local util = ug_require('/scripts/entity_util.tl') \
+             local open = util.isOwnedByPlayerOrNotOwned(90) \
+             ROSTER.list[2].closed = true \
+             for _ = 1, 20 do BAR.step() end \
+             return tostring(open) .. '|' .. tostring(util.isOwnedByPlayerOrNotOwned(90))"
+        ),
+        "true|false"
+    );
+    // Bob, of the first company now, joins Rival, which has a password.
+    assert_eq!(
+        eval(
+            "ROSTER.list[2].lock = { scope = 1, tag = string.rep('e', 64) } \
+             ROSTER.members = { { player = JAMES, company = 1 } } \
+             as(BOB) for _ = 1, 20 do BAR.step() end \
+             local n = #HOOK.commands \
+             button('Join').onClick() \
+             local refused = #HOOK.commands == n \
+             local f = find('TextInputField', function(p) return p.passwordMode end) \
+             f.onTyping('s3cret') \
+             button('Join').onClick() \
+             local action, password = last() \
+             return tostring(refused) .. '|' .. action.CompanyOp.Join .. '|' .. password"
+        ),
+        "true|1|s3cret"
+    );
+    let shown = eval("return texts()");
+    assert!(
+        shown.contains("Rival  james  (head: james, password, stations closed)"),
+        "{shown}"
+    );
+    assert!(shown.contains("Joining Rival..."), "{shown}");
+    assert!(!shown.contains("s3cret"), "{shown}");
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(!logged.contains("s3cret"), "{logged}");
+    assert!(
+        logged.contains("the line manager offers other companies' open stations"),
+        "{logged}"
+    );
+}
+
+/// The game's company window renames the player's company by its player
+/// entity: that goes to the room as the company's rename.
+#[test]
+fn the_company_windows_rename_goes_to_the_room_as_the_companys() {
+    let lua = gui();
+    lua.load("C = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')")
+        .exec()
+        .unwrap();
+    let (company, line): (String, String) = lua
+        .load(
+            "local ctx = { company = function(e) if e == 901 then return 1 end end, \
+                           line = function(e) if e == 600 then return 4 end end } \
+             local a = C.setName(ctx, 901, 'Blue Line') \
+             local b = C.setName(ctx, 600, 'North') \
+             return a.CompanyOp.Rename.company .. ' ' .. a.CompanyOp.Rename.name, \
+                    b.EditLine.line .. ' ' .. b.EditLine.change.Rename",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(company, "1 Blue Line");
+    assert_eq!(line, "4 North");
 }
 
 /// With more than one company, vehicles wear their company's colour: a new
