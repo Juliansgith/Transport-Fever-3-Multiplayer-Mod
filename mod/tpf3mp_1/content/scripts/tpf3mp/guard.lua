@@ -8,6 +8,9 @@
 -- front of sendCommand in the GUI's Lua state:
 --
 -- - a command of a kind in PASS is sent as the player gave it;
+-- - a command CARRY makes an action of is handed to the room instead,
+--   which orders it for every game, this one included; its callback hears
+--   on the next frame that it went, as the game's own windows expect;
 -- - every other kind is refused, as docs/PLAN.md (Part 3) says of every
 --   action the room does not carry yet: it is not sent, its callback hears
 --   on the next frame that it failed, and the player is told.
@@ -24,6 +27,9 @@
 
 local guard = {}
 
+-- Lua 5.2 (the game's) has table.unpack; Lua 5.1 (the tests') unpack.
+local unpackArgs = table.unpack or unpack
+
 -- The kinds sent as they are in the room's game, and why.
 guard.PASS = {
 	-- The speed row. In the room's game the step gate runs the room's pace
@@ -31,6 +37,23 @@ guard.PASS = {
 	-- player's request to the room (docs/HOOKS.md, "The step gate in the
 	-- game").
 	makeGameSetSpeedCmd = true,
+}
+
+-- The commands the room carries, by kind: each makes an action table
+-- (tpf3mp_proto::action, in the game's units) of the command's arguments,
+-- or nil for one it does not carry, which is then refused.
+guard.CARRY = {
+	-- The finance window's loans (finances_loan_gui.tl): the loan script's
+	-- events, with the loans as the script keeps them.
+	makeScriptingSendEventCmd = function(_src, id, name, param)
+		if id ~= "Loan" or type(param) ~= "table" then return nil end
+		if name == "Obtain" and type(param[1]) == "table" and type(param[2]) == "table" then
+			return { Loan = { Take = { next = param[1], offer = param[2] } } }
+		elseif name == "Repay" and type(param[2]) == "table" then
+			return { Loan = { Repay = { loan = param[2] } } }
+		end
+		return nil
+	end,
 }
 
 -- What the player is told a refused kind is, where "this" would not do.
@@ -96,6 +119,7 @@ local guarded = setmetatable({}, { __mode = "k" })
 
 -- Puts the guard in front of `cmd` (the GUI state's api.cmd). `env` is:
 --   inRoom()      -> whether the room's game runs;
+--   command(t)    -> hands an action table to the room: true, or nil and why;
 --   refused(kind) -> a command of `kind` (nil: made by no factory the guard
 --                    knows) was refused;
 --   later(fn)     -> runs fn on the next frame.
@@ -107,8 +131,10 @@ function guard.install(cmd, env)
 	local send = cmd.sendCommand
 	if send == nil then return nil, "api.cmd has no sendCommand" end
 
-	-- The factory each command came from, by the command itself.
+	-- The factory each command came from, and its arguments, by the command
+	-- itself.
 	local kinds = setmetatable({}, { __mode = "k" })
+	local calls = setmetatable({}, { __mode = "k" })
 	local factories = {}
 	for name, factory in pairs(cmd) do
 		if type(name) == "string" and name:match("^make.+Cmd$") then
@@ -123,7 +149,10 @@ function guard.install(cmd, env)
 		cmd[name] = function(...)
 			local command = factory(...)
 			local t = type(command)
-			if t == "table" or t == "userdata" then kinds[command] = name end
+			if t == "table" or t == "userdata" then
+				kinds[command] = name
+				if guard.CARRY[name] then calls[command] = { n = select("#", ...), ... } end
+			end
 			return command
 		end
 		wrapped = wrapped + 1
@@ -139,8 +168,21 @@ function guard.install(cmd, env)
 		if kind ~= nil and guard.PASS[kind] then
 			return send(command, ...)
 		end
-		env.refused(kind)
 		local callback = ...
+		local carry, args = kind and guard.CARRY[kind], calls[command]
+		local action = carry and args and carry(unpackArgs(args, 1, args.n))
+		if action then
+			local ok, why = env.command(action)
+			if ok then
+				if callback ~= nil then
+					env.later(function() callback(command, true, {}) end)
+				end
+				return
+			end
+			env.refused(kind, why)
+		else
+			env.refused(kind)
+		end
 		if callback ~= nil then
 			env.later(function() callback(command, false, {}) end)
 		end
