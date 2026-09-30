@@ -56,6 +56,9 @@ const TARGETS: &[(&str, u64)] = &[
     // The seeds and the order fixes (crates/tpf3mp-hook/src/seeds.rs, order.rs).
     ("ecs::LandVehicleMoveSystem::Update2/shuffle", 0xac1b70),
     ("ecs::LandVehicleMoveSystem::Update2/records", 0xac1d72),
+    // The platform-order fix (crates/tpf3mp-hook/src/order.rs, `platform`).
+    ("ecs::TransportVehicleSystem::Update2/visit", 0xb8bccb),
+    ("FindNextFreeTerminal/candidate sort", 0xb85430),
     // The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs).
     ("GameSim::Step/paused GameTime advance", 0x159412),
     ("CGameTime::Advance", 0xbace10),
@@ -148,6 +151,15 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
         &[
             0xFF, 0x47, 0x3C, 0x40, 0x84, 0xED, 0x74, 0x03, 0xFF, 0x47, 0x40
         ]
+    );
+    // The platform-order fix: the visit loop asks FindNextFreeTerminal,
+    // whose candidate sort follows the candidate site.
+    assert_eq!(callee(0xb8bea1), 0xb84e20);
+    assert_eq!(callee(0xb85453), 0xb76b30);
+    // The road-entry fix: Add appends in place (`add qword [rcx+8], 0x14`).
+    assert_eq!(
+        &text_bytes[at(0x255ea6d)..at(0x255ea6d) + 5],
+        &[0x48, 0x83, 0x41, 0x08, 0x14]
     );
     // The land-vehicle shuffle's seed is the tickCount getter's answer.
     assert_eq!(callee(0xac1b23), 0x2a95c0);

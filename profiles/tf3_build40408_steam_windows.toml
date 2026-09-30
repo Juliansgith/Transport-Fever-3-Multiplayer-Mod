@@ -493,6 +493,35 @@ offset = 0
 prologue = "48 89 5C 24 10 57 48 83 EC 30 48 8B F9 89 54 24 40"
 required = false
 
+# The platform-order fix (order.rs `platform`; investigation/TPF3_TRAIN_PRIORITY_2026-09-30.md).
+# ecs::TransportVehicleSystem::Update2 (vf12, 0xb8bae0) walks its node list, 8-byte
+# {entity, TransportVehicle index} records, `for rsi in 0..count*8`, reloading the
+# list's begin each iteration (`mov rax,[r13+8]; mov rdi,[rax]`, 0xb8bcc4) and asking
+# FindNextFreeTerminal for each en-route vehicle. The site is the next three
+# instructions (0xb8bccb = signature start + 7): `mov rcx,[r13+0x10]; movsxd
+# rax,[rsi+rdi+4]; imul rbx,rax,0x1e8`; the first two (9 bytes) are stolen, nothing
+# branches into 0xb8bccc..0xb8bcd3 (tpfre xrefs), and rdi is set anew after the loop
+# (0xb8c22f) before any other use. The hook points rdi at a copy sorted by entity.
+[[target]]
+name = "ecs::TransportVehicleSystem::Update2/visit"
+signature = "49 8B 45 08 48 8B 38 49 8B 4D 10 48 63 44 3E 04 48 69 D8 E8 01 00 00"
+offset = 7
+prologue = "49 8B 4D 10 48 63 44 3E 04 48 69 D8 E8 01 00 00"
+required = false
+
+# (anon)::FindNextFreeTerminal (0xb84e20, named by its assert) std::sorts its 12-byte
+# candidate terminals [r13, r14) by a cost it looks up per candidate (0xb85453; the
+# comparator compares floats only). The site (0xb85430) is the size computation right
+# before that call: `mov rcx,r14; sub rcx,r13` (6 bytes, stolen; 0xb85430 is a branch
+# target, 0xb85431..0xb85435 are not), then `mov rax,rdi; imul rcx`. The hook puts
+# the candidates in one order first, so equal costs break the same way everywhere.
+[[target]]
+name = "FindNextFreeTerminal/candidate sort"
+signature = "49 8B CE 49 2B CD 48 8B C7 48 F7 E9 48 D1 FA 4C 8B C2 49 C1 E8 3F 4C 03 C2 4C 8D 4D F0 49 8B D6 49 8B CD E8"
+offset = 0
+prologue = "49 8B CE 49 2B CD 48 8B C7 48 F7 E9"
+required = false
+
 # transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
 [[target]]
 name = "transport::EdgeReservationManager::Reserve"
