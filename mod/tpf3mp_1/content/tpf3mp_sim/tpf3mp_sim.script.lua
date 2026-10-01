@@ -87,6 +87,9 @@ function data()
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
 	local told, toldRegistry, toldOwnership = false, false, false
+	-- The headquarters lines last logged in this state, by company id: a
+	-- line is logged again only when it changed (tpf3mp/companies.lua).
+	local toldHeadquarters = {}
 	-- Events subscribed to from this state.
 	local subscribed = false
 	-- Says what a prospection did (below).
@@ -492,6 +495,25 @@ function data()
 					local ok, why = progression.sample(prog, roster, api, work.sample,
 						function(line) l:log(line) end, reg, registry)
 					if not ok then l:log("the companies' scores were not sampled: " .. tostring(why)) end
+					-- Each company's headquarters and the bonus its town
+					-- gets, read only, when it changed: the game's own town
+					-- script gives it (tpf3mp/companies.lua).
+					local okHq, lines, whyHq = pcall(companies.headquartersReport, roster, api)
+					if not okHq or lines == nil then
+						local said = "the headquarters were not read: " .. tostring(okHq and whyHq or lines)
+						if toldHeadquarters.failed ~= said then
+							toldHeadquarters.failed = said
+							l:log(said)
+						end
+					else
+						for _, line in ipairs(lines) do
+							local key = line:match("^(.-): headquarters ") or line
+							if toldHeadquarters[key] ~= line then
+								toldHeadquarters[key] = line
+								l:log("headquarters: " .. line)
+							end
+						end
+					end
 				end
 				saved.registry = reg
 				saved.companies = roster

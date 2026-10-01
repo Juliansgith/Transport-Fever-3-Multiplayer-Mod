@@ -9435,6 +9435,178 @@ fn each_company_builds_one_headquarters_of_its_own() {
     assert!(logged.contains("ownership: "), "{logged}");
 }
 
+/// Each company's headquarters gives its own town the game's bonus: the
+/// game's town script sums every headquarters' `town_growth` onto its
+/// closest town, whoever owns it (towns.script.tl, landmark_util.tl), so
+/// the mod adds nothing and says, read only, what each company's
+/// headquarters is, what its PLAYER names and the bonus its town gets, at
+/// the companies' samples, again only when that changed.
+#[test]
+fn each_headquarters_bonus_is_logged_for_its_own_town() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        api.type.ComponentType.PLAYER_OWNED = 55
+        api.type.ComponentType.PLAYER = 5
+        api.type.ComponentType.GAME_SCRIPT = 77
+        api.type.ComponentType.GAME_TIME = 99
+        GAME_T = 0
+        api.engine.util.getWorld = function() return 1 end
+        api.util = { getDefaultMonthDuration = function() return 1000 end }
+        CONS, OWNERS, PLAYERS, NEXT_CON = {}, {}, {}, 700
+        -- Two towns: a headquarters' closest town by its x.
+        TOWN_OF, NAMES = {}, { [31] = 'Ashford', [32] = 'Brill' }
+        api.engine.util.getEntityName = function(e) return NAMES[e] end
+        api.engine.system.streetConnectorSystem = {
+            getConstructionClosestTown = function(e) return TOWN_OF[e] or -1 end }
+        -- The game's town script's state: what it applies to each town.
+        TOWNS = { townStates = {
+            { townEntity = { entity = 31 }, constructionBoni = { xpIncrease = 0, reputationRecoveryBoost = 0 } },
+            { townEntity = { entity = 32 }, constructionBoni = { xpIncrease = 0, reputationRecoveryBoost = 0 } } } }
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == '::/game_mechanics/towns/town.gs' then return 600 end return -1 end }
+        api.res = { constructionRep = {
+            find = function(file)
+                if file == '::/landmarks/hq/headquarter.con' then return 1 end
+                return -1
+            end,
+            get = function(id)
+                if id == 1 then return { metadata = { company = { headquarters = true, companyRank = 1 } } } end
+                return { metadata = {} }
+            end,
+        } }
+        api.engine.getComponent = function(e, kind)
+            if kind == 99 then return { gameTime = GAME_T } end
+            if kind == 2 then return CONS[e] end
+            if kind == 55 then return OWNERS[e] and { player = OWNERS[e] } end
+            if kind == 5 then return PLAYERS[e] end
+            if e == 600 and kind == 77 then return { state = TOWNS } end
+        end
+        api.engine.forEachEntityWithComponent = function(fn, kind)
+            if kind == 2 then for e in pairs(CONS) do fn(e) end end
+        end
+        -- What a build makes, as the engine makes it (apply_proposal.cpp):
+        -- the construction, owned by the proposal's playerEntity, whose
+        -- PLAYER then names it as its headquarters; the headquarters'
+        -- town_growth on it (headquarter.script.tl).
+        local make = api.cmd.makeWorldBuildProposalCmd
+        api.cmd.makeWorldBuildProposalCmd = function(proposal, context, ...)
+            for _, e in ipairs(proposal.constructionsToAdd or {}) do
+                NEXT_CON = NEXT_CON + 1
+                CONS[NEXT_CON] = { fileName = e.fileName,
+                                   persistentMetadata = { town_growth = { xpIncrease = 0.05 } } }
+                OWNERS[NEXT_CON] = e.playerEntity
+                PLAYERS[e.playerEntity] = { headquarters = NEXT_CON }
+                TOWN_OF[NEXT_CON] = e.transf[4][1] > 500 and 32 or 31
+            end
+            return make(proposal, context, ...)
+        end
+        A, B = string.rep("a", 64), string.rep("b", 64)
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A }
+        UPDATE({}, STATE, 0.2)
+        function hq(x)
+            return { BuildConstruction = { file = '::/landmarks/hq/headquarter.con',
+                transform = { basis = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, origin = { x = x, y = 200, z = 5 } },
+                params = {}, name = 'HQ' } }
+        end
+        HOOK.batch = { hq(100), hq(900) } HOOK.origins = { A, B }
+        UPDATE({}, STATE, 0.2)
+        -- The game's town script, at its next check of the constructions.
+        TOWNS.townStates[1].constructionBoni.xpIncrease = 0.05
+        TOWNS.townStates[2].constructionBoni.xpIncrease = 0.05
+        function headquartersLogged()
+            local out = {}
+            for _, l in ipairs(HOOK.logged) do
+                if l:sub(1, 14) == 'headquarters: ' then out[#out + 1] = l end
+            end
+            return out
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    // Both built, each owned by its company, which the PLAYER names.
+    assert_eq!(
+        eval(
+            "local out = {} for e, c in pairs(CONS) do out[#out + 1] = OWNERS[e] .. '>' .. TOWN_OF[e] end \
+             table.sort(out) return table.concat(out, ',')"
+        ),
+        "25>32,901>31"
+    );
+    let report = eval(
+        "local C = ug_require('tpf3mp_1::/scripts/tpf3mp/companies.lua') \
+         local lines = C.headquartersReport(STATE.value.companies, api) return table.concat(lines, '|')",
+    );
+    let lines: Vec<&str> = report.split('|').collect();
+    assert_eq!(lines.len(), 2, "{report}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("Company #0: headquarters ")
+                && l.contains(
+                    "closest town 32 (Brill): on it xp +0.05, reputation recovery +0.00; \
+                 the game's town script applies xp +0.05, reputation recovery +0.00 there"
+                )),
+        "{report}"
+    );
+    let rival = lines
+        .iter()
+        .find(|l| l.starts_with("Rival #1: headquarters "))
+        .unwrap_or_else(|| panic!("{report}"));
+    let hq = rival
+        .trim_start_matches("Rival #1: headquarters ")
+        .split(',')
+        .next()
+        .unwrap();
+    assert!(
+        rival.contains(&format!("its PLAYER names {hq};")),
+        "the engine names Rival's own: {rival}"
+    );
+    assert!(
+        rival.contains("closest town 31 (Ashford): on it xp +0.05"),
+        "{rival}"
+    );
+    // The companies' sample in the update that built them said both, before
+    // the game's town script had checked the constructions; at the next,
+    // its bonus applied, both again; then nothing changed and nothing more
+    // is said.
+    assert_eq!(
+        eval(
+            "local l = headquartersLogged() return #l .. ' ' .. tostring(l[1]:find('applies xp +0.00', 1, true) ~= nil)"
+        ),
+        "2 true"
+    );
+    assert_eq!(
+        eval("GAME_T = 1000 UPDATE({}, STATE, 0.2) return tostring(#headquartersLogged())"),
+        "4"
+    );
+    assert_eq!(
+        eval("GAME_T = 2000 UPDATE({}, STATE, 0.2) return tostring(#headquartersLogged())"),
+        "4"
+    );
+    // A medium wing on Rival's: its town's bonus changes, and only Rival's
+    // line is said again.
+    assert_eq!(
+        eval(&format!(
+            "CONS[{hq}].persistentMetadata.town_growth.xpIncrease = 0.06 \
+             TOWNS.townStates[1].constructionBoni.xpIncrease = 0.06 \
+             GAME_T = 3000 UPDATE({{}}, STATE, 0.2) \
+             local l = headquartersLogged() return #l .. ' ' .. l[#l]"
+        )),
+        format!(
+            "5 headquarters: Rival #1: headquarters {hq}, its PLAYER names {hq}; closest town 31 (Ashford): \
+             on it xp +0.06, reputation recovery +0.00; the game's town script applies xp +0.06, \
+             reputation recovery +0.00 there"
+        )
+    );
+}
+
 /// In the GUI, the game's permit counts count the player's company's own
 /// constructions while the room has more than one company: the
 /// construction menu offers each company its headquarters until it has

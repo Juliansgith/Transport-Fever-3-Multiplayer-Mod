@@ -464,8 +464,11 @@ protected folder such as Program Files.
 - **Headquarters.** Each company builds one headquarters of its own, from
   the construction menu as usual, once its rank allows: another
   company's headquarters does not use up yours. A second one for the
-  same company is refused. The game bar's transported figures and the
-  finance window's company value still show the room's first company's.
+  same company is refused. Each headquarters gives its own town the
+  game's growth bonus, as in a single-player game, and the town labels
+  crown your company's headquarters town as your capital. The game bar's
+  transported figures and the finance window's company value still show
+  the room's first company's.
 - **Competitive rooms.** In a room created **Competitive**, every player
   gets a company of their own without clicking anything: about a second
   after you arrive in the room's world, your game founds `<your name>'s

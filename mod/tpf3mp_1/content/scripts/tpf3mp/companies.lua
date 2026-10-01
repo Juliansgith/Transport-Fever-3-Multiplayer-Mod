@@ -412,6 +412,89 @@ function companies.ownership(roster, api)
 	return table.concat(out, "; ")
 end
 
+-- What a headquarters gives, and to whom (docs/HOOKS.md, "Headquarters").
+-- Build 40408 keeps no headquarters bonus per company: the game's town
+-- script (game_mechanics/towns/towns.script.tl, updateConstructions, every
+-- 20 updates) sums the `town_growth` instance metadata of every
+-- construction in the world, whoever owns it, onto the town closest to it
+-- (landmarks/landmark_util.tl, collectTownGrowthMetadata), and that town's
+-- experience grows by that much more (town_util.getXpFactor: 1 +
+-- xpIncrease). A headquarters carries xp +5% itself and +1% for each
+-- medium wing, and reputation recovery +1% for each large wing
+-- (landmarks/hq/headquarter.script.tl, headquarter_addon.script.tl, the
+-- modules' metadata). So each company's headquarters already gives its
+-- town what a single player's gives, in every game alike; the mod adds
+-- nothing to it. Its PLAYER `headquarters` the engine sets for the
+-- proposal's `playerEntity` (apply_proposal.cpp, "ce.playerEntity !=
+-- ecs::Entity()"), which only the GUI reads: the capital badge, the
+-- "Headquarters" tooltip and selection.
+companies.TOWN_SCRIPT = "::/game_mechanics/towns/town.gs"
+
+local function number(v)
+	if type(v) ~= "number" then return 0 end
+	return v
+end
+
+-- For hook.log, read only: one line per live company with a headquarters,
+-- saying which construction it is, what its PLAYER names, the town it is
+-- closest to, the bonus on it, and the bonus the game's town script applies
+-- to that town. Nil and why where this game cannot list the constructions.
+function companies.headquartersReport(roster, api)
+	local towns = nil
+	pcall(function()
+		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(companies.TOWN_SCRIPT)
+		local script = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+		towns = script and script.state and script.state.townStates
+	end)
+	-- Every headquarters by its owner, in one pass over the constructions.
+	local byOwner, unknown = {}, nil
+	local listed, failed = pcall(api.engine.forEachEntityWithComponent, function(e)
+		local owner = companies.ownerOf(api, e)
+		if owner == nil or byOwner[owner] then return end
+		local con = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+		local hq = con and companies.isHeadquarters(api, con.fileName)
+		if hq == nil then unknown = con and con.fileName or e
+		elseif hq then byOwner[owner] = e end
+	end, api.type.ComponentType.CONSTRUCTION)
+	if not listed then return nil, "this game cannot list the constructions: " .. tostring(failed) end
+	local out = {}
+	for _, c in ipairs(companies.live(roster)) do
+		local hq = byOwner[c.entity]
+		if hq == nil and unknown ~= nil then
+			return nil, "this game cannot tell whether " .. tostring(unknown) .. " is a headquarters"
+		end
+		if hq then
+			local named, town, name, xp, recovery = nil, nil, nil, 0, 0
+			pcall(function()
+				local p = api.engine.getComponent(c.entity, api.type.ComponentType.PLAYER)
+				named = p and p.headquarters
+			end)
+			pcall(function()
+				town = api.engine.system.streetConnectorSystem.getConstructionClosestTown(hq)
+			end)
+			pcall(function() name = api.engine.util.getEntityName(town) end)
+			pcall(function()
+				local con = api.engine.getComponent(hq, api.type.ComponentType.CONSTRUCTION)
+				local growth = con and con.persistentMetadata and con.persistentMetadata.town_growth
+				if growth then xp, recovery = number(growth.xpIncrease), number(growth.reputationRecoveryBoost) end
+			end)
+			local applied = "the game's town script has no state for that town"
+			for _, t in ipairs(type(towns) == "table" and towns or {}) do
+				local te = type(t) == "table" and t.townEntity
+				if type(te) == "table" and te.entity == town and type(t.constructionBoni) == "table" then
+					applied = string.format("the game's town script applies xp +%.2f, reputation recovery +%.2f there",
+						number(t.constructionBoni.xpIncrease), number(t.constructionBoni.reputationRecoveryBoost))
+				end
+			end
+			out[#out + 1] = string.format("%s #%d: headquarters %s, its PLAYER names %s; closest town %s%s: "
+				.. "on it xp +%.2f, reputation recovery +%.2f; %s",
+				tostring(c.name), c.id, tostring(hq), tostring(named), tostring(town),
+				name and (" (" .. tostring(name) .. ")") or "", xp, recovery, applied)
+		end
+	end
+	return out
+end
+
 -- Whether `company` (a player entity) may change `entity`: what no company
 -- owns, and what it owns itself. Else false and why, naming the owner.
 function companies.mayTouch(roster, company, entity, api, what)
