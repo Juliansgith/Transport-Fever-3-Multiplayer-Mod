@@ -1014,6 +1014,108 @@ end
 -- demolition beyond what was asked). Raises otherwise; returns the
 -- entities it removes, for the log. A removal whose list does not read
 -- passes only when it names none (as before schema 15).
+-- The asset groups near (x, y) that hold an asset of `model` there: the
+-- game's octree first, every asset group where it gives none.
+local function assetGroupsAt(model, x, y, z)
+	local engine = module("engine")
+	local GROUP = api.type.ComponentType.ASSET_GROUP
+	local candidates = {}
+	local ok, near = pcall(function()
+		return api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(x, y), 1, GROUP)
+	end)
+	if ok and type(near) == "table" then candidates = near end
+	if #candidates == 0 then candidates = api.engine.getEntitiesWithComponent(GROUP) end
+	local out = {}
+	for i = 1, #candidates do
+		local g = candidates[i]
+		local okA, assets = pcall(engine.assetsOf, g)
+		if okA then
+			for _, a in ipairs(assets) do
+				if engine.assetAt(a, model, x, y, z) then
+					out[#out + 1] = { entity = g, assets = assets }
+					break
+				end
+			end
+		end
+	end
+	return out
+end
+
+-- Trees and other assets the asset bulldozer took out of their group
+-- (action::Bulldoze::Assets): the one group here that holds exactly
+-- `count` assets, the first and every one removed among them, removed and
+-- built again from this game's own copy without them, as the tool builds
+-- it (tpf3mp/engine.lua, captureAssets): one construction of no file at the
+-- world's origin whose one subconstruction lists the assets kept, each its
+-- model's file and its world matrix. Any other group here refuses it, so no
+-- game removes other trees than the player's. Paid by the player's company,
+-- as the player's own build. The log says the group and its assets before
+-- and after, in every game.
+local function removeAssets(a, context)
+	local engine = module("engine")
+	local f = a.first
+	local found = {}
+	for _, g in ipairs(assetGroupsAt(f.model, f.at.x, f.at.y, f.at.z)) do
+		if #g.assets == a.count then
+			local used, all = {}, true
+			for _, r in ipairs(a.removed) do
+				if not engine.takeAsset(g.assets, used, r.model, r.at.x, r.at.y, r.at.z) then all = false break end
+			end
+			if all then found[#found + 1] = { entity = g.entity, assets = g.assets, used = used } end
+		end
+	end
+	if #found ~= 1 then
+		error(#found == 0 and ("no asset group of " .. a.count .. " assets with those trees here")
+			or ("more than one asset group of " .. a.count .. " assets with those trees here"), 0)
+	end
+	local group = found[1]
+	local P = api.type.Proposal
+	local column = api.type.Vec4f.new
+	local models = {}
+	for i, asset in ipairs(group.assets) do
+		if not group.used[i] then
+			local m = engine.assetMatrix(asset, a.mirrored)
+			local tm = P.TransformedModel.new()
+			tm.id = asset.model
+			tm.transf = api.type.Mat4f.new(column(m[1], m[2], m[3], m[4]), column(m[5], m[6], m[7], m[8]),
+				column(m[9], m[10], m[11], m[12]), column(m[13], m[14], m[15], m[16]))
+			models[#models + 1] = tm
+		end
+	end
+	local sub = P.Subconstruction.new()
+	sub.models = models
+	local ce = P.ConstructionEntity.new()
+	ce.fileName = ""
+	local con = ce.construction
+	if con == nil then error("this game makes no construction for an asset group", 0) end
+	con.subconstructions = { sub }
+	ce.construction = con
+	ce.transf = api.type.Mat4f.new(column(1, 0, 0, 0), column(0, 1, 0, 0), column(0, 0, 1, 0), column(0, 0, 0, 1))
+	ce.playerEntity = a.owned and company() or -1
+	local proposal = P.new()
+	proposal.toRemove = { group.entity }
+	proposal.toAdd = { ce }
+	log(string.format("trees: asset group %d of %d assets, %d removed (%s at %.2f,%.2f), rebuilt with %d",
+		group.entity, #group.assets, #a.removed, tostring(a.removed[1].model), a.removed[1].at.x,
+		a.removed[1].at.y, #models))
+	run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	-- What stands now: the group that holds the first asset kept, and how
+	-- many it holds (the same in every game, or the replay differed).
+	local after = "none found"
+	for i, asset in ipairs(group.assets) do
+		if not group.used[i] then
+			local now = assetGroupsAt(asset.model, asset.x, asset.y, asset.z)
+			local counts = {}
+			for _, g in ipairs(now) do counts[#counts + 1] = tostring(#g.assets) end
+			after = #now == 0 and "no group holds the first tree kept"
+				or (#now .. " group(s) hold the first tree kept, of " .. table.concat(counts, ",") .. " assets")
+			break
+		end
+	end
+	log("trees: after the rebuild " .. after)
+	return true
+end
+
 local function townBuildingsRemoved(proposal, named)
 	local ok, removed = pcall(function()
 		local l, out = proposal.toRemove, {}
@@ -1088,6 +1190,8 @@ function HANDLERS.Bulldoze(b)
 	elseif b.EdgeObject then
 		-- A simple proposal: the game's verdict first (buildProposal).
 		return removeEdgeObject(b.EdgeObject, context)
+	elseif b.Assets then
+		return removeAssets(b.Assets, context)
 	else
 		return false, "a bulldoze of no kind"
 	end

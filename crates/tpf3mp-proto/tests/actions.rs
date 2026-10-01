@@ -9,12 +9,12 @@ use proptest::{collection::vec, prelude::*, sample::Index};
 use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
-        ACTION_SCHEMA_VERSION, Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
-        ConfigEdge, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration,
-        EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, JunctionEdit,
-        LaneConnection, LightPhase, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode,
-        LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeConfig, NodeRef, Param,
-        ParamValue, PlaceStop, Polyline, Pos, Pos2, Precedence, Prospect, ReplaceVehicle,
+        ACTION_SCHEMA_VERSION, Action, AssetRef, AssetRemoval, AssignLine, Bulldoze, BuyVehicle,
+        CompanyId, CompanyOp, ConfigEdge, ConsistPart, ConstructionBuild, ConstructionRef,
+        CreateLine, Decoration, EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction,
+        JunctionEdit, LaneConnection, LightPhase, LineChange, LineData, LineId, LineStop, Link,
+        Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeConfig, NodeRef,
+        Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Precedence, Prospect, ReplaceVehicle,
         ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef,
         Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
         UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
@@ -297,6 +297,19 @@ fn samples() -> Vec<Action> {
             at: pos(45_000, 3_000, 0),
             model: text("station/street/bus_stop.mdl"),
         }),
+        Action::Bulldoze(Bulldoze::Assets(AssetRemoval {
+            first: AssetRef {
+                model: text("assets/vegetation/trees/confr_02/confr_02.mdl"),
+                at: pos(2_830_600, -10_623_800, 4_900),
+            },
+            count: 61,
+            removed: list(vec![AssetRef {
+                model: text("assets/vegetation/trees/confr_02/confr_02.mdl"),
+                at: pos(2_840_000, -10_620_000, 5_100),
+            }]),
+            mirrored: false,
+            owned: false,
+        })),
         Action::BuildConstruction(ConstructionBuild {
             file: text("station/rail/modular_station/modular_station.con"),
             transform: Transform {

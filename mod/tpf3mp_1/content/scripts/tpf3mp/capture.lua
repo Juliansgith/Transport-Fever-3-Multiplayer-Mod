@@ -496,7 +496,14 @@ function capture.bulldoze(proposal)
 		for i = 1, length(toRemove) do
 			local entity = get(toRemove, i)
 			local c = api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
-			if c == nil then return nil, module("engine").notConstruction(entity) end
+			if c == nil then
+				local engine = module("engine")
+				-- Trees and other assets: carried where the hook lets
+				-- them (TPF3MP_TREE_BULLDOZE=1), for a trial of the replay.
+				local okA, asset = pcall(api.engine.getComponent, entity, api.type.ComponentType.ASSET_GROUP)
+				if okA and asset ~= nil and engine.treesOn() then return engine.captureAssets(proposal) end
+				return nil, engine.notConstruction(entity)
+			end
 			if (length(get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
 		end
 		return nil, "a bulldozer proposal that builds"

@@ -723,6 +723,168 @@ function engine.notConstruction(entity)
 		.. (#has > 0 and table.concat(has, ", ") or "no component it knows") .. ")"
 end
 
+-- ----------------------------------------------------------------- assets
+--
+-- Trees and other assets stand in asset groups (ASSET_GROUP, with a
+-- MODEL_INSTANCE_LIST). The asset bulldozer removes a group and adds it
+-- again without the assets taken out: one construction of no file whose
+-- one subconstruction lists the assets kept as models, each its model's
+-- file and its world matrix (seen on build 13090a8: a group of 61 thin
+-- instances rebuilt as 60 models). The room carries which assets went
+-- (action::Bulldoze::Assets); every game builds the group again from its
+-- own copy (tpf3mp/apply.lua).
+
+-- Positions of one asset match within this, per axis, in metres.
+engine.ASSET_TOLERANCE = 0.005
+
+-- Whether the asset bulldozer's removals go to the room: only where the
+-- hook says so (TPF3MP_TREE_BULLDOZE=1), for a trial of the replay.
+function engine.treesOn()
+	local native = rawget(_G, "tpf3mp_native")
+	local ok, on = pcall(function() return native.trees() end)
+	return ok and on == true
+end
+
+-- A model's file, as the tool's rebuilt group names it ("::/assets/...").
+local function modelFile(name)
+	if type(name) ~= "string" or name == "" then return nil end
+	return "::/" .. name:gsub("^::/", "")
+end
+engine.modelFile = modelFile
+
+-- An asset group's assets, in its own order: { model =, x =, y =, z =,
+-- rot =, scale = }; or raises. Only thin instances (model, position, turn
+-- about the vertical and scale) are taken: a group with full ones is not
+-- carried.
+function engine.assetsOf(group)
+	local types = api.type.ComponentType
+	if api.engine.getComponent(group, types.ASSET_GROUP) == nil then error("no asset group", 0) end
+	local m = api.engine.getComponent(group, types.MODEL_INSTANCE_LIST)
+	if m == nil then error("an asset group with no models", 0) end
+	if #list(get(m, "fatInstances")) > 0 then error("an asset group with full model instances", 0) end
+	local out = {}
+	for i, t in ipairs(list(get(m, "thinInstances"))) do
+		local id = get(t, "modelId")
+		local file = modelFile(api.res.modelRep.getName(id))
+		if file == nil then error("an asset of model " .. tostring(id) .. " with no file", 0) end
+		local p = vec3(get(t, "pos"))
+		local rot, scale = get(t, "rot"), get(t, "scale")
+		if type(p[1]) ~= "number" or type(p[2]) ~= "number" or type(p[3]) ~= "number"
+			or type(rot) ~= "number" or type(scale) ~= "number" then
+			error("asset " .. i .. " of the group does not read", 0)
+		end
+		out[i] = { model = file, x = p[1], y = p[2], z = p[3], rot = rot, scale = scale }
+	end
+	return out
+end
+
+-- An asset's world matrix, the game's 16 elements (columns of four): a
+-- turn of `rot` about the vertical, scaled by `scale`, at its position.
+-- `mirrored` turns the other way round in the matrix.
+function engine.assetMatrix(a, mirrored)
+	local c, s = math.cos(a.rot) * a.scale, math.sin(a.rot) * a.scale
+	if mirrored then s = -s end
+	return { c, s, 0, 0, -s, c, 0, 0, 0, 0, a.scale, 0, a.x, a.y, a.z, 1 }
+end
+
+-- Whether asset `a` is the one of `model` at x, y, z.
+function engine.assetAt(a, model, x, y, z)
+	local tol = engine.ASSET_TOLERANCE
+	return a.model == model and math.abs(a.x - x) <= tol and math.abs(a.y - y) <= tol and math.abs(a.z - z) <= tol
+end
+
+-- Takes from `assets` (each matched once, `used` marks them) the one of
+-- `model` at x, y, z; its index, or nil.
+function engine.takeAsset(assets, used, model, x, y, z)
+	for i, a in ipairs(assets) do
+		if not used[i] and engine.assetAt(a, model, x, y, z) then
+			used[i] = true
+			return i
+		end
+	end
+	return nil
+end
+
+-- The asset bulldozer's proposal as a Bulldoze::Assets, or nil and why:
+-- one asset group removed and one construction of no file added, at the
+-- world's origin, whose models are the group's own assets less some, each
+-- where it stood and turned as it was.
+function engine.captureAssets(proposal)
+	local ok, action = pcall(function()
+		local toRemove, toAdd = list(get(proposal, "toRemove")), list(get(proposal, "toAdd"))
+		if #toRemove ~= 1 or #toAdd ~= 1 then error("taking assets out of more than one group at once", 0) end
+		local group, ce = toRemove[1], toAdd[1]
+		local file = get(ce, "fileName")
+		if file ~= nil and tostring(file) ~= "" then error("an asset group rebuilt as " .. tostring(file), 0) end
+		local t = get(ce, "transf")
+		local identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
+		for i = 1, 16 do
+			local v = get(t, i)
+			if type(v) ~= "number" or math.abs(v - identity[i]) > 1e-6 then
+				error("an asset group rebuilt away from the world's origin (element " .. i .. " " .. tostring(v) .. ")", 0)
+			end
+		end
+		local old = engine.assetsOf(group)
+		local used, pairs_ = {}, {}
+		local con = get(ce, "construction")
+		local kept = 0
+		for _, sub in ipairs(list(con and get(con, "subconstructions"))) do
+			for _, m in ipairs(list(get(sub, "models"))) do
+				kept = kept + 1
+				local mt = get(m, "transf")
+				local model = modelFile(get(m, "id"))
+				local x, y, z = get(mt, 13), get(mt, 14), get(mt, 15)
+				local i = model and type(x) == "number" and type(y) == "number" and type(z) == "number"
+					and engine.takeAsset(old, used, model, x, y, z)
+				if not i then
+					error("the rebuilt group holds " .. tostring(get(m, "id")) .. " at " .. tostring(x) .. ", "
+						.. tostring(y) .. ", " .. tostring(z) .. ", which the group did not", 0)
+				end
+				pairs_[#pairs_ + 1] = { asset = old[i], transf = mt }
+			end
+		end
+		local removed = {}
+		for i, a in ipairs(old) do
+			if not used[i] then removed[#removed + 1] = { model = a.model, at = { x = a.x, y = a.y, z = a.z } } end
+		end
+		if #removed == 0 then error("an asset bulldoze that removes nothing", 0) end
+		if #removed > 64 then error("taking " .. #removed .. " assets at once, more than the room carries (64)", 0) end
+		-- Which way round the tool turned them: every one kept must read
+		-- as one of the two, the same for all.
+		local function fits(mirrored)
+			for _, pr in ipairs(pairs_) do
+				local want = engine.assetMatrix(pr.asset, mirrored)
+				for _, k in ipairs({ 1, 2, 3, 5, 6, 7, 9, 10, 11 }) do
+					local v = get(pr.transf, k)
+					if type(v) ~= "number" or math.abs(v - want[k]) > 1e-3 then return false, pr, k, v, want[k] end
+				end
+			end
+			return true
+		end
+		local mirrored = false
+		local plain, pr, k, v, want = fits(false)
+		if not plain then
+			if fits(true) then
+				mirrored = true
+			else
+				error(string.format("the tool turns %s differently than the room would build it (element %d: %s, not %s)",
+					pr.asset.model, k, tostring(v), tostring(want)), 0)
+			end
+		end
+		local owner = get(ce, "playerEntity")
+		local first = old[1]
+		return { Bulldoze = { Assets = {
+			first = { model = first.model, at = { x = first.x, y = first.y, z = first.z } },
+			count = #old,
+			removed = removed,
+			mirrored = mirrored,
+			owned = type(owner) == "number" and owner >= 0,
+		} } }
+	end)
+	if not ok then return nil, tostring(action) end
+	return action
+end
+
 -- Whether a CONSTRUCTION component is a town building's: one that lists
 -- its town buildings (as capture.construction tells them).
 local function isTownBuilding(c)

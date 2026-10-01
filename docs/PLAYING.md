@@ -399,7 +399,9 @@ protected folder such as Program Files.
   arrives the game would take another building than the ones you saw go
   (the town grew meanwhile), nothing is removed in any game and the
   hook's log says why. Bulldozing trees and other assets is not in
-  multiplayer yet: the bulldozer says so and removes nothing.
+  multiplayer yet: the bulldozer says so and removes nothing. A game
+  started with `TPF3MP_TREE_BULLDOZE=1` hands them to the room for a
+  trial: every game then takes the same trees out of the same group.
 - **Terraforming.** Raise, lower, smooth and flatten the ground, and the
   heightmap brush, as usual: every player's game reshapes the same cells
   to the same heights, a moment after each stroke, and your company pays.

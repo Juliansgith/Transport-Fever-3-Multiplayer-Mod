@@ -1990,9 +1990,21 @@ terrain tools through the hook, and a construction's window its edits:
   rebuilt group holds (its desc's type, its models, the thin ones, and
   the first one's model and place) and what the group removed holds
   (full and thin instances): what a replay of it would have to build.
-  No replay is built yet: the game scripts have no call that rebuilds an
-  asset group, and filling a proposal with one natively is not yet read
-  from the binary (TPF2-MP had to, `mp/assets.lua`). A stop it
+  On build 13090a8 the rebuilt group read as plain models: each a model's
+  file (`::/assets/...`) and its world matrix, none thin, one construction
+  of no file and no desc type, for a group of thin instances. With
+  `TPF3MP_TREE_BULLDOZE=1` in the player's game (the hook's `trees()`),
+  that proposal travels as a `Bulldoze::Assets`: the group by its first
+  asset and how many it holds, the assets taken out by model and position,
+  and which way the tool turned them (read off its matrices; a rebuilt
+  group that holds any asset the group did not, or turns one otherwise,
+  is refused). Every game finds the one group of that size holding them
+  all, builds a full proposal (`api.type.Proposal`) removing it and adding
+  its own copy less those assets as `TransformedModel`s (`::/` file,
+  matrix from the thin instance's position, turn and scale), sends it as
+  the player's company's build, and logs the group, its assets before,
+  and the group holding the first asset kept after (`trees:` lines). Not
+  yet tried in the game: the flag keeps it to trials. A stop it
   removes is carried as the stop tool's builds are (below): its edge
   rebuilt without it, the stop named by its edge, where it stands and its
   construction (the `EDGE_OBJECT` component's `transf` and

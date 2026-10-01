@@ -1057,6 +1057,8 @@ impl State {
                 }
                 self.objects.remove(&object);
             }
+            // The model's world has no trees or other assets.
+            Bulldoze::Assets(_) => refuse!("no asset group there"),
         }
         Ok(())
     }

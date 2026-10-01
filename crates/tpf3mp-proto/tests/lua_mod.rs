@@ -4640,6 +4640,161 @@ fn a_bulldoze_the_room_cannot_name_is_refused() {
     );
 }
 
+/// Trees over FAKE_NETWORK and FAKE_TOWN: asset group 7000 of four firs
+/// (thin instances), 7001 of two firs elsewhere; the game's model files and
+/// octree, and the full proposal's types as a game script makes them.
+/// `TOOL(removed)` is the asset bulldozer's proposal taking the firs at the
+/// given indices out of 7000, as build 13090a8 showed it: the group in
+/// `toRemove`, and one construction of no file at the origin whose models
+/// are the firs kept, each its file and world matrix.
+const FAKE_TREES: &str = r#"
+api.res.modelRep = { getName = function(id) if id == 41 then return 'assets/trees/fir.mdl' end end }
+api.type.Vec2f = { new = function(x, y) return { x = x, y = y } end }
+api.type.Proposal = {
+    new = function() return { kind = 'Proposal' } end,
+    TransformedModel = { new = function() return {} end },
+    Subconstruction = { new = function() return {} end },
+    ConstructionEntity = { new = function() return { construction = {} } end },
+}
+local function fir(x, y, rot) return { modelId = 41, pos = { x = x, y = y, z = 3 }, rot = rot, scale = 1.25 } end
+GROUPS = {
+    [7000] = { fir(10, 20, 0), fir(14, 21, 0.5), fir(18, 19, 1), fir(22, 20, 2) },
+    [7001] = { fir(400, 20, 0), fir(404, 20, 0) },
+}
+local get = api.engine.getComponent
+api.engine.getComponent = function(e, kind)
+    if kind == 30 and GROUPS[e] then return {} end
+    if kind == 31 and GROUPS[e] then return { fatInstances = {}, thinInstances = GROUPS[e] } end
+    return get(e, kind)
+end
+api.engine.util.octree = { findEntitiesInCircle = function(at, r, kind)
+    local out = {}
+    for e in pairs(GROUPS) do out[#out + 1] = e end
+    table.sort(out)
+    return out
+end }
+tpf3mp_native.trees = function() return HOOK.trees == true end
+function TOOL(removed)
+    local engine = ug_require('tpf3mp_1::/scripts/tpf3mp/engine.lua')
+    local gone, models = {}, {}
+    for _, i in ipairs(removed) do gone[i] = true end
+    for i, t in ipairs(GROUPS[7000]) do
+        if not gone[i] then
+            models[#models + 1] = { id = '::/assets/trees/fir.mdl', tag = 0, thin = false,
+                transf = engine.assetMatrix({ x = t.pos.x, y = t.pos.y, z = t.pos.z, rot = t.rot,
+                    scale = t.scale }, false) }
+        end
+    end
+    return { toRemove = { 7000 }, toAdd = { { fileName = '', playerEntity = -1,
+        transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
+        construction = { frozenNodes = {}, frozenEdges = {}, subconstructions = { { models = models } } } } },
+        proposal = { addedNodes = {}, addedSegments = {}, removedNodes = {}, removedSegments = {},
+            edgeObjectsToAdd = {} } }
+end
+"#;
+
+/// Trees bulldozed through the room, behind TPF3MP_TREE_BULLDOZE=1: the
+/// player's game names the group by its first tree and how many it holds,
+/// and the trees taken out by model and place; every game rebuilds its own
+/// copy of the group without them, for the acting company, and says so in
+/// its log. Without the flag, and wherever the group is not exactly the
+/// player's, nothing is removed.
+#[test]
+fn trees_bulldozed_go_in_every_game_behind_the_flag() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    lua.load(FAKE_TREES).exec().unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code).eval::<String>().unwrap_or_else(|error| {
+            panic!(
+                "{code}: {error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        })
+    };
+    let capture = "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') ";
+    // Without the flag: today's refusal.
+    assert_eq!(
+        eval(&format!(
+            "{capture} local _, why = capture.bulldoze(TOOL({{ 2 }})) return why"
+        )),
+        "removing trees or other assets (asset group 7000), which the room does not carry yet"
+    );
+    // With it: the fir at (14, 21) taken out of the group of four.
+    let carried = eval(&format!(
+        "HOOK.trees = true {capture} \
+         TREES = capture.bulldoze(TOOL({{ 2 }})) \
+         local a = TREES.Bulldoze.Assets local r = a.removed[1] \
+         return table.concat({{ a.first.model, a.first.at.x, a.first.at.y, a.count, #a.removed, r.model, \
+             r.at.x, r.at.y, tostring(a.mirrored), tostring(a.owned), tostring(schema_check(TREES)) }}, '|')"
+    ));
+    assert_eq!(
+        carried,
+        "::/assets/trees/fir.mdl|10|20|4|1|::/assets/trees/fir.mdl|14|21|false|false|true"
+    );
+    // A rebuilt group with a tree the group did not hold is refused.
+    assert_eq!(
+        eval(&format!(
+            "{capture} local p = TOOL({{ 2 }}) \
+             p.toAdd[1].construction.subconstructions[1].models[1].transf[13] = 99 \
+             local _, why = capture.bulldoze(p) return why"
+        )),
+        "the rebuilt group holds ::/assets/trees/fir.mdl at 99, 20, 3, which the group did not"
+    );
+    // Every game: a player of Rival bulldozes; the group is rebuilt with
+    // the three firs kept, each where it stood and turned as it was.
+    lua.load(
+        "A = string.rep('a', 64) \
+         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+         UPDATE({}, STATE, 0.2) \
+         SENT = {} HOOK.applied = {} HOOK.logged = {} \
+         HOOK.batch = { TREES } HOOK.origins = { A } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let rebuilt = eval(
+        "local out = {} for _, a in ipairs(HOOK.applied) do \
+             out[#out + 1] = tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+         local s = SENT[1] local ce = s.proposal.toAdd[1] \
+         local models = ce.construction.subconstructions[1].models \
+         local m = models[2].transf \
+         return table.concat({ table.concat(out, ','), s.proposal.kind, s.proposal.toRemove[1], #models, \
+             models[1].id, ce.fileName, ce.playerEntity, s.context.player, tostring(s.playerInitiated), \
+             string.format('%.4f,%.4f,%.1f,%.1f', m[1][1], m[1][2], m[4][1], m[4][2]) }, '|')",
+    );
+    assert_eq!(
+        rebuilt,
+        "true|Proposal|7000|3|::/assets/trees/fir.mdl||-1|901|true|0.6754,1.0518,18.0,19.0"
+    );
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains(
+            "trees: asset group 7000 of 4 assets, 1 removed (::/assets/trees/fir.mdl at 14.00,21.00), \
+             rebuilt with 3"
+        ),
+        "{logged}"
+    );
+    assert!(
+        logged.contains("trees: after the rebuild 1 group(s) hold the first tree kept, of 4 assets"),
+        "{logged}"
+    );
+    // A game whose group is not the player's (a tree fewer) refuses, and
+    // sends nothing.
+    lua.load(
+        "SENT = {} HOOK.applied = {} table.remove(GROUPS[7000], 4) \
+         HOOK.batch = { TREES } HOOK.origins = { A } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(
+        eval(
+            "local a = HOOK.applied[1] return tostring(a.ok) .. ':' .. tostring(a.why) .. ':' .. #SENT"
+        ),
+        "false:no asset group of 4 assets with those trees here:0"
+    );
+}
+
 /// Stops over FAKE_NETWORK: the game's edge object types, the stop's model
 /// and construction, and the script proposal's edge object record. Edge
 /// 100 runs north from node 8 (50, -40) to node 9 (50, 40).
