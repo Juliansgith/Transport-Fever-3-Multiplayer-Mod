@@ -2510,6 +2510,79 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
 }
 
 #[test]
+fn a_depot_placed_on_existing_track_leaves_all_its_internal_branches_to_the_construction() {
+    for refuse_snap in [false, true] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.load(include_str!("lua/depot_snap.lua")).exec().unwrap();
+        lua.load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+             ACTION = assert(capture.construction(depot_on_track()))
+             assert(schema_check(ACTION))
+             assert(#ACTION.BuildConstruction.connection.links == 6)
+             REFUSE_SNAP = {refuse_snap}
+             HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        let (nodes, edges, sends, connected, applied): (usize, usize, usize, bool, bool) = lua
+            .load(
+                "local p = SENT[1].proposal.streetProposal
+                 return #p.nodesToAdd, #p.edgesToAdd, #SENT, CONNECTED, HOOK.applied[1].ok",
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(
+            (nodes, edges),
+            (0, 0),
+            "do not duplicate the depot's own track"
+        );
+        assert_eq!(sends, 2, "place, then snap to the existing track");
+        assert_eq!(connected, !refuse_snap);
+        assert_eq!(
+            applied, !refuse_snap,
+            "never report a refused refresh as applied"
+        );
+    }
+}
+
+#[test]
+fn a_station_with_a_long_entrance_keeps_the_external_junction_only() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(include_str!("lua/depot_snap.lua")).exec().unwrap();
+    lua.load(format!(
+        "local p = {STATION_BY_ROAD}
+         local s = p.proposal
+         s.addedNodes[#s.addedNodes+1] = {{ entity=-20, comp={{ position={{ x=90,y=0,z=0 }} }} }}
+         s.addedSegments[#s.addedSegments+1] = {{ entity=-21, type=0, comp={{
+             node0=-20, node1=-1, type=0, typeIndex=-1,
+             tangent0={{ x=-20,y=0,z=0 }}, tangent1={{ x=-20,y=0,z=0 }},
+             roadTemplate='::/street/town_small.street_template', roadStyle='' }} }}
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+         ACTION = assert(capture.construction(p))
+         assert(schema_check(ACTION))
+         HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let (nodes, edges, removed, first, second): (usize, usize, i64, i64, i64) = lua
+        .load(
+            "local s = SENT[1].proposal.streetProposal
+             return #s.nodesToAdd, #s.edgesToAdd, s.edgesToRemove[1],
+                 s.edgesToAdd[1].comp.node0, s.edgesToAdd[2].comp.node1",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!((nodes, edges, removed, first, second), (1, 2, 100, 8, 9));
+    assert!(
+        lua.load("return CONNECTED and HOOK.applied[1].ok")
+            .eval::<bool>()
+            .unwrap()
+    );
+}
+
+#[test]
 fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     let (lua, _script) = engine();
     let asked: Vec<String> = lua

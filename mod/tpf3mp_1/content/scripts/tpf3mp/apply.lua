@@ -400,23 +400,42 @@ end
 -- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
 -- street proposal. `network`, `templateName` and `style` are the build's
 -- own kind, for the links that name none; nil for a construction's
--- streets, whose every link names its kind. With `dangling` false, a new
--- vertex at the end of a single link, and that link, are left out: in a
--- construction's streets, the construction's own entrance.
+-- streets, whose every link names its kind. With `dangling` true, peel
+-- back complete branches ending at new vertices: the construction makes
+-- its own entrance and internal track. Removing only the outermost links
+-- leaves duplicate track inside a branched depot (Steam 40408). Existing
+-- nodes and splits anchor the external network and are never peeled off.
 function networkInto(proposal, network, templateName, style, polyline, dangling)
-	local degree = {}
-	for _, link in ipairs(polyline.links) do
-		degree[link.from] = (degree[link.from] or 0) + 1
-		degree[link.to] = (degree[link.to] or 0) + 1
-	end
-	local function loose(i) return polyline.vertices[i + 1].resolve == "New" and degree[i] == 1 end
-	local links = {}
-	for _, link in ipairs(polyline.links) do
-		if not (dangling and (loose(link.from) or loose(link.to))) then links[#links + 1] = link end
-	end
-	local skipped = {}
+	local links, skipped = polyline.links, {}
 	if dangling then
-		for i = 0, #polyline.vertices - 1 do skipped[i + 1] = loose(i) end
+		local degree, incident = {}, {}
+		for i = 0, #polyline.vertices - 1 do degree[i], incident[i] = 0, {} end
+		for k, link in ipairs(links) do
+			for _, i in ipairs({ link.from, link.to }) do
+				degree[i] = degree[i] + 1
+				incident[i][#incident[i] + 1] = k
+			end
+		end
+		local function loose(i) return polyline.vertices[i + 1].resolve == "New" and degree[i] == 1 end
+		local queue, removed = {}, {}
+		for i = 0, #polyline.vertices - 1 do if loose(i) then queue[#queue + 1] = i end end
+		local head = 1
+		while head <= #queue do
+			local i = queue[head]
+			head = head + 1
+			for _, k in ipairs(incident[i]) do
+				if not removed[k] then
+					removed[k] = true
+					local link = links[k]
+					local other = link.from == i and link.to or link.from
+					degree[i], degree[other] = degree[i] - 1, degree[other] - 1
+					if loose(other) then queue[#queue + 1] = other end
+				end
+			end
+		end
+		links = {}
+		for k, link in ipairs(polyline.links) do if not removed[k] then links[#links + 1] = link end end
+		for i, v in ipairs(polyline.vertices) do skipped[i] = v.resolve == "New" and degree[i - 1] == 0 end
 	end
 	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
 		removed_nodes = polyline.removed_nodes }

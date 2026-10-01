@@ -288,6 +288,36 @@ same bookkeeping cannot handle.
   parameters, cancelled anyway, and the replay asserted in the engine's snap
   node lookup on all three instances at once.
 
+### TPF3: a depot placed onto existing track
+
+The 2026-10-01 relay playtest exposed a replay error for a rail depot
+placed with its entrance snapped to an existing track endpoint. The
+captured proposal correctly named that endpoint and six internal track
+segments arranged as a branching tree. Replay removed only the two
+outermost segments, then built the remaining four as standalone track
+alongside the depot's own generated track. Both games logged `Collision`;
+the subsequent `refreshConstruction` snapping command failed with
+`Construction Not Possible`. The depot remained built but disconnected.
+A later train purchase succeeded, while assignment to the line failed in
+both games: this was a placement failure, not a lost assignment message.
+
+Construction replay now removes complete branches ending at new vertices
+before building the external network. Existing-node and split references
+are anchors: they are retained, along with the paths between them, so a
+road rebuilt through a station junction still travels. The construction
+generates its own internal track, then its refresh snaps the entrance.
+Ordinary road and track builds do not use this branch removal.
+
+`lua_mod.rs` reproduces the recorded depot topology: before the fix its
+first build contains four duplicate nodes and edges; afterwards it contains
+none, and the stand-in engine accepts the refresh. A longer station
+entrance test preserves the external road junction, and a refused refresh
+still reports failure. These are Lua regression tests, not a successful
+real-game replay. The PC crashed after the original test session; the
+remaining acceptance check is a fresh two-game placement onto existing
+track, followed by buying and assigning a train and verifying its route
+in both games. The change does not repair already broken placements.
+
 ### Module edits and upgrades
 
 The old construction and the new parameters come off the proposal; every
