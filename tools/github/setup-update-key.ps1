@@ -79,7 +79,7 @@ $envBody | gh api -X PUT "repos/$Repo/environments/release" --input - | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail "could not create the release environment (the key is made, nothing else is set: run this again with -KeyDir pointing elsewhere after moving $pem away)" }
 $policies = gh api "repos/$Repo/environments/release/deployment-branch-policies" --jq '[.branch_policies[] | "\(.type):\(.name)"] | join(",")'
 if ($policies -notmatch "tag:v\*") {
-  '{"name":"v*","type":"tag"}' | gh api -X POST "repos/$Repo/environments/release/deployment-branch-policies" --input - | Out-Null
+  gh api -X POST "repos/$Repo/environments/release/deployment-branch-policies" -f "name=v*" -f "type=tag" | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail "could not limit the release environment to v* tags" }
 }
 
@@ -95,10 +95,12 @@ Step "Checking"
 $reviewers = gh api "repos/$Repo/environments/release" --jq '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[].reviewer.login] | join(",")'
 $secrets = gh secret list --env release --repo $Repo
 $variable = gh variable get TPF3MP_UPDATE_PUBLIC_KEY --repo $Repo
+$tags = gh api "repos/$Repo/environments/release/deployment-branch-policies" --jq '[.branch_policies[] | "\(.type):\(.name)"] | join(",")'
 Write-Host "release environment reviewers: $reviewers"
+Write-Host "release environment deploys:   $tags"
 Write-Host "release environment secrets:   $(($secrets | ForEach-Object { ($_ -split "\s+")[0] }) -join ', ')"
 Write-Host "TPF3MP_UPDATE_PUBLIC_KEY:      $variable"
-if ($reviewers -notmatch [regex]::Escape($me) -or "$secrets" -notmatch "TPF3MP_UPDATE_SIGNING_KEY" -or $variable -ne $public) {
+if ($reviewers -notmatch [regex]::Escape($me) -or $tags -notmatch "tag:v\*" -or "$secrets" -notmatch "TPF3MP_UPDATE_SIGNING_KEY" -or $variable -ne $public) {
   Fail "something did not take; check Settings, Environments, release"
 }
 
