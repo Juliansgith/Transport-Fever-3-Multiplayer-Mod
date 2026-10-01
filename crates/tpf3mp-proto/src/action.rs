@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 18;
+pub const ACTION_SCHEMA_VERSION: u32 = 19;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -69,6 +69,10 @@ pub const MAX_ALTERNATIVES: usize = 32;
 pub const MAX_MODES: usize = 32;
 /// Most waypoints after one stop of a line.
 pub const MAX_WAYPOINTS: usize = 32;
+/// Most kinds of notification the log ignores at once.
+pub const MAX_NOTIFICATION_TYPES: usize = 128;
+/// Most stocks one discard names.
+pub const MAX_STOCKS: usize = 64;
 /// Most node configurations one road or track build adds: its junctions,
 /// and the junctions at the ends of the edges it rebuilds.
 pub const MAX_NODE_CONFIGS: usize = 64;
@@ -1164,6 +1168,35 @@ pub enum Renamed {
     Construction(ConstructionRef),
 }
 
+/// What the notification log and popups send the game's Notifications
+/// script (`game_mechanics/notifications/gui/notification_log.tl`,
+/// `notification_popups.tl`): every game's script does it alike.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotificationOp {
+    /// A notification dismissed (`dismiss`), by the script's own number.
+    Dismiss(u32),
+    /// A notification kept in the log (`enlist`).
+    Enlist(u32),
+    /// The kinds of notification the log ignores, by name, sorted, and
+    /// whether it ignores them fully (`updateIgnoredTypes`).
+    Ignore {
+        types: BoundedVec<Text<64>, MAX_NOTIFICATION_TYPES>,
+        fully: bool,
+    },
+}
+
+/// The warehouse window's discard button (`makeStockListDiscardCargoCmd`):
+/// the cargo of these stocks of a warehouse thrown away.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscardCargo {
+    /// The warehouse, by its construction.
+    pub warehouse: ConstructionRef,
+    /// Its stocks, by the game's ids.
+    pub stocks: BoundedVec<u32, MAX_STOCKS>,
+    /// The time to delivery left, as the window sends it (1.0).
+    pub remaining: Fraction,
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -1215,6 +1248,12 @@ pub enum Action {
         what: Renamed,
         name: ObjectName,
     },
+    /// What the notification log does (`NotificationOp`). Appended under
+    /// schema version 19.
+    Notification(NotificationOp),
+    /// Discarding a warehouse's cargo (`DiscardCargo`). Appended under
+    /// schema version 19.
+    DiscardCargo(DiscardCargo),
 }
 
 #[derive(Debug, Error)]
@@ -1255,6 +1294,8 @@ impl Action {
             Action::Subsidy(_) => "Subsidy",
             Action::EditJunctions(_) => "EditJunctions",
             Action::Rename { .. } => "Rename",
+            Action::Notification(_) => "Notification",
+            Action::DiscardCargo(_) => "DiscardCargo",
         }
     }
 
@@ -1391,7 +1432,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                18, // schema version
+                19, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1434,7 +1475,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                19, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1470,7 +1511,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                19, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1488,7 +1529,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                19, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1503,7 +1544,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                19, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1514,7 +1555,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                19, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1526,7 +1567,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                19, // schema version
                 18, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1573,7 +1614,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                19, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10
@@ -1646,7 +1687,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                18, // schema version
+                19, // schema version
                 19, // Action::EditJunctions, appended under schema version 16
                 1, 0, 2, 0, 0, // a node: Street, (1, 0, 0)
                 1, 0, // its configuration removed

@@ -552,6 +552,17 @@ fn samples() -> Vec<Action> {
             what: tpf3mp_proto::action::Renamed::Construction(depot()),
             name: text("North depot"),
         },
+        Action::Notification(tpf3mp_proto::action::NotificationOp::Dismiss(41)),
+        Action::Notification(tpf3mp_proto::action::NotificationOp::Enlist(42)),
+        Action::Notification(tpf3mp_proto::action::NotificationOp::Ignore {
+            types: list(vec![text("VehicleBroken"), text("TownGrew")]),
+            fully: false,
+        }),
+        Action::DiscardCargo(tpf3mp_proto::action::DiscardCargo {
+            warehouse: depot(),
+            stocks: list(vec![0, 3]),
+            remaining: Fraction(1_000_000),
+        }),
     ]
 }
 
@@ -654,13 +665,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=20.
+    // Every top-level variant is sampled: postcard tags them 0..=22.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=20).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=22).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

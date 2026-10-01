@@ -1257,6 +1257,13 @@ reference of its own to either. Once linked, the GUI wraps every
     (`capture.subsidy`); an offer this game no longer has is refused at
     the click ("a subsidy no longer offered"). A refusal by the room is
     told the player in the game bar;
+  - the notification log's and popups' `makeScriptingSendEventCmd("",
+    "Notifications", "dismiss" | "enlist" | "updateIgnoredTypes", …)`, as a
+    `Notification` action (the notification by the script's number, or the
+    ignored kinds by name), which every game's Notifications script does
+    alike; and the warehouse window's discard
+    (`makeStockListDiscardCargoCmd`), as `DiscardCargo`, the warehouse by
+    its construction;
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
     file and position, the consist part by part, as the store configured
     it), selling, putting on a line, and the vehicle window's stop, start,

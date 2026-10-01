@@ -20,8 +20,8 @@ Each way is one of:
 
 | | count | where |
 |---|---|---|
-| command factories (`api.cmd.make*Cmd`) | 61 | 16 carried (in part), 1 passed (speed), 44 refused |
-| game-script events the GUI sends | 21 | 7 carried, 14 refused |
+| command factories (`api.cmd.make*Cmd`) | 61 | 17 carried (in part), 1 passed (speed), 43 refused |
+| game-script events the GUI sends | 21 | 10 carried, 11 refused |
 | native tools and windows (rows below) | 18 | 12 carried (in part), 6 refused |
 | unknown paths | 2 open, 1 closed | see "The gates and their holes" |
 
@@ -37,7 +37,10 @@ Open gaps, by risk (each is worked through under "Gaps" below):
 5. Carry: line waypoints, rail and ship and aircraft (batch 5).
    *Done* (`LineStop::waypoints`, schema 18).
 6. Carry: notification dismiss, keep and ignore (batch 6).
+   *Done* (`Notification`, schema 19).
 7. Carry: warehouse stock cargo and discarding cargo (batch 7).
+   *Done* (`DiscardCargo`, schema 19; a slot's cargo is a window's edit,
+   carried already).
 8. Refused, needs an owner decision or a probe: the rest (the table at the
    end).
 9. Carry: which of a construction's depots a vehicle is bought at (an
@@ -124,8 +127,8 @@ unless named otherwise.
 | `makeGameSetTimeOfDayCmd` | game bar | refused (owner decision) | generic |
 | `makeGameSetCloudCoverageCmd` | (game script) | refused from the GUI | generic |
 | `makeJournalBookAssetCmd` | game bar (`game_bar.tl:234`, sandbox money), marketing tool (its cost) | refused | generic |
-| `makeStockListSetStocksCargoTypeCmd` | warehouse window (`entity_window_util.tl`) | **refused** (gap 7) | generic |
-| `makeStockListDiscardCargoCmd` | warehouse window | **refused** (gap 7) | generic |
+| `makeStockListSetStocksCargoTypeCmd` | (commented out in build 40408's warehouse window, which sets a slot's cargo by replacing the construction instead: carried as a window's edit) | refused from the GUI | generic |
+| `makeStockListDiscardCargoCmd` | warehouse window | carried: `DiscardCargo`, the warehouse by its construction (INFERRED: the window's entity is it) | `the_notification_log_and_a_warehouses_discard_go_to_the_room` |
 | `makeCreateIndustryExtendProposalCmd` | industry window | refused (needs a probe: what it builds) | generic |
 | `makeTownBuildingSetBlockedDevelopmentCmd` | town building window | refused | generic |
 | `makeTownSetDevelopmentActiveCmd` | town window | refused (sandbox/map editor) | generic |
@@ -154,9 +157,9 @@ they do not run in a room's free game).
 | `Companies` `spawnIndustry` | construction menu, prospection | carried: `Prospect` | `a_prospection_goes_to_the_room_by_its_towns_id_and_its_types_in_order` |
 | `Companies` `applyLevel` | company window | carried: `ApplyRank` | `with_two_companies_a_company_takes_the_ranks_it_reached` |
 | `Notifications` `initialSound` | notification popups | carried: `NotificationSeen` | `a_notifications_first_sound_is_marked_in_every_game` |
-| `Notifications` `dismiss` | notification log and popups | **refused** (gap 6) | generic |
-| `Notifications` `enlist` | notification log | **refused** (gap 6) | generic |
-| `Notifications` `updateIgnoredTypes` | notification log settings | **refused** (gap 6) | generic |
+| `Notifications` `dismiss` | notification log and popups | carried: `Notification` `Dismiss` | `the_notification_log_and_a_warehouses_discard_go_to_the_room` |
+| `Notifications` `enlist` | notification log | carried: `Notification` `Enlist` | same |
+| `Notifications` `updateIgnoredTypes` | notification log settings | carried: `Notification` `Ignore` (by type name; by GUI kind refused) | same |
 | `Companies` `MakeGreen` | industry greening tool | refused (PLAN.md Part 3: greening stays refused) | generic |
 | `Companies` `startMarketingCampaign` | marketing tool (with a `makeJournalBookAssetCmd` for its cost) | refused: two commands that must be one action | generic |
 | `Towns` `setTownRatingSensitivity`, `resetTownRatingSensitivity` | town window | refused (owner decision: a town's setting changed by one company for all) | generic |
