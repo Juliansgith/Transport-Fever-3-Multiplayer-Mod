@@ -188,6 +188,51 @@ function data()
 		return { action = action, shape = shape, junctions = capture.junctionSummary(action) }
 	end
 
+	-- In the GUI state this script's GUI half runs in, where the game's
+	-- company script checks a construction's permits for the player
+	-- (company.script.tl, builder.proposalCreate: an error and skipRender,
+	-- so the tool shows no preview and builds nothing): the player's company
+	-- answers getPlayer there, its rank the game's rank windows, and its own
+	-- constructions the permit counts (tpf3mp/follow.lua,
+	-- tpf3mp/progression.lua, tpf3mp/companies.lua), as in the GUI's other
+	-- states. Without them a founded company's headquarters showed no preview
+	-- and was never placed (2026-10-01): the game's company script asked the
+	-- save's player's rank and counted every company's headquarters. Once
+	-- this Lua state; each piece is a no-op where another of the GUI's
+	-- states sharing its tables put it on first. Only ever in a GUI state:
+	-- guiHandleEvent runs nowhere else.
+	local guiFollowed = false
+	local function followInGui(l)
+		if guiFollowed then return end
+		guiFollowed = true
+		local okFollow, follow = pcall(ug_require, MOD .. "::/scripts/tpf3mp/follow.lua")
+		local mine, several, readAt = nil, false, nil
+		local function read()
+			local ok, now = pcall(function() return os.clock() end)
+			if not ok or readAt == nil or now - readAt >= 2.0 then
+				readAt = ok and now or nil
+				local status = l:status()
+				local state = companies.scriptState(api)
+				mine = okFollow and follow.companyOf(state and state.companies, status and status.me_id) or nil
+				several = state ~= nil and type(state.companies) == "table"
+					and type(state.companies.list) == "table" and #companies.live(state.companies) > 1
+			end
+		end
+		local parts = {}
+		if okFollow and type(follow) == "table" then
+			local ok, why = follow.install(api, function() read() return mine end)
+			parts[#parts + 1] = ok and "getPlayer follows the player's company" or ("getPlayer stays the game's: " .. tostring(why))
+		else
+			parts[#parts + 1] = "getPlayer stays the game's: tpf3mp/follow.lua did not load"
+		end
+		local ranked, whyRanks = progression.follow(function() return companies.scriptState(api) end)
+		parts[#parts + 1] = ranked and "ranks are each company's" or ("ranks are the game's: " .. tostring(whyRanks))
+		local counted, whyPermits = companies.followPermits(api, ug_require, function() read() return several end)
+		parts[#parts + 1] = counted and "permits count each company's own constructions"
+			or ("permits count the whole world's: " .. tostring(whyPermits))
+		l:log("the game scripts' GUI state: " .. table.concat(parts, "; "))
+	end
+
 	-- The guard on what this player's personal mods' game scripts send, in
 	-- this state (tpf3mp/modguard.lua): put on once the link is.
 	local PERSONAL_UNGUARDED = "personal-mods-unguarded"
@@ -573,6 +618,10 @@ function data()
 		end,
 
 		guiHandleEvent = function(_params, _state, _guiState, _src, id, name, param)
+			if name == "builder.proposalCreate" then
+				local l = linked()
+				if l and l:room() then followInGui(l) end
+			end
 			if name ~= "builder.proposalCreate" and name ~= "builder.proposalPrepareForApply" then
 				local l = linked()
 				if l and l:room() then note(l, id, name) end

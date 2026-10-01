@@ -10392,9 +10392,11 @@ fn the_traffic_light_tools_proposal_goes_to_the_room_and_every_game_lights_it_al
         ))
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    // The two lines by then: the script linked, and the game scripts' GUI
+    // state set to act for the player's company at the first proposal.
     assert_eq!(
         answers,
-        ["nil", "0 1", "nil", "1"],
+        ["nil", "0 2", "nil", "1"],
         "nothing for an empty hover, the click handed on: {}",
         hook_log(&lua)
     );
@@ -10795,4 +10797,53 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
         end
         assert(#HOOK.commands == 0)
     "#).exec().unwrap();
+}
+
+/// In the GUI state the game scripts' GUI half runs in, where the game's
+/// company script checks a construction's permits for `getPlayer()`, the
+/// player's company answers getPlayer once the room's tools propose a
+/// build: a founded company's headquarters was refused there (no preview,
+/// nothing placed) by the save's player's rank and the whole world's
+/// headquarters (2026-10-01).
+#[test]
+fn the_game_scripts_gui_state_acts_for_the_players_company() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        JAMES = string.rep("a", 64)
+        ROSTER = { next = 2,
+            list = { { id = 0, entity = 25, name = "First", color = { 0.8, 0.16, 0.12 } },
+                     { id = 1, entity = 901, name = "Rival", color = { 0.13, 0.42, 0.85 }, founder = JAMES } },
+            members = { { player = JAMES, company = 1 } } }
+        api.type.ComponentType.GAME_SCRIPT = 7
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        local get = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+            if get then return get(e, kind) end
+        end
+        HOOK.room = true
+        HOOK.status = { room = "r", me_id = JAMES, players = { { name = "james", id = JAMES, me = true } } }
+        BEFORE = api.engine.util.getPlayer()
+        SCRIPT.guiHandleEvent({}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', {})
+        AFTER = api.engine.util.getPlayer()
+        SCRIPT.guiHandleEvent({}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', {})
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let (before, after): (u32, u32) = lua.load("return BEFORE, AFTER").eval().unwrap();
+    assert_eq!((before, after), (25, 901));
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        logged
+            .matches("the game scripts' GUI state: getPlayer follows the player's company")
+            .count(),
+        1,
+        "once a state: {logged}"
+    );
 }
