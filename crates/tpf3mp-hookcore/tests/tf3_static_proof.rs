@@ -64,6 +64,7 @@ const TARGETS: &[(&str, u64)] = &[
     // The platform-order fix (crates/tpf3mp-hook/src/order.rs, `platform`).
     ("ecs::TransportVehicleSystem::Update2/visit", 0xb8bccb),
     ("FindNextFreeTerminal/candidate sort", 0xb85430),
+    ("ecs::LineSystem::GetData/return", 0xad20f4),
     // The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs).
     ("GameSim::Step/paused GameTime advance", 0x159412),
     ("CGameTime::Advance", 0xbace10),
@@ -95,6 +96,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("TownDevelopAt::Apply", 0x9dedf0),
     ("lua_getfield", 0x2fbdb90),
     ("lua_loadfile", 0x2fa1d50),
+    ("lua_cached_loadfile", 0x2fa8130),
 ];
 
 #[test]

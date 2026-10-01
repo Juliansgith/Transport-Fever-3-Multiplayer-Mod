@@ -2094,6 +2094,27 @@ read, and the room found no divergence over several checkpoints.
 
 #### Lane dumps
 
+Vehicle entries also include `arrival=<station-index>/<terminal-index>`
+and `arrival_locked=<bool>` from `TransportVehicle`, so a comparison can
+detect a different terminal choice before movement diverges. These are
+diagnostic fields only; they do not change the vehicle lane digest or the
+wire format. An unavailable field is printed as `nil`. When a `Path` is
+available, the dump also includes its physical edge count, an ordered hash
+of up to 4,096 edges (with the sampled count), nearby edge identities and
+directions, end and terminal-decision offsets, and movement/acceleration
+state. Different path lengths or decision offsets can expose route
+differences before movement diverges. Native edge indices are not portable:
+an industry rebuilt in a different order can give identical geometry
+different indices, so a path-hash mismatch alone is not proof of different
+physical routes. These fields are local diagnostics and never sent as actions.
+
+`TPF3MP_HOOK_TRACE_LINE=<native line entity>` additionally traces changes to
+that line's native route cache through `ecs::LineSystem::GetData/return`.
+It records terminals, edge counts, hashes of edge identity and direction
+(excluding padding), decision indices and invalid flags. The trace includes
+temporary engine contexts; compare simulation vehicle checkpoints before
+concluding that a cache read changed gameplay. It is disabled by default.
+
 A digest says *that* a lane differs, not which vehicle, line or edge, nor
 how. So after a divergence every game in the room writes the full text of
 the diverged lanes to its `hook.log`, entry by entry, at the same two
@@ -2420,8 +2441,30 @@ every thousandth step, and no mismatch line.
 
 ### The order fixes, as built
 
-Ported with the seeds, from the same commits; **not run in the game yet**
-either.
+Industry construction inputs also require stable ordering. Build 40408's
+base `industries/industryutil.lua` enumerates two string-keyed maps with
+`pairs`: `generatedData` for implicit terminals, and `generatedData.lanes.curves`
+for internal lanes. Different Lua hash orders can give a lane or terminal
+index a different physical meaning after an industry rebuild.
+
+The native Lua bytecode-cache lookup supplies a deferred wrapper for this
+base resource, including a construction worker's first load and cache hits.
+Intercepting only the loader body is insufficient: cache hits bypass it.
+The wrapper uses
+the game's original loader under a per-state recursion guard, then wraps
+`makeIndustryUpdateFn` with `industry_order.lua`. At each update the wrapper
+orders the input and then creates the original callback from that input,
+avoiding reliance on metatables surviving a worker transfer. Only the two input maps
+receive a sorted `__pairs` iterator; explicit terminal arrays and completed
+construction results are untouched. It neither changes global `pairs` nor
+writes to the game installation. The guard is cleared on load errors.
+Unknown map key types or pre-existing metatables are refused. Native
+validation and its current limits are recorded in
+`investigation/TPF3_ROAD_TERMINALS_2026-10-01.md`.
+
+The native collection fixes below were ported with the seeds, from the
+same commits. Their original static analysis follows; later real-game
+results are recorded in `investigation/TPF3_ROAD_TERMINALS_2026-10-01.md`.
 
 `crates/tpf3mp-hook/src/order.rs` ports the four order dependencies to
 TF3 Steam build 40408, from the static survey
@@ -2685,11 +2728,12 @@ edge's id and its entities in the order kept.
 
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
-inherits it; a number above 1 is the interval, default 100 updates), three
-whole-function detours install: `ecs::Engine::Update` (`0x2bb8a50`, the
-per-step engine advance, one caller: `GameSim::Step`'s iteration loop;
-its `dt` rides in `xmm1`, which the detour's float parameter forwards)
-counts updates and closes each one's lanes, and the two `Reserve`
+inherits it; a number above 1 is the interval, default 100 updates),
+`ecs::Engine::Update` (`0x2bb8a50`, the per-step engine advance) counts
+updates and closes each one's lanes through the existing seeds hook.
+If that hook is absent, a measurement detour forwards the update's `dt`
+in `xmm1`. Sharing the installed hook avoids trying to detour an already
+modified prologue, which previously left measurements unclosed. The two `Reserve`
 overloads feed the `claims` lane. `EdgeUseManager::Add` and `AddRange`
 feed `appends` from the road entry fix's detours, which install while
 measuring even with that fix switched off. The fixes' sites feed the
