@@ -655,16 +655,21 @@ impl Client {
                 })
                 .await
             }
-            Request::StartWorld(world) => {
+            Request::StartWorld { world, save } => {
                 if self.shared.snapshots.is_none() {
                     return Err(RequestError::WorldsNotKept);
                 }
                 self.in_room(|player, reply| RoomCommand::StartWorld {
                     player,
                     world,
+                    save,
                     reply,
                 })
                 .await
+            }
+            Request::ClearStartWorld => {
+                self.in_room(|player, reply| RoomCommand::ClearStartWorld { player, reply })
+                    .await
             }
         }
     }

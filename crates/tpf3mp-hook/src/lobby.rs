@@ -89,6 +89,24 @@ pub struct Room {
     pub members: Vec<Member>,
     /// Co-op (`false`) or competitive.
     pub competitive: bool,
+    /// In the lobby: the save the room starts from, as the room names it;
+    /// `None` when the owner's game provides the world.
+    pub start: Option<StartSave>,
+    /// For the owner: the save they picked on its way to the room, and how
+    /// much of it went up, in percent.
+    pub upload: Option<(String, u8)>,
+}
+
+/// The save a room starts from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartSave {
+    pub name: String,
+    /// Its climate, such as `temperate`; empty unknown.
+    pub map: String,
+    /// Its year; 0 unknown.
+    pub year: u16,
+    /// Whether the room has it.
+    pub arrived: bool,
 }
 
 /// One line of the room's chat.
@@ -252,6 +270,16 @@ enum WindowAction {
         #[serde(default)]
         banner: String,
     },
+    /// The owner's save for the room to start from now; empty for none.
+    /// The map and year are what the window read of it.
+    ChooseStart {
+        #[serde(default)]
+        save: String,
+        #[serde(default)]
+        map: String,
+        #[serde(default)]
+        year: u16,
+    },
 }
 
 fn default_max_players() -> u32 {
@@ -396,6 +424,13 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
                 _ => return Err("there is no such banner".to_owned()),
             },
         },
+        WindowAction::ChooseStart { save, map, year } => LobbyAction::ChooseStart {
+            save: text::<{ tpf3mp_bridge::MAX_SAVE_NAME }>(&save, "save name")?,
+            // What the game read of the save is only shown: too long, it is
+            // cut short rather than refused.
+            map: Text::lossy(map.trim()),
+            year,
+        },
     })
 }
 
@@ -416,6 +451,7 @@ pub fn kind(action: &LobbyAction) -> &'static str {
         LobbyAction::ListRooms { .. } => "list_rooms",
         LobbyAction::SetServer { .. } => "set_server",
         LobbyAction::SetBanner { .. } => "set_banner",
+        LobbyAction::ChooseStart { .. } => "choose_start",
     }
 }
 
@@ -526,6 +562,16 @@ impl LobbyState {
                 max_players: u32::from(room.max_players),
                 has_password: room.has_password,
                 competitive: room.competitive,
+                start: room.start.as_ref().map(|start| StartSave {
+                    name: start.name.as_str().to_owned(),
+                    map: start.map.as_str().to_owned(),
+                    year: start.year,
+                    arrived: start.arrived,
+                }),
+                upload: room
+                    .upload
+                    .as_ref()
+                    .map(|upload| (upload.save.as_str().to_owned(), upload.percent.min(100))),
                 members: room
                     .members
                     .iter()
@@ -782,7 +828,26 @@ impl LobbyState {
                         member.percent
                     ));
                 }
-                out.push_str(" } }");
+                out.push_str(" }");
+                match &room.start {
+                    None => out.push_str(", start = nil"),
+                    Some(start) => out.push_str(&format!(
+                        ", start = {{ name = {}, map = {}, year = {}, arrived = {} }}",
+                        lua_str(&start.name),
+                        lua_str(&start.map),
+                        start.year,
+                        start.arrived
+                    )),
+                }
+                match &room.upload {
+                    None => out.push_str(", upload = nil"),
+                    Some((save, percent)) => out.push_str(&format!(
+                        ", upload = {{ save = {}, percent = {} }}",
+                        lua_str(save),
+                        percent
+                    )),
+                }
+                out.push_str(" }");
             }
         }
         out.push_str(" }");
@@ -945,6 +1010,26 @@ pub(crate) mod tests {
             Ok(LobbyAction::SetBanner { banner: None })
         );
         assert!(parse_action(r#"{"action":"set_banner","banner":"selfie"}"#).is_err());
+        assert_eq!(
+            parse_action(r#"{"action":"choose_start","save":"mptest","map":"dry","year":1900}"#),
+            Ok(LobbyAction::ChooseStart {
+                save: Text::new("mptest").unwrap(),
+                map: Text::new("dry").unwrap(),
+                year: 1900,
+            })
+        );
+        assert!(
+            matches!(
+                parse_action(r#"{"action":"choose_start","save":""}"#),
+                Ok(LobbyAction::ChooseStart { save, year: 0, .. }) if save.as_str().is_empty()
+            ),
+            "none: the owner's game provides the world"
+        );
+        let long = "s".repeat(tpf3mp_bridge::MAX_SAVE_NAME + 1);
+        assert!(
+            parse_action(&format!(r#"{{"action":"choose_start","save":"{long}"}}"#)).is_err(),
+            "a save named only in part would be another"
+        );
         assert!(
             matches!(
                 parse_action(r#"{"action":"create","room":"Alps","start_save":""}"#),
@@ -1059,6 +1144,16 @@ pub(crate) mod tests {
                 }])
                 .unwrap(),
                 competitive: false,
+                start: Some(tpf3mp_bridge::LobbyStart {
+                    name: Text::new("Güterzug").unwrap(),
+                    map: Text::new("dry").unwrap(),
+                    year: 1925,
+                    arrived: false,
+                }),
+                upload: Some(tpf3mp_bridge::LobbyUpload {
+                    save: Text::new("Güterzug").unwrap(),
+                    percent: 35,
+                }),
             }),
             chat: BoundedVec::new(vec![LobbyLine {
                 from: Text::new("Bo").unwrap(),
@@ -1168,6 +1263,15 @@ pub(crate) mod tests {
         let members: mlua::Table = room.get("members").unwrap();
         let first: mlua::Table = members.get(1).unwrap();
         assert!(first.get::<bool>("you").unwrap());
+        // The save the room starts from, and the owner's upload of it.
+        let start: mlua::Table = room.get("start").unwrap();
+        assert_eq!(start.get::<String>("name").unwrap(), "Güterzug");
+        assert_eq!(start.get::<String>("map").unwrap(), "dry");
+        assert_eq!(start.get::<u16>("year").unwrap(), 1925);
+        assert!(!start.get::<bool>("arrived").unwrap());
+        let upload: mlua::Table = room.get("upload").unwrap();
+        assert_eq!(upload.get::<String>("save").unwrap(), "Güterzug");
+        assert_eq!(upload.get::<u8>("percent").unwrap(), 35);
         let chat: mlua::Table = state.get("chat").unwrap();
         let line: mlua::Table = chat.get(1).unwrap();
         assert_eq!(line.get::<String>("text").unwrap(), "hi");

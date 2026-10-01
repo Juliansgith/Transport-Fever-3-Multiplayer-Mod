@@ -215,7 +215,8 @@ window too.
      joined only this way.
    - **Host a room**: a **room name** (your name's room if you leave it
      empty); **Start from this save**, one of your saves, newest first, or
-     **None: I load a world myself**; **Players**, 2 to 16; **How you
+     **None: I load a world myself** (you can change it in the room until
+     its game starts); **Players**, 2 to 16; **How you
      play**, two pictures: **Co-op**, everyone for the room's one company,
      or **Competitive**, each player in a company of their own, founded
      for them as they arrive in the game (see "Companies"); **Who can find
@@ -237,12 +238,27 @@ window too.
    as picture cards of their banners (and their portrait beside it, if
    they picked a character), each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
    and **Other mods** when their game differs from the owner's. On the
-   right, the room's chat: type and press Enter or **Send**.
+   right, above the room's chat (type and press Enter or **Send**), the
+   save the room starts from:
+   - everyone sees it under **Starts from**: its name, and its climate
+     and year when the room knows them, "on its way to the room" until the
+     room has it, or "The world the owner's game has" without one;
+   - the owner picks it there under **Start from this save**, from the
+     same list as the Host page, until the game starts. A new pick goes up
+     to the room ("Sending mptest to the room: 42%", with a bar) and the
+     room's shared mods follow it; **Start the game** waits until the room
+     has it. Everyone is then asked to get ready again, since they agreed
+     to the save before: each guest is told the owner changed it, and
+     presses **Ready**. Picking the save first, when the room had none,
+     asks nobody again. A public room's card in the room list shows the
+     new save's climate and year.
 6. **Get ready.** At the main menu you are marked ready by yourself: a
-   guest at once, the owner once the room has the save picked in step 4.
-   **Ready** and **Not ready** set it by hand.
+   guest at once, the owner once the room has the save picked in step 4
+   or 5. **Ready** and **Not ready** set it by hand. When the owner
+   changes the save in the room, guests press **Ready** again.
 7. **Start.** The owner presses **Start the game** once everyone is
-   ready (until then it says it is waiting for everyone). Every player's
+   ready and the room has its save (until then it says it is waiting for
+   everyone, or that the save is still on its way). Every player's
    game loads the room's world from the menu and starts it, with no Start
    Game to press. Without a save picked, the owner loads the world to play
    with **Load Game** instead, as in single player, and it becomes the

@@ -168,13 +168,39 @@ pub async fn upload_world(
     worlds: &Worlds,
     snapshot: SnapshotId,
 ) -> Result<Served, BulkError> {
+    upload_world_with_progress(opener, worlds, snapshot, |_| {}).await
+}
+
+/// [`upload_world`], telling `progress` how much of the save went up, in
+/// percent of its chunks. The room asks only for the chunks it lacks, so
+/// it may end below 100.
+pub async fn upload_world_with_progress(
+    opener: &BulkOpener,
+    worlds: &Worlds,
+    snapshot: SnapshotId,
+    mut progress: impl FnMut(u8),
+) -> Result<Served, BulkError> {
     let store = worlds.store.clone();
     let id = bulk::manifest_id(&snapshot);
     let manifest = tokio::task::spawn_blocking(move || store.manifest(&id))
         .await
         .map_err(|error| BulkError::Task(error.to_string()))??;
+    let chunks = manifest.chunks().len() as u64;
     let (mut send, mut recv) = opener.open(BulkOpen::Serve { snapshot }).await?;
-    let served = bulk::serve(&mut send, &mut recv, &worlds.store, &manifest, BULK_IDLE).await;
+    let served = bulk::serve_with_progress(
+        &mut send,
+        &mut recv,
+        &worlds.store,
+        &manifest,
+        BULK_IDLE,
+        |served| {
+            let percent = (served.chunks.min(chunks) * 100)
+                .checked_div(chunks)
+                .unwrap_or(100);
+            progress(u8::try_from(percent).unwrap_or(100));
+        },
+    )
+    .await;
     let _ = send.finish();
     served
 }

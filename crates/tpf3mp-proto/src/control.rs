@@ -157,9 +157,21 @@ pub enum Request {
     /// save the owner's client holds, and not from one the owner's game
     /// saves once the game began. The room asks for it at once
     /// ([`ServerMessage::Upload`] with event 0), and when the game starts
-    /// every member loads it, the owner too. Declaring another replaces it.
-    /// Only on a server that keeps snapshots.
-    StartWorld(SavedWorld),
+    /// every member loads it, the owner too. Declaring another replaces it,
+    /// for as long as the room is in its lobby, and marks every member not
+    /// ready again: they agreed to the world before. The first one named
+    /// leaves readiness as it is: it is the world the room was waiting for.
+    /// The same world again only updates what the room shows of it
+    /// (`save`). Only on a server that keeps snapshots.
+    StartWorld {
+        world: SavedWorld,
+        save: StartSave,
+    },
+    /// The owner, in the lobby: the room's game starts from no handed-over
+    /// world after all, but from the owner's game, as without
+    /// [`Request::StartWorld`]. Marks every member not ready again if the
+    /// room had one. Done when it had none.
+    ClearStartWorld,
     /// The server's list of public rooms (those created with a
     /// [`CreateRoom::listing`]), [`ROOMS_PER_PAGE`] a page from `page` 0.
     /// Answered with [`Response::Rooms`]. A private room is never listed.
@@ -269,6 +281,28 @@ pub struct RoomListing {
     pub year: u16,
     /// The companies playing in the room's game.
     pub companies: u8,
+}
+
+/// The save a room's game starts from, as its owner names it
+/// ([`Request::StartWorld`]) and every member sees it ([`RoomView::start`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartSave {
+    /// The save's name in the owner's save folder, without `.sav`.
+    pub name: Text<64>,
+    /// Its map type, its climate as the game names it (`temperate`); empty
+    /// when the owner's game did not say.
+    pub map: Text<32>,
+    /// Its year; 0 when unknown.
+    pub year: u16,
+}
+
+/// The world a room in its lobby starts from, as its members see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartView {
+    pub save: StartSave,
+    /// Whether the room has received it: until then the game cannot start
+    /// (`StartWorldPending`).
+    pub arrived: bool,
 }
 
 /// One public room, as the room list shows it.
@@ -483,6 +517,10 @@ pub struct RoomView {
     pub members: Vec<MemberView>,
     /// The play style ([`CreateRoom::competitive`]).
     pub competitive: bool,
+    /// In the lobby: the save the owner handed over for the game to start
+    /// from ([`Request::StartWorld`]); `None` when the owner's game provides
+    /// the world, and once the game runs.
+    pub start: Option<StartView>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

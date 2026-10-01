@@ -13,10 +13,10 @@
 use std::time::{Duration, Instant};
 use tpf3mp_bridge::{
     BRIDGE_VERSION, LobbyAction, LobbyConnection, LobbyHave, LobbyLine, LobbyMember, LobbyMod,
-    LobbyModClass, LobbyPublicRoom, LobbyRoom, LobbyRoomList, LobbyRoomMod, LobbyRules, LobbyView,
-    LobbyWorld, MAX_LOBBY_CHAT, MAX_LOBBY_MODS, MAX_LOBBY_ROOM_MODS, MAX_LOBBY_RULES,
-    MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName, SaveName, ToAgent, ToHook, check_version, decode,
-    encode,
+    LobbyModClass, LobbyPublicRoom, LobbyRoom, LobbyRoomList, LobbyRoomMod, LobbyRules, LobbyStart,
+    LobbyUpload, LobbyView, LobbyWorld, MAX_LOBBY_CHAT, MAX_LOBBY_MODS, MAX_LOBBY_ROOM_MODS,
+    MAX_LOBBY_RULES, MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName, SaveName, ToAgent, ToHook,
+    check_version, decode, encode,
 };
 
 use tpf3mp_proto::{BoundedVec, Text};
@@ -72,6 +72,16 @@ pub(crate) fn view(state: &State) -> LobbyView {
         )
         .unwrap_or_default(),
         competitive: room.competitive,
+        start: state.start.as_ref().map(|start| LobbyStart {
+            name: Text::lossy(&start.name),
+            map: Text::lossy(&start.map),
+            year: start.year,
+            arrived: start.arrived,
+        }),
+        upload: state.start_upload.as_ref().map(|upload| LobbyUpload {
+            save: Text::lossy(&upload.save),
+            percent: upload.percent.min(100),
+        }),
     });
     LobbyView {
         banner: state.banner.as_deref().and_then(banner),
@@ -276,6 +286,11 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
         },
         LobbyAction::SetBanner { banner } => Action::SetBanner {
             banner: banner.map(|id| id.as_str().to_owned()),
+        },
+        LobbyAction::ChooseStart { save, map, year } => Action::ChooseStart {
+            save: save.as_str().to_owned(),
+            map: map.as_str().to_owned(),
+            year,
         },
     }
 }
@@ -681,6 +696,16 @@ pub(crate) mod tests {
                 "older".into(),
             ],
             start_save: Some("mptest".into()),
+            start: Some(api::RoomStart {
+                name: "mptest".into(),
+                map: "dry".into(),
+                year: 1900,
+                arrived: false,
+            }),
+            start_upload: Some(api::StartProgress {
+                save: "mptest".into(),
+                percent: 40,
+            }),
             game: Game {
                 world: World::Fetching,
                 bytes: 10,
@@ -809,6 +834,20 @@ pub(crate) mod tests {
         let saves: Vec<&str> = view.saves.iter().map(Text::as_str).collect();
         assert_eq!(saves, ["mptest", "older"], "a name too long is left out");
         assert_eq!(view.start_save.as_ref().unwrap().as_str(), "mptest");
+        // The save the room starts from, as the room names it, and the
+        // owner's upload of it.
+        let room_start = room.start.as_ref().unwrap();
+        assert_eq!(
+            (
+                room_start.name.as_str(),
+                room_start.map.as_str(),
+                room_start.year,
+                room_start.arrived
+            ),
+            ("mptest", "dry", 1900, false)
+        );
+        let upload = room.upload.as_ref().unwrap();
+        assert_eq!((upload.save.as_str(), upload.percent), ("mptest", 40));
         assert_eq!(
             view.world,
             LobbyWorld::Fetching {
@@ -890,6 +929,21 @@ pub(crate) mod tests {
         );
         assert_eq!(action(LobbyAction::Start, &state), Action::Start);
         assert_eq!(action(LobbyAction::Leave, &state), Action::Leave);
+        assert_eq!(
+            action(
+                LobbyAction::ChooseStart {
+                    save: Text::lossy("older"),
+                    map: Text::lossy("tropical"),
+                    year: 1950,
+                },
+                &state
+            ),
+            Action::ChooseStart {
+                save: "older".into(),
+                map: "tropical".into(),
+                year: 1950,
+            }
+        );
         assert_eq!(
             action(
                 LobbyAction::SetServer {

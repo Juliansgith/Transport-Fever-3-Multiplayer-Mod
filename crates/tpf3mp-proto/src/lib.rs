@@ -39,7 +39,7 @@ pub use control::{
     ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_ROOM_MEMBERS, MemberView, PORTRAITS,
     ROOMS_PER_PAGE, Reject, RejectReason, Request, RequestError, Response, Resume, RoomListing,
     RoomPage, RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage,
-    Speed, Welcome, is_banner, is_portrait,
+    Speed, StartSave, StartView, Welcome, is_banner, is_portrait,
 };
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText,
@@ -70,8 +70,12 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// [`RoomView::competitive`]); version 12 each member's loading progress
 /// ([`GameMessage::Loading`], [`MemberView::loading`]); version 13 lets a
 /// player show a campaign character's portrait ([`PORTRAITS`]) as their
-/// banner, with banner ids of up to 32 bytes ([`BannerId`]).
-pub const PROTOCOL_VERSION: u32 = 13;
+/// banner, with banner ids of up to 32 bytes ([`BannerId`]); version 14
+/// lets the owner change or clear the world the room starts from while it
+/// is in its lobby, names that save to every member
+/// ([`Request::StartWorld`]'s `save`, [`Request::ClearStartWorld`],
+/// [`RoomView::start`]) and marks everyone not ready when it changes.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

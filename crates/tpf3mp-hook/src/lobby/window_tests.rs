@@ -6,7 +6,7 @@
 use mlua::{Function, Lua, Table};
 use tpf3mp_bridge::{
     LobbyAction, LobbyConnection, LobbyLine, LobbyListing, LobbyMember, LobbyPublicRoom, LobbyRoom,
-    LobbyRoomList, LobbyRules, LobbyView, LobbyWorld,
+    LobbyRoomList, LobbyRules, LobbyStart, LobbyUpload, LobbyView, LobbyWorld,
 };
 use tpf3mp_proto::{BoundedVec, FixedBytes, PlayerId, Text};
 
@@ -157,6 +157,8 @@ fn in_room(members: Vec<LobbyMember>, you_own: bool) -> LobbyView {
             has_password: true,
             members: BoundedVec::new(members).unwrap(),
             competitive: false,
+            start: None,
+            upload: None,
         }),
         chat: BoundedVec::new(vec![LobbyLine {
             from: Text::new("Bob").unwrap(),
@@ -418,6 +420,214 @@ fn in_the_room_the_owner_starts_once_everyone_is_ready() {
     call(&lua, "tick", ());
     click(&lua, "Start the game");
     assert_eq!(sent(&lua), [LobbyAction::Start]);
+}
+
+/// A room in its lobby, Ann owning it if `you_own` (else Bob), both ready,
+/// starting from `start` while `upload` goes up.
+fn starting_from(
+    you_own: bool,
+    start: Option<LobbyStart>,
+    upload: Option<(&str, u8)>,
+) -> LobbyView {
+    let mut view = in_room(
+        vec![
+            member(1, "Ann", you_own, you_own, true),
+            member(2, "Bob", !you_own, !you_own, true),
+        ],
+        you_own,
+    );
+    let room = view.room.as_mut().unwrap();
+    room.start = start;
+    room.upload = upload.map(|(save, percent)| LobbyUpload {
+        save: Text::new(save).unwrap(),
+        percent,
+    });
+    view
+}
+
+fn start(name: &str, map: &str, year: u16, arrived: bool) -> LobbyStart {
+    LobbyStart {
+        name: Text::new(name).unwrap(),
+        map: Text::new(map).unwrap(),
+        year,
+        arrived,
+    }
+}
+
+/// The values the choice under `caption` offers and the one chosen; no
+/// choice there, `None`.
+fn offered(lua: &Lua, caption: &str) -> (Vec<String>, Option<String>) {
+    lua.globals()
+        .get::<Function>("offered")
+        .unwrap()
+        .call(caption)
+        .unwrap()
+}
+
+#[test]
+fn the_owner_picks_the_rooms_save_on_its_page() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("mptest", "", 0, true)),
+            None,
+        )),
+    );
+    open(&lua, None);
+    // The saves the Host page offers, newest first, the room's chosen, and
+    // a way to load a world by hand.
+    let (values, chosen) = offered(&lua, "Start from this save");
+    assert_eq!(values, ["newest", "mptest", ""]);
+    assert_eq!(chosen.as_deref(), Some("mptest"));
+    assert!(enabled(&lua, "Start the game"), "the room has its save");
+    // The same one again sends nothing.
+    call(&lua, "choose", ("Start from this save", "mptest"));
+    assert_eq!(sent(&lua), []);
+    call(&lua, "choose", ("Start from this save", "newest"));
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::ChooseStart {
+            save: Text::new("newest").unwrap(),
+            map: Text::new("").unwrap(),
+            year: 0,
+        }]
+    );
+    assert!(texts(&lua).contains("Changing the save..."));
+    call(&lua, "choose", ("Start from this save", ""));
+    let actions = sent(&lua);
+    assert!(
+        matches!(&actions[..], [LobbyAction::ChooseStart { save, .. }] if save.as_str().is_empty()),
+        "none: {actions:?}"
+    );
+}
+
+#[test]
+fn a_pick_carries_the_map_and_year_the_game_read_of_the_save() {
+    let lua = menu();
+    lua.load(
+        r#"LOBBY.saveDetails = function(name)
+            if name == "newest" then return { map = "dry", year = 1925 } end
+            return { map = "", year = 0 }
+        end"#,
+    )
+    .exec()
+    .unwrap();
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("mptest", "temperate", 1850, true)),
+            None,
+        )),
+    );
+    open(&lua, None);
+    call(&lua, "choose", ("Start from this save", "newest"));
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::ChooseStart {
+            save: Text::new("newest").unwrap(),
+            map: Text::new("dry").unwrap(),
+            year: 1925,
+        }]
+    );
+}
+
+#[test]
+fn a_private_rooms_save_is_described_once_the_game_read_it() {
+    let lua = menu();
+    lua.load(r#"LOBBY.saveDetails = function(name) return { map = "tropical", year = 1960 } end"#)
+        .exec()
+        .unwrap();
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("mptest", "", 0, false)),
+            None,
+        )),
+    );
+    open(&lua, None);
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::ChooseStart {
+            save: Text::new("mptest").unwrap(),
+            map: Text::new("tropical").unwrap(),
+            year: 1960,
+        }],
+        "the room named it without them"
+    );
+    call(&lua, "tick", ());
+    assert_eq!(sent(&lua), [], "once");
+}
+
+#[test]
+fn start_waits_while_the_owners_save_goes_up() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("mptest", "", 0, true)),
+            Some(("newest", 40)),
+        )),
+    );
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("Sending newest to the room: 40%"), "{shown}");
+    assert!(
+        !enabled(&lua, "Start the game"),
+        "everyone is ready, but the save is on its way"
+    );
+    let (_, chosen) = offered(&lua, "Start from this save");
+    assert_eq!(chosen.as_deref(), Some("newest"), "the pick on its way");
+    // Uploaded, but the room not told yet that it has it.
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("newest", "dry", 1925, false)),
+            None,
+        )),
+    );
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("on its way to the room"));
+    assert!(!enabled(&lua, "Start the game"));
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("newest", "dry", 1925, true)),
+            None,
+        )),
+    );
+    call(&lua, "tick", ());
+    assert!(enabled(&lua, "Start the game"));
+    click(&lua, "Start the game");
+    assert_eq!(sent(&lua), [LobbyAction::Start]);
+}
+
+#[test]
+fn a_guest_sees_the_rooms_save_but_cannot_pick_it() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&starting_from(
+            false,
+            Some(start("Güterzug", "dry", 1900, true)),
+            None,
+        )),
+    );
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("Starts from"), "{shown}");
+    assert!(shown.contains("Güterzug · Dry · 1900"), "{shown}");
+    assert_eq!(offered(&lua, "Start from this save").1, None, "no picker");
+    // Without one handed over, the owner's game has the world.
+    show(&lua, Some(&starting_from(false, None, None)));
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("The world the owner's game has."));
 }
 
 #[test]

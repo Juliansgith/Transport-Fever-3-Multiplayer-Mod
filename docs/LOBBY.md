@@ -214,6 +214,40 @@ name it listed, never a path, finds the file and hands it to the room as
 creates no room. The launcher's own `--start-save` is offered first, then
 the save last picked.
 
+**Changing the start save in the room** (bridge version 20, protocol 14).
+The Host page keeps its **Start from this save** (the launcher's save or
+the newest picked, or none), so a room usually starts as it was made; the
+room's page shows the save it starts from to everyone and lets its owner
+change it until the game starts:
+
+- The room in the lobby carries `start` (`{ name, map, year, arrived }`,
+  as the room names it to every member: `RoomView::start`; `nil` when the
+  owner's game provides the world) and, for the owner, `upload` (`{ save,
+  percent }` while their pick goes up to the room). Others see the line
+  under **Starts from**: the save's name, its climate and year when the
+  room knows them, and "on its way to the room" until it arrived.
+- The owner sees **Start from this save** instead: the Host page's saves,
+  newest first, the room's own first if it has dropped off the list, and
+  **None: I load a world myself**. A pick sends
+  `{"action":"choose_start","save":"<name>","map":"<climate>","year":<year>}`
+  (`"save":""` for none), with the climate and year the game reads of the
+  save (`lobby.saveDetails`, as the Host page lists a public room); the
+  window waits up to eight polls for them. The launcher takes only a
+  listed name, as Create does, works out the room's shared mods from the
+  save again (`picker::Mods::own_start`), and the room session declares
+  them and hands the save over (`Control::StartWorld`). The room marks
+  everyone not ready, as it replaced the save they agreed to; each guest
+  is told so, and presses Ready again.
+- While the save goes up, the page shows "Sending <save> to the room: N%"
+  with a bar (the share of its chunks served), and **Start the game** is
+  disabled, as it is while the room does not have the save
+  (`arrived` false), with "The save is still on its way to the room".
+- A room made private names its save without a map and year; once the
+  game has read them, the owner's window tells the room once, with the
+  same save (`choose_start` with its name): the room only updates what it
+  shows, and nobody is asked to agree again. The same save picked again,
+  unchanged on disk, is not uploaded again either.
+
 ## Portraits
 
 A player may show one of the campaign's characters instead of a banner:

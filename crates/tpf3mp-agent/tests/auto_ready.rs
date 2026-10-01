@@ -5,7 +5,10 @@
 //! (`ToAgent::MenuUp`) marks a guest ready too, since it loads the room's
 //! world from there, but never the room's owner, whose world the room plays,
 //! unless the owner hands the room a save to start from: then the owner is
-//! marked ready at the menu too, once the room has that save.
+//! marked ready at the menu too, once the room has that save. An owner who
+//! names another save in the lobby hands that one over and is ready again
+//! once the room has it; one who takes the save back readies with a world
+//! up, as without one.
 
 #![allow(clippy::unwrap_used)]
 
@@ -28,9 +31,9 @@ use tpf3mp_net::{
     write_message, write_preamble,
 };
 use tpf3mp_proto::{
-    BULK_REQUEST_MAX_FRAME, BulkOpen, CONTROL_MAX_FRAME, ChatText, ClientMessage, FixedBytes,
-    PROTOCOL_VERSION, PlayerId, Request, Response, RoomId, RoomPhase, RoomSettings, RoomView,
-    RulesName, ServerMessage, SessionId, Text, Welcome,
+    BULK_REQUEST_MAX_FRAME, BulkOpen, CONTROL_MAX_FRAME, ChatText, ClientMessage, ContentManifest,
+    FixedBytes, PROTOCOL_VERSION, PlayerId, Request, Response, RoomId, RoomPhase, RoomSettings,
+    RoomView, RulesName, ServerMessage, SessionId, StartSave, Text, Welcome,
 };
 use tpf3mp_snapshot::{ChunkStore, StoreConfig};
 
@@ -78,6 +81,7 @@ fn room(phase: RoomPhase, owner: PlayerId) -> RoomView {
         },
         members: Vec::new(),
         competitive: false,
+        start: None,
     }
 }
 
@@ -124,7 +128,7 @@ async fn server(
         while let Ok(message) = read_message::<ClientMessage>(&mut recv, CONTROL_MAX_FRAME).await {
             if let ClientMessage::Request { id, request } = message {
                 let asked = match &request {
-                    Request::StartWorld(world) if uploads => Some(world.snapshot),
+                    Request::StartWorld { world, .. } if uploads => Some(world.snapshot),
                     _ => None,
                 };
                 let _ = heard_tx.send(request);
@@ -435,10 +439,11 @@ async fn the_owner_with_a_start_save_is_ready_at_the_menu_once_the_room_has_it()
     let save = start_save("uploaded");
     let mut session = Session::owner_starting_from(save.clone(), "start-uploaded", true).await;
     // The room is handed the save before anything else.
-    let Request::StartWorld(world) = session.next().await else {
+    let Request::StartWorld { world, save: named } = session.next().await else {
         panic!("the owner's agent hands the room its save first");
     };
     assert_eq!(world.size, 200_000);
+    assert_eq!(named.name.as_str(), "mptest", "named for everyone to see");
     session.hook_says(&ToAgent::MenuUp { menu: 1 });
     // Once uploaded, the owner's game waits at its menu like everyone's.
     assert_eq!(session.next().await, Request::SetReady(true));
@@ -450,13 +455,165 @@ async fn the_owner_with_a_start_save_is_ready_at_the_menu_once_the_room_has_it()
 async fn the_owner_is_not_ready_while_the_start_save_is_on_its_way() {
     let save = start_save("pending");
     let mut session = Session::owner_starting_from(save.clone(), "start-pending", false).await;
-    assert!(matches!(session.next().await, Request::StartWorld(_)));
+    assert!(matches!(session.next().await, Request::StartWorld { .. }));
     session.hook_says(&ToAgent::MenuUp { menu: 1 });
     session.hook_says(&ToAgent::WorldUp { world: 1 });
     let heard = session.until("never asked for it").await;
     assert!(
         !heard.contains(&Request::SetReady(true)),
         "the room cannot start before it has the save: {heard:?}"
+    );
+    let _ = std::fs::remove_dir_all(save.parent().unwrap());
+}
+
+/// Another save of the player's own, next to `start_save`'s.
+fn other_save(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("tpf3mp-other-save-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("other.sav");
+    let bytes: Vec<u8> = (0..150_000u32).map(|i| (i % 241) as u8).collect();
+    std::fs::write(&file, bytes).unwrap();
+    file
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_owner_naming_another_save_hands_it_over_and_readies_once_the_room_has_it() {
+    let first = start_save("replaced");
+    let second = other_save("replacing");
+    let mut session = Session::owner_starting_from(first.clone(), "start-replaced", true).await;
+    let Request::StartWorld { world: before, .. } = session.next().await else {
+        panic!("the first save goes first");
+    };
+    session.hook_says(&ToAgent::MenuUp { menu: 1 });
+    assert_eq!(session.next().await, Request::SetReady(true));
+
+    // The owner picks another on the room's page: the room's shared mods
+    // follow it, then the room is handed it.
+    let declared = ContentManifest::new(Text::new("40408").unwrap(), Vec::new());
+    let named = StartSave {
+        name: Text::new("other").unwrap(),
+        map: Text::new("dry").unwrap(),
+        year: 1900,
+    };
+    session
+        .controls
+        .send(Control::StartWorld {
+            start: Some((second.clone(), named.clone())),
+            declare: Some(declared.clone()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.next().await, Request::DeclareContent(declared));
+    let Request::StartWorld { world, save } = session.next().await else {
+        panic!("the new save is handed over");
+    };
+    assert_ne!(world.snapshot, before.snapshot);
+    assert_eq!(world.size, 150_000);
+    assert_eq!(
+        save, named,
+        "everyone sees what the owner's game read of it"
+    );
+    // The room asked everyone to agree again; the owner's game still waits
+    // at its menu, and once the room has the new save the owner is ready.
+    assert_eq!(session.next().await, Request::SetReady(true));
+    for file in [first, second] {
+        assert!(file.is_file(), "the player's own saves stay");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_owner_taking_the_save_back_readies_with_a_world_up_again() {
+    let save = start_save("taken-back");
+    let mut session = Session::owner_starting_from(save.clone(), "start-taken-back", true).await;
+    assert!(matches!(session.next().await, Request::StartWorld { .. }));
+    session.hook_says(&ToAgent::MenuUp { menu: 1 });
+    assert_eq!(session.next().await, Request::SetReady(true));
+
+    session
+        .controls
+        .send(Control::StartWorld {
+            start: None,
+            declare: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.next().await, Request::ClearStartWorld);
+    let heard = session.until("taken back").await;
+    assert!(
+        !heard.contains(&Request::SetReady(true)),
+        "at the menu, the owner has no world for the room: {heard:?}"
+    );
+    // As without a save: a world up readies the owner.
+    session.hook_says(&ToAgent::WorldUp { world: 1 });
+    assert_eq!(session.next().await, Request::SetReady(true));
+    let _ = std::fs::remove_dir_all(save.parent().unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_guest_cannot_name_the_rooms_save() {
+    let mut session =
+        Session::at_menu(RoomPhase::Lobby, Seat::Guest, Some(worlds("guest-names"))).await;
+    // Wait until the room is known.
+    let _ = session.until("announced").await;
+    session
+        .controls
+        .send(Control::StartWorld {
+            start: Some((
+                start_save("guest-names"),
+                StartSave {
+                    name: Text::new("mptest").unwrap(),
+                    map: Text::new("").unwrap(),
+                    year: 0,
+                },
+            )),
+            declare: None,
+        })
+        .await
+        .unwrap();
+    let heard = session.until("guest named").await;
+    assert!(
+        !heard
+            .iter()
+            .any(|request| matches!(request, Request::StartWorld { .. })),
+        "only the owner chooses: {heard:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_owner_naming_the_same_save_again_only_describes_it() {
+    let save = start_save("described");
+    let mut session = Session::owner_starting_from(save.clone(), "start-described", true).await;
+    let Request::StartWorld { world, .. } = session.next().await else {
+        panic!("the save goes first");
+    };
+    session.hook_says(&ToAgent::MenuUp { menu: 1 });
+    assert_eq!(session.next().await, Request::SetReady(true));
+    // The window read the save's map and year once the room was made.
+    let described = StartSave {
+        name: Text::new("mptest").unwrap(),
+        map: Text::new("temperate").unwrap(),
+        year: 1875,
+    };
+    session
+        .controls
+        .send(Control::StartWorld {
+            start: Some((save.clone(), described.clone())),
+            declare: Some(ContentManifest::new(
+                Text::new("40408").unwrap(),
+                Vec::new(),
+            )),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.next().await,
+        Request::StartWorld {
+            world,
+            save: described
+        },
+        "the same save, unchanged: named again without reading it again"
     );
     let _ = std::fs::remove_dir_all(save.parent().unwrap());
 }

@@ -13,7 +13,8 @@ use tpf3mp_agent::{ClientError, ClientEvent, Worlds, transfer};
 use tpf3mp_net::read_message;
 use tpf3mp_proto::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkRequest, BulkResponse,
-    FixedBytes, Invite, Request, RequestError, SavedWorld, SnapshotId, WorldOffer,
+    FixedBytes, Invite, Request, RequestError, RoomView, SavedWorld, SnapshotId, StartSave, Text,
+    WorldOffer,
 };
 use tpf3mp_server::{ServerConfig, SnapshotConfig};
 
@@ -209,6 +210,55 @@ fn owners_save(dir: &Path, len: usize) -> (Worlds, Vec<u8>, SavedWorld) {
     (worlds, bytes, world)
 }
 
+/// Another save of `len` bytes in the same player's store.
+fn another_save(worlds: &Worlds, dir: &Path, name: &str, len: usize) -> SavedWorld {
+    let bytes: Vec<u8> = (0..len).map(|i| (i * 13 % 241) as u8).collect();
+    let file = dir.join(format!("{name}.sav"));
+    std::fs::write(&file, &bytes).unwrap();
+    worlds.ingest_copy(&file).unwrap().1
+}
+
+/// A save as the owner names it.
+fn named(name: &str, map: &str, year: u16) -> StartSave {
+    StartSave {
+        name: Text::new(name).unwrap(),
+        map: Text::new(map).unwrap(),
+        year,
+    }
+}
+
+/// The owner names `world` as the room's start, as `save`.
+async fn name_start(owner: &TestClient, world: SavedWorld, save: StartSave) {
+    owner
+        .client
+        .requests()
+        .done(Request::StartWorld { world, save })
+        .await
+        .unwrap();
+}
+
+/// Waits until the room asks the owner for `world`, then uploads it.
+async fn upload_when_asked(owner: &mut TestClient, worlds: &Worlds, world: SavedWorld) {
+    let asked = owner
+        .wait_for(|event| match event {
+            ClientEvent::Upload { event, snapshot } => Some((event, snapshot)),
+            _ => None,
+        })
+        .await;
+    assert_eq!(asked, (0, world.snapshot));
+    transfer::upload_world(&owner.client.bulk(), worlds, world.snapshot)
+        .await
+        .unwrap();
+}
+
+fn everyone_ready(room: &RoomView) -> bool {
+    room.members.iter().all(|member| member.ready)
+}
+
+fn nobody_ready(room: &RoomView) -> bool {
+    room.members.iter().all(|member| !member.ready)
+}
+
 /// Starts the room, waiting while the world it starts from is still on its
 /// way: the room refuses to start before it has it.
 async fn start_once_the_world_is_there(owner: &TestClient) {
@@ -237,14 +287,20 @@ async fn a_room_starts_from_the_world_its_owner_handed_over() {
     assert_eq!(
         bob.client
             .requests()
-            .done(Request::StartWorld(world))
+            .done(Request::StartWorld {
+                world,
+                save: named("start", "", 0),
+            })
             .await
             .unwrap_err(),
         ClientError::Refused(RequestError::NotOwner)
     );
     ann.client
         .requests()
-        .done(Request::StartWorld(world))
+        .done(Request::StartWorld {
+            world,
+            save: named("start", "", 0),
+        })
         .await
         .unwrap();
     let asked = ann
@@ -308,12 +364,210 @@ async fn a_room_is_handed_no_world_where_the_server_keeps_none() {
     assert_eq!(
         ann.client
             .requests()
-            .done(Request::StartWorld(world))
+            .done(Request::StartWorld {
+                world,
+                save: named("start", "", 0),
+            })
             .await
             .unwrap_err(),
         ClientError::Refused(RequestError::WorldsNotKept)
     );
     // The room starts as before, from the owner's game.
     ann.client.start_game().await.unwrap();
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn the_owner_replaces_the_start_world_in_the_lobby_and_everyone_readies_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = RunningServer::start(saving(dir.path())).await;
+    let mut ann = server.client("ann").await;
+    let mut bob = server.client("bob").await;
+    seat(&mut [&mut ann, &mut bob], FAST).await;
+    let (worlds, _, first) = owners_save(dir.path(), 300_000);
+
+    // The first named: every member sees it, on its way. It is the world
+    // the room was waiting for, so who was ready stays ready.
+    name_start(&ann, first, named("first", "", 0)).await;
+    let room = bob
+        .room_where(|room| {
+            room.start
+                .as_ref()
+                .is_some_and(|start| start.save.name.as_str() == "first" && !start.arrived)
+        })
+        .await;
+    assert!(everyone_ready(&room), "{room:?}");
+    upload_when_asked(&mut ann, &worlds, first).await;
+    bob.room_where(|room| room.start.as_ref().is_some_and(|start| start.arrived))
+        .await;
+
+    // The same save again, with what the owner's game read of it: only what
+    // the room shows changes, and nobody is asked to agree again.
+    name_start(&ann, first, named("first", "dry", 1900)).await;
+    let room = bob
+        .room_where(|room| {
+            room.start
+                .as_ref()
+                .is_some_and(|start| start.save.map.as_str() == "dry")
+        })
+        .await;
+    assert!(everyone_ready(&room), "{room:?}");
+    assert!(room.start.as_ref().unwrap().arrived);
+    assert_eq!(room.start.as_ref().unwrap().save.year, 1900);
+
+    // Another save: asked for at once, everyone not ready again, and the
+    // game waits for it.
+    let second = another_save(&worlds, dir.path(), "second", 200_000);
+    name_start(&ann, second, named("second", "tropical", 1950)).await;
+    let room = bob
+        .room_where(|room| {
+            room.start
+                .as_ref()
+                .is_some_and(|start| start.save.name.as_str() == "second")
+        })
+        .await;
+    assert!(!room.start.as_ref().unwrap().arrived);
+    assert!(nobody_ready(&room), "they agreed to the first: {room:?}");
+    for player in [&ann, &bob] {
+        player.client.set_ready(true).await.unwrap();
+    }
+    assert_eq!(
+        ann.client.start_game().await.unwrap_err(),
+        ClientError::Refused(RequestError::StartWorldPending),
+        "not before the room has the new save"
+    );
+    upload_when_asked(&mut ann, &worlds, second).await;
+    start_once_the_world_is_there(&ann).await;
+    for player in [&mut ann, &mut bob] {
+        let start = player
+            .wait_for(|event| match event {
+                ClientEvent::TurnStream(start) => Some(start),
+                _ => None,
+            })
+            .await;
+        assert_eq!(
+            start.world.map(|offer| offer.snapshot),
+            Some(second.snapshot),
+            "every game loads the save named last"
+        );
+    }
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn the_owner_takes_the_start_world_back_and_the_owners_game_provides_it_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = RunningServer::start(saving(dir.path())).await;
+    let mut ann = server.client("ann").await;
+    let mut bob = server.client("bob").await;
+    seat(&mut [&mut ann, &mut bob], FAST).await;
+    let (worlds, _, world) = owners_save(dir.path(), 100_000);
+    name_start(&ann, world, named("start", "", 0)).await;
+    upload_when_asked(&mut ann, &worlds, world).await;
+    let room = bob
+        .room_where(|room| room.start.as_ref().is_some_and(|start| start.arrived))
+        .await;
+    assert!(everyone_ready(&room), "{room:?}");
+
+    // Only the owner takes it back.
+    assert_eq!(
+        bob.client
+            .requests()
+            .done(Request::ClearStartWorld)
+            .await
+            .unwrap_err(),
+        ClientError::Refused(RequestError::NotOwner)
+    );
+    ann.client
+        .requests()
+        .done(Request::ClearStartWorld)
+        .await
+        .unwrap();
+    bob.room_where(|room| room.start.is_none() && nobody_ready(room))
+        .await;
+    // Taking back none is no change.
+    ann.client
+        .requests()
+        .done(Request::ClearStartWorld)
+        .await
+        .unwrap();
+    for player in [&ann, &bob] {
+        player.client.set_ready(true).await.unwrap();
+    }
+    ann.client.start_game().await.unwrap();
+    // As without one: the owner's game plays the world it has.
+    let start = ann
+        .wait_for(|event| match event {
+            ClientEvent::TurnStream(start) => Some(start),
+            _ => None,
+        })
+        .await;
+    assert_eq!(start.world, None, "the owner's game plays its own world");
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn the_start_world_cannot_change_once_the_game_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = RunningServer::start(saving(dir.path())).await;
+    let (players, _invite) = running(vec![server.client("ann").await]).await;
+    let worlds = Worlds::open(&dir.path().join("ann"), 1 << 30).unwrap();
+    let world = another_save(&worlds, dir.path(), "late", 1000);
+    let requests = players[0].client().requests();
+    assert_eq!(
+        requests
+            .done(Request::StartWorld {
+                world,
+                save: named("late", "", 0),
+            })
+            .await
+            .unwrap_err(),
+        ClientError::Refused(RequestError::GameRunning)
+    );
+    assert_eq!(
+        requests.done(Request::ClearStartWorld).await.unwrap_err(),
+        ClientError::Refused(RequestError::GameRunning)
+    );
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn a_public_rooms_listing_follows_its_start_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = RunningServer::start(saving(dir.path())).await;
+    let ann = server.client("ann").await;
+    let cat = server.client("cat").await;
+    ann.client
+        .create_room(tpf3mp_proto::CreateRoom {
+            listing: Some(tpf3mp_proto::RoomListing {
+                map: Text::new("temperate").unwrap(),
+                year: 1850,
+                companies: 1,
+            }),
+            ..common::room("open", FAST)
+        })
+        .await
+        .unwrap();
+    let (_worlds, _, world) = owners_save(dir.path(), 1000);
+    name_start(&ann, world, named("start", "dry", 1920)).await;
+    let page = cat.client.list_rooms(0).await.unwrap();
+    assert_eq!(page.rooms[0].listing.map.as_str(), "dry");
+    assert_eq!(page.rooms[0].listing.year, 1920);
+    ann.client
+        .requests()
+        .done(Request::ClearStartWorld)
+        .await
+        .unwrap();
+    // One page a second for a connection.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let page = cat.client.list_rooms(0).await.unwrap();
+    assert_eq!(
+        (
+            page.rooms[0].listing.map.as_str(),
+            page.rooms[0].listing.year
+        ),
+        ("", 0),
+        "the owner's own world: unknown until the owner says"
+    );
     server.shut_down().await;
 }

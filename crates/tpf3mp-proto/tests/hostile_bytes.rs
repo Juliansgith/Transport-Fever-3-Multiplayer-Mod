@@ -83,6 +83,14 @@ fn room_view() -> RoomView {
             },
         ],
         competitive: false,
+        start: Some(tpf3mp_proto::StartView {
+            save: tpf3mp_proto::StartSave {
+                name: Text::new("Güterzug 1900").unwrap(),
+                map: Text::new("temperate").unwrap(),
+                year: 1900,
+            },
+            arrived: false,
+        }),
     }
 }
 
@@ -165,6 +173,24 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         ClientMessage::Request {
             id: 10,
             request: Request::Kick(player(2)),
+        },
+        ClientMessage::Request {
+            id: 12,
+            request: Request::StartWorld {
+                world: SavedWorld {
+                    snapshot,
+                    size: 80 << 20,
+                },
+                save: tpf3mp_proto::StartSave {
+                    name: Text::new("mptest").unwrap(),
+                    map: Text::new("dry").unwrap(),
+                    year: 1850,
+                },
+            },
+        },
+        ClientMessage::Request {
+            id: 13,
+            request: Request::ClearStartWorld,
         },
         ClientMessage::Game(GameMessage::Intent {
             client_seq: 3,

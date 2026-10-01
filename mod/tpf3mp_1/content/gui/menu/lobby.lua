@@ -565,6 +565,26 @@ function lobby.saveDetails(name)
 	return read
 end
 
+-- The save a room starts from, in a line: its name, its map and year when
+-- the room knows them, and whether the room has it yet.
+function lobby.startLine(start)
+	local parts = { start.name }
+	if type(start.map) == "string" and start.map ~= "" then parts[#parts + 1] = lobby.climateName(start.map) end
+	if (tonumber(start.year) or 0) > 0 then parts[#parts + 1] = tostring(start.year) end
+	if not start.arrived then parts[#parts + 1] = _("on its way to the room") end
+	return table.concat(parts, " · ")
+end
+
+-- Whether the room's game must wait for its start save: the owner's still
+-- going up, or the room not having it yet.
+function lobby.startWaits(room)
+	return room.upload ~= nil or (room.start ~= nil and not room.start.arrived)
+end
+
+-- Polls a pick of the room's start save waits at most for the game to read
+-- the save's map and year.
+local PICK_POLLS = 8
+
 -- Banners ---------------------------------------------------------------------
 
 -- The pictures players show in rooms (tpf3mp/banners.lua, which the game's
@@ -763,6 +783,11 @@ function lobby.content(onClose, focus)
 	local playersS = react.useState(DEFAULT_PLAYERS)
 	local rulesS = react.useState(nil)
 	local saveS = react.useState(nil)
+	-- The room page's pick of its start save while the game reads its map
+	-- and year: { save, polls }.
+	local pickS = react.useState(nil)
+	-- The start save this window already told the room the map and year of.
+	local describedRef = react.useRef(nil)
 	-- The page shown: "choose" (Join or Host), "join" (the public rooms
 	-- and an invite) or "host" (the room's settings); in a room, always the
 	-- room's. Your mods show over it while modsS is on.
@@ -809,6 +834,7 @@ function lobby.content(onClose, focus)
 			tostring(state.connection), tostring(room and room.name), tostring(room and room.phase),
 			tostring(room and #room.members), tostring(me and me.ready), tostring(state.error),
 			tostring(state.notice), tostring(#(state.chat or {})), tostring(state.server_address),
+			tostring(room and room.start and room.start.name), tostring(room and room.upload and room.upload.save),
 		}, "|")
 	end
 
@@ -839,6 +865,37 @@ function lobby.content(onClose, focus)
 				end
 			end
 			stateS:set(state)
+			local room = state.room
+			local owning = room and room.you_own and room.phase == "lobby"
+			-- A start save picked on the room page goes once the game read its
+			-- map and year, or could not in a few polls.
+			local pick = pickS:old()
+			if pick then
+				local details = lobby.saveDetails(pick.save)
+				if not details.async or pick.polls >= PICK_POLLS then
+					pickS:set(nil)
+					if owning then
+						refusedS:set(act({ action = "choose_start", save = pick.save, map = details.map or "",
+							year = details.year or 0 }))
+					end
+				else
+					pickS:set({ save = pick.save, polls = pick.polls + 1 })
+				end
+			end
+			-- The room names its start save without its map and year when the
+			-- room was made private: this window tells it what the game read,
+			-- once, so every player sees them.
+			local start = owning and room.start
+			if start and room.upload == nil and start.map == "" and (tonumber(start.year) or 0) == 0
+				and describedRef:get() ~= start.name then
+				local details = lobby.saveDetails(start.name)
+				if not details.async then
+					describedRef:set(start.name)
+					if details.map ~= "" or details.year > 0 then
+						act({ action = "choose_start", save = start.name, map = details.map, year = details.year })
+					end
+				end
+			end
 			-- Opened while not connected: connect to the launcher's server
 			-- under the player's name at once, as a click on Connect would.
 			if not autoConnectedRef:get() and state.linked and state.heard
@@ -1375,7 +1432,7 @@ function lobby.content(onClose, focus)
 				column({
 					field(_("Room name"), roomName, string.format(_("%s's room"), state.name), { maxLength = 48 }),
 					choice(_("Start from this save"), pickedSave, saveItems, function(value) saveS:set(value) end,
-						pickedSave ~= "" and _("Every player's game loads it from the menu when you start.")
+						pickedSave ~= "" and _("Every player's game loads it from the menu when you start. You can change it in the room.")
 							or _("Load a world in the game once in the room: it is saved for everyone.")),
 					choice(_("Players"), playersS:old(), playersItems, function(value) playersS:set(value) end),
 				}, style{ size = { LEFT, AUTO } }),
@@ -1497,10 +1554,77 @@ function lobby.content(onClose, focus)
 			send({ action = "chat", text = msg }, nil)
 		end
 	end
+	-- The save the room starts from, for everyone; the owner picks it here
+	-- while the room is in its lobby, from the saves the Host page offers.
+	local startBlock
+	-- The chat takes what the start save leaves of the column.
+	local chatHeight = HEIGHT - 330
+	if playing then
+		startBlock = gap(1)
+	else
+		local start, upload, pick = room.start, room.upload, pickS:old()
+		local line
+		if pick then
+			line = string.format(_("Reading %s..."), pick.save)
+		elseif upload then
+			line = string.format(_("Sending %s to the room: %d%%"), upload.save, upload.percent)
+		elseif start then
+			line = lobby.startLine(start)
+		elseif room.you_own then
+			line = _("None: load a world in your game; it is saved for everyone when you start.")
+		else
+			line = _("The world the owner's game has.")
+		end
+		local children = {}
+		if room.you_own then
+			local current = (pick and pick.save) or (upload and upload.save) or (start and start.name) or ""
+			local items, listed = {}, false
+			for _i, save in ipairs(state.saves or {}) do
+				items[#items + 1] = { save, save }
+				if save == current then listed = true end
+			end
+			-- The room's own, even once it left the newest saves listed.
+			if current ~= "" and not listed then table.insert(items, 1, { current, current }) end
+			items[#items + 1] = { "", _("None: I load a world myself") }
+			children[#children + 1] = choice(_("Start from this save"), current, items, function(value)
+				if value == current or not canAct then return end
+				confirmS:set(nil)
+				if value == "" then
+					send({ action = "choose_start", save = "" }, _("Changing the save..."))
+					return
+				end
+				local details = lobby.saveDetails(value)
+				if details.async then
+					pickS:set({ save = value, polls = 0 })
+				else
+					send({ action = "choose_start", save = value, map = details.map, year = details.year },
+						_("Changing the save..."))
+				end
+			end, line)
+			chatHeight = chatHeight - 92
+		else
+			children[#children + 1] = note(_("Starts from"))
+			children[#children + 1] = gap(4)
+			children[#children + 1] = label(line, "font-scale-body")
+			children[#children + 1] = gap(12)
+			chatHeight = chatHeight - 54
+		end
+		if upload then
+			children[#children + 1] = builtin.Component{
+				meta = { styleSheet = style{ size = { RIGHT - 20, 14 } } },
+				layout = builtin.BoxLayout{ children = { builtin.ProgressBar{ value = math.min(1, upload.percent / 100) } } },
+			}
+			children[#children + 1] = gap(8)
+			chatHeight = chatHeight - 22
+		end
+		startBlock = column(children)
+	end
+
 	local chat = column({
+		startBlock,
 		heading(_("Chat")),
 		builtin.ScrollArea{
-			meta = { styleSheet = style{ size = { RIGHT, HEIGHT - 330 } } },
+			meta = { styleSheet = style{ size = { RIGHT, chatHeight } } },
 			horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
 			verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
 			content = column(chatRows),
@@ -1539,10 +1663,12 @@ function lobby.content(onClose, focus)
 		end
 		if room.you_own then
 			local all = everyoneReady(room)
+			local waits = lobby.startWaits(room) or pickS:old() ~= nil
 			footer[#footer + 1] = primary(_("Start the game"), function()
 				send({ action = "start" }, _("Starting the room's game..."))
-			end, canAct and all and not busy,
-				all and _("Every player's game loads the room's world") or _("Waiting for everyone to be ready"))
+			end, canAct and all and not waits and not busy,
+				(waits and _("The save is still on its way to the room"))
+					or (all and _("Every player's game loads the room's world")) or _("Waiting for everyone to be ready"))
 		end
 	end
 

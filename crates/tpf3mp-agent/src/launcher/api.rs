@@ -131,6 +131,18 @@ pub enum Action {
     SetServer {
         server: String,
     },
+    /// The room's owner, in its lobby: the room starts from the save `save`
+    /// now, one of [`State::saves`], in place of the one before; empty for
+    /// none, the owner's game then providing the world. `map` and `year`
+    /// are what the owner's game read of it, for the room to show. Every
+    /// player is asked to get ready again.
+    ChooseStart {
+        save: String,
+        #[serde(default)]
+        map: String,
+        #[serde(default)]
+        year: u16,
+    },
 }
 
 /// What a public room's list entry says of its world, as the creating
@@ -260,6 +272,31 @@ pub struct State {
     /// The room's shared mods, from its owner's start save, and whether this
     /// player has each; empty while not known.
     pub room_mods: Vec<RoomModRow>,
+    /// In a room's lobby: the save its game starts from, as the room names
+    /// it to everyone; `None` when the owner's game provides the world.
+    pub start: Option<RoomStart>,
+    /// For the room's owner: the save they named on its way to the room.
+    pub start_upload: Option<StartProgress>,
+}
+
+/// The save a room starts from, as the room names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RoomStart {
+    pub name: String,
+    /// Its climate, such as `temperate`; empty unknown.
+    pub map: String,
+    /// Its year; 0 unknown.
+    pub year: u16,
+    /// The room has it: until then the game cannot start.
+    pub arrived: bool,
+}
+
+/// The owner's save on its way to the room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StartProgress {
+    pub save: String,
+    /// 0 to 100; 0 while it is read.
+    pub percent: u8,
 }
 
 /// One installed mod, as the front ends list it.
@@ -632,6 +669,25 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         mods: view.mods.clone(),
         room_mods: view.room_mods.clone(),
         rooms: view.rooms.clone().filter(|_| view.connected),
+        start: status
+            .room
+            .as_ref()
+            .filter(|_| view.in_room)
+            .and_then(|room| room.start.as_ref())
+            .map(|start| RoomStart {
+                name: start.save.name.as_str().to_owned(),
+                map: start.save.map.as_str().to_owned(),
+                year: start.save.year,
+                arrived: start.arrived,
+            }),
+        start_upload: status
+            .start_upload
+            .as_ref()
+            .filter(|_| view.in_room)
+            .map(|upload| StartProgress {
+                save: upload.save.clone(),
+                percent: upload.percent.min(100),
+            }),
     }
 }
 
