@@ -195,18 +195,35 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   loaded its save (below). Everyone still holds the clock until loaded.
   The owner provides it one of two ways:
   - **Handed over in the lobby.** The owner's client sends
-    `StartWorld(SavedWorld)`, a save it holds (the launcher's
-    `--start-save`), before the game starts. The room answers `Upload`
-    with event 0 at once, and the owner's client uploads it on a bulk
-    stream as it uploads any save the room asks for. When the game
-    starts, every member's first turn stream names that world, starting
-    from the game's first turn, so every game loads the same file from its
-    main menu at the same time and no game saves first. Only the owner
-    may send it, only in the lobby, and only to a server that keeps
-    snapshots (`WorldsNotKept` otherwise); another replaces it, and it
-    goes with the owner if the owner leaves. The room gives up on one
-    that does not start arriving within 30 seconds, and the game then
-    starts as below.
+    `StartWorld { world, save }`: `world` a save it holds (the one the
+    owner picked, or the launcher's `--start-save`), `save` what the room
+    shows of it (`StartSave`: its name, up to 64 bytes, and the map type
+    and year the owner's game read of it, empty and 0 when unknown). The
+    room answers `Upload` with event 0 at once, and the owner's client
+    uploads it on a bulk stream as it uploads any save the room asks for.
+    When the game starts, every member's first turn stream names that
+    world, starting from the game's first turn, so every game loads the
+    same file from its main menu at the same time and no game saves
+    first. Only the owner may send it, only in the lobby (`GameRunning`
+    once the game runs), and only to a server that keeps snapshots
+    (`WorldsNotKept` otherwise); it goes with the owner if the owner
+    leaves. The room gives up on one that does not start arriving within
+    30 seconds, and the game then starts as below.
+  - **Changing it in the lobby** (protocol 14). The room view names the
+    world handed over to every member (`RoomView::start`: its `StartSave`
+    and whether it has `arrived`; `None` without one, and once the game
+    runs), and sends a new view when it is named, arrives, is given up on
+    or taken back. Until the game starts, the owner may send
+    `StartWorld` with another world: it replaces the one before, which
+    the room lets go, the room asks for the new one at once, and **every
+    member is marked not ready**, since they agreed to the world before.
+    The first world named leaves readiness alone: it is the world the
+    room was waiting for. The same world again only changes what the
+    room shows of it (its `save`), and asks for nothing. `ClearStartWorld`
+    takes the world back: the game starts as below, from the owner's
+    game, and every member is marked not ready if there was one. A public
+    room's listing follows: its map and year become the new save's, and
+    unknown (empty, 0) without one.
   - **Saved by the owner's game.** Without one, the owner's game loads
     the world, the room saves it before the first step, and every player
     loads that save.

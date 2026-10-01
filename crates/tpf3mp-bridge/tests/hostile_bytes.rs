@@ -135,6 +135,13 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                 }])
                 .unwrap(),
                 competitive: false,
+                start: Some(tpf3mp_bridge::LobbyStart {
+                    name: Text::new("mptest").unwrap(),
+                    map: Text::new("temperate").unwrap(),
+                    year: 1900,
+                    arrived: true,
+                }),
+                upload: None,
             }),
             chat: BoundedVec::new(vec![LobbyLine {
                 from: Text::new("Ann").unwrap(),
@@ -208,6 +215,11 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         ToAgent::Lobby(LobbyAction::Join {
             invite: Text::new("tpf3mp.example.org:29470 K7QM2X").unwrap(),
             password: Some(Text::new("pw").unwrap()),
+        }),
+        ToAgent::Lobby(LobbyAction::ChooseStart {
+            save: Text::new("Güterzug").unwrap(),
+            map: Text::new("dry").unwrap(),
+            year: 1925,
         }),
     ];
     let mut samples: Vec<(Check, Vec<u8>)> = Vec::new();

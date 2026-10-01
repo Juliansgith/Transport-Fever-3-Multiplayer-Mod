@@ -21,8 +21,8 @@ use tpf3mp_proto::{
     BannerId, ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN,
     FixedBytes, IntentRejection, Invite, LaneDigest, LoadingStage, MemberView, Payload, Platform,
     PlayerId, RequestError, Resume, RoomId, RoomListing, RoomPhase, RoomSettings, RoomView,
-    RulesName, SavedWorld, Seal, Secret, ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text,
-    Turn, TurnMessage, TurnStart, WorldOffer, decode_frame, encode_frame,
+    RulesName, SavedWorld, Seal, Secret, ServerMessage, SnapshotId, Speed, StartSave, StartView,
+    TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, WorldOffer, decode_frame, encode_frame,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -179,6 +179,13 @@ pub(crate) enum RoomCommand {
     StartWorld {
         player: PlayerId,
         world: SavedWorld,
+        save: StartSave,
+        reply: Reply,
+    },
+    /// The owner takes back the world it handed over: the owner's game
+    /// provides the room's world again.
+    ClearStartWorld {
+        player: PlayerId,
         reply: Reply,
     },
     SetSpeed {
@@ -584,13 +591,41 @@ enum StartWorld {
     /// Asked of the owner, not received yet.
     Asked {
         world: SavedWorld,
+        save: StartSave,
         from: PlayerId,
         asked: Instant,
         /// Whether the owner opened its stream.
         receiving: bool,
     },
     /// In the store, held by the room.
-    Held(Arc<Manifest>),
+    Held {
+        manifest: Arc<Manifest>,
+        save: StartSave,
+    },
+}
+
+impl StartWorld {
+    fn snapshot(&self) -> SnapshotId {
+        match self {
+            Self::Asked { world, .. } => world.snapshot,
+            Self::Held { manifest, .. } => bulk::snapshot_id(&manifest.id()),
+        }
+    }
+
+    /// The save as the owner named it.
+    fn save(&self) -> &StartSave {
+        match self {
+            Self::Asked { save, .. } | Self::Held { save, .. } => save,
+        }
+    }
+
+    /// What the room's members see of it.
+    fn view(&self) -> StartView {
+        StartView {
+            save: self.save().clone(),
+            arrived: matches!(self, Self::Held { .. }),
+        }
+    }
 }
 
 struct Game {
@@ -1211,6 +1246,10 @@ impl Room {
                 })
                 .collect(),
             competitive: self.competitive,
+            start: match self.phase {
+                Phase::Lobby => self.start_world.as_ref().map(StartWorld::view),
+                Phase::Running(_) => None,
+            },
         }
     }
 
@@ -1282,9 +1321,15 @@ impl Room {
             RoomCommand::StartWorld {
                 player,
                 world,
+                save,
                 reply,
             } => {
-                let _ = reply.send(self.ask_for_start_world(player, world));
+                let result = self.ask_for_start_world(player, world, save);
+                self.answer_and_broadcast_if_changed(reply, result);
+            }
+            RoomCommand::ClearStartWorld { player, reply } => {
+                let result = self.clear_start_world(player);
+                self.answer_and_broadcast_if_changed(reply, result);
             }
             RoomCommand::SetSpeed {
                 player,
@@ -1684,12 +1729,16 @@ impl Room {
 
     /// The owner names the world the game starts from (`Request::StartWorld`):
     /// the room asks the owner to upload it, unless it has it already. It
-    /// replaces any world named before.
+    /// replaces any world named before, for as long as the room is in its
+    /// lobby, and then every member is not ready again: they agreed to the
+    /// world before. The same world again only updates what the room shows
+    /// of it. Returns whether anything changed.
     fn ask_for_start_world(
         &mut self,
         player: PlayerId,
         world: SavedWorld,
-    ) -> Result<(), RequestError> {
+        save: StartSave,
+    ) -> Result<bool, RequestError> {
         if player != self.owner {
             return Err(RequestError::NotOwner);
         }
@@ -1699,25 +1748,37 @@ impl Room {
         if self.snapshots.is_none() {
             return Err(RequestError::WorldsNotKept);
         }
-        let same = match &self.start_world {
-            Some(StartWorld::Asked { world: asked, .. }) => asked.snapshot == world.snapshot,
-            Some(StartWorld::Held(manifest)) => bulk::snapshot_id(&manifest.id()) == world.snapshot,
-            None => false,
-        };
-        if same {
-            return Ok(());
-        }
-        self.drop_start_world();
         let Some(index) = self.members.iter().position(|m| m.player == player) else {
             return Err(RequestError::NotInRoom);
         };
-        info!(room = %self.id, snapshot = %world.snapshot, bytes = world.size, "the owner hands over the world the game starts from");
+        if let Some(named) = &mut self.start_world
+            && named.snapshot() == world.snapshot
+        {
+            let (StartWorld::Asked { save: shown, .. } | StartWorld::Held { save: shown, .. }) =
+                named;
+            if *shown == save {
+                return Ok(false);
+            }
+            *shown = save;
+            self.list_start_save();
+            return Ok(true);
+        }
+        let replacing = self.start_world.is_some();
+        self.drop_start_world();
+        info!(room = %self.id, snapshot = %world.snapshot, bytes = world.size, replacing, "the owner hands over the world the game starts from");
         self.start_world = Some(StartWorld::Asked {
             world,
+            save,
             from: player,
             asked: Instant::now(),
             receiving: false,
         });
+        // The first named is the world the room was waiting for; another
+        // in its place is not the one the members agreed to.
+        if replacing {
+            self.unready_all();
+        }
+        self.list_start_save();
         self.push(
             index,
             ServerMessage::Upload {
@@ -1725,13 +1786,63 @@ impl Room {
                 snapshot: world.snapshot,
             },
         );
-        Ok(())
+        Ok(true)
+    }
+
+    /// The owner takes back the world it handed over
+    /// (`Request::ClearStartWorld`): the room's world is the owner's game's
+    /// again, and every member is not ready again. Returns whether the room
+    /// had one.
+    fn clear_start_world(&mut self, player: PlayerId) -> Result<bool, RequestError> {
+        if !self.members.iter().any(|member| member.player == player) {
+            return Err(RequestError::NotInRoom);
+        }
+        if player != self.owner {
+            return Err(RequestError::NotOwner);
+        }
+        if matches!(self.phase, Phase::Running(_)) {
+            return Err(RequestError::GameRunning);
+        }
+        if self.start_world.is_none() {
+            return Ok(false);
+        }
+        info!(room = %self.id, "the owner takes back the world the game starts from");
+        self.drop_start_world();
+        self.unready_all();
+        self.list_start_save();
+        Ok(true)
+    }
+
+    /// Every member is not ready: the world they agreed to changed.
+    fn unready_all(&mut self) {
+        for member in &mut self.members {
+            member.ready = false;
+        }
+    }
+
+    /// A public room's list entry follows the save it starts from: its map
+    /// and year, unknown when the save does not say or there is none.
+    fn list_start_save(&self) {
+        let (map, year) = self
+            .start_world
+            .as_ref()
+            .map_or((Text::lossy(""), 0), |named| {
+                (named.save().map.clone(), named.save().year)
+            });
+        let mut summary = self
+            .summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(listing) = summary.listing.as_mut() {
+            listing.map = map;
+            listing.year = year;
+        }
     }
 
     /// Forgets the world the owner handed over, giving back the room's hold
     /// on it.
     fn drop_start_world(&mut self) {
-        if let (Some(StartWorld::Held(manifest)), Some(snapshots)) =
+        if let (Some(StartWorld::Held { manifest, .. }), Some(snapshots)) =
             (self.start_world.take(), &self.snapshots)
         {
             release_in_background(Arc::clone(snapshots), vec![manifest.id()]);
@@ -1753,6 +1864,8 @@ impl Room {
             warn!(room = %self.id, snapshot = %world.snapshot, "the owner did not upload the world the game starts from");
             metrics::increment(&self.metrics.uploads_failed);
             self.start_world = None;
+            self.list_start_save();
+            self.broadcast_view();
         }
     }
 
@@ -1779,7 +1892,7 @@ impl Room {
             return Err(RequestError::StartWorldPending);
         }
         let start_world = match self.start_world.take() {
-            Some(StartWorld::Held(manifest)) => Some(manifest),
+            Some(StartWorld::Held { manifest, .. }) => Some(manifest),
             _ => None,
         };
         let mut game = Game::new(self.settings, new_history());
@@ -2452,12 +2565,18 @@ impl Room {
         match (asked, result) {
             (true, Ok(manifest)) => {
                 info!(room = %self.id, %player, %snapshot, bytes = manifest.total_size(), "received the world the game starts from");
-                self.start_world = Some(StartWorld::Held(manifest));
+                if let Some(StartWorld::Asked { save, .. }) = self.start_world.take() {
+                    self.start_world = Some(StartWorld::Held { manifest, save });
+                }
+                // Everyone sees it arrived: the owner may start.
+                self.broadcast_view();
             }
             (true, Err(error)) => {
                 warn!(room = %self.id, %player, %snapshot, %error, "the upload of the world the game starts from failed");
                 metrics::increment(&self.metrics.uploads_failed);
                 self.start_world = None;
+                self.list_start_save();
+                self.broadcast_view();
             }
             (false, Ok(manifest)) => {
                 if let Some(snapshots) = &self.snapshots {

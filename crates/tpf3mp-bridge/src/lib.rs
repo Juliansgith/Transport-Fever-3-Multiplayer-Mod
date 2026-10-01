@@ -61,8 +61,11 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// member's banner and loading progress ([`RoomMember`]), and its Leave
 /// as [`LobbyAction::Leave`]; 19 the campaign portraits this player's game
 /// can show ([`LobbyView::portraits`]), and banner ids of up to 32 bytes
-/// that may name one (protocol 13's `tpf3mp_proto::PORTRAITS`).
-pub const BRIDGE_VERSION: u32 = 19;
+/// that may name one (protocol 13's `tpf3mp_proto::PORTRAITS`); 20 the save
+/// a room starts from on its page ([`LobbyRoom::start`]), the owner's
+/// upload of it ([`LobbyRoom::upload`]) and the owner's choice of another
+/// in the lobby ([`LobbyAction::ChooseStart`]; protocol 14).
+pub const BRIDGE_VERSION: u32 = 20;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -368,6 +371,33 @@ pub struct LobbyRoom {
     pub members: BoundedVec<LobbyMember, { MAX_ROOM_MEMBERS as usize }>,
     /// Co-op (`false`) or competitive (`true`).
     pub competitive: bool,
+    /// In the lobby: the save the room's game starts from, as the room
+    /// names it to everyone; `None` when the owner's game provides the
+    /// world.
+    pub start: Option<LobbyStart>,
+    /// For the owner: the save they picked on its way to the room. Start
+    /// waits for it.
+    pub upload: Option<LobbyUpload>,
+}
+
+/// The save a room starts from, as its page shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyStart {
+    pub name: SaveName,
+    /// Its climate, such as `temperate`; empty unknown.
+    pub map: Text<32>,
+    /// Its year; 0 unknown.
+    pub year: u16,
+    /// Whether the room has it: until then the game cannot start.
+    pub arrived: bool,
+}
+
+/// The owner's save on its way to the room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyUpload {
+    pub save: SaveName,
+    /// How much of it went up, 0 to 100; 0 while it is being read.
+    pub percent: u8,
 }
 
 /// One member of the room, as its lobby shows it.
@@ -458,6 +488,17 @@ pub enum LobbyAction {
     /// Show this banner or portrait in rooms; `None` for the default.
     SetBanner {
         banner: Option<tpf3mp_proto::BannerId>,
+    },
+    /// The room's owner, in its lobby: the room starts from the save `save`
+    /// now, one of [`LobbyView::saves`], which the launcher hands over in
+    /// place of the one before; empty for none, the owner's game then
+    /// providing the world. `map` and `year` are what the owner's game read
+    /// of the save, for the room to show (empty and 0 unknown). Every player
+    /// is asked to get ready again.
+    ChooseStart {
+        save: SaveName,
+        map: Text<32>,
+        year: u16,
     },
 }
 
@@ -694,6 +735,16 @@ mod tests {
                 has_password: true,
                 members: BoundedVec::new((0..MAX_ROOM_MEMBERS).map(member).collect()).unwrap(),
                 competitive: false,
+                start: Some(LobbyStart {
+                    name: Text::new("s".repeat(MAX_SAVE_NAME)).unwrap(),
+                    map: Text::new("m".repeat(32)).unwrap(),
+                    year: u16::MAX,
+                    arrived: false,
+                }),
+                upload: Some(LobbyUpload {
+                    save: Text::new("u".repeat(MAX_SAVE_NAME)).unwrap(),
+                    percent: 100,
+                }),
             }),
             chat: BoundedVec::new(vec![line; MAX_LOBBY_CHAT]).unwrap(),
             rules: BoundedVec::new(vec![
@@ -789,6 +840,12 @@ mod tests {
             server: Text::new("s".repeat(128)).unwrap(),
         });
         assert_eq!(decode::<ToAgent>(&encode(&set).unwrap()).unwrap(), set);
+        let pick = ToAgent::Lobby(LobbyAction::ChooseStart {
+            save: Text::new("s".repeat(MAX_SAVE_NAME)).unwrap(),
+            map: Text::new("temperate").unwrap(),
+            year: 1900,
+        });
+        assert_eq!(decode::<ToAgent>(&encode(&pick).unwrap()).unwrap(), pick);
     }
 
     #[test]

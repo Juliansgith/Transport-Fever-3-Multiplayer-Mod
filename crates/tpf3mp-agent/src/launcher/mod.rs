@@ -36,13 +36,15 @@ use tokio::{
 use tpf3mp_bridge::{LobbyAction, LobbyView};
 use tpf3mp_net::{Identity, ServerTrust};
 use tpf3mp_proto::{
-    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomSettings, Text,
+    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomPhase,
+    RoomSettings, StartSave, Text,
 };
 use tracing::{info, warn};
 
 pub use self::api::{
     Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent,
-    ModClass, ModHave, ModRow, Phase, Room, RoomModRow, RulesChoice, State, World,
+    ModClass, ModHave, ModRow, Phase, Room, RoomModRow, RoomStart, RulesChoice, StartProgress,
+    State, World,
 };
 use self::{api::View, http::Page, lobby::IdleLink};
 use crate::{
@@ -625,6 +627,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::ListRooms { .. } => "list_rooms",
         Action::SetServer { .. } => "set_server",
         Action::SetBanner { .. } => "set_banner",
+        Action::ChooseStart { .. } => "choose_start",
     }
 }
 
@@ -733,6 +736,20 @@ async fn act(
                 }),
                 competitive,
             };
+            // What the room shows everyone of its start save: the list's
+            // map and year, when the owner's game read them.
+            let start_world = start_world.map(|file| {
+                let save = start_save_named(
+                    &file,
+                    create
+                        .listing
+                        .as_ref()
+                        .map(|l| l.map.as_str())
+                        .unwrap_or(""),
+                    create.listing.as_ref().map_or(0, |l| l.year),
+                );
+                (file, save)
+            });
             let (invite, room) = current
                 .client
                 .create_room(create.clone())
@@ -760,6 +777,9 @@ async fn act(
                 start_world,
                 generate_world,
             )
+        }
+        Action::ChooseStart { save, map, year } => {
+            choose_start(shared, config, session, &save, &map, year).await
         }
         Action::Join { invite, password } => {
             let passed = passed_invite(&invite).ok_or("that is not an invite")?;
@@ -1013,6 +1033,60 @@ fn save_name(file: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// What the room shows everyone of the save `file`: its name, and the map
+/// and year the owner's game read of it.
+fn start_save_named(file: &Path, map: &str, year: u16) -> StartSave {
+    StartSave {
+        name: Text::lossy(&save_name(file).unwrap_or_default()),
+        map: Text::lossy(map.trim()),
+        year,
+    }
+}
+
+/// The owner picks another save for the room to start from, in its lobby,
+/// or none (an empty `picked`): checked as a new room's is, the room's
+/// shared mods follow it, and the room session hands it over in place of
+/// the one before, asking everyone to get ready again.
+async fn choose_start(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    session: &Option<Session>,
+    picked: &str,
+    map: &str,
+    year: u16,
+) -> Result<(), String> {
+    if session.is_none() {
+        return Err("join a room first".into());
+    }
+    {
+        let status = shared.status();
+        let room = status.room.as_ref().ok_or("join a room first")?;
+        if room.owner != config.identity.player() {
+            return Err("only the room's owner chooses the save it starts from".into());
+        }
+        if room.phase != RoomPhase::Lobby {
+            return Err("the room's game has begun: it plays the world it has".into());
+        }
+    }
+    let listed = shared.view().saves.clone();
+    let file = start_world(Some(picked), &listed, None, crate::steam::find_save)?;
+    let declare = own_start(shared, file.as_deref());
+    let picked = picked.trim();
+    if !picked.is_empty() {
+        // Offered first next time.
+        shared.view().start_save = Some(picked.to_owned());
+    }
+    info!(
+        none = picked.is_empty(),
+        "the owner picks the save the room starts from"
+    );
+    let start = file.map(|file| {
+        let save = start_save_named(&file, map, year);
+        (file, save)
+    });
+    forward(session, Control::StartWorld { start, declare }).await
+}
+
 /// Hands the connection to a bridge, which runs the room from its lobby to
 /// the end of its game, and plays it through the game's hook. A room this
 /// player owns starts from `start_world`, if it names a save.
@@ -1025,7 +1099,7 @@ fn begin_session(
     idle: &mut Idle,
     invite: Invite,
     password: Option<Text<64>>,
-    start_world: Option<PathBuf>,
+    start_world: Option<(PathBuf, StartSave)>,
     generate_world: bool,
 ) -> Result<(), String> {
     let Connected {
@@ -1058,7 +1132,11 @@ fn begin_session(
         status: Some(Arc::clone(&shared.status)),
         lobby: Some(shared.lobby.clone()),
         // A room this player created starts from the save named for it.
-        start_world: start_world.filter(|_| owned),
+        start_save: start_world
+            .as_ref()
+            .filter(|_| owned)
+            .map(|(_, save)| save.clone()),
+        start_world: start_world.filter(|_| owned).map(|(file, _)| file),
         start_generated_world: owned && generate_world,
         mods: config.mods.clone(),
         picker: shared.picker_link(),
@@ -1450,7 +1528,10 @@ async fn join(
         idle,
         invite,
         password,
-        config.start_save.clone(),
+        config.start_save.clone().map(|file| {
+            let save = start_save_named(&file, "", 0);
+            (file, save)
+        }),
         false,
     )
 }
@@ -1812,6 +1893,13 @@ mod tests {
         assert_eq!(
             save_name(Path::new("/x/y/twomptest.sav")).as_deref(),
             Some("twomptest")
+        );
+        // What the room shows everyone of it: its name, with what the
+        // owner's game read.
+        let named = start_save_named(Path::new("/saves/Güterzug.sav"), " dry ", 1900);
+        assert_eq!(
+            (named.name.as_str(), named.map.as_str(), named.year),
+            ("Güterzug", "dry", 1900)
         );
     }
 

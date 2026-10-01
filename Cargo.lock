@@ -4529,7 +4529,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ureq",
- "winresource",
  "zip",
 ]
 

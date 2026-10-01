@@ -442,6 +442,11 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     or empty for the launcher's default; the launcher checks, remembers
     and reconnects, and refuses it in a room (D12, proposed amendment).
     Connect still names no server, and an invite never switches it.
+    Since version 20, `ChooseStart { save, map, year }` is the room
+    owner's pick of the save the room starts from, in its lobby (empty
+    for none; LOBBY.md, "Changing the start save in the room"), and the
+    lobby's room carries the save it starts from and the owner's upload
+    of it.
   - `Log`: a line for the agent's log.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the

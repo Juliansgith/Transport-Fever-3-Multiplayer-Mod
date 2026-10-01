@@ -136,6 +136,21 @@ pub async fn serve(
     manifest: &Manifest,
     idle: Duration,
 ) -> Result<Served, BulkError> {
+    serve_with_progress(send, recv, store, manifest, idle, |_| {}).await
+}
+
+/// [`serve`], calling `progress` with what was sent so far after each chunk,
+/// for an uploader to show how far it is. The fetching side asks only for
+/// the chunks it lacks, so the chunks served may stop short of the
+/// manifest's.
+pub async fn serve_with_progress(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    store: &ChunkStore,
+    manifest: &Manifest,
+    idle: Duration,
+    mut progress: impl FnMut(Served),
+) -> Result<Served, BulkError> {
     let listed: HashSet<ChunkId> = manifest.chunks().iter().map(|entry| entry.id).collect();
     let manifest_bytes = manifest.to_bytes();
     let mut served = Served::default();
@@ -205,6 +220,7 @@ pub async fn serve(
                         write_message(send, &response, BULK_RESPONSE_MAX_FRAME),
                     )
                     .await??;
+                    progress(served);
                 }
             }
         }
