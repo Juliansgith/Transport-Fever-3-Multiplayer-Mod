@@ -352,6 +352,8 @@ impl LauncherArgs {
                 .name
                 .clone()
                 .or(remembered.name)
+                // Unchosen, the player is called what Steam calls them.
+                .or_else(crate::steam::persona_name)
                 .unwrap_or_else(|| "player".to_owned()),
             content: split.manifest,
             mods: split.lists,
