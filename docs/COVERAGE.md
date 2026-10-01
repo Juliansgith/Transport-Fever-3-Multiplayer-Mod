@@ -33,6 +33,7 @@ Open gaps, by risk (each is worked through under "Gaps" below):
    *Measured* by batch 3; refusing them needs an in-game probe first.
 3. **Unknown, by design:** the console's Lua state.
 4. Carry: vehicle rename and colour, station and town rename (batch 4).
+   *Done* (`Rename`, `VehicleChange::Recolor`, schema 17).
 5. Carry: line waypoints, rail and ship and aircraft (batch 5).
 6. Carry: notification dismiss, keep and ignore (batch 6).
 7. Carry: warehouse stock cargo and discarding cargo (batch 7).
@@ -109,8 +110,8 @@ unless named otherwise.
 | `makeLineCreateCmd` | line manager | carried: `CreateLine`; a line through waypoints refused (gap 5) | `a_line_travels_by_its_stations_ids_and_is_made_again_the_same`, `a_new_lines_colour_comes_back_on_the_games_palette_step` |
 | `makeLineUpdateCmd` | line manager, line window, cargo filter window | carried: `EditLine` `Update` (stops, terminals, alternatives, load mode, waiting times, loading rules, modes, custom filters, priority); waypoints refused (gap 5) | `a_stops_loading_flags_reach_the_game_in_order_however_it_copied_them` |
 | `makeLineDestroyCmd` | line manager | carried: `EditLine` `Delete` | registry tests |
-| `makeEntitySetNameCmd` | entity windows' titles (`view_manager.tl`: any entity with a window), line manager (lines, vehicles, auto-rename schemes), company window | carried for lines (`EditLine` `Rename`) and the room's companies (`CompanyOp` `Rename`); **refused** for vehicles, stations, towns and the rest ("renaming this", gap 4) | `the_company_windows_rename_goes_to_the_room_as_the_companys` |
-| `makeEntitySetColorCmd` | line window, line manager, vehicle window, line manager's vehicle list | carried for lines and companies; **refused** for vehicles ("recolouring this", gap 4) | `companies_are_founded_joined_renamed_recoloured_and_dissolved_alike` |
+| `makeEntitySetNameCmd` | entity windows' titles (`view_manager.tl`: any entity with a window), line manager (lines, vehicles, auto-rename schemes), company window | carried: lines (`EditLine` `Rename`), the room's companies (`CompanyOp` `Rename`), vehicles, stations, towns and other constructions (`Rename`); anything else refused ("renaming this") | `the_company_windows_rename_goes_to_the_room_as_the_companys`, `a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_room`, `every_game_renames_and_recolours_what_the_room_names` |
+| `makeEntitySetColorCmd` | line window, line manager, vehicle window, line manager's vehicle list | carried: lines, companies, vehicles (`VehicleOp` `Recolor`); anything else refused ("recolouring this") | `companies_are_founded_joined_renamed_recoloured_and_dissolved_alike`, `a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_room` |
 | `makeWorldBuildProposalCmd` | construction menu's parameters (`construction.tl`), station cargo buttons (`entity_window_util.tl`), bridge and tunnel window, double slip switch window, industry removal (`industry_util.tl`), map editor, debug panel | carried: an edit that replaces one construction (`BuildConstruction` with `replaces`); everything else refused ("building from this window") | `a_construction_edited_in_its_window_goes_to_the_room` |
 | `makeScriptingSendEventCmd` | see "Game-script events" | carried for six events, refused for the rest | see there |
 | `makeGameSetSpeedCmd` | speed row | passed: the step gate reads it as a speed request | `in_the_rooms_game_the_gui_refuses_what_the_room_cannot_carry` |
@@ -195,7 +196,7 @@ the hook reads it.
 | signals, waypoints | lights and crosswalks: with the junction from the street tool; the light and crosswalk tools refused | signals, waypoints (stop tool): carried; bulldozing them: carried where the object has a construction (INFERRED) | buoys: none on build 40408 | none |
 | buying | store at a depot: carried | multiple units and wagons by group: carried | ships: carried; the depot named by the construction that lists it (`capture.depotRef`) where no street reaches it | aircraft: carried, the hangar named as a ship depot is. Every game buys at its construction's first depot: a harbour or airport with several depots needs the depot's index carried (schema; gap 9) |
 | lines | stops, terminals, waiting, loading: carried | the same; track waypoints: **refused** (gap 5) | the same; route waypoints (`Waypoint.pos`): **refused** (gap 5) | the same; route waypoints: **refused** (gap 5) |
-| vehicle actions | sell, replace, to depot, stop, reverse, depart: carried; rename, colour: **refused** (gap 4) | the same | the same | the same |
+| vehicle actions | sell, replace, to depot, stop, reverse, depart, rename, colour: carried | the same | the same | the same |
 
 Auto-replace: build 40408 has no auto-replace in its GUI. Line frequency
 and intervals are the stops' waiting times (`minWaitingTime`,

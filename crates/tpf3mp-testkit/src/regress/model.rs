@@ -608,6 +608,8 @@ impl State {
             // The game's subsidy script decides offers and their money; the
             // model has no subsidies.
             Action::Subsidy(_) => Ok(()),
+            // A name: the model keeps no names.
+            Action::Rename { .. } => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }

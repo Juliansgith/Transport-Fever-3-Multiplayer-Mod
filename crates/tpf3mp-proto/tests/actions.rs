@@ -433,6 +433,14 @@ fn samples() -> Vec<Action> {
             vehicle: VehicleId(2),
             change: VehicleChange::ManualDeparture(true),
         }),
+        Action::VehicleOp(VehicleOp {
+            vehicle: VehicleId(2),
+            change: VehicleChange::Recolor(Tint {
+                r: 1_000_000,
+                g: 500_000,
+                b: 0,
+            }),
+        }),
         Action::ReplaceVehicle(replacement()),
         Action::Prospect(Prospect {
             town: TownId(4),
@@ -453,6 +461,22 @@ fn samples() -> Vec<Action> {
             uid: 7,
             kind: text("::/game_mechanics/subventions/deliver_passengers/deliver_passengers.res"),
         })),
+        Action::Rename {
+            what: tpf3mp_proto::action::Renamed::Vehicle(VehicleId(2)),
+            name: text("Blue Arrow"),
+        },
+        Action::Rename {
+            what: tpf3mp_proto::action::Renamed::Station(StationId(5)),
+            name: text("Central"),
+        },
+        Action::Rename {
+            what: tpf3mp_proto::action::Renamed::Town(TownId(1)),
+            name: text("Newtown"),
+        },
+        Action::Rename {
+            what: tpf3mp_proto::action::Renamed::Construction(depot()),
+            name: text("North depot"),
+        },
     ]
 }
 
@@ -593,13 +617,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=18.
+    // Every top-level variant is sampled: postcard tags them 0..=20.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=18).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=20).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();
