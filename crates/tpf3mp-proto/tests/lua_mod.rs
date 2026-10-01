@@ -6792,7 +6792,185 @@ fn a_vehicles_marker_wears_its_companys_colour() {
             classes.contains(&format!("!tpf3mp-company-{i} VehicleItem::Icon")),
             "{classes}"
         );
+        // And for every company's capital, in place of the game's blue.
+        assert!(
+            classes.contains(&format!("!tpf3mp-capital-{i} R::TownHudIcon!capital-city")),
+            "{classes}"
+        );
+        assert!(
+            classes.contains(&format!(
+                "!tpf3mp-capital-{i} TextView!tpf3mp-capital-label"
+            )),
+            "{classes}"
+        );
     }
+}
+
+/// Every company's capital on the map, for every player: with more than
+/// one company, the game's town label crowns each live company's
+/// headquarters town (the town closest to the headquarters its PLAYER
+/// names), the viewer's own in the game's blue (`capital-city`), another
+/// company's in its colour's class, with a line naming whose capital it is;
+/// two companies in one town are both named, a company without a
+/// headquarters crowns nothing. With one company, the game's own label.
+#[test]
+fn every_companys_capital_is_crowned_for_every_player() {
+    let lua = gui();
+    lua.load(
+        r#"
+        -- Companies' PLAYER components: the headquarters each names, and
+        -- each headquarters' closest town.
+        PLAYERS = {
+            [25] = { headquarters = 701 },  -- Company, in 31
+            [901] = { headquarters = 702 }, -- Rival, in 32
+            [902] = { headquarters = 703 }, -- Pals, in 32 too
+            [903] = { headquarters = -1 },  -- Late: none yet
+            [904] = { headquarters = 704 }, -- Odd, in 34, an own colour
+        }
+        CLOSEST = { [701] = 31, [702] = 32, [703] = 32, [704] = 34 }
+        ME = 901
+        ROSTER = nil
+        api = {
+            engine = {
+                getComponent = function(e, kind)
+                    if kind == 7 then return e == 77 and { state = { companies = ROSTER } } or nil end
+                    if kind == 5 then return PLAYERS[e] end
+                end,
+                util = { getPlayer = function() return ME end },
+                system = {
+                    gameScriptSystem = { getEntityForGameScript = function(name)
+                        return name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" and 77 or -1
+                    end },
+                    streetConnectorSystem = { getConstructionClosestTown = function(e)
+                        return CLOSEST[e] or -1
+                    end },
+                },
+            },
+            type = { ComponentType = { PLAYER = 5, GAME_SCRIPT = 7 } },
+        }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        -- The game's isCapital (game_mechanics/towns/town_util.tl): the
+        -- town closest to getPlayer()'s headquarters. The game loads it by
+        -- two names, one table.
+        local town_util = {}
+        function town_util.isCapital(town)
+            local p = api.engine.getComponent(api.engine.util.getPlayer(), 5)
+            if p and p.headquarters and p.headquarters >= 0 then
+                local t = api.engine.system.streetConnectorSystem.getConstructionClosestTown(p.headquarters)
+                if t >= 0 and t == town then return true end
+            end
+            return false
+        end
+        -- The game's town label (gui/main/town_hud_react_util.tl): a crown
+        -- and `capital-city` for what isCapital says.
+        local react = ug_require("::/gui/main/react.lua")
+        react.setMouseTransparent = react.setMouseTransparent or function() end
+        local town_hud = {}
+        town_hud.TownHudIcon = react.RegisterRecipe("TownHudIcon", function(params)
+            return { view = "Town", params = { entity = params.entity,
+                capital = town_util.isCapital(params.entity) } }
+        end)
+        GAME_MODULES = {
+            ["::/gui/main/town_hud_react_util.tl"] = town_hud,
+            ["::/game_mechanics/towns/town_util.tl"] = town_util,
+            ["/game_mechanics/towns/town_util.tl"] = town_util,
+        }
+        local script = "gui/tpf3mp/capitals.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        local exported = data()
+        exported.replace({ ReplaceRecipe = function(original, replacement)
+            assert(original == town_hud.TownHudIcon, "replaces the game's town label")
+            LABEL = replacement
+        end })
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        function companies(list) ROSTER = { list = list, members = {} } CLOCK = CLOCK + 10 end
+        -- A town's label as the HUD gets it: always a layout around the
+        -- game's; "<class> | <game's crown?> | <line under it>".
+        function town(entity)
+            local node = mount(LABEL, { entity = entity }).layout
+            assert(node.layout == "BoxLayout", "a town label's recipe gives a layout")
+            local children = node.params.children
+            local inner = children[1]
+            assert(inner.view == "Town" and inner.params.entity == entity, "around the game's label")
+            local meta = node.params.meta
+            for k in pairs(meta or {}) do assert(k == "class", "a wrapper's meta has a class only") end
+            local line = children[2]
+            assert(#children <= 2 and (line == nil or line.view == "TextView"))
+            return ((meta and meta.class) or "") .. " | " .. (inner.params.capital and "crown" or "-")
+                .. " | " .. (line and line.params.text or "")
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let town = |entity: i64| -> String {
+        lua.load(format!("return town({entity})"))
+            .eval()
+            .unwrap_or_else(|error| panic!("{entity}: {error}\n{}", log(&lua)))
+    };
+    let exec = |code: &str| {
+        lua.load(code)
+            .exec()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+
+    // No roster yet: the game's label, its own capital only.
+    assert_eq!(town(32), " | crown | ");
+    assert_eq!(town(31), " | - | ");
+    // One company (co-op): as in single player.
+    exec("ME = 25 companies({ { id = 0, entity = 25, name = 'Company', color = C.PALETTE[1] } })");
+    assert_eq!(town(31), " | crown | ");
+    assert_eq!(town(32), " | - | ");
+
+    // Five companies; the viewer plays for Rival.
+    exec(
+        "ME = 901 companies({ \
+           { id = 0, entity = 25, name = 'Company', color = C.PALETTE[1] }, \
+           { id = 1, entity = 901, name = 'Rival', color = C.PALETTE[2] }, \
+           { id = 2, entity = 902, name = 'Pals', color = C.PALETTE[3] }, \
+           { id = 3, entity = 903, name = 'Late', color = C.PALETTE[4] }, \
+           { id = 4, entity = 904, name = 'Odd', color = { 0.6, 0.3, 0.8 } } })",
+    );
+    // Another company's capital: crowned, in its colour, named.
+    assert_eq!(town(31), "tpf3mp-capital-1 | crown | Capital of Company");
+    // The viewer's own, shared with Pals: the game's blue, both named.
+    assert_eq!(town(32), " | crown | Capital of Rival and Pals");
+    // A colour of a company's own choosing: the palette's nearest.
+    assert_eq!(town(34), "tpf3mp-capital-5 | crown | Capital of Odd");
+    // No company's capital, and Late without a headquarters: nothing.
+    assert_eq!(town(33), " | - | ");
+    let logged = log(&lua);
+    assert!(
+        logged.contains(
+            "[tpf3mp] capitals: the game's isCapital crowns every company's capital (1 town_util table(s))"
+        ),
+        "{logged}"
+    );
+
+    // Another player, of the first company, sees the same capitals, its
+    // own in blue and Rival's in Rival's colour, named first.
+    exec("ME = 25");
+    assert_eq!(town(31), " | crown | Capital of Company");
+    assert_eq!(
+        town(32),
+        "tpf3mp-capital-2 | crown | Capital of Rival and Pals"
+    );
+
+    // Whose capital is where is read again only every ten seconds: Late's
+    // new headquarters shows once it is read.
+    exec("PLAYERS[903] = { headquarters = 705 } CLOSEST[705] = 33 CLOCK = CLOCK + 5");
+    assert_eq!(town(33), " | - | ");
+    exec("CLOCK = CLOCK + 5");
+    assert_eq!(town(33), "tpf3mp-capital-4 | crown | Capital of Late");
+
+    // Back to one company: the game's own again.
+    exec(
+        "companies({ ROSTER.list[1], \
+           { id = 1, entity = 901, name = 'Rival', color = C.PALETTE[2], gone = true } })",
+    );
+    assert_eq!(town(31), " | crown | ");
+    assert_eq!(town(32), " | - | ");
 }
 
 /// A world for the companies' progression (tpf3mp/progression.lua), over the
