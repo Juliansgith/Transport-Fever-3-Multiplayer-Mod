@@ -1693,6 +1693,27 @@ on `entity_util.isOwnedByPlayer`, which the mod answers). Not solved yet:
 see the investigation of the engine's player in
 [investigation/TF3_LOCAL_PLAYER_2026-10-01.md](../investigation/TF3_LOCAL_PLAYER_2026-10-01.md).
 
+**The probe of the engine's player** (`crates/tpf3mp-hook/src/probe.rs`),
+off unless the game's environment has `TPF3MP_PROBE_PLAYER=1`. Read only:
+it takes field offsets from two optional profile targets (`probe: GUI
+GameState getter`, `probe: engine GameState getter`), checks every pointer
+readable before it reads it, and writes nothing. In `CMenuUI::DoStep`'s
+detour, after the game's frame, for five frames whenever `m_game` changes
+and then every 3 s, `hook.log` says:
+
+```
+probe: reading the engine's player, read only: the GUI's GameState at [[menu+0x6b0]+0x1e0], the engine's at [[game+0x1f0]+0x78+8*i], i at +0x98; 8192 bytes of each scanned every 3 s
+probe: at the menu, no CGame (m_game is 0)
+probe: CGame 0x...: GUI GameState [+0x1e0] 0x...; engine buffers [+0x1f0] 0x...: [0] 0x..., [1] 0x..., i 0; the GUI's is neither buffer
+probe: player 118368 in GUI 0x...: +0x40q +0x1a0d
+probe: player 118368 in engine [0] 0x...: +0x40q
+probe: player 118368 in engine [1] 0x...: none
+```
+
+The player is the save's, as the mod's game script notes it once linked
+(`note("tpf3mp.player")`); until then `probe: the save's player is not known
+yet`. Without the variable: `probe: the engine's player is not probed`.
+
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and
 `getCompaniesValue()` take no company and answer for the engine's local
