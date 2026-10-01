@@ -1346,17 +1346,19 @@ pub mod platform {
             };
             candidates.push(candidate);
         }
-        let changed = CANDIDATES_SAID.with(|said| {
-            let mut said = said.borrow_mut();
-            if said.get(&(engine, vehicle)) == Some(&candidates) {
-                return false;
-            }
-            if said.len() >= Checks::MAX {
-                said.clear();
-            }
-            said.insert((engine, vehicle), candidates.clone());
-            true
-        });
+        // A watched vehicle's every choice is said; others' when it changed.
+        let changed = super::claims::watched(vehicle)
+            || CANDIDATES_SAID.with(|said| {
+                let mut said = said.borrow_mut();
+                if said.get(&(engine, vehicle)) == Some(&candidates) {
+                    return false;
+                }
+                if said.len() >= Checks::MAX {
+                    said.clear();
+                }
+                said.insert((engine, vehicle), candidates.clone());
+                true
+            });
         if changed {
             log::line(&candidates_line(step, engine, vehicle, &candidates));
         }
@@ -1393,11 +1395,12 @@ pub mod platform {
                 .as_deref()
                 .map(|entries| entries.iter().map(super::road::key).collect())
                 .unwrap_or_default();
-            let say = CHECKS.with(|checks| {
-                checks
-                    .borrow_mut()
-                    .note(engine, vehicle, edge_key, occupant, on_edge)
-            });
+            let say = super::claims::watched(vehicle)
+                || CHECKS.with(|checks| {
+                    checks
+                        .borrow_mut()
+                        .note(engine, vehicle, edge_key, occupant, on_edge)
+                });
             if say {
                 log::line(&check_line(
                     step,

@@ -3097,7 +3097,12 @@ second, from each ship and aircraft `Update2`'s loop head
 `ecs::AircraftMoveSystem::Update2/node head` `0xa83ca7`), when the order of
 its node list changes: two games whose lines differ walk their ships or
 aircraft in different orders. The third, every update, a watched
-entity's movement component bit for bit.
+entity's movement component bit for bit. For an entity `TPF3MP_HOOK_WATCH_ENTITIES`
+lists, the `candidates` and `checks` lines are said at every call, not
+only on a change: the change filter is per engine, so a call that asks
+for the same candidates as an earlier call on that engine was silent,
+and round D's logs cannot tell whether james's and bob's games asked at
+step 3201.
 
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
