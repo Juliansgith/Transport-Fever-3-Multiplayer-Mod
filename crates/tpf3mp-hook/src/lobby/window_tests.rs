@@ -1004,6 +1004,13 @@ fn the_players_show_as_cards_of_their_banners_or_their_default() {
             .unwrap()
             .contains("Not ready")
     );
+    // One banner to a row, a single column.
+    let most: u32 = lua.load("return most_cards_in_a_row()").eval().unwrap();
+    assert_eq!(most, 1, "one player to a row");
+    assert!(
+        has_button(&lua, "Remove Bob from the room"),
+        "Remove at the row's end"
+    );
 }
 
 #[test]

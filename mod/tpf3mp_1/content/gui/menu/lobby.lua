@@ -599,8 +599,9 @@ function lobby.bannerPicture(id)
 	return BANNER_PATH[id] or BANNERS[1][2]
 end
 
--- A room member's size as a card, two to a row of the players' column.
-local MEMBER_WIDTH, MEMBER_HEIGHT = 228, 128
+-- A room member as a banner: a wide, short strip, one to a row of the
+-- players' column, with room at its right end for the owner's Remove.
+local MEMBER_WIDTH, MEMBER_HEIGHT = 400, 80
 
 -- A picture card in the main menu's style: title and a line under it, a
 -- word on the right; `onClick` nil for a card that only shows.
@@ -1364,23 +1365,15 @@ function lobby.content(onClose, focus)
 	local me = you(room)
 	local playing = room.phase == "playing"
 	local confirm = confirmS:old()
-	-- The players as cards of their banners, two to a row; for the owner,
-	-- a Remove under each other player's, asked first.
+	-- The players as banners, one to a row; for the owner, Remove at the
+	-- right end of each other player's, asked first.
 	local memberRows = {}
-	local cells = {}
-	local function flush()
-		if #cells > 0 then
-			memberRows[#memberRows + 1] = row(cells)
-			memberRows[#memberRows + 1] = gap(10)
-			cells = {}
-		end
-	end
 	for _i, member in ipairs(room.members) do
-		local parts = { lobby.memberCard(member, playing) }
+		local cells = { lobby.memberCard(member, playing) }
 		if room.you_own and not member.you then
-			parts[#parts + 1] = gap(4)
+			cells[#cells + 1] = gap(8)
 			if confirm and confirm.kind == "kick" and confirm.id == member.id then
-				parts[#parts + 1] = row({
+				cells[#cells + 1] = column({
 					button(_("Remove"), function()
 						send({ action = "kick", player = member.id }, string.format(_("Removing %s..."), member.name))
 					end, "primary", canAct),
@@ -1388,18 +1381,14 @@ function lobby.content(onClose, focus)
 					button(_("Keep"), function() confirmS:set(nil) end),
 				})
 			else
-				parts[#parts + 1] = row({
-					button_react_util.makeIconButton(nil, ICON.kick, function()
-						confirmS:set({ kind = "kick", id = member.id, name = member.name })
-					end, string.format(_("Remove %s from the room"), member.name)),
-				})
+				cells[#cells + 1] = button_react_util.makeIconButton(nil, ICON.kick, function()
+					confirmS:set({ kind = "kick", id = member.id, name = member.name })
+				end, string.format(_("Remove %s from the room"), member.name))
 			end
 		end
-		if #cells > 0 then cells[#cells + 1] = gap(12) end
-		cells[#cells + 1] = column(parts)
-		if #cells >= 3 then flush() end
+		memberRows[#memberRows + 1] = row(cells)
+		memberRows[#memberRows + 1] = gap(8)
 	end
-	flush()
 
 	local roomHeader = column({
 		row({
