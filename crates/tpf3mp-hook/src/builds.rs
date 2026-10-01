@@ -169,7 +169,20 @@ unsafe extern "C" fn add_detour(
         // its payload.
         let payload = unsafe { (command as *const usize).add(COMMAND_PAYLOAD).read() };
         // SAFETY: a command's payload, the size the dispatcher reads.
-        if unsafe { player_build(payload as *const u8) } {
+        let build = unsafe { player_build(payload as *const u8) };
+        // Every kind queued outside the room's replays, by where it came
+        // from, once each (docs/COVERAGE.md, U2).
+        if payload != 0 && !REPLAYING.load(Ordering::Acquire) {
+            // SAFETY: as above.
+            let kind = unsafe {
+                (payload as *const u8)
+                    .add(PAYLOAD_INDEX)
+                    .cast::<i8>()
+                    .read_unaligned()
+            };
+            crate::cmdkinds::note(kind, build, return_address);
+        }
+        if build {
             let click = CLICKS.fetch_add(1, Ordering::AcqRel);
             if crate::modules::is_module_editor(return_address) {
                 // Read before the game takes it: the command is the

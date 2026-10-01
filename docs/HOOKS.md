@@ -2009,6 +2009,17 @@ traffic light and crosswalk tools stay refused until their builds are
 captured. Where the profile lacks the
 two targets, `clicks()` is nil and every tool stays refused.
 
+The gate stops builds only. To find any other command native code queues
+without Lua, which neither it nor the GUI's guard would stop
+([COVERAGE.md](COVERAGE.md), U2), the add's detour notes every command
+kind queued in the room's game outside the room's replays, by where its
+`Add` call returns to (`crates/tpf3mp-hook/src/cmdkinds.rs`), and logs each
+pair once, at most 128: `command kind 52 queued from +0x543b2a in the
+room's game: a player's build, stopped at its apply`, or `... not stopped by
+the build gate; the GUI's guard sees it only if Lua sent it`. The site
+Lua's `sendCommand` adds from is then the one most kinds share; a kind from
+any other site is a path to refuse. Measurement only, so far.
+
 Seen on build 40408, through the deployed server with two games on one PC:
 a maintenance building placed with the construction tool in the guest's
 game was stopped there, handed to the room, and built in both games in the

@@ -75,6 +75,9 @@ past them is "unknown".
      `WorldBuildProposal` that native code queues without Lua is not
      stopped. None is known on build 40408 (the GUI is Lua; every tool
      above builds through a proposal), but none is ruled out either.
+     *Measured:* the hook logs every kind queued in the room's game, once
+     per kind and call site (`cmdkinds.rs`); refusing what is neither a
+     build nor Lua's waits on a playtest's log.
 3. **Game scripts.** The game's own scripts and shared mods' run in every
    game alike. A personal mod's game script goes through
    `tpf3mp/modguard.lua` (carried, dropped or refused).
