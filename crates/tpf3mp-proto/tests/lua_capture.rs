@@ -113,6 +113,7 @@ fn link(from: u16, to: u16, t0: Tangent, t1: Tangent, structure: Structure) -> L
         locked: false,
         owned: false,
         lanes: BoundedVec::default(),
+        precedence: None,
     }
 }
 

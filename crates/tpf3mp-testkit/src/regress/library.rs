@@ -101,6 +101,7 @@ pub fn polyline(vertices: Vec<Vertex>, structure: &Structure) -> Polyline {
                 locked: false,
                 owned: false,
                 lanes: BoundedVec::default(),
+                precedence: None,
             }
         })
         .collect();

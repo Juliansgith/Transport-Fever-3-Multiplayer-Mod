@@ -281,6 +281,10 @@ function capture.connection(proposal)
 	if not ok then return nil, tostring(part) end
 	if part == nil then return false end
 	local removes = #part.removed > 0 or #part.removedNodes > 0
+	-- A junction's configurations name the construction's own entrance,
+	-- which every game makes itself (and snaps by refreshing it): not
+	-- carried with a construction yet.
+	part.nodeConfigs = nil
 	joinedOnly(part)
 	if #part.edges == 0 then
 		if removes then return nil, "a construction that removes streets and builds none" end

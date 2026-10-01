@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 13;
+pub const ACTION_SCHEMA_VERSION: u32 = 14;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -65,6 +65,18 @@ pub const MAX_CARGOS: usize = 64;
 pub const MAX_ALTERNATIVES: usize = 32;
 /// Most transport modes a line lists.
 pub const MAX_MODES: usize = 32;
+/// Most node configurations one road or track build adds: its junctions,
+/// and the junctions at the ends of the edges it rebuilds.
+pub const MAX_NODE_CONFIGS: usize = 64;
+/// Most lane connections one junction has (four streets of four lanes each
+/// way, every lane to every lane, is 256).
+pub const MAX_LANE_CONNECTIONS: usize = 512;
+/// Most crosswalks one junction has.
+pub const MAX_CROSSWALKS: usize = 16;
+/// Most traffic light phases one junction has.
+pub const MAX_LIGHT_PHASES: usize = 32;
+/// Most indices one traffic light phase locks.
+pub const MAX_LOCKED_LANES: usize = 512;
 /// Most industry types one prospection may find. Build 40408's economy has
 /// at most a handful per cargo.
 pub const MAX_INDUSTRY_TYPES: usize = 32;
@@ -281,6 +293,70 @@ pub struct Link {
     /// for its template's own.
     #[serde(default)]
     pub lanes: BoundedVec<Lane, MAX_LANES>,
+    /// A street's precedence at each end, as the tool set it
+    /// (`BaseEdgeStreet.precedenceNode0`, `precedenceNode1`, the game's
+    /// `PrecedencePreference` values); none for a track, or where the tool
+    /// set none.
+    #[serde(default)]
+    pub precedence: Option<Precedence>,
+}
+
+/// A street's precedence at its two ends, the game's own values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Precedence {
+    pub node0: i32,
+    pub node1: i32,
+}
+
+/// An edge a node configuration names: a link of its polyline, by index, or
+/// an existing edge the build keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfigEdge {
+    Link(u16),
+    Existing(EdgeRef),
+}
+
+/// A turn at a junction, from a lane of one edge to a lane of another, as
+/// TF3's `LaneConnection` has it (lanes zero-based, from the left looking
+/// from the node).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneConnection {
+    pub edge0: ConfigEdge,
+    pub lane0: i32,
+    pub edge1: ConfigEdge,
+    pub lane1: i32,
+    pub with_road: bool,
+    pub with_tram: bool,
+}
+
+/// One phase of a junction's traffic lights (`TrafficLightState`): the
+/// indices it locks, its duration and least duration in milliseconds, and
+/// whether it may be skipped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LightPhase {
+    pub locked: BoundedVec<i32, MAX_LOCKED_LANES>,
+    pub duration: i32,
+    pub min_duration: i32,
+    pub can_skip: bool,
+}
+
+/// A junction's own configuration as the street tool proposed it
+/// (`BaseNodeConfig`, a proposal's `nodeConfigsToAdd`): TF3 makes none of
+/// its own for a scripted build, so without it a junction has no turns, no
+/// lights and no crosswalks. Its node is a vertex of the polyline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeConfig {
+    pub node: u16,
+    pub lane_connections: BoundedVec<LaneConnection, MAX_LANE_CONNECTIONS>,
+    pub crosswalks: BoundedVec<ConfigEdge, MAX_CROSSWALKS>,
+    /// The game's `TrafficLightPreference` value.
+    pub light_preference: i32,
+    /// The traffic lights' type (`trafficLightType`) and phases.
+    pub light_type: i32,
+    pub phases: BoundedVec<LightPhase, MAX_LIGHT_PHASES>,
+    pub double_slip_switch: bool,
+    pub user_modified_lanes: bool,
+    pub user_modified_lights: bool,
 }
 
 /// The geometry of one road or track build, as the tool proposed it: new
@@ -302,6 +378,8 @@ pub struct Polyline {
     /// Existing nodes removed: TF3's tools move a junction that was near the
     /// new one onto it.
     pub removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
+    /// The junctions' configurations the tool added (schema 14).
+    pub node_configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
 }
 
 #[derive(Deserialize)]
@@ -310,6 +388,8 @@ struct PolylineFields {
     links: BoundedVec<Link, MAX_LINKS>,
     removals: BoundedVec<EdgeRef, MAX_EDGES>,
     removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
+    #[serde(default)]
+    node_configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -320,6 +400,8 @@ pub enum PolylineError {
     NoSuchVertex(usize),
     #[error("link {0} joins a vertex to itself")]
     Loop(usize),
+    #[error("node configuration {0} names a vertex or link the polyline does not have")]
+    NoSuchConfigTarget(usize),
 }
 
 impl Polyline {
@@ -346,7 +428,33 @@ impl Polyline {
             links,
             removals,
             removed_nodes: BoundedVec::empty(),
+            node_configs: BoundedVec::empty(),
         })
+    }
+
+    /// This polyline, with these junction configurations; each must name
+    /// its own vertices and links.
+    pub fn with_node_configs(
+        mut self,
+        configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
+    ) -> Result<Self, PolylineError> {
+        let links = self.links.len();
+        let edge_ok = |e: &ConfigEdge| match e {
+            ConfigEdge::Link(i) => usize::from(*i) < links,
+            ConfigEdge::Existing(_) => true,
+        };
+        for (index, c) in configs.iter().enumerate() {
+            let ok = usize::from(c.node) < self.vertices.len()
+                && c.lane_connections
+                    .iter()
+                    .all(|l| edge_ok(&l.edge0) && edge_ok(&l.edge1))
+                && c.crosswalks.iter().all(edge_ok);
+            if !ok {
+                return Err(PolylineError::NoSuchConfigTarget(index));
+            }
+        }
+        self.node_configs = configs;
+        Ok(self)
     }
 
     /// This polyline, removing these existing nodes too.
@@ -361,8 +469,9 @@ impl TryFrom<PolylineFields> for Polyline {
     type Error = PolylineError;
 
     fn try_from(fields: PolylineFields) -> Result<Self, PolylineError> {
-        Ok(Self::new(fields.vertices, fields.links, fields.removals)?
-            .with_removed_nodes(fields.removed_nodes))
+        Self::new(fields.vertices, fields.links, fields.removals)?
+            .with_removed_nodes(fields.removed_nodes)
+            .with_node_configs(fields.node_configs)
     }
 }
 
@@ -1032,6 +1141,7 @@ mod tests {
             locked: false,
             owned: false,
             lanes: BoundedVec::default(),
+            precedence: None,
         }
     }
 
@@ -1077,12 +1187,14 @@ mod tests {
             links: BoundedVec<Link, MAX_LINKS>,
             removals: BoundedVec<EdgeRef, MAX_EDGES>,
             removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
+            node_configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
         }
         let raw = Raw {
             vertices: vertices(1),
             links: BoundedVec::new(vec![link(0, 1)]).unwrap(),
             removals: BoundedVec::empty(),
             removed_nodes: BoundedVec::empty(),
+            node_configs: BoundedVec::empty(),
         };
         let bytes = postcard::to_stdvec(&raw).unwrap();
         assert!(postcard::from_bytes::<Polyline>(&bytes).is_err());
@@ -1119,7 +1231,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                13, // schema version
+                14, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1162,7 +1274,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                13, // schema version
+                14, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1172,8 +1284,10 @@ mod tests {
                 0, 1, 2, 0, 0, 2, 0, 0, 0, // 0 -> 1, tangents, Structure::Ground
                 0, // the build's own kind
                 0, 0, 0, 0, // no decorations, not locked, not owned, no lanes of its own
+                0, // no precedence
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
+                0, // no junction configurations
             ]
         );
         // Appended with Prospect under schema version 7: the variants
@@ -1196,7 +1310,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                13, // schema version
+                14, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1214,7 +1328,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                13, // schema version
+                14, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1229,7 +1343,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                13, // schema version
+                14, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1240,7 +1354,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                13, // schema version
+                14, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1252,7 +1366,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                13, // schema version
+                14, // schema version
                 18, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1289,7 +1403,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [13, 11]);
+            assert_eq!(payload.as_bytes()[..2], [ACTION_SCHEMA_VERSION as u8, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         let hold = Action::VehicleOp(VehicleOp {
@@ -1299,7 +1413,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                13, // schema version
+                14, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

@@ -2176,6 +2176,270 @@ fn the_log_says_what_a_junction_the_tool_proposed_carries() {
     );
 }
 
+/// A junction on the street 8-9 of FAKE_NETWORK, as the street tool
+/// proposes it: the street rebuilt through a new node -2 at (50, 0), a new
+/// town street -3 to it from node 7 (the end of street 101), and `{MORE}`
+/// (a fourth arm for a cross). The tool configures the new junction -2 and
+/// node 7, whose street 101 now turns into the new one; and gives the
+/// rebuilt street its precedence.
+const TOOL_JUNCTION: &str = "{ toRemove = {}, toAdd = {}, proposal = { \
+    addedNodes = { { entity = -2, comp = { position = { x = 50, y = 0, z = 0 } } } {NODES} }, \
+    addedSegments = { \
+        { entity = -3, type = 0, comp = { node0 = 7, node1 = -2, type = 0, typeIndex = -1, \
+          tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+          roadTemplate = '::/street/town_small.street_template', roadStyle = '' } }, \
+        { entity = -4, type = 0, streetEdge = { precedenceNode0 = 1, precedenceNode1 = 2 }, \
+          comp = { node0 = 8, node1 = -2, type = 0, typeIndex = -1, \
+          tangent0 = { x = 0, y = 40, z = 0 }, tangent1 = { x = 0, y = 40, z = 0 }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } }, \
+        { entity = -5, type = 0, streetEdge = { precedenceNode0 = 2, precedenceNode1 = 1 }, \
+          comp = { node0 = -2, node1 = 9, type = 0, typeIndex = -1, \
+          tangent0 = { x = 0, y = 40, z = 0 }, tangent1 = { x = 0, y = 40, z = 0 }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } } {SEGMENTS} }, \
+    removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9 } } }, \
+    removedNodes = {}, edgeObjectsToAdd = {}, \
+    nodeConfigsToAdd = { \
+        { entity = -2, comp = { trafficLightPreference = 1, doubleSlipSwitch = false, \
+          userModifiedLaneConnections = false, userModifiedTrafficLightStates = true, \
+          crosswalks = { -3, -4 }, \
+          laneConnections = { \
+            { segment0 = -3, lane0 = 0, segment1 = -4, lane1 = 1, withRoad = true, withTram = false }, \
+            { segment0 = -4, lane0 = 0, segment1 = -5, lane1 = 1, withRoad = true, withTram = false }, \
+            { segment0 = -5, lane0 = 0, segment1 = -3, lane1 = 1, withRoad = true, withTram = true } {TURNS} }, \
+          trafficLightConfig = { trafficLightType = 1, states = { \
+            { lockedLanes = { 0, 1 }, duration = 20, minDuration = 5, canSkip = false }, \
+            { lockedLanes = { 2 }, duration = 15.5, minDuration = 4.25, canSkip = true } } } } }, \
+        { entity = 7, comp = { trafficLightPreference = 2, doubleSlipSwitch = false, \
+          userModifiedLaneConnections = false, userModifiedTrafficLightStates = false, crosswalks = {}, \
+          laneConnections = { \
+            { segment0 = 101, lane0 = 0, segment1 = -3, lane1 = 0, withRoad = true, withTram = false } }, \
+          trafficLightConfig = { trafficLightType = 0, states = {} } } } } } }";
+
+/// A junction's configurations in words that name nodes and edges by where
+/// they are, so the tool's and a replay's compare: `nodeAt(e)` and
+/// `edgeAt(e)` place an entity.
+const CONFIG_WORDS: &str = r#"
+function CONFIG_WORDS(configs, nodeAt, edgeAt)
+    local out = {}
+    for _, c in ipairs(configs) do
+        local comp = c.comp
+        local turns = {}
+        for _, l in ipairs(comp.laneConnections) do
+            turns[#turns + 1] = edgeAt(l.segment0) .. '#' .. l.lane0 .. '->' .. edgeAt(l.segment1) .. '#'
+                .. l.lane1 .. (l.withRoad and 'r' or '') .. (l.withTram and 't' or '')
+        end
+        local walks = {}
+        for _, e in ipairs(comp.crosswalks) do walks[#walks + 1] = edgeAt(e) end
+        local phases = {}
+        for _, s in ipairs(comp.trafficLightConfig.states) do
+            phases[#phases + 1] = '[' .. table.concat(s.lockedLanes, ',') .. string.format(' %g/%g', s.duration,
+                s.minDuration) .. (s.canSkip and ' skip' or '') .. ']'
+        end
+        out[#out + 1] = nodeAt(c.entity) .. ' tl' .. tostring(comp.trafficLightPreference) .. ' type'
+            .. tostring(comp.trafficLightConfig.trafficLightType) .. ' ' .. table.concat(phases)
+            .. ' dss=' .. tostring(comp.doubleSlipSwitch) .. ' um=' .. tostring(comp.userModifiedLaneConnections)
+            .. '/' .. tostring(comp.userModifiedTrafficLightStates)
+            .. ' turns ' .. table.concat(turns, ' ') .. ' walks ' .. table.concat(walks, ' ')
+    end
+    return table.concat(out, ' || ')
+end
+function PLACE(p) return string.format('(%g,%g)', p.x, p.y) end
+function ENDS(a, b) a, b = PLACE(a), PLACE(b) if a > b then a, b = b, a end return a .. '-' .. b end
+-- The tool's proposal, placed: its own new nodes and edges, else the world's.
+function TOOL_WORDS(p)
+    local s = p.proposal
+    local nodes, edges = {}, {}
+    for _, n in ipairs(s.addedNodes) do nodes[n.entity] = n.comp.position end
+    local function nodeAt(e) return PLACE(nodes[e] or NODES[e]) end
+    for _, e in ipairs(s.addedSegments) do edges[e.entity] = e.comp end
+    local function edgeAt(e)
+        local c = edges[e] or EDGES[e]
+        return ENDS(nodes[c.node0] or NODES[c.node0], nodes[c.node1] or NODES[c.node1])
+    end
+    return CONFIG_WORDS(s.nodeConfigsToAdd, nodeAt, edgeAt)
+end
+-- What a replay sent, placed the same way.
+function SENT_WORDS(sent)
+    local s = sent.proposal.streetProposal
+    local nodes, edges = {}, {}
+    for _, n in ipairs(s.nodesToAdd) do nodes[n.entity] = n.comp.position end
+    local function nodeAt(e) return PLACE(nodes[e] or NODES[e]) end
+    for _, e in ipairs(s.edgesToAdd) do edges[e.entity] = e.comp end
+    local function edgeAt(e)
+        local c = edges[e] or EDGES[e]
+        return ENDS(nodes[c.node0] or NODES[c.node0], nodes[c.node1] or NODES[c.node1])
+    end
+    return CONFIG_WORDS(s.nodeConfigsToAdd or {}, nodeAt, edgeAt)
+end
+"#;
+
+/// The tool's proposal for a junction, its action as the hook hands it
+/// (through the schema, both ways), applied in this game.
+fn junction_through_the_room(lua: &Lua, proposal: &str) -> String {
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(CONFIG_WORDS).exec().unwrap();
+    lua.load(format!(
+        "CONFIGS[7] = true \
+         PROPOSAL = {proposal} \
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         local why \
+         CAPTURED, why = capture.street(PROPOSAL) \
+         assert(CAPTURED, why)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let captured: mlua::Value = lua.globals().get("CAPTURED").unwrap();
+    let action = tpf3mp_proto::lua::action_from_lua(&common::tree(&captured))
+        .unwrap_or_else(|error| panic!("the schema refuses it: {error}"));
+    let back = tpf3mp_proto::lua::action_to_lua(&action).unwrap();
+    lua.globals()
+        .set("ACTION", common::value(lua, &back))
+        .unwrap();
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+    lua.load("return TOOL_WORDS(PROPOSAL)").eval().unwrap()
+}
+
+#[test]
+fn a_t_junction_built_through_the_room_is_configured_as_the_tool_proposed() {
+    let (lua, _script) = engine();
+    let tool = junction_through_the_room(
+        &lua,
+        &TOOL_JUNCTION
+            .replace("{NODES}", "")
+            .replace("{SEGMENTS}", "")
+            .replace("{TURNS}", ""),
+    );
+    let (sent, removed, precedence): (String, String, String) = lua
+        .load(
+            "local s = SENT[1].proposal.streetProposal \
+             local p = {} \
+             for _, e in ipairs(s.edgesToAdd) do \
+                 p[#p + 1] = e.streetEdge and (e.streetEdge.precedenceNode0 .. '/' .. e.streetEdge.precedenceNode1) or '-' end \
+             return SENT_WORDS(SENT[1]), table.concat(s.nodeConfigsToRemove, ','), table.concat(p, ' ')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        tool,
+        "(50,0) tl1 type1 [0,1 20/5][2 15.5/4.25 skip] dss=false um=false/true \
+         turns (0,0)-(50,0)#0->(50,-40)-(50,0)#1r (50,-40)-(50,0)#0->(50,0)-(50,40)#1r \
+         (50,0)-(50,40)#0->(0,0)-(50,0)#1rt walks (0,0)-(50,0) (50,-40)-(50,0) \
+         || (0,0) tl2 type0  dss=false um=false/false turns (-60,0)-(0,0)#0->(0,0)-(50,0)#0r walks ",
+        "the tool's, placed"
+    );
+    assert_eq!(
+        sent, tool,
+        "every game configures the junctions as the tool did"
+    );
+    assert_eq!(
+        removed, "8,9,7",
+        "the configurations they replace go first, in the same proposal"
+    );
+    assert_eq!(
+        precedence, "- 1/2 2/1",
+        "the rebuilt street keeps its precedence"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l
+            == "junctions: +cfg-4{tl=1 lc=3 cw=2 phases=2 dss=false um=false/true} \
+                +cfg7{tl=2 lc=1 cw=0 phases=0 dss=false um=false/false}"),
+        "what every game applied, for the log: {logged:?}"
+    );
+}
+
+#[test]
+fn a_cross_junction_built_through_the_room_is_configured_as_the_tool_proposed() {
+    let (lua, _script) = engine();
+    let tool = junction_through_the_room(
+        &lua,
+        &TOOL_JUNCTION
+            .replace(
+                "{NODES}",
+                ", { entity = -7, comp = { position = { x = 90, y = 0, z = 0 } } }",
+            )
+            .replace(
+                "{SEGMENTS}",
+                ", { entity = -6, type = 0, comp = { node0 = -2, node1 = -7, type = 0, typeIndex = -1, \
+                   tangent0 = { x = 40, y = 0, z = 0 }, tangent1 = { x = 40, y = 0, z = 0 }, \
+                   roadTemplate = '::/street/town_small.street_template', roadStyle = '' } }",
+            )
+            .replace(
+                "{TURNS}",
+                ", { segment0 = -3, lane0 = 1, segment1 = -6, lane1 = 0, withRoad = true, withTram = false }, \
+                 { segment0 = -6, lane0 = 1, segment1 = -4, lane1 = 0, withRoad = true, withTram = false }",
+            ),
+    );
+    let sent: String = lua
+        .load("return SENT_WORDS(SENT[1])")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(
+        tool.contains("(0,0)-(50,0)#1->(50,0)-(90,0)#0r (50,0)-(90,0)#1->(50,-40)-(50,0)#0r"),
+        "{tool}"
+    );
+    assert_eq!(
+        sent, tool,
+        "every game configures the cross as the tool did"
+    );
+}
+
+#[test]
+fn a_junction_whose_settings_name_what_the_room_cannot_is_built_nowhere() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let base = TOOL_JUNCTION
+        .replace("{NODES}", "")
+        .replace("{SEGMENTS}", "")
+        .replace("{TURNS}", "");
+    // The tool names an edge the build removes, or one there is not.
+    let refusals: Vec<String> = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local out = {{}} \
+             for _, edge in ipairs({{ 100, 555 }}) do \
+                 local p = {base} \
+                 p.proposal.nodeConfigsToAdd[2].comp.laneConnections[1].segment0 = edge \
+                 local action, why = capture.street(p) \
+                 out[#out + 1] = tostring(action) .. ': ' .. tostring(why) \
+             end \
+             local odd = {base} \
+             odd.proposal.nodeConfigsToAdd[1].comp.trafficLightPreference = 'AUTO' \
+             local action, why = capture.street(odd) \
+             out[#out + 1] = tostring(action) .. ': ' .. tostring(why) \
+             return out"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        refusals,
+        [
+            "nil: a junction's setting names edge 100, which the build does not keep",
+            "nil: a junction's setting names edge 555, which the room cannot name",
+            "nil: a junction's traffic light preference it cannot read: AUTO",
+        ]
+    );
+    // Carried, but this game has no street 101 any more: nothing is built
+    // here, never a junction half configured.
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = capture.street({base}) \
+         EDGES[101] = nil \
+         HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let (sent, ok, why): (usize, bool, String) = lua
+        .load("return #SENT, HOOK.applied[1].ok, HOOK.applied[1].why")
+        .eval()
+        .unwrap();
+    assert_eq!(sent, 0, "nothing sent");
+    assert!(!ok);
+    assert_eq!(why, "junction 2 names an edge this game cannot name");
+}
+
 #[test]
 fn a_rail_station_on_open_ground_leaves_its_own_track_to_the_station() {
     let (lua, _script) = engine();

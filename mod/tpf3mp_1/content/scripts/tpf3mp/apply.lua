@@ -451,6 +451,90 @@ function apply.ownStreets(polyline)
 	return links, skipped
 end
 
+-- The game's object of `kind` (api.type.<kind>.new()), or a table where the
+-- game has no constructor for it.
+local function made(kind)
+	local ok, v = pcall(function() return api.type[kind].new() end)
+	if ok and v ~= nil then return v end
+	return {}
+end
+
+-- A junction's configuration in one word for the log, as tpf3mp/engine.lua
+-- describes the tool's: preference, lane connections, crosswalks, phases,
+-- double slip, user-modified.
+function apply.describeConfig(node, c)
+	return string.format("+cfg%s{tl=%s lc=%d cw=%d phases=%d dss=%s um=%s/%s}", tostring(node),
+		tostring(c.light_preference), #c.lane_connections, #c.crosswalks, #c.phases,
+		tostring(c.double_slip_switch), tostring(c.user_modified_lanes), tostring(c.user_modified_lights))
+end
+
+-- The junctions' configurations of a polyline (tpf3mp_proto action::
+-- NodeConfig) as the game's BaseNodeLaneConnectionAndEntity, each value as
+-- the tool proposed it, every node and edge it names as this game names it:
+-- `names.node(vertex)`, `names.link(index)` and `names.existing(edgeRef)`
+-- give the entity, or nil. One it cannot name fails the whole build, in
+-- every game alike: never a junction half configured. Returns the list and
+-- each in a word for the log.
+function apply.nodeConfigsFor(configs, names)
+	local out, said = {}, {}
+	for k, c in ipairs(configs) do
+		local function edge(ref)
+			local e
+			if type(ref) == "table" and ref.Link ~= nil then
+				e = names.link(ref.Link)
+			elseif type(ref) == "table" and ref.Existing ~= nil then
+				e = names.existing(ref.Existing)
+			end
+			if e == nil then error("junction " .. k .. " names an edge this game cannot name", 0) end
+			return e
+		end
+		local node = names.node(c.node)
+		if node == nil then error("junction " .. k .. " is at a node this game cannot name", 0) end
+		local connections = {}
+		for i, l in ipairs(c.lane_connections) do
+			local lc = made("LaneConnection")
+			lc.segment0, lc.lane0 = edge(l.edge0), l.lane0
+			lc.segment1, lc.lane1 = edge(l.edge1), l.lane1
+			lc.withRoad, lc.withTram = l.with_road == true, l.with_tram == true
+			connections[i] = lc
+		end
+		local crosswalks = {}
+		for i, e in ipairs(c.crosswalks) do crosswalks[i] = edge(e) end
+		local states = {}
+		for i, p in ipairs(c.phases) do
+			local st = made("TrafficLightState")
+			st.lockedLanes = seq(p.locked)
+			st.duration = p.duration
+			st.minDuration = p.min_duration
+			st.canSkip = p.can_skip == true
+			states[i] = st
+		end
+		local entry = made("BaseNodeLaneConnectionAndEntity")
+		entry.entity = node
+		local comp = entry.comp
+		if comp == nil then
+			comp = made("BaseNodeConfig")
+			entry.comp = comp
+		end
+		comp.laneConnections = connections
+		comp.crosswalks = crosswalks
+		comp.trafficLightPreference = c.light_preference
+		local tl = comp.trafficLightConfig
+		if tl == nil then
+			tl = made("TrafficLightConfig")
+			comp.trafficLightConfig = tl
+		end
+		tl.trafficLightType = c.light_type
+		tl.states = states
+		comp.doubleSlipSwitch = c.double_slip_switch == true
+		comp.userModifiedLaneConnections = c.user_modified_lanes == true
+		comp.userModifiedTrafficLightStates = c.user_modified_lights == true
+		out[k] = entry
+		said[k] = apply.describeConfig(node, c)
+	end
+	return out, said
+end
+
 -- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
 -- street proposal. `network`, `templateName` and `style` are the build's
 -- own kind, for the links that name none; nil for a construction's
@@ -461,6 +545,11 @@ end
 function networkInto(proposal, network, templateName, style, polyline, dangling)
 	local links, skipped = polyline.links, {}
 	if dangling then links, skipped = apply.ownStreets(polyline) end
+	-- Each link by its place in the action, which the junctions'
+	-- configurations name it by.
+	local linkIndex = {}
+	for k, link in ipairs(polyline.links) do linkIndex[link] = k - 1 end
+	local configs = polyline.node_configs or {}
 	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
 		removed_nodes = polyline.removed_nodes }
 	local nodesOf = {}
@@ -599,6 +688,15 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 		end
 		s.comp.edgeDecorations = decorations
 		s.comp.roadDevelopmentLocked = link.locked == true
+		-- A street's precedence at its ends, as the tool set it.
+		if link.precedence ~= nil then
+			if s.streetEdge == nil then
+				local ok, street = pcall(function() return api.type.BaseEdgeStreet.new() end)
+				s.streetEdge = ok and street or {}
+			end
+			s.streetEdge.precedenceNode0 = link.precedence.node0
+			s.streetEdge.precedenceNode1 = link.precedence.node1
+		end
 		if link.owned == true then
 			local ok = pcall(function() s.playerOwned.player = company() end)
 			if not ok then
@@ -662,11 +760,48 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 		end
 	end
 
+	-- The junctions' configurations, as the tool proposed them, in the same
+	-- proposal: TF3 makes none of its own for a scripted build. An existing
+	-- node's own goes first, as the tool's would.
+	local configsToAdd, said = apply.nodeConfigsFor(configs, {
+		link = function(i)
+			for k, link in ipairs(polyline.links) do
+				if linkIndex[link] == i then return links[k].entity end
+			end
+			return nil
+		end,
+		node = function(i)
+			if skipped[i + 1] then return nil end
+			local id = ids[i + 1]
+			if id ~= nil and removedNode[id] then return nil end
+			return id
+		end,
+		existing = function(ref)
+			local e = edgeBetween(nodes(ref.network), ref.network, arr(ref.ends.a), arr(ref.ends.b))
+			if e == nil then return nil end
+			for _, gone in ipairs(edgesToRemove) do
+				if gone == e.id then return nil end
+			end
+			return e.id
+		end,
+	})
+	local removing = {}
+	for _, node in ipairs(configsToRemove) do removing[node] = true end
+	for _, c in ipairs(configsToAdd) do
+		local node = c.entity
+		if node >= 0 and not removing[node]
+			and api.engine.getComponent(node, api.type.ComponentType.BASE_NODE_CONFIG) ~= nil then
+			removing[node] = true
+			configsToRemove[#configsToRemove + 1] = node
+		end
+	end
+
 	proposal.streetProposal.nodesToAdd = nodesToAdd
 	proposal.streetProposal.edgesToAdd = edgesToAdd
 	proposal.streetProposal.edgesToRemove = edgesToRemove
 	if #nodesToRemove > 0 then proposal.streetProposal.nodesToRemove = nodesToRemove end
 	if #configsToRemove > 0 then proposal.streetProposal.nodeConfigsToRemove = configsToRemove end
+	if #configsToAdd > 0 then proposal.streetProposal.nodeConfigsToAdd = configsToAdd end
 
 	-- What is sent, in the log before it goes: an exception from the game
 	-- does not always come back through pcall.
@@ -682,6 +817,8 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	shape[#shape + 1] = "-e" .. table.concat(edgesToRemove, ",") .. " -n" .. table.concat(nodesToRemove, ",")
 		.. " -c" .. table.concat(configsToRemove, ",")
 	log("building " .. table.concat(shape, " "))
+	-- The junctions as every game configures them, to compare across games.
+	if #said > 0 then log("junctions: " .. table.concat(said, " ")) end
 end
 
 local function buildNetwork(network, templateName, style, polyline)

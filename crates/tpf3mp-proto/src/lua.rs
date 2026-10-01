@@ -193,6 +193,8 @@ fn field_scale(owner: &str, field: &str) -> Scale {
     match (owner, field) {
         ("Pos" | "Pos2" | "Tangent" | "TerrainCell", _) => Scale::Milli,
         ("Lane", "speed" | "width" | "height" | "offset") => Scale::Milli,
+        // A traffic light phase's seconds, as milliseconds.
+        ("LightPhase", "duration" | "min_duration") => Scale::Milli,
         ("Terraform" | "TerraformFields", "cell") => Scale::Milli,
         ("UnitDir" | "Tint", _)
         | ("Transform", "basis")
@@ -1100,6 +1102,7 @@ mod tests {
                     locked: false,
                     owned: false,
                     lanes: BoundedVec::default(),
+                    precedence: None,
                 }])
                 .unwrap(),
                 BoundedVec::<EdgeRef, 256>::empty(),

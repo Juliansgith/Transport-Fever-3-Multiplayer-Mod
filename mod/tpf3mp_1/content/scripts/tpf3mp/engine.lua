@@ -95,6 +95,21 @@ function engine.world()
 		end
 		return nil
 	end
+	-- An existing edge's network and the positions of its ends, or nil.
+	function world.edgeEnds(id)
+		local c
+		pcall(function() c = api.engine.getComponent(id, api.type.ComponentType.BASE_EDGE) end)
+		if c == nil then return nil end
+		local n0, n1 = get(c, "node0"), get(c, "node1")
+		local a, b = nodePos(n0), nodePos(n1)
+		if a == nil or b == nil then return nil end
+		for _, network in ipairs({ "Street", "Track" }) do
+			for _, e in ipairs(list(nodeEdges(n0, network))) do
+				if e == id then return network, a, b end
+			end
+		end
+		return nil
+	end
 	return world
 end
 
@@ -177,12 +192,88 @@ local function lanesOf(c)
 	return out
 end
 
+-- A whole number the tool set, or raises: a junction's settings are carried
+-- as the tool proposed them or not at all.
+local function whole(v, what)
+	if type(v) ~= "number" or v ~= math.floor(v) then
+		error("a junction's " .. what .. " it cannot read: " .. tostring(v), 0)
+	end
+	return v
+end
+
+local function flag(v, what)
+	if v == nil then return false end
+	if type(v) ~= "boolean" then error("a junction's " .. what .. " it cannot read: " .. tostring(v), 0) end
+	return v
+end
+
+-- A street's precedence at its two ends (BaseEdgeStreet), or nil where the
+-- tool set none.
+local function precedenceOf(seg)
+	local se = get(seg, "streetEdge")
+	if se == nil then return nil end
+	local a, b = get(se, "precedenceNode0"), get(se, "precedenceNode1")
+	if a == nil and b == nil then return nil end
+	return { node0 = whole(a, "precedence"), node1 = whole(b, "precedence") }
+end
+
+-- The node configurations a tool's proposal adds (nodeConfigsToAdd), with
+-- the entities they name as the proposal names them: TF3 makes none of its
+-- own for a scripted build (seen 2026-09-30: a junction built through the
+-- room had no turns, lights or crosswalks), so the build carries the tool's.
+-- Raises on anything it cannot read.
+function engine.nodeConfigs(street)
+	local out = {}
+	for _, nc in ipairs(list(get(street, "nodeConfigsToAdd"))) do
+		local c = get(nc, "comp")
+		if c == nil then error("a junction's configuration with no component", 0) end
+		local connections = {}
+		for _, lc in ipairs(list(get(c, "laneConnections"))) do
+			connections[#connections + 1] = {
+				segment0 = whole(get(lc, "segment0"), "lane connection"), lane0 = whole(get(lc, "lane0"), "lane"),
+				segment1 = whole(get(lc, "segment1"), "lane connection"), lane1 = whole(get(lc, "lane1"), "lane"),
+				with_road = flag(get(lc, "withRoad"), "lane connection"),
+				with_tram = flag(get(lc, "withTram"), "lane connection"),
+			}
+		end
+		local crosswalks = {}
+		for _, e in ipairs(list(get(c, "crosswalks"))) do crosswalks[#crosswalks + 1] = whole(e, "crosswalk") end
+		local tl = get(c, "trafficLightConfig")
+		local phases = {}
+		for _, st in ipairs(list(tl and get(tl, "states"))) do
+			local locked = {}
+			for _, i in ipairs(list(get(st, "lockedLanes"))) do locked[#locked + 1] = whole(i, "light phase") end
+			local duration, least = get(st, "duration"), get(st, "minDuration")
+			if type(duration) ~= "number" or type(least) ~= "number" then
+				error("a junction's light phase it cannot read", 0)
+			end
+			phases[#phases + 1] = { locked = locked, duration = duration, min_duration = least,
+				can_skip = flag(get(st, "canSkip"), "light phase") }
+		end
+		local kind = tl and get(tl, "trafficLightType")
+		out[#out + 1] = {
+			node = whole(get(nc, "entity"), "node"),
+			lane_connections = connections,
+			crosswalks = crosswalks,
+			light_preference = whole(get(c, "trafficLightPreference"), "traffic light preference"),
+			light_type = kind == nil and -1 or whole(kind, "traffic light type"),
+			phases = phases,
+			double_slip_switch = flag(get(c, "doubleSlipSwitch"), "double slip switch"),
+			user_modified_lanes = flag(get(c, "userModifiedLaneConnections"), "lane setting"),
+			user_modified_lights = flag(get(c, "userModifiedTrafficLightStates"), "light setting"),
+		}
+	end
+	return out
+end
+
 local function segment(seg)
 	local c = get(seg, "comp")
 	if c == nil then error("an edge with no component", 0) end
 	local owner = get(seg, "playerOwned")
 	local player = owner and get(owner, "player")
 	local e = {
+		id = get(seg, "entity"),
+		precedence = networkOf(seg) == "Street" and precedenceOf(seg) or nil,
 		node0 = c.node0, node1 = c.node1,
 		network = networkOf(seg),
 		tangent0 = vec3(c.tangent0), tangent1 = vec3(c.tangent1),
@@ -304,13 +395,14 @@ function engine.fromProposal(proposal, network, constructions)
 		if not first and e.network == network then first = e end
 	end
 	for _, seg in ipairs(removed) do
-		capture.removed[#capture.removed + 1] = { node0 = seg.comp.node0, node1 = seg.comp.node1,
+		capture.removed[#capture.removed + 1] = { id = get(seg, "entity"), node0 = seg.comp.node0, node1 = seg.comp.node1,
 			network = networkOf(seg), objects = objectEntities(seg.comp) }
 	end
 	for _, n in ipairs(removedNodes) do
 		capture.removedNodes[#capture.removedNodes + 1] = { id = n.entity, pos = vec3(get(n.comp, "position")) }
 	end
 	engine.keptInPlace(capture)
+	capture.nodeConfigs = engine.nodeConfigs(street)
 
 	-- The build's own kind: its first edge of the tool's network. The
 	-- template names the edge whole on TF3: its lanes, bus lanes and tram

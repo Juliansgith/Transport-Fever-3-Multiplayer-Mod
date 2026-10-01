@@ -432,7 +432,7 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (13; 12 had no subsidies (`Subsidy`), 11 had no signals (`PlaceStop::object`, `one_way`) and no link decorations, lanes, lock or owner (`Link::decorations`, `lanes`, `locked`, `owned`), and its `Terraform` was TPF2's, placed in the world rather than in the terrain's own grid, 10 had no station access per company (`CompanyOp::StationAccess`), 9 had no manual departure (`VehicleChange::ManualDeparture`), 8 had no two-sided stop (`PlaceStop::two_sided`), no notification sound (`NotificationSeen`), no company ranks (`ApplyRank`) and no company head's operations (`CompanyOp::Lock`, `Unlock`, `Dismiss`, `ShareStations`), 7 had no company colour (`CompanyOp::Recolor`), 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
+`ACTION_SCHEMA_VERSION` (14; 13 had no junction configurations or street precedence (`Polyline::node_configs`, `Link::precedence`), 12 had no subsidies (`Subsidy`), 11 had no signals (`PlaceStop::object`, `one_way`) and no link decorations, lanes, lock or owner (`Link::decorations`, `lanes`, `locked`, `owned`), and its `Terraform` was TPF2's, placed in the world rather than in the terrain's own grid, 10 had no station access per company (`CompanyOp::StationAccess`), 9 had no manual departure (`VehicleChange::ManualDeparture`), 8 had no two-sided stop (`PlaceStop::two_sided`), no notification sound (`NotificationSeen`), no company ranks (`ApplyRank`) and no company head's operations (`CompanyOp::Lock`, `Unlock`, `Dismiss`, `ShareStations`), 7 had no company colour (`CompanyOp::Recolor`), 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
 vehicles and lines, 2 no edge kinds or removed nodes, 1 no road style). The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
@@ -565,15 +565,25 @@ from its worker threads): the replay removes the configurations at the ends
 of the edges it removes (`nodeConfigsToRemove`), except at a node it removes,
 which takes its own along and may not be named for both, and the game makes
 new ones. A node's own settings (traffic lights, lane connections set by
-hand) go back to the game's defaults there. The replay carries none of the
-tool's own node configurations (`nodeConfigsToAdd`) or street precedences
-(`streetEdge`); a junction built through the room was seen without what
-single player gives it (2026-09-30), so the log's "handed the player's
-build" line shows them as the tool proposed them: `^a/b` after a new edge
-for its precedence at each end, `+cfg<node>{tl= lc= cw= phases= dss= um=}`
-for a configuration added (traffic light preference, lane connections,
-crosswalks, phases, double slip, user-modified), `-cfg<node>` for one
-removed. Before sending, the replay asks
+hand) are the tool's again: TF3 makes no node configuration of its own for
+a scripted build (seen 2026-09-30: a junction built through the room had
+no turns, no lights and no crosswalks), so a road or track build carries
+the tool's (`nodeConfigsToAdd`: lane connections, crosswalks, traffic light
+preference, type and phases, double slip, the user-modified flags) as
+`Polyline::node_configs`, and each new street's precedence at its ends
+(`streetEdge`) as `Link::precedence`, every value as the tool proposed it.
+A configuration names its node by its vertex and each edge by its link, or
+an edge the build keeps by its ends; one that names an edge the build
+removes, one the room cannot name, or a value it cannot read refuses the
+whole build at the click. Every game adds them in the same proposal as the
+edges, removing the configuration an existing node had first; one that
+names what this game cannot find fails the whole build there, never a
+junction half configured. A construction's streets carry none yet: they
+name the construction's own entrance, which every game makes itself. The
+log's "handed the player's build" line shows the tool's (`^a/b` after a
+new edge for its precedence at each end, `+cfg<node>{tl= lc= cw= phases=
+dss= um=}` for a configuration added, `-cfg<node>` for one removed), and
+each game's `junctions: +cfg<node>{...}` line what it applied. Before sending, the replay asks
 the game's verdict (`makeProposalData`) and refuses a build it calls
 critical, with its reasons.
 The tests `tpf3mp-proto/tests/lua_capture.rs` (a junction rebuilt around a

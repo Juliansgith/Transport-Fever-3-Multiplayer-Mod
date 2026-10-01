@@ -10,13 +10,14 @@ use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
         ACTION_SCHEMA_VERSION, Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
-        ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds,
-        EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData, LineId,
-        LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network,
-        NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle,
-        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef,
-        Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
-        UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
+        ConfigEdge, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration,
+        EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LaneConnection,
+        LightPhase, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp,
+        LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeConfig, NodeRef, Param, ParamValue,
+        PlaceStop, Polyline, Pos, Pos2, Precedence, Prospect, ReplaceVehicle, ReplacedPart,
+        Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef, Tangent,
+        Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir,
+        VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -79,6 +80,7 @@ fn polyline() -> Polyline {
                 locked: false,
                 owned: false,
                 lanes: BoundedVec::default(),
+                precedence: None,
             },
             Link {
                 from: 1,
@@ -106,6 +108,7 @@ fn polyline() -> Polyline {
                 locked: true,
                 owned: true,
                 lanes: BoundedVec::default(),
+                precedence: Some(Precedence { node0: 1, node1: 2 }),
             },
         ]),
         list(vec![EdgeRef {
@@ -118,6 +121,43 @@ fn polyline() -> Polyline {
         network: Network::Street,
         at: pos(-2_500, 6_000, 150),
     }]))
+    .with_node_configs(list(vec![NodeConfig {
+        node: 1,
+        lane_connections: list(vec![
+            LaneConnection {
+                edge0: ConfigEdge::Link(0),
+                lane0: 0,
+                edge1: ConfigEdge::Link(1),
+                lane1: 2,
+                with_road: true,
+                with_tram: false,
+            },
+            LaneConnection {
+                edge0: ConfigEdge::Existing(EdgeRef {
+                    network: Network::Street,
+                    ends: ends(pos(0, 0, 0), pos(1_204_500, -88_250, 31_400)),
+                }),
+                lane0: 1,
+                edge1: ConfigEdge::Link(0),
+                lane1: 0,
+                with_road: true,
+                with_tram: true,
+            },
+        ]),
+        crosswalks: list(vec![ConfigEdge::Link(1)]),
+        light_preference: 1,
+        light_type: 0,
+        phases: list(vec![LightPhase {
+            locked: list(vec![0, 1]),
+            duration: 15_500,
+            min_duration: 4_250,
+            can_skip: true,
+        }]),
+        double_slip_switch: false,
+        user_modified_lanes: false,
+        user_modified_lights: true,
+    }]))
+    .unwrap()
 }
 
 fn depot() -> ConstructionRef {
@@ -624,6 +664,7 @@ fn a_link_to_a_missing_vertex_is_refused() {
         links: Vec<Link>,
         removals: Vec<EdgeRef>,
         removed_nodes: Vec<NodeRef>,
+        node_configs: Vec<NodeConfig>,
     }
     let good = polyline();
     let mut vertices = good.vertices.to_vec();
@@ -644,6 +685,7 @@ fn a_link_to_a_missing_vertex_is_refused() {
         links: good.links.to_vec(),
         removals: Vec::new(),
         removed_nodes: Vec::new(),
+        node_configs: Vec::new(),
     };
     // The schema version, then Action::BuildTrack.
     let bytes = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, 1u32, &track)).unwrap();
