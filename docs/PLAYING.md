@@ -248,7 +248,13 @@ window too.
      joined by invite, either here or through **Join a friend** on the main menu.
    - **Host a room**: a **room name** (your name's room if you leave it
      empty); **Start from this save**, one of your saves, newest first, or
-     **Create a new world...** (offered first); **Players**, 2 to 16; **How you
+     **Create a new world...** (offered first). The save must have TPF3-MP
+     among its mods: a save without it is refused with "This save doesn't
+     have the TPF3-MP mod enabled: load it once, turn TPF3-MP on in its
+     mods, save it, then pick it again", since the room's game cannot run
+     in a world without it. Should such a world reach a game anyway, the
+     launcher does not load it, and both windows say why; **Players**, 2
+     to 16; **How you
      play**, two pictures: **Co-op**, everyone for the room's one company,
      or **Competitive**, each player founding a company of their own in
      the game; **Who can find

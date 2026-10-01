@@ -735,6 +735,7 @@ async fn act(
                 config.start_save.as_ref(),
                 crate::steam::find_save,
             )?;
+            check_start_save(start_world.as_deref())?;
             // The room's shared mods are the start save's, less this
             // player's personal ones: declared before the room exists, so
             // the room compares every guest's with them (docs/MODS.md).
@@ -1050,6 +1051,28 @@ fn start_world(
     find(picked).map(Some)
 }
 
+/// Refuses a save to start a room from that does not run TPF3-MP's mod:
+/// every game would load the room's world without the mod's game script,
+/// and hold it paused for good. A save whose mods do not read is not
+/// refused here: the room's mods then follow no save (`own_start` says so),
+/// and the world is checked again as it arrives (`Bridge`).
+fn check_start_save(file: Option<&Path>) -> Result<(), String> {
+    let Some(file) = file else {
+        return Ok(());
+    };
+    match crate::save_check::runs_own_mod(file) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            warn!(save = %file.display(), "the save picked to start a room from does not run TPF3-MP's mod");
+            Err(crate::save_check::SAVE_WITHOUT_OWN_MOD.to_owned())
+        }
+        Err(why) => {
+            warn!(%why, "cannot tell whether the start save runs TPF3-MP's mod");
+            Ok(())
+        }
+    }
+}
+
 /// A save's name, as the game's save list shows it: its file name without
 /// `.sav`.
 fn save_name(file: &Path) -> Option<String> {
@@ -1095,6 +1118,7 @@ async fn choose_start(
     }
     let listed = shared.view().saves.clone();
     let file = start_world(Some(picked), &listed, None, crate::steam::find_save)?;
+    check_start_save(file.as_deref())?;
     let declare = own_start(shared, file.as_deref());
     let picked = picked.trim();
     if !picked.is_empty() {
@@ -1723,14 +1747,16 @@ async fn session_end(
     }
 }
 
-/// What the player is told when a session ended because its room was lost
-/// for good: gone from the server, or not rejoined in time. `None` for any
-/// other end.
+/// What the player is told, in both windows, when a session ended because
+/// its room was lost for good: gone from the server, not rejoined in time,
+/// or with a world this game cannot play. `None` for any other end.
 fn room_lost(ended: &Result<BridgeEnd, bridge::BridgeFault>) -> Option<String> {
     match ended {
-        Err(fault @ (bridge::BridgeFault::RoomGone | bridge::BridgeFault::Rejoin(_))) => {
-            Some(fault.to_string())
-        }
+        Err(
+            fault @ (bridge::BridgeFault::RoomGone
+            | bridge::BridgeFault::Rejoin(_)
+            | bridge::BridgeFault::WorldWithoutOwnMod),
+        ) => Some(fault.to_string()),
         _ => None,
     }
 }
@@ -1833,6 +1859,39 @@ mod tests {
         assert!(gave_up.contains("could not rejoin") && gave_up.contains("may be gone"));
         assert_eq!(room_lost(&Ok(BridgeEnd::Left)), None);
         assert_eq!(room_lost(&Err(bridge::BridgeFault::GameClosed)), None);
+        assert_eq!(
+            room_lost(&Err(bridge::BridgeFault::WorldWithoutOwnMod)).as_deref(),
+            Some(crate::save_check::WORLD_WITHOUT_OWN_MOD)
+        );
+    }
+
+    /// Seen live: a host started a room from a save without TPF3-MP's mod,
+    /// and both games loaded its world and held it paused, without a word.
+    #[test]
+    fn a_start_save_without_tpf3mps_mod_is_refused_saying_how_to_fix_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let without = dir.path().join("without.sav");
+        crate::save_check::saves::write(
+            &without,
+            &["urbangames_deluxe_upgrade_pack", "urbangames_preorder_pack"],
+        );
+        assert_eq!(
+            check_start_save(Some(&without)),
+            Err(
+                "This save doesn't have the TPF3-MP mod enabled: load it once, turn TPF3-MP on \
+                 in its mods, save it, then pick it again"
+                    .to_owned()
+            )
+        );
+        let with = dir.path().join("with.sav");
+        crate::save_check::saves::write(&with, &["tpf3mp_1", "urbangames_preorder_pack"]);
+        assert_eq!(check_start_save(Some(&with)), Ok(()));
+        // No save (a generated world), or one whose mods do not read: not
+        // refused here.
+        assert_eq!(check_start_save(None), Ok(()));
+        let junk = dir.path().join("junk.sav");
+        std::fs::write(&junk, b"not a save").unwrap();
+        assert_eq!(check_start_save(Some(&junk)), Ok(()));
     }
 
     #[test]
