@@ -399,6 +399,15 @@ protected folder such as Program Files.
   lock against the town's changes, and a road built through a stretch
   with stops keeps them. Remove them, and roads and tracks, with the
   bulldozer.
+- **Town buildings.** Bulldoze a town's building as usual: every player's
+  game removes the same building, a moment after your click; your company
+  pays the demolition, and the town's opinion of it changes as in single
+  player, the same in every game. Bulldozing a town street takes the
+  buildings along it with it, as in single player; if by the time it
+  arrives the game would take another building than the ones you saw go
+  (the town grew meanwhile), nothing is removed in any game and the
+  hook's log says why. Bulldozing trees and other assets is not in
+  multiplayer yet: the bulldozer says so and removes nothing.
 - **Vehicles and lines.** Buy vehicles in a depot's store, make and change
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window

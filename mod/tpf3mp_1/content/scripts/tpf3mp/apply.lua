@@ -701,11 +701,61 @@ function HANDLERS.EditJunctions(edit)
 	return buildProposal(proposal, context)
 end
 
+-- The town buildings the game's removal of streets takes with them
+-- (makeSegmentsRemoveProposal gathers them as the bulldozer did, through
+-- the same street_util::FinishProposal: build 40408, read statically),
+-- checked against those the action names, `named`: every one it removes
+-- must be a town building named there, of its file within 2 m, and every
+-- one named must be removed. So no game removes a building the player did
+-- not see go, and none keeps one the player's did not (PLAN.md: no
+-- demolition beyond what was asked). Raises otherwise; returns the
+-- entities it removes, for the log. A removal whose list does not read
+-- passes only when it names none (as before schema 15).
+local function townBuildingsRemoved(proposal, named)
+	local ok, removed = pcall(function()
+		local l, out = proposal.toRemove, {}
+		for i = 1, #l do out[i] = l[i] end
+		return out
+	end)
+	if not ok or type(removed) ~= "table" then
+		if #named > 0 then error("the game's removal does not say which town buildings it takes", 0) end
+		return ""
+	end
+	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
+	local taken, ids = {}, {}
+	for _, e in ipairs(removed) do
+		local c = api.engine.getComponent(e, CONSTRUCTION)
+		local file = c and tostring(c.fileName) or ("entity " .. tostring(e))
+		if c == nil or #(c.townBuildings or {}) == 0 then
+			error("the game would remove " .. file .. " with the streets", 0)
+		end
+		local t, best, bestD = c.transf, nil, nil
+		for i, ref in ipairs(named) do
+			if not taken[i] and ref.file == c.fileName then
+				local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
+				local d = dx * dx + dy * dy + dz * dz
+				if d <= 4 and (bestD == nil or d < bestD) then best, bestD = i, d end
+			end
+		end
+		if best == nil then error("the game would also remove the town building " .. file .. ", which the player's did not", 0) end
+		taken[best] = true
+		ids[#ids + 1] = tostring(e)
+	end
+	for i, ref in ipairs(named) do
+		if not taken[i] then error("no town building " .. tostring(ref.file) .. " there to remove", 0) end
+	end
+	return table.concat(ids, ",")
+end
+
 -- The bulldozer's removals, as the game makes them itself: a construction
 -- with what is its own (createProposalRemove: its entrance edge and node, as
--- the bulldozer proposed them on build 40408), or edges with the nodes they
--- leave on their own (makeSegmentsRemoveProposal). Paid by the player, as
--- the tool removes.
+-- the bulldozer proposed them on build 40408; a town building alone), or
+-- edges with the nodes they leave on their own and the town buildings along
+-- them (makeSegmentsRemoveProposal; townBuildingsRemoved). Paid by the
+-- player's company, as the tool removes (the context's player), town
+-- buildings' demolition included; the town's reputation follows from the
+-- same proposal, as the player's own build (playerInitiated: the game's
+-- towns script, onPreBuildProposal), in every game at the same step.
 function HANDLERS.Bulldoze(b)
 	local context = api.type.Context.new()
 	context.player = company()
@@ -729,7 +779,9 @@ function HANDLERS.Bulldoze(b)
 			ids[#ids + 1] = e.id
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
-		log("removing " .. network .. " edges " .. table.concat(ids, ","))
+		local gone = townBuildingsRemoved(proposal, b.Edges.buildings or {})
+		log("removing " .. network .. " edges " .. table.concat(ids, ",")
+			.. (gone ~= "" and (" and town buildings " .. gone) or ""))
 	elseif b.EdgeObject then
 		-- A simple proposal: the game's verdict first (buildProposal).
 		return removeEdgeObject(b.EdgeObject, context)

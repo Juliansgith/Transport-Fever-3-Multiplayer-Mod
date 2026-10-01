@@ -38,7 +38,8 @@ The shape tells the tool apart (measured unless noted):
 | stop, signal, waypoint placement | the edge removed and re-added, plus one edge-object record |
 | stop or signal bulldoze | the edge removed and re-added without the object |
 | construction bulldoze | `toRemove` populated, nothing added |
-| road or track bulldoze | removed nodes and segments, nothing added |
+| road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408) |
+| tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file: the group rebuilt without the assets removed (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408) |
 | terraform | no nodes or segments; a `Grid<{height, base}>` of 4 m cells |
 | paint | no nodes or segments; the material index grid and its mask |
 | asset brush | `toAdd` records of an asset-group type whose per-asset data is a vector of `{model path, matrix}` (decompiled); its commit clears `old2new` first |
@@ -489,7 +490,7 @@ appended.
 |---|---|
 | `BuildRoad` | street type (TF3: its road template), road style (TF3), bus lane, tram track (none, plain, electric), a polyline whose links may each name their own kind, decorations, the towns' lock and the company's ownership (the road modifiers) |
 | `BuildTrack` | track type (TF3: its road template), road style (TF3), catenary, a polyline |
-| `Bulldoze` | edges of one network by their ends; or a construction by file and position; or a stop, signal or waypoint by its edge, position and model |
+| `Bulldoze` | edges of one network by their ends, with the town buildings the game removes along them, each by file and position; or a construction (a town building among them) by file and position; or a stop, signal or waypoint by its edge, position and model |
 | `BuildConstruction` | file, transform, every parameter (`seed` included), name, the construction it replaces for a module edit, and its connection: the streets and tracks its tool built with it, as a polyline whose every link names its kind |
 | `BuyVehicle` | the depot by file and position, the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |
 | `SellVehicle` | vehicles |

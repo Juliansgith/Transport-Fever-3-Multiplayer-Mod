@@ -381,19 +381,27 @@ function capture.stop(proposal, link)
 end
 
 -- The bulldozer's removal (tpf3mp_proto action::Bulldoze), read off its
--- proposal by tpf3mp/engine.lua: a construction, edges, or a stop. Returns the action table; false for a
--- proposal of nothing; or nil and why.
+-- proposal by tpf3mp/engine.lua: a construction (a town building among
+-- them), edges with the town buildings the game removes along them, or a
+-- stop. Returns the action table; false for a proposal of nothing; or nil
+-- and why.
 --
 -- A proposal that removes a construction and adds one is an edit: a module
 -- taken off with the module bulldozer, if that reaches game scripts as the
 -- bulldozer's (INFERRED, not seen in the game), is carried as the edit it is
--- (capture.construction), or refused.
+-- (capture.construction), or refused. One that removes something that is no
+-- construction and adds a construction of no file is the asset
+-- bulldozer's (trees and other assets: their group rebuilt without the ones
+-- removed), refused with what it removes (tpf3mp/engine.lua,
+-- notConstruction).
 function capture.bulldoze(proposal)
 	local toRemove = get(proposal, "toRemove")
 	if (length(get(proposal, "toAdd")) or 0) > 0 and (length(toRemove) or 0) > 0 then
 		for i = 1, length(toRemove) do
-			local c = api.engine.getComponent(get(toRemove, i), api.type.ComponentType.CONSTRUCTION)
-			if (length(c and get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
+			local entity = get(toRemove, i)
+			local c = api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
+			if c == nil then return nil, module("engine").notConstruction(entity) end
+			if (length(get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
 		end
 		return nil, "a bulldozer proposal that builds"
 	end

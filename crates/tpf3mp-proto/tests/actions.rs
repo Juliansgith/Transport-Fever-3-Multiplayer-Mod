@@ -213,6 +213,15 @@ fn samples() -> Vec<Action> {
         Action::Bulldoze(Bulldoze::Edges {
             network: Network::Track,
             edges: list(vec![ends(pos(1, 2, 3), pos(4, 5, 6))]),
+            buildings: list(vec![]),
+        }),
+        Action::Bulldoze(Bulldoze::Edges {
+            network: Network::Street,
+            edges: list(vec![ends(pos(1, 2, 3), pos(4, 5, 6))]),
+            buildings: list(vec![ConstructionRef {
+                file: text("buildings/a/c1/4x4_02/a_com_l1_4x4_02.con"),
+                at: pos(2_000, 9_000, 3_000),
+            }]),
         }),
         Action::Bulldoze(Bulldoze::Construction(depot())),
         Action::Bulldoze(Bulldoze::EdgeObject {

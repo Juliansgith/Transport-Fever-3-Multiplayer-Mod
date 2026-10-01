@@ -3827,6 +3827,190 @@ fn the_bulldozer_removes_a_construction_or_edges_in_every_game() {
     assert_eq!(why, "removing an edge with a stop or signal on it");
 }
 
+/// Town buildings over FAKE_NETWORK, as the game has them: constructions
+/// that list their town buildings. 5100 stands by the street 8-9, 5200 by
+/// the street 10-7; 5300 is a depot. The game's own remove proposals: the
+/// street's gathers the town buildings `GATHER` names, as the bulldozer's
+/// did. Asset group 6600 (trees) is no construction.
+const FAKE_TOWN: &str = r#"
+api.type.ComponentType.CONSTRUCTION = 2
+api.type.ComponentType.ASSET_GROUP = 30
+api.type.ComponentType.MODEL_INSTANCE_LIST = 31
+local function at(x, y) return { 1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,0,1 } end
+CONSTRUCTIONS = {
+    [5100] = { fileName = '::/buildings/a/c1/4x4_02/a_com_l1_4x4_02.con', townBuildings = { 5101 },
+               transf = at(60, -10) },
+    [5200] = { fileName = '::/buildings/a/r1/2x2_01/a_res_l1_2x2_01.con', townBuildings = { 5201 },
+               transf = at(-30, 8) },
+    [5300] = { fileName = '::/depots/road/road_depot/road_depot.con', townBuildings = {},
+               transf = at(80, 0) },
+}
+ASSETS = { [6600] = true }
+local get = api.engine.getComponent
+api.engine.getComponent = function(e, kind)
+    if kind == 2 then return CONSTRUCTIONS[e] end
+    if (kind == 30 or kind == 31) and ASSETS[e] then return {} end
+    return get(e, kind)
+end
+api.engine.getEntitiesWithComponent = function(kind)
+    local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end
+    table.sort(l) return l
+end
+GATHER = {}
+api.engine.util.proposal = {
+    createProposalRemove = function(e, context) return { removes = e, player = context.player } end,
+    makeSegmentsRemoveProposal = function(ids)
+        return { removesEdges = table.concat(ids, ','), toRemove = GATHER }
+    end }
+-- The bulldozer's proposal: `toRemove`, and edges removed, each { entity, node0, node1 }.
+function BULLDOZER(toRemove, edges, toAdd)
+    local removed = {}
+    for i, e in ipairs(edges or {}) do
+        removed[i] = { entity = e[1], type = 0, comp = { node0 = e[2], node1 = e[3], objects = {} } }
+    end
+    return { toAdd = toAdd or {}, toRemove = toRemove, proposal = { addedNodes = {}, addedSegments = {},
+        removedNodes = {}, removedSegments = removed, edgeObjectsToAdd = {} } }
+end
+"#;
+
+/// A town building the bulldozer removes goes through the room: alone, by
+/// its file and place, or with the street it stands by, named beside the
+/// street's edges. Every game removes the same one, through the game's own
+/// removal, booked to the acting player's company and as the player's own
+/// build (so the town's reputation follows in every game alike).
+#[test]
+fn a_town_building_bulldozed_goes_in_every_game_charged_to_the_players_company() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code).eval::<String>().unwrap_or_else(|error| {
+            panic!(
+                "{code}: {error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        })
+    };
+    // The bulldozer over the town building 5100 alone; over the street 8-9,
+    // which the game proposes with 5100 beside it.
+    let (alone, street) = (
+        eval(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             ALONE = capture.bulldoze(BULLDOZER({ 5100 })) \
+             local c = ALONE.Bulldoze.Construction \
+             return c.file .. '@' .. c.at.x .. ',' .. c.at.y .. ':' .. tostring(schema_check(ALONE))",
+        ),
+        eval(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             STREET = capture.bulldoze(BULLDOZER({ 5100 }, { { 100, 8, 9 } })) \
+             local e = STREET.Bulldoze.Edges local b = e.buildings[1] \
+             return e.network .. ':' .. #e.edges .. ':' .. #e.buildings .. ':' .. b.file .. '@' \
+                 .. b.at.x .. ',' .. b.at.y .. ':' .. tostring(schema_check(STREET))",
+        ),
+    );
+    assert_eq!(
+        alone,
+        "::/buildings/a/c1/4x4_02/a_com_l1_4x4_02.con@60,-10:true"
+    );
+    assert_eq!(
+        street,
+        "Street:1:1:::/buildings/a/c1/4x4_02/a_com_l1_4x4_02.con@60,-10:true"
+    );
+    // A player of the company Rival bulldozes; every game removes the town
+    // building, and the street with the one beside it, for Rival.
+    lua.load(
+        "A = string.rep('a', 64) \
+         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+         UPDATE({}, STATE, 0.2) \
+         SENT = {} HOOK.applied = {} GATHER = { 5100 } \
+         HOOK.batch = { ALONE, STREET } HOOK.origins = { A, A } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let removed = eval(
+        "local out = {} for _, a in ipairs(HOOK.applied) do \
+             out[#out + 1] = tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+         local s1, s2 = SENT[1], SENT[2] \
+         return table.concat(out, ',') .. '|' .. s1.proposal.removes .. '>' .. s1.proposal.player \
+             .. '>' .. s1.context.player .. '>' .. tostring(s1.playerInitiated) .. '|' \
+             .. s2.proposal.removesEdges .. '>' .. s2.context.player .. '>' .. tostring(s2.playerInitiated)",
+    );
+    assert_eq!(removed, "true,true|5100>901>901>true|100>901>true");
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains("removing Street edges 100 and town buildings 5100"),
+        "{logged}"
+    );
+}
+
+/// What the room cannot name is refused, never removed in one game alone:
+/// at the click, trees and other assets (the asset bulldozer rebuilds their
+/// group without them) and a street that takes a depot with it; in every
+/// game, a street whose removal there would take another town building than
+/// the player's did, or not take the one it did.
+#[test]
+fn a_bulldoze_the_room_cannot_name_is_refused() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    let why = |code: &str| -> String {
+        lua.load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action, why = capture.bulldoze({code}) \
+             return tostring(why)"
+        ))
+        .eval::<String>()
+        .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    // Trees taken out of their group: the group removed, and built again
+    // without them as a construction of no file.
+    assert_eq!(
+        why("BULLDOZER({ 6600 }, nil, { { fileName = '' } })"),
+        "removing trees or other assets (asset group 6600), which the room does not carry yet"
+    );
+    assert_eq!(
+        why("BULLDOZER({ 6601 })"),
+        "removing something that is no construction (entity 6601: no component it knows)"
+    );
+    assert_eq!(
+        why("BULLDOZER({ 5100, 5300 }, { { 100, 8, 9 } })"),
+        "removing more than one construction at once"
+    );
+    assert_eq!(
+        why("BULLDOZER({ 5100, 5200 })"),
+        "removing more than one construction at once"
+    );
+    // The street 8-9 with 5100 beside it, as the player's bulldozer showed
+    // it; in this game the removal would take 5200 too, then 5300, then
+    // nothing: each refused, and nothing sent.
+    lua.load(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         STREET = capture.bulldoze(BULLDOZER({ 5100 }, { { 100, 8, 9 } })) \
+         SENT = {} HOOK.applied = {} \
+         GATHER = { 5100, 5200 } HOOK.batch = { STREET } UPDATE({}, STATE, 0.2) \
+         GATHER = { 5100, 5300 } HOOK.batch = { STREET } UPDATE({}, STATE, 0.2) \
+         GATHER = {} HOOK.batch = { STREET } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let refused: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = tostring(a.ok) .. ':' .. tostring(a.why) end \
+             return table.concat(out, '|') .. '|' .. #SENT",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        refused,
+        "false:the game would also remove the town building \
+         ::/buildings/a/r1/2x2_01/a_res_l1_2x2_01.con, which the player's did not|\
+         false:the game would remove ::/depots/road/road_depot/road_depot.con with the streets|\
+         false:no town building ::/buildings/a/c1/4x4_02/a_com_l1_4x4_02.con there to remove|0"
+    );
+}
+
 /// Stops over FAKE_NETWORK: the game's edge object types, the stop's model
 /// and construction, and the script proposal's edge object record. Edge
 /// 100 runs north from node 8 (50, -40) to node 9 (50, 40).
