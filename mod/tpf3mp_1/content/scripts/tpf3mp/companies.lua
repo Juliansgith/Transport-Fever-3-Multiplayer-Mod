@@ -412,62 +412,69 @@ local function number(v)
 	return v
 end
 
--- For hook.log, read only: one line per live company with a headquarters,
--- saying which construction it is, what its PLAYER names, the town it is
--- closest to, the bonus on it, and the bonus the game's town script applies
--- to that town. Nil and why where this game cannot list the constructions.
+-- For hook.log, read only: one line per live company whose PLAYER names a
+-- headquarters, saying which construction it is and who owns it, the town
+-- it is closest to, the bonus on it, and the bonus the game's town script
+-- applies to that town. Bounded work that never waits: at most
+-- `REPORT_MAX` companies, a few engine reads each, no pass over the world's
+-- constructions, and nothing at all read while no company has one; every
+-- read in a pcall. Nil and why where the roster is not readable.
+companies.REPORT_MAX = 8
 function companies.headquartersReport(roster, api)
+	if type(roster) ~= "table" or type(roster.list) ~= "table" then return nil, "no roster" end
+	local found = {}
+	for _, c in ipairs(companies.live(roster)) do
+		if #found >= companies.REPORT_MAX then break end
+		local hq = nil
+		pcall(function()
+			local p = api.engine.getComponent(c.entity, api.type.ComponentType.PLAYER)
+			hq = p and p.headquarters
+		end)
+		if type(hq) == "number" and hq >= 0 then found[#found + 1] = { c = c, hq = hq } end
+	end
+	local out = {}
+	if #found == 0 then return out end
 	local towns = nil
 	pcall(function()
 		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(companies.TOWN_SCRIPT)
+		if type(entity) ~= "number" or entity < 0 then return end
 		local script = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
 		towns = script and script.state and script.state.townStates
 	end)
-	-- Every headquarters by its owner, in one pass over the constructions.
-	local byOwner, unknown = {}, nil
-	local listed, failed = pcall(api.engine.forEachEntityWithComponent, function(e)
-		local owner = companies.ownerOf(api, e)
-		if owner == nil or byOwner[owner] then return end
-		local con = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
-		local hq = con and companies.isHeadquarters(api, con.fileName)
-		if hq == nil then unknown = con and con.fileName or e
-		elseif hq then byOwner[owner] = e end
-	end, api.type.ComponentType.CONSTRUCTION)
-	if not listed then return nil, "this game cannot list the constructions: " .. tostring(failed) end
-	local out = {}
-	for _, c in ipairs(companies.live(roster)) do
-		local hq = byOwner[c.entity]
-		if hq == nil and unknown ~= nil then
-			return nil, "this game cannot tell whether " .. tostring(unknown) .. " is a headquarters"
+	for _, f in ipairs(found) do
+		local c, hq = f.c, f.hq
+		local owner, town, name, xp, recovery, built = nil, nil, nil, 0, 0, false
+		pcall(function() owner = companies.ownerOf(api, hq) end)
+		pcall(function()
+			local con = api.engine.getComponent(hq, api.type.ComponentType.CONSTRUCTION)
+			if not con then return end
+			built = true
+			local growth = con.persistentMetadata and con.persistentMetadata.town_growth
+			if growth then xp, recovery = number(growth.xpIncrease), number(growth.reputationRecoveryBoost) end
+		end)
+		if built then
+			pcall(function()
+				local t = api.engine.system.streetConnectorSystem.getConstructionClosestTown(hq)
+				if type(t) == "number" and t >= 0 then town = t end
+			end)
 		end
-		if hq then
-			local named, town, name, xp, recovery = nil, nil, nil, 0, 0
-			pcall(function()
-				local p = api.engine.getComponent(c.entity, api.type.ComponentType.PLAYER)
-				named = p and p.headquarters
-			end)
-			pcall(function()
-				town = api.engine.system.streetConnectorSystem.getConstructionClosestTown(hq)
-			end)
-			pcall(function() name = api.engine.util.getEntityName(town) end)
-			pcall(function()
-				local con = api.engine.getComponent(hq, api.type.ComponentType.CONSTRUCTION)
-				local growth = con and con.persistentMetadata and con.persistentMetadata.town_growth
-				if growth then xp, recovery = number(growth.xpIncrease), number(growth.reputationRecoveryBoost) end
-			end)
-			local applied = "the game's town script has no state for that town"
-			for _, t in ipairs(type(towns) == "table" and towns or {}) do
+		if town then pcall(function() name = api.engine.util.getEntityName(town) end) end
+		local applied = "the game's town script has no state for that town"
+		if town and type(towns) == "table" then
+			for k = 1, math.min(#towns, 4096) do
+				local t = towns[k]
 				local te = type(t) == "table" and t.townEntity
 				if type(te) == "table" and te.entity == town and type(t.constructionBoni) == "table" then
 					applied = string.format("the game's town script applies xp +%.2f, reputation recovery +%.2f there",
 						number(t.constructionBoni.xpIncrease), number(t.constructionBoni.reputationRecoveryBoost))
+					break
 				end
 			end
-			out[#out + 1] = string.format("%s #%d: headquarters %s, its PLAYER names %s; closest town %s%s: "
-				.. "on it xp +%.2f, reputation recovery +%.2f; %s",
-				tostring(c.name), c.id, tostring(hq), tostring(named), tostring(town),
-				name and (" (" .. tostring(name) .. ")") or "", xp, recovery, applied)
 		end
+		out[#out + 1] = string.format("%s #%s: headquarters %s (%s), owned by %s; closest town %s%s: "
+			.. "on it xp +%.2f, reputation recovery +%.2f; %s",
+			tostring(c.name), tostring(c.id), tostring(hq), built and "a construction" or "no construction",
+			tostring(owner), tostring(town), name and (" (" .. tostring(name) .. ")") or "", xp, recovery, applied)
 	end
 	return out
 end

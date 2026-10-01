@@ -1701,11 +1701,15 @@ headquarters and its town's bonus, read only, a line again only when it
 changed:
 
 ```
-headquarters: Rival #1: headquarters 701, its PLAYER names 701; closest town 31 (Ashford): on it xp +0.05, reputation recovery +0.00; the game's town script applies xp +0.05, reputation recovery +0.00 there
+headquarters: Rival #1: headquarters 701 (a construction), owned by 901; closest town 31 (Ashford): on it xp +0.05, reputation recovery +0.00; the game's town script applies xp +0.05, reputation recovery +0.00 there
 ```
 
-"its PLAYER names" other than the headquarters, or a town script that
-applies less than what is on it, is a fault to report.
+The headquarters is the one the company's PLAYER names; "owned by" another
+entity than the company's, "no construction", or a town script that
+applies less than what is on it, is a fault to report. The report is
+bounded and never waits: a few engine reads for each of at most eight
+companies, no pass over the world's constructions, nothing more while no
+company has a headquarters, every read in a `pcall`.
 
 Once a world is up, with more than one company, each game logs what each
 company owns as the engine records it, read only: `ownership: <company>
