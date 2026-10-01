@@ -99,9 +99,27 @@ pub fn split(
     let mut shared = Vec::new();
     let mut personal = Vec::new();
     let mut verdicts = Vec::new();
-    for listed in listed {
+    for mut listed in listed {
         let (class, why) = if listed.id.as_str() == tpf3mp_bridge::mods::OWN_MOD {
-            (Class::Shared, "TPF3-MP itself".to_owned())
+            // Its version is the listed one and the fingerprint of the files
+            // the game loads (`crate::own_mod`), where it is installed.
+            match roots::find(installed, listed.id.as_str()) {
+                Some(found) => {
+                    listed.version = Text::lossy(&crate::own_mod::version(
+                        listed.version.as_str(),
+                        &found.path,
+                    ));
+                    (
+                        Class::Shared,
+                        format!("TPF3-MP itself, in {}", found.path.display()),
+                    )
+                }
+                None => (
+                    Class::Shared,
+                    "TPF3-MP itself, not found among the installed mods: its files are not compared"
+                        .to_owned(),
+                ),
+            }
         } else {
             match roots::find(installed, listed.id.as_str()) {
                 None => (
@@ -266,6 +284,8 @@ mod tests {
         let split = split("40408", Some(&list), &found, false).unwrap();
         let declared: Vec<&str> = split.manifest.mods.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(declared, ["timetables", "tpf3mp_1", "not_installed"]);
+        // TPF3-MP is not installed here: its listed version stands.
+        assert_eq!(split.manifest.mods[1].version.as_str(), "1");
         let lists = split.lists.unwrap();
         assert_eq!(
             lists.shared.iter().map(|m| m.as_str()).collect::<Vec<_>>(),

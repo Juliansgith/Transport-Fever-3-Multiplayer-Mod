@@ -8,7 +8,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{FAST, Player, RunningServer, TestClient, content, join, seat};
+use common::{FAST, Player, RunningServer, TestClient, content, join, modded, seat};
 use tpf3mp_agent::{ClientError, ClientEvent, Worlds, transfer};
 use tpf3mp_net::read_message;
 use tpf3mp_proto::{
@@ -92,6 +92,48 @@ async fn a_newcomer_must_run_the_games_content() {
     );
     let room = newcomer(&cat, &invite, Some(1)).await.unwrap();
     assert_eq!(room.members.len(), 2, "a seat at the running game");
+    server.shut_down().await;
+}
+
+/// A newcomer whose copy of TPF3-MP's own mod has the same revision but
+/// other files (its version carries their fingerprint,
+/// `tpf3mp_agent::own_mod`) is refused at a running game, and told so.
+#[tokio::test]
+async fn a_newcomer_with_another_copy_of_tpf3mp_itself_is_refused() {
+    const HOSTS: &str = "tpf3mp_1 1+0123456789abcdef";
+    const OLD: &str = "tpf3mp_1 1+fedcba9876543210";
+    let dir = tempfile::tempdir().unwrap();
+    let server = RunningServer::start(saving(dir.path())).await;
+    let mut ann = server.client("ann").await;
+    let invite = seat(&mut [&mut ann], FAST).await;
+    ann.client
+        .declare_content(modded(&["trains 1", HOSTS]))
+        .await
+        .unwrap();
+    ann.client.start_game().await.unwrap();
+    let mut player = Player::new(ann);
+    player.play_until(|p| p.executed >= 1).await;
+
+    let mut cat = server.client("cat").await;
+    cat.client
+        .declare_content(modded(&["trains 1", OLD]))
+        .await
+        .unwrap();
+    assert_eq!(
+        cat.client.join_room(join(&invite)).await.unwrap_err(),
+        ClientError::Refused(RequestError::ContentMismatch)
+    );
+    assert_eq!(
+        cat.content_diff().await.unwrap().to_string(),
+        "Your TPF3-MP mod differs from the host's (yours fedcba98, host 01234567): reinstall the same version"
+    );
+    cat.client
+        .declare_content(modded(&["trains 1", HOSTS]))
+        .await
+        .unwrap();
+    let room = cat.client.join_room(join(&invite)).await.unwrap();
+    assert_eq!(room.members.len(), 2, "a seat at the running game");
+    drop(player);
     server.shut_down().await;
 }
 

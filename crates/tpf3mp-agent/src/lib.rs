@@ -9,6 +9,7 @@ pub mod diagnostics;
 mod follower;
 pub mod launcher;
 pub mod logs;
+pub mod own_mod;
 pub mod picker;
 mod playout;
 pub mod portraits;
