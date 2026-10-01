@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 9;
+pub const ACTION_SCHEMA_VERSION: u32 = 10;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -641,6 +641,12 @@ pub enum VehicleChange {
     Reverse,
     /// Leaves its terminal now.
     Depart,
+    /// Waits at its stops until told to leave (true), or leaves by the
+    /// line's own rules again (false): the game's manual departure, which a
+    /// timetable mod holds and releases vehicles with (docs/MODS.md).
+    /// Appended under schema version 10: the variants before it keep their
+    /// bytes.
+    ManualDeparture(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -773,7 +779,31 @@ pub enum CompanyOp {
         company: CompanyId,
         color: Tint,
     },
+    /// The company's head gives it the password the intent carries beside
+    /// it (a [`crate::Secret`] whose scope is the company), or a new one:
+    /// joining it then needs the password. Every game keeps only the
+    /// password's seal. Appended under schema version 9, as the variants
+    /// after it.
+    Lock(CompanyId),
+    /// The company's head takes its password away: anyone may join again.
+    Unlock(CompanyId),
+    /// The company's head sends a player out of it: they play for the
+    /// room's first company again.
+    Dismiss {
+        company: CompanyId,
+        /// The player, as the mod names players: 64 lowercase hex digits.
+        player: PlayerHex,
+    },
+    /// The company's head opens its stations to other companies' lines, or
+    /// closes them. A company's stations start open.
+    ShareStations {
+        company: CompanyId,
+        open: bool,
+    },
 }
+
+/// A player as the mod names one: their id's 64 lowercase hex digits.
+pub type PlayerHex = Text<64>;
 
 /// A loan on its terms, as Transport Fever 3's loan script keeps it
 /// (`game_mechanics/finance/loan.d.tl`), field for field. Nothing in it
@@ -857,6 +887,15 @@ pub enum Action {
     /// game, so the sound is not played again.
     NotificationSeen {
         notification: u32,
+    },
+    /// Taking a company rank the company has reached: what TF3's company
+    /// window sends the company growth script (`Companies` `applyLevel`,
+    /// `game_mechanics/company/company.tl`), the rank being `level` there.
+    /// The acting player's company takes it. Appended under schema version
+    /// 9, after `NotificationSeen`: the variants before it keep their bytes.
+    ApplyRank {
+        /// The rank to take, 1 to 15 in the game.
+        level: u8,
     },
 }
 
@@ -1003,8 +1042,8 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                9, // schema version
-                5, // Action::SellVehicle
+                10, // schema version
+                5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
         );
@@ -1046,8 +1085,8 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                9, // schema version
-                1, // Action::BuildTrack
+                10, // schema version
+                1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
                 1, 2, 0, 1, 0, // (-1, 1, 0) zigzag, Resolve::Node(Street)
@@ -1080,7 +1119,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                9,  // schema version
+                10, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1098,7 +1137,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                9,  // schema version
+                10, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1113,12 +1152,63 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                9,  // schema version
+                10, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
                 2, 0, 0, // the colour, zigzag
             ]
+        );
+        let rank = Action::ApplyRank { level: 6 };
+        assert_eq!(
+            rank.to_payload().unwrap().as_bytes(),
+            [
+                10, // schema version
+                17, // Action::ApplyRank, appended under schema version 9
+                6,  // the rank
+            ]
+        );
+        // Appended under schema version 9: the company's head's own.
+        let cases: [(CompanyOp, &[u8]); 4] = [
+            (CompanyOp::Lock(CompanyId(2)), &[5, 2]),
+            (CompanyOp::Unlock(CompanyId(2)), &[6, 2]),
+            (
+                CompanyOp::Dismiss {
+                    company: CompanyId(2),
+                    player: Text::new("ab").unwrap(),
+                },
+                &[7, 2, 2, b'a', b'b'],
+            ),
+            (
+                CompanyOp::ShareStations {
+                    company: CompanyId(2),
+                    open: false,
+                },
+                &[8, 2, 0],
+            ),
+        ];
+        for (op, bytes) in cases {
+            let payload = Action::CompanyOp(op).to_payload().unwrap();
+            assert_eq!(payload.as_bytes()[..2], [10, 11]);
+            assert_eq!(&payload.as_bytes()[2..], bytes);
+        }
+        let hold = Action::VehicleOp(VehicleOp {
+            vehicle: VehicleId(7),
+            change: VehicleChange::ManualDeparture(true),
+        });
+        assert_eq!(
+            hold.to_payload().unwrap().as_bytes(),
+            [
+                10, // schema version
+                13, // Action::VehicleOp
+                7,  // vehicle-7
+                4,  // VehicleChange::ManualDeparture, appended under schema version 10
+                1,  // held
+            ]
+        );
+        assert_eq!(
+            Action::from_payload(&hold.to_payload().unwrap()).unwrap(),
+            hold
         );
     }
 

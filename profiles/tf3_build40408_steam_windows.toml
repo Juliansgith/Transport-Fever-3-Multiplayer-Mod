@@ -323,6 +323,20 @@ offset = 0
 prologue = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56"
 required = false
 
+# DoStep's test of CMenuUI::m_game (rva 0x6a01c0, DoStep + 0x60): `cmp
+# [rsi+0x6b0], r13; je; cmp [rsi+0x7d0], r13; je; mov rdx, r14; mov rcx,
+# [rsi+0x508]; call`, which hands the frame to the world's UI when a world is
+# loaded. m_game is the field CMenuUI::StartGame asserts clear ("!m_game") and
+# sets, and CMenuUI::StopGame clears. Read only: the hook takes the field's
+# offset from the displacement (bytes 3..7) and reads it in the menu's frame to
+# know whether a world is loaded (crates/tpf3mp-hook/src/at_menu.rs).
+[[target]]
+name = "UI::CMenuUI::DoStep/m_game test"
+signature = "4C 39 AE ?? ?? ?? ?? 74 ?? 4C 39 AE ?? ?? ?? ?? 74 ?? 49 8B D6 48 8B 8E"
+offset = 0
+prologue = "4C 39 AE"
+required = false
+
 # Lua 5.2 C API, address only (never detoured). (rva 0x2fbe0c0)
 [[target]]
 name = "lua_pcallk"

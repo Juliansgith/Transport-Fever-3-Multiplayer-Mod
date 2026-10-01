@@ -20,7 +20,7 @@ Flag each of these when a task asks for it:
 |---|---|---|
 | Steam networking, peer-to-peer, a player hosting, a player's game as the truth | D2, D4: the server orders every turn; no player is the host | Rooms on the project's server |
 | Joining a room from the game without the launcher, a Multiplayer entry that works in a game Steam started | D11: the hook runs only in a game the launcher started | *Changed:* the main menu's Multiplayer entry in a game the launcher started, which drives that launcher (D17, amended 2026-09-30) |
-| Typing or choosing a server, following an invite to its server | D12: one server, built in | `--server` for development only |
+| Typing or choosing a server, following an invite to its server | D12: one server, built in. *Proposed:* the D12 amendment (2026-09-30, not decided) makes the project's relay the default and lets players change the server in the launcher's Settings; invites still never switch servers | `--server` for development; with the amendment, the server setting (Settings, **Server**), never an invite |
 | A proxy DLL (`alut.dll`), files in the game's folder, an installer `.bat` that patches the game | D9, D11 | The readable install scripts put in the mod alone; the launcher injects the hook |
 | An action sent to other games before its channel was checked (a "strict" flag off meaning "send it unchecked") | Fail closed (AGENTS.md) | Off means the action is refused in a multiplayer game; see Part 3 |
 | A speed control in the launcher | Part 2, Dev A: the game's own speed buttons, synced by the server | |
@@ -278,6 +278,28 @@ Dev B:
   and no money is created in the switch. *Added (D21):* any split of the
   room's players, loans for every company, colours, and the GUI showing
   the player's own company.
+- [ ] *Added, proposed (D22, not decided; the owner approves):* who may do
+  what to a company: its head (founder, then the longest-standing player)
+  sets its password, sends players out and opens or closes its stations;
+  joining a company with a password needs it, sealed by the server and
+  never held by a game; the game's company window renames the company;
+  the colour chooser offers the game's colours too. Built on
+  `feat/company-play`; to see in a real game with three players.
+- [ ] *Added, proposed (D22, not decided):* a company's lines stop at
+  another company's open stations: the line manager offers them, and
+  every game refuses a line that stops at a closed company's station.
+  To see in a real game: pathing, boarding and fares of such a line, and
+  whether the line manager's ownership test is one shared module (the
+  mod assumes so).
+- [ ] *Proposed (D23), for the owner to approve:* company ranks. With one
+  company the game's own, a rank the company window takes carried to every
+  game (`ApplyRank`); with more, each company's score its share of each
+  town's population by what it carried there, times its rating there over
+  100, at the same game time in every game. Built on `feat/progression`;
+  open: whether the game's thresholds scale with the number of companies,
+  and prospecting's outcome for companies other than the room's first,
+  which the game's company script never runs (it looks at the save's
+  player alone).
 - [ ] Roadside stops and signals, the side included, never rebuilding an
   edge a line runs on.
 - [ ] The room's required mods from Mod Hub IDs; a missing mod is
@@ -285,7 +307,14 @@ Dev B:
 - [ ] *Added, open for the team:* a rule for mods that send commands from
   the GUI (GW Big City and Startup Fortune do, once per save). Every
   player's game sends them: forwarded, the room gets one city per player;
-  dropped, the worlds differ.
+  dropped, the worlds differ. *Proposed (D25, for the owner):* such a mod is
+  personal; the guard carries what the room carries and refuses the rest,
+  in every game alike ([MODS.md](MODS.md)).
+- [ ] *Added (D25, proposed):* personal mods ([MODS.md](MODS.md)). Built:
+  the scan (`tpf3mp-modscan`), the content check on shared mods only, the
+  room's world loaded with the room's mods and the player's own, and the
+  personal mods' guard for game-script mods. Tick once the two-player test
+  in MODS.md passes in the real game, and its measurements are made.
 
 Dev C:
 
@@ -334,6 +363,10 @@ Dev C:
   starts the room's game, through the launcher that started the game
   (docs/LOBBY.md). Built; tick once seen working in the real game
   (investigation/TPF3_INGAME_MENU_2026-09-30.md, section 6).
+  *Proposed* (D24, for the owner): the launcher's window opens with the
+  lobby in the game, starting the game and showing where things stand,
+  with its own lobby one click away; the window picks the save a room
+  starts from.
 - [ ] *Held* (D18, D19, D20): choosing versions and tracks, and a Dev
   track of untested builds. The owner decides after launch, once `dev`
   takes reviewed pull requests only.

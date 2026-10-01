@@ -34,10 +34,12 @@ pub use content::{
     ModChange, ModId, ModRef, ModVersion, Unlisted,
 };
 pub use control::{
-    AUTH_DOMAIN, AUTH_EXPORTER_LABEL, ChatText, ClientMessage, ContentFingerprint, CreateRoom,
-    GameMessage, Hello, IntentRejection, JoinRoom, LaneDigest, MAX_CHECKPOINT_LANES,
-    MAX_ROOM_MEMBERS, MemberView, Reject, RejectReason, Request, RequestError, Response, Resume,
-    RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, ServerMessage, Speed, Welcome,
+    AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
+    ContentFingerprint, CreateRoom, GameMessage, Hello, IntentRejection, JoinRoom, LaneDigest,
+    ListedRoom, MAX_CHECKPOINT_LANES, MAX_ROOM_MEMBERS, MemberView, ROOMS_PER_PAGE, Reject,
+    RejectReason, Request, RequestError, Response, Resume, RoomListing, RoomPage, RoomPhase,
+    RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage, Speed, Welcome,
+    is_banner,
 };
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText,
@@ -51,7 +53,7 @@ pub use snapshot::{
     ChunkHash, MAX_CHUNKS_PER_REQUEST, SavedWorld, SnapshotId, WorldOffer,
 };
 pub use text::{Text, TextError};
-pub use turn::{Event, EventBody, Turn, TurnMessage, TurnStart};
+pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 
 /// Protocol version. Client and server must match exactly. Version 2 lets
 /// hosts choose the rules a room is played by; version 3 declares a game's
@@ -59,8 +61,14 @@ pub use turn::{Event, EventBody, Turn, TurnMessage, TurnStart};
 /// operator's notices; version 5 lets clients send their diagnostics;
 /// version 6 makes invites and session IDs six-character codes; version 7
 /// lets a room's owner hand the room the world it starts from
-/// ([`Request::StartWorld`]).
-pub const PROTOCOL_VERSION: u32 = 7;
+/// ([`Request::StartWorld`]); version 8 carries a password beside the intent
+/// that needs it ([`Secret`]) and orders the intent with the password's seal
+/// ([`Seal`]), for companies' passwords; version 9 lists public rooms
+/// ([`Request::ListRooms`], [`CreateRoom::listing`]); version 10 carries
+/// each member's banner ([`Request::SetBanner`], [`MemberView::banner`]);
+/// version 11 a room's play style ([`CreateRoom::competitive`],
+/// [`RoomView::competitive`]).
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
@@ -265,6 +273,39 @@ mod tests {
         let frame = encode_frame(&progress, CONTROL_MAX_FRAME).unwrap();
         // Game variant, Progress variant, varint 300.
         assert_eq!(frame, [4, 0, 0, 0, 2, 1, 0xac, 0x02]);
+        // Version 8: an intent carries an optional secret after its payload.
+        let intent = ClientMessage::Game(GameMessage::Intent {
+            client_seq: 1,
+            payload: Payload::new(vec![7]).unwrap(),
+            secret: Some(Secret {
+                scope: 3,
+                password: Text::new("pw").unwrap(),
+            }),
+        });
+        let frame = encode_frame(&intent, CONTROL_MAX_FRAME).unwrap();
+        assert_eq!(
+            payload(&frame),
+            [2, 0, 1, 1, 7, 1, 3, 2, b'p', b'w'],
+            "Game, Intent, seq, payload, Some, scope, password"
+        );
+    }
+
+    #[test]
+    fn a_secret_never_shows_its_password() {
+        let secret = Secret {
+            scope: 3,
+            password: Text::new("hunter2").unwrap(),
+        };
+        let shown = format!(
+            "{:?}",
+            GameMessage::Intent {
+                client_seq: 1,
+                payload: Payload::new(vec![7]).unwrap(),
+                secret: Some(secret),
+            }
+        );
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("<hidden>"), "{shown}");
     }
 
     #[test]
@@ -280,6 +321,10 @@ mod tests {
                     player: PlayerId(FixedBytes([3; 32])),
                     client_seq: 7,
                     payload: Payload::new(vec![1, 2, 3]).unwrap(),
+                    seal: Some(Seal {
+                        scope: 2,
+                        tag: FixedBytes([9; 32]),
+                    }),
                 },
             }],
         });

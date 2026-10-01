@@ -410,7 +410,7 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (9; 8 had no two-sided stop (`PlaceStop::two_sided`), no signals (`PlaceStop::object`, `one_way`), no link decorations, lock or owner (`Link::decorations`, `locked`, `owned`) and no notification sound (`NotificationSeen`), 7 had no company colour (`CompanyOp::Recolor`), 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
+`ACTION_SCHEMA_VERSION` (10; 9 had no manual departure (`VehicleChange::ManualDeparture`), no signals (`PlaceStop::object`, `one_way`) and no link decorations, lock, owner or lanes (`Link::decorations`, `locked`, `owned`, `lanes`), 8 had no two-sided stop (`PlaceStop::two_sided`), no notification sound (`NotificationSeen`), no company ranks (`ApplyRank`) and no company head's operations (`CompanyOp::Lock`, `Unlock`, `Dismiss`, `ShareStations`), 7 had no company colour (`CompanyOp::Recolor`), 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
 vehicles and lines, 2 no edge kinds or removed nodes, 1 no road style). The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
@@ -457,6 +457,7 @@ appended.
 | `ReplaceVehicle` | a vehicle and its new consist, as `BuyVehicle` carries one, each part also saying which of the vehicle's own parts it keeps (by index, same model), or none for a part bought new; its groups and multiple units. One vehicle each: a group edit is one action per vehicle, as the game sends it |
 | `NotificationSeen` | a notification's popup played its first sound: every game's Notifications script marks it (its `initialSound` event), so no game plays it again |
 | `Prospect` | prospecting near a town: the town, the cargo, the industry types that may be found in the originator's menu's order, and the company permit it uses. The outcome is not in it: every game's company script draws it from the game time, months later, alike ([investigation](../investigation/TPF3_PROSPECTING_2026-09-30.md)) |
+| `ApplyRank` | a company rank to take, as the company window sends the game's growth script (`applyLevel`); the acting player's company takes it ([HOOKS.md](HOOKS.md), "Company ranks") |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:

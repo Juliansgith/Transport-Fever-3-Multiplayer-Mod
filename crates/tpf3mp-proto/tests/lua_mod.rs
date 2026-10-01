@@ -204,9 +204,11 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.follow",
             "tpf3mp.geom",
             "tpf3mp.guard",
+            "tpf3mp.progression",
             "tpf3mp.registry",
             "tpf3mp.roads",
-            "tpf3mp.ui"
+            "tpf3mp.ui",
+            "tpf3mp.worldload"
         ]
     );
 }
@@ -408,24 +410,27 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {},
          dump = nil, dumped = {} }
 tpf3mp_native = {
-    version = 11,
+    version = 12,
     note = function(key, value)
         HOOK.notes = HOOK.notes or {}
         if value == nil then return HOOK.notes[key] end
         HOOK.notes[key] = value ~= "" and value or nil
     end,
-    command = function(action)
+    command = function(action, password)
         local ok, why = schema_check(action)
         if ok then
             HOOK.commands[#HOOK.commands + 1] = action
+            -- What the hook would send the room beside it, by ticket.
+            HOOK.passwords = HOOK.passwords or {}
+            HOOK.passwords[#HOOK.commands] = password
             return true, #HOOK.commands
         end
         return ok, why
     end,
     take = function()
-        local batch, origins = HOOK.batch, HOOK.origins
-        HOOK.batch, HOOK.origins = nil, nil
-        return batch, origins
+        local batch, origins, seals = HOOK.batch, HOOK.origins, HOOK.seals
+        HOOK.batch, HOOK.origins, HOOK.seals = nil, nil, nil
+        return batch, origins, seals
     end,
     log = function(line) HOOK.logged[#HOOK.logged + 1] = line end,
     poll = function()
@@ -544,7 +549,11 @@ fn with_the_hook_the_gui_links_once() {
     assert_eq!(
         logged,
         "the GUI is linked|the guard is on 4 command factories|\
-         the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)"
+         the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)|\
+         the company window shows the game's own rank only: the game's company progression did \
+         not load: fake_gui.lua:144: ug_require of an unknown path \
+         /game_mechanics/company/company_progression_util.tl|\
+         the line manager offers other companies' open stations (1 entity_util table(s))"
     );
     let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
     assert_eq!(worlds, 1, "the world's GUI started once");
@@ -606,6 +615,84 @@ fn the_gui_loads_the_rooms_world_from_the_save_folder() {
     assert_eq!(logged.last().unwrap(), "loading the room's world");
 }
 
+/// The hook's `mods` as the room's lists make it (crates/tpf3mp-bridge,
+/// `mods::plan`), and the game's save details, mods and ModId, for a load
+/// with the room's mods (docs/MODS.md).
+const FAKE_MODS: &str = r#"
+SHARED = { vehicles_pack = true }
+MINE = { 'my_colours' }
+tpf3mp_native.mods = function(list)
+    if list == nil then return true end
+    local keep, dropped, added = {}, {}, {}
+    for name in string.gmatch(list, '[^\n]+') do
+        if SHARED[name] or name == 'tpf3mp_1' or name == MINE[1] then keep[#keep + 1] = name
+        else dropped[#dropped + 1] = name end
+    end
+    keep[#keep + 1] = MINE[1] added[1] = MINE[1]
+    return table.concat(keep, '\n'), table.concat(dropped, '\n'), table.concat(added, '\n')
+end
+SAVED = { 'vehicles_pack', 'tpf3mp_1', 'owner_minimap' }
+INSTALLED = { vehicles_pack = true, tpf3mp_1 = true, my_colours = true }
+READY = false
+api.type.ModId = { new = function() return {} end }
+api.type.SaveGameDetails = { new = function(info)
+    local copy = {} for k, v in pairs(info) do copy[k] = v end return copy end }
+app.getSavegameInfo = function(id)
+    local mods = {}
+    for i, name in ipairs(SAVED) do mods[i] = { name = name } end
+    return { isCompleted = function() return READY end,
+             get = function() return { errorMsg = '', info = { mods = mods } } end }
+end
+app.getUserProfile = function() return { getModRep = function() return {
+    exists = function(_, m) return INSTALLED[m.name] == true end } end } end
+local load = app.loadGame
+app.loadGame = function(id, isMapEditor, info)
+    load(id, isMapEditor, info)
+    local names = {}
+    for _, m in ipairs(info and info.mods or {}) do names[#names + 1] = m.name end
+    APP.loads[#APP.loads].mods = table.concat(names, ',')
+end
+"#;
+
+#[test]
+fn the_gui_loads_the_rooms_world_with_the_rooms_mods_and_its_own() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_APP).exec().unwrap();
+    lua.load(FAKE_MODS).exec().unwrap();
+    lua.load(
+        "M = mount(loadPlugin()) M.step() HOOK.request = { load = 'tpf3mp_room_77' } M.step()",
+    )
+    .exec()
+    .unwrap();
+    // The game reads the save's details over a few frames.
+    let loads: usize = lua.load("M.step() return #APP.loads").eval().unwrap();
+    assert_eq!(loads, 0);
+    let (name, mods): (String, String) = lua
+        .load("READY = true M.step() return APP.loads[1].id.saveGameName, APP.loads[1].mods")
+        .eval()
+        .unwrap();
+    assert_eq!(name, "tpf3mp_room_77");
+    assert_eq!(
+        mods, "vehicles_pack,tpf3mp_1,my_colours",
+        "the owner's minimap left out, this player's colours added"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert_eq!(logged.last().unwrap(), "loading the room's world");
+
+    // A shared mod this player lacks: not loaded, and said why.
+    lua.load("INSTALLED.vehicles_pack = nil HOOK.request = { load = 'tpf3mp_room_78' } M.step()")
+        .exec()
+        .unwrap();
+    let (loads, logged): (usize, Vec<String>) =
+        lua.load("return #APP.loads, HOOK.logged").eval().unwrap();
+    assert_eq!(loads, 1);
+    assert_eq!(
+        logged.last().unwrap(),
+        "loading the room's world failed: the room's world needs the mod vehicles_pack, which is not installed"
+    );
+}
+
 #[test]
 fn a_hook_of_another_version_is_not_used() {
     let lua = gui();
@@ -614,7 +701,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 11; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 12; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -707,7 +794,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 11, command = print, log = print })
+             why({ version = 12, command = print, log = print })
              return out",
         )
         .eval()
@@ -910,7 +997,7 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 11 }
+             local native = { version = 12 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
                                   'status', 'chat', 'say' }) do
@@ -1211,6 +1298,32 @@ fn the_game_script_hands_the_lanes_over_at_a_checkpoint_only() {
         .collect();
     handed.sort();
     assert_eq!(handed, read_lanes(&lua));
+}
+
+/// A simulation state without debug.getinfo cannot tell a personal mod's
+/// command from the game's own: it notes so for the hook, which loads the
+/// room's worlds without this player's personal mods from then on, and
+/// says why in the log.
+#[test]
+fn a_simulation_state_that_cannot_guard_personal_mods_has_them_left_out() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    lua.load(
+        "tpf3mp_native.personal = function() return 'celmi_timetables' end          debug = nil UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let (noted, logged): (Option<String>, String) = lua
+        .load(
+            "return HOOK.notes and HOOK.notes['personal-mods-unguarded'],              table.concat(HOOK.logged, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(noted.as_deref(), Some("1"));
+    assert!(
+        logged.contains("personal mods are left out of the room's worlds"),
+        "{logged}"
+    );
 }
 
 /// A game of the room with the stand-in world: its registry begun at the
@@ -3522,6 +3635,296 @@ fn without_callbacks_the_registry_alone_finds_what_an_action_made() {
     );
 }
 
+/// A personal timetable mod's game script (docs/MODS.md): its holds and
+/// releases of its own company's vehicles go to the room, once each; what
+/// the game's own scripts and shared mods send runs as before.
+#[test]
+fn a_personal_mods_game_script_hands_its_holds_to_the_room() {
+    let lua = gui();
+    let (sent, handed, wrapped, logged): (String, Vec<String>, u32, Vec<String>) = lua
+        .load(
+            r#"
+            local modguard = ug_require('tpf3mp_1::/scripts/tpf3mp/modguard.lua')
+            SENT, HANDED, LOGGED, CALLERS, NOW, ROOM = {}, {}, {}, {}, 0, true
+            local cmd = {
+                makeVehicleSetManualDepartureCmd = function(v, m) return { kind = 'manual', v = v, m = m } end,
+                makeVehicleTryToDepartCmd = function(v) return { kind = 'depart', v = v } end,
+                makeScriptingSendEventCmd = function() return { kind = 'event' } end,
+                makeVehicleSellCmd = function() return { kind = 'sell' } end,
+                sendCommand = function(c) SENT[#SENT + 1] = c.kind end,
+            }
+            local wrapped = modguard.install(cmd, {
+                inRoom = function() return ROOM end,
+                personal = function(mod) return mod == 'celmi_timetables' end,
+                callers = function() return CALLERS end,
+                command = function(a)
+                    local ok, why = schema_check(a)
+                    if not ok then error(why) end
+                    local c = a.VehicleOp.change
+                    if type(c) == 'table' then c = 'ManualDeparture=' .. tostring(c.ManualDeparture) end
+                    HANDED[#HANDED + 1] = a.VehicleOp.vehicle .. ':' .. c
+                    return true
+                end,
+                context = { vehicle = function(e) if e == 500 then return 7 elseif e == 600 then return 8 end end },
+                mayTouch = function(e)
+                    if e == 600 then return false, 'the vehicle belongs to Blue Line' end
+                    return true
+                end,
+                now = function() return NOW end,
+                log = function(line) LOGGED[#LOGGED + 1] = line end,
+            })
+            -- The game's own script and a shared mod: run here, as before.
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+            CALLERS = { 'auto_signals_1' }
+            cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(500))
+            -- The personal mod: a hold, the same hold again at once, a
+            -- release, and a hold again later.
+            CALLERS = { 'celmi_timetables' }
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, false))
+            NOW = 6000
+            cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+            -- Another company's vehicle; its events; what it may not do.
+            cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(600))
+            cmd.sendCommand(cmd.makeScriptingSendEventCmd('', 'celmiTT_held', 'celmiTT_held', {}))
+            cmd.sendCommand(cmd.makeVehicleSellCmd({ 500 }))
+            -- Through a shared mod's helper, still the personal mod's.
+            CALLERS, NOW = { 'shared_lib', 'celmi_timetables' }, 20000
+            cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(500))
+            -- Outside the room's game, as the game would.
+            ROOM = false
+            cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(500))
+            return table.concat(SENT, ','), HANDED, wrapped, LOGGED
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(sent, "manual,depart,depart");
+    assert_eq!(
+        handed,
+        [
+            "7:ManualDeparture=true",
+            "7:ManualDeparture=false",
+            "7:ManualDeparture=true",
+            "7:Depart"
+        ]
+    );
+    assert_eq!(wrapped, 3, "the factories the fake api.cmd has");
+    let refused: Vec<&String> = logged.iter().filter(|l| !l.starts_with("handed")).collect();
+    assert_eq!(
+        refused,
+        [
+            "refused makeVehicleTryToDepartCmd for another company's: the vehicle belongs to Blue Line, from the personal mod celmi_timetables",
+            "dropped makeScriptingSendEventCmd (heard by this game's scripts only), from the personal mod celmi_timetables",
+            "refused a command no factory made, from the personal mod celmi_timetables",
+        ]
+    );
+    assert_eq!(
+        logged[0],
+        "handed makeVehicleSetManualDepartureCmd from the personal mod celmi_timetables to the room (1 so far)"
+    );
+}
+
+/// The GUI's guard (guard.lua) and the personal mods' guard (modguard.lua)
+/// each keep the sendCommand they found, so on one api.cmd, in either order,
+/// neither swallows the other: outside the room's game a command runs once;
+/// a personal mod's hold goes to the room once and does not run here; a
+/// command the room does not carry is refused once.
+#[test]
+fn the_gui_guard_and_the_personal_mods_guard_chain_in_either_order() {
+    let lua = gui();
+    for guard_first in [true, false] {
+        let (sent, handed, refused): (String, u32, u32) = lua
+            .load(format!(
+                r#"
+                local guard = ug_require('tpf3mp_1::/scripts/tpf3mp/guard.lua')
+                local modguard = ug_require('tpf3mp_1::/scripts/tpf3mp/modguard.lua')
+                -- The GUI state's modules, as its script puts them there.
+                package.loaded['tpf3mp.capture'] = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+                SENT, HANDED, REFUSED, CALLERS, ROOM = {{}}, 0, 0, {{}}, false
+                local cmd = {{
+                    makeVehicleSetManualDepartureCmd = function(v, m) return {{ kind = 'manual', v = v, m = m }} end,
+                    makeVehicleTryToDepartCmd = function(v) return {{ kind = 'depart', v = v }} end,
+                    makeScriptingSendEventCmd = function() return {{ kind = 'event' }} end,
+                    sendCommand = function(c) SENT[#SENT + 1] = c.kind end,
+                }}
+                local context = {{ vehicle = function(e) if e == 500 then return 7 end end }}
+                local function hand(a)
+                    local ok, why = schema_check(a)
+                    if not ok then error(why) end
+                    HANDED = HANDED + 1
+                    return true
+                end
+                local function onGuard()
+                    guard.install(cmd, {{
+                        inRoom = function() return ROOM end,
+                        command = hand,
+                        refused = function() REFUSED = REFUSED + 1 end,
+                        later = function(fn) fn() end,
+                        context = context,
+                        personal = function(mod) return mod == 'celmi_timetables' end,
+                        caller = function() return CALLERS[1] end,
+                    }})
+                end
+                local function onModguard()
+                    modguard.install(cmd, {{
+                        inRoom = function() return ROOM end,
+                        personal = function(mod) return mod == 'celmi_timetables' end,
+                        callers = function() return CALLERS end,
+                        command = hand,
+                        context = context,
+                        now = function() return 0 end,
+                        log = function() end,
+                    }})
+                end
+                if {guard_first} then onGuard() onModguard() else onModguard() onGuard() end
+                -- Outside the room's game: runs here, once.
+                cmd.sendCommand(cmd.makeVehicleTryToDepartCmd(500))
+                ROOM = true
+                -- A personal mod's hold: to the room once, not run here.
+                CALLERS = {{ 'celmi_timetables' }}
+                cmd.sendCommand(cmd.makeVehicleSetManualDepartureCmd(500, true))
+                -- A shared mod's event: the room carries none, refused once.
+                CALLERS = {{ 'auto_signals_1' }}
+                cmd.sendCommand(cmd.makeScriptingSendEventCmd('', 'x', 'y', {{}}))
+                return table.concat(SENT, ','), HANDED, REFUSED
+                "#
+            ))
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            (sent.as_str(), handed, refused),
+            ("depart", 1, 1),
+            "guard first: {guard_first}"
+        );
+    }
+}
+
+/// The GUI's guard names the mod a refused command came from, and lets a
+/// personal mod's event to its own game script through, in this game only.
+#[test]
+fn the_guard_names_the_mod_and_lets_a_personal_mods_events_reach_its_script() {
+    let lua = gui();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (callers, refused, sent): (String, Vec<String>, String) = lua
+        .load(
+            r#"
+            local guard = ug_require('tpf3mp_1::/scripts/tpf3mp/guard.lua')
+            local stack = { { source = '@::/gui/main/engine_react_util.tl' },
+                            { source = 'tpf3mp_1::/scripts/tpf3mp/guard.lua' },
+                            { source = '@celmi_timetables::/timetable/plugins/shared/helpers.script.tl' },
+                            { source = 'gw_big_city_1::/gui/x.script.tl' },
+                            { source = '@celmi_timetables::/timetable/x.tl' } }
+            local callers = table.concat(guard.callers(function(level) return stack[level] end), ',')
+            REFUSED, FROM = {}, 'celmi_timetables'
+            guard.install(api.cmd, {
+                inRoom = function() return true end,
+                refused = function(kind, why, from)
+                    REFUSED[#REFUSED + 1] = tostring(kind) .. ' ' .. tostring(from)
+                end,
+                later = function() end,
+                context = {},
+                personal = function(mod) return mod == 'celmi_timetables' end,
+                shared = function() return { 'tpf3mp_1' } end,
+                caller = function() return FROM end,
+            })
+            api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
+            FROM = 'gw_big_city_1'
+            api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
+            FROM = nil
+            api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
+            -- Made by the mod, sent by the game's own helper (a window's
+            -- commit): still the mod's.
+            FROM = 'celmi_timetables'
+            local made = api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setMinWait', {})
+            FROM = nil
+            api.cmd.sendCommand(made)
+            local sent = {}
+            for _, s in ipairs(SENT) do sent[#sent + 1] = s.command.kind .. ':' .. tostring(s.command.id) end
+            return callers, REFUSED, table.concat(sent, ',')
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(callers, "celmi_timetables,gw_big_city_1");
+    assert_eq!(
+        sent, "event:TimetablesEdit,event:TimetablesEdit",
+        "the personal mod's own events only"
+    );
+    assert_eq!(
+        refused,
+        [
+            "makeScriptingSendEventCmd gw_big_city_1",
+            "makeScriptingSendEventCmd nil"
+        ]
+    );
+}
+
+/// A personal mod's events to the game's own scripts (a rank, prospecting,
+/// a loan) take the room's way, carried or refused, as a click's would; only
+/// an event addressed to the mod's own game script passes, here alone.
+#[test]
+fn a_personal_mods_events_to_the_games_scripts_take_the_rooms_way() {
+    let lua = gui();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (sent, handed, refused, own): (String, Vec<String>, Vec<String>, Vec<bool>) = lua
+        .load(
+            r#"
+            local guard = ug_require('tpf3mp_1::/scripts/tpf3mp/guard.lua')
+            HANDED, REFUSED = {}, {}
+            guard.install(api.cmd, {
+                inRoom = function() return true end,
+                command = function(action)
+                    local kind = next(action)
+                    HANDED[#HANDED + 1] = kind
+                    return true
+                end,
+                refused = function(kind, why) REFUSED[#REFUSED + 1] = tostring(why) end,
+                later = function() end,
+                context = { town = function() return nil end, player = function() return 1 end },
+                personal = function(mod) return mod == 'celmi_timetables' end,
+                shared = function() return { 'tpf3mp_1', 'other_mod_1' } end,
+                caller = function() return 'celmi_timetables' end,
+            })
+            local ev = api.cmd.makeScriptingSendEventCmd
+            api.cmd.sendCommand(ev('', 'Companies', 'applyLevel', { level = 2 }))
+            api.cmd.sendCommand(ev('', 'Loan', 'Obtain', { { amount = 1 }, { amount = 2 } }))
+            api.cmd.sendCommand(ev('', 'Companies', 'spawnIndustry', { companyEntity = 1 }))
+            -- Under its own id, but a name the company script hears whatever
+            -- the id, and an id of the game's own: not its own.
+            api.cmd.sendCommand(ev('', 'TimetablesEdit', 'company.lockPermits', {}))
+            api.cmd.sendCommand(ev('', 'tpf3mp', 'command', {}))
+            -- Its own script's.
+            api.cmd.sendCommand(ev('', 'TimetablesEdit', 'setArrDep', {}))
+            local sent = {}
+            for _, s in ipairs(SENT) do sent[#sent + 1] = tostring(s.command.id) .. ':' .. tostring(s.command.name) end
+            local shared = { 'tpf3mp_1' }
+            local own = {
+                guard.ownEvent('celmi_timetables', 'TimetablesEdit', 'setArrDep', shared),
+                guard.ownEvent('celmi_timetables', 'celmi_timetables', 'x', shared),
+                guard.ownEvent('celmi_timetables', 'Notifications', 'add', shared),
+                guard.ownEvent('celmi_timetables', 'OtherModChannel', 'x', shared),
+                guard.ownEvent('gw_big_city_1', 'big', 'x', shared),
+                -- A shared mod hears the same id: not the personal mod's alone.
+                guard.ownEvent('timetables_ui_tweak', 'TimetablesEdit', 'x', { 'celmi_timetables' }),
+                -- Without the room's shared list, nothing is its own.
+                guard.ownEvent('celmi_timetables', 'TimetablesEdit', 'setArrDep', nil),
+            }
+            return table.concat(sent, ','), HANDED, REFUSED, own
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        sent, "TimetablesEdit:setArrDep",
+        "only its own event runs here"
+    );
+    assert_eq!(handed, ["ApplyRank", "Loan"], "carried as a click's are");
+    assert_eq!(refused.len(), 3, "{refused:?}");
+    assert_eq!(own, [true, true, false, false, false, false, false]);
+}
+
 #[test]
 fn a_window_hears_of_what_its_command_made_once_its_world_has_it() {
     let lua = gui();
@@ -3969,14 +4372,23 @@ fn a_prospection_goes_to_the_room_by_its_towns_id_and_its_types_in_order() {
             "{why}: {logged:?}"
         );
     }
-    // The company's other events stay refused.
+    // Taking a rank goes to the room too (tpf3mp/progression.lua); the
+    // company's other events stay refused.
     lua.load(
-        "api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'applyLevel', { level = 2 }))",
+        "api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'applyLevel', { level = 2 }))          api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'applyLevel', { level = 2.5 }))          api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'MakeGreen', {}))",
     )
     .exec()
     .unwrap();
-    let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
-    assert_eq!(handed, 1);
+    let (handed, level): (usize, u32) = lua
+        .load("return #HOOK.commands, HOOK.commands[2].ApplyRank.level")
+        .eval()
+        .unwrap();
+    assert_eq!((handed, level), (2, 2));
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.ends_with("a rank of 2.5")),
+        "{logged:?}"
+    );
 }
 
 /// Towns and industries for the prospecting tests, over the stand-in engine
@@ -4316,6 +4728,275 @@ fn companies_are_founded_joined_renamed_recoloured_and_dissolved_alike() {
     );
 }
 
+/// Pure: who may do what to a company (DECISIONS.md, D22, proposed). A
+/// password is the room's seal of it; its head alone locks and unlocks it,
+/// sends players out and opens or closes its stations; the head's place
+/// passes to the longest-standing player when the founder leaves; the room's
+/// first company is everyone's.
+#[test]
+fn a_companys_head_locks_it_and_only_its_password_opens_it() {
+    let lua = gui();
+    lua.load(
+        r#"
+        COMP = { [2] = { [800] = { player = 901 }, [801] = { player = 25 }, [802] = {} } }
+        api = {
+            engine = {
+                util = { getPlayer = function() return 25 end },
+                getComponent = function(e, kind) return COMP[kind] and COMP[kind][e] end,
+                forEachEntityWithComponent = function(fn, kind)
+                    for e in pairs(COMP[kind] or {}) do fn(e) end
+                end,
+            },
+            type = { ComponentType = { NAME = 1, PLAYER_OWNED = 2, TRANSPORT_VEHICLE = 4 },
+                     Vec3f = { new = function(x, y, z) return { x, y, z } end } },
+            cmd = {
+                makeGameAddPlayerCmd = function(name, color) return { add = name } end,
+                makeEntitySetColorCmd = function(e, color) return { paint = e } end,
+            },
+        }
+        SENT, NEXT = {}, 900
+        function send(cmd)
+            SENT[#SENT + 1] = cmd
+            if cmd.add then NEXT = NEXT + 1 return { resultEntity = NEXT } end
+        end
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        JAMES, BOB, CAT = string.rep("a", 64), string.rep("b", 64), string.rep("c", 64)
+        R = C.ensure(nil, api)
+        function seal(scope, byte) return { scope = scope, tag = string.rep(byte, 64) } end
+        function why(player, op, s)
+            local ok, reason = C.run(R, player, op, send, api, s)
+            return ok and "ok" or reason
+        end
+        -- James founds Rival (company 1, entity 901).
+        C.run(R, JAMES, { Create = { name = 'Rival' } }, send, api)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    assert_eq!(eval("return C.head(R, 1)"), eval("return JAMES"));
+    // Only its head locks it, and only with the room's seal for it.
+    assert_eq!(
+        eval("return why(BOB, { Lock = 1 }, seal(1, 'e'))"),
+        "only the head of Rival gives a password to it"
+    );
+    assert_eq!(
+        eval("return why(JAMES, { Lock = 1 })"),
+        "a password for Rival comes sealed by the room"
+    );
+    assert_eq!(
+        eval("return why(JAMES, { Lock = 1 }, seal(2, 'e'))"),
+        "a password for Rival comes sealed by the room",
+        "a seal made for another company"
+    );
+    assert_eq!(eval("return why(JAMES, { Lock = 1 }, seal(1, 'e'))"), "ok");
+    // Joining it needs the password: none, a wrong one, then the right one.
+    assert_eq!(
+        eval("return why(BOB, { Join = 1 })"),
+        "joining Rival needs its password"
+    );
+    assert_eq!(
+        eval("return why(BOB, { Join = 1 }, seal(1, 'f'))"),
+        "the password for Rival is not right"
+    );
+    assert_eq!(eval("return why(BOB, { Join = 1 }, seal(1, 'e'))"), "ok");
+    assert_eq!(eval("return why(CAT, { Join = 1 }, seal(1, 'e'))"), "ok");
+    // A player is no head: Bob cannot send Cat out or close the stations.
+    assert_eq!(
+        eval("return why(BOB, { Dismiss = { company = 1, player = CAT } })"),
+        "only the head of Rival sends players out of it"
+    );
+    assert_eq!(
+        eval("return why(BOB, { ShareStations = { company = 1, open = false } })"),
+        "only the head of Rival closes the stations of it"
+    );
+    // The head sends Cat out: she plays for the first company again, and
+    // gets back in only with the password.
+    assert_eq!(
+        eval("return why(JAMES, { Dismiss = { company = 1, player = CAT } })"),
+        "ok"
+    );
+    assert_eq!(eval("return tostring(C.of(R, CAT).id)"), "0");
+    assert_eq!(
+        eval("return why(JAMES, { Dismiss = { company = 1, player = JAMES } })"),
+        "the head leaves by joining another company"
+    );
+    // James leaves: Bob, who has played for Rival longest, is its head now.
+    assert_eq!(eval("return why(JAMES, { Join = 0 })"), "ok");
+    assert_eq!(eval("return C.head(R, 1)"), eval("return BOB"));
+    assert_eq!(
+        eval("return why(BOB, { ShareStations = { company = 1, open = false } })"),
+        "ok"
+    );
+    assert_eq!(eval("return tostring(C.open(C.find(R, 1)))"), "false");
+    // The founder returns with the password, and heads it again.
+    assert_eq!(eval("return why(JAMES, { Join = 1 }, seal(1, 'e'))"), "ok");
+    assert_eq!(eval("return C.head(R, 1)"), eval("return JAMES"));
+    assert_eq!(eval("return why(JAMES, { Unlock = 1 })"), "ok");
+    assert_eq!(eval("return why(CAT, { Join = 1 })"), "ok");
+    // The room's first company is everyone's: no head, no password, and its
+    // stations stay open.
+    assert_eq!(eval("return tostring(C.head(R, 0))"), "nil");
+    assert_eq!(
+        eval("return why(JAMES, { Lock = 0 }, seal(0, 'e'))"),
+        "the room's first company is everyone's: nobody gives a password to it"
+    );
+    assert_eq!(
+        eval("return why(JAMES, { ShareStations = { company = 0, open = false } })"),
+        "the room's first company is everyone's: nobody closes the stations of it"
+    );
+    // Using a station: no one's, one's own and an open company's are fine;
+    // a closed company's is refused, naming it. Using is not changing.
+    assert_eq!(
+        eval(
+            "return tostring(C.mayUse(R, 25, 802, api)) .. tostring(C.mayUse(R, 901, 800, api)) \
+             .. tostring(C.mayUse(R, 901, 801, api))"
+        ),
+        "truetruetrue"
+    );
+    assert_eq!(
+        eval("local ok, why = C.mayUse(R, 25, 800, api) return tostring(ok) .. ' ' .. why"),
+        "false the station belongs to Rival, which keeps its stations to itself"
+    );
+    assert_eq!(
+        eval(
+            "why(JAMES, { ShareStations = { company = 1, open = true } }) return tostring(C.mayUse(R, 25, 800, api))"
+        ),
+        "true"
+    );
+    // A colour is fractions from 0 to 1, and no two companies wear one.
+    assert_eq!(
+        eval("return why(JAMES, { Recolor = { company = 1, color = { r = 2, g = 0, b = 0 } } })"),
+        "a colour is { r, g, b }, each from 0 to 1"
+    );
+    assert_eq!(
+        eval(
+            "local first = C.find(R, 0).color \
+             return why(JAMES, { Recolor = { company = 1, color = { r = first[1], g = first[2], b = first[3] } } })"
+        ),
+        "Company wears that colour already"
+    );
+}
+
+/// Through the game script: a line of one company stops at another's
+/// station while that one keeps its stations open, and is refused in every
+/// game once they are closed; a join travels with its seal.
+#[test]
+fn a_line_stops_at_another_companys_station_while_it_is_open() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        r#"
+        api.type.Line = { new = function() return { vehicleInfo = {} } end,
+            Stop = { new = function() return {} end }, StopConfig = { new = function() return {} end } }
+        api.type.StationTerminal = { new = function(s, t) return { station = s, terminal = t } end }
+        api.cmd.makeLineCreateCmd = function(name, color, player, line)
+            return { createLine = { name = name, color = color, player = player, line = line } } end
+        JAMES, BOB, CAT = string.rep("a", 64), string.rep("b", 64), string.rep("c", 64)
+        -- Station group 90 is Rival's (901); 91 is no company's.
+        OWNERS = {}
+        local get = api.engine.getComponent
+        api.type.ComponentType.PLAYER_OWNED = 55
+        api.engine.getComponent = function(e, kind)
+            if kind == 55 then return OWNERS[e] and { player = OWNERS[e] } or nil end
+            return get(e, kind)
+        end
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { JAMES }
+        UPDATE({}, STATE, 0.2)
+        RIVAL = STATE.value.companies.list[2]
+        HOOK.batch = { { CompanyOp = { Lock = RIVAL.id } } } HOOK.origins = { JAMES }
+        HOOK.seals = { { scope = RIVAL.id, tag = string.rep("e", 64) } }
+        UPDATE({}, STATE, 0.2)
+        HOOK.batch = { { CompanyOp = { Join = RIVAL.id } }, { CompanyOp = { Join = RIVAL.id } } }
+        HOOK.origins = { BOB, BOB }
+        HOOK.seals = { { scope = RIVAL.id, tag = string.rep("f", 64) }, { scope = RIVAL.id, tag = string.rep("e", 64) } }
+        UPDATE({}, STATE, 0.2)
+        HOOK.seals = nil
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+             return table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied, "true,true,false:the password for Rival is not right,true",
+        "founded, locked, a wrong password refused, the right one let in"
+    );
+    let members: String = lua
+        .load("local r = STATE.value.companies return #r.members .. ' ' .. r.members[2].company")
+        .eval()
+        .unwrap();
+    assert_eq!(members, "2 1");
+    // hook.log says what became of the companies, and never a seal.
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains(
+            "company: Lock by aaaaaaaa (with a password's seal): \
+             Company #0 (0 chose it); Rival #1 (1 chose it, head aaaaaaaa, password)"
+        ),
+        "{logged}"
+    );
+    assert!(
+        logged.contains("was not applied: the password for Rival is not right"),
+        "{logged}"
+    );
+    assert!(!logged.contains("eeeeeeee"), "{logged}");
+    // Cat, of the room's first company, runs a line from Rival's station 90
+    // to 91: allowed while Rival's stations are open, refused once its head
+    // closes them, in every game alike.
+    lua.load(
+        r#"
+        OWNERS[90] = RIVAL.entity
+        local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua')
+        local reg = STATE.value.registry
+        local ctx = { group = function(e) return registry.id(reg, 'groups', e) end,
+                      line = function(e) return registry.id(reg, 'lines', e) end }
+        local function stop(group) return { stationGroup = group, station = 0, terminal = 1,
+            alternativeTerminals = {}, loadMode = 0, minWaitingTime = 0, maxWaitingTime = 180,
+            maxAdditionalWaitingTime = 0, waypoints = {},
+            stopConfig = { load = {}, maxLoad = {}, forceUnload = false,
+                destroyForConfigChange = false, destroyForRefresh = false } } end
+        LINE_ACTION = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua').lineCreate(ctx, 'Shared',
+            { x = 0.8, y = 0.2, z = 0 }, 25, { stops = { stop(90), stop(91) }, customFilters = false,
+            reservationPriority = 0, vehicleInfo = { transportModes = { [3] = true } } })
+        HOOK.applied = {}
+        HOOK.batch = { LINE_ACTION } HOOK.origins = { CAT }
+        UPDATE({}, STATE, 0.2)
+        HOOK.batch = { { CompanyOp = { ShareStations = { company = RIVAL.id, open = false } } }, LINE_ACTION }
+        HOOK.origins = { JAMES, CAT }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let lines: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+             return table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        lines,
+        "true,true,false:stop 1: the station belongs to Rival, which keeps its stations to itself"
+    );
+}
+
 /// Through the game script: a player founds a company, and what they do is
 /// booked to it; the roster is kept in the script's state.
 #[test]
@@ -4439,6 +5120,169 @@ fn the_guis_company_is_the_one_the_player_plays_for() {
         logged.contains("the GUI's company follows the player's"),
         "{logged}"
     );
+}
+
+/// The Multiplayer window's companies (D22, proposed): the head of the
+/// player's company sets its password, opens or closes its stations and
+/// sends players out; another player joins a company with a password by
+/// typing it, and the password goes to the hook beside the action, never
+/// into the window's notes or the log. The line manager offers another
+/// company's station while that company keeps its stations open.
+#[test]
+fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        JAMES, BOB = string.rep("a", 64), string.rep("b", 64)
+        ROSTER = { next = 2,
+            list = { { id = 0, entity = 25, name = "First", color = { 0.8, 0.16, 0.12 } },
+                     { id = 1, entity = 901, name = "Rival", color = { 0.13, 0.42, 0.85 }, founder = JAMES } },
+            members = { { player = JAMES, company = 1 }, { player = BOB, company = 1 } } }
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = function() return 25 end }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = { GAME_SCRIPT = 7, STATION_GROUP = 9, CONSTRUCTION = 2, PLAYER_OWNED = 55 }
+        api.type.Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end }
+        -- Station group 90 is Rival's.
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+            if e == 90 and kind == 9 then return {} end
+            if e == 90 and kind == 55 then return { player = 901 } end
+        end
+        HOOK.room = true
+        function as(me)
+            HOOK.status = { room = "r", me_id = me, players = {
+                { name = "james", id = JAMES, me = me == JAMES, connected = true, owner = true },
+                { name = "bob", id = BOB, me = me == BOB, connected = true } } }
+        end
+        as(JAMES)
+        BAR = mount(loadPlugin())
+        for _ = 1, 20 do BAR.step() end
+        BAR.render()
+        views(BAR.layout)[1].params.onClick()
+        function window() WINDOWS.Tpf3mpWindow.step() return WINDOWS.Tpf3mpWindow.render() end
+        function find(view, pick)
+            for _, v in ipairs(views(window())) do
+                if v.view == view and pick(v.params) then return v.params end
+            end
+        end
+        function button(label)
+            return find("Button", function(p) return p.content and p.content.params.text == label end)
+        end
+        function texts()
+            local out = {}
+            for _, v in ipairs(views(window())) do
+                if v.view == 'TextView' then out[#out + 1] = v.params.text end
+            end
+            return table.concat(out, "\n")
+        end
+        function last() return HOOK.commands[#HOOK.commands], HOOK.passwords[#HOOK.commands] end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}\n{}", log(&lua)))
+    };
+    assert!(
+        eval("return texts()").contains("Rival  james (you), bob  (yours, head: james)"),
+        "{}",
+        eval("return texts()")
+    );
+    // The head types a password: it goes beside the action, and the field
+    // hides it.
+    assert_eq!(
+        eval(
+            "local f = find('TextInputField', function(p) return p.passwordMode end) \
+             f.onValueChange('s3cret') \
+             local action, password = last() \
+             return f.placeholderText .. '|' .. action.CompanyOp.Lock .. '|' .. password"
+        ),
+        "A password to join|1|s3cret"
+    );
+    assert!(!eval("return texts()").contains("s3cret"));
+    // The head closes the stations and sends Bob out.
+    assert_eq!(
+        eval(
+            "button('Close').onClick() \
+             local close = last().CompanyOp.ShareStations \
+             button('Send out').onClick() \
+             local out = last().CompanyOp.Dismiss \
+             return tostring(close.open) .. '|' .. out.player"
+        ),
+        format!("false|{}", "b".repeat(64))
+    );
+    // The line manager offers Rival's station while its stations are open.
+    assert_eq!(
+        eval(
+            "local util = ug_require('/scripts/entity_util.tl') \
+             local open = util.isOwnedByPlayerOrNotOwned(90) \
+             ROSTER.list[2].closed = true \
+             for _ = 1, 20 do BAR.step() end \
+             return tostring(open) .. '|' .. tostring(util.isOwnedByPlayerOrNotOwned(90))"
+        ),
+        "true|false"
+    );
+    // Bob, of the first company now, joins Rival, which has a password.
+    assert_eq!(
+        eval(
+            "ROSTER.list[2].lock = { scope = 1, tag = string.rep('e', 64) } \
+             ROSTER.members = { { player = JAMES, company = 1 } } \
+             as(BOB) for _ = 1, 20 do BAR.step() end \
+             local n = #HOOK.commands \
+             button('Join').onClick() \
+             local refused = #HOOK.commands == n \
+             local f = find('TextInputField', function(p) return p.passwordMode end) \
+             f.onTyping('s3cret') \
+             button('Join').onClick() \
+             local action, password = last() \
+             return tostring(refused) .. '|' .. action.CompanyOp.Join .. '|' .. password"
+        ),
+        "true|1|s3cret"
+    );
+    let shown = eval("return texts()");
+    assert!(
+        shown.contains("Rival  james  (head: james, password, stations closed)"),
+        "{shown}"
+    );
+    assert!(shown.contains("Joining Rival..."), "{shown}");
+    assert!(!shown.contains("s3cret"), "{shown}");
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(!logged.contains("s3cret"), "{logged}");
+    assert!(
+        logged.contains("the line manager offers other companies' open stations"),
+        "{logged}"
+    );
+}
+
+/// The game's company window renames the player's company by its player
+/// entity: that goes to the room as the company's rename.
+#[test]
+fn the_company_windows_rename_goes_to_the_room_as_the_companys() {
+    let lua = gui();
+    lua.load("C = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')")
+        .exec()
+        .unwrap();
+    let (company, line): (String, String) = lua
+        .load(
+            "local ctx = { company = function(e) if e == 901 then return 1 end end, \
+                           line = function(e) if e == 600 then return 4 end end } \
+             local a = C.setName(ctx, 901, 'Blue Line') \
+             local b = C.setName(ctx, 600, 'North') \
+             return a.CompanyOp.Rename.company .. ' ' .. a.CompanyOp.Rename.name, \
+                    b.EditLine.line .. ' ' .. b.EditLine.change.Rename",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(company, "1 Blue Line");
+    assert_eq!(line, "4 North");
 }
 
 /// With more than one company, vehicles wear their company's colour: a new
@@ -4629,6 +5473,392 @@ fn a_vehicles_marker_wears_its_companys_colour() {
             "{classes}"
         );
     }
+}
+
+/// A world for the companies' progression (tpf3mp/progression.lua), over the
+/// stand-in engine state: towns 5, 7 and 9 of 400, 1000 and 50 people; lines
+/// 301 of the save's player (25), 302 and 303 of the company founded next
+/// (901), 304 of a player the room has not; the game's delivery and
+/// passenger statistics per line, the towns' ratings, and the game's own
+/// modules. A game month is 4000 ms of game time: a sample every 1000.
+/// REVERSED lists everything the other way round, as another game's hash
+/// tables might.
+const FAKE_PROGRESSION: &str = r#"
+GAME_T = 0
+local CT = api.type.ComponentType
+CT.GAME_TIME, CT.PLAYER_OWNED, CT.TOWN = 99, 98, 12
+api.engine.util.getWorld = function() return 1 end
+OWNERS = { [301] = 25, [302] = 901, [303] = 901, [304] = 555 }
+api.engine.getComponent = function(e, kind)
+    if kind == CT.GAME_TIME then return { gameTime = GAME_T } end
+    if kind == CT.PLAYER_OWNED then
+        local o = OWNERS[e]
+        if o then return { player = o } end
+        return nil
+    end
+    if kind == CT.TOWN and (e == 5 or e == 7 or e == 9) then return {} end
+end
+api.engine.getEntitiesWithComponent = function(kind)
+    if kind == CT.TOWN then return { 5, 7, 9 } end
+    return {}
+end
+api.util = { getDefaultMonthDuration = function() return 4000 end,
+             getDefaultYearDuration = function() return 48000 end }
+local function keyed(pairsList)
+    local t = {}
+    local from, to, by = 1, #pairsList, 1
+    if REVERSED then from, to, by = #pairsList, 1, -1 end
+    for i = from, to, by do t[pairsList[i][1]] = pairsList[i][2] end
+    return t
+end
+local function listed(list)
+    if not REVERSED then return list end
+    local out = {}
+    for i = #list, 1, -1 do out[#out + 1] = list[i] end
+    return out
+end
+api.engine.system.townBuildingSystem = { getTown2personCapacitiesMap = function()
+    return keyed({ { 7, { 1000, 0 } }, { 5, { 400, 0 } }, { 9, { 50, 0 } } })
+end }
+DELIVERIES = function(town)
+    if town == 7 then return keyed({ { 301, { [-1] = { 2, 60 } } }, { 302, { [-1] = { 0, 40 } } } }) end
+    if town == 5 then return keyed({ { 302, { [-1] = { 0, 10 } } }, { 304, { [-1] = { 0, 99 } } } }) end
+    return {}
+end
+HAPPY = function(town)
+    if town == 7 then
+        return listed({ { 301, { resident = { 1, 20 }, nonResident = { 0, 0 } } },
+                        { 303, { resident = { 0, 10 }, nonResident = { 5, 10 } } } })
+    end
+    return {}
+end
+api.engine.util.town = {
+    getTownDeliveriesStats = function(town, interval, perLine, perCargo)
+        ASKED = { interval, perLine, perCargo }
+        return DELIVERIES(town)
+    end,
+    getTownHappinessStats = function(town, lines) return { byLine = HAPPY(town) } end,
+}
+TOWN_STATES = { townStates = listed({
+    { townEntity = { entity = 7 }, authorityScore = 0.7, cachedRatings = {
+        urban_care = { value = 0.9 }, traffic_congestion = { value = 0.8 },
+        noise = { value = 1 }, pollution = { value = 1 }, people_happiness = { value = 0.1 } } },
+    { townEntity = { entity = 5 }, authorityScore = 0.5 },
+    { townEntity = { entity = 9 }, authorityScore = 1 },
+}) }
+OWN = { [25] = { experience = 1500, level = 1, potentialLevel = 7 } }
+GAME_MODULES = {
+    ['/game_mechanics/company/company_progression_util.tl'] = {
+        getLevelAndFraction = function(base, exp) return math.floor(exp / base), 0 end,
+        getCompanyProgressionState = function(e) return OWN[e] end,
+    },
+    ['/game_mechanics/towns/town_util.tl'] = {
+        getRatingSensitivity = function(state, key) return 1 end,
+        externalGetTownsState = function() return TOWN_STATES end,
+    },
+    ['/game_mechanics/company/company_util.tl'] = { getBasePopulation = function() return 200 end },
+}
+A, B = string.rep('a', 64), string.rep('b', 64)
+"#;
+
+/// The progression lines of the hook's log.
+fn progression_log(lua: &Lua) -> Vec<String> {
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    logged
+        .into_iter()
+        .filter(|l| l.starts_with("progression"))
+        .collect()
+}
+
+/// A room of two companies after its first sample: A founded Rival (901),
+/// B plays for the room's first company (25).
+fn two_companies(reversed: bool) -> Lua {
+    let (lua, _script) = engine();
+    lua.load(FAKE_PROGRESSION).exec().unwrap();
+    lua.globals().set("REVERSED", reversed).unwrap();
+    lua.load(
+        "HOOK.room = true \
+         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+         UPDATE({}, STATE, 0.2) \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    lua
+}
+
+#[test]
+fn with_two_companies_each_takes_its_share_of_every_town_by_its_deliveries_and_rating() {
+    let lua = two_companies(false);
+    let records: String = lua
+        .load(
+            "local out = {} for _, r in ipairs(STATE.value.progression.records) do \
+                 out[#out + 1] = r.company .. ':' .. r.entity .. ':' .. r.experience .. ':' \
+                     .. r.potential .. ':' .. r.level end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    // Town 5: Rival carried all its cargo; rating the town's 50 (its own
+    // parts are perfect): 400 x 1 x 50 / 100 = 200. Town 7: cargo 60 to 40,
+    // passengers 20 to 20, so shares 0.55 and 0.45; the first company's
+    // rating is the town's 80 (its passengers' happiness 93, its cargo on
+    // time 95): 440; Rival's is its unhappy passengers' 64.29: 289.29.
+    // Rival: 489. The first company keeps the game's own 1500, which it
+    // earned before the room had two companies. Ranks: experience / 200.
+    assert_eq!(records, "0:25:1500:7:1 1:901:489:2:1");
+    let log = progression_log(&lua);
+    assert_eq!(log.len(), 5, "{log:?}");
+    assert_eq!(
+        log[0],
+        "progression at game time 0: 3 towns, weights cargo 1 passengers 1"
+    );
+    assert_eq!(
+        log[1],
+        "progression at game time 0: town-0 population 400: company-1 share 1.0000 \
+         rating 50.0000 part 200.0000"
+    );
+    assert!(
+        log[2].starts_with(
+            "progression at game time 0: town-1 population 1000: company-0 share 0.5500 \
+             rating 80.0000 part 440.0000, company-1 share 0.4500 rating 64.28"
+        ),
+        "{log:?}"
+    );
+    assert_eq!(
+        log[3],
+        "progression at game time 0: company-0 score 440.0000, experience 1500, rank 7 reached, 1 taken"
+    );
+    assert!(
+        log[4].starts_with("progression at game time 0: company-1 score 489.28")
+            && log[4].ends_with(", experience 489, rank 2 reached, 1 taken"),
+        "{log:?}"
+    );
+    // The game's delivery statistics per line, over half a year.
+    let asked: String = lua
+        .load(
+            "return table.concat({ tostring(ASKED[1]), tostring(ASKED[2]), tostring(ASKED[3]) }, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(asked, "24000 true false");
+    // The next sample waits for the next quarter of a month.
+    lua.load("UPDATE({}, STATE, 0.2) GAME_T = 999 UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    assert_eq!(progression_log(&lua).len(), 5);
+    lua.load("GAME_T = 1000 UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    assert_eq!(progression_log(&lua).len(), 10);
+}
+
+#[test]
+fn every_game_scores_the_companies_alike_however_its_tables_are_ordered() {
+    let run = |reversed: bool| {
+        let lua = two_companies(reversed);
+        lua.load("for _ = 1, 5 do GAME_T = GAME_T + 1000 UPDATE({}, STATE, 0.2) end")
+            .exec()
+            .unwrap();
+        let records: String = lua
+            .load(
+                "local out = {} for _, r in ipairs(STATE.value.progression.records) do \
+                     out[#out + 1] = r.company .. ':' .. r.experience .. ':' .. r.potential end \
+                 for _, p in ipairs(STATE.value.progression.passengers) do \
+                     out[#out + 1] = p.company .. '@' .. p.town .. '=' .. string.format('%.17g', p.value) end \
+                 return table.concat(out, ' ')",
+            )
+            .eval()
+            .unwrap();
+        (records, progression_log(&lua))
+    };
+    let (a, log_a) = run(false);
+    let (b, log_b) = run(true);
+    assert_eq!(a, b);
+    assert_eq!(log_a, log_b);
+    assert_eq!(log_a.len(), 30, "six samples of five lines");
+}
+
+#[test]
+fn with_two_companies_a_company_takes_the_ranks_it_reached() {
+    let lua = two_companies(false);
+    lua.load(
+        "SENT = {} HOOK.applied = {} \
+         HOOK.batch = { { ApplyRank = { level = 2 } }, { ApplyRank = { level = 3 } }, \
+                        { ApplyRank = { level = 2 } }, { ApplyRank = { level = 5 } } } \
+         HOOK.origins = { A, A, B, B } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = a.i .. ':' .. tostring(a.ok) .. ':' .. tostring(a.why) end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied, "1:true:nil 2:false:Rival has reached rank 2, not 3 3:true:nil 4:true:nil",
+        "Rival takes rank 2 and not 3; the first company takes 2, then 5"
+    );
+    let levels: String = lua
+        .load(
+            "local out = {} for _, r in ipairs(STATE.value.progression.records) do \
+                 out[#out + 1] = r.company .. ':' .. r.level end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(levels, "0:5 1:2");
+    // The room's first company takes its ranks in the game's own state too,
+    // for when the room is one company again; Rival's are the room's alone.
+    let events: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do if c.event then \
+                 out[#out + 1] = c.event.id .. '.' .. c.event.name .. '=' .. c.event.param.level end end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(events, "Companies.applyLevel=2 Companies.applyLevel=5");
+}
+
+#[test]
+fn with_one_company_the_game_keeps_its_own_score_and_takes_its_own_ranks() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_PROGRESSION).exec().unwrap();
+    lua.load(
+        "HOOK.room = true UPDATE({}, STATE, 0.2) \
+         for _ = 1, 3 do GAME_T = GAME_T + 1000 UPDATE({}, STATE, 0.2) end \
+         OWN[25] = { experience = 1500, level = 2, potentialLevel = 4 } \
+         SENT = {} HOOK.applied = {} \
+         HOOK.batch = { { ApplyRank = { level = 3 } }, { ApplyRank = { level = 5 } }, \
+                        { ApplyRank = { level = 2 } } } \
+         HOOK.origins = { A, A, B } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    assert!(
+        progression_log(&lua).is_empty(),
+        "no score of the room's own"
+    );
+    let none: bool = lua
+        .load("return STATE.value.progression.records[1] == nil")
+        .eval()
+        .unwrap();
+    assert!(none);
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = a.i .. ':' .. tostring(a.ok) .. ':' .. tostring(a.why) end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied,
+        "1:true:nil 2:false:the company has reached rank 4, not 5 \
+         3:false:the company has rank 2 already"
+    );
+    let events: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do \
+                 out[#out + 1] = c.event.src .. '|' .. c.event.id .. '|' .. c.event.name .. '|' .. c.event.param.level end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        events, "|Companies|applyLevel|3",
+        "the growth script's own event, as the company window sends it"
+    );
+}
+
+#[test]
+fn a_sample_the_game_cannot_measure_changes_no_rank() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_PROGRESSION).exec().unwrap();
+    lua.load(
+        "GAME_MODULES['/game_mechanics/towns/town_util.tl'] = nil \
+         HOOK.room = true \
+         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+         UPDATE({}, STATE, 0.2) UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.starts_with(
+            "the companies' scores were not sampled: /game_mechanics/towns/town_util.tl did not load"
+        )),
+        "{logged:?}"
+    );
+    let none: bool = lua
+        .load("return STATE.value.progression.records[1] == nil")
+        .eval()
+        .unwrap();
+    assert!(none, "nothing guessed");
+}
+
+#[test]
+fn the_rules_formulas_are_the_games() {
+    let lua = gui();
+    let out: String = lua
+        .load(
+            "local p = ug_require('tpf3mp_1::/scripts/tpf3mp/progression.lua') \
+             local w = { cargo = 1, passengers = 1 } \
+             return table.concat({ \
+                 string.format('%.4f', p.happiness(1, 20, 1)), \
+                 string.format('%.4f', p.happiness(0, 0, 1)), \
+                 string.format('%.4f', p.happiness(9, 10, 0)), \
+                 string.format('%.4f', p.onTime(5, 10, 1)), \
+                 string.format('%.4f', p.onTime(1, 2, 1)), \
+                 string.format('%.4f', p.share(60, 100, 1, 2, w)), \
+                 string.format('%.4f', p.share(0, 0, 1, 4, w)), \
+                 tostring(p.share(5, 0, 0, 0, w)), \
+                 string.format('%.4f', p.share(60, 100, 1, 2, { cargo = 3, passengers = 1 })), \
+                 string.format('%.1f', p.part(1000, 0.5, 80)) }, ' ')",
+        )
+        .eval()
+        .unwrap();
+    // The game's own: happiness and on-time cargo map 0.3..1 to 0..1 at
+    // sensitivity 1, and fewer than 15 people or 10 items count as that many.
+    assert_eq!(
+        out,
+        "0.9286 1.0000 1.0000 0.2857 0.8571 0.5500 0.2500 nil 0.5750 400.0"
+    );
+}
+
+#[test]
+fn the_company_window_reads_each_companys_own_rank_with_two_companies() {
+    let lua = gui();
+    let out: String = lua
+        .load(
+            "GAME_MODULES = { ['/game_mechanics/company/company_progression_util.tl'] = { \
+                 getCompanyProgressionState = function(e) return { level = 9, potentialLevel = 9, experience = e } end } } \
+             local p = ug_require('tpf3mp_1::/scripts/tpf3mp/progression.lua') \
+             local roster = { next = 2, members = {}, list = { { id = 0, entity = 25, name = 'First' }, \
+                 { id = 1, entity = 901, name = 'Rival' } } } \
+             STATEV = { companies = roster, progression = { records = { \
+                 { company = 0, entity = 25, experience = 1500, potential = 7, level = 3 }, \
+                 { company = 1, entity = 901, experience = 489, potential = 2, level = 1 } } } } \
+             assert(p.follow(function() return STATEV end)) \
+             local util = GAME_MODULES['/game_mechanics/company/company_progression_util.tl'] \
+             local function show(e) local s = util.getCompanyProgressionState(e) \
+                 return s.level .. '/' .. s.potentialLevel .. '/' .. s.experience end \
+             local two = show(25) .. ' ' .. show(901) .. ' ' .. show(555) \
+             roster.list[2].gone = true \
+             return two .. ' | ' .. show(25) .. ' ' .. show(901)",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        out, "3/7/1500 1/2/489 9/9/555 | 9/9/25 9/9/901",
+        "each company's own with two; the game's own with one"
+    );
 }
 
 /// A notification's popup plays its first sound and tells the game's

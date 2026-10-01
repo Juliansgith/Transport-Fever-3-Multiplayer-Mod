@@ -15,13 +15,13 @@ use std::{
 use thiserror::Error;
 use tpf3mp_ipc::{IpcError, Link, Role, SendError};
 use tpf3mp_proto::{
-    ChatText, Event, EventBody, IntentRejection, LaneDigest, Payload, PlayerId, RulesName, Speed,
-    Text,
+    ChatText, Event, EventBody, IntentRejection, LaneDigest, Payload, PlayerId, RulesName, Secret,
+    Speed, Text,
 };
 
 use crate::{
     BRIDGE_VERSION, BridgeError, Gate, GateError, Gated, LobbyAction, LobbyView, MAX_MESSAGE,
-    RoomInfo, ToAgent, ToHook, check_version, decode, encode,
+    ModLists, RoomInfo, ToAgent, ToHook, check_version, decode, encode,
 };
 
 /// How long to sleep between polls while waiting for the agent.
@@ -120,6 +120,8 @@ pub struct Begin {
     pub saves: PathBuf,
     /// The local player, as the room's events name the actor.
     pub player: PlayerId,
+    /// The mods the room's worlds load with (see `ToHook::Begin`).
+    pub mods: Option<ModLists>,
 }
 
 #[derive(Debug, Error)]
@@ -324,6 +326,7 @@ impl Session {
                     checkpoint_interval,
                     saves,
                     player,
+                    mods,
                 } => {
                     self.checkpoint_interval = u64::from(checkpoint_interval).max(1);
                     self.saves = PathBuf::from(saves.as_str());
@@ -334,6 +337,7 @@ impl Session {
                         checkpoint_interval,
                         saves: self.saves.clone(),
                         player,
+                        mods,
                     }));
                 }
                 // Talk in the lobby, and the lobby itself, are for the front
@@ -345,7 +349,7 @@ impl Session {
                     self.lobby = Lobby::left();
                     return Ok(None);
                 }
-                ToHook::Lobby(view) => self.lobby_view = Some(view),
+                ToHook::Lobby(view) => self.lobby_view = Some(*view),
                 _ => return Err(SessionError::Unexpected("something before the game began")),
             }
         }
@@ -536,8 +540,18 @@ impl Session {
     /// Hands a player's action to the room. Returns its number, which a
     /// refusal names.
     pub fn command(&mut self, payload: Payload) -> Result<u64, SessionError> {
+        self.command_with(payload, None)
+    }
+
+    /// Hands a player's action to the room with the password it needs (a
+    /// company's), which the room seals and never passes on.
+    pub fn command_with(
+        &mut self,
+        payload: Payload,
+        secret: Option<Secret>,
+    ) -> Result<u64, SessionError> {
         let number = self.commands;
-        self.send(&ToAgent::Command { payload })?;
+        self.send(&ToAgent::Command { payload, secret })?;
         self.commands += 1;
         Ok(number)
     }
@@ -625,7 +639,7 @@ impl Session {
         }
         while let Some(message) = self.try_recv()? {
             match message {
-                ToHook::Lobby(view) => self.lobby_view = Some(view),
+                ToHook::Lobby(view) => self.lobby_view = Some(*view),
                 ToHook::Chat { .. } | ToHook::Room(_) => {}
                 _ if ended => {}
                 other => {
@@ -677,7 +691,7 @@ impl Session {
             Gated::Ended(reason) => game.notice(Notice::Ended(reason)),
             Gated::Chat { from, text } => game.notice(Notice::Chat { from, text }),
             Gated::Room(room) => game.notice(Notice::Room(room)),
-            Gated::Lobby(view) => self.lobby_view = Some(view),
+            Gated::Lobby(view) => self.lobby_view = Some(*view),
             Gated::Nothing => {}
         }
         Ok(())
@@ -823,6 +837,7 @@ mod tests {
             checkpoint_interval,
             saves: Text::lossy("saves"),
             player: PlayerId(FixedBytes([1; 32])),
+            mods: None,
         }
     }
 
@@ -1038,10 +1053,13 @@ mod tests {
     fn at_the_menu_the_lobby_is_read_and_the_rooms_game_waits_for_its_gate() {
         let (mut session, agent) = at_the_menu("menu-lobby");
         assert_eq!(session.take_lobby(), None);
-        say(&agent, &ToHook::Lobby(lobby_view("first")));
-        say(&agent, &ToHook::Lobby(lobby_view("second")));
+        say(&agent, &ToHook::Lobby(Box::new(lobby_view("first"))));
+        say(&agent, &ToHook::Lobby(Box::new(lobby_view("second"))));
         say(&agent, &begin(50));
-        say(&agent, &ToHook::Lobby(lobby_view("after the begin")));
+        say(
+            &agent,
+            &ToHook::Lobby(Box::new(lobby_view("after the begin"))),
+        );
         say(
             &agent,
             &ToHook::Load {
@@ -1068,7 +1086,7 @@ mod tests {
         ));
         assert_eq!(session.take_lobby(), Some(lobby_view("after the begin")));
         // Once the game began, only its gate reads the link.
-        say(&agent, &ToHook::Lobby(lobby_view("in the game")));
+        say(&agent, &ToHook::Lobby(Box::new(lobby_view("in the game"))));
         session.poll_lobby().unwrap();
         assert_eq!(session.take_lobby(), None);
         session.loaded(1).unwrap();
@@ -1089,7 +1107,7 @@ mod tests {
         );
         assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Ended);
         say(&agent, &begin(50));
-        say(&agent, &ToHook::Lobby(lobby_view("next room")));
+        say(&agent, &ToHook::Lobby(Box::new(lobby_view("next room"))));
         session.poll_lobby().unwrap();
         assert_eq!(session.take_lobby(), Some(lobby_view("next room")));
     }
@@ -1185,6 +1203,7 @@ mod tests {
                 checkpoint_interval: 50,
                 saves: Text::lossy("saves"),
                 player: PlayerId(FixedBytes([1; 32])),
+                mods: None,
             },
         );
         assert!(session.try_begin().unwrap().is_some());

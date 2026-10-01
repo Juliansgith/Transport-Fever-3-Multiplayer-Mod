@@ -542,6 +542,12 @@ function capture.vehicleDepart(ctx, vehicle)
 	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = "Depart" } }
 end
 
+-- Held at its stops until told to leave, or not: what a timetable mod's
+-- game script sends (tpf3mp/modguard.lua).
+function capture.vehicleManualDeparture(ctx, vehicle, manual)
+	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ManualDeparture = manual == true } } }
+end
+
 -- The game's load modes (Line.LoadMode), numbers to the schema's names.
 local LOAD_MODES = { [0] = "LoadIfAvailable", [1] = "FullLoadAny", [2] = "FullLoadAll", [3] = "LegacyUnloadOnly" }
 
@@ -633,12 +639,19 @@ function capture.prospect(ctx, param)
 	} }
 end
 
--- Renaming and recolouring: lines so far.
+-- Renaming and recolouring: lines, and the room's companies (the game's
+-- company window renames the player's company by its player entity,
+-- game_mechanics/company/company.tl), which every game checks is the
+-- player's own (tpf3mp/companies.lua).
 function capture.setName(ctx, entity, name)
+	local company = ctx.company and ctx.company(entity)
+	if company ~= nil then return { CompanyOp = { Rename = { company = company, name = name } } } end
 	return { EditLine = { line = named("renaming this", ctx.line(entity)), change = { Rename = name } } }
 end
 
 function capture.setColor(ctx, entity, color)
+	local company = ctx.company and ctx.company(entity)
+	if company ~= nil then return { CompanyOp = { Recolor = { company = company, color = tintOf(color) } } } end
 	return { EditLine = { line = named("recolouring this", ctx.line(entity)), change = { Recolor = tintOf(color) } } }
 end
 

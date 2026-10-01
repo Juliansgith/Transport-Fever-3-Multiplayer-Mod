@@ -840,6 +840,7 @@ end
 local registry = module("registry")
 local companiesModule = module("companies")
 require_companies = function() return companiesModule end
+local progressionModule = module("progression")
 
 local function entityOf(ctx, kind, id)
 	local e = registry.entity(ctx and ctx.registry, kind, id)
@@ -1024,6 +1025,8 @@ function HANDLERS.VehicleOp(op, ctx)
 		return run(api.cmd.makeVehicleReverseCmd(vehicle))
 	elseif change == "Depart" then
 		return run(api.cmd.makeVehicleTryToDepartCmd(vehicle))
+	elseif type(change) == "table" and change.ManualDeparture ~= nil then
+		return run(api.cmd.makeVehicleSetManualDepartureCmd(vehicle, change.ManualDeparture == true))
 	end
 	return false, "a vehicle change of no kind"
 end
@@ -1031,13 +1034,21 @@ end
 -- The game's load modes, by the schema's names, as numbers.
 local LOAD_MODES = { LoadIfAvailable = 0, FullLoadAny = 1, FullLoadAll = 2, LegacyUnloadOnly = 3 }
 
--- A LineData as the game's Line component.
+-- A LineData as the game's Line component. Each stop is at a station the
+-- acting company may use (tpf3mp/companies.lua, mayUse): no company's, its
+-- own, or another company's that keeps its stations open (DECISIONS.md, D22,
+-- proposed). The game itself stops a line anywhere (build 40408: no owner
+-- check on a line's stops); its line manager offers only the player's own
+-- stations, which the GUI lifts for open ones (gui/tpf3mp/tpf3mp.script.lua).
 local function lineComponent(data, ctx)
 	local line = api.type.Line.new()
 	local stops = {}
 	for i, s in ipairs(data.stops) do
 		local stop = api.type.Line.Stop.new()
-		stop.stationGroup = entityOf(ctx, "groups", s.group)
+		local group = entityOf(ctx, "groups", s.group)
+		local usable, why = companiesModule.mayUse(ctx and ctx.roster, company(), group, api)
+		if not usable then error("stop " .. i .. ": " .. why, 0) end
+		stop.stationGroup = group
 		stop.station = s.terminal.station
 		stop.terminal = s.terminal.terminal
 		local alternatives = {}
@@ -1169,18 +1180,55 @@ function HANDLERS.Prospect(p, ctx)
 end
 
 -- The room's companies (tpf3mp/companies.lua): the acting player founds,
--- joins, renames, recolours or dissolves one, in `ctx.roster`.
+-- joins, renames, recolours or dissolves one, and its head locks it, sends a
+-- player out or shares its stations, in `ctx.roster`; `ctx.seal` is the
+-- room's seal of a password sent with it.
 function HANDLERS.CompanyOp(op, ctx)
 	if not (ctx and ctx.roster and ctx.player) then return false, "no roster to change" end
-	local ok, why = companiesModule.run(ctx.roster, ctx.player, op, send, api)
+	local ok, why = companiesModule.run(ctx.roster, ctx.player, op, send, api, ctx.seal)
 	if not ok then return false, why end
 	return true
+end
+
+-- Taking a company rank (tpf3mp/progression.lua). With one company in the
+-- room, the company growth script's own event, as the company window sends
+-- it: the game keeps that company's rank, and checks the rank is reached.
+-- With more, the acting company's rank in the mod's state, when it reached
+-- it; the save's own player also takes it in the game's own state, so its
+-- rank stays when the room is one company again.
+function HANDLERS.ApplyRank(r, ctx)
+	local level = tonumber(r.level)
+	if level == nil then return false, "a rank is a number" end
+	local roster = ctx and ctx.roster
+	local event = function()
+		return api.cmd.makeScriptingSendEventCmd("", "Companies", "applyLevel", { level = level })
+	end
+	if progressionModule.multi(roster) then
+		local ok, why = progressionModule.take(ctx.progression, roster, company(), level)
+		if not ok then return false, why end
+		if company() == api.engine.util.getPlayer() then send(event()) end
+		return true
+	end
+	if company() ~= api.engine.util.getPlayer() then
+		return false, "only the room's first company has the game's own rank"
+	end
+	-- The game ignores a rank not reached; this says why, where it can read it.
+	local game = progressionModule.game(api)
+	local read, own = pcall(function() return game and game.own(company()) end)
+	if read and type(own) == "table" and type(own.level) == "number" and type(own.potentialLevel) == "number" then
+		if level <= own.level then return false, "the company has rank " .. own.level .. " already" end
+		if level > own.potentialLevel then
+			return false, "the company has reached rank " .. own.potentialLevel .. ", not " .. level
+		end
+	end
+	return run(event())
 end
 
 -- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the
 -- actions that name vehicles, lines and station groups; with companies, also
 -- `roster`, `player` (who sent it) and `company` (their company's player
--- entity), which the action is booked to. Returns true, nil
+-- entity), which the action is booked to, and `progression`, the companies'
+-- ranks (tpf3mp/progression.lua). Returns true, nil
 -- and the entity it made or changed (for the kinds in CREATES and KEEPS,
 -- where the game said), or false and why not; never raises.
 function apply.run(action, ctx)
