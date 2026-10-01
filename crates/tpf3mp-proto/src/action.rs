@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 10;
+pub const ACTION_SCHEMA_VERSION: u32 = 11;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -44,6 +44,10 @@ pub const MAX_LINKS: usize = 512;
 pub const MAX_DECORATIONS: usize = 8;
 /// Lanes one edge has.
 pub const MAX_LANES: usize = 32;
+/// Junctions changed by one tool stroke, and connections/phases per junction.
+pub const MAX_JUNCTIONS: usize = 64;
+pub const MAX_CONNECTIONS: usize = 256;
+pub const MAX_PHASES: usize = 64;
 /// Most edges one action removes or bulldozes.
 pub const MAX_EDGES: usize = 256;
 /// Most parameters of one construction, nested modules counted one by one.
@@ -185,6 +189,59 @@ pub struct NodeRef {
     pub at: Pos,
 }
 
+/// A turn through a junction. Lane indices are counted from the junction,
+/// as in TF3, so reversing an edge's local entity numbering changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneConnection {
+    pub incoming: EdgeRef,
+    pub lane_in: u16,
+    pub outgoing: EdgeRef,
+    pub lane_out: u16,
+    pub road: bool,
+    pub tram: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrafficPreference {
+    Auto,
+    Yes,
+    No,
+}
+
+/// Durations in milliseconds. Locked indices address connections followed
+/// by crosswalks, in the order carried by JunctionConfig (never entity ids).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrafficPhase {
+    pub locked: BoundedVec<u16, MAX_CONNECTIONS>,
+    pub duration: u32,
+    pub minimum: u32,
+    pub skip: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JunctionConfig {
+    pub connections: BoundedVec<LaneConnection, MAX_CONNECTIONS>,
+    pub crosswalks: BoundedVec<EdgeRef, MAX_CONNECTIONS>,
+    pub preference: TrafficPreference,
+    /// None is the game's default light type (-1); otherwise a resource name.
+    pub light: Option<ResName>,
+    pub phases: BoundedVec<TrafficPhase, MAX_PHASES>,
+    pub double_slip: bool,
+    pub custom_phases: bool,
+}
+
+/// None removes a configuration and restores the game's defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JunctionChange {
+    pub node: NodeRef,
+    pub config: Option<JunctionConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JunctionEdit {
+    pub changes: BoundedVec<JunctionChange, MAX_JUNCTIONS>,
+}
+
 /// An existing construction, named by its file and its position (the
 /// transform's origin). Matched within 2 m.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -302,6 +359,8 @@ pub struct Polyline {
     /// Existing nodes removed: TF3's tools move a junction that was near the
     /// new one onto it.
     pub removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
+    /// Full junction settings, including those a rebuilt edge must preserve.
+    pub junctions: BoundedVec<JunctionChange, MAX_JUNCTIONS>,
 }
 
 #[derive(Deserialize)]
@@ -310,6 +369,8 @@ struct PolylineFields {
     links: BoundedVec<Link, MAX_LINKS>,
     removals: BoundedVec<EdgeRef, MAX_EDGES>,
     removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
+    #[serde(default)]
+    junctions: BoundedVec<JunctionChange, MAX_JUNCTIONS>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -346,6 +407,7 @@ impl Polyline {
             links,
             removals,
             removed_nodes: BoundedVec::empty(),
+            junctions: BoundedVec::empty(),
         })
     }
 
@@ -355,6 +417,12 @@ impl Polyline {
         self.removed_nodes = nodes;
         self
     }
+
+    #[must_use]
+    pub fn with_junctions(mut self, changes: BoundedVec<JunctionChange, MAX_JUNCTIONS>) -> Self {
+        self.junctions = changes;
+        self
+    }
 }
 
 impl TryFrom<PolylineFields> for Polyline {
@@ -362,7 +430,8 @@ impl TryFrom<PolylineFields> for Polyline {
 
     fn try_from(fields: PolylineFields) -> Result<Self, PolylineError> {
         Ok(Self::new(fields.vertices, fields.links, fields.removals)?
-            .with_removed_nodes(fields.removed_nodes))
+            .with_removed_nodes(fields.removed_nodes)
+            .with_junctions(fields.junctions))
     }
 }
 
@@ -897,10 +966,14 @@ pub enum Action {
         /// The rank to take, 1 to 15 in the game.
         level: u8,
     },
+    /// Crosswalks, turning lanes and the full traffic-light configuration.
+    EditJunctions(JunctionEdit),
 }
 
 #[derive(Debug, Error)]
 pub enum ActionError {
+    #[error("invalid junction configuration: {0}")]
+    Junction(&'static str),
     #[error("action schema {found}; this game speaks {ACTION_SCHEMA_VERSION}")]
     Schema { found: u32 },
     #[error("malformed action: {0}")]
@@ -912,9 +985,54 @@ pub enum ActionError {
 }
 
 impl Action {
+    /// Validate relationships within a junction, beyond the wire's bounds.
+    pub fn validate(&self) -> Result<(), ActionError> {
+        let changes = match self {
+            Self::EditJunctions(edit) => {
+                if edit.changes.is_empty() {
+                    return Err(ActionError::Junction("empty edit"));
+                }
+                &edit.changes
+            }
+            Self::BuildRoad(road) => &road.polyline.junctions,
+            Self::BuildTrack(track) => &track.polyline.junctions,
+            Self::BuildConstruction(build) => match &build.connection {
+                Some(line) => &line.junctions,
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        for (i, change) in changes.iter().enumerate() {
+            if changes[..i].iter().any(|other| other.node == change.node) {
+                return Err(ActionError::Junction("node changed twice"));
+            }
+            let Some(config) = &change.config else {
+                continue;
+            };
+            for turn in config.connections.iter() {
+                if usize::from(turn.lane_in) >= MAX_LANES || usize::from(turn.lane_out) >= MAX_LANES
+                {
+                    return Err(ActionError::Junction("lane index out of bounds"));
+                }
+            }
+            let count = config.connections.len() + config.crosswalks.len();
+            for phase in config.phases.iter() {
+                if phase.minimum > phase.duration || phase.duration > 86_400_000 {
+                    return Err(ActionError::Junction("invalid phase duration"));
+                }
+                for (j, lane) in phase.locked.iter().enumerate() {
+                    if usize::from(*lane) >= count || phase.locked[..j].contains(lane) {
+                        return Err(ActionError::Junction("invalid or duplicate locked lane"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     /// The payload of an intent carrying this action: the schema version,
     /// then the action, both postcard-encoded.
     pub fn to_payload(&self) -> Result<Payload, ActionError> {
+        self.validate()?;
         let mut bytes = postcard::to_stdvec(&ACTION_SCHEMA_VERSION)?;
         bytes.extend(postcard::to_stdvec(self)?);
         Ok(Payload::new(bytes)?)
@@ -927,10 +1045,11 @@ impl Action {
         if version != ACTION_SCHEMA_VERSION {
             return Err(ActionError::Schema { found: version });
         }
-        let (action, rest) = postcard::take_from_bytes(rest)?;
+        let (action, rest): (Self, _) = postcard::take_from_bytes(rest)?;
         if !rest.is_empty() {
             return Err(ActionError::TrailingBytes(rest.len()));
         }
+        action.validate()?;
         Ok(action)
     }
 }
@@ -1042,7 +1161,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1085,7 +1204,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1097,6 +1216,7 @@ mod tests {
                 0, 0, 0, 0, // no decorations, not locked, not owned, no lanes of its own
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
+                0, // no junction changes
             ]
         );
         // Appended with Prospect under schema version 7: the variants
@@ -1119,7 +1239,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1137,7 +1257,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1152,7 +1272,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1163,7 +1283,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1189,7 +1309,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [10, 11]);
+            assert_eq!(payload.as_bytes()[..2], [11, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         let hold = Action::VehicleOp(VehicleOp {
@@ -1199,7 +1319,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

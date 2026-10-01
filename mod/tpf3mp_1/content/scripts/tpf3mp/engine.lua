@@ -29,6 +29,7 @@ end
 
 local roads = module("roads")
 local geom = module("geom")
+local junctions = module("junctions")
 
 local engine = {}
 
@@ -292,7 +293,8 @@ function engine.fromProposal(proposal, network, constructions)
 	local removedNodes = list(get(street, "removedNodes"))
 	if #added == 0 and #segments == 0 and #removed == 0 and #removedNodes == 0 then return nil end
 
-	local capture = { network = network, nodes = {}, edges = {}, removed = {}, removedNodes = {} }
+	local capture = { network = network, nodes = {}, edges = {}, removed = {}, removedNodes = {},
+		junctions = junctions.capture(street) }
 	for _, n in ipairs(added) do
 		capture.nodes[#capture.nodes + 1] = { id = n.entity, pos = vec3(n.comp.position) }
 	end
@@ -823,6 +825,11 @@ end
 -- or BuildTrack of the network of its first edge. The town buildings it
 -- clears along the road every game's build clears again.
 function engine.captureModify(proposal)
+	local street = get(proposal, "proposal")
+	if street and #list(get(street,"addedNodes")) == 0 and #list(get(street,"addedSegments")) == 0
+		and #list(get(street,"removedNodes")) == 0 and #list(get(street,"removedSegments")) == 0 then
+		return junctions.edit(proposal)
+	end
 	local ok, capture = pcall(engine.fromProposal, proposal, nil, "town")
 	if not ok then return nil, tostring(capture) end
 	if capture == nil then return false end

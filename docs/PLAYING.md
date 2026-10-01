@@ -259,11 +259,18 @@ protected folder such as Program Files.
   room's newest chat, where you can write to everyone. Rooms and invites
   are on the main menu's Multiplayer window (see "Playing from the game's
   Multiplayer button").
+- **Reading the room.** Its in-game window keeps room status at the top,
+  with Players and Companies side by side. Company cards separate the
+  name, balance, debt and members; your company comes first. Scroll the
+  company column for its management controls or more companies. Chat has
+  its own scrolling history, with the message field always below it.
+  Long names and messages wrap rather than widening the window.
 - **Speed and pause.** The room's owner sets the room's speed, pause
   included, with the game's own speed buttons, and everyone's game runs at
-  it. Anyone else's speed buttons do not change the room's speed: the
-  launcher says so, and the game keeps the room's pace whatever the
-  buttons show.
+  it. Guests' speed buttons highlight the room's accepted speed,
+  including pause. Their buttons and speed shortcuts are disabled;
+  their tooltip and the Multiplayer window say **Host controls speed**.
+  Outside a multiplayer game the normal controls return.
 - **Joining later.** You can join a game that is already running: the
   room sends you its world, and your game loads it and catches up.
 - **Losing the connection.** If your connection or the server drops, the
@@ -344,8 +351,10 @@ protected folder such as Program Files.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
   does not happen in your game either. The game bar says "Not in
   multiplayer yet: …" for what the game's windows do that the room does
-  not carry yet. The lane arrow and traffic light tools, and a tool that
-  would move a stop or signal onto another stretch of road, show "Not in
+  not carry yet. Junction tools (lane arrows, crosswalks and traffic-light
+  settings) have an implementation behind `strict_junctions`, off until
+  the two-player acceptance check in HOOKS.md passes. With it off, these
+  tools, and a tool that would move a stop or signal onto another stretch of road, show "Not in
   multiplayer yet" and build nothing: the tool says why.
 
 ## Playtesting before the game is out

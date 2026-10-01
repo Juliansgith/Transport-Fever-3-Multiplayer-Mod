@@ -164,7 +164,8 @@ function roads.convert(capture, world)
 		removedNodes[#removedNodes + 1] = { network = network, at = at }
 	end
 
-	local polyline = { vertices = vertices, links = links, removals = removals, removed_nodes = removedNodes }
+	local polyline = { vertices = vertices, links = links, removals = removals, removed_nodes = removedNodes,
+		junctions = capture.junctions or {} }
 	if own == "Street" then
 		return { BuildRoad = {
 			street = capture.street, style = capture.style, bus_lane = capture.bus_lane == true,

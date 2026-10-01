@@ -532,6 +532,71 @@ function data()
 		return palette
 	end
 
+	-- Native fixed-width panels keep a long name, eight companies or a busy
+	-- chat from stretching the window beyond the screen. -1 means automatic
+	-- height in TF3's StyleSheet; zero would hide the content.
+	local WINDOW_WIDTH, PLAYERS_WIDTH, COMPANIES_WIDTH = 800, 192, 548
+	local BODY_HEIGHT = 310
+	local function sheet(width, height, padding, background)
+		local s = api.gui.StyleSheet.new()
+		s.size = api.type.Vec2f.new(width or -1, height or -1)
+		if padding then s.padding = api.type.Vec4f.new(padding, padding, padding, padding) end
+		if background then s.backgroundColor = api.type.Vec4f.new(0.07, 0.10, 0.12, 0.90) end
+		return s
+	end
+	local function gap(size)
+		return builtin.Component{ meta = { styleSheet = sheet(size, size) },
+			mouseTransparent = true, layout = builtin.BoxLayout{ children = {} } }
+	end
+	local function box(children, horizontal, width, padding, background)
+		return builtin.Component{
+			meta = { styleSheet = sheet(width, nil, padding, background) },
+			mouseTransparent = true,
+			layout = builtin.BoxLayout{
+				orientation = horizontal and builtin.type.Orientation.Horizontal or builtin.type.Orientation.Vertical,
+				children = children,
+			},
+		}
+	end
+	-- Break on spaces when possible and on UTF-8 character boundaries for
+	-- unbroken names. The complete text stays visible, including chat.
+	local function wrapped(text, limit)
+		local lines, chars, space = {}, {}, nil
+		local function flush(count)
+			lines[#lines + 1] = table.concat(chars, "", 1, count)
+			local left = {}
+			for i = count + 1, #chars do left[#left + 1] = chars[i] end
+			if left[1] == " " then table.remove(left, 1) end
+			chars, space = left, nil
+			for i, c in ipairs(chars) do if c == " " then space = i end end
+		end
+		for c in tostring(text):gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+			if c == "\n" then
+				flush(#chars)
+			else
+				chars[#chars + 1] = c
+				if c == " " then space = #chars end
+				if #chars > limit then flush(space and space > 1 and space - 1 or limit) end
+			end
+		end
+		if #chars > 0 then lines[#lines + 1] = table.concat(chars) end
+		return table.concat(lines, "\n")
+	end
+	local function label(text, class, width, limit)
+		return builtin.TextView{
+			meta = { class = class or "font-scale-body", styleSheet = sheet(width), tooltip = tostring(text) },
+			text = limit and wrapped(text, limit) or tostring(text),
+		}
+	end
+	local function scroll(children, width, height)
+		return builtin.ScrollArea{
+			meta = { styleSheet = sheet(width, height) },
+			horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+			verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+			content = box(children, false, width - 20),
+		}
+	end
+
 	-- The companies: each with its money and players, the one you play for
 	-- first, with its colour and name to change; the others to join, with
 	-- their password where they have one; a company of your own to found.
@@ -542,16 +607,24 @@ function data()
 		local roster = shared.companies
 		if not roster then return end
 		local companies = require("tpf3mp.companies")
-		local function line(text) rows[#rows + 1] = builtin.TextView{ text = text } end
+		local function line(text) rows[#rows + 1] = label(text, "font-scale-annotation", COMPANIES_WIDTH - 40, 38) end
 		local function row(children)
-			rows[#rows + 1] = builtin.BoxLayout{ orientation = builtin.type.Orientation.Horizontal, children = children }
+			local spaced = {}
+			for i, child in ipairs(children) do
+				if i > 1 then spaced[#spaced + 1] = gap(8) end
+				spaced[#spaced + 1] = child
+			end
+			rows[#rows + 1] = box(spaced, true)
+			rows[#rows + 1] = gap(8)
 		end
 		local function button(label, tooltip, onClick)
-			return builtin.Button{ meta = { tooltip = tooltip }, content = builtin.TextView{ text = label }, onClick = onClick }
+			return builtin.Button{ meta = { class = "secondary", tooltip = tooltip },
+				content = builtin.TextView{ meta = { class = "font-scale-body" }, text = label }, onClick = onClick }
 		end
 		-- A field for a draft, sent with `act` on Enter or its button.
 		local function field(draft, placeholder, secret, act)
 			return builtin.TextInputField{
+				meta = { class = "font-scale-body", styleSheet = sheet(300, 36) },
 				placeholderText = placeholder,
 				value = draft:get(),
 				maxLength = 64,
@@ -580,13 +653,11 @@ function data()
 		local myName
 		for _, c in ipairs(roster.list) do if c.id == mine then myName = c.name end end
 		local iHead = status.me_id ~= nil and companies.head(roster, mine) == status.me_id
-		line("")
-		line("Companies")
+		local otherCards = {}
 		for _, c in ipairs(ordered) do
 			local head = companies.head(roster, c.id)
-			local who = names[c.id] and table.concat(names[c.id], ", ") or "nobody"
 			local tags = {}
-			if c.id == mine then tags[#tags + 1] = "yours" end
+			if c.id == mine then tags[#tags + 1] = "Your company" end
 			if head and byId[head] then tags[#tags + 1] = "head: " .. tostring(byId[head].name) end
 			if c.locked then tags[#tags + 1] = "password" end
 			if c.closed then tags[#tags + 1] = "stations closed" end
@@ -604,14 +675,20 @@ function data()
 					resetButton = false,
 				}
 			end
-			local parts = { tostring(c.name) }
+			children[#children + 1] = gap(8)
+			children[#children + 1] = label(c.name, "font-scale-title-4", COMPANIES_WIDTH - 100, 28)
+			local card = { box(children, true), gap(6) }
+			if #tags > 0 then card[#card + 1] = label(table.concat(tags, " · "), "font-scale-annotation, info", nil, 38) end
 			if c.balance ~= nil then
-				parts[#parts + 1] = money(c.balance)
-					.. ((type(c.owed) == "number" and c.owed > 0) and (" (owes " .. money(c.owed) .. ")") or "")
+				card[#card + 1] = label("Balance  " .. money(c.balance), "font-scale-body", nil, 38)
+				if type(c.owed) == "number" and c.owed > 0 then
+					card[#card + 1] = label("Debt  " .. money(c.owed), "font-scale-annotation", nil, 38)
+				end
 			end
-			parts[#parts + 1] = who
-			if #tags > 0 then parts[#parts + 1] = "(" .. table.concat(tags, ", ") .. ")" end
-			children[#children + 1] = builtin.TextView{ text = "  " .. table.concat(parts, "  ") }
+			card[#card + 1] = gap(6)
+			card[#card + 1] = label("Players  " .. (names[c.id] and table.concat(names[c.id], ", ") or "Nobody yet"),
+				"font-scale-annotation", nil, 38)
+			children = {}
 			if c.id ~= mine then
 				if c.locked then
 					-- Its password, typed here; the room seals it, and only
@@ -639,14 +716,18 @@ function data()
 					.. " once it owns nothing, and play for the room's first company again",
 					function() companyOp(shared, { Delete = c.id }, "Dissolving " .. c.name) end)
 			end
-			row(children)
+			if #children > 0 then card[#card + 1] = gap(8); card[#card + 1] = box(children, true) end
+			local destination = c.id == mine and rows or otherCards
+			destination[#destination + 1] = box(card, false, COMPANIES_WIDTH - 24, 12, true)
+			destination[#destination + 1] = gap(10)
 		end
+		line("MANAGE YOUR COMPANY")
+		rows[#rows + 1] = gap(6)
 		-- What the head of the player's company does with it.
 		if iHead then
 			local c
 			for _, x in ipairs(roster.list) do if x.id == mine then c = x end end
 			local lockChildren = {
-				builtin.TextView{ text = "  Password: " },
 				field(drafts.lockPassword, c.locked and "A new password" or "A password to join", true, function(text)
 					if blank(text) then return end
 					companyOp(shared, { Lock = c.id }, "Setting the password of " .. c.name, nil, text)
@@ -666,7 +747,7 @@ function data()
 			end
 			row(lockChildren)
 			row({
-				builtin.TextView{ text = c.closed and "  Stations: yours alone" or "  Stations: open to every company's lines" },
+				label(c.closed and "Stations: yours alone" or "Stations: open to other companies", "font-scale-annotation", 300, 28),
 				button(c.closed and "Open" or "Close", c.closed
 					and "Let other companies' lines stop at " .. tostring(c.name) .. "'s stations"
 					or "Keep " .. tostring(c.name) .. "'s stations to its own lines",
@@ -679,7 +760,7 @@ function data()
 				local p = byId[player]
 				if player ~= status.me_id and p then
 					row({
-						builtin.TextView{ text = "  " .. tostring(p.name) },
+						label(p.name, nil, 300, 28),
 						button("Send out", "Send " .. tostring(p.name) .. " back to the room's first company",
 							function()
 								companyOp(shared, { Dismiss = { company = c.id, player = player } },
@@ -702,6 +783,14 @@ function data()
 				drafts.rename:set("")
 			end),
 		})
+		rows[#rows + 1] = gap(8)
+		if #otherCards > 0 then
+			line("OTHER COMPANIES")
+			rows[#rows + 1] = gap(6)
+			for _, card in ipairs(otherCards) do rows[#rows + 1] = card end
+		end
+		line("START ANOTHER COMPANY")
+		rows[#rows + 1] = gap(6)
 		row({
 			field(drafts.found, "A company of your own", false, function(text)
 				if blank(text) then return end
@@ -723,8 +812,8 @@ function data()
 			for _, loan in ipairs(roster.loans or {}) do if loan.company == mine then loans[#loans + 1] = loan end end
 			for _, loan in ipairs(loans) do
 				row({
-					builtin.TextView{ text = "  Loan: " .. money(loan.remaining) .. " owed of " .. money(loan.amount)
-						.. ", " .. money(loan.payment) .. " a month, " .. (loan.months - loan.paid) .. " months left" },
+					label("Loan: " .. money(loan.remaining) .. " owed of " .. money(loan.amount)
+						.. ", " .. money(loan.payment) .. " a month, " .. (loan.months - loan.paid) .. " months left", nil, 300, 28),
 					button("Repay", "Pay back what is still owed now", function()
 						companyOp(shared, nil, "Repaying " .. money(loan.remaining), { Loan = { Repay = { loan = {
 							type = "Custom", amount = loan.amount, duration = 1, percentage = 0, id = loan.id } } } })
@@ -744,7 +833,7 @@ function data()
 						end)
 				end
 			end
-			if #offers > 0 then row(offers) end
+			for _, offer in ipairs(offers) do row({ offer }) end
 		end
 		if shared.companyNote then line(shared.companyNote) end
 	end
@@ -762,35 +851,63 @@ function data()
 			end
 			shared.version = shared.version + 1
 		end
-		local rows = {}
-		local function line(text) rows[#rows + 1] = builtin.TextView{ text = text } end
-		line("Room: " .. tostring(status.room))
-		if status.speed then line("Speed: " .. speedText(status.speed)) end
+		local rows = { label(status.room, "font-scale-title-3", 740, 36), gap(6) }
+		local statusRow = {}
+		if status.speed then statusRow[#statusRow + 1] = label("Speed: " .. speedText(status.speed), "font-scale-annotation") end
+		statusRow[#statusRow + 1] = gap(16)
+		statusRow[#statusRow + 1] = label("Host controls speed", "font-scale-annotation")
+		statusRow[#statusRow + 1] = gap(16)
 		if status.diverged then
-			line("Your world differed from the room's at step " .. tostring(status.diverged)
-				.. "; the room's is on its way")
+			statusRow[#statusRow + 1] = label("Resyncing your world", "font-scale-annotation, warning")
 		else
-			line("Worlds match")
+			statusRow[#statusRow + 1] = label("Worlds match", "font-scale-annotation, success")
 		end
-		line("")
-		line("Players")
+		rows[#rows + 1] = box(statusRow, true)
+		if status.diverged then
+			rows[#rows + 1] = label("Your world differed at step " .. tostring(status.diverged)
+				.. ". The room's world is on its way.", "font-scale-annotation, warning", 740, 64)
+		end
+		rows[#rows + 1] = gap(18)
+		local players, online = {}, 0
 		for _, p in ipairs(status.players or {}) do
 			local tags = {}
 			if p.owner then tags[#tags + 1] = "host" end
 			if p.me then tags[#tags + 1] = "you" end
 			if not p.connected then tags[#tags + 1] = "away" end
-			line("  " .. tostring(p.name) .. (#tags > 0 and (" (" .. table.concat(tags, ", ") .. ")") or ""))
+			if p.connected then online = online + 1 end
+			players[#players + 1] = box({
+				label(p.name, "font-scale-body", PLAYERS_WIDTH - 40, 16),
+				label(#tags > 0 and table.concat(tags, " · ") or "playing", "font-scale-annotation" .. (p.me and ", info" or ""), nil, 16),
+			}, false, PLAYERS_WIDTH - 24, 10, true)
+			players[#players + 1] = gap(8)
 		end
-		companyRows(rows, status, shared, drafts)
-		line("")
-		line("Chat")
-		-- The newest lines only: the window sizes itself to what it holds.
-		for i = math.max(1, #shared.lines - CHAT_SHOWN + 1), #shared.lines do line(shared.lines[i]) end
-		if #shared.lines == 0 then line("Nobody said anything yet.") end
-		rows[#rows + 1] = builtin.BoxLayout{
-			orientation = builtin.type.Orientation.Horizontal,
-			children = {
+		local companies = {}
+		companyRows(companies, status, shared, drafts)
+		if #companies == 0 then companies[1] = label("Waiting for the companies...", "font-scale-annotation") end
+		rows[#rows + 1] = box({
+			box({ label("Players", "font-scale-title-4"),
+				label(online .. " of " .. #(status.players or {}) .. " online", "font-scale-annotation"), gap(10),
+				scroll(players, PLAYERS_WIDTH, BODY_HEIGHT) }, false, PLAYERS_WIDTH),
+			gap(20),
+			box({ label("Companies", "font-scale-title-4"),
+				label("Choose who you build with", "font-scale-annotation"), gap(10),
+				scroll(companies, COMPANIES_WIDTH, BODY_HEIGHT) }, false, COMPANIES_WIDTH),
+		}, true)
+		rows[#rows + 1] = gap(18)
+		rows[#rows + 1] = label("Chat", "font-scale-title-4")
+		rows[#rows + 1] = gap(6)
+		local chat = {}
+		-- The newest lines, in a bounded panel. The composer stays visible.
+		for i = math.max(1, #shared.lines - CHAT_SHOWN + 1), #shared.lines do
+			chat[#chat + 1] = label(shared.lines[i], "font-scale-body", 720, 64)
+			chat[#chat + 1] = gap(4)
+		end
+		if #chat == 0 then chat[1] = label("Nobody said anything yet.", "font-scale-annotation") end
+		rows[#rows + 1] = scroll(chat, 760, 92)
+		rows[#rows + 1] = gap(8)
+		rows[#rows + 1] = box({
 				builtin.TextInputField{
+					meta = { class = "font-scale-body", styleSheet = sheet(652, 36) },
 					placeholderText = "Say something to the room",
 					value = draft:get(),
 					maxLength = 280,
@@ -804,12 +921,13 @@ function data()
 					onCancel = function() shared.version = shared.version + 1 end,
 					onValueChange = function(text) send(text) end,
 				},
+				gap(8),
 				builtin.Button{
-					content = builtin.TextView{ text = "Send" },
+					meta = { class = "primary", styleSheet = sheet(100, 36) },
+					content = label("Send"),
 					onClick = function() send(draft:get()) end,
 				},
-			},
-		}
+			}, true)
 		return rows
 	end
 
@@ -848,7 +966,7 @@ function data()
 					-- the mods' buttons, which it would cover at 0, 0.
 					initialX = 0,
 					initialY = 0.15,
-					content = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical, children = rows },
+					content = box(rows, false, WINDOW_WIDTH, 20, true),
 				}
 			end)
 		end
