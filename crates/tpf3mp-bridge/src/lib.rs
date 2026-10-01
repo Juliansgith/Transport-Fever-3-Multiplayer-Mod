@@ -59,8 +59,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// the room list); 18 each member's loading progress
 /// ([`LobbyMember::loading`]), and in the game's Multiplayer window each
 /// member's banner and loading progress ([`RoomMember`]), and its Leave
-/// as [`LobbyAction::Leave`].
-pub const BRIDGE_VERSION: u32 = 18;
+/// as [`LobbyAction::Leave`]; 19 the campaign portraits this player's game
+/// can show ([`LobbyView::portraits`]), and banner ids of up to 32 bytes
+/// that may name one (protocol 13's `tpf3mp_proto::PORTRAITS`).
+pub const BRIDGE_VERSION: u32 = 19;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -160,8 +162,13 @@ pub struct LobbyView {
     /// The launcher's default server, `host:port`, which the setting's
     /// "Reset to default" goes back to; empty without one.
     pub server_default: Text<128>,
-    /// The banner this player picked, if any.
+    /// The banner this player picked, if any: one of
+    /// `tpf3mp_proto::BANNERS` or of [`LobbyView::portraits`].
     pub banner: Option<tpf3mp_proto::BannerId>,
+    /// The campaign portraits this player's game can show
+    /// (`tpf3mp_proto::PORTRAITS`), in that order: those the launcher took
+    /// from this player's install. Empty without the campaign.
+    pub portraits: BoundedVec<tpf3mp_proto::BannerId, MAX_LOBBY_PORTRAITS>,
     /// The player's name.
     pub name: Text<32>,
     /// What went wrong last, until something succeeds.
@@ -195,6 +202,10 @@ pub struct LobbyView {
     /// The room's shared mods beyond those listed.
     pub room_mods_more: u32,
 }
+
+/// Most portraits a [`LobbyView`] offers: room for all of
+/// `tpf3mp_proto::PORTRAITS`.
+pub const MAX_LOBBY_PORTRAITS: usize = 32;
 
 /// Most installed mods a [`LobbyView`] lists.
 pub const MAX_LOBBY_MODS: usize = 64;
@@ -314,6 +325,7 @@ impl Default for LobbyView {
             server_address: Text::lossy(""),
             server_default: Text::lossy(""),
             banner: None,
+            portraits: BoundedVec::empty(),
             name: Text::lossy(""),
             error: None,
             notice: None,
@@ -370,7 +382,9 @@ pub struct LobbyMember {
     /// Whether this member's game matches the owner's: `None` while either
     /// has not said.
     pub same_content: Option<bool>,
-    /// The banner this member picked (`tpf3mp_proto::BANNERS`), if any.
+    /// The banner this member picked (`tpf3mp_proto::BANNERS`), or the
+    /// portrait (`tpf3mp_proto::PORTRAITS`) this player's game can show, if
+    /// any: a portrait it cannot show is left out, for the default banner.
     pub banner: Option<tpf3mp_proto::BannerId>,
     /// Where this member's game is with the room's world while it comes in.
     pub loading: Option<tpf3mp_proto::LoadingStage>,
@@ -441,7 +455,7 @@ pub enum LobbyAction {
     SetServer {
         server: Text<128>,
     },
-    /// Show this banner in rooms; `None` for the default.
+    /// Show this banner or portrait in rooms; `None` for the default.
     SetBanner {
         banner: Option<tpf3mp_proto::BannerId>,
     },
@@ -461,7 +475,9 @@ pub struct RoomMember {
     pub player: PlayerId,
     pub name: Text<32>,
     pub connected: bool,
-    /// The banner this member picked (`tpf3mp_proto::BANNERS`), if any.
+    /// The banner this member picked (`tpf3mp_proto::BANNERS`), or the
+    /// portrait (`tpf3mp_proto::PORTRAITS`) this player's game can show, if
+    /// any: a portrait it cannot show is left out, for the default banner.
     pub banner: Option<tpf3mp_proto::BannerId>,
     /// Where this member's game is with the room's world while it comes in.
     pub loading: Option<tpf3mp_proto::LoadingStage>,
@@ -646,7 +662,7 @@ mod tests {
             owner: n == 0,
             you: n == 1,
             same_content: Some(true),
-            banner: Some(Text::new("x".repeat(16)).unwrap()),
+            banner: Some(Text::new("x".repeat(32)).unwrap()),
             loading: Some(tpf3mp_proto::LoadingStage::Fetching { percent: 100 }),
         };
         let line = LobbyLine {
@@ -659,7 +675,12 @@ mod tests {
             server: Text::new("s".repeat(128)).unwrap(),
             server_address: Text::new("a".repeat(128)).unwrap(),
             server_default: Text::new("d".repeat(128)).unwrap(),
-            banner: Some(Text::new("b".repeat(16)).unwrap()),
+            banner: Some(Text::new("b".repeat(32)).unwrap()),
+            portraits: BoundedVec::new(vec![
+                Text::new("p".repeat(32)).unwrap();
+                MAX_LOBBY_PORTRAITS
+            ])
+            .unwrap(),
             name: Text::new("n".repeat(32)).unwrap(),
             error: Some(Text::new("e".repeat(256)).unwrap()),
             notice: Some(Text::new("o".repeat(256)).unwrap()),

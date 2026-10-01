@@ -380,7 +380,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (`set_banner` from the window, empty for the default). Since version 17 the room, the
     room list and create carry the play style (`competitive`). Since version 18 each member
     carries where their game is with the room's world while it comes in (`loading`:
-    `fetching` with a `percent`, or `loading`, in the window's state). Since bridge version 15 it carries the
+    `fetching` with a `percent`, or `loading`, in the window's state). Since version 19 it
+    carries the campaign portraits this game has (`portraits`, LOBBY.md "Portraits"), and a
+    banner id of up to 32 bytes may name one; a member's portrait this game lacks is left
+    out, for their default. Since bridge version 15 it carries the
     server's address (`server_address`) and the launcher's default server
     (`server_default`), for the server setting.
   - `End`: the session is over. Sent only once the room's game has begun:
@@ -768,7 +771,8 @@ for the table (`bridge.find`). Its contract is in
   name =, connected =, owner =, me =, banner =, loading =, percent = } } }`,
   or nil before the room's game; `invite` too, the room's invite as the
   launcher last told it, when it did. `banner` is the player's pick, empty for
-  their default; `loading` is `fetching` (with `percent`), `loading` or
+  their default (a portrait id only where this game has the portrait, bridge
+  version 19); `loading` is `fetching` (with `percent`), `loading` or
   empty (bridge version 18: `RoomMember::banner` and `loading`). The
   hook keeps what the room tells it (`Room`, `Speed`, `Diverged`), and
   forgets the divergence when a world loads (bridge version 9).

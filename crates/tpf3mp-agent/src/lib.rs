@@ -10,6 +10,7 @@ pub mod launcher;
 pub mod logs;
 pub mod picker;
 mod playout;
+pub mod portraits;
 pub mod save_check;
 pub mod steam;
 pub mod transfer;

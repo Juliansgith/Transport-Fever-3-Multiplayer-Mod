@@ -839,8 +839,9 @@ function data()
 	end
 
 	-- One player as a strip: their banner (tpf3mp/banners.lua, the same the
-	-- main menu's window shows), name, and marks: the room's owner, you,
-	-- away, and how far their game is with the room's world.
+	-- main menu's window shows), their portrait if they picked one, name,
+	-- and marks: the room's owner, you, away, and how far their game is with
+	-- the room's world.
 	local function playerRow(p)
 		local banners = require("tpf3mp.banners")
 		local marks = {}
@@ -849,13 +850,24 @@ function data()
 		if not p.connected then marks[#marks + 1] = "Away" end
 		marks[#marks + 1] = banners.stage(p, true)
 		local sheet = sized(BANNER_W, BANNER_H)
-		return hbox({
+		local cells = {
 			builtin.ImageView{
 				meta = sheet and { styleSheet = sheet } or {},
 				path = banners.picture(banners.of(p)),
 			},
-			column({ text(tostring(p.name), "font-scale-body"), text(table.concat(marks, " · ")) }),
-		})
+		}
+		-- A campaign character's portrait the player picked, beside their
+		-- name: the hook passes it only where this game has the picture.
+		local portrait = banners.portraitOf(p)
+		if portrait then
+			local square = sized(BANNER_H, BANNER_H)
+			cells[#cells + 1] = builtin.ImageView{
+				meta = square and { styleSheet = square } or {},
+				path = portrait,
+			}
+		end
+		cells[#cells + 1] = column({ text(tostring(p.name), "font-scale-body"), text(table.concat(marks, " · ")) })
+		return hbox(cells)
 	end
 
 	-- The room page in the game: the room and its players with their

@@ -141,6 +141,10 @@ pub struct LobbyState {
     pub server_default: String,
     /// The banner this player picked: empty for their default.
     pub banner: String,
+    /// The campaign portraits this game can show, by id
+    /// (`tpf3mp_proto::PORTRAITS`): what the banner picker offers besides
+    /// the banners.
+    pub portraits: Vec<String>,
     pub name: String,
     /// The last thing that went wrong, for the window to show.
     pub error: Option<String>,
@@ -449,6 +453,7 @@ impl LobbyState {
             server_address: String::new(),
             server_default: String::new(),
             banner: String::new(),
+            portraits: Vec::new(),
             name: String::new(),
             error: None,
             notice: None,
@@ -492,6 +497,12 @@ impl LobbyState {
                 .as_ref()
                 .map(|id| id.as_str().to_owned())
                 .unwrap_or_default(),
+            portraits: view
+                .portraits
+                .iter()
+                .map(|id| id.as_str().to_owned())
+                .filter(|id| tpf3mp_proto::is_portrait(id))
+                .collect(),
             name: view.name.as_str().to_owned(),
             error: view.error.as_ref().map(|text| text.as_str().to_owned()),
             notice: view.notice.as_ref().map(|text| text.as_str().to_owned()),
@@ -636,7 +647,13 @@ impl LobbyState {
         out.push_str(&lua_str(&self.server_default));
         out.push_str(", banner = ");
         out.push_str(&lua_str(&self.banner));
-        out.push_str(", name = ");
+        out.push_str(", portraits = {");
+        for id in &self.portraits {
+            out.push(' ');
+            out.push_str(&lua_str(id));
+            out.push(',');
+        }
+        out.push_str(" }, name = ");
         out.push_str(&lua_str(&self.name));
         out.push_str(", error = ");
         out.push_str(&lua_opt(self.error.as_deref()));
@@ -999,6 +1016,11 @@ mod tests {
             server_address: Text::new("eu.example.org:29470").unwrap(),
             server_default: Text::new("relay.example.org:29470").unwrap(),
             banner: None,
+            portraits: BoundedVec::new(vec![
+                Text::new("andrew").unwrap(),
+                Text::new("selfie").unwrap(),
+            ])
+            .unwrap(),
             name: Text::new("Ann").unwrap(),
             error: None,
             notice: Some(Text::new("created the room").unwrap()),
@@ -1111,6 +1133,12 @@ mod tests {
         let lua = mlua::Lua::new();
         let state: mlua::Table = lua.load(format!("return {literal}")).eval().unwrap();
         assert_eq!(state.get::<String>("connection").unwrap(), "connected");
+        // The portraits this game has, an id that is none left out.
+        assert_eq!(
+            state.get::<Vec<String>>("portraits").unwrap(),
+            ["andrew"],
+            "{literal}"
+        );
         assert_eq!(
             state.get::<String>("server_address").unwrap(),
             "eu.example.org:29470"

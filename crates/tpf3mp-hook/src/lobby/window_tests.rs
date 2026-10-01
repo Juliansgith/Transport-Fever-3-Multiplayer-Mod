@@ -1206,6 +1206,134 @@ fn a_banner_is_picked_from_the_first_page() {
     assert_eq!(sent(&lua), [LobbyAction::SetBanner { banner: None }]);
 }
 
+fn images(lua: &Lua) -> Vec<String> {
+    let list: Table = lua
+        .globals()
+        .get::<Function>("images")
+        .unwrap()
+        .call(())
+        .unwrap();
+    list.sequence_values::<String>()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The campaign's characters this game has are picked like banners, by
+/// their names; the launcher sends only those it has.
+#[test]
+fn a_campaign_portrait_is_picked_beside_the_banners() {
+    let lua = menu();
+    let portraits = |ids: &[&str]| {
+        BoundedVec::new(ids.iter().map(|id| Text::new(*id).unwrap()).collect()).unwrap()
+    };
+    show(
+        &lua,
+        Some(&LobbyView {
+            portraits: portraits(&["andrew", "dr_karl_brandt", "richard_o_sullivan"]),
+            ..online()
+        }),
+    );
+    open(&lua, None);
+    click(&lua, "Your banner");
+    let cards = all_cards(&lua);
+    assert_eq!(cards.len(), tpf3mp_proto::BANNERS.len() + 3);
+    let shown = texts(&lua);
+    assert!(shown.contains("Characters"), "{shown}");
+    let karl = cards
+        .iter()
+        .find(|card| {
+            card.get::<String>("text")
+                .unwrap()
+                .starts_with("Dr. Karl Brandt")
+        })
+        .expect("a card named for the character");
+    assert_eq!(
+        karl.get::<String>("picture").unwrap(),
+        "tpf3mp_1::/gui/tpf3mp/portraits/dr_karl_brandt.tga"
+    );
+    assert!(shown.contains("Richard O'Sullivan"), "{shown}");
+    karl.get::<Function>("click")
+        .unwrap()
+        .call::<()>(())
+        .unwrap();
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::SetBanner {
+            banner: Some(Text::new("dr_karl_brandt").unwrap())
+        }]
+    );
+    show(
+        &lua,
+        Some(&LobbyView {
+            banner: Some(Text::new("dr_karl_brandt").unwrap()),
+            portraits: portraits(&["andrew", "dr_karl_brandt"]),
+            ..online()
+        }),
+    );
+    call(&lua, "tick", ());
+    let karl: String = all_cards(&lua)
+        .iter()
+        .map(|card| card.get::<String>("text").unwrap())
+        .find(|text| text.starts_with("Dr. Karl Brandt"))
+        .unwrap();
+    assert!(karl.contains("Yours"), "{karl}");
+    assert!(enabled(&lua, "Default"));
+
+    // Without the campaign, the picker offers the banners alone.
+    show(&lua, Some(&online()));
+    call(&lua, "tick", ());
+    assert_eq!(all_cards(&lua).len(), tpf3mp_proto::BANNERS.len());
+    assert!(!texts(&lua).contains("Characters"));
+}
+
+/// A member's portrait shows beside their card, which keeps their key's
+/// banner; an id the window does not know shows the banner alone.
+#[test]
+fn a_players_portrait_shows_beside_their_name_in_the_room() {
+    let lua = menu();
+    let mut ann = member(1, "Ann", true, true, true);
+    ann.banner = Some(Text::new("tom_mclaren").unwrap());
+    let mut bob = member(0x2a, "Bob", false, false, false);
+    bob.banner = Some(Text::new("selfie").unwrap());
+    show(&lua, Some(&in_room(vec![ann, bob], true)));
+    open(&lua, None);
+    let pictures = images(&lua);
+    let portrait = "tpf3mp_1::/gui/tpf3mp/portraits/tom_mclaren.tga";
+    assert_eq!(
+        pictures.iter().filter(|path| *path == portrait).count(),
+        1,
+        "{pictures:?}"
+    );
+    let card = |name: &str| {
+        all_cards(&lua)
+            .into_iter()
+            .find(|card| card.get::<String>("text").unwrap().starts_with(name))
+            .unwrap()
+            .get::<String>("picture")
+            .unwrap()
+    };
+    let key_banner = |n: usize| -> String {
+        lua.load(format!(
+            "return LOBBY.bannerPicture(\"{}\")",
+            tpf3mp_proto::BANNERS[n % tpf3mp_proto::BANNERS.len()]
+        ))
+        .eval()
+        .unwrap()
+    };
+    assert_eq!(card("Ann"), key_banner(0x0101_0101), "her key's banner");
+    assert_eq!(
+        card("Bob"),
+        key_banner(0x2a2a_2a2a),
+        "an unknown id: the default"
+    );
+    assert!(
+        !pictures.iter().any(|path| path.contains("selfie")),
+        "{pictures:?}"
+    );
+    let most: u32 = lua.load("return most_cards_in_a_row()").eval().unwrap();
+    assert_eq!(most, 1, "still one player to a row");
+}
+
 #[test]
 fn the_host_picks_co_op_or_competitive_from_two_pictures() {
     let lua = menu();

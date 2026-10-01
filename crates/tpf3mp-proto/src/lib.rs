@@ -36,10 +36,10 @@ pub use content::{
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
     ContentFingerprint, CreateRoom, GameMessage, Hello, IntentRejection, JoinRoom, LaneDigest,
-    ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_ROOM_MEMBERS, MemberView, ROOMS_PER_PAGE,
-    Reject, RejectReason, Request, RequestError, Response, Resume, RoomListing, RoomPage,
-    RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage, Speed,
-    Welcome, is_banner,
+    ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_ROOM_MEMBERS, MemberView, PORTRAITS,
+    ROOMS_PER_PAGE, Reject, RejectReason, Request, RequestError, Response, Resume, RoomListing,
+    RoomPage, RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage,
+    Speed, Welcome, is_banner, is_portrait,
 };
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText,
@@ -68,8 +68,10 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// each member's banner ([`Request::SetBanner`], [`MemberView::banner`]);
 /// version 11 a room's play style ([`CreateRoom::competitive`],
 /// [`RoomView::competitive`]); version 12 each member's loading progress
-/// ([`GameMessage::Loading`], [`MemberView::loading`]).
-pub const PROTOCOL_VERSION: u32 = 12;
+/// ([`GameMessage::Loading`], [`MemberView::loading`]); version 13 lets a
+/// player show a campaign character's portrait ([`PORTRAITS`]) as their
+/// banner, with banner ids of up to 32 bytes ([`BannerId`]).
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
@@ -432,5 +434,23 @@ mod tests {
         let mut settings = RoomSettings::DEFAULT;
         settings.steps_per_second = 0;
         assert!(!settings.is_valid());
+    }
+
+    /// Version 13: every portrait id is a banner id that fits, apart from
+    /// the banners, so either travels as one `SetBanner`.
+    #[test]
+    fn portraits_are_banner_ids_of_their_own() {
+        for id in PORTRAITS {
+            assert!(is_banner(id) && is_portrait(id), "{id}");
+            assert!(!BANNERS.contains(id), "{id} is a banner too");
+            assert!(BannerId::new(*id).is_ok(), "{id} is too long");
+            assert!(
+                id.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{id} is a file name"
+            );
+        }
+        assert_eq!(PORTRAITS.len(), 25);
+        assert!(!is_banner("none"), "the dialogue's empty speaker");
+        assert!(!is_portrait(BANNERS[0]));
     }
 }

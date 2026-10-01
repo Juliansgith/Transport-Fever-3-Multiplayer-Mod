@@ -573,6 +573,9 @@ local BANNERS = banners.LIST
 lobby.BANNERS = BANNERS
 lobby.bannerOf = banners.of
 lobby.bannerPicture = banners.picture
+lobby.portraitOf = banners.portraitOf
+lobby.portraitName = banners.portraitName
+lobby.portraitPicture = banners.portrait
 
 -- A room member as a banner: a wide, short strip, one to a row of the
 -- players' column, with room at its right end for the owner's Remove.
@@ -627,9 +630,22 @@ function lobby.memberCard(member, playing)
 			path = ICON.ready,
 		},
 	} or nil
-	return pictureCard(lobby.bannerPicture(lobby.bannerOf(member)), member.name,
+	-- A member who picked a portrait: it beside their card, which shows
+	-- their key's banner (tpf3mp/banners.lua).
+	local portrait = lobby.portraitOf(member)
+	local card = pictureCard(lobby.bannerPicture(lobby.bannerOf(member)), member.name,
 		table.concat(marks, " · "), member.you and _("You") or nil, nil, true,
-		MEMBER_WIDTH, MEMBER_HEIGHT, ready and { ready } or {})
+		portrait and MEMBER_WIDTH - MEMBER_HEIGHT - 8 or MEMBER_WIDTH, MEMBER_HEIGHT, ready and { ready } or {})
+	if not portrait then return card end
+	return row({ icon(portrait, MEMBER_HEIGHT), gap(8), card })
+end
+
+-- A campaign character's portrait as a card of the banner picker: the
+-- picture, the character's name, and whether it is yours.
+local PORTRAIT_WIDTH, PORTRAIT_HEIGHT = 150, 190
+function lobby.portraitCard(id, picked, onClick, enabled)
+	return pictureCard(banners.portrait(id), banners.portraitName(id) or id, picked and _("Yours") or " ",
+		nil, onClick, enabled, PORTRAIT_WIDTH, PORTRAIT_HEIGHT)
 end
 
 -- The pictures of the Host page's play styles. Co-op: the busy harbour of
@@ -1045,6 +1061,30 @@ function lobby.content(onClose, focus)
 			end
 		end
 		if #cellsRow > 0 then rows[#rows + 1] = row(cellsRow) end
+		-- The campaign's characters this game has (the launcher takes their
+		-- portraits from the game): one shows beside your name instead.
+		local portraits = {}
+		for _i, id in ipairs(state.portraits or {}) do
+			if banners.portrait(id) then portraits[#portraits + 1] = id end
+		end
+		if #portraits > 0 then
+			rows[#rows + 1] = gap(16)
+			rows[#rows + 1] = heading(_("Characters"), _("A character of the campaign, beside your name."))
+			rows[#rows + 1] = gap(10)
+			cellsRow = {}
+			for _i, id in ipairs(portraits) do
+				if #cellsRow > 0 then cellsRow[#cellsRow + 1] = gap(10) end
+				cellsRow[#cellsRow + 1] = lobby.portraitCard(id, state.banner == id, function()
+					send({ action = "set_banner", banner = id }, nil)
+				end, canAct)
+				if #cellsRow >= 9 then
+					rows[#rows + 1] = row(cellsRow)
+					rows[#rows + 1] = gap(10)
+					cellsRow = {}
+				end
+			end
+			if #cellsRow > 0 then rows[#rows + 1] = row(cellsRow) end
+		end
 		return frame(_("Your banner"), status, column({
 			row({
 				button(_("Back"), function() bannerS:set(false) end),

@@ -170,15 +170,16 @@ pub enum Request {
     /// as the game's year and its companies once it runs. A private room
     /// stays private (`NotListed`).
     DescribeRoom(RoomListing),
-    /// The picture this player shows in rooms, one of [`BANNERS`] by id;
-    /// `None` for their default. Kept for the connection, and shown to the
+    /// The picture this player shows in rooms, one of [`BANNERS`] or
+    /// [`PORTRAITS`] by id; `None` for their default. Kept for the connection, and shown to the
     /// room this player is in at once. Unknown ids are refused
     /// (`UnknownBanner`).
     SetBanner(Option<BannerId>),
 }
 
-/// A player's banner: one of [`BANNERS`], by id.
-pub type BannerId = Text<16>;
+/// A player's picture: one of [`BANNERS`] or [`PORTRAITS`], by id. Long
+/// enough for the longest portrait id.
+pub type BannerId = Text<32>;
 
 /// The banners players pick from: short ids, each standing for one of the
 /// game's own pictures (the window maps them; the server only checks the
@@ -208,9 +209,48 @@ pub const BANNERS: &[&str] = &[
     "loading4",
 ];
 
-/// Whether `id` names one of [`BANNERS`].
+/// The campaign's characters a player may show instead of a banner, by
+/// the name their portrait has in the game's campaign missions
+/// (`mission/dialogue/<id>_neutral.tga`). The pictures are the game's: each
+/// player's launcher takes them from their own install, and a game without
+/// one shows the player's banner instead (docs/LOBBY.md, "Portraits").
+pub const PORTRAITS: &[&str] = &[
+    "andrew",
+    "katie_baker",
+    "major",
+    "anton_zurbriggen",
+    "dr_karl_brandt",
+    "lorenzo_bianchi",
+    "freiherr_von_schlitzwiesen",
+    "nasra_ramahi",
+    "salim_al_zalabia",
+    "bart_korner",
+    "richard_o_sullivan",
+    "sun_flowers",
+    "andrea",
+    "astrid_larsson",
+    "lasse",
+    "nils_eriksen",
+    "mateo_cruz",
+    "richard_cleese",
+    "salita_ananda_cruz",
+    "holly_travers",
+    "monaro_namatjira",
+    "tom_mclaren",
+    "chisato_murai",
+    "sayoko_tanizaki",
+    "takumi_arakawa",
+];
+
+/// Whether `id` names one of [`PORTRAITS`].
+pub fn is_portrait(id: &str) -> bool {
+    PORTRAITS.contains(&id)
+}
+
+/// Whether `id` names a picture a player may show: one of [`BANNERS`] or
+/// [`PORTRAITS`].
 pub fn is_banner(id: &str) -> bool {
-    BANNERS.contains(&id)
+    BANNERS.contains(&id) || is_portrait(id)
 }
 
 /// Most rooms a page of the room list holds.
@@ -344,7 +384,7 @@ pub enum RequestError {
     StartWorldPending,
     /// The room is private: it is in no list to describe.
     NotListed,
-    /// No such banner (see [`BANNERS`]).
+    /// No such banner or portrait (see [`BANNERS`], [`PORTRAITS`]).
     UnknownBanner,
 }
 
