@@ -9453,3 +9453,38 @@ fn a_refused_build_says_what_it_collides_with() {
         .unwrap();
     assert_eq!(nothing, "");
 }
+
+/// A part whose loads the action leaves out gets the store's own, one for
+/// each of the model's compartments: the game throws for a part with fewer.
+/// One that names some but not all is refused in every game.
+#[test]
+fn a_bought_vehicle_loads_every_compartment_of_its_model() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        "api.res.modelRep.get = function(id) \
+             return { metadata = { transportVehicle = { compartments = { {}, {} } } } } end",
+    )
+    .exec()
+    .unwrap();
+    let no_loads = BUY_BUS.replace("loads = { { config = 0, cargo = 3 } }", "loads = { }");
+    lua.load(format!(
+        "HOOK.room = true UPDATE({{}}, STATE, 0.2) \
+         HOOK.batch = {{ {no_loads}, {BUY_BUS} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let outcome: String = lua
+        .load(
+            "local p = SENT[1].buy.config.vehicles[1].part \
+             local out = { #SENT, #p.compartment2loadConfig, p.compartment2loadConfig[2].loadConfigIndex, \
+                 tostring(HOOK.applied[1].ok), tostring(HOOK.applied[2].ok), tostring(HOOK.applied[2].why) } \
+             return table.concat(out, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        outcome,
+        "1|2|0|true|false|vehicle/bus/city.mdl has 2 compartments, and the part loads 1"
+    );
+}

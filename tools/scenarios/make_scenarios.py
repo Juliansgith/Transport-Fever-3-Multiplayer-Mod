@@ -40,13 +40,17 @@ AIRFIELD = "::/stations/air/airfield.con"
 HQ = "::/landmarks/hq/headquarter.con"
 SIGNAL = "::/infrastructure/signal/signal_path_a.con"
 
-# Vehicle models, by the game's resource names (INFERRED from the content
-# folders: the baseline lists the names this game has, under "models").
+# Vehicle models, by the game's resource names (the baseline lists the names
+# this game has, under "models"), each in service in 1912, the fixture
+# save's year (the models' availability, build 40408). Their loads are left
+# out: every game gives each compartment the store's own (apply.lua).
 BUS = "::/vehicle/bus/american_post_coach/american_post_coach.mdl"
 TRUCK = "::/vehicle/truck/benz1912/benz1912_box.mdl"
 LOCOMOTIVE = "::/vehicle/train/atlantic_4_4_2/atlantic_4_4_2.mdl"
 WAGGON = "::/vehicle/waggon/boxcar_1_20/boxcar_1_20.mdl"
-SHIP = "::/vehicle/ship/sternwheeler/sternwheeler.mdl"
+SHIP = "::/vehicle/ship/british_columbia/british_columbia.mdl"
+# No plane is in service before 1920 (the Junkers F 13): the air scenario
+# needs a later save, and in 1912 its buy is the game's to refuse.
 PLANE = "::/vehicle/plane/junkers_f_13/junkers_f_13.mdl"
 
 # Transport modes, as TF3 numbers them (api.type.TransportMode).
