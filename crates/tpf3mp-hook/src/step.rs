@@ -86,6 +86,9 @@ pub enum Updates {
 
 /// The room's side of the gate: what the detour needs of a [`Session`].
 pub trait RoomGate {
+    fn poll_departure(&mut self) -> Result<bool, SessionError> {
+        Ok(false)
+    }
     fn return_to_lobby(&mut self) -> bool {
         false
     }
@@ -189,6 +192,9 @@ struct Loading {
 }
 
 impl RoomGate for Session {
+    fn poll_departure(&mut self) -> Result<bool, SessionError> {
+        Session::poll_departure(self)
+    }
     fn return_to_lobby(&mut self) -> bool {
         Session::return_to_lobby(self)
     }
@@ -482,6 +488,8 @@ pub struct StepDriver<G> {
     /// Whether the game is at its menu: no step ran since the last
     /// [`StepDriver::on_menu`].
     at_menu: bool,
+    /// Leave requested; only the main menu may discard the old world's work.
+    menu_departing: bool,
     /// What the menu last said it cannot do, so it is logged once.
     menu_said: Option<&'static str>,
     /// The room's step the next update runs, once a world is loaded: what
@@ -512,6 +520,7 @@ impl<G: RoomGate> StepDriver<G> {
             refused: Vec::new(),
             menus: 0,
             at_menu: false,
+            menu_departing: false,
             menu_said: None,
             next_step: None,
             log: Vec::new(),
@@ -533,10 +542,14 @@ impl<G: RoomGate> StepDriver<G> {
     pub fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
         let mut fault = None;
         for action in actions {
+            let leaving = matches!(action, LobbyAction::Leave | LobbyAction::Disconnect)
+                && matches!(self.phase, Phase::Running | Phase::Holding(_));
             if let Err(error) = self.gate.lobby_act(action) {
                 fault = Some(format!(
                     "the launcher did not hear the lobby window: {error}"
                 ));
+            } else if leaving {
+                self.menu_departing = true;
             }
         }
         if matches!(self.phase, Phase::BeforeBegin | Phase::Ended)
@@ -1101,6 +1114,19 @@ impl<G: RoomGate> StepDriver<G> {
     /// - a load without a file (the owner's own world) and a save need a
     ///   world up: the menu leaves them to the step, and logs so once.
     pub fn on_menu(&mut self) {
+        if self.menu_departing {
+            match self.gate.poll_departure() {
+                Ok(true) => {
+                    self.phase = Phase::Ended;
+                    self.menu_departing = false;
+                }
+                Ok(false) => return,
+                Err(error) => {
+                    self.hold(format!("leaving the old world: {error}"));
+                    return;
+                }
+            }
+        }
         if self.phase == Phase::Ended && self.gate.return_to_lobby() {
             self.phase = Phase::BeforeBegin;
             self.saving = None;
@@ -1212,6 +1238,8 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct Script {
         pub(crate) reset_ended: bool,
+        pub(crate) departure_done: bool,
+        pub(crate) departure_polls: usize,
         pub(crate) begin: VecDeque<Option<Begin>>,
         pub(crate) gates: VecDeque<StepGate>,
         pub(crate) ran: u64,
@@ -1249,6 +1277,10 @@ pub(crate) mod tests {
     }
 
     impl RoomGate for Script {
+        fn poll_departure(&mut self) -> Result<bool, SessionError> {
+            self.departure_polls += 1;
+            Ok(self.departure_done)
+        }
         fn return_to_lobby(&mut self) -> bool {
             std::mem::take(&mut self.reset_ended)
         }
@@ -2211,6 +2243,30 @@ pub(crate) mod tests {
         assert_eq!(call(&mut d, &mut calls), Updates::Own);
         assert_eq!(d.phase(), &Phase::Ended);
         assert_eq!(call(&mut d, &mut calls), Updates::Own);
+    }
+
+    #[test]
+    fn leaving_after_a_world_closes_drains_its_session_only_at_the_menu() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([StepGate::Run, StepGate::Run]);
+        let (mut d, mut calls) = driver(script);
+        call(&mut d, &mut calls);
+        d.lobby(vec![LobbyAction::Leave]);
+        assert_eq!(
+            d.gate.departure_polls, 0,
+            "never discard a live world's events"
+        );
+        d.on_menu();
+        assert_eq!(d.gate.departure_polls, 1);
+        assert_eq!(d.phase(), &Phase::Running, "wait for the real End");
+        d.gate.departure_done = true;
+        d.gate.reset_ended = true;
+        d.on_menu();
+        assert_eq!(d.phase(), &Phase::BeforeBegin);
+        assert_eq!(d.gate.menus_up, vec![1]);
+        assert!(!d.menu_departing);
+        assert_eq!(d.gate.lobby_acts, vec![LobbyAction::Leave]);
     }
 
     #[test]

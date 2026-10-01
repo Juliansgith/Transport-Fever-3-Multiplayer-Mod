@@ -249,6 +249,7 @@ end
 -- The room's world in this game, in words, and how far it is (0 to 1), or
 -- nil when there is none of the room's.
 local function worldText(state)
+	if not state.room then return nil end
 	if state.world == "fetching" then
 		local total = tonumber(state.total) or 0
 		local bytes = tonumber(state.bytes) or 0
@@ -770,6 +771,9 @@ end
 -- `focus` is what the card that opened the window is about: "join" puts
 -- the invite first.
 function lobby.content(onClose, focus, onNewGame)
+	-- The hook calls this before loading, then lets the menu render one frame.
+	-- Polling room state alone races the loader, which suspends menu callbacks.
+	resolveutil.__tpf3mp_before_load = onClose
 	local stateS = react.useState(nil)
 	local problemS = react.useState(nil)
 	-- An action on its way: { text, polls left, the state it was sent in }.

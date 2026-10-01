@@ -541,6 +541,11 @@ fn while_the_rooms_world_comes_the_window_says_how_far_and_stays_usable() {
     show(&lua, Some(&view));
     call(&lua, "tick", ());
     assert!(texts(&lua).contains("Loading the room's world..."));
+    view.room = None;
+    view.world = LobbyWorld::Playing;
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(!texts(&lua).contains("Playing the room's game"));
 }
 
 #[test]
@@ -1263,4 +1268,31 @@ fn unchanged_lobby_polls_leave_native_controls_open() {
     show(&lua, Some(&changed));
     call(&lua, "tick", ());
     assert!(texts(&lua).contains("A new notice"));
+}
+
+#[test]
+fn the_loader_can_close_the_lobby_before_menu_callbacks_are_suspended() {
+    for already_in_lobby in [false, true] {
+        let lua = menu();
+        let mut view = in_room(vec![member(1, "Ann", true, true, true)], true);
+        let connected = online();
+        show(
+            &lua,
+            Some(if already_in_lobby { &view } else { &connected }),
+        );
+        open(&lua, None);
+        view.room.as_mut().unwrap().running = true;
+        show(&lua, Some(&view));
+        lua.load("resolveutil.__tpf3mp_before_load()")
+            .exec()
+            .unwrap();
+        assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 1);
+    }
+    let lua = menu();
+    let mut view = in_room(vec![member(1, "Ann", true, true, true)], true);
+    view.room.as_mut().unwrap().running = true;
+    show(&lua, Some(&view));
+    open(&lua, None);
+    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 0);
+    assert!(enabled(&lua, "Leave room"));
 }

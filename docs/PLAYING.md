@@ -264,8 +264,9 @@ What the window says:
 - "This game has no link to the TPF3-MP launcher": the game was not
   started from the launcher. Close it and start it from there.
 - **Remove** (the bin, for the owner) and **Leave room** ask first.
-  **Disconnect** leaves the server. After leaving a running room, return
-  to the main menu before joining another; the launcher can stay open.
+  **Disconnect** leaves the server. To leave from a running game, use
+  **Quit → Return to Main Menu**, then **Multiplayer → Leave room**.
+  You can join again without restarting the game or launcher.
 
 ## Updates
 

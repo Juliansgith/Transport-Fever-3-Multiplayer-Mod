@@ -170,6 +170,14 @@ local function load(name)
 		busy = task ~= nil and task ~= ""
 	end)
 	if busy then return "busy" end
+	-- Dismiss the lobby while the menu still runs. Loading suspends its
+	-- callbacks, so a state-poll-based close can leave a frozen overlay.
+	if resolveutil and resolveutil.__tpf3mp_before_load then
+		local ok, err = pcall(resolveutil.__tpf3mp_before_load)
+		if not ok then return "closing the multiplayer menu failed: " .. tostring(err) end
+		resolveutil.__tpf3mp_before_load = nil
+		return "busy" -- let the menu apply the removal before starting a load
+	end
 	local info = nil
 	if plan and plan() then
 		-- The room's mods, not the save's: its details first, read by the
@@ -851,6 +859,32 @@ pub(crate) mod tests {
             unsafe { serve("tpf3mp_room_7") },
             Some(Served::Failed(
                 "app.loadGame failed: Game initialization is already active!".into()
+            ))
+        );
+        assert_eq!(menu.run("return #LOADS"), Ok("1".into()));
+        forget_all();
+    }
+
+    #[test]
+    fn loading_closes_the_lobby_and_gives_its_removal_a_frame() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        menu51();
+        forget_all();
+        let menu = Lua::new();
+        menu.run(FAKE_MENU).unwrap();
+        menu.run("CLOSED = 0; resolveutil = { __tpf3mp_before_load = function() CLOSED = CLOSED + 1 end }")
+            .unwrap();
+        assert_eq!(unsafe { adopt(menu.state()) }, Ok(true));
+        assert_eq!(unsafe { serve("room") }, Some(Served::Busy));
+        assert_eq!(menu.run("return CLOSED, #LOADS"), Ok("1|0".into()));
+        assert_eq!(unsafe { serve("room") }, Some(Served::Started));
+        assert_eq!(menu.run("return CLOSED, #LOADS"), Ok("1|1".into()));
+        menu.run("resolveutil.__tpf3mp_before_load = function() error('cannot close', 0) end")
+            .unwrap();
+        assert_eq!(
+            unsafe { serve("room") },
+            Some(Served::Failed(
+                "closing the multiplayer menu failed: cannot close".into()
             ))
         );
         assert_eq!(menu.run("return #LOADS"), Ok("1".into()));

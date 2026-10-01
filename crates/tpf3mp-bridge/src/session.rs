@@ -651,6 +651,32 @@ impl Session {
         true
     }
 
+    /// After the player leaves and the old world has closed, drain its
+    /// remaining messages through End without applying or acknowledging
+    /// simulation work. A released step can no longer run at the menu.
+    pub fn poll_departure(&mut self) -> Result<bool, SessionError> {
+        self.link.heartbeat();
+        if self.gate.ended() {
+            return Ok(true);
+        }
+        for _ in 0..256 {
+            let Some(message) = self.try_recv()? else {
+                self.check_agent()?;
+                return Ok(false);
+            };
+            match message {
+                ToHook::Lobby(view) => self.remember_lobby(*view),
+                end @ ToHook::End { .. } => {
+                    self.gate.on_message(end)?;
+                    return Ok(true);
+                }
+                ToHook::Begin { .. } => return Err(SessionError::Unexpected("Begin before End")),
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
     /// Without blocking, for a game at its main menu, where no step reads
     /// the link: reads what the agent sent before the room's game, keeping
     /// the lobby. It stops at the first message the game must see at its
@@ -1131,6 +1157,36 @@ mod tests {
         assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
         assert_eq!(session.take_lobby(), Some(lobby_view("in the game")));
         assert!(world.notices.is_empty(), "the lobby is not the game's");
+    }
+
+    #[test]
+    fn a_closed_world_can_leave_past_unrun_steps_without_reporting_them() {
+        let (mut session, agent, mut world) = playing("menu-departure", 50);
+        assert_eq!(heard_now(&agent), Some(ToAgent::Loaded { next_step: 1 }));
+        say(&agent, &ToHook::Release { through: 1 });
+        assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Run);
+        session.lobby_act(LobbyAction::Leave).unwrap();
+        assert_eq!(heard(&agent), ToAgent::Lobby(LobbyAction::Leave));
+        assert!(!session.poll_departure().unwrap());
+        say(&agent, &ToHook::Apply(event(2)));
+        say(&agent, &ToHook::Release { through: 2 });
+        say(
+            &agent,
+            &ToHook::End {
+                reason: Text::lossy("left"),
+            },
+        );
+        say(
+            &agent,
+            &ToHook::Lobby(Box::new(lobby_view("back at the hub"))),
+        );
+        say(&agent, &begin(50));
+        assert!(session.poll_departure().unwrap());
+        assert!(world.applied.is_empty());
+        assert_eq!(heard_now(&agent), None, "no false Ran or Checkpoint");
+        assert!(session.return_to_lobby());
+        assert!(session.try_begin().unwrap().is_some());
+        assert_eq!(session.take_lobby(), Some(lobby_view("back at the hub")));
     }
 
     #[test]
