@@ -27,7 +27,7 @@
 
 use std::sync::{
     Mutex, PoisonError,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use tpf3mp_hookcore::profile::ResolvedProfile;
@@ -178,6 +178,222 @@ static SIM_STATES: AtomicUsize = AtomicUsize::new(0);
 static SIM_INDEX: AtomicUsize = AtomicUsize::new(0);
 static SIM_BASE: AtomicUsize = AtomicUsize::new(0);
 
+/// The proposal street graph's owner read,
+/// `street_util::ProposalStreetGraph::GetPlayerOwnedPtr` (vf5: `this` and an
+/// entity in, the entity's `PlayerOwned` or null out): detoured to count its
+/// callers, never to change its answer.
+pub const CALLER_TARGET: &str = "probe: ProposalStreetGraph::GetPlayerOwnedPtr";
+/// Return addresses counted apart; the rest go to one overflow row.
+const SLOTS: usize = 64;
+
+/// Where a call came from: inside the simulation's step on the main thread,
+/// on another thread (the simulation's pool, during the step), or on the
+/// main thread outside the step (the GUI and its tools).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Step = 0,
+    Pool = 1,
+    Gui = 2,
+}
+
+/// One row: a return address and its counts by [`Side`].
+struct Row {
+    key: AtomicU64,
+    counts: [AtomicU64; 3],
+}
+
+#[allow(clippy::declare_interior_mutable_const)]
+const ROW: Row = Row {
+    key: AtomicU64::new(0),
+    counts: [const { AtomicU64::new(0) }; 3],
+};
+
+/// The callers seen since the last flush, fixed size: no allocation and no
+/// lock on the hot path.
+static ROWS: [Row; SLOTS] = [ROW; SLOTS];
+/// Calls whose return address found no free row.
+static OVERFLOW: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+/// The original function (the trampoline), 0 while not detoured.
+static CALLER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+/// The executable's base, for return addresses as RVAs.
+static IMAGE_BASE: AtomicUsize = AtomicUsize::new(0);
+/// The main thread's id, as the menu's frame runs on it; 0 while unknown.
+static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
+/// When the callers were last flushed to the log.
+static FLUSHED_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Counts one call from `ret` on `side`. Lock-free: a row is claimed by a
+/// compare-and-swap of its key, then counted with one add.
+pub fn count(ret: u64, side: Side) {
+    let start = usize::try_from((ret ^ (ret >> 7)) % SLOTS as u64).unwrap_or(0);
+    for i in 0..SLOTS {
+        let row = &ROWS[(start + i) % SLOTS];
+        let key = row.key.load(Ordering::Relaxed);
+        let mine = key == ret
+            || (key == 0
+                && match row
+                    .key
+                    .compare_exchange(0, ret, Ordering::Relaxed, Ordering::Relaxed)
+                {
+                    Ok(_) => true,
+                    Err(now) => now == ret,
+                });
+        if mine {
+            row.counts[side as usize].fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    }
+    OVERFLOW[side as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// The counts since the last call, busiest first, and the overflow. Each
+/// count is taken and zeroed at once, so a call counted meanwhile is in this
+/// flush or the next, never lost.
+pub fn take_counts() -> (Vec<(u64, [u64; 3])>, [u64; 3]) {
+    let mut rows = Vec::new();
+    for row in &ROWS {
+        let key = row.key.load(Ordering::Relaxed);
+        if key == 0 {
+            continue;
+        }
+        let counts = [0, 1, 2].map(|i| row.counts[i].swap(0, Ordering::Relaxed));
+        if counts.iter().any(|&n| n > 0) {
+            rows.push((key, counts));
+        }
+    }
+    rows.sort_by_key(|(key, counts)| (std::cmp::Reverse(counts.iter().sum::<u64>()), *key));
+    let overflow = [0, 1, 2].map(|i| OVERFLOW[i].swap(0, Ordering::Relaxed));
+    (rows, overflow)
+}
+
+/// The flush's lines: one per caller, at most 12, as RVAs.
+pub fn callers_text(rows: &[(u64, [u64; 3])], overflow: [u64; 3], base: u64) -> Vec<String> {
+    if rows.is_empty() && overflow.iter().all(|&n| n == 0) {
+        return vec!["probe: owner reads: none in 3 s".into()];
+    }
+    let mut lines: Vec<String> = rows
+        .iter()
+        .take(12)
+        .map(|(ret, [step, pool, gui])| {
+            format!(
+                "probe: owner read from rva {:#x}: in the step {step}, sim pool {pool}, GUI {gui}",
+                ret.saturating_sub(base)
+            )
+        })
+        .collect();
+    if rows.len() > 12 || overflow.iter().any(|&n| n > 0) {
+        lines.push(format!(
+            "probe: owner reads elsewhere: {} more callers, overflow step {} pool {} GUI {}",
+            rows.len().saturating_sub(12),
+            overflow[0],
+            overflow[1],
+            overflow[2]
+        ));
+    }
+    lines
+}
+
+#[cfg(windows)]
+fn thread_id() -> u32 {
+    // SAFETY: reads the calling thread's id; no arguments, no failure.
+    unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }
+}
+
+#[cfg(not(windows))]
+fn thread_id() -> u32 {
+    0
+}
+
+/// Which side a call on this thread is on now.
+fn side_now() -> Side {
+    if crate::order::in_step() {
+        return Side::Step;
+    }
+    let main = MAIN_THREAD.load(Ordering::Relaxed);
+    if main != 0 && thread_id() != main {
+        Side::Pool
+    } else {
+        Side::Gui
+    }
+}
+
+/// The detour's body: counts the caller, then calls the original with the
+/// same two arguments and returns its answer unchanged.
+extern "C" fn owner_read(this: usize, entity: usize, ret: u64) -> usize {
+    count(ret, side_now());
+    let original = CALLER_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: the trampoline of the function this detours, stored before
+    // the detour could be reached; it takes `this` and the entity in rcx and
+    // rdx, as the original was called, and returns its pointer in rax.
+    let original: extern "C" fn(usize, usize) -> usize =
+        unsafe { std::mem::transmute::<usize, extern "C" fn(usize, usize) -> usize>(original) };
+    original(this, entity)
+}
+
+/// The detour's entry: hands the return address (at `[rsp]` on entry) to
+/// [`owner_read`] as its third argument and jumps there, so the stack is the
+/// caller's own and `owner_read` returns straight to it. r8 is no argument
+/// of the original (`this` in rcx, the entity in edx).
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[unsafe(naked)]
+extern "C" fn owner_read_entry() {
+    core::arch::naked_asm!("mov r8, [rsp]", "jmp {body}", body = sym owner_read);
+}
+
+/// Detours [`CALLER_TARGET`] for counting; returns its log line.
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn install_callers(resolved: &ResolvedProfile) -> String {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    let Some(target) = resolved.get(CALLER_TARGET) else {
+        return format!("probe: owner reads not counted: the profile has no {CALLER_TARGET}");
+    };
+    // SAFETY: a null name asks for the executable's own base.
+    let base = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
+    IMAGE_BASE.store(base, Ordering::Release);
+    // SAFETY: a function the profile resolved and prologue-checked in this
+    // build, detoured while the game starts, before any world exists; the
+    // entry forwards every argument register untouched but r8, which the
+    // original does not take.
+    let installed = unsafe {
+        tpf3mp_hookcore::detour::InlineDetour::install(
+            target.address as usize as *mut u8,
+            owner_read_entry as *const u8,
+        )
+    };
+    match installed {
+        Ok(detoured) => {
+            CALLER_ORIGINAL.store(detoured.trampoline() as usize, Ordering::Release);
+            let _kept = std::mem::ManuallyDrop::new(detoured);
+            format!(
+                "probe: counting the callers of {CALLER_TARGET} at {:#x}, its answer unchanged; flushed every {} s",
+                target.address,
+                EVERY_MS / 1000
+            )
+        }
+        Err(error) => format!("probe: owner reads not counted: detouring failed: {error:?}"),
+    }
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn install_callers(_resolved: &ResolvedProfile) -> String {
+    "probe: owner reads not counted: Windows x86-64 only".into()
+}
+
+/// The callers' lines when due (every [`EVERY_MS`]); none while not counting.
+fn flush_callers(now_ms: u64) -> Vec<String> {
+    if CALLER_ORIGINAL.load(Ordering::Acquire) == 0 {
+        return Vec::new();
+    }
+    MAIN_THREAD.store(thread_id(), Ordering::Relaxed);
+    let last = FLUSHED_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last) < EVERY_MS {
+        return Vec::new();
+    }
+    FLUSHED_MS.store(now_ms, Ordering::Relaxed);
+    let (rows, overflow) = take_counts();
+    callers_text(&rows, overflow, IMAGE_BASE.load(Ordering::Acquire) as u64)
+}
+
 /// When the probe last looked, and at which game.
 struct Pace {
     game: usize,
@@ -231,8 +447,9 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> String {
     SIM_INDEX.store(s.index, Ordering::Release);
     SIM_BASE.store(s.base, Ordering::Release);
     ON.store(true, Ordering::Release);
+    let callers = install_callers(resolved);
     format!(
-        "probe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
+        "{callers}\nprobe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
         g.game,
         g.state,
         s.states,
@@ -269,6 +486,13 @@ pub fn frame(menu: usize, now_ms: u64) -> Vec<String> {
     if !ON.load(Ordering::Acquire) || menu == 0 {
         return Vec::new();
     }
+    let mut lines = flush_callers(now_ms);
+    lines.extend(states(menu, now_ms));
+    lines
+}
+
+/// The states' lines when due.
+fn states(menu: usize, now_ms: u64) -> Vec<String> {
     let game = pointer(menu + GUI_GAME.load(Ordering::Acquire)).unwrap_or(0);
     let mut pace = PACE.lock().unwrap_or_else(PoisonError::into_inner);
     if game != pace.game {
@@ -397,6 +621,41 @@ mod tests {
         assert_eq!(scan(&bytes, 118_368), vec![(8, 'q'), (20, 'd')]);
         assert_eq!(hits_text(&scan(&bytes, 5)), "none");
         assert_eq!(hits_text(&scan(&bytes, 118_368)), "+0x8q +0x14d");
+    }
+
+    #[test]
+    fn callers_are_counted_by_side_and_flushed_busiest_first() {
+        count(0x1_4000_1000, Side::Gui);
+        count(0x1_4000_1000, Side::Gui);
+        count(0x1_4000_2000, Side::Step);
+        count(0x1_4000_1000, Side::Pool);
+        let (rows, overflow) = take_counts();
+        assert_eq!(
+            rows,
+            vec![(0x1_4000_1000, [0, 1, 2]), (0x1_4000_2000, [1, 0, 0])]
+        );
+        assert_eq!(
+            callers_text(&rows, overflow, 0x1_4000_0000),
+            [
+                "probe: owner read from rva 0x1000: in the step 0, sim pool 1, GUI 2",
+                "probe: owner read from rva 0x2000: in the step 1, sim pool 0, GUI 0",
+            ]
+        );
+        let (rows, overflow) = take_counts();
+        assert!(rows.is_empty(), "taken once");
+        assert_eq!(
+            callers_text(&rows, overflow, 0),
+            ["probe: owner reads: none in 3 s"]
+        );
+        // More callers than rows: the rest are counted, not lost.
+        for i in 1..=(SLOTS as u64 + 3) {
+            count(0x2_0000_0000 + i * 16, Side::Gui);
+        }
+        let (rows, overflow) = take_counts();
+        // Rows keep their caller once claimed (call sites are few); the
+        // two above still hold theirs.
+        assert_eq!(rows.len(), SLOTS - 2);
+        assert_eq!(overflow, [0, 0, 5]);
     }
 
     #[test]

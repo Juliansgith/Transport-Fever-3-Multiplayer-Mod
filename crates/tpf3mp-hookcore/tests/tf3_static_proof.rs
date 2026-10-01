@@ -101,6 +101,7 @@ const TARGETS: &[(&str, u64)] = &[
     // The probe of the engine's player (crates/tpf3mp-hook/src/probe.rs).
     ("probe: GUI GameState getter", 0x6aa800),
     ("probe: engine GameState getter", 0x11ffd0),
+    ("probe: ProposalStreetGraph::GetPlayerOwnedPtr", 0xa46cd0),
 ];
 
 #[test]

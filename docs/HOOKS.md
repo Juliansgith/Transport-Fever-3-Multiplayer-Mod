@@ -1730,6 +1730,23 @@ The player is the save's, as the mod's game script notes it once linked
 (`note("tpf3mp.player")`); until then `probe: the save's player is not known
 yet`. Without the variable: `probe: the engine's player is not probed`.
 
+With the same variable it also counts who asks the proposal street graph
+for an entity's owner (`probe: ProposalStreetGraph::GetPlayerOwnedPtr`,
+rva 0xa46cd0): a pass-through detour that always calls the original and
+returns its answer, counting each caller's return address in a fixed table
+of 64 rows by side (inside `GameSim::Step`, on a simulation pool thread,
+or on the main thread outside the step: the GUI and its tools), with no
+lock and no allocation. Every 3 s, from the menu's frame:
+
+```
+probe: counting the callers of probe: ProposalStreetGraph::GetPlayerOwnedPtr at 0x...; its answer unchanged; flushed every 3 s
+probe: owner read from rva 0x...: in the step 0, sim pool 0, GUI 412
+probe: owner reads: none in 3 s
+```
+
+A caller counted under GUI only is a tool's or the GUI's own; one under
+the step or the pool is the simulation's.
+
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and
 `getCompaniesValue()` take no company and answer for the engine's local

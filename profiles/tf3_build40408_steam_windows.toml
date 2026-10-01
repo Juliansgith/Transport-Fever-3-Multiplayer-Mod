@@ -739,3 +739,18 @@ signature = "80 79 10 00 48 8B 41 08 48 8B 80 ?? ?? ?? ?? 74 ?? B9 01 00 00 00 2
 offset = 0
 prologue = "80 79 10 00 48 8B 41 08"
 required = false
+
+# The probe's caller count (crates/tpf3mp-hook/src/probe.rs), only with
+# TPF3MP_PROBE_PLAYER=1: street_util::ProposalStreetGraph::GetPlayerOwnedPtr,
+# vf5 of the proposal street graph (rva 0xa46cd0; named by its assert string
+# "street_util::ProposalStreetGraph::GetPlayerOwnedPtr"), this in rcx and the
+# entity in edx, the entity's PlayerOwned (or null) in rax. Detoured to count
+# the return addresses of its callers, inside and outside GameSim::Step, and
+# always answered by the original. The live graph's twin (vf5, 0xa45d90) is
+# byte-identical to four other slots and has no unique signature.
+[[target]]
+name = "probe: ProposalStreetGraph::GetPlayerOwnedPtr"
+signature = "48 83 EC 28 4C 8B 49 20 4C 8B D1 49 8B 41 48 4D 8B 41 50 49 3B C0 74 ?? 39 10 0F 84 ?? ?? ?? ?? 48 05 50 03 00 00 49 3B C0 75 ?? 49 8B 49 18 49 8B 41 20 48 3B C8 74 ?? 39 11 0F 84 ?? ?? ?? ?? 48 81 C1 50 03 00 00 48 3B C8 75 ?? 4D 63 42 34"
+offset = 0
+prologue = "48 83 EC 28 4C 8B 49 20 4C 8B D1 49 8B 41 48"
+required = false
