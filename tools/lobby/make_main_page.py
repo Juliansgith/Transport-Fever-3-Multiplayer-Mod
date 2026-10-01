@@ -100,11 +100,21 @@ SHOW = '''	-- TPF3-MP: open the Multiplayer window, as showDeluxeContent opens i
 		titleIconOnlyState:set(true)
 		local wc = mainPageParams.commonParams.windowContainer:get():getApi()
 		wc.addSingletonWindow(Tpf3mpLobbyWindow, {
+			-- Closing works while this page is gone too (the room's world
+			-- loading replaces it): the window goes first, through the
+			-- container it was added to, then the page's look comes back;
+			-- each step on its own, so an expired ref of the page's never
+			-- keeps the window up.
 			onClose = function()
-				titleIconOnlyState:set(false)
-				fastFadeInState:set(true)
-				cardsFadeInStartTimeRef:set(api.util.getApplicationTime())
-				mainPageParams.commonParams.windowContainer:get():getApi().removeAllWindows(Tpf3mpLobbyWindow)
+				local removed = pcall(function() wc.removeAllWindows(Tpf3mpLobbyWindow) end)
+				if not removed then
+					pcall(function()
+						mainPageParams.commonParams.windowContainer:get():getApi().removeAllWindows(Tpf3mpLobbyWindow)
+					end)
+				end
+				pcall(function() titleIconOnlyState:set(false) end)
+				pcall(function() fastFadeInState:set(true) end)
+				pcall(function() cardsFadeInStartTimeRef:set(api.util.getApplicationTime()) end)
 			end,
 			pos = pos,
 			focus = focus,

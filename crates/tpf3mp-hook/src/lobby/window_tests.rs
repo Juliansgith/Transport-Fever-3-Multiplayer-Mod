@@ -497,10 +497,43 @@ fn while_the_rooms_world_comes_the_window_says_how_far_and_stays_usable() {
     );
     assert_eq!(sent(&lua).len(), 1);
     assert!(enabled(&lua, "Leave room"));
+    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 0);
+}
+
+/// The window closes as the room's world loads, while the main menu that
+/// holds it is still there: once the world is up, that menu is gone and
+/// the window could not be closed any more. The hook's load of the world
+/// closes it through the close the window leaves it; the window closes
+/// itself when it sees the world loading.
+#[test]
+fn the_window_closes_as_the_rooms_world_loads() {
+    let lua = menu();
+    let mut view = in_room(vec![member(1, "Ann", true, true, true)], true);
+    view.room.as_mut().unwrap().running = true;
+    view.world = LobbyWorld::Fetching { bytes: 1, total: 2 };
+    show(&lua, Some(&view));
+    open(&lua, None);
+    call(&lua, "tick", ());
+    assert_eq!(
+        lua.globals().get::<u32>("CLOSED").unwrap(),
+        0,
+        "open while fetching"
+    );
+    // What the hook calls before it loads the world.
+    lua.load("resolveutil.__tpf3mp_close()").exec().unwrap();
+    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 1);
+    // Seen by the window itself.
     view.world = LobbyWorld::Loading;
     show(&lua, Some(&view));
     call(&lua, "tick", ());
-    assert!(texts(&lua).contains("Loading the room's world..."));
+    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 2);
+    // A window opened while the world is already up stays open.
+    let lua = menu();
+    view.world = LobbyWorld::Playing;
+    show(&lua, Some(&view));
+    open(&lua, None);
+    call(&lua, "tick", ());
+    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 0);
 }
 
 #[test]
@@ -719,6 +752,43 @@ fn a_public_room_is_listed_with_its_saves_climate_and_year() {
         })
     );
     assert_eq!(lua.globals().get::<u32>("READS").unwrap(), 1, "read once");
+}
+
+/// The window's close in `main_page.tl` (Teal, which the stand-in cannot
+/// run) removes the window first, through the container it was added to,
+/// and does every step on its own: once the main page is gone its refs
+/// have expired, and a failing step must not keep the window up.
+#[test]
+fn the_windows_close_removes_it_first_and_survives_an_expired_page() {
+    let page = include_str!("../../../../mod/tpf3mp_1/content/gui/menu/main_page.tl");
+    let start = page.find("local showMultiplayer").unwrap();
+    let close = &page[start
+        ..start
+            + page[start..]
+                .find(
+                    "
+	end
+",
+                )
+                .unwrap()];
+    let remove = close
+        .find("pcall(function() wc.removeAllWindows(Tpf3mpLobbyWindow) end)")
+        .expect("removed through the container it was added to");
+    for set in [
+        "pcall(function() titleIconOnlyState:set(false) end)",
+        "pcall(function() fastFadeInState:set(true) end)",
+    ] {
+        let at = close
+            .find(set)
+            .unwrap_or_else(|| panic!("{set} on its own"));
+        assert!(at > remove, "the window goes first");
+    }
+    // The generator applies the same block.
+    let generator = include_str!("../../../../tools/lobby/make_main_page.py");
+    assert!(
+        generator.contains(close),
+        "make_main_page.py has the same close"
+    );
 }
 
 /// The window itself is a wrapper recipe in the mod's `main_page.tl`

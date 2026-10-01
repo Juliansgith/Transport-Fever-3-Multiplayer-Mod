@@ -118,6 +118,16 @@ A game Steam started has no hook and keeps the plain menu.
     which waits until everyone is ready. Once the room's game runs, the
     chat and Leave stay and Ready and Start go.
 
+  The window closes as the room's world starts loading. It lives in the
+  main menu's window container, and once the world is up the menu that
+  holds it is gone: its X, and any close, could no longer reach it
+  (2026-10-01, the window stayed on screen in the game). So the hook's
+  load of the room's world (`crates/tpf3mp-hook/src/menu.rs`) first calls
+  the close the window leaves it (`resolveutil.__tpf3mp_close`), and the
+  window closes itself when it sees the world loading. Its close removes
+  the window first, through the container it was added to, and does each
+  step on its own, so an expired ref of the main page's never keeps it up.
+
   `crates/tpf3mp-hook/src/lobby/window_tests.rs` draws the window in every
   view against a stand-in for the menu (`tests/lua/fake_menu.lua`), clicks
   its buttons, and parses every action it sends as the hook does.

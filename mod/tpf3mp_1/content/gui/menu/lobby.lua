@@ -799,6 +799,18 @@ function lobby.content(onClose, focus)
 	local competitiveS = react.useState(false)
 	local joiningS = react.useState(nil)
 	local listAtRef = react.useRef(LIST_POLLS)
+	-- The room's world as this window last saw it; false before its first
+	-- poll.
+	local worldRef = react.useRef(false)
+
+	-- The window closes as the room's world loads, while the menu that
+	-- holds it is still there: once the world is up the menu is gone, and
+	-- the window with it could not be closed (2026-10-01). The hook's load
+	-- of the room's world closes it first (crates/tpf3mp-hook/src/menu.rs);
+	-- the window itself closes when it sees the world loading or played.
+	if type(resolveutil) == "table" then
+		pcall(function() resolveutil.__tpf3mp_close = onClose end)
+	end
 
 	-- What the view shows, in one string: when it changes, an action sent
 	-- has been answered.
@@ -829,6 +841,13 @@ function lobby.content(onClose, focus)
 	react.onStepTimer(function()
 		local state, why = fetchState()
 		if state then
+			local before = worldRef:get()
+			worldRef:set(state.world or "")
+			local world = state.world
+			if before ~= false and before ~= world and (world == "loading" or world == "playing") then
+				pcall(onClose)
+				return
+			end
 			if problemS:old() ~= nil then problemS:set(nil) end
 			local pending = pendingS:old()
 			if pending then

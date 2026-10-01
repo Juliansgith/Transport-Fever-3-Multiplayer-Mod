@@ -190,6 +190,13 @@ local function load(name)
 		if made == nil and why then return why end
 		info = made
 	end
+	-- The main menu's Multiplayer window closes first (gui/menu/lobby.lua
+	-- leaves its close here): the menu that holds it goes once the world is
+	-- up, and with it any way to close the window.
+	pcall(function()
+		local close = resolveutil.__tpf3mp_close
+		if type(close) == "function" then close() end
+	end)
 	local ok, err = pcall(function()
 		theApp.loadGame(savegameId(theApp, name), false, info)
 	end)
@@ -972,6 +979,37 @@ pub(crate) mod tests {
         assert_eq!(unsafe { world_loaded(menu.as_ptr() as usize) }, Some(false));
         set_game_field(0);
         assert_eq!(unsafe { world_loaded(menu.as_ptr() as usize) }, None);
+    }
+
+    /// The main menu's Multiplayer window is closed before the room's world
+    /// loads, whatever its close does; a menu without it loads all the same.
+    #[test]
+    fn the_multiplayer_window_closes_before_the_rooms_world_loads() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        menu51();
+        forget_all();
+        let menu = Lua::new();
+        menu.run(FAKE_MENU).unwrap();
+        menu.run(
+            "CLOSED = {}              resolveutil = { __tpf3mp_close = function() CLOSED[#CLOSED + 1] = #LOADS end }",
+        )
+        .unwrap();
+        assert_eq!(unsafe { adopt(menu.state()) }, Ok(true));
+        assert_eq!(unsafe { serve("tpf3mp_room_7") }, Some(Served::Started));
+        assert_eq!(
+            menu.run("return table.concat(CLOSED, ',') .. '/' .. #LOADS"),
+            Ok("0/1".into()),
+            "closed once, before the load"
+        );
+        // A close that fails does not stop the load.
+        menu.run("resolveutil.__tpf3mp_close = function() error('expired') end")
+            .unwrap();
+        assert_eq!(unsafe { serve("tpf3mp_room_8") }, Some(Served::Started));
+        // No window, no resolveutil: the load as before.
+        menu.run("resolveutil = nil").unwrap();
+        assert_eq!(unsafe { serve("tpf3mp_room_9") }, Some(Served::Started));
+        assert_eq!(menu.run("return #LOADS"), Ok("3".into()));
+        forget_all();
     }
 
     #[test]

@@ -213,11 +213,11 @@ window too.
    with **Load Game** instead, as in single player, and it becomes the
    room's.
 8. **Play.** While the world comes, the window says how far it is
-   ("Receiving the room's world: 42% (48.0 MB of 112 MB)", then "Loading
-   the room's world..."), and the chat and **Leave room** still work.
-   Each player's row says how far their game is: **Downloading 42%**,
-   then **Loading...**, then **Playing**. In
-   the game, the Multiplayer window on the game bar has the room (see
+   ("Receiving the room's world: 42% (48.0 MB of 112 MB)"), and the chat
+   and **Leave room** still work. Each player's row says how far their
+   game is: **Downloading 42%**, then **Loading...**, then **Playing**.
+   The window closes by itself when your game starts loading the world.
+   In the game, the Multiplayer window on the game bar has the room (see
    "While you play").
 
 What the window says:
