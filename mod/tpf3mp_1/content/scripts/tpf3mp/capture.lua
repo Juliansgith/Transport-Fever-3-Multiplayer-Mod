@@ -724,13 +724,54 @@ function capture.vehicleManualDeparture(ctx, vehicle, manual)
 	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ManualDeparture = manual == true } } }
 end
 
+-- A line's waypoint (the game's Waypoint) as the schema's Waypoint: on a
+-- street or track, the lane its EdgePos names, in the transport network of
+-- a street or track edge (by its ends, node 0 first) or of a construction
+-- (by its file and place), and where along it; a ship's or aircraft's in the
+-- open by its position. Its tag goes as it is. Raises why the room cannot
+-- name one.
+function capture.waypoint(w)
+	local tag = get(w, "tag")
+	if type(tag) ~= "number" or tag ~= math.floor(tag) then error("a waypoint without its tag", 0) end
+	local edgePos = get(w, "edgePos")
+	local id = edgePos and get(edgePos, "edgeId")
+	local entity = id and get(id, "entity")
+	if type(entity) == "number" and entity >= 0 then
+		local index, param = get(id, "index"), get(edgePos, "param")
+		if type(index) ~= "number" or type(param) ~= "number" then error("a waypoint it cannot read", 0) end
+		local of
+		pcall(function()
+			local CT = api.type.ComponentType
+			local edge = api.engine.getComponent(entity, CT.BASE_EDGE)
+			if edge ~= nil then
+				local a = api.engine.getComponent(edge.node0, CT.BASE_NODE).position
+				local b = api.engine.getComponent(edge.node1, CT.BASE_NODE).position
+				local street = api.engine.getComponent(entity, CT.BASE_EDGE_STREET) ~= nil
+				local function xyz(p) return { x = p.x or p[1], y = p.y or p[2], z = p.z or p[3] } end
+				of = { Edge = { network = street and "Street" or "Track", ends = { a = xyz(a), b = xyz(b) } } }
+			else
+				local ref = capture.replaced(api.engine.getComponent(entity, CT.CONSTRUCTION))
+				if ref then of = { Construction = ref } end
+			end
+		end)
+		if of == nil then error("a waypoint on a network the room cannot name", 0) end
+		return { at = { Lane = { of = of, index = index, param = param } }, tag = tag }
+	end
+	local p = get(w, "pos")
+	local x, y, z = get(p, "x"), get(p, "y"), get(p, "z")
+	if type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
+		error("a waypoint with no place", 0)
+	end
+	return { at = { Open = { x = x, y = y, z = z } }, tag = tag }
+end
+
 -- The game's load modes (Line.LoadMode), numbers to the schema's names.
 local LOAD_MODES = { [0] = "LoadIfAvailable", [1] = "FullLoadAny", [2] = "FullLoadAll", [3] = "LegacyUnloadOnly" }
 
 -- A Line component as the schema's LineData.
 function capture.lineData(ctx, line)
 	local stops = each(get(line, "stops"), function(s)
-		if (length(get(s, "waypoints")) or 0) > 0 then error("a line through waypoints", 0) end
+		local waypoints = each(get(s, "waypoints"), capture.waypoint)
 		local config = get(s, "stopConfig")
 		local mode = tonumber(get(s, "loadMode"))
 		return {
@@ -750,6 +791,7 @@ function capture.lineData(ctx, line)
 				destroy_for_config_change = get(config, "destroyForConfigChange") == true,
 				destroy_for_refresh = get(config, "destroyForRefresh") == true,
 			},
+			waypoints = waypoints,
 		}
 	end)
 	local info = get(line, "vehicleInfo")

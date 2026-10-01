@@ -183,6 +183,31 @@ fn line_data() -> LineData {
         max_wait: 180_000_000,
         max_extra_wait: 30_500_000,
         rules,
+        waypoints: list(vec![
+            tpf3mp_proto::action::Waypoint {
+                at: tpf3mp_proto::action::WaypointAt::Lane {
+                    of: tpf3mp_proto::action::NetworkOf::Edge(EdgeRef {
+                        network: Network::Track,
+                        ends: ends(pos(0, 0, 0), pos(80_000, 0, 0)),
+                    }),
+                    index: 1,
+                    param: Fraction(250_000),
+                },
+                tag: 3,
+            },
+            tpf3mp_proto::action::Waypoint {
+                at: tpf3mp_proto::action::WaypointAt::Lane {
+                    of: tpf3mp_proto::action::NetworkOf::Construction(depot()),
+                    index: 12,
+                    param: Fraction(1_000_000),
+                },
+                tag: 4,
+            },
+            tpf3mp_proto::action::Waypoint {
+                at: tpf3mp_proto::action::WaypointAt::Open(pos(-1_200_000, 340_000, 0)),
+                tag: 5,
+            },
+        ]),
     };
     LineData {
         stops: list(vec![

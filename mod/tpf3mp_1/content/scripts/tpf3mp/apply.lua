@@ -1501,6 +1501,42 @@ end
 -- The game's load modes, by the schema's names, as numbers.
 local LOAD_MODES = { LoadIfAvailable = 0, FullLoadAny = 1, FullLoadAll = 2, LegacyUnloadOnly = 3 }
 
+-- A line's waypoint (action::Waypoint) as the game's Waypoint: on a lane,
+-- the edge found by its ends (the lowest entity between those nodes, as for
+-- a stop), which must run node 0 to node 1 as on the originator's (else
+-- the lane's index and place would name another: refused), or the
+-- construction at its place; in the open, its position. Its tag as carried.
+local function waypointFor(w)
+	local wp = api.type.Waypoint.new()
+	local at = w.at or {}
+	if at.Open then
+		wp.pos = api.type.Vec3f.new(at.Open.x, at.Open.y, at.Open.z)
+	elseif at.Lane then
+		local lane, entity = at.Lane, nil
+		if lane.of.Edge then
+			local ref = lane.of.Edge
+			local nodes = readNodes(ref.network)
+			local e = edgeBetween(nodes, ref.network, arr(ref.ends.a), arr(ref.ends.b))
+			if e == nil then error("no " .. ref.network .. " edge for a waypoint", 0) end
+			local a = nearest(nodes, arr(ref.ends.a), END_TOLERANCE)
+			if a == nil or e.node0 ~= a.id then error("a waypoint's edge runs the other way here", 0) end
+			entity = e.id
+		elseif lane.of.Construction then
+			entity = constructionAt(lane.of.Construction)
+		else
+			error("a waypoint on no network", 0)
+		end
+		local edgePos = api.type.EdgePos.new()
+		edgePos.edgeId = api.type.EdgeId.new(entity, lane.index)
+		edgePos.param = lane.param
+		wp.edgePos = edgePos
+	else
+		error("a waypoint with no place", 0)
+	end
+	wp.tag = w.tag
+	return wp
+end
+
 -- A LineData as the game's Line component. Each stop is at a station the
 -- acting company may use (tpf3mp/companies.lua, mayUse): no company's, its
 -- own, or another company's that keeps its stations open (DECISIONS.md, D22,
@@ -1534,6 +1570,9 @@ local function lineComponent(data, ctx)
 		config.destroyForConfigChange = s.rules.destroy_for_config_change == true
 		config.destroyForRefresh = s.rules.destroy_for_refresh == true
 		stop.stopConfig = config
+		local waypoints = {}
+		for k, w in ipairs(s.waypoints or {}) do waypoints[k] = waypointFor(w) end
+		stop.waypoints = waypoints
 		stops[i] = stop
 	end
 	line.stops = stops

@@ -233,6 +233,7 @@ fn line_data(stations: &[u32]) -> LineData {
                         destroy_for_config_change: false,
                         destroy_for_refresh: false,
                     },
+                    waypoints: BoundedVec::empty(),
                 })
                 .collect(),
         ),
