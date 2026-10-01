@@ -90,7 +90,7 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
     outcomes.extend(platform::install(resolved, wanted(platform::TOGGLE_ENV)));
     outcomes.push(decision_sync::install(
         resolved,
-        wanted(decision_sync::TOGGLE_ENV),
+        crate::step::alternate_wanted(std::env::var(decision_sync::TOGGLE_ENV).ok().as_deref()),
     ));
     outcomes.extend(road::install(resolved, wanted(road::TOGGLE_ENV), measuring));
     // The claim loop's watcher rides on the vehicle watcher's switch.
@@ -1210,6 +1210,7 @@ pub mod platform {
 
     pub(super) unsafe extern "system" fn visit_hook(regs: *mut SavedRegs) {
         let _timer = perf::time(Piece::PlatformVisit);
+        let rsp = SavedRegs::rsp(regs);
         guarded(FIX, &VISIT_BROKEN, || {
             // SAFETY: the stub's block, held until the hook returns.
             let regs = unsafe { &mut *regs };
@@ -1262,6 +1263,7 @@ pub mod platform {
                 if WATCH.load(Ordering::Relaxed) {
                     CURRENT.with(|current| current.set(None));
                     watch(regs.r13, regs.rdi, regs.rsi);
+                    watch_path(rsp);
                 }
             });
         });
@@ -1443,6 +1445,81 @@ pub mod platform {
         });
     }
 
+    /// A path edge's bytes that mean something: its entity, its index and
+    /// its direction byte (`+0x08`); the three bytes after are padding,
+    /// different from game to game.
+    pub fn path_edge_bytes(edge: &[u8; 12]) -> [u8; 9] {
+        let mut out = [0u8; 9];
+        out.copy_from_slice(&edge[..9]);
+        out
+    }
+
+    /// A watched vehicle's path, when it changed for that engine: each
+    /// edge `entity/index/direction`.
+    pub fn path_line(step: u64, engine: usize, vehicle: i32, edges: &[(i32, i32, u8)]) -> String {
+        let mut text = format!(
+            "watch: step {step} engine {engine} vehicle {vehicle} path {}:",
+            edges.len()
+        );
+        for (entity, index, forward) in edges {
+            text.push_str(&format!(" {entity}/{index}/{forward}"));
+        }
+        text
+    }
+
+    /// The paths last said per `(engine, vehicle)`.
+    type PathsSaid = std::collections::HashMap<(usize, i32), Vec<(i32, i32, u8)>>;
+
+    thread_local! {
+        static PATHS: RefCell<PathsSaid> =
+            RefCell::new(std::collections::HashMap::new());
+    }
+
+    /// The watcher's path line for a watched vehicle, at the visit loop
+    /// (`rsp` the loop's frame: the engine at `[rsp+0x70]`).
+    fn watch_path(rsp: u64) {
+        let Some((step, engine, vehicle)) = CURRENT.with(|current| current.get()) else {
+            return;
+        };
+        if !super::claims::watched(vehicle) {
+            return;
+        }
+        let mut probe = Probe::new();
+        let Some(ecs) = probe.read::<u64>(rsp + 0x70) else {
+            return;
+        };
+        let Some(mp) = super::decision_sync::movepath_of(ecs as usize, vehicle) else {
+            return;
+        };
+        let (Some(begin), Some(end)) = (probe.read::<u64>(mp), probe.read::<u64>(mp + 8)) else {
+            return;
+        };
+        if end < begin || !(end - begin).is_multiple_of(12) || (end - begin) / 12 > 1 << 16 {
+            return;
+        }
+        let mut edges = Vec::with_capacity(((end - begin) / 12) as usize);
+        for i in 0..(end - begin) / 12 {
+            let Some(edge) = probe.read::<[u8; 12]>(begin + i * 12) else {
+                return;
+            };
+            let word = |at: usize| {
+                i32::from_le_bytes([edge[at], edge[at + 1], edge[at + 2], edge[at + 3]])
+            };
+            edges.push((word(0), word(4), edge[8]));
+        }
+        let changed = PATHS.with(|paths| {
+            let mut paths = paths.borrow_mut();
+            if paths.get(&(engine, vehicle)) == Some(&edges) {
+                return false;
+            }
+            paths.insert((engine, vehicle), edges.clone());
+            true
+        });
+        if changed {
+            log::line(&path_line(step, engine, vehicle, &edges));
+        }
+    }
+
     /// The watcher's line for a land vehicle's platform-decision flag, when
     /// the loop reads another value than it read last for that vehicle.
     pub fn decision_line(step: u64, engine: usize, vehicle: i32, flag: u8) -> String {
@@ -1532,7 +1609,7 @@ pub mod platform {
                 len = (end - begin) / 12;
                 for i in 0..len {
                     match probe.read::<[u8; 12]>(begin + i * 12) {
-                        Some(edge) => hash.write(&edge),
+                        Some(edge) => hash.write(&path_edge_bytes(&edge)),
                         None => break,
                     }
                 }
@@ -1820,7 +1897,7 @@ pub mod claims {
                 len = (end - begin) / PATH_EDGE_LEN;
                 for i in 0..len.min(MAX_PATH_EDGES) {
                     match probe.read::<[u8; 12]>(begin + i * PATH_EDGE_LEN) {
-                        Some(edge) => hash.write(&edge),
+                        Some(edge) => hash.write(&super::platform::path_edge_bytes(&edge)),
                         None => break,
                     }
                 }
@@ -1861,7 +1938,10 @@ pub mod decision_sync {
     use super::*;
 
     pub const FIX: &str = "decision-sync";
-    /// Set to `0` (or `off`), the flag stays each engine's own.
+    /// Set to `1` (or `on`), the copy runs; off otherwise. Round A
+    /// (2026-10-01, `crate::copycheck`) found the game's own engine copy
+    /// carries `+0x4c..+0x74`, the flag among it, for every vehicle: the
+    /// diagnosis this rested on was wrong, and it copied nothing.
     pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_DECISION_SYNC";
     /// The flag's offset in `MovePath`.
     pub const FLAG: u64 = 0x70;
@@ -1884,7 +1964,24 @@ pub mod decision_sync {
     type GetterFn = unsafe extern "system" fn(usize, i32) -> usize;
 
     static GETTER: AtomicUsize = AtomicUsize::new(0);
+    /// Whether the copy runs ([`TOGGLE_ENV`]); the getter serves the
+    /// vehicle watcher's path lines either way.
+    static SYNC: AtomicBool = AtomicBool::new(false);
     static BROKEN: AtomicBool = AtomicBool::new(false);
+
+    /// The game's `MovePath` getter, once found: `(engine, entity)` to the
+    /// component or 0.
+    pub fn movepath_of(engine: usize, entity: i32) -> Option<u64> {
+        let getter = GETTER.load(Ordering::Acquire);
+        if getter == 0 || engine == 0 {
+            return None;
+        }
+        // SAFETY: the game's getter, checked at install; it reads the
+        // engine's tables and answers a pointer or null.
+        let get: GetterFn = unsafe { std::mem::transmute::<usize, GetterFn>(getter) };
+        let at = unsafe { get(engine, entity) };
+        (at != 0).then_some(at as u64)
+    }
     static UPDATES: AtomicU64 = AtomicU64::new(0);
     static SYNCS: AtomicU64 = AtomicU64::new(0);
     static COPIED: AtomicU64 = AtomicU64::new(0);
@@ -1941,11 +2038,6 @@ pub mod decision_sync {
             installed: false,
             reason,
         };
-        if !wanted {
-            return off(format!(
-                "{TOGGLE_ENV} says so; each engine keeps its own flag"
-            ));
-        }
         let Some(site) = resolved.get(super::platform::DECISION_SITE) else {
             return off(format!(
                 "the profile has no {:?}",
@@ -1963,6 +2055,12 @@ pub mod decision_sync {
         match getter_from_call(site.address - CALL_BEFORE_READ, &mut read) {
             Ok(getter) => {
                 GETTER.store(getter as usize, Ordering::Release);
+                SYNC.store(wanted, Ordering::Release);
+                if !wanted {
+                    return off(format!(
+                        "off unless {TOGGLE_ENV}=1 (round A showed the game's own copy carries the flag); the MovePath getter at {getter:#x} serves the path watch"
+                    ));
+                }
                 Outcome {
                     fix: FIX,
                     installed: true,
@@ -1983,7 +2081,11 @@ pub mod decision_sync {
     /// At the transport vehicle loop's first record (`rbp` its frame,
     /// `begin` its 8-byte records): the vehicles, by entity.
     pub fn note_list(rbp: u64, begin: u64) {
-        if GETTER.load(Ordering::Acquire) == 0 || BROKEN.load(Ordering::Relaxed) || !in_step() {
+        if !SYNC.load(Ordering::Acquire)
+            || GETTER.load(Ordering::Acquire) == 0
+            || BROKEN.load(Ordering::Relaxed)
+            || !in_step()
+        {
             return;
         }
         if let Some(vehicles) = read_list(rbp, begin) {
@@ -2044,7 +2146,12 @@ pub mod decision_sync {
     /// from the engine before, if it was the other.
     pub fn before_update(engine: usize) {
         let getter = GETTER.load(Ordering::Acquire);
-        if getter == 0 || engine == 0 || !in_step() || crate::seeds::current_step().is_none() {
+        if !SYNC.load(Ordering::Acquire)
+            || getter == 0
+            || engine == 0
+            || !in_step()
+            || crate::seeds::current_step().is_none()
+        {
             return;
         }
         guarded(FIX, &BROKEN, || {
@@ -3447,6 +3554,21 @@ mod tests {
         other.insert(call, vec![0x90; 5]);
         let mut read = reads(other);
         assert!(decision_sync::getter_from_call(call, &mut read).is_err());
+    }
+
+    #[test]
+    fn the_path_lines_and_hashes_leave_the_padding_out() {
+        let mut a = [0u8; 12];
+        a[..4].copy_from_slice(&900i32.to_le_bytes());
+        a[4..8].copy_from_slice(&2i32.to_le_bytes());
+        a[8] = 1;
+        let mut b = a;
+        b[9..].copy_from_slice(&[0x20, 0x20, 0x20]);
+        assert_eq!(platform::path_edge_bytes(&a), platform::path_edge_bytes(&b));
+        assert_eq!(
+            platform::path_line(3200, 1, 217708, &[(900, 2, 1), (901, 0, 0)]),
+            "watch: step 3200 engine 1 vehicle 217708 path 2: 900/2/1 901/0/0"
+        );
     }
 
     #[test]

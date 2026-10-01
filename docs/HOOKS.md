@@ -3286,8 +3286,11 @@ on that engine; the second every update for a watched entity: its
 with its path's length and hash. Two games' lines for one step must be
 equal; the first that differs is where the vehicle's own state split.
 
-**The platform-decision flag** (`decision-sync`, on unless
-`TPF3MP_HOOK_DECISION_SYNC` is `0` or `off`). The `decision flag` lines of
+**The platform-decision flag** (`decision-sync`, off unless
+`TPF3MP_HOOK_DECISION_SYNC` is `1` or `on`; withdrawn as a fix: round A's
+engine-copy checker, below, found the game's own copy carries the flag,
+so the diagnosis in this paragraph is wrong and the copy never ran in a
+room). The `decision flag` lines of
 the two-game round of 2026-10-01 (`c381f1c`, james and cat; cat split)
 named the cause. Every vehicle's flag is set, and cleared, in only the one
 engine that ran the step where it changed; the other engine keeps reading
@@ -3323,6 +3326,26 @@ order fix decision-sync: alive, updates=<n> engine changes=<n> flags copied=<n>
 Other `MovePath` fields written alongside the flag may be engine-local in
 the same way; the `movepath` watch lines (`TPF3MP_HOOK_WATCH_ENTITIES`)
 would show one that differs between games.
+
+The "stale" readings above were each engine's own: a `decision flag` line
+is said when the flag differs from what *that engine* read last, and an
+engine reads it only on the steps it runs. What does differ is the
+vehicle's path: in round A 217708's `MovePath` path held 26 edges in
+james's game and 10 in cat's at step 3200, every other word equal. The
+path hash in the `movepath` lines covered each 12-byte edge whole,
+padding included, so it differed between games from step 1; it now covers
+the entity, the index and the direction byte only. For the entities
+`TPF3MP_HOOK_WATCH_ENTITIES` lists, the vehicle watcher also says the path
+itself whenever it changes for an engine, read at the transport vehicle
+loop through the game's `MovePath` getter (the one `decision-sync` finds,
+with the engine at the loop's `[rsp+0x70]`):
+
+```
+watch: step <s> engine <n> vehicle <entity> path <edges>: <entity>/<index>/<direction> ...
+```
+
+The first step where two games' path lines differ is where a route was
+computed differently.
 
 **The engine-copy checker** (`crate::copycheck`; read only, off unless
 `TPF3MP_PROBE_ENGINE_COPY` is `1` or `on`, or a number n for every n-th
