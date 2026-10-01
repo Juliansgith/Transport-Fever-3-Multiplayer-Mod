@@ -1334,16 +1334,22 @@ own ("Companies" below). The one the game renders its React recipes in
 gets the same guard (`tpf3mp/hudguard.lua`, installed from
 `gui/tpf3mp/gui_state.script.lua`), so no window sends a command past the
 room from either state ([COVERAGE.md](COVERAGE.md), U1). The room's
-answers (`results()`) have one reader, the plugin's state, so there a
-command handed to the room is answered as sent, and a command whose window
-waits on what it made (`guard.RESULT`: a purchase, a new line, a
-replacement) sent with a callback is refused, `a window that waits on what
-it made, in a Lua state the room's answers do not reach`. That state has
-no frame the mod runs in: the callbacks the guard defers run from the
-HUD's next reads of the player's company, two clock ticks on. hook.log:
-`the guard is on N command factories in the HUD's state`, and each
-refusal there `... in the HUD's state: <why>`. Which windows render in that
-state is not known on build 40408; the log says if any sends a command.
+answers (`results()`) have one reader, the plugin's state, so the HUD's
+state notes the tickets of its commands it waits on
+(`tpf3mp_native.note("tpf3mp.hud.tickets", …)`), the plugin's state passes
+on the answers to those (`hudguard.forward`, a note
+`tpf3mp.hud.answers` of `ticket ok entity;`), and the HUD's state hears
+them through the same `guard.deliver` as the plugin's: the vehicle store,
+which renders there (2026-10-01), is told the vehicle it bought once the
+registry names it, and puts it on its line; a new line's window opens the
+line. Only a hook without `note` leaves the answers unrouted: a command is
+then answered as sent, and one whose window waits on what it made
+(`guard.RESULT`) is refused. That state has no frame the mod runs in: the
+deferred callbacks and the answers run from the HUD's next reads of the
+player's company, two clock ticks on. hook.log: `the guard is on N command
+factories in the HUD's state`, and each refusal there `... in the HUD's
+state: <why>`. Which windows render in that state is not known on build
+40408 beyond the store; the log says if any sends a command.
 
 Before the room begins, and after it ends, every command is sent as it
 would be, and every tool builds. A kind the room comes to carry is
