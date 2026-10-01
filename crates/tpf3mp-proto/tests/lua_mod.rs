@@ -201,6 +201,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.capture",
             "tpf3mp.companies",
             "tpf3mp.engine",
+            "tpf3mp.follow",
             "tpf3mp.geom",
             "tpf3mp.guard",
             "tpf3mp.registry",
@@ -407,7 +408,12 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {},
          dump = nil, dumped = {} }
 tpf3mp_native = {
-    version = 10,
+    version = 11,
+    note = function(key, value)
+        HOOK.notes = HOOK.notes or {}
+        if value == nil then return HOOK.notes[key] end
+        HOOK.notes[key] = value ~= "" and value or nil
+    end,
     command = function(action)
         local ok, why = schema_check(action)
         if ok then
@@ -608,7 +614,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 10; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 11; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -701,7 +707,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 10, command = print, log = print })
+             why({ version = 11, command = print, log = print })
              return out",
         )
         .eval()
@@ -904,7 +910,7 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 10 }
+             local native = { version = 11 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
                                   'status', 'chat', 'say' }) do
@@ -2090,7 +2096,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     );
     assert!(
         logged.contains(
-            &"the room does not carry the laneModifier tool yet \
+            &"the room does not carry the laneModifier tool yet (?) \
               [+c::/depots/road/road_maint_station.con{frozen 0n 0e}]"
                 .to_owned()
         ),
@@ -2555,7 +2561,7 @@ fn the_game_script_rebuilds_a_street_through_a_new_junction() {
         logged
             .last()
             .unwrap()
-            .ends_with("removal 2 has a stop or signal on it"),
+            .ends_with("removal 2 has a stop or signal on it and no link rebuilds it"),
         "{logged:?}"
     );
 }
@@ -3133,8 +3139,111 @@ fn a_stop_the_stop_tool_placed_goes_to_the_room_and_every_game_places_it() {
         });
     assert_eq!(
         placed,
-        "1|-1|0|8|9|::/street/country.street_template|1|-1|0|100|8,9|-1|0.5000|true\
+        "1|-1|0|8|9|::/street/country.street_template|1|-400000000|0|100|8,9|-1|0.5000|true\
          |::/stations/street/small_stops/small_new.con|25|25|true|true"
+    );
+}
+
+/// As build 40408 proposes a stop to game scripts: no model and no place on
+/// its edge objects (seen in a room: `+o{resultEntity=-1 category=0
+/// left=false playerEntity=3869}`). The stop is the construction the
+/// construction menu gave the tool, which the GUI noted, where the cursor
+/// is; a two-sided one is one click on both sides, and every game builds
+/// both.
+#[test]
+fn a_stop_as_the_game_proposes_it_is_the_noted_construction_under_the_cursor() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(
+        "api.gui = { mouse = { hasTerrainPosition = function() return true end, \
+                               getTerrainPosition = function() return { x = 56, y = 0, z = 0 } end } }",
+    )
+    .exec()
+    .unwrap();
+    // Both sides, neither object with a model or a place.
+    let proposal = stop_proposal("", "{ -400000001, 1 },", "{ category = 0, left = false },")
+        .replace(
+            ", \
+             modelInstance = { modelId = 77, \
+                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 56,0,0,1 } }",
+            "",
+        );
+    assert!(!proposal.contains("modelInstance"), "{proposal}");
+    let ask = |proposal: &str| -> String {
+        lua.load(format!(
+            "HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({{}}, nil, nil) \
+             local r = SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetTerminalBuilder', \
+                 'builder.proposalCreate', {{ {proposal} }}) \
+             if r == nil then return 'nil' end \
+             for text in pairs(r.errorMessages) do return text end"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"))
+    };
+    // Nothing noted: which stop it is, the room cannot say.
+    assert!(
+        ask(&proposal).starts_with("Not in multiplayer yet: the stop's construction"),
+        "{}",
+        ask(&proposal)
+    );
+    // The menu gave the tool the two-sided stop: noted in the GUI's state.
+    lua.load(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         local util = { getActionParams = function(definition) \
+             return { constructionActionParams = { edgeObjectBuilder = { resName = definition } } } end } \
+         package.loaded['tpf3mp.stopToolWatched'] = nil \
+         assert(capture.watchStopTool(util, ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua').attach(tpf3mp_native))) \
+         util.getActionParams('stations/street/small_stops/small_new_twosided.con')",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(
+        ask(&proposal),
+        "nil",
+        "the stop tool builds through the room"
+    );
+    lua.load("HOOK.clicks = 1 SCRIPT.guiUpdate({}, nil, nil)")
+        .exec()
+        .unwrap();
+    let handed: String = lua
+        .load(
+            "local s = HOOK.commands[1].PlaceStop
+             local function n(v) return string.format('%.3f', v) end
+             return table.concat({ #HOOK.commands, tostring(schema_check(HOOK.commands[1])),
+                 n(s.at.x), n(s.at.y), tostring(s.left), s.model, tostring(s.two_sided) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        handed,
+        "1|true|50.000|0.000|false|stations/street/small_stops/small_new_twosided.con|true"
+    );
+    // Every game builds it on both sides of the edge, in one proposal.
+    lua.load("HOOK.batch = { HOOK.commands[1] } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let placed: String = lua
+        .load(
+            "local p = SENT[1].proposal.streetProposal local e = p.edgesToAdd[1]
+             local out = {}
+             for _, o in ipairs(e.comp.objects) do out[#out + 1] = o[1] .. ':' .. o[2] end
+             for _, o in ipairs(p.edgeObjectsToAdd) do
+                 out[#out + 1] = tostring(o.left) .. ':' .. o.model
+             end
+             return table.concat(out, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        placed,
+        "-400000000:1|-400000001:0|false:stations/street/small_stops/small_new_twosided.con\
+         |true:stations/street/small_stops/small_new_twosided.con"
     );
 }
 
@@ -3158,15 +3267,25 @@ fn a_stop_the_room_cannot_carry_says_why() {
         capture(stop_proposal("{ 555, 0 },", "", "")),
         "a stop that replaces another"
     );
-    // A two-sided stop: two new objects.
+    // A two-sided stop: a new object on each side, one click.
     let two = stop_proposal("", "{ -400000001, 1 },", "{ category = 0, left = false },");
-    assert_eq!(
-        capture(two),
-        "more than one stop at once (a two-sided stop)"
-    );
-    // A signal, and a side the engine lists other than `left` says.
+    assert_eq!(capture(two), "table");
+    // A signal the engine lists as a stop, and a side the engine lists
+    // other than `left` says.
     let signal = stop_proposal("", "", "").replace("category = 0", "category = 2");
-    assert_eq!(capture(signal), "a signal or waypoint");
+    assert_eq!(capture(signal), "a signal the engine lists as no signal");
+    // A signal (the engine's SIGNAL, 2): carried as one, one-way as noted.
+    let signal = stop_proposal("", "", "")
+        .replace("category = 0", "category = 2")
+        .replace("{ -400000000, 0 }", "{ -400000000, 2 }");
+    let carried: String = lua
+        .load(format!(
+            "local a = ug_require('tpf3mp_1::/scripts/tpf3mp/engine.lua').placeStop({signal}, nil, true) \
+             return a.PlaceStop.object .. ' ' .. tostring(a.PlaceStop.one_way) .. ' ' .. tostring(schema_check(a))"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(carried, "Signal true true");
     let side = stop_proposal("", "", "").replace("left = true", "left = false");
     assert_eq!(capture(side), "a stop whose side the room cannot say");
     // With a stop on the other side, kept: carried.
@@ -3229,7 +3348,7 @@ fn a_stop_is_placed_beside_the_edges_others_and_never_on_a_taken_side() {
         .eval()
         .unwrap();
     assert_eq!(
-        objects, "555:1,-1:0|true",
+        objects, "555:1,-400000000:0|true",
         "the kept stop under its own entity"
     );
     // A place off the edge, as another world would have it: placed nowhere.
@@ -4510,4 +4629,180 @@ fn a_vehicles_marker_wears_its_companys_colour() {
             "{classes}"
         );
     }
+}
+
+/// A notification's popup plays its first sound and tells the game's
+/// Notifications script (its `initialSound` event): in the room's game that
+/// goes to the room, and every game's script marks the same notification.
+#[test]
+fn a_notifications_first_sound_is_marked_in_every_game() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load("M = mount(loadPlugin()) M.step() HOOK.room = true")
+        .exec()
+        .unwrap();
+    lua.load(
+        "api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Notifications', 'initialSound', \
+             { notificationId = 12 })) \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Notifications', 'initialSound', \
+             { notificationId = 1.5 })) \
+         M.step()",
+    )
+    .exec()
+    .unwrap();
+    let (sent, handed, seen): (usize, usize, i64) = lua
+        .load("return #SENT, #HOOK.commands, HOOK.commands[1].NotificationSeen.notification")
+        .eval()
+        .unwrap();
+    assert_eq!(sent, 0, "not run here: the room orders it for every game");
+    assert_eq!(handed, 1, "the whole-numbered one, through the schema");
+    assert_eq!(seen, 12);
+
+    let (lua, _script) = engine();
+    lua.load(
+        "HOOK.room = true UPDATE({}, STATE, 0.2) \
+         HOOK.batch = { { NotificationSeen = { notification = 12 } } } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let event: String = lua
+        .load("local e = SENT[1].event return table.concat({ e.src, e.id, e.name, e.param.notificationId }, '|')")
+        .eval()
+        .unwrap();
+    assert_eq!(event, "|Notifications|initialSound|12");
+}
+
+/// In the GUI's other Lua state (where the HUD and the line manager's
+/// depots are drawn) the GUI's company is the player's too: read from the
+/// hook (who this player is) and the game script's roster, the room's
+/// first company answered as the game answers it.
+#[test]
+fn the_huds_state_follows_the_players_company() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(
+        r#"
+        ME = string.rep("b", 64)
+        ROSTER = { next = 2, list = { { id = 0, entity = 25, name = "First", color = { 1, 0, 0 } },
+                                      { id = 1, entity = 901, name = "Rival", color = { 0, 0, 1 } } },
+                   members = {} }
+        api = api or {}
+        api.engine = { util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) },
+                       system = { gameScriptSystem = { getEntityForGameScript = function(name)
+                           return name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" and 77 or -1 end } },
+                       getComponent = function(e, kind)
+                           if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+                       end }
+        api.type = { ComponentType = { GAME_SCRIPT = 7 } }
+        HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        local script = "gui/tpf3mp/gui_state.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        GAME_UTIL = { getActionParams = function() return {} end }
+        local real = ug_require
+        ug_require = function(path)
+            if path == "::/gui/construction/construction_react_util.tl" then return GAME_UTIL end
+            return real(path)
+        end
+        data().prepare({})
+        ug_require = real
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let first: i64 = lua
+        .load("return api.engine.util.getPlayer()")
+        .eval()
+        .unwrap();
+    assert_eq!(first, 25, "playing for the first company: the game's own");
+    lua.load(
+        "ROSTER = { list = ROSTER.list, members = { { player = ME, company = 1 } } } CLOCK = 3",
+    )
+    .exec()
+    .unwrap();
+    let mine: i64 = lua
+        .load("return api.engine.util.getPlayer()")
+        .eval()
+        .unwrap();
+    assert_eq!(mine, 901, "playing for Rival: Rival");
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains("the GUI's company follows the player's in the HUD's state")
+            && logged.contains("the stop tool's stop is noted"),
+        "{logged}"
+    );
+}
+
+/// A road modifier's build, as the room orders it: the street 8-9 rebuilt in
+/// place with the lanes, decoration, lock and owner the tool gave it. Every
+/// game gives the lanes their modes as the game takes them, a Lua array
+/// from 1 (build 40408: keyed from 0 they land one mode off, and a sidewalk
+/// that carries vehicles crashed the simulation), its decoration by the id
+/// its name has here, and the acting company as its owner.
+#[test]
+fn a_road_modifier_is_built_with_its_lanes_decorations_lock_and_owner() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(
+        r#"
+        -- Each read of a template's lanes gives new copies, as the game's.
+        api.res.streetTemplateRep.get = function(id)
+            return setmetatable({ streetStyle = '::/style/country.street_style' }, { __index = function(_, k)
+                if k == 'laneConfigs' then
+                    return { { speed = 1, width = 1, height = 0, offset = 0, forward = true, transportModes = {} },
+                             { speed = 1, width = 1, height = 0, offset = 0, forward = true, transportModes = {} } }
+                end
+            end })
+        end
+        api.res.edgeDecorationRep = { find = function(name)
+            if name == '::/infrastructure/edge_addons/barrier_b.edge' then return 3 end return -1 end }
+        api.type.PlayerOwned = { new = function() return {} end }
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let action = "{ BuildRoad = { street = '::/street/country.street_template', bus_lane = false, tram = 'None', \
+        polyline = { vertices = { \
+            { pos = { x = 50, y = -40, z = 0 }, resolve = { Node = 'Street' } }, \
+            { pos = { x = 50, y = 40, z = 0 }, resolve = { Node = 'Street' } } }, \
+          links = { { from = 0, to = 1, tangent0 = { x = 0, y = 80, z = 0 }, tangent1 = { x = 0, y = 80, z = 0 }, \
+            structure = 'Ground', \
+            lanes = { { speed = 22.22, width = 2, height = 0, offset = -1, forward = false, modes = 3 }, \
+                      { speed = 22.22, width = 5, height = 0, offset = -0.5, forward = false, modes = 124 } }, \
+            decorations = { { name = '::/infrastructure/edge_addons/barrier_b.edge', flag = false } }, \
+            locked = true, owned = true } }, \
+          removals = { { network = 'Street', ends = { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } } }, \
+          removed_nodes = {} } } }";
+    lua.load(format!(
+        "HOOK.batch = {{ {action} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let built: String = lua
+        .load(
+            "local e = SENT[1].proposal.streetProposal.edgesToAdd[1]
+             local function modes(l)
+                 local on = {}
+                 for i = 1, 16 do if l.transportModes[i] then on[#on + 1] = i - 1 end end
+                 return table.concat(on, ',') .. (l.transportModes[0] == nil and '' or ' zero-keyed!')
+             end
+             return table.concat({ modes(e.comp.laneConfigs[1]), modes(e.comp.laneConfigs[2]),
+                 e.comp.laneConfigs[2].width, e.comp.edgeDecorations[1][1],
+                 tostring(e.comp.edgeDecorations[1][2]), tostring(e.comp.roadDevelopmentLocked),
+                 e.playerOwned.player }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(built, "0,1|2,3,4,5,6|5|3|false|true|25");
 }

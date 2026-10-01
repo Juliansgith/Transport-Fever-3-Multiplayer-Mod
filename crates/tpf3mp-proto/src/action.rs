@@ -34,12 +34,16 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 8;
+pub const ACTION_SCHEMA_VERSION: u32 = 9;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
 pub const MAX_VERTICES: usize = 512;
 pub const MAX_LINKS: usize = 512;
+/// Decorations one edge carries.
+pub const MAX_DECORATIONS: usize = 8;
+/// Lanes one edge has.
+pub const MAX_LANES: usize = 32;
 /// Most edges one action removes or bulldozes.
 pub const MAX_EDGES: usize = 256;
 /// Most parameters of one construction, nested modules counted one by one.
@@ -231,6 +235,28 @@ pub struct EdgeKind {
     pub style: Option<ResName>,
 }
 
+/// One lane of an edge, as TF3's `LaneConfig` has it: its speed (in the
+/// game's units, thousandths), width, height and offset in millimetres, its
+/// direction, and the transport modes it carries, a bit for each
+/// `TransportMode` value (a tram track or bus lane is a lane's modes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lane {
+    pub speed: i32,
+    pub width: i32,
+    pub height: i32,
+    pub offset: i32,
+    pub forward: bool,
+    pub modes: u32,
+}
+
+/// A decoration along an edge (TF3's `BaseEdge.edgeDecorations`: a noise
+/// barrier, an alley of trees), by its resource, with the game's flag for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decoration {
+    pub name: ResName,
+    pub flag: bool,
+}
+
 /// One new edge between two vertices of its polyline, by index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
@@ -241,6 +267,20 @@ pub struct Link {
     pub structure: Structure,
     /// None for the build's own street or track, in the build's style.
     pub kind: Option<EdgeKind>,
+    /// Its decorations, as the tool left them.
+    #[serde(default)]
+    pub decorations: BoundedVec<Decoration, MAX_DECORATIONS>,
+    /// Locked against the towns' road development
+    /// (`roadDevelopmentLocked`).
+    #[serde(default)]
+    pub locked: bool,
+    /// Owned by the acting company (`PLAYER_OWNED`), as the tool made it.
+    #[serde(default)]
+    pub owned: bool,
+    /// Its lanes, as the tool made them (a tram track, a bus lane); empty
+    /// for its template's own.
+    #[serde(default)]
+    pub lanes: BoundedVec<Lane, MAX_LANES>,
 }
 
 /// The geometry of one road or track build, as the tool proposed it: new
@@ -620,7 +660,30 @@ pub struct PlaceStop {
     /// The edge's direction at `at` on the originator; a receiver whose edge
     /// runs the other way flips `left`.
     pub direction: UnitDir,
+    /// The stop's construction (Transport Fever 3 builds a stop as one,
+    /// e.g. `stations/street/small_stops/small_new.con`).
     pub model: ResName,
+    /// A stop on both sides at once (a `_twosided` construction): `left`
+    /// names the side the originator's tool put first.
+    #[serde(default)]
+    pub two_sided: bool,
+    /// What it is: a stop, or a waypoint or signal on a track (the game's
+    /// edge object category).
+    #[serde(default)]
+    pub object: EdgeObjectKind,
+    /// A one-way signal (the signal tool's "oneWay").
+    #[serde(default)]
+    pub one_way: bool,
+}
+
+/// What an edge object placed with the stop and signal tool is (TF3's
+/// `EdgeObject.category`: 0, 1, 2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EdgeObjectKind {
+    #[default]
+    Stop,
+    Waypoint,
+    Signal,
 }
 
 /// One terrain cell: the height it is set to and the height it had, in
@@ -789,6 +852,12 @@ pub enum Action {
     VehicleOp(VehicleOp),
     ReplaceVehicle(ReplaceVehicle),
     Prospect(Prospect),
+    /// A notification's popup played its first sound: the game's
+    /// Notifications script marks it so (its `initialSound` event), in every
+    /// game, so the sound is not played again.
+    NotificationSeen {
+        notification: u32,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -843,6 +912,10 @@ mod tests {
             tangent1: Tangent { x: 1, y: 0, z: 0 },
             structure: Structure::Ground,
             kind: None,
+            decorations: BoundedVec::default(),
+            locked: false,
+            owned: false,
+            lanes: BoundedVec::default(),
         }
     }
 
@@ -930,7 +1003,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                8, // schema version
+                9, // schema version
                 5, // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -973,7 +1046,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                8, // schema version
+                9, // schema version
                 1, // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -982,6 +1055,7 @@ mod tests {
                 1, // one link
                 0, 1, 2, 0, 0, 2, 0, 0, 0, // 0 -> 1, tangents, Structure::Ground
                 0, // the build's own kind
+                0, 0, 0, 0, // no decorations, not locked, not owned, no lanes of its own
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
             ]
@@ -1006,7 +1080,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                8,  // schema version
+                9,  // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1024,7 +1098,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                8,  // schema version
+                9,  // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1039,7 +1113,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                8,  // schema version
+                9,  // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2

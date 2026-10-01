@@ -297,11 +297,63 @@ function capture.track(proposal)
 	return module("engine").captureBuild(proposal, "Track")
 end
 
+-- The road and track modifiers' builds (tpf3mp/engine.lua captureModify).
+function capture.modify(proposal)
+	return module("engine").captureModify(proposal)
+end
+
 -- A stop placed on a street or track with the stop tool (tpf3mp_proto
 -- action::PlaceStop), read off its proposal by tpf3mp/engine.lua. Returns
 -- the action table; false for a proposal of nothing; or nil and why.
-function capture.stop(proposal)
-	return module("engine").placeStop(proposal)
+--
+-- Transport Fever 3's proposal does not name the stop (build 40408: its
+-- edge objects carry no model), which is a construction the construction
+-- menu gave the tool; the GUI notes it (capture.STOP_NOTE,
+-- gui/tpf3mp/gui_state.script.lua) and `link` reads the note.
+capture.STOP_NOTE = "stop-tool"
+-- Whether the signal the tool places is one-way: "1" or "0".
+capture.ONE_WAY_NOTE = "stop-tool-one-way"
+-- The tool the construction menu last started: its action and resource.
+capture.TOOL_NOTE = "tool"
+
+-- In a GUI Lua state: notes the stop the construction menu gives the stop
+-- tool, for capture.stop, which runs in another. The menu makes the tool's
+-- action with construction_react_util.getActionParams (`util`), whose
+-- EdgeObjectBuilder names the stop's construction (resName; build 40408,
+-- gui/construction/construction_react_util.tl); each call is noted through
+-- `link` (tpf3mp/bridge.lua). Once a state. Returns whether it watches.
+function capture.watchStopTool(util, link)
+	if type(package) == "table" and type(package.loaded) == "table" then
+		if package.loaded["tpf3mp.stopToolWatched"] then return true end
+	end
+	if type(util) ~= "table" or type(util.getActionParams) ~= "function" or link == nil then return false end
+	local original = util.getActionParams
+	util.getActionParams = function(definition, ...)
+		local result = original(definition, ...)
+		-- The tool picked, for the log (capture.TOOL_NOTE).
+		pcall(function()
+			link:note(capture.TOOL_NOTE, tostring(definition.action) .. " " .. tostring(definition.resName))
+		end)
+		pcall(function()
+			local builder = result.constructionActionParams.edgeObjectBuilder
+			local name = builder and builder.resName
+			if type(name) == "string" and name ~= "" then
+				link:note(capture.STOP_NOTE, name)
+				link:note(capture.ONE_WAY_NOTE, builder.oneWay == true and "1" or "0")
+			end
+		end)
+		return result
+	end
+	if type(package) == "table" and type(package.loaded) == "table" then
+		package.loaded["tpf3mp.stopToolWatched"] = true
+	end
+	return true
+end
+
+function capture.stop(proposal, link)
+	local noted = link and link.note and link:note(capture.STOP_NOTE) or nil
+	local oneWay = link and link.note and link:note(capture.ONE_WAY_NOTE) == "1"
+	return module("engine").placeStop(proposal, noted, oneWay)
 end
 
 -- The bulldozer's removal (tpf3mp_proto action::Bulldoze), read off its
@@ -342,6 +394,12 @@ end
 -- "" when it has none.
 function capture.describe(proposal)
 	return module("engine").describe(proposal)
+end
+
+-- What a tool changed of the edges it rebuilt, for the log
+-- (tpf3mp/engine.lua).
+function capture.rebuildDiff(proposal)
+	return module("engine").rebuildDiff(proposal)
 end
 
 -- ------------------------------------------------------ vehicles and lines

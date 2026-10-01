@@ -367,6 +367,35 @@ end
 
 local STRUCTURE = { Ground = "NORMAL", Bridge = "BRIDGE", Tunnel = "TUNNEL" }
 
+-- A link's lanes: its template's, or the ones the tool made (a tram track, a
+-- bus lane: a lane's transport modes on TF3). The game has no constructor
+-- for a lane, so each is a copy of one of the template's (read afresh, so
+-- no two are one), set to what the link says.
+-- The transport modes a lane names (api.type.enum.TransportMode, 0 to 15).
+local MODES = 16
+local function lanesFor(link, t)
+	if link.lanes == nil or #link.lanes == 0 then return t.laneConfigs end
+	local out = {}
+	for i, l in ipairs(link.lanes) do
+		local fresh = t.laneConfigs
+		local lane = fresh[math.min(i, #fresh)]
+		if lane == nil then error("a lane its template has none to make it from", 0) end
+		lane.speed, lane.width, lane.height, lane.offset = l.speed, l.width, l.height, l.offset
+		lane.forward = l.forward == true
+		-- Every mode, true or false. Build 40408 reads a lane's modes keyed
+		-- from 0 (the TransportMode value) but takes them as a Lua array,
+		-- from 1: mode m at m + 1. Keyed from 0 they land one mode off, and
+		-- a sidewalk that carries vehicles failed every game's build, then
+		-- crashed its simulation (TransportNetworkSystem, `person0 ==
+		-- person1`; 2026-10-01).
+		local modes = {}
+		for m = 0, MODES - 1 do modes[m + 1] = math.floor(l.modes / 2 ^ m) % 2 == 1 end
+		lane.transportModes = modes
+		out[i] = lane
+	end
+	return out
+end
+
 -- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
 -- street proposal. `network`, `templateName` and `style` are the build's
 -- own kind, for the links that name none; nil for a construction's
@@ -514,19 +543,56 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 		-- The build's own kind, or the kind the link names.
 		local kind = link.kind or { network = network, template = templateName, style = style }
 		local t = template(kind.template)
-		s.comp.laneConfigs = t.laneConfigs
+		s.comp.laneConfigs = lanesFor(link, t)
 		s.comp.roadTemplate = kind.template
 		s.comp.roadStyle = kind.style or t.streetStyle
 		s.comp.roadType = kind.network == "Track" and enum("RoadType").TRACK or enum("RoadType").STREET
+		-- What the tool left on it: its decorations (by name, as every game
+		-- numbers them), the towns' lock, and the acting company's ownership.
+		local decorations = {}
+		for _, d in ipairs(link.decorations or {}) do
+			decorations[#decorations + 1] = { find("edgeDecorationRep", d.name), d.flag == true }
+		end
+		s.comp.edgeDecorations = decorations
+		s.comp.roadDevelopmentLocked = link.locked == true
+		if link.owned == true then
+			local ok = pcall(function() s.playerOwned.player = company() end)
+			if not ok then
+				local owned = api.type.PlayerOwned.new()
+				owned.player = company()
+				s.playerOwned = owned
+			end
+		end
 	end
 
+	-- An edge removed with its stops or signals leaves them pointing
+	-- nowhere: on TPF2 that crashed every game at the same step
+	-- (docs/BUILDING.md). So one with any is removed only where a link
+	-- rebuilds it in place, between the same places in the same direction,
+	-- which takes its objects under their own entities (as the capture
+	-- demands, tpf3mp/engine.lua keptInPlace).
+	local taken = {}
+	local function sameAt(a, b)
+		return math.abs(a[1] - b[1]) < 0.05 and math.abs(a[2] - b[2]) < 0.05 and math.abs(a[3] - b[3]) < 0.05
+	end
 	for k, r in ipairs(polyline.removals or {}) do
 		local e = edgeBetween(nodes(r.network), r.network, arr(r.ends.a), arr(r.ends.b))
 		if e == nil then error("no " .. r.network .. " edge to remove (" .. k .. ")") end
-		-- An edge removed with its stops or signals leaves them pointing
-		-- nowhere: on TPF2 that crashed every game at the same step
-		-- (docs/BUILDING.md). The room does not carry them yet.
-		if #(e.comp.objects or {}) > 0 then error("removal " .. k .. " has a stop or signal on it") end
+		local objects = e.comp.objects or {}
+		if #objects > 0 then
+			local into
+			for j, link in ipairs(polyline.links) do
+				if not taken[j] and sameAt(at[link.from + 1], e.a) and sameAt(at[link.to + 1], e.b) then
+					into = j
+					break
+				end
+			end
+			if into == nil then error("removal " .. k .. " has a stop or signal on it and no link rebuilds it") end
+			taken[into] = true
+			local kept = {}
+			for i, o in ipairs(objects) do kept[i] = { o[1], o[2] } end
+			links[into].comp.objects = kept
+		end
 		removeEdge(e)
 	end
 
@@ -577,9 +643,11 @@ end
 local function buildNetwork(network, templateName, style, polyline)
 	local proposal = api.type.SimpleProposal.new()
 	networkInto(proposal, network, templateName, style, polyline)
-	-- Paid by the player, as the tool builds.
+	-- Paid by the player, as the tool builds; the town buildings in the way
+	-- cleared, as the tool clears them (the capture lets only those through).
 	local context = api.type.Context.new()
 	context.player = company()
+	context.gatherBuildings = true
 	return buildProposal(proposal, context)
 end
 
@@ -674,6 +742,9 @@ end
 -- point of that centreline, rounded to the millimetre.
 local STOP_TOLERANCE = 0.5
 
+-- The entity a proposal gives its first new edge object (build 40408).
+local NEW_EDGE_OBJECT = -400000000
+
 function HANDLERS.PlaceStop(stop)
 	local network = stop.edge.network
 	local e = stopEdge(stop.edge)
@@ -684,27 +755,47 @@ function HANDLERS.PlaceStop(stop)
 	local t, d = geom.hermiteTangent(e.a, e.ta, e.b, e.tb, u), stop.direction
 	if t[1] * d.x + t[2] * d.y + t[3] * d.z < 0 then left = not left end
 	local types = enum("EdgeObjectType")
-	local side = left and types.STOP_LEFT or types.STOP_RIGHT
+	local isStop = stop.object == nil or stop.object == "Stop"
+	local function typeOf(l)
+		if not isStop then return types.SIGNAL end
+		return l and types.STOP_LEFT or types.STOP_RIGHT
+	end
+	-- The sides it takes: one, or both for a two-sided stop, the
+	-- originator's first side first, as its tool added them.
+	local sides = { left }
+	if isStop and stop.two_sided == true then sides[2] = not left end
 	-- One stop a side: a second is a fatal assert in the game's lane
-	-- creation (TPF2, docs/BUILDING.md).
+	-- creation (TPF2, docs/BUILDING.md). Signals are not by side.
 	local objects = {}
 	for i, o in ipairs(e.comp.objects or {}) do
-		if o[2] == side then error("the edge has a stop on that side already", 0) end
+		if isStop then
+			for _, l in ipairs(sides) do
+				if o[2] == typeOf(l) then error("the edge has a stop on that side already", 0) end
+			end
+		end
 		objects[i] = { o[1], o[2] }
 	end
-	objects[#objects + 1] = { -1, side }
+	local added = {}
+	for k, l in ipairs(sides) do
+		-- A new edge object is named by its place in edgeObjectsToAdd,
+		-- from -400000000 down (build 40408: con_util_entity_index.h
+		-- asserts the range, a fatal error; game_mechanics/towns/
+		-- town_util.tl; the stop tool's own proposals).
+		objects[#objects + 1] = { NEW_EDGE_OBJECT - (k - 1), typeOf(l) }
+		local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+		eo.edgeEntity = -1
+		eo.param = u
+		eo.left = l
+		eo.oneWay = stop.one_way == true
+		eo.model = stop.model
+		eo.playerEntity = company()
+		eo.name = ""
+		added[k] = eo
+	end
 	local proposal = rebuildWith(e, network, objects)
-	local eo = api.type.SimpleStreetProposal.EdgeObject.new()
-	eo.edgeEntity = -1
-	eo.param = u
-	eo.left = left
-	eo.oneWay = false
-	eo.model = stop.model
-	eo.playerEntity = company()
-	eo.name = ""
-	proposal.streetProposal.edgeObjectsToAdd = { eo }
+	proposal.streetProposal.edgeObjectsToAdd = added
 	log(string.format("placing %s on %s edge %d at %.4f, %s", tostring(stop.model), network, e.id, u,
-		left and "left" or "right"))
+		stop.two_sided == true and "both sides" or (left and "left" or "right")))
 	-- Paid by the player, as the tool builds.
 	local context = api.type.Context.new()
 	context.player = company()
@@ -1040,6 +1131,16 @@ function HANDLERS.Loan(op, ctx)
 		return run(api.cmd.makeScriptingSendEventCmd("", "Loan", "Repay", param))
 	end
 	return false, "a loan is taken or paid back"
+end
+
+-- A notification's popup played its first sound: the game's Notifications
+-- script's own event marks it (game_mechanics/notifications/
+-- notifications.script.tl, "initialSound"), in every game, so no game
+-- plays it again.
+function HANDLERS.NotificationSeen(n)
+	if type(n.notification) ~= "number" then error("a notification by its id", 0) end
+	return run(api.cmd.makeScriptingSendEventCmd("", "Notifications", "initialSound",
+		{ notificationId = n.notification }))
 end
 
 -- Prospecting goes through the company script's own event, with the

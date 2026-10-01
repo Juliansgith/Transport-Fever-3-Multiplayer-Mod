@@ -10,12 +10,13 @@ use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
         ACTION_SCHEMA_VERSION, Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
-        ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeKind, EdgeRef,
-        EditLine, Fraction, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp,
-        LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeRef, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
-        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
-        Tram, Transform, UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
+        ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds,
+        EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData, LineId,
+        LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network,
+        NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle,
+        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent, Terminal,
+        Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleChange,
+        VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -74,6 +75,10 @@ fn polyline() -> Polyline {
                 },
                 structure: Structure::Ground,
                 kind: None,
+                decorations: BoundedVec::default(),
+                locked: false,
+                owned: false,
+                lanes: BoundedVec::default(),
             },
             Link {
                 from: 1,
@@ -94,6 +99,13 @@ fn polyline() -> Polyline {
                     template: text("street/country.street_template"),
                     style: None,
                 }),
+                decorations: list(vec![Decoration {
+                    name: text("::/infrastructure/edge_addons/barrier_b.edge"),
+                    flag: false,
+                }]),
+                locked: true,
+                owned: true,
+                lanes: BoundedVec::default(),
             },
         ]),
         list(vec![EdgeRef {
@@ -307,7 +319,27 @@ fn samples() -> Vec<Action> {
                 y: 0,
                 z: 0,
             },
-            model: text("station/street/bus_stop.mdl"),
+            model: text("stations/street/small_stops/small_new_twosided.con"),
+            two_sided: true,
+            object: EdgeObjectKind::Stop,
+            one_way: false,
+        }),
+        Action::PlaceStop(PlaceStop {
+            edge: EdgeRef {
+                network: Network::Track,
+                ends: ends(pos(10, 0, 0), pos(90_000, 0, 0)),
+            },
+            at: pos(45_000, 0, 0),
+            left: false,
+            direction: UnitDir {
+                x: 1_000_000,
+                y: 0,
+                z: 0,
+            },
+            model: text("infrastructure/signal/signal_path_a.con"),
+            two_sided: false,
+            object: EdgeObjectKind::Signal,
+            one_way: true,
         }),
         Action::Terraform(
             Terraform::new(
@@ -387,6 +419,7 @@ fn samples() -> Vec<Action> {
                 "game_mechanics/company/explorations/exploration_coal.res",
             )),
         }),
+        Action::NotificationSeen { notification: 12 },
     ]
 }
 
@@ -443,13 +476,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=15.
+    // Every top-level variant is sampled: postcard tags them 0..=16.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=15).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=16).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

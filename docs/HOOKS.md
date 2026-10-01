@@ -658,7 +658,12 @@ for the table (`bridge.find`). Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
 `crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 10. The mod refuses any other.
+- `tpf3mp_native.version`: 11. The mod refuses any other.
+- `tpf3mp_native.note(key[, value])`: a short string one of the game's Lua
+  states notes for the others (at most 16 keys, 512 bytes each; "" forgets
+  it); with only a key, what was noted, or nil. The GUI runs in more than
+  one Lua state, and a game script's GUI half reads there what the
+  construction menu knows (the stop tool's stop, "The build tools").
 - `tpf3mp_native.command(action)`: an action table, in the game's units.
   The hook reads it into a `tpf3mp_proto::lua::LuaValue`, within
   `MAX_DEPTH` and `MAX_NODES` (a function, userdata or a table as a key is
@@ -1157,7 +1162,16 @@ state, which the game saves with the world:
   The game scripts' states keep the game's own answer, so the simulation
   is the same in every game. Seen on build 40408: the game bar's account
   showed the new company's money, and another company's depot opened
-  without its vehicle management.
+  without its vehicle management. The GUI runs in more than one Lua state:
+  the line manager's HUD, drawn in another, showed the room's first
+  company's depots to a Rival player and not Rival's own. So
+  `gui/tpf3mp/gui_state.res.lua`, a `react-replacement-config` that
+  replaces no recipe, has the game run `gui_state.script.lua` in the state
+  it renders its recipes in, before any renders; there
+  `tpf3mp/follow.lua` gives getPlayer the same answer, read from the hook
+  (`status().me_id`) and the game script's roster every 2 seconds
+  (`hook.log`: `the GUI's company follows the player's in the HUD's
+  state`).
 - *The Multiplayer window* lists the companies with their money and
   players, the one the player plays for first with its colour to choose,
   a name to change, loans to take and pay back, and each other company to
@@ -1331,8 +1345,8 @@ hook, and a construction's window its edits:
   - the game tells game scripts of the proposals of six tools only, under
     the ids `UI::CGameUI`'s constructor names them by:
     `constructionBuilder`, `streetTerminalBuilder`, `streetBuilder`,
-    `trackBuilder`, `streetTrackModifier` (the street and track upgrade
-    tool, not carried yet) and `bulldozer`. The **module editor**
+    `trackBuilder`, `streetTrackModifier` (the road and track modifiers,
+    "The road and track modifiers" below) and `bulldozer`. The **module editor**
     (`UI::ModuleBuilder`, opened from a station's window) is not among
     them: it queues its `WorldBuildProposal` itself and game scripts hear
     nothing of it (its click was stopped with "no proposal seen" in the
@@ -1424,9 +1438,23 @@ hook, and a construction's window its edits:
   stop is the one entity the old edge did not list. It becomes a
   `PlaceStop`: the edge by its ends, the point of its centreline where the
   stop stands, the engine's `left`, the edge's direction there, and the
-  stop's model named as the game's guide names it,
-  `api.res.modelRep.getName(modelInstance.modelId)` (a construction such
-  as `::/stations/street/small_stops/small_new.con`). Every game's
+  stop's construction. Seen on build 40408 (a room, 2026-09-30): the
+  proposal game scripts get has no model and no place on its edge objects
+  (`+o{resultEntity=-1 category=0 left=false playerEntity=3869}`), and a
+  stop is a construction (`stations/street/small_stops/small_new.con`,
+  whose update script places `small_new.mdl` on the edge). So the GUI
+  notes the construction the construction menu gives the tool (its
+  `EdgeObjectBuilder.resName`, from `construction_react_util
+  .getActionParams`, which `capture.watchStopTool` wraps in each GUI Lua
+  state) through the hook (`tpf3mp_native.note`), and the capture reads it;
+  a proposal whose edge object has a model
+  (`api.res.modelRep.getName(modelInstance.modelId)`) names it itself. The
+  place is the proposal's parameter or model position where it has one,
+  else the point of the centreline nearest the ground under the cursor
+  (`api.gui.mouse.getTerrainPosition`), which every game then uses. A
+  two-sided stop is one click that adds an object on each side: a
+  `PlaceStop` with `two_sided`, which every game builds on both sides in
+  one proposal (objects `-1` and `-2`). Every game's
   `postUpdate` rebuilds the edge as the game's electrify task rebuilds one
   (`electrify.tl`: the edge's own component read afresh, entity -1), its
   other stops kept under their own entities, the new stop
@@ -1438,9 +1466,10 @@ hook, and a construction's window its edits:
   whose edge runs the other way flips `left`; a side already taken is
   refused (two stops on one side is a fatal assert in the game's lane
   creation on TPF2). Refused: a stop dropped where one stood (the game
-  moves its lines to the new one, which a replay cannot say), a two-sided
-  stop (two new objects at once), signals and waypoints, and a stop whose
-  engine side (`STOP_LEFT`, `STOP_RIGHT`) is not what its `left` says.
+  moves its lines to the new one, which a replay cannot say), more than
+  two new objects, or two on one side, signals and waypoints, a stop whose
+  engine side (`STOP_LEFT`, `STOP_RIGHT`) is not what its `left` says, and
+  a stop whose construction no GUI state noted.
   INFERRED, not yet seen in the game: that the tool's proposal lists
   `objects` in the order of `edgeObjectsToAdd`, that a kept stop keeps its
   entity there, that `STOP_LEFT` goes with `left`, that a script proposal
@@ -1465,6 +1494,36 @@ track across open ground ($22,054), a track across a street, and a bus
 depot snapped onto a town street, clearing three town buildings
 ($825,816): identical in both games, towns included.
 
+
+### The road and track modifiers
+
+The tools of the road menu's tools tab and the track menu's (tram tracks,
+bus lanes, noise barriers, alleys, the towns' lock, electrification, a
+track type) tell game scripts their builds as `streetTrackModifier`. Seen
+on build 40408 (a room, 2026-09-30; `hook.log` names the tool, e.g.
+`ACTION_TRAM_TRACK_TOOL ::/gui/construction/tools/tram_track_tool.res`,
+and what it changes): each rebuilds the stretch of road it is used on,
+edge by edge, between the same places (a node between two edges may be
+removed and added again at the same place), with its new template (a
+tram track or bus lane is the road's template on TF3), decorations
+(`edgeDecorations`: `barrier_b.edge` as `{ 3, false }`, `alley.edge` as `{
+0, false }`), `roadDevelopmentLocked` and owner (the player-owned tool:
+`false>true`, `nil>` the player), new node configurations at its ends, and
+the town buildings along it cleared and put back.
+
+The mod carries such a build as the `BuildRoad` or `BuildTrack` of the
+network of its first edge (`capture.modify`, `engine.captureModify`): each
+link names its template (`kind`), its decorations by name
+(`edgeDecorationRep.getName`; every game finds its own id with `find`), and
+whether it is locked and owned by the acting company. The town buildings it
+clears every game's build clears again (the build is the player's own,
+`ignoreErrors`), and the node configurations every game makes anew, as for
+a road. Stops and signals on the stretch stay: a new edge between the same
+places in the same direction as a removed one, listing exactly its objects,
+is the edge rebuilt in place, and every game's build gives it the objects
+of the edge it replaces under their own entities (`engine.keptInPlace`,
+`networkInto`); a stop moved onto another edge is refused. The same rule
+lets the road and track tools build through an edge with a stop on it.
 ### The world's lanes
 
 A room finds a game that drifted from the others by comparing the world's
