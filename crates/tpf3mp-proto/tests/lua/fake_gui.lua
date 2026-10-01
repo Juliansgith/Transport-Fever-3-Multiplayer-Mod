@@ -15,6 +15,11 @@
 -- investigation/dayone-2026-09-29/probe/script_api_dump_gui.txt).
 package.preload = nil
 
+api = { gui = { StyleSheet = { new = function() return {} end } }, type = {
+	Vec2f = { new = function(x, y) return { x = x, y = y } end },
+	Vec4f = { new = function(x, y, z, w) return { x = x, y = y, z = z, w = w } end },
+} }
+
 LOG = {}
 function debugPrint(line)
 	LOG[#LOG + 1] = tostring(line)
@@ -62,7 +67,7 @@ end
 
 local builtin = { type = {
 	Orientation = { Horizontal = "Horizontal", Vertical = "Vertical" },
-	ScrollBarPolicy = { Simple = "Simple", AlwaysOff = "AlwaysOff" },
+	ScrollBarPolicy = { Simple = "Simple", AlwaysOff = "AlwaysOff", AsNeeded = "AsNeeded" },
 } }
 function builtin.BoxLayout(params)
 	return { layout = "BoxLayout", params = params }

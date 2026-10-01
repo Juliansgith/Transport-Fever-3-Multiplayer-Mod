@@ -641,7 +641,18 @@ call of the speed getter, as TPF2MP's speed hook
   nothing in the room's game but the display, until the room follows them.
   Nothing may send the debug step command during a room: its pending count
   would add updates to a call.
-- **The speed row asks the room.** The getter's detour only reads: the
+- **The speed row follows the room.** The Lua replacement
+  `gui/tpf3mp/speed_control.script.lua` highlights the accepted speed for guests from
+  the hook's room status, including pause. Guests see disabled buttons
+  with "Host controls speed" help; their keyboard speed shortcuts are
+  disabled through both `game.tl`'s internal `game_react_globals` table
+  and the public module that copies its functions. It copies feature
+  flags instead of changing the game's table, preserving mission/mod
+  restrictions. Becoming host or leaving the room restores the stock
+  recipe and shortcuts, including the host's keyboard hints. Updating the display
+  never sends `makeGameSetSpeedCmd`: feeding the room's speed back into
+  the game's local value would be mistaken for a player's request.
+- **The host's speed row asks the room.** The getter's detour only reads: the
   game's own speed, the speed row's value, every time the game asks
   (`CGame::Sync` and the game UI ask every frame, paused or not). When it
   changes in the room's game, the hook sends `ToAgent::Speed` and the agent

@@ -263,14 +263,19 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     assert_eq!(
         texts,
         [
-            "Room: Sunday line",
+            "Sunday line",
             "Speed: 2x",
+            "Host controls speed",
             "Worlds match",
-            "",
             "Players",
-            "  Julian (host)",
-            "  Sam (you)",
-            "",
+            "2 of 2 online",
+            "Julian",
+            "host",
+            "Sam",
+            "you",
+            "Companies",
+            "Choose who you build with",
+            "Waiting for the companies...",
             "Chat",
             "Julian: the bus is late",
             "Send"
@@ -339,6 +344,87 @@ fn chat_a_new_world_is_given_again_is_not_new() {
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(label, "Multiplayer: r · 0/0 playing · 1 new");
+}
+
+#[test]
+fn the_room_panel_keeps_large_rosters_and_unicode_chat_inside_scroll_areas() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        HOOK.room = true
+        HOOK.status = { room = 'A busy room', me_id = 'me', players = {} }
+        for i = 1, 8 do
+            HOOK.status.players[i] = { name = string.rep('W', 64), id = 'p' .. i,
+                connected = i ~= 8, me = i == 1 }
+        end
+        BAR = mount(loadPlugin()) BAR.step() BAR.render()
+        local shared = package.loaded['tpf3mp.ui']
+        shared.companies = { list = {}, members = {}, loans = {} }
+        api.type.Vec3f = { new = function(x,y,z) return { x=x, y=y, z=z } end }
+        for i = 0, 7 do
+            shared.companies.list[i+1] = { id=i, entity=i+1, name=string.rep('界', 64),
+                color={0.8,0.2,0.1}, balance=44149292, owed=50050007 }
+        end
+        shared.lines = { string.rep('界', 280) }
+        views(BAR.layout)[1].params.onClick()
+        LAYOUT = WINDOWS.Tpf3mpWindow.render()
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let (areas, cards, company_text, chat_text, composer_outside): (
+        usize,
+        usize,
+        String,
+        String,
+        bool,
+    ) = lua
+        .load(
+            r#"
+            local areas, cards, companyText, chatText = {}, 0, '', ''
+            for _, v in ipairs(views(LAYOUT)) do
+                if v.view == 'ScrollArea' then
+                    assert(v.params.horizontalPolicy == 'AlwaysOff')
+                    assert(v.params.verticalPolicy == 'AsNeeded')
+                    assert(v.params.meta.styleSheet.size.y > 0 and v.params.meta.styleSheet.size.y <= 310)
+                    areas[#areas+1] = v
+                end
+            end
+            for _, v in ipairs(views(areas[2])) do
+                if v.view == 'TextInputField' and v.params.placeholderText:find('A new name', 1, true) then
+                    assert(cards == 1, 'manage your own company before scrolling past the other companies')
+                end
+                if v.view == 'TextView' and v.params.meta.tooltip == string.rep('界',64) then
+                    cards = cards + 1
+                    companyText = v.params.text:gsub('\n','')
+                end
+            end
+            for _, v in ipairs(views(areas[3])) do
+                if v.view == 'TextView' then chatText = v.params.text:gsub('\n','') end
+            end
+            local composer, inside = false, false
+            for _, v in ipairs(views(LAYOUT)) do
+                if v.view == 'TextInputField' and v.params.placeholderText == 'Say something to the room' then
+                    composer = true
+                    for _, area in ipairs(areas) do
+                        for _, child in ipairs(views(area)) do if child == v then inside = true end end
+                    end
+                end
+            end
+            return #areas, cards, companyText, chatText, composer and not inside
+            "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!((areas, cards), (3, 8));
+    assert_eq!(company_text, "界".repeat(64));
+    assert_eq!(chat_text, "界".repeat(280));
+    assert!(
+        composer_outside,
+        "chat can be sent without scrolling past a roster"
+    );
 }
 
 #[test]
@@ -516,6 +602,20 @@ api.cmd = {
 }
 "#;
 
+#[test]
+fn the_speed_row_shows_the_room_and_only_the_host_can_use_it() {
+    for with_hook in [false, true] {
+        let lua = gui();
+        if with_hook {
+            lua.load(FAKE_HOOK).exec().unwrap();
+        }
+        lua.load(include_str!("lua/speed_ui.lua"))
+            .set_name("@speed_ui.lua")
+            .exec()
+            .unwrap_or_else(|error| panic!("hook={with_hook}: {error}"));
+    }
+}
+
 /// The game's save and load, as the GUI state has them.
 const FAKE_APP: &str = r#"
 APP = { saves = {}, loads = {} }
@@ -551,7 +651,7 @@ fn with_the_hook_the_gui_links_once() {
         "the GUI is linked|the guard is on 4 command factories|\
          the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)|\
          the company window shows the game's own rank only: the game's company progression did \
-         not load: fake_gui.lua:144: ug_require of an unknown path \
+         not load: fake_gui.lua:149: ug_require of an unknown path \
          /game_mechanics/company/company_progression_util.tl|\
          the line manager offers other companies' open stations (1 entity_util table(s))"
     );
@@ -2406,6 +2506,79 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
             .iter()
             .any(|l| l == "snapping 5000 +e-2:-1>7777 -e6000"),
         "{logged:?}"
+    );
+}
+
+#[test]
+fn a_depot_placed_on_existing_track_leaves_all_its_internal_branches_to_the_construction() {
+    for refuse_snap in [false, true] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.load(include_str!("lua/depot_snap.lua")).exec().unwrap();
+        lua.load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+             ACTION = assert(capture.construction(depot_on_track()))
+             assert(schema_check(ACTION))
+             assert(#ACTION.BuildConstruction.connection.links == 6)
+             REFUSE_SNAP = {refuse_snap}
+             HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        let (nodes, edges, sends, connected, applied): (usize, usize, usize, bool, bool) = lua
+            .load(
+                "local p = SENT[1].proposal.streetProposal
+                 return #p.nodesToAdd, #p.edgesToAdd, #SENT, CONNECTED, HOOK.applied[1].ok",
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(
+            (nodes, edges),
+            (0, 0),
+            "do not duplicate the depot's own track"
+        );
+        assert_eq!(sends, 2, "place, then snap to the existing track");
+        assert_eq!(connected, !refuse_snap);
+        assert_eq!(
+            applied, !refuse_snap,
+            "never report a refused refresh as applied"
+        );
+    }
+}
+
+#[test]
+fn a_station_with_a_long_entrance_keeps_the_external_junction_only() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(include_str!("lua/depot_snap.lua")).exec().unwrap();
+    lua.load(format!(
+        "local p = {STATION_BY_ROAD}
+         local s = p.proposal
+         s.addedNodes[#s.addedNodes+1] = {{ entity=-20, comp={{ position={{ x=90,y=0,z=0 }} }} }}
+         s.addedSegments[#s.addedSegments+1] = {{ entity=-21, type=0, comp={{
+             node0=-20, node1=-1, type=0, typeIndex=-1,
+             tangent0={{ x=-20,y=0,z=0 }}, tangent1={{ x=-20,y=0,z=0 }},
+             roadTemplate='::/street/town_small.street_template', roadStyle='' }} }}
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+         ACTION = assert(capture.construction(p))
+         assert(schema_check(ACTION))
+         HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let (nodes, edges, removed, first, second): (usize, usize, i64, i64, i64) = lua
+        .load(
+            "local s = SENT[1].proposal.streetProposal
+             return #s.nodesToAdd, #s.edgesToAdd, s.edgesToRemove[1],
+                 s.edgesToAdd[1].comp.node0, s.edgesToAdd[2].comp.node1",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!((nodes, edges, removed, first, second), (1, 2, 100, 8, 9));
+    assert!(
+        lua.load("return CONNECTED and HOOK.applied[1].ok")
+            .eval::<bool>()
+            .unwrap()
     );
 }
 
@@ -5469,7 +5642,8 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
             .unwrap_or_else(|error| panic!("{code}: {error}\n{}", log(&lua)))
     };
     assert!(
-        eval("return texts()").contains("Rival  james (you), bob  (yours, head: james)"),
+        eval("return texts()")
+            .contains("Rival\nYour company · head: james\nPlayers  james (you), bob"),
         "{}",
         eval("return texts()")
     );
@@ -5526,7 +5700,7 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
     );
     let shown = eval("return texts()");
     assert!(
-        shown.contains("Rival  james  (head: james, password, stations closed)"),
+        shown.contains("Rival\nhead: james · password · stations\nclosed\nPlayers  james"),
         "{shown}"
     );
     assert!(shown.contains("Joining Rival..."), "{shown}");
