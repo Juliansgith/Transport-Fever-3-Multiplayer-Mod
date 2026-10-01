@@ -131,6 +131,18 @@ guard.RESULT = {
 	end,
 }
 
+-- What a command makes that the window may name in its next command, by
+-- the registry's kind (tpf3mp/registry.lua): the store's "buy and put on a
+-- line" puts the new vehicle on its line in the buy's callback, and that
+-- command names the vehicle by its id, which the GUI reads from the game
+-- script's state a moment after its world has the vehicle (2026-09-30:
+-- "a vehicle the room cannot name"). So deliver() holds such an answer
+-- until the GUI can name what it made, as it holds one for the world.
+guard.NAMED = {
+	makeVehicleBuyCmd = "vehicles",
+	makeLineCreateCmd = "lines",
+}
+
 -- What the player is told a refused kind is, where "this" would not do.
 guard.WHAT = {
 	makeVehicleBuyCmd = "buying vehicles",
@@ -386,9 +398,11 @@ end
 -- What became of the commands the guard handed to the room: `results` is
 -- the hook's list ({ ticket =, ok =, entity =, why = }, bridge.lua's
 -- results()). Each waiting callback hears it, with what the room's action
--- made, as the game's own command would have answered, once `sees(entity)`
--- says the GUI's world has what it made: the game script made it in the
--- simulation, and a window that hears of it opens it at once. Answers keep
+-- made, as the game's own command would have answered, once `sees(entity,
+-- kind)` says the GUI's world has what it made, and for the kinds in NAMED
+-- that the GUI names it by its id (`kind`, the registry's): the game script
+-- made it in the simulation, and a window that hears of it opens it, or
+-- puts it on a line, at once. Answers keep
 -- their order; one held back holds those after it, for HOLD calls at most.
 -- A command that should have made something and made nothing the game
 -- could name is answered as failed, which the windows handle, not as made.
@@ -403,7 +417,7 @@ function guard.deliver(cmd, results, sees)
 		local r = h.r
 		local w = r.ticket and pending[r.ticket]
 		if w then
-			local unseen = r.entity ~= nil and sees ~= nil and not sees(r.entity)
+			local unseen = r.entity ~= nil and sees ~= nil and not sees(r.entity, guard.NAMED[w.kind])
 			if #later > 0 or (unseen and h.calls < guard.HOLD) then
 				h.calls = h.calls + 1
 				later[#later + 1] = h
