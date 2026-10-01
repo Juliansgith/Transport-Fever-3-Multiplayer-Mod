@@ -565,6 +565,36 @@ mod tests {
         assert_eq!(room.compare(&same.manifest()), None);
     }
 
+    /// The owner's declaration from a start save that lists TPF3-MP (a
+    /// save names no version) carries the owner's own fingerprint, and a
+    /// guest with the same files matches it.
+    #[test]
+    fn an_owner_with_a_start_save_and_a_guest_with_the_same_files_match() {
+        let catalog = || {
+            vec![
+                installed("tpf3mp_1", Class::Shared, "1+74554cbaf1a7d3dd"),
+                installed("ug_legacy_road_1850", Class::Shared, "1"),
+            ]
+        };
+        let mut owner = Mods::new(Text::lossy("40408"), catalog(), [], false);
+        owner.own_start(&save(&["ug_legacy_road_1850", "tpf3mp_1"]));
+        let room = owner.manifest();
+        assert_eq!(
+            names(&room),
+            ["ug_legacy_road_1850 1", "tpf3mp_1 1+74554cbaf1a7d3dd"]
+        );
+        let mut guest = Mods::new(Text::lossy("40408"), catalog(), [], false);
+        guest.forget_room();
+        if let Some(told) = room.compare(&guest.manifest()) {
+            assert!(
+                told.changed.is_empty(),
+                "the same TPF3-MP is never said to differ: {told}"
+            );
+            guest.learn(&told);
+        }
+        assert_eq!(room.compare(&guest.manifest()), None);
+    }
+
     #[test]
     fn scanning_fingerprints_tpf3mp_itself() {
         let dir = tempfile::tempdir().unwrap();
