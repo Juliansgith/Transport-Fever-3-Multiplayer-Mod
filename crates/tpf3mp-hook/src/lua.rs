@@ -534,6 +534,11 @@ pub fn take_menu_load() -> Option<String> {
     shared().menu_load.take()
 }
 
+/// Whether a load for the main menu waits to be taken ([`take_menu_load`]).
+pub fn menu_load_waiting() -> bool {
+    shared().menu_load.is_some()
+}
+
 /// The main menu could not start the load yet (the game is loading
 /// something else): it is asked again on its next frame.
 pub fn menu_load_later(name: &str) {

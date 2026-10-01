@@ -340,6 +340,22 @@ pub unsafe fn load_in_progress(menu: usize) -> Option<bool> {
     unsafe { pointer_set(menu, LOAD_FIELD.load(Ordering::Acquire)) }
 }
 
+/// The value of `CMenuUI::m_loadGameResult` and its offset, for the log;
+/// `None` when either is unknown.
+///
+/// # Safety
+///
+/// As [`world_loaded`].
+pub unsafe fn load_field_value(menu: usize) -> Option<(usize, usize)> {
+    let offset = LOAD_FIELD.load(Ordering::Acquire);
+    if offset == 0 || menu == 0 {
+        return None;
+    }
+    // SAFETY: as in pointer_set.
+    let value = unsafe { std::ptr::read_volatile((menu + offset) as *const usize) };
+    Some((offset, value))
+}
+
 /// Whether the menu `menu` (a live `UI::CMenuUI`) has a world loaded: its
 /// `m_game` is set. `None` when the offset is unknown or there is no menu.
 ///
@@ -696,6 +712,11 @@ unsafe extern "C-unwind" fn register_detour(
         }
     });
     result
+}
+
+/// Whether the menu's detours are installed ([`install`]).
+pub fn installed() -> bool {
+    STEP_ORIGINAL.load(Ordering::Acquire) != 0 && REGISTER_ORIGINAL.load(Ordering::Acquire) != 0
 }
 
 /// How many of the menu's frames are running on this thread: more than one

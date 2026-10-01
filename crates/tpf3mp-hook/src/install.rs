@@ -128,6 +128,8 @@ struct MenuSight {
     /// When the world came up, while the main menu's Multiplayer window is
     /// still to be handed over to the game's ([`hand_over_lobby`]).
     hand_over_due: Option<u64>,
+    /// Why the menu last held the room back, as logged ([`held_back`]).
+    held: Option<String>,
 }
 
 static MENU_SIGHT: Mutex<MenuSight> = Mutex::new(MenuSight {
@@ -135,7 +137,40 @@ static MENU_SIGHT: Mutex<MenuSight> = Mutex::new(MenuSight {
     seen: None,
     logged: None,
     hand_over_due: None,
+    held: None,
 });
+
+/// Why the menu's frame holds the room back now, if it does: no state of
+/// the menu's to load from, or a load that may run while the room's waits.
+/// `None` when nothing waits on the menu or nothing holds it.
+fn held_back(menu: usize, seen: Seen, lua_ok: bool) -> Option<String> {
+    if !seen.allows() {
+        return None;
+    }
+    let waiting = lua::menu_load_waiting();
+    // At the menu with no state of its own, it can neither tell the agent
+    // nor follow the room: said whether or not a room waits.
+    if !crate::menu::available() {
+        return Some(
+            "no Lua state of the main menu's is adopted on this thread (made before the hook's detours?), so the main menu cannot load the room's world"
+                .to_owned(),
+        );
+    }
+    if waiting && !lua_ok {
+        // SAFETY: DoStep's `this`, live, on its thread, after its frame.
+        let field = match unsafe { crate::menu::load_field_value(menu) } {
+            Some((offset, value)) => {
+                format!("CMenuUI::m_loadGameResult (+{offset:#x}) = {value:#x}")
+            }
+            None => "CMenuUI::m_loadGameResult unknown (no profile target)".to_owned(),
+        };
+        return Some(format!(
+            "the room's load waits until no load runs: {field}, a load the hook started still running: {}",
+            lua::load_started()
+        ));
+    }
+    None
+}
 
 /// What one of the menu's frames saw ([`menu_seen`]).
 struct MenuFrame {
@@ -269,6 +304,19 @@ pub(crate) fn menu_frame(menu: usize) {
         hand_over,
         mut lines,
     } = menu_seen(menu);
+    // Once per change: why the menu holds the room back, and when it no
+    // longer does.
+    let held = held_back(menu, seen, lua_ok);
+    {
+        let mut sight = menu_sight();
+        if sight.held != held {
+            match &held {
+                Some(why) => lines.push(format!("menu: holding the room back: {why}")),
+                None => lines.push("menu: no longer holding the room back".to_owned()),
+            }
+            sight.held = held;
+        }
+    }
     if hand_over {
         hand_over_lobby(&mut lines);
     }
@@ -622,10 +670,17 @@ pub fn install(profile: &Profile, link_name: &str, log: crate::Logger) -> Instal
     }
 }
 
+/// The profile as [`prepare`] resolved it in this process: the image's base
+/// and the targets, and whether the main menu's load was installed then.
 #[cfg(all(windows, target_arch = "x86_64"))]
-fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
-    use std::time::Duration;
+static PREPARED: Mutex<Option<(usize, tpf3mp_hookcore::profile::ResolvedProfile, bool)>> =
+    Mutex::new(None);
 
+/// The executable's base and the profile resolved in its code.
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn resolve_here(
+    profile: &Profile,
+) -> Result<(usize, tpf3mp_hookcore::profile::ResolvedProfile), String> {
     use tpf3mp_hookcore::{pe::PeHeaders, profile};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
@@ -649,6 +704,71 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     };
     let resolved = profile::resolve(profile, code, u64::from(text.virtual_address))
         .map_err(|refusal| format!("the profile does not resolve here: {refusal:?}"))?;
+    Ok((base, resolved))
+}
+
+/// Before the game runs (it is still suspended): resolves the profile and
+/// installs the main menu's load of the room's world, so the menu's Lua
+/// states are adopted as the game makes them. The rest waits for the
+/// agent's link ([`install`]), which can take long: the main menu was built
+/// before the hook got there once (2026-10-01, 27 s), and no state of the
+/// menu's was ever adopted, so the room's world never loaded. Returns the
+/// line for the log.
+#[cfg(all(windows, target_arch = "x86_64"))]
+pub fn prepare(profile: &Profile, log: crate::Logger) -> String {
+    *LOG.lock().unwrap_or_else(|p| p.into_inner()) = Some(log);
+    let (base, resolved) = match resolve_here(profile) {
+        Ok(found) => found,
+        Err(reason) => return format!("the main menu's load waits for the step gate: {reason}"),
+    };
+    let at = |name: &str| -> Result<usize, String> {
+        resolved
+            .get(name)
+            .map(|target| base + target.address as usize)
+            .ok_or_else(|| format!("the profile has no {name}"))
+    };
+    // SAFETY: each address is the function of Lua 5.2's C API the profile
+    // names, found by its signature and checked by its prologue in this very
+    // build; the types are that API's.
+    let line = match unsafe { lua_api(&at) } {
+        Ok(api) => {
+            lua::install_api(api);
+            // SAFETY: `at` gives the functions the profile resolved in this
+            // build; the game is suspended, so no thread runs them;
+            // detour_forever installs each for good.
+            match unsafe { crate::menu::install(&at, detour_forever) } {
+                Ok(line) | Err(line) => line,
+            }
+        }
+        Err(reason) => {
+            format!("the main menu cannot load the room's world (fail closed): {reason}")
+        }
+    };
+    let menu = crate::menu::installed();
+    *PREPARED.lock().unwrap_or_else(PoisonError::into_inner) = Some((base, resolved, menu));
+    line
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+pub fn prepare(_profile: &Profile, _log: crate::Logger) -> String {
+    "the main menu's load: Windows x86-64 only for now".into()
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
+    use std::time::Duration;
+
+    let prepared = PREPARED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    let (base, resolved, menu_installed) = match prepared {
+        Some(prepared) => prepared,
+        None => {
+            let (base, resolved) = resolve_here(profile)?;
+            (base, resolved, false)
+        }
+    };
     let step_rva = resolved
         .get(STEP_TARGET)
         .ok_or_else(|| format!("the profile has no {STEP_TARGET}"))?
@@ -769,10 +889,14 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     // Loading the room's world from the main menu (docs/HOOKS.md, "Loading
     // from the main menu"): without it, a game needs a world up to take the
     // room's, as before.
-    // SAFETY: `at` gives the functions the profile resolved in this build,
-    // which no thread runs yet; detour_forever installs each for good.
-    match unsafe { crate::menu::install(&at, detour_forever) } {
-        Ok(line) | Err(line) => log_line(&line),
+    // Installed before the game ran ([`prepare`]), as a rule.
+    if !menu_installed {
+        // SAFETY: `at` gives the functions the profile resolved in this
+        // build, which no thread runs yet; detour_forever installs each for
+        // good.
+        match unsafe { crate::menu::install(&at, detour_forever) } {
+            Ok(line) | Err(line) => log_line(&line),
+        }
     }
     // The seeds and the order fixes (docs/HOOKS.md, "Seeds, as built" and
     // "The order fixes, as built") take the targets at their addresses in
@@ -1213,6 +1337,7 @@ mod tests {
         sight.seen = None;
         sight.logged = None;
         sight.hand_over_due = None;
+        sight.held = None;
         drop(sight);
         MENU_CLOCK_SKEW.store(0, Ordering::Release);
         crate::menu::set_game_field(0);
@@ -1439,6 +1564,76 @@ mod tests {
         lua::menu_load_failed(String::new());
         let _ = lua::take_load_failure();
         lua::forget_worlds();
+        forget_menu_sight();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The menu says in hook.log when it holds the room back and why: no
+    /// state of its own to load from (made before the hook's detours), or a
+    /// load that may run, with the field's value; and when it goes ahead.
+    #[test]
+    fn the_menu_logs_why_it_holds_the_room_back() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        lua::forget_worlds();
+        forget_menu_sight();
+        crate::menu::tests::menu51();
+        crate::menu::tests::forget_all();
+        let dir = std::env::temp_dir().join(format!("tpf3mp-menu-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        *LOG.lock().unwrap() = Some(crate::Logger::open(Some(&dir)));
+        let hook_log = || std::fs::read_to_string(dir.join("hook.log")).unwrap_or_default();
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            Script::default(),
+            Box::new(crate::worlds::GuiWorlds::in_folder(Ok(dir.clone()))),
+        )));
+        LAST_STEP.store(0, Ordering::Release);
+        let mut cmenu = [0usize; 4];
+        crate::menu::set_load_field(16);
+        let at = cmenu.as_mut_ptr() as usize;
+
+        // No state of the menu's: said once.
+        menu_frame(at);
+        menu_frame(at);
+        let log = hook_log();
+        assert_eq!(
+            log.matches("menu: holding the room back: no Lua state of the main menu's")
+                .count(),
+            1,
+            "{log}"
+        );
+        // A state, and a room load waiting while the game loads: the field.
+        let menu = Lua::new();
+        menu.run(
+            "LOADS = {} api = { type = { SavegameId = { new = function() return {} end } } } \
+             app = { SaveGameNamespace = { getSavegame = function() return 'savegame' end }, \
+                     loadGame = function(id) LOADS[#LOADS + 1] = id.saveGameName end }",
+        )
+        .unwrap();
+        assert_eq!(unsafe { crate::menu::adopt(menu.state()) }, Ok(true));
+        lua::request_menu_load("x");
+        unsafe { std::ptr::write_volatile((at + 16) as *mut usize, 0x1234) };
+        menu_frame(at);
+        let log = hook_log();
+        assert!(
+            log.contains(
+                "menu: holding the room back: the room's load waits until no load runs: CMenuUI::m_loadGameResult (+0x10) = 0x1234, a load the hook started still running: false"
+            ),
+            "{log}"
+        );
+        assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
+        // The load ends: the room's goes ahead.
+        unsafe { std::ptr::write_volatile((at + 16) as *mut usize, 0) };
+        menu_frame(at);
+        assert!(hook_log().contains("menu: no longer holding the room back"));
+        assert_eq!(menu.run("return #LOADS"), Ok("1".into()));
+
+        *LOG.lock().unwrap() = None;
+        *DRIVER.lock().unwrap() = None;
+        crate::menu::tests::forget_all();
+        let _ = lua::take_menu_load();
+        lua::menu_load_failed(String::new());
+        let _ = lua::take_load_failure();
         forget_menu_sight();
         let _ = std::fs::remove_dir_all(&dir);
     }

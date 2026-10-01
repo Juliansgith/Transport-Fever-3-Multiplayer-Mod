@@ -465,7 +465,15 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   "Transport Fever 3 closed", without waiting out those limits, so the
   player can start the game again at once. The heartbeat limits remain for
   games the launcher did not start and for a hook whose game still runs
-  but hangs.
+  but hangs. When a game closes, the launcher starts its link afresh in
+  place (`tpf3mp_ipc::Link::reset`: both rings emptied, a new
+  generation), through `IdleLink::forget_game` or a session given back
+  with no game running: what was queued for the closed game's hook and
+  never read (a lobby sent as it closed) never reaches the next game's,
+  whose hook would otherwise read it before the answer to its hello and
+  refuse the link ("the agent sent something before its hello", seen
+  2026-10-01). Only a ring's consumer may move its head, and the closed
+  game's hook never will, so the owner resets the whole link.
 
 ### The hook's session
 
@@ -960,6 +968,13 @@ so neither the GUI nor the step's detour is there. A game at its menu
 (`crates/tpf3mp-hook/src/menu.rs`; the static findings and the in-game
 checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
 
+- **Before the game runs.** The main menu's load (the Lua API, the two
+  detours below, the two field offsets) is installed while the launcher
+  still holds the game suspended, with the menu's Multiplayer entry
+  (`install::prepare`); the rest of the install waits for the agent's
+  link. On 2026-10-01 that wait took 27 s, the game built its main menu
+  meanwhile, no state of the menu's was adopted, and the room's world
+  loaded in no game.
 - **Gets a Lua state that can load.** The game gives a Lua state its `app`
   table in one function, `RegisterAppUsertypes` (profile target, build
   40408 `0xdc5fa0`), for the menu's states and the in-game GUI's. The
@@ -1025,7 +1040,12 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   (CMenuUI::m_game cleared); ...`, `menu: no world loaded, but the game is
   loading one`, `menu: back at the main menu after a world (no world loaded
   or loading for 2 s)`; and when the room begins there, `the room began at
-  the main menu; the menu sees: <where>`. Before the room begins, `on_menu` reads `Begin` and tells
+  the main menu; the menu sees: <where>`. When the menu holds the room
+  back, once per reason: `menu: holding the room back: no Lua state of
+  the main menu's is adopted on this thread ...`, or `menu: holding the
+  room back: the room's load waits until no load runs:
+  CMenuUI::m_loadGameResult (+0x1bd0) = 0x..., a load the hook started
+  still running: <bool>`; then `menu: no longer holding the room back`. Before the room begins, `on_menu` reads `Begin` and tells
   the agent `MenuUp` once per arrival, which marks a guest ready (and the
   room's owner, once the room has the save the owner named for it to start
   from: PROTOCOL.md, "The first world") and keeps the hook's heartbeat

@@ -106,6 +106,14 @@ pub fn bootstrap() {
             // opens, and says the launcher is not answering; without its
             // own targets the menu is the game's.
             install_menu(&profiles, &mut log, data_dir.as_deref());
+            // The main menu's load of the room's world too, before the
+            // game builds its menu: the rest of the install waits for the
+            // agent's link, which can take long, and a menu built before
+            // the load's detours never loads the room's world (2026-10-01).
+            log.line(&install::prepare(
+                &profile,
+                Logger::open(data_dir.as_deref()),
+            ));
             ready.signal(&mut log);
             match install::install(&profile, &link_name, Logger::open(data_dir.as_deref())) {
                 install::Installed::Yes { step_rva } => log.line(&format!(
