@@ -189,8 +189,8 @@ window too.
      empty); **Start from this save**, one of your saves, newest first, or
      **None: I load a world myself**; **Players**, 2 to 16; **How you
      play**, two pictures: **Co-op**, everyone for the room's one company,
-     or **Competitive**, each player founding a company of their own in
-     the game; **Who can find
+     or **Competitive**, each player in a company of their own, founded
+     for them as they arrive in the game (see "Companies"); **Who can find
      it**: **Private**, invite only (the default), or **Public**, in the
      room list, with your save's climate and year; the **Rules**, when the
      server offers more than one (`native` is the game's own rules and
@@ -356,6 +356,25 @@ protected folder such as Program Files.
   markers on the map wear their company's colour, and a new colour
   repaints them. The colour button offers the companies' colours first,
   then the game's own.
+- **Competitive rooms.** In a room created **Competitive**, every player
+  gets a company of their own without clicking anything: about a second
+  after you arrive in the room's world, your game founds `<your name>'s
+  company` for you and you play for it, as if you had pressed **Found a
+  company** (the Multiplayer window says "Founding your company, ...").
+  The host gets one too, and so does a player who joins the running game
+  later. You are its head; rename or recolour it as any company. The
+  room's first company, the save's own, stays in the room but nobody plays
+  for it: it keeps whatever the save gave it, money and the game's own
+  loans included, so every player starts alike, with a new company and no
+  money, borrowing on the same terms. You can still switch companies,
+  join a friend's or go back to the first one as in a co-op room. Your
+  game founds one only while you play for the first company and have
+  never founded a company in this room (even one you dissolved since), so
+  a player in a friend's company stays there, and one who dissolved
+  theirs is not given another. In a co-op room nothing is founded for
+  you. If founding
+  fails (the room has eight companies already, or your company's name is
+  taken), you stay in the first company and can found one by hand.
 - **Your company's head, passwords and stations** (proposed, D22). The
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows

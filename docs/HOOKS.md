@@ -770,7 +770,10 @@ for the table (`bridge.find`). Its contract is in
   window, `{ room =, speed =, diverged =, me_id =, players = { { id =,
   name =, connected =, owner =, me =, banner =, loading =, percent = } } }`,
   or nil before the room's game; `invite` too, the room's invite as the
-  launcher last told it, when it did. `banner` is the player's pick, empty for
+  launcher last told it, when it did, and `competitive`, whether the room
+  is competitive as the launcher's lobby says (`LobbyRoom::competitive`),
+  left out where it has said nothing: the GUI founds the player's own
+  company by it (PLAYING.md, "Companies"). `banner` is the player's pick, empty for
   their default (a portrait id only where this game has the portrait, bridge
   version 19); `loading` is `fetching` (with `percent`), `loading` or
   empty (bridge version 18: `RoomMember::banner` and `loading`). The
@@ -1376,6 +1379,21 @@ state, which the game saves with the world:
   (`status().me_id`) and the game script's roster every 2 seconds
   (`hook.log`: `the GUI's company follows the player's in the HUD's
   state`).
+- *In a competitive room* the GUI founds the player a company of their
+  own (`tpf3mp.script.lua`, `foundOwnCompany`): the same `CompanyOp`
+  `Create` **Found a company** sends, named `<name>'s company`, sent by the
+  player's own game, so the room orders it for every game like any other
+  action (D8: the server never writes an action). Only while
+  `status().competitive` is true, the roster is read and says the player
+  plays for the room's first company, and no company of the room, dissolved
+  ones included, was founded by them; and only once that has held for four
+  readings of the room in a row (`OWN_SETTLE`, about a second), so a world
+  that is still catching up has applied what the room ordered before. At
+  most once a room and player in this Lua state. The name is the same each
+  time, so a second one sent before the first arrives is refused alike in
+  every game; with another player of the same name in the room, the first
+  four hex digits of the player's id follow it. `hook.log`: `a competitive
+  room: founding the player's own company`.
 - *The Multiplayer window* lists the companies with their money and
   players, the one the player plays for first with its colour to choose
   (the game's colour chooser, `ColorChooserButton`, with the companies'

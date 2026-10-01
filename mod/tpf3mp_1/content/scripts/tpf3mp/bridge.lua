@@ -47,9 +47,11 @@
 --                                   -- { { ticket =, ok =, entity =, why = } }
 --     status  = function(),         -- the room, for the Multiplayer window, or
 --                                   -- nil before its game: { room =, speed =,
---                                   -- diverged =, me_id =, players = { {
---                                   -- name =, connected =, owner =, me =,
---                                   -- id = } } }
+--                                   -- diverged =, me_id =, competitive =,
+--                                   -- players = { { name =, connected =,
+--                                   -- owner =, me =, id = } } };
+--                                   -- competitive is nil where the launcher
+--                                   -- has not said
 --     chat    = function(),         -- what the room's members said since the
 --                                   -- last call, { { from =, text = } }
 --     say     = function(text),     -- says text to the room -> true |

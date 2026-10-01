@@ -1276,6 +1276,7 @@ pub fn take_said() -> Vec<ChatText> {
 fn room_status() -> Option<LuaValue> {
     // Before this module's lock: the lobby's is never taken under it.
     let invite = crate::lobby::invite();
+    let competitive = crate::lobby::competitive();
     let shared = shared();
     let room = &shared.room;
     let info = room.info.as_ref()?;
@@ -1343,6 +1344,14 @@ fn room_status() -> Option<LuaValue> {
     ];
     if let Some(invite) = invite {
         fields.push((LuaValue::string("invite"), LuaValue::string(&invite)));
+    }
+    // Left out where the launcher has not said: the GUI then founds no
+    // company for the player (fail closed).
+    if let Some(competitive) = competitive {
+        fields.push((
+            LuaValue::string("competitive"),
+            LuaValue::Boolean(competitive),
+        ));
     }
     if let Some(me) = &room.me {
         fields.push((
@@ -2832,6 +2841,37 @@ pub(crate) mod tests {
             lua.run("return tostring(tpf3mp_native.status())"),
             Ok("nil".into())
         );
+    }
+
+    /// The window's status says whether the room is competitive, as the
+    /// launcher's lobby says, and nothing where the lobby has no room: the
+    /// GUI founds the player's own company by it, never on a guess.
+    #[test]
+    fn the_status_says_whether_the_room_is_competitive() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        crate::lobby::reset();
+        let lua = Lua::new();
+        lua.register();
+        notice(&Notice::Room(RoomInfo {
+            name: Text::new("Rivals").unwrap(),
+            owner: player(1),
+            members: BoundedVec::new(Vec::new()).unwrap(),
+        }));
+        let competitive = || lua.run("return tostring(tpf3mp_native.status().competitive)");
+        assert_eq!(competitive(), Ok("nil".into()), "the lobby has not said");
+        let mut view = crate::lobby::tests::view();
+        view.room.as_mut().unwrap().competitive = true;
+        crate::lobby::show(view.clone());
+        assert_eq!(competitive(), Ok("true".into()));
+        view.room.as_mut().unwrap().competitive = false;
+        crate::lobby::show(view.clone());
+        assert_eq!(competitive(), Ok("false".into()));
+        view.room = None;
+        crate::lobby::show(view);
+        assert_eq!(competitive(), Ok("nil".into()), "out of the room");
+        crate::lobby::reset();
+        reset();
     }
 
     #[test]

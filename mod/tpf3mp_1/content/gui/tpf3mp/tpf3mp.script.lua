@@ -150,6 +150,14 @@ function data()
 			if ok and type(name) == "string" and name ~= "" then return name end
 			return nil
 		end,
+		-- The kind of the subsidy offered under `uid`, as this game's subsidy
+		-- script has it (tpf3mp/companies.lua), or nil when it offers none.
+		subsidy = function(uid)
+			local companies = require("tpf3mp.companies")
+			local where, s = companies.findSubsidy(companies.subsidyState(api), uid)
+			if where == "offered" and type(s.id) == "string" then return s.id end
+			return nil
+		end,
 		-- A vehicle's parts as its TRANSPORT_VEHICLE component has them.
 		parts = function(vehicle)
 			local ok, parts = pcall(function()
@@ -168,6 +176,9 @@ function data()
 
 	-- The GUI state's api.cmd, which the guard is on.
 	local guardedCmd = nil
+	-- What the player asked of the commands handed to the room whose
+	-- refusal they are told, by ticket: a subsidy's answer.
+	local answers = {}
 
 	-- Whether the GUI's world has `entity` yet: what the room's action made
 	-- in the simulation reaches it a moment later. With `kind`, also whether
@@ -187,7 +198,16 @@ function data()
 		guardedCmd = ok and cmd or nil
 		local wrapped, why = require("tpf3mp.guard").install(guardedCmd, {
 			inRoom = function() return link:room() end,
-			command = function(action) return link:command(action) end,
+			command = function(action)
+				local ok, ticket = link:command(action)
+				-- A subsidy's answer the room refuses is told the player
+				-- (taken by another company first, no longer offered).
+				local subsidy = ok and type(action) == "table" and action.Subsidy
+				if subsidy and ticket ~= nil then
+					answers[ticket] = subsidy.Accept and "Taking the subsidy" or "Declining the subsidy"
+				end
+				return ok, ticket
+			end,
 			refused = refused,
 			later = function(fn) pending[#pending + 1] = fn end,
 			context = context,
@@ -414,7 +434,13 @@ function data()
 		local state = scriptState()
 		local roster = state and state.companies
 		if type(roster) ~= "table" or type(roster.list) ~= "table" then return nil, "" end
-		local out, sign = { list = {}, members = roster.members or {}, loans = roster.loans or {} }, {}
+		local out, sign = { list = {}, members = roster.members or {}, loans = roster.loans or {}, founders = {} }, {}
+		-- Who founded a company in this room, dissolved since or not: the
+		-- room founds no company for them in a competitive room
+		-- (foundOwnCompany).
+		for _, c in ipairs(roster.list) do
+			if type(c.founder) == "string" then out.founders[c.founder] = true end
+		end
 		-- The loans the game offers now (its loan script's), which another
 		-- company takes on the same terms.
 		pcall(function()
@@ -466,6 +492,9 @@ function data()
 		return out, table.concat(sign, "|")
 	end
 
+	-- Founds the player's own company in a competitive room; below.
+	local foundOwnCompany
+
 	-- Reads the room and its chat from the hook into ui(): the room every
 	-- STATUS_FRAMES frames, the chat every frame.
 	local statusFrames = 0
@@ -487,6 +516,7 @@ function data()
 				shared.companiesSign = sign
 				changed = true
 			end
+			foundOwnCompany(shared)
 		end
 		-- A new world's GUI gets the chat so far again, as old lines: they
 		-- fill the window without counting as new.
@@ -531,6 +561,63 @@ function data()
 			shared.companyNote = "Not sent: " .. tostring(ticket)
 		end
 		shared.version = shared.version + 1
+	end
+
+	-- In a competitive room each player plays for a company of their own
+	-- (docs/PLAYING.md, "Companies"): the player's game founds it for them,
+	-- with the same action "Found a company" sends, which the room orders
+	-- for every game. Only for a player who plays for the room's first
+	-- company and never founded one in this room (one who dissolved theirs,
+	-- or chose the first company again after founding, keeps that choice),
+	-- once the room and its roster have read the same for OWN_SETTLE
+	-- readings in a row, so a world still catching up has had time to
+	-- apply what the room ordered before. At most once a room and player in
+	-- this game. The name is the player's, "<name>'s company", the same
+	-- every time: a second one sent while the first is still on its way is
+	-- refused alike in every game ("a company is called ... already"). In a
+	-- co-op room, where the launcher has not said, or without the roster or
+	-- the player's name, nothing is sent; the player can still found one
+	-- with "Found a company".
+	local OWN_SETTLE = 4
+	local own = { key = nil, settled = 0, sent = {} }
+
+	-- "<name>'s company"; with another player of the same name in the
+	-- room, the first four hex digits of the player's id after it, so both
+	-- get one. At most 32 + 17 bytes, within a company name's 64.
+	local function ownCompanyName(status)
+		local me
+		for _, p in ipairs(status.players or {}) do
+			if p.me then me = p end
+		end
+		local name = me and type(me.name) == "string" and me.name:gsub("^%s+", ""):gsub("%s+$", "") or ""
+		if name == "" then return nil end
+		for _, p in ipairs(status.players) do
+			if not p.me and type(p.name) == "string" and p.name:lower() == me.name:lower() then
+				return name .. "'s company (" .. status.me_id:sub(1, 4) .. ")"
+			end
+		end
+		return name .. "'s company"
+	end
+
+	foundOwnCompany = function(shared)
+		local status, roster = shared.status, shared.companies
+		local me = status and status.me_id
+		local playing = roster and type(me) == "string" and require("tpf3mp.companies").of(roster, me)
+		if not (link and status and playing and status.competitive == true and me ~= "")
+			or roster.founders[me] or playing.id ~= 0 then
+			own.settled = 0
+			return
+		end
+		local key = me .. "@" .. tostring(status.invite or status.room)
+		if own.sent[key] then return end
+		if own.key ~= key then own.key, own.settled = key, 0 end
+		own.settled = own.settled + 1
+		if own.settled < OWN_SETTLE then return end
+		local name = ownCompanyName(status)
+		if not name then return end
+		own.sent[key] = true
+		link:log("a competitive room: founding the player's own company")
+		companyOp(shared, { Create = { name = name } }, "Founding your company, " .. name)
 	end
 
 	-- The colours a company can wear: the companies' own first (a vehicle in
@@ -1118,6 +1205,11 @@ function data()
 							shared.companyNote = r.ok and (doing .. ": done")
 								or (doing .. ": not done, " .. tostring(r.why))
 							shared.version = shared.version + 1
+						end
+						local asked = r.ticket and answers[r.ticket]
+						if asked then
+							answers[r.ticket] = nil
+							if r.ok ~= true then notice = asked .. ": not done, " .. tostring(r.why) end
 						end
 					end
 				end)

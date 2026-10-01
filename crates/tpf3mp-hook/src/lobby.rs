@@ -320,6 +320,14 @@ pub fn invite() -> Option<String> {
     Some(invite.as_str().to_owned())
 }
 
+/// Whether the player's room is competitive, each player for a company of
+/// their own, as the launcher last told it; `None` outside a room. The
+/// game's GUI founds the player's company by it (docs/PLAYING.md,
+/// "Companies").
+pub fn competitive() -> Option<bool> {
+    Some(menu().view.as_ref()?.room.as_ref()?.competitive)
+}
+
 /// Parses one action from the window's JSON into what the launcher takes.
 pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
     let action: WindowAction =
@@ -856,6 +864,12 @@ pub fn state() -> LobbyState {
     state
 }
 
+/// The launcher's lobby, as if it had just sent it.
+#[cfg(test)]
+pub(crate) fn show(view: LobbyView) {
+    menu().view = Some(view);
+}
+
 #[cfg(test)]
 pub(crate) fn reset() {
     *menu() = Menu {
@@ -870,7 +884,7 @@ pub(crate) fn reset() {
 mod window_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use tpf3mp_bridge::{LobbyLine, LobbyMember, LobbyRoom, LobbyRules};
     use tpf3mp_proto::BoundedVec;
 
@@ -1009,7 +1023,7 @@ mod tests {
         assert!(lua.ends_with(" }"));
     }
 
-    fn view() -> LobbyView {
+    pub(crate) fn view() -> LobbyView {
         LobbyView {
             connection: LobbyConnection::Connected,
             server: Text::new("EU").unwrap(),

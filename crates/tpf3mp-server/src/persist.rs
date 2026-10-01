@@ -42,8 +42,13 @@ use tpf3mp_proto::{
 /// played by, and version 6 the game's content manifest. Version 7's
 /// invite tag is of the room's six-character code alone. Version 8's
 /// commands carry the seal of a password sent with them (protocol 8), never
-/// the password.
-pub(crate) const FORMAT_VERSION: u16 = 8;
+/// the password. Version 9 appends the room's play style
+/// ([`StartRecord::competitive`]); a version 8 log is still read, as a co-op
+/// room ([`StartRecord::decode`]).
+pub(crate) const FORMAT_VERSION: u16 = 9;
+/// The last format before [`FORMAT_VERSION`] that is still read: the same
+/// layout without the fields version 9 appended.
+pub(crate) const FORMAT_VERSION_CO_OP: u16 = 8;
 /// Largest start record: one whose base holds the rules' state.
 const MAX_START_RECORD: usize = 16 << 20;
 /// Largest record after the start record: a turn frame at its cap. Kept
@@ -77,6 +82,34 @@ pub(crate) struct StartRecord {
     pub(crate) members: Vec<StartMember>,
     /// For a compacted log, the game's state before its first turn.
     pub(crate) base: Option<Base>,
+    /// The play style its owner chose (`CreateRoom::competitive`), which a
+    /// restored room keeps. Appended in version 9: last, so a version 8
+    /// record is this layout without it.
+    pub(crate) competitive: bool,
+}
+
+impl StartRecord {
+    /// Reads a start record of `version`, which leads `bytes`: this
+    /// format's, or version 8's, whose layout is this one's without
+    /// `competitive` at the end. postcard writes a struct's fields one after
+    /// the other with nothing between them and `false` as one zero byte, so
+    /// a version 8 record with that byte appended is exactly a version 9
+    /// record of a co-op room. Any other version is not read here.
+    pub(crate) fn decode(version: u16, bytes: &[u8]) -> Option<postcard::Result<Self>> {
+        if version == FORMAT_VERSION {
+            Some(postcard::from_bytes(bytes))
+        } else if version == FORMAT_VERSION_CO_OP {
+            let mut upgraded = Vec::with_capacity(bytes.len() + 1);
+            upgraded.extend_from_slice(bytes);
+            upgraded.push(0);
+            Some(postcard::from_bytes(&upgraded).map(|start: Self| Self {
+                version: FORMAT_VERSION,
+                ..start
+            }))
+        } else {
+            None
+        }
+    }
 }
 
 /// A running game's state after a turn, which a compacted log starts from
@@ -441,6 +474,7 @@ mod tests {
             password_tag: None,
             members: Vec::new(),
             base: None,
+            competitive: false,
         }
     }
 
@@ -472,6 +506,38 @@ mod tests {
         reader.delete().unwrap();
         assert!(!path.exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A competitive room's start record keeps its play style; one of
+    /// version 8, written before the play style was logged, reads as the
+    /// same room, co-op. Any other version is not read.
+    #[test]
+    fn a_start_record_keeps_the_play_style_and_version_8_reads_as_co_op() {
+        let competitive = StartRecord {
+            competitive: true,
+            ..start()
+        };
+        let bytes = postcard::to_stdvec(&competitive).unwrap();
+        let read = StartRecord::decode(FORMAT_VERSION, &bytes)
+            .unwrap()
+            .unwrap();
+        assert!(read.competitive);
+
+        // Version 8's layout: the same fields without the last one, the
+        // play style's byte.
+        let co_op = postcard::to_stdvec(&start()).unwrap();
+        let mut old = postcard::to_stdvec(&FORMAT_VERSION_CO_OP).unwrap();
+        old.extend_from_slice(&co_op[old.len()..co_op.len() - 1]);
+        let read = StartRecord::decode(FORMAT_VERSION_CO_OP, &old)
+            .unwrap()
+            .unwrap();
+        assert!(!read.competitive);
+        assert_eq!(read.version, FORMAT_VERSION);
+        assert_eq!(read.name, start().name);
+        assert_eq!(read.invite_tag, start().invite_tag);
+        // Read as version 9, version 8's record is a byte short.
+        assert!(StartRecord::decode(FORMAT_VERSION, &old).unwrap().is_err());
+        assert!(StartRecord::decode(7, &old).is_none());
     }
 
     #[test]

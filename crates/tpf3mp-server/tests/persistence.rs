@@ -13,7 +13,7 @@ use std::{
 
 use common::{FAST, Player, RunningServer, TestClient, seat};
 use tpf3mp_agent::ClientError;
-use tpf3mp_proto::{EventBody, Invite, JoinRoom, Payload, RequestError};
+use tpf3mp_proto::{CreateRoom, EventBody, Invite, JoinRoom, Payload, RequestError};
 use tpf3mp_server::ServerConfig;
 
 fn data_dir(name: &str) -> PathBuf {
@@ -203,6 +203,46 @@ async fn a_restored_game_nobody_returns_to_closes_with_its_log() {
     assert_eq!(server.stats.rooms(), 1, "restored");
     server.wait_for_rooms(0).await;
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "log deleted");
+    server.shut_down().await;
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A competitive room comes back competitive: each player's game founds the
+/// player a company of their own only in a room that says so, a player who
+/// joins after the restart included (docs/PLAYING.md, "Companies").
+#[tokio::test]
+async fn a_restored_room_keeps_its_play_style() {
+    let dir = data_dir("play-style");
+    let secret = [6; 32];
+    let server = RunningServer::start(persistent(&dir, secret)).await;
+    let ann = server.client("ann").await;
+    let (invite, view) = ann
+        .client
+        .create_room(CreateRoom {
+            competitive: true,
+            ..common::room("rivals", FAST)
+        })
+        .await
+        .unwrap();
+    assert!(view.competitive);
+    ann.client
+        .declare_content(common::content(1))
+        .await
+        .unwrap();
+    ann.client.set_ready(true).await.unwrap();
+    ann.client.start_game().await.unwrap();
+    let mut player = Player::new(ann);
+    player.play_until(|p| p.executed >= 3).await;
+    let identity = Arc::clone(&player.test.identity);
+    drop(player);
+    server.shut_down().await;
+
+    let server = RunningServer::start(persistent(&dir, secret)).await;
+    assert_eq!(server.stats.rooms(), 1, "restored");
+    let ann = server.client_as(identity, "ann").await;
+    let view = ann.client.join_room(common::join(&invite)).await.unwrap();
+    assert!(view.competitive, "still competitive after the restart");
+    drop(ann);
     server.shut_down().await;
     std::fs::remove_dir_all(&dir).unwrap();
 }

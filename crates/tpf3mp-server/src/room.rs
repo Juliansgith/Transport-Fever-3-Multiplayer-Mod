@@ -700,8 +700,8 @@ pub(crate) struct Room {
     closed: bool,
     /// What the room list shows of the room.
     summary: SharedSummary,
-    /// The play style its owner chose; not logged, so a restored room is
-    /// co-op.
+    /// The play style its owner chose, which its log keeps, so a restored
+    /// room has it too (a log of format 8, from before, restores co-op).
     competitive: bool,
 }
 
@@ -854,10 +854,9 @@ impl Room {
         // another format has another layout, and is named as such rather
         // than reported unreadable.
         let (version, _) = postcard::take_from_bytes::<u16>(&first).map_err(RecoverError::Start)?;
-        if version != persist::FORMAT_VERSION {
-            return Err(RecoverError::Version(version));
-        }
-        let start: StartRecord = postcard::from_bytes(&first).map_err(RecoverError::Start)?;
+        let start: StartRecord = StartRecord::decode(version, &first)
+            .ok_or(RecoverError::Version(version))?
+            .map_err(RecoverError::Start)?;
         if !start.settings.is_valid() {
             return Err(RecoverError::Settings);
         }
@@ -1091,7 +1090,7 @@ impl Room {
             snapshots: env.snapshots,
             start_world: None,
             closed: false,
-            competitive: false,
+            competitive: start.competitive,
             // Private after a restart: the log keeps no listing.
             summary: Arc::new(std::sync::Mutex::new(Summary {
                 name: Text::lossy(""),
@@ -1101,7 +1100,7 @@ impl Room {
                 max_players: 0,
                 has_password: false,
                 phase: RoomPhase::Running,
-                competitive: false,
+                competitive: start.competitive,
                 listing: None,
             })),
         };
@@ -1885,6 +1884,7 @@ impl Room {
                 })
                 .collect(),
             base,
+            competitive: self.competitive,
         }
     }
 
@@ -3837,6 +3837,7 @@ mod tests {
             password_tag: None,
             members: Vec::new(),
             base: None,
+            competitive: false,
         };
         let mut log = RoomLog::create(&dir, &start).unwrap();
         for frame in &frames {
@@ -3907,6 +3908,7 @@ mod tests {
             password_tag: None,
             members: Vec::new(),
             base: None,
+            competitive: false,
         };
         let mut log = RoomLog::create(&dir, &start).unwrap();
         for frame in &frames {
@@ -4105,6 +4107,7 @@ mod tests {
             password_tag: None,
             members: Vec::new(),
             base: Some(base),
+            competitive: false,
         };
         let mut log = RoomLog::create(&dir, &start).unwrap();
         let turn = TurnMessage::Turn(Turn {
@@ -4181,6 +4184,7 @@ mod tests {
             password_tag: None,
             members: Vec::new(),
             base: None,
+            competitive: false,
         };
         let mut log = RoomLog::create(&dir, &start).unwrap();
         for frame in &frames {

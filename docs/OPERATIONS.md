@@ -247,7 +247,8 @@ Persistence details:
   lose the last few turns; a client that saw them is told
   `ResumeUnavailable`, even once the room has sealed new turns with the same
   numbers (see "Histories" in PROTOCOL.md). Logs of an older format are
-  set aside, not restored.
+  set aside, not restored, except format 8's, which format 9 only extends
+  with the room's play style: such a game is restored, as co-op.
 - **Damaged logs.** Recovery reads a log without changing it. A damaged final
   record is what a crash leaves behind, so it is cut off once the room is
   rebuilt. Any other damage leaves the log exactly as it was, renamed to
