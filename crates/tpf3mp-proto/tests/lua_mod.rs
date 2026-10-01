@@ -399,6 +399,47 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     assert!(closed && reopened && closed_by_itself);
 }
 
+/// The game's window draws its page on the theme's window colour, nearly
+/// opaque, so the map does not show through; and a tab is as tall as what
+/// it holds, in a scroll area only once it would run long.
+#[test]
+fn the_games_window_is_opaque_and_as_tall_as_its_tab() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (background, short, long): (String, bool, bool) = lua
+        .load(
+            "styleSheets() \
+             api.gui.genericRep = { find = function(name) return name end, \
+                 get = function(name) return { data = { BaseDarkMedium = { 0.1, 0.2, 0.3 } } } end } \
+             GAME_MODULES = { ['::/gui/main/color_util.tl'] = { withTransparency = function(c, a) \
+                 return api.type.Vec4f.new(c[1], c[2], c[3], a) end } } \
+             local function players(n) \
+                 local list = {} \
+                 for i = 1, n do list[i] = { name = 'p' .. i, connected = true, id = string.format('%08x', i) } end \
+                 HOOK.status = { room = 'r', players = list } \
+             end \
+             HOOK.room = true players(2) \
+             BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+             views(BAR.layout)[1].params.onClick() \
+             local function scrolls() \
+                 for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                     if v.view == 'ScrollArea' then return true end \
+                 end \
+                 return false \
+             end \
+             local page = WINDOWS.Tpf3mpWindow.render().params.content.params.meta.styleSheet \
+             local short = scrolls() \
+             players(12) for _ = 1, 20 do BAR.step() end \
+             return table.concat(page.backgroundColor1, ','), short, scrolls()",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(background, "0.1,0.2,0.3,0.97");
+    assert!(!short, "two players: the tab's own height");
+    assert!(long, "twelve players: a scroll area");
+}
+
 /// The game's window shows the room's invite code with Copy: the hook puts
 /// it on the clipboard, and the button says "Copied" for a while.
 #[test]

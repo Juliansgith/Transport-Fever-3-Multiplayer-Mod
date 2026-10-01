@@ -697,21 +697,26 @@ function data()
 	-- helpers, classes (the font-scale-* sizes, primary and secondary
 	-- buttons, the default style sheet's colours and tapes: success,
 	-- warning, error, info), padding and spacing, so the two read as one.
-	-- The content has a fixed size, as the menu's has: the header, the tabs
-	-- (Players, Companies, Your company) in a scroll area on the left, the
-	-- chat on the right, and a footer with Leave room.
-	local WIDTH, HEIGHT = 900, 620
+	-- The content has a fixed width and the height of what it holds: the
+	-- header, the tabs (Players, Companies, Your company) on the left, the
+	-- chat on the right, and a footer with Leave room. A tab taller than
+	-- BODY_MAX scrolls; one shorter than BODY_MIN keeps that height.
+	local WIDTH = 900
 	local PADDING = { 14, 20, 14, 20 }
 	local MAIN_W, CHAT_W, COLUMN_GAP = 540, 300, 20
-	-- The tab's scroll area, and what its content leaves for the scroll bar.
-	local BODY_H = 400
+	local BODY_MIN, BODY_MAX = 200, 420
+	-- The tab's width inside its scroll area, which leaves room for the
+	-- scroll bar.
 	local INNER_W = MAIN_W - 24
-	local CHAT_H = BODY_H - 28
 	local FIELD_W = 300
 	-- A company card's text, and its buttons' column.
 	local CARD_TEXT_W, CARD_ACTIONS_W = 340, 110
 	-- A station access row's company and its state.
 	local ACCESS_NAME_W, ACCESS_STATE_W = 190, 140
+	-- A player row's name column, which its status tape follows.
+	local PLAYER_NAME_W = 200
+	-- How tall a tab is (below).
+	local tabHeight
 	-- A size left to the content, as the game's style sheets write it; a
 	-- size of 0 hides everything inside.
 	local AUTO = -1
@@ -725,7 +730,9 @@ function data()
 	end)()
 
 	-- An inline style sheet: size as {w, h}, padding as {top, right, bottom,
-	-- left}; nil where the state has none to make.
+	-- left}, and a background colour (a Vec4f); nil where the state has none
+	-- to make. The game's own windows set the same fields
+	-- (gui/main/styleutil.tl, makeStyle; api/tealdef/api/gui.d.tl).
 	local function style(t)
 		local ok, sheet = pcall(function()
 			local s = api.gui.StyleSheet.new()
@@ -733,9 +740,24 @@ function data()
 			if t.padding then
 				s.padding = api.type.Vec4f.new(t.padding[1], t.padding[2], t.padding[3], t.padding[4])
 			end
+			if t.background then s.backgroundColor1 = t.background end
 			return s
 		end)
 		return ok and sheet or nil
+	end
+
+	-- The window's own colour (gui/main/builtin.css.lua: a Window's
+	-- background is the theme's BaseDarkMedium), nearly opaque: the game's
+	-- window surface lets the map show through, which made the page hard to
+	-- read (build 40408, 2026-10-01). Nil where the state cannot say.
+	local BACKDROP_ALPHA = 0.97
+	local function backdrop()
+		local ok, color = pcall(function()
+			local rep = api.gui.genericRep
+			local colors = rep.get(rep.find("::/gui/main/default_colors.gres")).data
+			return ug_require("::/gui/main/color_util.tl").withTransparency(colors.BaseDarkMedium, BACKDROP_ALPHA)
+		end)
+		return ok and color or nil
 	end
 	local function sized(w, h) return style{ size = { w, h } } end
 	local function meta(sheet, more)
@@ -910,8 +932,7 @@ function data()
 			end
 			local who = { label(tostring(p.name), "font-scale-title-5") }
 			if #roles > 0 then who[#who + 1] = note(table.concat(roles, " · ")) end
-			cells[#cells + 1] = column(who)
-			cells[#cells + 1] = spacer()
+			cells[#cells + 1] = column(who, sized(PLAYER_NAME_W, AUTO))
 			cells[#cells + 1] = badge(stage, tone)
 			rows[#rows + 1] = row(cells, style{ size = { INNER_W, AUTO } })
 			rows[#rows + 1] = gap(8)
@@ -1194,6 +1215,35 @@ function data()
 		return rows
 	end
 
+	-- About how tall a tab is, in the style sheet's pixels, from what it
+	-- shows: no layout can be measured from Lua, so each row counts as its
+	-- usual height (a heading with its line 52, a field or button row 40, a
+	-- player 56, a company card 76, a note 18). Only for choosing between
+	-- a scroll area and the tab's own height, so near enough is enough.
+	local HEADING_H, ROW_H, NOTE_H, SECTION_GAP = 52, 40, 18, 14
+	tabHeight = function(shown, v, status, drafts)
+		if shown == "players" or v == nil then return 26 + #(status.players or {}) * 56 end
+		if shown == "companies" then
+			return 26 + #v.ordered * 76 + (drafts.prompt:get() ~= nil and ROW_H or 0)
+		end
+		local h = HEADING_H + ROW_H
+		if v.myCompany and v.mine ~= 0 then
+			h = h + HEADING_H + ROW_H + SECTION_GAP
+			if v.iHead then
+				local members = #require("tpf3mp.companies").members(v.roster, v.mine)
+				h = h + HEADING_H + ROW_H + SECTION_GAP
+					+ HEADING_H + NOTE_H + 6 + ROW_H * #v.roster.list + SECTION_GAP
+					+ HEADING_H + ROW_H * math.max(1, members - 1) + SECTION_GAP
+			end
+			local loans = 0
+			for _, loan in ipairs(v.roster.loans or {}) do if loan.company == v.mine then loans = loans + 1 end end
+			h = h + HEADING_H + ROW_H * math.max(1, loans + #(v.roster.offers or {})) + SECTION_GAP
+		else
+			h = h + HEADING_H + NOTE_H + SECTION_GAP
+		end
+		return h
+	end
+
 	-- The room page in the game: a header with the room, its invite code
 	-- with Copy, its speed and whether this world matches the room's; the
 	-- tabs Players, Companies and Your company on the left; the chat on the
@@ -1290,16 +1340,29 @@ function data()
 		else
 			body = playersTab(status)
 		end
-		local main = column({
-			bar,
-			gap(10),
-			builtin.ScrollArea{
-				meta = meta(sized(MAIN_W, BODY_H)),
+		-- The tab at the height of what it holds: in a scroll area past
+		-- BODY_MAX, and no shorter than BODY_MIN, so the window neither
+		-- runs off the screen nor jumps much between tabs.
+		local tall = tabHeight(shown, v, status, drafts)
+		local content
+		if tall > BODY_MAX then
+			content = builtin.ScrollArea{
+				meta = meta(sized(MAIN_W, BODY_MAX)),
 				horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
 				verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
 				content = column(body, style{ size = { INNER_W, AUTO } }),
-			},
-		}, style{ size = { MAIN_W, AUTO } })
+			}
+		else
+			if tall < BODY_MIN then
+				body[#body + 1] = builtin.Component{
+					meta = meta(sized(1, BODY_MIN - tall)),
+					mouseTransparent = true,
+					layout = builtin.BoxLayout{ children = {} },
+				}
+			end
+			content = column(body, style{ size = { INNER_W, AUTO } })
+		end
+		local main = column({ bar, gap(10), content }, style{ size = { MAIN_W, AUTO } })
 
 		-- The chat: the newest lines, and a field to write to the room.
 		local lines = {}
@@ -1311,13 +1374,8 @@ function data()
 		local chat = column({
 			label("Chat", "font-scale-title-4"),
 			gap(10),
-			builtin.ScrollArea{
-				meta = meta(sized(CHAT_W, CHAT_H)),
-				horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
-				verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
-				content = column(lines, style{ size = { CHAT_W - 24, AUTO } }),
-			},
-			gap(8),
+			column(lines, style{ size = { CHAT_W, AUTO } }),
+			gap(10),
 			row({
 				input(draft, "Say something to the room", CHAT_W - 80, send, { maxLength = 280 }),
 				gap(8),
@@ -1364,7 +1422,7 @@ function data()
 			row({ main, gap(COLUMN_GAP), chat }),
 			gap(10),
 			column(footer),
-		}, style{ size = { WIDTH, HEIGHT }, padding = PADDING })
+		}, style{ size = { WIDTH, AUTO }, padding = PADDING, background = backdrop() })
 	end
 
 	-- The Multiplayer window, which the game's window container shows, as
