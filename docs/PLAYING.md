@@ -344,8 +344,10 @@ protected folder such as Program Files.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
   does not happen in your game either. The game bar says "Not in
   multiplayer yet: …" for what the game's windows do that the room does
-  not carry yet. The lane arrow and traffic light tools, and a tool that
-  would move a stop or signal onto another stretch of road, show "Not in
+  not carry yet. Junction tools (lane arrows, crosswalks and traffic-light
+  settings) have an implementation behind `strict_junctions`, off until
+  the two-player acceptance check in HOOKS.md passes. With it off, these
+  tools, and a tool that would move a stop or signal onto another stretch of road, show "Not in
   multiplayer yet" and build nothing: the tool says why.
 
 ## Playtesting before the game is out

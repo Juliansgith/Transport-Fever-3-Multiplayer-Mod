@@ -102,7 +102,8 @@ function data()
 	-- that a later build would send its proposals under them.
 	local CAPTURE = { constructionBuilder = "construction", streetBuilder = "street", trackBuilder = "track",
 		bulldozer = "bulldoze", streetTerminalBuilder = "stop", moduleBuilder = "construction",
-		moduleBulldozer = "bulldoze", streetTrackModifier = "modify" }
+		moduleBulldozer = "bulldoze", streetTrackModifier = "modify", laneModifier = "junction",
+		crosswalkModifier = "junction", streetEdgeNodeModifier = "junction" }
 	-- In the GUI: the last proposal seen at each count of the player's builds
 	-- ({ action = t } or { why = text }), and the builds handed on so far.
 	local snapshots, handled = {}, nil
@@ -126,6 +127,11 @@ function data()
 	-- construction tool's capture makes of it, which must replace the
 	-- construction edited.
 	local function moduleEdit(proposal, why)
+		if proposal and proposal.junctionEdit then
+			local ok, action, whyNot = pcall(capture.junction, proposal)
+			if not ok then action, whyNot = nil, tostring(action) end
+			return { action = action or nil, why = whyNot or "an empty junction edit", shape = "junction tool" }
+		end
 		local shape = "module editor"
 		if proposal == nil then
 			return { why = "the module editor's edit did not read: " .. tostring(why), shape = shape }

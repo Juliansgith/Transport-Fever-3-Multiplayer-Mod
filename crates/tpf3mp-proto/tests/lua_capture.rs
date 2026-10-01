@@ -31,7 +31,7 @@ macro_rules! modules {
 }
 
 /// Every module of the mod, as `require "tpf3mp.<name>"` finds it.
-const MODULES: [(&str, &str); 3] = modules!("geom", "roads", "engine");
+const MODULES: [(&str, &str); 4] = modules!("geom", "roads", "junctions", "engine");
 
 const TEST: &str = include_str!("lua/road_capture.lua");
 

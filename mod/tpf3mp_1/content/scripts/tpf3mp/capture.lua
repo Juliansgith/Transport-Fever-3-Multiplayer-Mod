@@ -196,20 +196,40 @@ function capture.replaced(component)
 end
 
 -- Whether an edit's street part removes only the old construction's own
--- nodes and edges (its CONSTRUCTION component's frozenNodes and
--- frozenEdges). true, or nil and why not.
+-- nodes and edges. Track ends may not be in frozenNodes (Steam 40408:
+-- a two-track station has 50 nodes, only 46 frozen). Such a node belongs
+-- to the rebuild only if every incident edge is frozen in this construction
+-- and is being removed. Shared endpoints touching external tracks refuse.
+-- true, or nil and why not.
 function capture.ownStreets(street, component)
-	local own = {}
+	local own = { frozenNodes = {}, frozenEdges = {} }
 	for _, key in ipairs({ "frozenNodes", "frozenEdges" }) do
 		local list = get(component, key)
-		for i = 1, (length(list) or 0) do own[get(list, i)] = true end
+		for i = 1, (length(list) or 0) do own[key][get(list, i)] = true end
 	end
-	for _, key in ipairs({ "removedSegments", "removedNodes" }) do
-		local list = get(street, key)
-		for i = 1, (length(list) or 0) do
-			if not own[get(get(list, i), "entity")] then
-				return nil, "a construction edit that changes the streets around it"
-			end
+	local removed = {}
+	local segments = get(street, "removedSegments")
+	for i = 1, (length(segments) or 0) do
+		local id = get(get(segments, i), "entity")
+		if not own.frozenEdges[id] then
+			return nil, "a construction edit that changes the streets around it"
+		end
+		removed[id] = true
+	end
+	local function ownEnd(id)
+		local ok, edges = pcall(function() return api.engine.system.streetSystem.getNodeSegments(id) end)
+		local n = ok and length(edges)
+		if not n or n < 1 then return false end
+		for i = 1, n do
+			if not removed[get(edges, i)] then return false end
+		end
+		return true
+	end
+	local nodes = get(street, "removedNodes")
+	for i = 1, (length(nodes) or 0) do
+		local id = get(get(nodes, i), "entity")
+		if not own.frozenNodes[id] and not ownEnd(id) then
+			return nil, "a construction edit that changes the streets around it"
 		end
 	end
 	return true
@@ -302,6 +322,10 @@ function capture.modify(proposal)
 	return module("engine").captureModify(proposal)
 end
 
+function capture.junction(proposal)
+	return module("junctions").edit(proposal)
+end
+
 -- A stop placed on a street or track with the stop tool (tpf3mp_proto
 -- action::PlaceStop), read off its proposal by tpf3mp/engine.lua. Returns
 -- the action table; false for a proposal of nothing; or nil and why.
@@ -384,6 +408,12 @@ end
 -- gui/entity_window/entity_window_util.tl, build 40408). Every other build
 -- from a window stays refused. Returns the action table, or raises why not.
 function capture.windowBuild(_ctx, proposal)
+	local p = proposal and proposal.proposal
+	if p and #(proposal.toAdd or {}) == 0 and #(proposal.toRemove or {}) == 0
+		and ((p.nodeConfigsToAdd and #p.nodeConfigsToAdd > 0)
+		or (p.nodeConfigsToRemove and #p.nodeConfigsToRemove > 0)) then
+		return capture.junction(proposal)
+	end
 	local action, why = capture.construction(proposal)
 	if not action then error(why, 0) end
 	if action.BuildConstruction.replaces == nil then error("building from this window", 0) end

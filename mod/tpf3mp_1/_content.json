@@ -44,6 +44,7 @@
         "scripts/tpf3mp/follow.lua",
         "scripts/tpf3mp/geom.lua",
         "scripts/tpf3mp/guard.lua",
+        "scripts/tpf3mp/junctions.lua",
         "scripts/tpf3mp/lanes.lua",
         "scripts/tpf3mp/modguard.lua",
         "scripts/tpf3mp/progression.lua",

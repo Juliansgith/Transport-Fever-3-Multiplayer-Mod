@@ -1746,13 +1746,95 @@ link names its template (`kind`), its decorations by name
 (`edgeDecorationRep.getName`; every game finds its own id with `find`), and
 whether it is locked and owned by the acting company. The town buildings it
 clears every game's build clears again (the build is the player's own,
-`ignoreErrors`), and the node configurations every game makes anew, as for
-a road. Stops and signals on the stretch stay: a new edge between the same
+`ignoreErrors`). Junction changes in the tool's proposal now travel with
+the polyline; otherwise the replay preserves the endpoint configurations
+and remaps their edge references (BUILDING.md, "Junction edits").
+Stops and signals on the stretch stay: a new edge between the same
 places in the same direction as a removed one, listing exactly its objects,
 is the edge rebuilt in place, and every game's build gives it the objects
 of the edge it replaces under their own entities (`engine.keptInPlace`,
 `networkInto`); a stop moved onto another edge is refused. The same rule
 lets the road and track tools build through an edge with a stop on it.
+### Junction tools
+
+Build 40408's native lane/crosswalk tools do not emit a Lua proposal preview.
+At the existing `CommandList::Add` hook, `junctions.rs` reads junction-only
+WorldBuildProposals and stores them against the click number through the
+same `tpf3mp_native.built(n)` queue as the module editor. That snapshot
+overrides an older road/construction preview. The Lua command guard also
+captures a window's `createTrafficLightProposal` via `capture.windowBuild`.
+The original player command remains cancelled; each replica uses the
+ordinary ordered replay path. Mixed native geometry proposals keep their
+existing capture path, never a partial junction replacement.
+The reader classifies mixed geometry/construction proposals before imposing
+the standalone junction limit. A live eight-track station attempt generated
+392 node configs (another attempt generated 200); checking the 64-junction
+limit first incorrectly rejected the station before construction capture.
+The regression test covers both sizes and every mixed-proposal vector,
+while oversized standalone junction edits remain refused.
+The corrected reader was tested in two real games on the local server on
+2026-10-01: an eight-track, 320 m station placed and applied on both replicas.
+The same run exercised two module edits after correcting the ownership
+check for unfrozen station track ends (BUILDING.md, "Module edits and upgrades").
+
+Read-only binary evidence (Steam Windows 40408): StreetProposal config
+vectors at +0x60/+0x78; BaseNodeLaneConnectionAndEntity has the component
+at +0 and node at +0x78, stride 0x80. BaseNodeConfig connections/crosswalks
+are at +0/+0x18, double-slip at +0x48, preference at +0x4c, light states at
++0x50, light type at +0x68 and custom phases at +0x70. Connections have
+stride 0x14; phases have stride 0x28. Binding-registration signatures
+at RVAs 0x1768337 and 0x22c395f gate this reader in the profile; the
+static proof resolves both against the installed executable. Crosswalks
+are a `phmap::flat_hash_set<int>` occupying +0x18 through +0x47: control
+bytes and slot pointers, size, capacity and internal bookkeeping. The
+constructor at RVA 0xa4990d is a third profile anchor; the move/copy at
+0x1eda20/0x1fe1e0 and iteration at 0xa49f1a establish this layout. The
+reader checks the sentinel, occupied-slot count, bounds and unique edge
+IDs, skipping empty/deleted slots. The first real crosswalk click on
+2026-10-01 exposed and now regression-covers the earlier incorrect vector
+assumption. Every read, vector count and boolean is checked.
+The API declaration's `userModifiedLaneConnections` is absent from this
+build's binding registration; the adapter does not invent an offset.
+
+Two-game test on 2026-10-01 (Steam Windows 40408, local server, disposable
+copy of `tpf3mp_fixture2.sav`): the host removed a crosswalk, the guest
+restored it, then the guest changed a lane connection and enabled traffic
+lights at the same crossing. Both replicas logged each ordered replay;
+network checkpoint hashes agreed at steps 500, 750, 1000 and 1350. The
+crosswalk and traffic lights also changed visibly in the other game.
+Evidence is in the local `runtime/junction-live-20261001-01/` logs. This
+does not yet cover custom phases/reset, adjacent geometry changes,
+proposal field comparison or rejoining after an edit. The initial load
+also hit a native crash/Lua UI error; a later host-then-guest restart
+worked. That startup failure has not been diagnosed. A rejoined game's
+speed row showed 1x while the room was paused; pause then play resumed it.
+
+Full acceptance is still pending. Keep `junctions.strict_junctions` off in
+the normal mod. In matching disposable test mod copies, turn it on and:
+
+1. Start two games through the launcher into one room and the same save.
+   Use the actual tools to toggle crosswalks, lane turns and traffic lights;
+   edit phase timings and reset settings. Repeat from the other player.
+2. Confirm the native capture log names the clicked junction edit, and
+   the emitted action has positions/resource names, with no engine IDs.
+   Compare the engine's proposal against the replay's proposal field by
+   field before treating matching synthetic tests as gameplay evidence.
+3. Check both games' visible crossings, arrows and light settings, then
+   upgrade/split an adjacent road and check that the settings survive.
+   A change that removes a referenced lane must refuse without changing
+   either game, rather than silently replace the configuration.
+4. Compare network checkpoint dumps through subsequent updates and after
+   save/load or rejoin. One-sided edits to a crosswalk, turn or phase in a
+   disposable diagnostic test must cause a network-lane mismatch.
+
+`lua_mod.rs` runs portable capture → wire → replay against two different
+ID spaces and checks the native-click precedence, refusal cases and
+curved-road preservation. `hook/tests/junctions.rs` checks native layouts
+and malformed memory. These tests do not launch the game and do not
+complete the playtest above. AGENTS.md currently prohibits automated game
+launches/modifications; a human must run this check or explicitly override
+that restriction before an agent runs it.
+
 ### The world's lanes
 
 A room finds a game that drifted from the others by comparing the world's
@@ -1783,7 +1865,7 @@ matter:
 
 | lane | reads |
 |---|---|
-| 0 network | every street and track edge by its ends (0.1 m) and road template, from the street system's node map |
+| 0 network | street/track endpoints (0.1 m), template and per-lane modes/dimensions/direction; junction positions (1 mm), portable turn/crosswalk references, light preference/resource/phases and flags |
 | 1 constructions | every construction by its file and position (0.1 m) |
 | 2 lines | every line's number of stops |
 | 3 vehicles | each vehicle's state, stop and place on its path: the path edge, the distance along it (1 cm) and the speed (1 cm/s), the simulation's own (`MOVE_PATH.dyn`) |
