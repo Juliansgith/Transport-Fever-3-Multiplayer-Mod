@@ -931,7 +931,10 @@ money, ran in the game script's `postUpdate`.
   `makeScriptingSendEventCmd("", "Companies", "spawnIndustry", {
   companyEntity, townEntity, types, permitKey, cargoType })`, with the
   player's company, the town the registry names, and the industry types in
-  the order the action carries them ("Prospecting" below).
+  the order the action carries them ("Prospecting" below);
+- `Subsidy`: the subsidy script's own event, `makeScriptingSendEventCmd("",
+  "Subvention", "onAccept" | "onDecline", { uid })`, once every game has
+  checked the offer against its own script's state ("Subsidies" below).
 
 Every other action is refused with a line in `hook.log`, the same on every
 game, so the worlds stay alike. The native build tools come next.
@@ -1239,6 +1242,13 @@ reference of its own to either. Once linked, the GUI wraps every
     "Companies", "applyLevel", { level })`, as an `ApplyRank` action
     ("Company ranks" below). The company's other events (greening an
     industry, `MakeGreen`; a marketing campaign) stay refused;
+  - answering a subsidy offer, the subsidy window's
+    `makeScriptingSendEventCmd("", "Subvention", "onAccept" | "onDecline",
+    { uid })`, as a `Subsidy` action naming the offer by its number and
+    its kind, read from the subsidy script's offers as this game has them
+    (`capture.subsidy`); an offer this game no longer has is refused at
+    the click ("a subsidy no longer offered"). A refusal by the room is
+    told the player in the game bar;
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
     file and position, the consist part by part, as the store configured
     it), selling, putting on a line, and the vehicle window's stop, start,
@@ -1339,6 +1349,32 @@ state, which the game saves with the world:
   calendar as an annuity, the interest as `INTEREST` and the rest as
   `LOAN`, or all at once. The game script books the months since the last
   on the first update of a new month, in every game alike.
+- *Subsidies.* The game's subsidy script
+  (`::/game_mechanics/subventions/subventions.gs`) draws its offers in
+  every game alike: in its `update`, from the world and the game time,
+  with `math.random` reseeded per call ("Seeds, as built"); INFERRED from
+  its code (build 40408), not yet compared between games. Offers belong to
+  no company. Accepting one (`Subsidy::Accept`) is checked by every game
+  against its script's state first: the offer under that number must
+  still be offered, of the kind the action names, and the only offer under
+  that number; else it is refused, alike in every game, naming who took
+  it ("the subsidy was taken already, by Rival"). So when two companies
+  accept one offer in the same step, the first in the room's order gets
+  it. Then the script's own `onAccept` runs, which books the money up
+  front. The script books every amount, up front, the reward for
+  completing and the penalty for failing, to `getPlayer()`, the room's
+  first company in a game script's state (`subvention_util.tl`,
+  `applyBonusMalus`). For a subsidy another company took, every game moves
+  each amount on to that company as `SUBSIDY` journal entries (out of the
+  first company's account and into the taker's): the money up front at
+  once, and the reward or penalty on the first update of the game day
+  after the script completed or failed it, while the room keeps a record
+  of who took which (`roster.subsidies`), saved with the world. Declining
+  (`Subsidy::Decline`) runs the script's `onDecline`: the offer is gone for
+  every company, as in single player. Not carried: the script counts any
+  company's deliveries towards a subsidy, and its reputation and town
+  growth bonuses are the towns', as the game has them; the pace of new
+  offers follows the first company's rank (`subventions.script.tl`).
 - *Colours.* With more than one company, a vehicle bought is painted in its
   company's colour (`makeEntitySetColorCmd`), and a new colour repaints the
   company's vehicles, in the engine's own order. With one company the

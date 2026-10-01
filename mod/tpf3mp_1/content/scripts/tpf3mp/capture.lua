@@ -737,6 +737,22 @@ function capture.prospect(ctx, param)
 	} }
 end
 
+-- Answering a subsidy offer: the subsidy window's Accept or Decline
+-- (game_mechanics/subventions/subventions_gui.tl sends the subsidy script
+-- `onAccept` or `onDecline` with { uid }), as the offer by its number and
+-- its kind, which `ctx.subsidy(uid)` reads from the subsidy script's offers
+-- as this game has them. Every game checks the offer again when the room
+-- orders it (tpf3mp/companies.lua, acceptSubsidy).
+function capture.subsidy(ctx, name, param)
+	local uid = get(param, "uid")
+	if type(uid) ~= "number" or uid ~= math.floor(uid) then error("a subsidy by no number", 0) end
+	local kind = ctx.subsidy and ctx.subsidy(uid) or nil
+	if type(kind) ~= "string" or kind == "" then error("a subsidy no longer offered", 0) end
+	local ref = { uid = uid, kind = kind }
+	if name == "onAccept" then return { Subsidy = { Accept = ref } } end
+	return { Subsidy = { Decline = ref } }
+end
+
 -- Renaming and recolouring: lines, and the room's companies (the game's
 -- company window renames the player's company by its player entity,
 -- game_mechanics/company/company.tl), which every game checks is the

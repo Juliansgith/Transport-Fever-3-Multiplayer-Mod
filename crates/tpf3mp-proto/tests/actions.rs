@@ -14,9 +14,9 @@ use tpf3mp_proto::{
         EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData, LineId,
         LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network,
         NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle,
-        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent, Terminal,
-        Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleChange,
-        VehicleId, VehicleOp, Vertex,
+        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef,
+        Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
+        UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -445,6 +445,14 @@ fn samples() -> Vec<Action> {
         }),
         Action::NotificationSeen { notification: 12 },
         Action::ApplyRank { level: 6 },
+        Action::Subsidy(SubsidyOp::Accept(SubsidyRef {
+            uid: 1_234_560_000,
+            kind: text("::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"),
+        })),
+        Action::Subsidy(SubsidyOp::Decline(SubsidyRef {
+            uid: 7,
+            kind: text("::/game_mechanics/subventions/deliver_passengers/deliver_passengers.res"),
+        })),
     ]
 }
 
@@ -501,13 +509,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=17.
+    // Every top-level variant is sampled: postcard tags them 0..=18.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=17).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=18).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

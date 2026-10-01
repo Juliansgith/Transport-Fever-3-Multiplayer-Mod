@@ -1285,7 +1285,7 @@ mod tests {
             "unknown variant `Nonsense`, expected one of `BuildRoad`, `BuildTrack`, \
              `Bulldoze`, `BuildConstruction`, `BuyVehicle`, `SellVehicle`, `CreateLine`, \
              `EditLine`, `AssignLine`, `PlaceStop`, `Terraform`, `CompanyOp`, `Loan`, `VehicleOp`, \
-             `ReplaceVehicle`, `Prospect`, `NotificationSeen`, `ApplyRank`"
+             `ReplaceVehicle`, `Prospect`, `NotificationSeen`, `ApplyRank`, `Subsidy`"
         );
     }
 

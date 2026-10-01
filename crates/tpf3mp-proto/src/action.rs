@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 12;
+pub const ACTION_SCHEMA_VERSION: u32 = 13;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -863,6 +863,32 @@ pub enum LoanOp {
     Repay { loan: LoanTerms },
 }
 
+/// A subsidy the game offers, as Transport Fever 3's subsidy script keeps
+/// it (`game_mechanics/subventions/subventions.script.tl`): its own number
+/// (`uid`) and its kind, the subsidy resource that drew it (`id`, such as
+/// `::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res`). Every
+/// game draws the same offers from the same world; the kind is there so a
+/// game whose offer under that number is another kind refuses it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubsidyRef {
+    pub uid: i64,
+    pub kind: ResName,
+}
+
+/// Answering a subsidy offer: what TF3's subsidy window sends the subsidy
+/// script (`Subvention` `onAccept` and `onDecline`, `subventions_gui.tl`).
+/// Appended under schema version 13.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubsidyOp {
+    /// The acting player's company takes the offer: the first in the
+    /// room's order to accept it gets it, every later one is refused alike
+    /// in every game.
+    Accept(SubsidyRef),
+    /// The offer is declined: it is gone for every company, as in single
+    /// player.
+    Decline(SubsidyRef),
+}
+
 /// Prospecting near a town for one cargo: what TF3's construction menu sends
 /// the company script when the player picks a town with a prospection
 /// (`gui/construction/construction_react_util.tl`, the event `Companies`
@@ -919,6 +945,9 @@ pub enum Action {
         /// The rank to take, 1 to 15 in the game.
         level: u8,
     },
+    /// Accepting or declining a subsidy offer (`SubsidyOp`). Appended under
+    /// schema version 13: the variants before it keep their bytes.
+    Subsidy(SubsidyOp),
 }
 
 #[derive(Debug, Error)]
@@ -956,6 +985,7 @@ impl Action {
             Action::Prospect(_) => "Prospect",
             Action::NotificationSeen { .. } => "NotificationSeen",
             Action::ApplyRank { .. } => "ApplyRank",
+            Action::Subsidy(_) => "Subsidy",
         }
     }
 
@@ -1089,7 +1119,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                12, // schema version
+                13, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1132,7 +1162,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                12, // schema version
+                13, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1166,7 +1196,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                12, // schema version
+                13, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1184,7 +1214,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                12, // schema version
+                13, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1199,7 +1229,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                12, // schema version
+                13, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1210,9 +1240,23 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                12, // schema version
+                13, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
+            ]
+        );
+        let accept = Action::Subsidy(SubsidyOp::Accept(SubsidyRef {
+            uid: 1_234_560_000,
+            kind: Text::new("s").unwrap(),
+        }));
+        assert_eq!(
+            accept.to_payload().unwrap().as_bytes(),
+            [
+                13, // schema version
+                18, // Action::Subsidy, appended under schema version 13
+                0,  // SubsidyOp::Accept
+                0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
+                1, b's', // the kind
             ]
         );
         // Appended under schema version 9: the company's head's own.
@@ -1245,7 +1289,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [12, 11]);
+            assert_eq!(payload.as_bytes()[..2], [13, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         let hold = Action::VehicleOp(VehicleOp {
@@ -1255,7 +1299,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                12, // schema version
+                13, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

@@ -297,6 +297,16 @@ protected folder such as Program Files.
   which you notice as a short pause, like an autosave.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
+- **Subsidies.** Accept or decline a subsidy in its window as usual:
+  every player's game answers it together, a moment after your click.
+  Every company is offered the same subsidies. The first company to
+  accept one gets it; if another company took it a moment before you, the
+  game bar says so ("Taking the subsidy: not done, the subsidy was taken
+  already, by ..."). The money up front, the reward when it is completed
+  and the penalty when it fails all go to the company that took it.
+  Declining an offer takes it away for every company, as in single
+  player. Any company's deliveries count towards a subsidy, whoever took
+  it, as the game counts them.
 - **Prospecting.** Prospect for resources near a town from the
   construction menu as usual: every player's game starts the prospection
   together, a moment after your click, and uses your company's permit.

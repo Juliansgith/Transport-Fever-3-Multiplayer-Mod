@@ -613,6 +613,9 @@ impl State {
             // A notification's sound played: nothing the model keeps.
             Action::NotificationSeen { .. } => Ok(()),
             Action::ApplyRank { level } => self.apply_rank(company, *level),
+            // The game's subsidy script decides offers and their money; the
+            // model has no subsidies.
+            Action::Subsidy(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }
