@@ -163,6 +163,13 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   same build and the same mods in the same order, and rooms compare those.
   The agent declares a player's shared mods only: those it scanned as
   personal, which may differ between players, stay out ([MODS.md](MODS.md)).
+  TPF3-MP's own mod (`OWN_MOD`, `tpf3mp_1`) is always declared, last, and
+  its version is its revision, a `+` and the first 16 hex digits of a
+  fingerprint of the files the game loads from it (`1+0123456789abcdef`,
+  `tpf3mp-agent`'s `own_mod`): two copies of the same revision whose files
+  differ do not match, and `ContentDiff`'s text says so first ("Your
+  TPF3-MP mod differs from the host's (yours …, host …): reinstall the same
+  version"). The wire format is unchanged.
   A room tells each member whose content differs from its own (the owner's
   in the lobby, the game's once it runs) how, with `ContentDiff`: the
   builds if they differ, the mods the member lacks, the mods the room

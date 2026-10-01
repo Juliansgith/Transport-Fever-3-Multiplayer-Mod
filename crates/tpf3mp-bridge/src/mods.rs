@@ -27,7 +27,7 @@ pub const MAX_SHARED_MODS: usize = 256;
 /// Most personal mods the lists carry.
 pub const MAX_PERSONAL_MODS: usize = 64;
 /// TPF3-MP's own mod, which every game of a room runs, listed or not.
-pub const OWN_MOD: &str = "tpf3mp_1";
+pub const OWN_MOD: &str = tpf3mp_proto::OWN_MOD;
 
 /// This player's mods for the room's world.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

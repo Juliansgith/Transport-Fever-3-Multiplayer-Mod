@@ -458,6 +458,46 @@ async fn players_learn_which_mods_differ_from_the_owners() {
     server.shut_down().await;
 }
 
+/// Two copies of TPF3-MP's own mod of the same revision whose files differ
+/// declare different versions (`tpf3mp_agent::own_mod`): the room does not
+/// start, and the player with the other copy is told plainly.
+#[tokio::test]
+async fn another_copy_of_tpf3mp_itself_keeps_the_room_from_starting() {
+    const HOSTS: &str = "tpf3mp_1 1+0123456789abcdef";
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    let mut bob = server.client("bob").await;
+    ann.client
+        .declare_content(modded(&["trains 1", HOSTS]))
+        .await
+        .unwrap();
+    bob.client
+        .declare_content(modded(&["trains 1", "tpf3mp_1 1+fedcba9876543210"]))
+        .await
+        .unwrap();
+    let (invite, _) = ann.client.create_room(room("table", FAST)).await.unwrap();
+    bob.client.join_room(join(&invite)).await.unwrap();
+    ann.client.set_ready(true).await.unwrap();
+    bob.client.set_ready(true).await.unwrap();
+    assert_eq!(
+        ann.client.start_game().await,
+        Err(ClientError::Refused(RequestError::ContentMismatch))
+    );
+    let told = bob.content_diff().await.expect("Bob's copy differs");
+    assert_eq!(
+        told.to_string(),
+        "Your TPF3-MP mod differs from the host's (yours fedcba98, host 01234567): reinstall the same version"
+    );
+    // The same files: the room starts.
+    bob.client
+        .declare_content(modded(&["trains 1", HOSTS]))
+        .await
+        .unwrap();
+    assert_eq!(bob.content_diff().await, None);
+    ann.client.start_game().await.unwrap();
+    server.shut_down().await;
+}
+
 #[tokio::test]
 async fn an_overlong_mod_list_is_refused() {
     let server = RunningServer::start(|_| {}).await;

@@ -209,6 +209,42 @@ Nothing there changes: the agent declares only the shared mods.
 - Two players who differ only in personal mods therefore declare the same
   manifest, and the room starts.
 
+### TPF3-MP's own mod
+
+Every game of a room runs TPF3-MP's own mod, `tpf3mp_1`, whose Lua applies
+the room's actions; the room checks it by its files, not only by its
+revision. A player's game once loaded an old copy of the same revision (a
+Sandboxie box's own copy, 2026-10-01): nothing noticed, and a road was
+built differently in that game.
+
+- **What is compared** (`crates/tpf3mp-agent/src/own_mod.rs`): a SHA-256
+  over the files the game loads from the mod, sorted by path, each path with
+  its bytes: `mod.json`, `_content.json` and everything under `content/`.
+  Left out: what the launcher writes into the mod by itself, the campaign's
+  portraits (`content/gui/tpf3mp/portraits/`, "Portraits" in LOBBY.md) and
+  their lines in `_content.json`; `_metadata/`, which the game shows but
+  does not load; and `desktop.ini`, `Thumbs.db` and dot files.
+- **Which copy:** the one the launcher finds first in the game's order of
+  mod folders (`tpf3mp_modscan::roots`), the folder it writes the portraits
+  to. The launcher runs as the same user as the game, in the same Sandboxie
+  box when it is boxed (the game it starts is boxed with it), so it reads
+  the files through the game's own view: a box's copy shadows the real one
+  for both. The game names a mod's files only as `tpf3mp_1::/...` and says
+  nowhere which folder it loaded them from, so the hook could only repeat
+  the same search; and the room checks content in the lobby, before the
+  game may run.
+- **How:** the mod's version in the manifest is its revision, a `+` and the
+  first 16 hex digits (`1+0123456789abcdef`), and the agent always declares
+  it, last, whatever the room's save lists. A copy that cannot be read gets
+  a version no other game has (fail closed), with a warning in the log. The
+  existing content check then refuses Start and a join to the running game
+  (`ContentMismatch`), and the player with the other copy is told "Your
+  TPF3-MP mod differs from the host's (yours fedcba98, host 01234567):
+  reinstall the same version". The launcher computes it once, at start: a
+  mod reinstalled while it runs counts after a restart.
+- With `--mods`, a listed `tpf3mp_1` that is installed gets the same
+  version; one not found keeps its listed version, uncompared.
+
 The launcher window's content comparison, its "differ" pill and the
 `ContentDiff` messages work on the declared manifests, so they speak of
 shared mods only.
@@ -238,7 +274,8 @@ Without `--mods`, the launcher (`crates/tpf3mp-agent/src/picker.rs`):
   version: fail closed). It declares them before the room exists. A save
   whose mods do not read leaves the room's mods unknown, and says so:
   worlds then load with their saves' own mods, as without the picker;
-- **learns them as a guest.** Joining a room, the launcher declares no mods;
+- **learns them as a guest.** Joining a room, the launcher declares no mods
+  but TPF3-MP's own ("TPF3-MP's own mod" above);
   the room answers with what this game lacks (`ContentDiff`: the owner's
   mods in load order, the first 32 named, with the owner's versions), and
   the bridge declares again the room's mods this player has, in its own

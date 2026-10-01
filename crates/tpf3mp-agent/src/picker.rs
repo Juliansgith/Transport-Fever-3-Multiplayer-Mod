@@ -67,10 +67,17 @@ pub fn scanned(found: &[roots::Found]) -> Vec<Installed> {
             Some(reason) => format!("{}: {}", kind_word(report.class), reason.detail),
             None => "only what this player sees".to_owned(),
         };
+        let revision = report.revision.map(|r| r.to_string()).unwrap_or_default();
         out.push(Installed {
             id: mod_found.id.clone(),
             name: display_name(&mod_found.path).unwrap_or_else(|| mod_found.id.clone()),
-            version: report.revision.map(|r| r.to_string()).unwrap_or_default(),
+            // TPF3-MP's own mod: its revision and the fingerprint of its
+            // files, so that an old copy of the same revision differs.
+            version: if mod_found.id == OWN_MOD {
+                crate::own_mod::version(&revision, &mod_found.path)
+            } else {
+                revision
+            },
             class: report.class,
             reason: shorten(&reason),
             path: mod_found.path.clone(),
@@ -273,14 +280,19 @@ impl Mods {
         changed
     }
 
-    /// What this player declares to the room: the build, and those of the
+    /// What this player declares to the room: the build, those of the
     /// room's shared mods this player has, in the room's order, in this
-    /// player's versions. None before the room's are known.
+    /// player's versions (none before the room's are known), then TPF3-MP's
+    /// own mod, whatever the room's save lists: every game of the room runs
+    /// it, and its version carries the fingerprint of its files
+    /// (`crate::own_mod`). It goes last in every player's manifest alike, so
+    /// that where it stands in a save never makes two players differ.
     pub fn manifest(&self) -> ContentManifest {
-        let mods = self
+        let mut mods: Vec<ModRef> = self
             .room
             .iter()
             .flatten()
+            .filter(|m| m.id.as_str() != OWN_MOD)
             .filter_map(|m| {
                 let here = self.find(m.id.as_str())?;
                 Some(ModRef {
@@ -289,6 +301,12 @@ impl Mods {
                 })
             })
             .collect();
+        if let Some(own) = self.find(OWN_MOD) {
+            mods.push(ModRef {
+                id: Text::lossy(OWN_MOD),
+                version: Text::lossy(&own.version),
+            });
+        }
         ContentManifest::new(self.build.clone(), mods)
     }
 
@@ -313,11 +331,23 @@ impl Mods {
         })
     }
 
-    /// The room's shared mods, and whether this player has each.
+    /// The room's shared mods, and whether this player has each. TPF3-MP's
+    /// own mod is one of them once the room's are known, listed by the save
+    /// or not: every player declares it ([`Mods::manifest`]), so a guest
+    /// whose copy matches is never told of it, and has it as the room does.
     pub fn required(&self) -> Vec<Required> {
+        let own = self
+            .room
+            .as_ref()
+            .filter(|room| !room.iter().any(|m| m.id.as_str() == OWN_MOD))
+            .map(|_| ModRef {
+                id: Text::lossy(OWN_MOD),
+                version: Text::lossy(self.find(OWN_MOD).map_or("", |here| here.version.as_str())),
+            });
         self.room
             .iter()
             .flatten()
+            .chain(own.as_ref())
             .map(|m| Required {
                 id: m.id.as_str().to_owned(),
                 version: m.version.as_str().to_owned(),
@@ -414,7 +444,11 @@ mod tests {
             None,
             "no room yet: saves load with their own"
         );
-        assert!(owner.manifest().mods.is_empty());
+        assert_eq!(
+            names(&owner.manifest()),
+            ["tpf3mp_1 1"],
+            "TPF3-MP itself, before the room's mods are known"
+        );
         owner.own_start(&save(&["vehicles_pack", "tpf3mp_1", "minimap", "dlc_pack"]));
         assert_eq!(
             names(&owner.manifest()),
@@ -431,7 +465,7 @@ mod tests {
         );
 
         // A guest with an older vehicle pack and no minimap: declares
-        // nothing, hears what it lacks, declares what it has.
+        // TPF3-MP alone, hears what it lacks, declares what it has.
         let mut guest = Mods::new(
             Text::lossy("40408"),
             vec![
@@ -455,12 +489,102 @@ mod tests {
             }]
         );
         assert!(!guest.learn(&told), "nothing new: no second declaration");
+        // TPF3-MP itself, the same here, was never said to differ.
         assert_eq!(
             guest.required().iter().map(|r| r.have).collect::<Vec<_>>(),
             [Have::OtherVersion, Have::Yes]
         );
         // The owner is never told what the room is.
         assert!(!owner.learn(&told));
+    }
+
+    #[test]
+    fn tpf3mp_itself_is_declared_last_with_its_fingerprint_whatever_the_save_lists() {
+        let mut owner = Mods::new(
+            Text::lossy("40408"),
+            vec![
+                installed("tpf3mp_1", Class::Shared, "1+0123456789abcdef"),
+                installed("vehicles_pack", Class::Shared, "3"),
+            ],
+            [],
+            false,
+        );
+        // A save that lists TPF3-MP first, and one that does not list it.
+        owner.own_start(&save(&["tpf3mp_1", "vehicles_pack"]));
+        assert_eq!(
+            names(&owner.manifest()),
+            ["vehicles_pack 3", "tpf3mp_1 1+0123456789abcdef"]
+        );
+        owner.own_start(&save(&["vehicles_pack"]));
+        assert_eq!(
+            names(&owner.manifest()),
+            ["vehicles_pack 3", "tpf3mp_1 1+0123456789abcdef"]
+        );
+        // A guest with an old copy of the same revision: told plainly, and
+        // learning the room's mods does not make it match.
+        let mut guest = Mods::new(
+            Text::lossy("40408"),
+            vec![
+                installed("tpf3mp_1", Class::Shared, "1+fedcba9876543210"),
+                installed("vehicles_pack", Class::Shared, "3"),
+            ],
+            [],
+            false,
+        );
+        let room = owner.manifest();
+        let told = room.compare(&guest.manifest()).unwrap();
+        assert!(guest.learn(&told));
+        assert_eq!(
+            names(&guest.manifest()),
+            ["vehicles_pack 3", "tpf3mp_1 1+fedcba9876543210"]
+        );
+        let told = room.compare(&guest.manifest()).unwrap();
+        assert_eq!(
+            told.to_string(),
+            "Your TPF3-MP mod differs from the host's (yours fedcba98, host 01234567): \
+             reinstall the same version"
+        );
+        assert!(
+            guest
+                .required()
+                .iter()
+                .any(|r| r.id == "tpf3mp_1" && r.have == Have::OtherVersion)
+        );
+        // With the same files, the same manifest.
+        let mut same = Mods::new(
+            Text::lossy("40408"),
+            vec![
+                installed("tpf3mp_1", Class::Shared, "1+0123456789abcdef"),
+                installed("vehicles_pack", Class::Shared, "3"),
+            ],
+            [],
+            false,
+        );
+        let told = room.compare(&same.manifest()).unwrap();
+        same.learn(&told);
+        assert_eq!(room.compare(&same.manifest()), None);
+    }
+
+    #[test]
+    fn scanning_fingerprints_tpf3mp_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let mod_dir = dir.path().join("tpf3mp_1");
+        fs::create_dir_all(mod_dir.join("content/tpf3mp")).unwrap();
+        fs::write(
+            mod_dir.join("mod.json"),
+            r#"{"modId": "tpf3mp_1", "revision": 1}"#,
+        )
+        .unwrap();
+        fs::write(mod_dir.join("content/tpf3mp/act.lua"), "return {}").unwrap();
+        let found = roots::installed(&[dir.path().to_owned()]);
+        let scanned = scanned(&found);
+        let own = scanned.iter().find(|m| m.id == "tpf3mp_1").unwrap();
+        assert_eq!(
+            own.version,
+            crate::own_mod::version("1", &mod_dir),
+            "the revision and the fingerprint of the files"
+        );
+        assert!(own.version.starts_with("1+"));
     }
 
     #[test]

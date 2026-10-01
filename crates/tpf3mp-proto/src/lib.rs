@@ -31,7 +31,7 @@ pub use bounded::{BoundedVec, TooMany};
 pub use bytes::{FixedBytes, MAX_PAYLOAD, Payload, PayloadTooLarge};
 pub use content::{
     ContentDiff, ContentManifest, GameBuilds, MAX_DIFF_LISTED, MAX_LISTED_MODS, MAX_MANIFEST_BYTES,
-    ModChange, ModId, ModRef, ModVersion, Unlisted,
+    ModChange, ModId, ModRef, ModVersion, OWN_MOD, Unlisted, own_mod_short,
 };
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
