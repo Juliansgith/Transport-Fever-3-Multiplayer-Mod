@@ -632,14 +632,27 @@ local function pictureCard(picture, title, line, right, onClick, enabled, width,
 end
 lobby.pictureCard = pictureCard
 
+-- Where a member's game is with the room's world: its download, its load,
+-- then in the game; before the room starts, whether it is ready.
+function lobby.memberStage(member, playing)
+	if member.loading == "fetching" then
+		return string.format(_("Downloading %d%%"), math.floor(tonumber(member.percent) or 0))
+	elseif member.loading == "loading" then
+		return _("Loading...")
+	elseif playing then
+		return member.connected and _("Playing") or nil
+	end
+	return member.ready and _("Ready") or _("Not ready")
+end
+
 -- A room member as a card: their banner, name, and what marks them.
 function lobby.memberCard(member, playing)
 	local marks = {}
 	if member.owner then marks[#marks + 1] = _("Owner") end
 	if not member.connected then marks[#marks + 1] = _("Away") end
-	if not playing then marks[#marks + 1] = member.ready and _("Ready") or _("Not ready") end
+	marks[#marks + 1] = lobby.memberStage(member, playing)
 	if member.content == "differs" then marks[#marks + 1] = _("Other mods") end
-	local ready = member.ready and not playing and builtin.FloatingLayoutChild{
+	local ready = member.ready and not playing and (member.loading or "") == "" and builtin.FloatingLayoutChild{
 		h = 0.95,
 		v = 0.06,
 		item = builtin.ImageView{

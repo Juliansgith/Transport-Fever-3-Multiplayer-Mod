@@ -36,10 +36,10 @@ pub use content::{
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
     ContentFingerprint, CreateRoom, GameMessage, Hello, IntentRejection, JoinRoom, LaneDigest,
-    ListedRoom, MAX_CHECKPOINT_LANES, MAX_ROOM_MEMBERS, MemberView, ROOMS_PER_PAGE, Reject,
-    RejectReason, Request, RequestError, Response, Resume, RoomListing, RoomPage, RoomPhase,
-    RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage, Speed, Welcome,
-    is_banner,
+    ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_ROOM_MEMBERS, MemberView, ROOMS_PER_PAGE,
+    Reject, RejectReason, Request, RequestError, Response, Resume, RoomListing, RoomPage,
+    RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage, Speed,
+    Welcome, is_banner,
 };
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText,
@@ -67,8 +67,9 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// ([`Request::ListRooms`], [`CreateRoom::listing`]); version 10 carries
 /// each member's banner ([`Request::SetBanner`], [`MemberView::banner`]);
 /// version 11 a room's play style ([`CreateRoom::competitive`],
-/// [`RoomView::competitive`]).
-pub const PROTOCOL_VERSION: u32 = 11;
+/// [`RoomView::competitive`]); version 12 each member's loading progress
+/// ([`GameMessage::Loading`], [`MemberView::loading`]).
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
@@ -273,6 +274,16 @@ mod tests {
         let frame = encode_frame(&progress, CONTROL_MAX_FRAME).unwrap();
         // Game variant, Progress variant, varint 300.
         assert_eq!(frame, [4, 0, 0, 0, 2, 1, 0xac, 0x02]);
+        // Version 12: a member's loading progress, the last variant.
+        let loading = ClientMessage::Game(GameMessage::Loading(Some(LoadingStage::Fetching {
+            percent: 42,
+        })));
+        let frame = encode_frame(&loading, CONTROL_MAX_FRAME).unwrap();
+        assert_eq!(
+            payload(&frame),
+            [2, 4, 1, 0, 42],
+            "Game, Loading, Some, Fetching, percent"
+        );
         // Version 8: an intent carries an optional secret after its payload.
         let intent = ClientMessage::Game(GameMessage::Intent {
             client_seq: 1,

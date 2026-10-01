@@ -62,6 +62,7 @@ pub(crate) fn view(state: &State) -> LobbyView {
                             MemberContent::Unknown => None,
                         },
                         banner: member.banner.as_deref().and_then(banner),
+                        loading: member.loading,
                     })
                 })
                 .take(usize::from(tpf3mp_proto::MAX_ROOM_MEMBERS))
@@ -521,6 +522,7 @@ pub(crate) mod tests {
                         you: true,
                         content: MemberContent::Same,
                         banner: None,
+                        loading: None,
                     },
                     Member {
                         id: "not a player".into(),
@@ -532,6 +534,7 @@ pub(crate) mod tests {
                         you: false,
                         content: MemberContent::Unknown,
                         banner: None,
+                        loading: None,
                     },
                 ],
                 competitive: false,

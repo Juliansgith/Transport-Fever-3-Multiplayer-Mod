@@ -130,6 +130,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                     you: true,
                     same_content: Some(true),
                     banner: None,
+                    loading: None,
                 }])
                 .unwrap(),
                 competitive: false,

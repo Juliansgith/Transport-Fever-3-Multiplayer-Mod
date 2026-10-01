@@ -794,6 +794,7 @@ mod tests {
             connected: true,
             content: MemberContent::Same,
             banner: None,
+            loading: None,
         }
     }
 

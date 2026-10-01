@@ -473,6 +473,9 @@ impl Client {
                     let allowed = match &message {
                         GameMessage::Intent { .. } => self.intents.take(now, 1),
                         GameMessage::Progress { .. } => self.progress.take(now, 1),
+                        // The room keeps at most about two a second; more
+                        // are never needed.
+                        GameMessage::Loading(_) => self.progress.take(now, 1),
                         // Like checkpoints: the room ignores reports of
                         // saves it is not deciding.
                         GameMessage::Checkpoint { .. } | GameMessage::Saved { .. } => true,
@@ -743,6 +746,12 @@ impl Client {
                 if !queued {
                     self.reject_intent(client_seq, IntentRejection::RateLimited);
                 }
+            }
+            GameMessage::Loading(stage) => {
+                room.notify(RoomCommand::Loading {
+                    player: self.player,
+                    stage,
+                });
             }
             GameMessage::Progress { step } => {
                 room.notify(RoomCommand::Progress {

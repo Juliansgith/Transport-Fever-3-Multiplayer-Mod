@@ -716,6 +716,15 @@ impl Client {
         .await
     }
 
+    /// Tells the room where this player's game is with its world while it
+    /// comes in; `None` once it plays.
+    pub async fn report_loading(
+        &self,
+        stage: Option<tpf3mp_proto::LoadingStage>,
+    ) -> Result<(), ClientError> {
+        self.send(GameMessage::Loading(stage)).await
+    }
+
     pub async fn report_progress(&self, step: u64) -> Result<(), ClientError> {
         self.send(GameMessage::Progress { step }).await
     }

@@ -56,8 +56,9 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// [`LobbyMember::banner`], the player's own ([`LobbyView::banner`]) and
 /// [`LobbyAction::SetBanner`]; 17 a room's play style, co-op or
 /// competitive ([`LobbyRoom::competitive`], in [`LobbyAction::Create`] and
-/// the room list).
-pub const BRIDGE_VERSION: u32 = 17;
+/// the room list); 18 each member's loading progress
+/// ([`LobbyMember::loading`]).
+pub const BRIDGE_VERSION: u32 = 18;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -369,6 +370,8 @@ pub struct LobbyMember {
     pub same_content: Option<bool>,
     /// The banner this member picked (`tpf3mp_proto::BANNERS`), if any.
     pub banner: Option<tpf3mp_proto::BannerId>,
+    /// Where this member's game is with the room's world while it comes in.
+    pub loading: Option<tpf3mp_proto::LoadingStage>,
 }
 
 /// One line of the room's chat.
@@ -637,7 +640,8 @@ mod tests {
             owner: n == 0,
             you: n == 1,
             same_content: Some(true),
-            banner: None,
+            banner: Some(Text::new("x".repeat(16)).unwrap()),
+            loading: Some(tpf3mp_proto::LoadingStage::Fetching { percent: 100 }),
         };
         let line = LobbyLine {
             from: Text::new("y".repeat(32)).unwrap(),
