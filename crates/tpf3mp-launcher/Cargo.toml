@@ -39,5 +39,8 @@ zip.workspace = true
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 tempfile.workspace = true
 
+[build-dependencies]
+tpf3mp-buildinfo.workspace = true
+
 [lints]
 workspace = true

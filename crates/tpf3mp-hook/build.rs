@@ -1,0 +1,10 @@
+//! Builds in the commit, the build time and, on Windows, the version
+//! resource (`tpf3mp-buildinfo`).
+
+fn main() {
+    tpf3mp_buildinfo::emit(
+        tpf3mp_buildinfo::Artifact::Library,
+        "TPF3-MP game hook",
+        "tpf3mp_hook.dll",
+    );
+}

@@ -21,6 +21,7 @@ tpf3mp-snapshot = { path = "crates/tpf3mp-snapshot" }
 tpf3mp-bridge = { path = "crates/tpf3mp-bridge" }
 tpf3mp-launch = { path = "crates/tpf3mp-launch" }
 tpf3mp-modscan = { path = "crates/tpf3mp-modscan" }
+tpf3mp-buildinfo = { path = "crates/tpf3mp-buildinfo" }
 
 anyhow = "1.0.104"
 base64 = "0.23.1"
