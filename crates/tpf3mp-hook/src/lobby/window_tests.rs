@@ -502,40 +502,75 @@ fn while_the_rooms_world_comes_the_window_says_how_far_and_stays_usable() {
     assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 0);
 }
 
-/// The window closes as the room's world loads, while the main menu that
-/// holds it is still there: once the world is up, that menu is gone and
-/// the window could not be closed any more. The hook's load of the world
-/// closes it through the close the window leaves it; the window closes
-/// itself when it sees the world loading.
+/// The window stays open while the room's world downloads and loads, each
+/// player's progress in it. While open it leaves the hook its close, which
+/// the hook calls as the world comes up (the main menu's window container
+/// stays behind under the world's GUI); closed by the player, it leaves
+/// nothing, so the game's window does not open in its place.
 #[test]
-fn the_window_closes_as_the_rooms_world_loads() {
+fn the_window_stays_through_the_load_and_leaves_the_hook_its_close() {
     let lua = menu();
     let mut view = in_room(vec![member(1, "Ann", true, true, true)], true);
     view.room.as_mut().unwrap().running = true;
     view.world = LobbyWorld::Fetching { bytes: 1, total: 2 };
     show(&lua, Some(&view));
     open(&lua, None);
-    call(&lua, "tick", ());
-    assert_eq!(
-        lua.globals().get::<u32>("CLOSED").unwrap(),
-        0,
-        "open while fetching"
-    );
-    // What the hook calls before it loads the world.
+    for world in [LobbyWorld::Loading, LobbyWorld::Playing] {
+        view.world = world;
+        show(&lua, Some(&view));
+        call(&lua, "tick", ());
+    }
+    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 0, "still open");
+    // What the hook calls as the world comes up.
     lua.load("resolveutil.__tpf3mp_close()").exec().unwrap();
     assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 1);
-    // Seen by the window itself.
-    view.world = LobbyWorld::Loading;
-    show(&lua, Some(&view));
-    call(&lua, "tick", ());
-    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 2);
-    // A window opened while the world is already up stays open.
+    // Closed by the player (main_page.tl's close calls lobby.closed).
     let lua = menu();
-    view.world = LobbyWorld::Playing;
     show(&lua, Some(&view));
     open(&lua, None);
-    call(&lua, "tick", ());
-    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 0);
+    let left: bool = lua
+        .load("local open = type(resolveutil.__tpf3mp_close) == 'function' LOBBY.closed() return open and resolveutil.__tpf3mp_close == nil")
+        .eval()
+        .unwrap();
+    assert!(left, "the close is there while open and gone once closed");
+}
+
+/// Copy beside the room's invite code asks the hook to put the code on the
+/// clipboard, and says "Copied" for a moment.
+#[test]
+fn the_invite_code_is_copied_with_a_click() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&in_room(vec![member(1, "Ann", true, true, true)], true)),
+    );
+    open(&lua, None);
+    assert!(enabled(&lua, "Copy"));
+    click(&lua, "Copy");
+    let asked: Vec<String> = lua
+        .load(
+            "local out = {} for i, json in ipairs(SENT) do out[i] = json end SENT = {} return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(asked, [r#"{"action":"copy","text":"K7QM2X"}"#]);
+    call(&lua, "render", ());
+    assert!(has_button(&lua, "Copied") && !has_button(&lua, "Copy"));
+    for _ in 0..5 {
+        call(&lua, "tick", ());
+    }
+    assert!(has_button(&lua, "Copy"), "back after a moment");
+    // A refusal shows as any other.
+    lua.load("REPLY = 'error: the clipboard is busy'")
+        .exec()
+        .unwrap();
+    click(&lua, "Copy");
+    assert!(
+        texts(&lua).contains("the clipboard is busy"),
+        "{}",
+        texts(&lua)
+    );
+    assert!(!has_button(&lua, "Copied"));
 }
 
 #[test]

@@ -290,6 +290,32 @@ pub(crate) fn hex(player: &PlayerId) -> String {
         .collect()
 }
 
+/// What the window asks of the hook itself, never the launcher.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum LocalAction {
+    /// Puts the text, the room's invite code, on the clipboard.
+    Copy { text: String },
+}
+
+/// Does what the window asks of the hook itself (`{"action":"copy",
+/// "text":"K7QM2X"}`: the clipboard, [`crate::clipboard`]): `None` for an
+/// action the launcher takes ([`parse_action`]).
+pub fn local_action(json: &str) -> Option<Result<(), String>> {
+    let action: LocalAction = serde_json::from_str(json).ok()?;
+    Some(match action {
+        LocalAction::Copy { text } => crate::clipboard::copy(&text),
+    })
+}
+
+/// The room's invite as the launcher last told it, if the player is in a
+/// room: the game's Multiplayer window shows it with its Copy.
+pub fn invite() -> Option<String> {
+    let menu = menu();
+    let invite = menu.view.as_ref()?.room.as_ref()?.invite.as_ref()?;
+    Some(invite.as_str().to_owned())
+}
+
 /// Parses one action from the window's JSON into what the launcher takes.
 pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
     let action: WindowAction =
@@ -1186,6 +1212,17 @@ mod tests {
         exchange(&mut launcher);
         assert_eq!(state().name, "Ann");
         reset();
+    }
+
+    /// Copy is the hook's own: never queued for the launcher.
+    #[test]
+    fn copy_is_done_by_the_hook_itself() {
+        assert_eq!(
+            local_action(r#"{"action":"copy","text":"  "}"#),
+            Some(Err("nothing to copy".to_owned()))
+        );
+        assert_eq!(local_action(r#"{"action":"leave"}"#), None);
+        assert!(parse_action(r#"{"action":"copy","text":"K7QM2X"}"#).is_err());
     }
 
     #[test]

@@ -264,8 +264,15 @@ function data()
 			if group == nil and not (con and con.stations and #con.stations > 0) then return false end
 			local owned = api.engine.getComponent(entity, CT.PLAYER_OWNED)
 			local owner = owned and owned.player
+			-- The player's company, by the room's roster: whether the
+			-- owner lets it stop there (its head's choice, else its default).
+			local companies = require("tpf3mp.companies")
+			local mine = 0
+			for _, m in ipairs(roster.members or {}) do
+				if m.player == shared.status.me_id then mine = m.company end
+			end
 			for _, c in ipairs(roster.list or {}) do
-				if c.entity == owner then return not c.closed end
+				if c.entity == owner then return companies.lets(c, mine) end
 			end
 			return false
 		end)
@@ -431,7 +438,9 @@ function data()
 				-- window has no use for it.
 				local locked = type(c.lock) == "table"
 				out.list[#out.list + 1] = { id = c.id, entity = c.entity, name = name or c.name, color = c.color,
-					balance = balance, owed = owed, founder = c.founder, locked = locked, closed = c.closed == true }
+					balance = balance, owed = owed, founder = c.founder, locked = locked, closed = c.closed == true,
+					access = c.access }
+				for _, a in ipairs(c.access or {}) do sign[#sign + 1] = c.id .. ">" .. tostring(a.company) .. "=" .. tostring(a.open) end
 				local color = type(c.color) == "table" and c.color or {}
 				sign[#sign + 1] = table.concat({ c.id, name or c.name, tostring(balance), tostring(owed),
 					tostring(color[1]), tostring(color[2]), tostring(color[3]), tostring(locked),
@@ -537,6 +546,8 @@ function data()
 	local GLYPH = MOD .. "::/gui/tpf3mp/icons/menu_multiplayer_50.tga"
 	-- A banner strip's size, and the window's two columns.
 	local BANNER_W, BANNER_H = 160, 40
+	-- Frames Copy says "Copied" for: about two seconds.
+	local COPIED_FRAMES = 120
 	local LEFT_W, CHAT_W = 480, 360
 
 	-- A style sheet of one size, or nil where the state has none to make.
@@ -562,22 +573,51 @@ function data()
 		return builtin.TextView{ meta = class and { class = class } or nil, text = t }
 	end
 
-	-- Whether other companies' lines may stop at company `c`'s stations,
-	-- for its head to change.
+	-- Who may have their lines stop at company `c`'s stations, for its
+	-- head to choose (D22, proposed): a default, which also holds for
+	-- companies founded later, and a toggle for each other company, which
+	-- wins over it. Per company, not per player: a company's players share
+	-- everything it owns.
 	local function stationRows(rows, roster, c, shared)
+		local companies = require("tpf3mp.companies")
+		local function button(label, tooltip, onClick)
+			return builtin.Button{ meta = { tooltip = tooltip }, content = text(label), onClick = onClick }
+		end
+		local open = not c.closed
+		rows[#rows + 1] = text("Who may stop at " .. tostring(c.name) .. "'s stations", "font-scale-body")
 		rows[#rows + 1] = hbox({
-			text(c.closed and "Stations: yours alone" or "Stations: open to every company's lines"),
-			builtin.Button{
-				meta = { tooltip = c.closed
-					and "Let other companies' lines stop at " .. tostring(c.name) .. "'s stations"
-					or "Keep " .. tostring(c.name) .. "'s stations to its own lines" },
-				content = text(c.closed and "Open" or "Close"),
-				onClick = function()
-					companyOp(shared, { ShareStations = { company = c.id, open = c.closed == true } },
-						(c.closed and "Opening " or "Closing ") .. "the stations of " .. c.name)
-				end,
-			},
+			text("Default, and companies founded later: " .. (open and "allowed" or "denied")),
+			button(open and "Deny by default" or "Allow by default", open
+				and "Keep " .. tostring(c.name) .. "'s stations from every company without a choice of its own"
+				or "Let every company without a choice of its own stop at " .. tostring(c.name) .. "'s stations",
+				function()
+					companyOp(shared, { ShareStations = { company = c.id, open = not open } },
+						(open and "Closing " or "Opening ") .. "the stations of " .. c.name .. " by default")
+				end),
 		})
+		for _, other in ipairs(roster.list or {}) do
+			if other.id ~= c.id then
+				local choice = companies.choice(c, other.id)
+				local allowed = companies.lets(c, other.id)
+				local row = {
+					text(tostring(other.name) .. ": " .. (allowed and "allowed" or "denied")
+						.. (choice == nil and " (default)" or "")),
+					button(allowed and "Deny" or "Allow", (allowed and "Keep " or "Let ") .. tostring(other.name)
+						.. (allowed and "'s lines from " or "'s lines stop at ") .. tostring(c.name) .. "'s stations",
+						function()
+							companyOp(shared, { StationAccess = { company = c.id, other = other.id, open = not allowed } },
+								(allowed and "Denying " or "Allowing ") .. other.name)
+						end),
+				}
+				if choice ~= nil then
+					row[#row + 1] = button("Default", tostring(other.name) .. " follows the default again", function()
+						companyOp(shared, { StationAccess = { company = c.id, other = other.id } },
+							"Putting " .. other.name .. " back to the default")
+					end)
+				end
+				rows[#rows + 1] = hbox(row)
+			end
+		end
 	end
 
 	-- The companies (tpf3mp/companies.lua; DECISIONS.md D22, proposed), as
@@ -837,6 +877,30 @@ function data()
 		local left = {}
 		local function line(t, class) left[#left + 1] = text(t, class) end
 		line(tostring(status.room), "font-scale-title-4")
+		-- The room's invite code alone (without the server the launcher may
+		-- put before it), and Copy: the hook puts it on the clipboard, and
+		-- the button says "Copied" for a moment.
+		local code = type(status.invite) == "string" and status.invite:match("(%S+)%s*$")
+		if code then
+			left[#left + 1] = hbox({
+				text("Invite code  " .. code, "font-scale-body"),
+				builtin.Button{
+					meta = { tooltip = "Copy the invite code, to paste it to your friends" },
+					content = text((shared.copied or 0) > 0 and "Copied" or "Copy"),
+					onClick = function()
+						local l = shared.link
+						local ok, why = false, "not linked"
+						if l then ok, why = l:copy(code) end
+						if ok then
+							shared.copied = COPIED_FRAMES
+						else
+							shared.leaveNote = "Not copied: " .. tostring(why)
+						end
+						shared.version = shared.version + 1
+					end,
+				},
+			})
+		end
 		local about = {}
 		if status.speed then about[#about + 1] = "Speed " .. speedText(status.speed) end
 		if status.diverged then
@@ -1001,6 +1065,15 @@ function data()
 			if not ok then say("serving the hook failed: " .. tostring(err)) end
 			local followed, why = pcall(follow)
 			if not followed then say("reading the room failed: " .. tostring(why)) end
+			-- The main menu's Multiplayer window was open as this world came
+			-- up: this one opens in its place, once the room is read, so the
+			-- player keeps the lobby they had (the hook closed the menu's).
+			if link and ui().status and not ui().open and link:handover() then toggleWindow() end
+			local copied = ui().copied
+			if copied and copied > 0 then
+				ui().copied = copied - 1
+				if copied == 1 then ui().version = ui().version + 1 end
+			end
 			if ui().version ~= seen:get() then
 				seen:set(ui().version)
 				room:set(ui().version)

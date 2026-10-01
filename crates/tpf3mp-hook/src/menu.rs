@@ -29,8 +29,15 @@
 //!   its displacement is the field's offset ([`world_loaded`]). A state the
 //!   game gives `app` while a world is loaded is the world's GUI's: it is
 //!   never the menu's, and it is forgotten when the world closes
-//!   ([`forget_world_states`]). The menu's own sign of a load, the progress
-//!   monitor's task, is read through the chunk's `busy` ([`loading`]).
+//!   ([`forget_world_states`]).
+//! - **Knowing whether the game loads, without asking it.** `DoStep` polls
+//!   `CMenuUI::m_loadGameResult`, the future of a load under way; the
+//!   profile target [`MENU_LOAD_TARGET`] is that read, and its
+//!   displacement is the field's offset ([`load_in_progress`]). The hook
+//!   reads the field on the menu's own thread, without the game's locks.
+//!   It never asks the game's progress monitor from the menu's frame: the
+//!   game's loader holds the monitor's lock while it runs frames, and a
+//!   menu frame that asked it there hung the host's load (2026-09-30).
 //!
 //! Without `app.setWaitForStartReadyGame()`, which the menu's own pages call
 //! first, the game starts the loaded world by itself, with no Start Game
@@ -68,6 +75,12 @@ pub const MENU_STEP_TARGET: &str = "UI::CMenuUI::DoStep";
 pub const MENU_GAME_TARGET: &str = "UI::CMenuUI::DoStep/m_game test";
 /// The bytes of that instruction before its displacement.
 pub const MENU_GAME_OPCODE: [u8; 3] = [0x4C, 0x39, 0xAE];
+/// The profile's name for `DoStep`'s read of `CMenuUI::m_loadGameResult`:
+/// `mov rbx, [rsi+disp32]` (`48 8B 9E`), whose displacement is the field's
+/// offset.
+pub const MENU_LOAD_TARGET: &str = "UI::CMenuUI::DoStep/m_loadGameResult read";
+/// The bytes of that instruction before its displacement.
+pub const MENU_LOAD_OPCODE: [u8; 3] = [0x48, 0x8B, 0x9E];
 /// The profile's names for the Lua 5.2 functions only the menu needs.
 pub const LOAD_TARGET: &str = "lua_load";
 pub const PCALL_TARGET: &str = "lua_pcallk";
@@ -120,12 +133,12 @@ pub fn install_api(api: MenuApi) -> bool {
 ///
 /// `load(name)` loads the save `name` of the game's save folder, as the
 /// menu's Load Game page does, except that it does not ask the game to wait
-/// for Start Game. It answers `"started"`, `"busy"` while the game is
-/// loading something already (the menu's own sign of it: the progress
-/// monitor's task, `gui/menu/main_menu.tl`), or why it could not.
+/// for Start Game. It answers `"started"`, `"busy"` while the game reads
+/// the save's details, or why it could not. It never asks the progress
+/// monitor: the hook calls it only while no load runs ([`load_in_progress`]).
 ///
-/// `busy()` answers whether the progress monitor has a task, or nil when
-/// the state cannot tell.
+/// `busy(true)` closes the main menu's Multiplayer window if it is open
+/// ([`close_lobby`]) and answers whether it was; `busy()` answers nil.
 pub const CHUNK: &str = r#"
 local here, gone, plan = ...
 local number
@@ -164,12 +177,6 @@ local function load(name)
 	local keep = sentinel
 	local found, theApp = pcall(function() return app end)
 	if not found or theApp == nil then return "this Lua state has no app" end
-	local busy = false
-	pcall(function()
-		local task = theApp.getProgressMonitor():getTask()
-		busy = task ~= nil and task ~= ""
-	end)
-	if busy then return "busy" end
 	local info = nil
 	if plan and plan() then
 		-- The room's mods, not the save's: its details first, read by the
@@ -190,24 +197,25 @@ local function load(name)
 		if made == nil and why then return why end
 		info = made
 	end
-	-- The main menu's Multiplayer window closes first (gui/menu/lobby.lua
-	-- leaves its close here): the menu that holds it goes once the world is
-	-- up, and with it any way to close the window.
-	pcall(function()
-		local close = resolveutil.__tpf3mp_close
-		if type(close) == "function" then close() end
-	end)
 	local ok, err = pcall(function()
 		theApp.loadGame(savegameId(theApp, name), false, info)
 	end)
 	if ok then return "started" end
 	return "app.loadGame failed: " .. tostring(err)
 end
-local function busy()
+local function busy(closeLobby)
 	local keep = sentinel
-	local ok, task = pcall(function() return app.getProgressMonitor():getTask() end)
-	if not ok then return nil end
-	return task ~= nil and task ~= ""
+	if closeLobby then
+		-- The main menu's Multiplayer window, if open (gui/menu/lobby.lua
+		-- leaves its close here while it is): closed, and whether it was.
+		local close
+		pcall(function() close = resolveutil.__tpf3mp_close end)
+		if type(close) ~= "function" then return false end
+		pcall(close)
+		pcall(function() resolveutil.__tpf3mp_close = nil end)
+		return true
+	end
+	return nil
 end
 number = here(load, busy)
 "#;
@@ -263,11 +271,15 @@ pub fn forget_world_states() -> usize {
 /// 0 while unknown.
 static GAME_FIELD: AtomicUsize = AtomicUsize::new(0);
 
-/// The offset of `CMenuUI::m_game` that `DoStep`'s test at `code` (the
-/// instruction [`MENU_GAME_TARGET`] names) reads, if it is that test and
-/// the offset is plausible for a pointer field.
-pub fn game_field_at(code: &[u8]) -> Option<usize> {
-    if code.get(..3)? != MENU_GAME_OPCODE {
+/// The offset of `CMenuUI::m_loadGameResult` in the menu, from
+/// [`MENU_LOAD_TARGET`]; 0 while unknown.
+static LOAD_FIELD: AtomicUsize = AtomicUsize::new(0);
+
+/// The field offset an instruction `opcode [rsi+disp32]` at `code` reads,
+/// if it is that instruction and the offset is plausible for a pointer
+/// field.
+fn field_at(code: &[u8], opcode: [u8; 3]) -> Option<usize> {
+    if code.get(..3)? != opcode {
         return None;
     }
     let disp = i32::from_le_bytes(code.get(3..7)?.try_into().ok()?);
@@ -275,9 +287,57 @@ pub fn game_field_at(code: &[u8]) -> Option<usize> {
     (offset > 0 && offset < 0x1_0000 && offset % 8 == 0).then_some(offset)
 }
 
+/// The offset of `CMenuUI::m_game` that `DoStep`'s test at `code` (the
+/// instruction [`MENU_GAME_TARGET`] names) reads.
+pub fn game_field_at(code: &[u8]) -> Option<usize> {
+    field_at(code, MENU_GAME_OPCODE)
+}
+
+/// The offset of `CMenuUI::m_loadGameResult` that `DoStep`'s read at `code`
+/// (the instruction [`MENU_LOAD_TARGET`] names) reads.
+pub fn load_field_at(code: &[u8]) -> Option<usize> {
+    field_at(code, MENU_LOAD_OPCODE)
+}
+
 /// Makes `offset` the one [`world_loaded`] reads; 0 forgets it.
 pub fn set_game_field(offset: usize) {
     GAME_FIELD.store(offset, Ordering::Release);
+}
+
+/// Makes `offset` the one [`load_in_progress`] reads; 0 forgets it.
+pub fn set_load_field(offset: usize) {
+    LOAD_FIELD.store(offset, Ordering::Release);
+}
+
+/// Reads the pointer at `menu + offset`: whether it is set, `None` when
+/// either is unknown.
+///
+/// # Safety
+///
+/// As [`world_loaded`], `offset` a pointer field the game's own `DoStep`
+/// reads in the menu.
+unsafe fn pointer_set(menu: usize, offset: usize) -> Option<bool> {
+    if offset == 0 || menu == 0 {
+        return None;
+    }
+    // SAFETY: the caller's: the menu is live and at least as large as the
+    // field the game's own DoStep reads at this offset; the read is of one
+    // aligned pointer, which is never dereferenced, and takes no lock.
+    let value = unsafe { std::ptr::read_volatile((menu + offset) as *const usize) };
+    Some(value != 0)
+}
+
+/// Whether the menu `menu` is loading a world: its `m_loadGameResult`, the
+/// future of the load under way, is set. `None` when the offset is unknown
+/// or there is no menu. A plain read of the menu's field on its own thread:
+/// no Lua, no lock of the game's.
+///
+/// # Safety
+///
+/// As [`world_loaded`].
+pub unsafe fn load_in_progress(menu: usize) -> Option<bool> {
+    // SAFETY: the caller's.
+    unsafe { pointer_set(menu, LOAD_FIELD.load(Ordering::Acquire)) }
 }
 
 /// Whether the menu `menu` (a live `UI::CMenuUI`) has a world loaded: its
@@ -288,15 +348,8 @@ pub fn set_game_field(offset: usize) {
 /// `menu` is 0 or the game's live `UI::CMenuUI`, as `DoStep` and
 /// `RegisterAppUsertypes` are handed it, on the thread that runs it.
 pub unsafe fn world_loaded(menu: usize) -> Option<bool> {
-    let offset = GAME_FIELD.load(Ordering::Acquire);
-    if offset == 0 || menu == 0 {
-        return None;
-    }
-    // SAFETY: the caller's: the menu is live and at least as large as the
-    // field the game's own DoStep reads at this offset; the read is of one
-    // aligned pointer.
-    let game = unsafe { std::ptr::read_volatile((menu + offset) as *const usize) };
-    Some(game != 0)
+    // SAFETY: the caller's.
+    unsafe { pointer_set(menu, GAME_FIELD.load(Ordering::Acquire)) }
 }
 
 /// One buffer handed to `lua_load`, whole, once.
@@ -504,14 +557,18 @@ fn newest_menu_state() -> Option<(usize, c_int, c_int)> {
         .map(|state| (state.state, state.reference, state.busy))
 }
 
-/// Whether the game is loading something, the menu's own sign of it (the
-/// progress monitor has a task), asked in the newest state of the menu's
-/// adopted on this thread: `None` when there is none, or it cannot tell.
+/// Closes the main menu's Multiplayer window, if it is open, in the newest
+/// state of the menu's adopted on this thread: whether it was open, or
+/// `None` when there is no such state. Called as the room's world comes up
+/// (`crate::install::menu_frame`): the window lives in the main menu's
+/// window container, which the world's GUI leaves behind, so it is closed
+/// while the menu still runs, and the game's own Multiplayer window takes
+/// over (D17; docs/LOBBY.md).
 ///
 /// # Safety
 ///
 /// As [`serve`].
-pub unsafe fn loading() -> Option<bool> {
+pub unsafe fn close_lobby() -> Option<bool> {
     let (Some(api), Some(menu)) = (lua::api(), MENU_API.get()) else {
         return None;
     };
@@ -526,11 +583,12 @@ pub unsafe fn loading() -> Option<bool> {
         // runs no Lua now; the final settop pops what was pushed.
         unsafe {
             let top = (api.gettop)(l);
-            if (api.checkstack)(l, 2) == 0 {
+            if (api.checkstack)(l, 3) == 0 {
                 return None;
             }
             (api.rawgeti)(l, menu.registry, busy);
-            let status = (menu.pcallk)(l, 0, 1, 0, 0, std::ptr::null());
+            (api.pushboolean)(l, 1);
+            let status = (menu.pcallk)(l, 1, 1, 0, 0, std::ptr::null());
             let answer = (status == 0 && (api.type_of)(l, -1) == TBOOLEAN)
                 .then(|| (api.toboolean)(l, -1) != 0);
             (api.settop)(l, top);
@@ -640,15 +698,31 @@ unsafe extern "C-unwind" fn register_detour(
     result
 }
 
-/// After each of the menu's frames: the room, from the menu.
+/// How many of the menu's frames are running on this thread: more than one
+/// is a frame the game runs inside its own (a load's screen), where the
+/// game holds its locks.
+static FRAMES_RUNNING: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a menu frame ends now with no other of the menu's frames under
+/// it on the stack: only such a frame is the menu's own.
+pub fn outermost_frame() -> bool {
+    FRAMES_RUNNING.load(Ordering::Acquire) == 0
+}
+
+/// After each of the menu's frames: the room, from the menu. A frame that
+/// runs inside another (the game's own work, a load) is left alone.
 unsafe extern "C-unwind" fn step_detour(menu: usize, a: usize, b: usize, c: usize) -> usize {
     let original = STEP_ORIGINAL.load(Ordering::Acquire);
     if original == 0 {
         return 0;
     }
+    FRAMES_RUNNING.fetch_add(1, Ordering::AcqRel);
     // SAFETY: as above.
     let result = unsafe { std::mem::transmute::<u64, Passthrough>(original)(menu, a, b, c) };
-    let _ = std::panic::catch_unwind(|| crate::install::menu_frame(menu));
+    FRAMES_RUNNING.fetch_sub(1, Ordering::AcqRel);
+    if outermost_frame() {
+        let _ = std::panic::catch_unwind(|| crate::install::menu_frame(menu));
+    }
     result
 }
 
@@ -702,7 +776,7 @@ pub unsafe fn install(
     // Before the detours: a state the game gives `app` in a loaded world is
     // known for the world's from the first.
     // SAFETY: the caller's.
-    let game = unsafe { find_game_field(at) };
+    let game = unsafe { find_fields(at) };
     // SAFETY: both targets are functions the profile resolved and
     // prologue-checked; the hook installs while the game starts, before its
     // menu or any Lua state exists, so no thread runs them; each detour has
@@ -719,8 +793,45 @@ pub unsafe fn install(
     ))
 }
 
-/// Finds `CMenuUI::m_game` from [`MENU_GAME_TARGET`] and keeps its offset;
+/// Finds `CMenuUI::m_game` and `CMenuUI::m_loadGameResult` from
+/// [`MENU_GAME_TARGET`] and [`MENU_LOAD_TARGET`] and keeps their offsets;
 /// returns the end of the install's log line.
+///
+/// # Safety
+///
+/// As [`install`].
+#[cfg(all(windows, target_arch = "x86_64"))]
+unsafe fn find_fields(at: &dyn Fn(&str) -> Result<usize, String>) -> String {
+    // SAFETY: the caller's.
+    let game = unsafe { find_game_field(at) };
+    // Whether a load runs: without it, the menu never calls into the
+    // menu's Lua (fail closed), since a call there during a load can wait
+    // on the loader's locks.
+    let load = match at(MENU_LOAD_TARGET) {
+        Ok(read) => {
+            // SAFETY: as in find_game_field.
+            let code = unsafe { std::slice::from_raw_parts(read as *const u8, 7) };
+            match load_field_at(code) {
+                Some(offset) => {
+                    set_load_field(offset);
+                    format!(
+                        "; a load runs while CMenuUI::m_loadGameResult (+{offset:#x}) is set, and the menu's Lua is called only while none does"
+                    )
+                }
+                None => format!(
+                    "; {MENU_LOAD_TARGET} is not the read it names, so the menu never calls its Lua and does not load the room's world (fail closed)"
+                ),
+            }
+        }
+        Err(error) => format!(
+            "; {error}, so the menu never calls its Lua and does not load the room's world (fail closed)"
+        ),
+    };
+    format!("{game}{load}")
+}
+
+/// Finds `CMenuUI::m_game` from [`MENU_GAME_TARGET`] and keeps its offset;
+/// returns its part of the install's log line.
 ///
 /// # Safety
 ///
@@ -781,8 +892,12 @@ pub(crate) mod tests {
         _ctx: c_int,
         _k: *const c_void,
     ) -> c_int {
+        PCALLS.fetch_add(1, Ordering::SeqCst);
         unsafe { ffi::lua_pcall(l.cast(), nargs, nresults, errfunc) }
     }
+
+    /// Every call the hook makes into a menu state (the menu's `pcallk`).
+    pub(crate) static PCALLS: AtomicUsize = AtomicUsize::new(0);
     unsafe extern "C-unwind" fn ref51(l: State, t: c_int) -> c_int {
         unsafe { ffi::luaL_ref(l.cast(), t) }
     }
@@ -800,13 +915,14 @@ pub(crate) mod tests {
     }
 
     /// The menu's `app` and `api`, as far as a load uses them: `LOADS`
-    /// records each load, `TASK` is the progress monitor's task.
+    /// records each load. The progress monitor, whose lock the game's loader
+    /// holds, is never to be asked: `MONITOR` counts it if it is.
     const FAKE_MENU: &str = "\
-        LOADS = {} TASK = '' \
+        LOADS = {} MONITOR = 0 \
         api = { type = { SavegameId = { new = function() return {} end } } } \
         app = { \
           SaveGameNamespace = { getSavegame = function() return 'savegame' end }, \
-          getProgressMonitor = function() return { getTask = function() return TASK end } end, \
+          getProgressMonitor = function() MONITOR = MONITOR + 1 error('the loader holds it') end, \
           loadGame = function(id, isMapEditor, info) \
             if FAIL then error(FAIL, 0) end \
             LOADS[#LOADS + 1] = id.saveGameName .. '|' .. id.path .. '|' .. id.saveGameNamespace \
@@ -815,6 +931,26 @@ pub(crate) mod tests {
 
     pub(crate) fn forget_all() {
         adopted().clear();
+    }
+
+    /// Runs one of the menu's frames through its detour, with `original` as
+    /// the game's `DoStep`.
+    pub(crate) fn frame_through_detour(
+        original: unsafe extern "C-unwind" fn(usize, usize, usize, usize) -> usize,
+        menu: usize,
+    ) -> usize {
+        STEP_ORIGINAL.store(original as usize as u64, Ordering::Release);
+        // SAFETY: the detour, as the game would call it.
+        let result = unsafe { step_detour(menu, 0, 0, 0) };
+        STEP_ORIGINAL.store(0, Ordering::Release);
+        result
+    }
+
+    /// The detour's own entry, for a game `DoStep` that runs a frame inside
+    /// itself.
+    pub(crate) fn nested_frame(menu: usize) -> usize {
+        // SAFETY: as above, STEP_ORIGINAL still set by the outer frame.
+        unsafe { step_detour(menu, 0, 0, 0) }
     }
 
     #[test]
@@ -838,10 +974,10 @@ pub(crate) mod tests {
             Ok("1|tpf3mp_room_7||savegame|false|nil".into()),
             "no Start Game wait, the save's own mods"
         );
-        // Loading something already: asked again later, nothing started.
-        menu.run("TASK = 'Loading'").unwrap();
-        assert_eq!(unsafe { serve("tpf3mp_room_7") }, Some(Served::Busy));
-        menu.run("TASK = '' FAIL = 'Game initialization is already active!'")
+        // The load never asks the progress monitor (the hook calls it only
+        // while no load runs).
+        assert_eq!(menu.run("return MONITOR"), Ok("0".into()));
+        menu.run("FAIL = 'Game initialization is already active!'")
             .unwrap();
         assert_eq!(
             unsafe { serve("tpf3mp_room_7") },
@@ -924,28 +1060,6 @@ pub(crate) mod tests {
         assert_eq!(unsafe { adopt_as(world.state(), true) }, Ok(true));
         assert!(!available());
         assert_eq!(unsafe { serve("x") }, None);
-        assert_eq!(unsafe { loading() }, None);
-        forget_all();
-    }
-
-    #[test]
-    fn the_menu_says_whether_the_game_is_loading() {
-        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-        menu51();
-        forget_all();
-        assert_eq!(unsafe { loading() }, None, "no state to ask");
-        let menu = Lua::new();
-        menu.run(FAKE_MENU).unwrap();
-        assert_eq!(unsafe { adopt(menu.state()) }, Ok(true));
-        let l: *mut ffi::lua_State = menu.state().cast();
-        let top = unsafe { ffi::lua_gettop(l) };
-        assert_eq!(unsafe { loading() }, Some(false));
-        menu.run("TASK = 'Loading'").unwrap();
-        assert_eq!(unsafe { loading() }, Some(true));
-        // A state that cannot tell: unknown, never "not loading".
-        menu.run("app = nil").unwrap();
-        assert_eq!(unsafe { loading() }, None);
-        assert_eq!(unsafe { ffi::lua_gettop(l) }, top, "the stack is as it was");
         forget_all();
     }
 
@@ -981,10 +1095,42 @@ pub(crate) mod tests {
         assert_eq!(unsafe { world_loaded(menu.as_ptr() as usize) }, None);
     }
 
-    /// The main menu's Multiplayer window is closed before the room's world
-    /// loads, whatever its close does; a menu without it loads all the same.
     #[test]
-    fn the_multiplayer_window_closes_before_the_rooms_world_loads() {
+    fn the_m_load_game_result_read_gives_the_fields_offset() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        // Build 40408's `mov rbx, [rsi+0x1bd0]`.
+        let read = [0x48, 0x8B, 0x9E, 0xD0, 0x1B, 0x00, 0x00, 0x48];
+        assert_eq!(load_field_at(&read), Some(0x1bd0));
+        assert_eq!(
+            load_field_at(&[0x4C, 0x39, 0xAE, 0xD0, 0x1B, 0x00, 0x00]),
+            None
+        );
+        assert_eq!(game_field_at(&read), None);
+        // The field read from a menu: no Lua, no state needed.
+        menu51();
+        forget_all();
+        let before = PCALLS.load(Ordering::SeqCst);
+        let menu = [0usize, 0, 0x1234];
+        set_load_field(16);
+        assert_eq!(
+            unsafe { load_in_progress(menu.as_ptr() as usize) },
+            Some(true)
+        );
+        set_load_field(8);
+        assert_eq!(
+            unsafe { load_in_progress(menu.as_ptr() as usize) },
+            Some(false)
+        );
+        set_load_field(0);
+        assert_eq!(unsafe { load_in_progress(menu.as_ptr() as usize) }, None);
+        assert_eq!(PCALLS.load(Ordering::SeqCst), before, "no Lua");
+    }
+
+    /// The main menu's Multiplayer window stays open while the room's world
+    /// loads; the hook closes it as the world comes up, whatever its close
+    /// does, and says whether it was open.
+    #[test]
+    fn the_multiplayer_window_stays_through_the_load_and_closes_as_the_world_comes_up() {
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         menu51();
         forget_all();
@@ -997,19 +1143,24 @@ pub(crate) mod tests {
         assert_eq!(unsafe { adopt(menu.state()) }, Ok(true));
         assert_eq!(unsafe { serve("tpf3mp_room_7") }, Some(Served::Started));
         assert_eq!(
-            menu.run("return table.concat(CLOSED, ',') .. '/' .. #LOADS"),
+            menu.run("return #CLOSED .. '/' .. #LOADS"),
             Ok("0/1".into()),
-            "closed once, before the load"
+            "open through the load"
         );
-        // A close that fails does not stop the load.
+        // The world comes up: closed once, and only once.
+        assert_eq!(unsafe { close_lobby() }, Some(true));
+        assert_eq!(menu.run("return #CLOSED"), Ok("1".into()));
+        assert_eq!(unsafe { close_lobby() }, Some(false), "nothing open now");
+        // A close that fails still counts as closed, and the menu goes on.
         menu.run("resolveutil.__tpf3mp_close = function() error('expired') end")
             .unwrap();
-        assert_eq!(unsafe { serve("tpf3mp_room_8") }, Some(Served::Started));
-        // No window, no resolveutil: the load as before.
+        assert_eq!(unsafe { close_lobby() }, Some(true));
+        assert_eq!(menu.run("return MONITOR"), Ok("0".into()));
+        // No window, no resolveutil: nothing to close.
         menu.run("resolveutil = nil").unwrap();
-        assert_eq!(unsafe { serve("tpf3mp_room_9") }, Some(Served::Started));
-        assert_eq!(menu.run("return #LOADS"), Ok("3".into()));
+        assert_eq!(unsafe { close_lobby() }, Some(false));
         forget_all();
+        assert_eq!(unsafe { close_lobby() }, None, "no menu state");
     }
 
     #[test]

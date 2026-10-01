@@ -364,6 +364,65 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     assert!(closed && reopened && closed_by_itself);
 }
 
+/// The game's window shows the room's invite code with Copy: the hook puts
+/// it on the clipboard, and the button says "Copied" for a while.
+#[test]
+fn the_games_window_copies_the_invite_code() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (shown, copied, label, back): (bool, String, String, String) = lua
+        .load(
+            "HOOK.room = true HOOK.status = { room = 'r', invite = 'eu.example.org K7QM2X', players = {} } \
+             BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+             views(BAR.layout)[1].params.onClick() \
+             local function find(label) \
+                 for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                     if v.view == 'Button' and v.params.content.params.text == label then return v end \
+                     if v.view == 'TextView' and v.params.text == label then return v end \
+                 end \
+             end \
+             local shown = find('Invite code  K7QM2X') ~= nil \
+             find('Copy').params.onClick() \
+             local label = find('Copied') and 'Copied' or 'none' \
+             for _ = 1, 130 do BAR.step() end \
+             return shown, HOOK.copied, label, find('Copy') and 'Copy' or 'none'",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(shown, "the code alone, without the server");
+    assert_eq!(copied, "K7QM2X");
+    assert_eq!(label, "Copied");
+    assert_eq!(back, "Copy");
+}
+
+/// The main menu's Multiplayer window was open as the world came up: the
+/// game's opens in its place by itself, once; otherwise it waits for a
+/// button.
+#[test]
+fn the_games_window_opens_in_place_of_the_menus_once() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (before, opened, closed): (bool, bool, bool) = lua
+        .load(
+            "HOOK.room = true HOOK.status = { room = 'r', players = {} } \
+             BAR = mount(loadPlugin()) for _ = 1, 3 do BAR.step() end \
+             local before = WINDOWS.Tpf3mpWindow ~= nil \
+             HOOK.handover = true \
+             for _ = 1, 20 do BAR.step() end \
+             local opened = WINDOWS.Tpf3mpWindow ~= nil \
+             WINDOWS.Tpf3mpWindow.layout.params.onClose() \
+             for _ = 1, 20 do BAR.step() end \
+             return before, opened, WINDOWS.Tpf3mpWindow == nil",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(!before, "no handover, no window");
+    assert!(opened, "opened in place of the menu's");
+    assert!(closed, "its own close closes it, and it stays closed");
+}
+
 #[test]
 fn chat_a_new_world_is_given_again_is_not_new() {
     let lua = gui();
@@ -526,6 +585,15 @@ tpf3mp_native = {
     leave = function()
         HOOK.left = (HOOK.left or 0) + 1
         return true
+    end,
+    copy = function(text)
+        HOOK.copied = text
+        return true
+    end,
+    handover = function()
+        local handed = HOOK.handover == true
+        HOOK.handover = nil
+        return handed
     end,
     -- A lane dump the hook asks for ({ step =, lanes = }), once; the
     -- entries go to HOOK.dumped as the hook writes them to its log.
@@ -4881,6 +4949,46 @@ fn a_companys_head_locks_it_and_only_its_password_opens_it() {
         ),
         "true"
     );
+    // Its head's choice for one company wins over the default, either way;
+    // none leaves it to the default again (D22, proposed).
+    let first = eval("return C.find(R, 0).name");
+    assert_eq!(
+        eval("return why(JAMES, { StationAccess = { company = 1, other = 0, open = false } })"),
+        "ok"
+    );
+    assert_eq!(
+        eval("local ok, why = C.mayUse(R, 25, 800, api) return tostring(ok) .. ' ' .. why"),
+        format!("false the station belongs to Rival, which keeps its stations from {first}")
+    );
+    assert_eq!(
+        eval(
+            "why(JAMES, { ShareStations = { company = 1, open = false } }) \
+             why(JAMES, { StationAccess = { company = 1, other = 0, open = true } }) \
+             local let = C.mayUse(R, 25, 800, api) \
+             why(JAMES, { StationAccess = { company = 1, other = 0 } }) \
+             local default = C.mayUse(R, 25, 800, api) \
+             why(JAMES, { ShareStations = { company = 1, open = true } }) \
+             return tostring(let) .. '|' .. tostring(default) .. '|' .. tostring(C.find(R, 1).access)"
+        ),
+        "true|false|nil"
+    );
+    // Only its head chooses, for another company there is.
+    assert_eq!(
+        eval("return why(CAT, { StationAccess = { company = 1, other = 0, open = true } })"),
+        "only the head of Rival decides whose lines stop at the stations of it"
+    );
+    assert_eq!(
+        eval("return why(JAMES, { StationAccess = { company = 1, other = 1, open = false } })"),
+        "Rival's stations are always its own"
+    );
+    assert_eq!(
+        eval("return why(JAMES, { StationAccess = { company = 1, other = 7, open = false } })"),
+        "there is no company 7"
+    );
+    assert_eq!(
+        eval("return why(JAMES, { StationAccess = { company = 0, other = 1, open = false } })"),
+        "the room's first company is everyone's: nobody decides whose lines stop at the stations of it"
+    );
     // A colour is fractions from 0 to 1, and no two companies wear one.
     assert_eq!(
         eval("return why(JAMES, { Recolor = { company = 1, color = { r = 2, g = 0, b = 0 } } })"),
@@ -5228,16 +5336,39 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         "A password to join|1|s3cret"
     );
     assert!(!eval("return texts()").contains("s3cret"));
-    // The head closes the stations and sends Bob out.
+    // The head chooses who stops at Rival's stations: by default, and for
+    // the first company on its own; and sends Bob out.
+    let shown = eval("return texts()");
+    assert!(
+        shown.contains("Default, and companies founded later: allowed"),
+        "{shown}"
+    );
+    assert!(shown.contains("First: allowed (default)"), "{shown}");
     assert_eq!(
         eval(
-            "button('Close').onClick() \
+            "button('Deny by default').onClick() \
              local close = last().CompanyOp.ShareStations \
+             button('Deny').onClick() \
+             local deny = last().CompanyOp.StationAccess \
              button('Send out').onClick() \
              local out = last().CompanyOp.Dismiss \
-             return tostring(close.open) .. '|' .. out.player"
+             return tostring(close.open) .. '|' .. deny.company .. '>' .. deny.other .. '=' \
+                 .. tostring(deny.open) .. '|' .. out.player"
         ),
-        format!("false|{}", "b".repeat(64))
+        format!("false|1>0=false|{}", "b".repeat(64))
+    );
+    // Once the room has it, the row says so and offers the default back.
+    assert_eq!(
+        eval(
+            "ROSTER.list[2].access = { { company = 0, open = false } } \
+             for _ = 1, 20 do BAR.step() end \
+             local shown = texts():find('First: denied', 1, true) ~= nil \
+             button('Default').onClick() \
+             local back = last().CompanyOp.StationAccess \
+             ROSTER.list[2].access = nil \
+             return tostring(shown) .. '|' .. tostring(back.open) .. '|' .. back.other"
+        ),
+        "true|nil|0"
     );
     // The line manager offers Rival's station while its stations are open.
     assert_eq!(
@@ -5247,6 +5378,25 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
              ROSTER.list[2].closed = true \
              for _ = 1, 20 do BAR.step() end \
              return tostring(open) .. '|' .. tostring(util.isOwnedByPlayerOrNotOwned(90))"
+        ),
+        "true|false"
+    );
+    // With James in the first company: Rival's choice for it wins over
+    // its default, either way.
+    assert_eq!(
+        eval(
+            "local util = ug_require('/scripts/entity_util.tl') \
+             ROSTER.members = { { player = BOB, company = 1 } } \
+             ROSTER.list[2].access = { { company = 0, open = true } } \
+             for _ = 1, 20 do BAR.step() end \
+             local let = util.isOwnedByPlayerOrNotOwned(90) \
+             ROSTER.list[2].closed = nil \
+             ROSTER.list[2].access = { { company = 0, open = false } } \
+             for _ = 1, 20 do BAR.step() end \
+             local kept = util.isOwnedByPlayerOrNotOwned(90) \
+             ROSTER.list[2].closed = true ROSTER.list[2].access = nil \
+             ROSTER.members = { { player = JAMES, company = 1 }, { player = BOB, company = 1 } } \
+             return tostring(let) .. '|' .. tostring(kept)"
         ),
         "true|false"
     );

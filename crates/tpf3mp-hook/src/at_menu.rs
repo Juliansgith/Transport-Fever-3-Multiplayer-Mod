@@ -11,7 +11,8 @@
 //! (asserting `!m_game` first) and `CMenuUI::StopGame` clears, the one
 //! pointer `DoStep` tests before it hands its frame to the world's UI
 //! (`investigation/TPF3_MENU_JOIN_2026-09-30.md`, section 8). Loading is the
-//! menu's own sign: the progress monitor has a task.
+//! the menu's `m_loadGameResult` (the future of a load under way) or a load
+//! the hook started, read without the game's Lua or locks.
 //!
 //! [`MenuGate`] is the rule, kept free of the game so it is tested on its
 //! own:
@@ -87,7 +88,8 @@ pub struct Frame {
     pub world_gui_started: bool,
     /// `CMenuUI::m_game` is set; `None` when the hook cannot read it.
     pub world_loaded: Option<bool>,
-    /// The progress monitor has a task; `None` when the hook cannot ask.
+    /// A load runs (`CMenuUI::m_loadGameResult` set, or a load the hook
+    /// started); `None` when the hook cannot read it.
     pub loading: Option<bool>,
 }
 

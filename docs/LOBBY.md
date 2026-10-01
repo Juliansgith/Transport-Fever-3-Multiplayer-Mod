@@ -111,22 +111,29 @@ A game Steam started has no hook and keeps the plain menu.
     **Your mods** opens from Join, Host and the room: the player's
     installed mods to turn on or off (`choose_mod`), and in a room the
     room's own and whether the player has each;
-  - in a room: its name, invite and counts, the players with their marks
+  - in a room: its name, invite (with **Copy**, which the hook puts on
+    the clipboard: `crate::clipboard`) and counts, the players with their marks
     (owner, you, ready, away, other mods) and, for the owner, a Remove
     button that asks first; the chat; **Leave room** (asks first),
     **Ready** or **Not ready**, and, for the owner, **Start the game**,
     which waits until everyone is ready. Once the room's game runs, the
     chat and Leave stay and Ready and Start go.
 
-  The window closes as the room's world starts loading. It lives in the
-  main menu's window container, and once the world is up the menu that
-  holds it is gone: its X, and any close, could no longer reach it
-  (2026-10-01, the window stayed on screen in the game). So the hook's
-  load of the room's world (`crates/tpf3mp-hook/src/menu.rs`) first calls
-  the close the window leaves it (`resolveutil.__tpf3mp_close`), and the
-  window closes itself when it sees the world loading. Its close removes
-  the window first, through the container it was added to, and does each
-  step on its own, so an expired ref of the main page's never keeps it up.
+  The window stays open while the room's world downloads and loads, with
+  each player's progress, and hands over to the game's own Multiplayer
+  window when the world comes up. It lives in the main menu's window
+  container, which the world's GUI leaves behind on screen where nothing
+  could close it (2026-10-01). So while it is open it leaves the hook its
+  close (`resolveutil.__tpf3mp_close`); at the menu frame where the world
+  comes up, the hook calls it while the menu still runs
+  (`crates/tpf3mp-hook/src/menu.rs`, `close_lobby`) and marks the
+  handover, and the world's GUI opens its Multiplayer window, the room
+  page, once (`tpf3mp_native.handover()`). The player closes that one with
+  its own X or Close. A window the player closed before (main_page.tl's
+  close calls `lobby.closed`) leaves nothing, so nothing opens. Its close
+  removes the window first, through the container it was added to, and
+  does each step on its own, so an expired ref of the main page's never
+  keeps it up.
 
   `crates/tpf3mp-hook/src/lobby/window_tests.rs` draws the window in every
   view against a stand-in for the menu (`tests/lua/fake_menu.lua`), clicks

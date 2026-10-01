@@ -199,7 +199,8 @@ window too.
      from its start save, and whether you have each. You can change your
      choice until the room's game starts.
 5. **The room.** On the left, the room's name (a lock if it has a
-   password), its **invite code** to send your friends, and its players
+   password), its **invite code** to send your friends (**Copy** beside it
+   puts it on the clipboard), and its players
    as picture cards of their banners, each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
    and **Other mods** when their game differs from the owner's. On the
    right, the room's chat: type and press Enter or **Send**.
@@ -216,9 +217,10 @@ window too.
    ("Receiving the room's world: 42% (48.0 MB of 112 MB)"), and the chat
    and **Leave room** still work. Each player's row says how far their
    game is: **Downloading 42%**, then **Loading...**, then **Playing**.
-   The window closes by itself when your game starts loading the world.
-   In the game, the Multiplayer window on the game bar has the room (see
-   "While you play").
+   The window stays open until the world is up; then the game's own
+   Multiplayer window, with the same room, opens in its place, and you
+   close it with its X or **Close** (see "While you play"). If you closed
+   the window before, it stays closed.
 
 What the window says:
 
@@ -257,7 +259,8 @@ protected folder such as Program Files.
   room in one line: its name, how many players are in the game, its speed,
   and new chat. Click it, or the Multiplayer button among the mods'
   buttons (the main menu's Multiplayer glyph, with the number of new chat
-  lines), for the Multiplayer window: the room's players as their banners,
+  lines), for the Multiplayer window: the room's invite code with
+  **Copy**, the room's players as their banners,
   each marked **Owner**, **You**, **Away** and how far their game is
   (**Downloading 42%**, **Loading...**, **Playing**), its speed, whether
   your world matches the room's, the companies, **Leave room** (asks
@@ -354,10 +357,13 @@ protected folder such as Program Files.
   The password goes to the server, which keeps it from every game and
   every log; nobody, the head included, can read it back, so share it
   the way you share a room's. The head can also remove or change the
-  password, send a player back to the room's first company, and close
-  the company's stations to other companies' lines. Stations start open:
-  your lines may stop at another company's station, and the line manager
-  offers it, until its head closes them. You still cannot change or
+  password, send a player back to the room's first company, and choose
+  who may stop at the company's stations: **Deny by default** or **Allow
+  by default** for every company (those founded later included), and
+  **Allow** or **Deny** for each other company on its own, which wins over
+  the default (**Default** puts it back). Stations start open: your lines
+  may stop at another company's station, and the line manager offers it,
+  unless its head denies your company. You still cannot change or
   remove another company's station, and your vehicles use your own
   depots. The room's first company is everyone's: it has no head and no
   password. The game's company window renames your company too.

@@ -520,6 +520,15 @@ fn answer(state: *mut c_void, path: &str) -> Option<String> {
         note("lobby action refused: no JSON in resolveutil.__tpf3mp_action");
         return Some("error: no action".to_owned());
     };
+    if let Some(done) = lobby::local_action(&json) {
+        return Some(match done {
+            Ok(()) => "ok".to_owned(),
+            Err(error) => {
+                note(&format!("lobby action refused: {error}"));
+                format!("error: {error}")
+            }
+        });
+    }
     Some(
         match lobby::parse_action(&json).and_then(|action| {
             note(&format!(

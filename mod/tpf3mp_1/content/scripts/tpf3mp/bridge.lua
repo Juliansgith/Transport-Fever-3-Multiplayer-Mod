@@ -204,6 +204,25 @@ function Link:say(text)
 	return true
 end
 
+-- Whether the game's Multiplayer window should open in place of the main
+-- menu's, which was open as the room's world came up: true once. False from
+-- a hook without it.
+function Link:handover()
+	if type(self.native.handover) ~= "function" then return false end
+	local ok, handed = pcall(self.native.handover)
+	return ok and handed == true
+end
+
+-- Puts `text`, the room's invite code, on the clipboard: true, or nil and
+-- why not.
+function Link:copy(text)
+	if type(self.native.copy) ~= "function" then return nil, "this hook cannot copy" end
+	local ok, copied, why = pcall(self.native.copy, tostring(text))
+	if not ok then return nil, tostring(copied) end
+	if copied ~= true then return nil, tostring(why or "the hook did not copy it") end
+	return true
+end
+
 -- Leaves the room, as the launcher's Leave room does: true, or nil and why
 -- not. A hook without leave (an older one) says so.
 function Link:leave()

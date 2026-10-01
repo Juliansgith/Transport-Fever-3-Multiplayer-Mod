@@ -58,6 +58,8 @@ local MIN_PLAYERS, MAX_PLAYERS, DEFAULT_PLAYERS = 2, 16, 4
 -- many of those asks an action is shown as under way at most.
 local POLL = 0.4
 local PENDING_POLLS = 20
+-- How many polls Copy says "Copied" for: about two seconds.
+local COPIED_POLLS = 5
 
 -- The request channel -------------------------------------------------------
 
@@ -251,6 +253,14 @@ local function worldText(state)
 	return nil
 end
 lobby.worldText = worldText
+
+-- The player closed the window (main_page.tl's close): the hook has nothing
+-- to close or hand over when the room's world comes up.
+function lobby.closed()
+	if type(resolveutil) == "table" then
+		pcall(function() resolveutil.__tpf3mp_close = nil end)
+	end
+end
 
 -- Where the player is, for the Multiplayer cards on the main menu: a line
 -- under the card's title.
@@ -756,15 +766,15 @@ function lobby.content(onClose, focus)
 	local competitiveS = react.useState(false)
 	local joiningS = react.useState(nil)
 	local listAtRef = react.useRef(LIST_POLLS)
-	-- The room's world as this window last saw it; false before its first
-	-- poll.
-	local worldRef = react.useRef(false)
-
-	-- The window closes as the room's world loads, while the menu that
-	-- holds it is still there: once the world is up the menu is gone, and
-	-- the window with it could not be closed (2026-10-01). The hook's load
-	-- of the room's world closes it first (crates/tpf3mp-hook/src/menu.rs);
-	-- the window itself closes when it sees the world loading or played.
+	-- Polls the room page's Copy says "Copied" for after a click.
+	local copiedS = react.useState(0)
+	-- The window stays open while the room's world downloads and loads. It
+	-- lives in the main menu's window container, which the world's GUI
+	-- leaves behind where nothing could close it (2026-10-01), so the hook
+	-- closes it as the world comes up, with the close it leaves here while
+	-- it is open (crates/tpf3mp-hook/src/menu.rs, close_lobby), and the
+	-- game's own Multiplayer window opens in its place. Closed by the
+	-- player (lobby.closed), it leaves nothing to close or hand over.
 	if type(resolveutil) == "table" then
 		pcall(function() resolveutil.__tpf3mp_close = onClose end)
 	end
@@ -796,15 +806,9 @@ function lobby.content(onClose, focus)
 	-- Poll the hook for the lobby a few times a second: the room and chat
 	-- change without anything happening in this window.
 	react.onStepTimer(function()
+		if copiedS:old() > 0 then copiedS:set(copiedS:old() - 1) end
 		local state, why = fetchState()
 		if state then
-			local before = worldRef:get()
-			worldRef:set(state.world or "")
-			local world = state.world
-			if before ~= false and before ~= world and (world == "loading" or world == "playing") then
-				pcall(onClose)
-				return
-			end
 			if problemS:old() ~= nil then problemS:set(nil) end
 			local pending = pendingS:old()
 			if pending then
@@ -1392,6 +1396,14 @@ function lobby.content(onClose, focus)
 		row({
 			note(_("Invite code  ")),
 			label(room.invite ~= "" and inviteCode(room.invite) or "-", "font-scale-title-4, info"),
+			gap(10),
+			-- The hook puts it on the clipboard (the game's GUI has no
+			-- clipboard of its own); "Copied" for a moment after.
+			button(copiedS:old() > 0 and _("Copied") or _("Copy"), function()
+				local refused = act({ action = "copy", text = inviteCode(room.invite) })
+				refusedS:set(refused)
+				if not refused then copiedS:set(COPIED_POLLS) end
+			end, nil, room.invite ~= "", _("Copy the invite code, to paste it to your friends")),
 		}),
 		note(_("Send it to friends: they join with it from their game's Multiplayer window.")),
 		gap(10),

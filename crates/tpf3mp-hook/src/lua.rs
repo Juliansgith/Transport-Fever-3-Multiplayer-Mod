@@ -278,6 +278,11 @@ struct Shared {
     /// A load asked for: `None` until the GUI took it, then the worlds
     /// started by then.
     load: Option<Option<u64>>,
+    /// A load the hook started (the GUI or the main menu took it), with the
+    /// worlds started by then, until a world's GUI starts after it or it
+    /// fails: the game may be loading for the hook ([`load_started`]). Kept
+    /// apart from `load`, which a new request resets.
+    started: Option<u64>,
     /// The last world [`take_world_up`] handed out.
     told: u64,
     /// A load for the main menu to start, not taken yet
@@ -338,6 +343,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     save_answer: None,
     worlds: 0,
     load: None,
+    started: None,
     room: RoomStatus {
         info: None,
         me: None,
@@ -551,6 +557,7 @@ pub fn menu_load_started() {
     let mut shared = shared();
     if matches!(shared.load, Some(None)) {
         shared.load = Some(Some(shared.worlds));
+        shared.started = Some(shared.worlds);
     }
 }
 
@@ -558,6 +565,7 @@ pub fn menu_load_started() {
 pub fn menu_load_failed(why: String) {
     let mut shared = shared();
     shared.load = None;
+    shared.started = None;
     shared.load_failure = Some(why);
 }
 
@@ -578,6 +586,14 @@ pub fn load_done() -> bool {
     done
 }
 
+/// Whether a load the hook asked for has started (the GUI or the main menu
+/// took it) and its world's GUI has not started yet, nor has it failed: the
+/// game may be loading for the hook.
+pub fn load_started() -> bool {
+    let shared = shared();
+    shared.started.is_some_and(|taken| shared.worlds <= taken)
+}
+
 /// Whether any world's GUI has started in this process.
 pub fn any_world_started() -> bool {
     shared().worlds > 0
@@ -590,6 +606,7 @@ pub(crate) fn forget_worlds() {
     let mut shared = shared();
     shared.worlds = 0;
     shared.told = 0;
+    shared.started = None;
 }
 
 /// The number of the latest world whose GUI started, if it is newer than
@@ -660,6 +677,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"chat", native_chat),
                 (b"say", native_say),
                 (b"leave", native_leave),
+                (b"handover", native_handover),
+                (b"copy", native_copy),
                 (b"dump", native_dump),
                 (b"dumped", native_dumped),
                 (b"mods", native_mods),
@@ -1050,6 +1069,7 @@ unsafe extern "C-unwind" fn native_poll(l: State) -> c_int {
         let request = shared.request.take();
         if matches!(request, Some(Request::Load(_))) {
             shared.load = Some(Some(shared.worlds));
+            shared.started = Some(shared.worlds);
         }
         request
     };
@@ -1249,6 +1269,8 @@ pub fn take_said() -> Vec<ChatText> {
 
 /// The room as `status()` gives it, or `None` before the room's game.
 fn room_status() -> Option<LuaValue> {
+    // Before this module's lock: the lobby's is never taken under it.
+    let invite = crate::lobby::invite();
     let shared = shared();
     let room = &shared.room;
     let info = room.info.as_ref()?;
@@ -1314,6 +1336,9 @@ fn room_status() -> Option<LuaValue> {
         ),
         (LuaValue::string("players"), players),
     ];
+    if let Some(invite) = invite {
+        fields.push((LuaValue::string("invite"), LuaValue::string(&invite)));
+    }
     if let Some(me) = &room.me {
         fields.push((
             LuaValue::string("me_id"),
@@ -1444,6 +1469,58 @@ unsafe extern "C-unwind" fn native_say(l: State) -> c_int {
     // SAFETY: a C function's call has room for its results.
     unsafe {
         match said {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
+/// The main menu's Multiplayer window was open as the room's world came
+/// up and was closed for it: the world's GUI opens its own in its place,
+/// once ([`native_handover`]).
+static HANDED_OVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The main menu's Multiplayer window gave way to the game's
+/// (`crate::install::menu_frame`).
+pub fn hand_over() {
+    HANDED_OVER.store(true, Ordering::Release);
+}
+
+/// `handover()`: in the GUI: whether the game's Multiplayer window should
+/// open in place of the main menu's, which was open as the world came up;
+/// `true` once.
+unsafe extern "C-unwind" fn native_handover(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let handed = HANDED_OVER.swap(false, Ordering::AcqRel);
+    // SAFETY: a C function's call has room for its result.
+    unsafe { (api.pushboolean)(l, c_int::from(handed)) };
+    1
+}
+
+/// `copy(text)`: in the GUI: puts `text`, the room's invite code, on the
+/// clipboard ([`crate::clipboard`]): `true`, or `false` and why.
+unsafe extern "C-unwind" fn native_copy(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let text = unsafe { string_arg(api, l, 1, 4 * crate::clipboard::MAX_CHARS) };
+    let copied = match text {
+        Some(text) => crate::clipboard::copy(&text),
+        None => Err("nothing to copy".to_owned()),
+    };
+    // SAFETY: a C function's call has room for its results.
+    unsafe {
+        match copied {
             Ok(()) => {
                 (api.pushboolean)(l, 1);
                 1
@@ -2161,6 +2238,29 @@ pub(crate) mod tests {
             replaces: None,
             connection: None,
         })
+    }
+
+    /// The game's Multiplayer window opens in place of the main menu's
+    /// once, after the menu's gave way.
+    #[test]
+    fn the_games_window_takes_over_once() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        HANDED_OVER.store(false, Ordering::Release);
+        assert_eq!(
+            lua.run("return tpf3mp_native.handover()"),
+            Ok("false".into())
+        );
+        hand_over();
+        assert_eq!(
+            lua.run("return tpf3mp_native.handover()"),
+            Ok("true".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.handover()"),
+            Ok("false".into())
+        );
     }
 
     /// Leave room in the game's Multiplayer window goes to the launcher

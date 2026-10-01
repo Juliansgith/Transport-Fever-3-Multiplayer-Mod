@@ -51,6 +51,7 @@ const TARGETS: &[(&str, u64)] = &[
     // The main menu's load (crates/tpf3mp-hook/src/menu.rs).
     ("UI::CMenuUI::DoStep", 0x6a0160),
     ("UI::CMenuUI::DoStep/m_game test", 0x6a01c0),
+    ("UI::CMenuUI::DoStep/m_loadGameResult read", 0x6a0c84),
     ("lua_pcallk", 0x2fbe0c0),
     ("luaL_ref", 0x2fb40b0),
     ("lua_load", 0x2fbdf70),
@@ -179,6 +180,16 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     assert_eq!(
         &text_bytes[at(0x6a3662)..at(0x6a3662) + 7],
         &[0x48, 0x8D, 0x81, 0xB0, 0x06, 0x00, 0x00]
+    );
+    // The m_loadGameResult read is of CMenuUI+0x1bd0, the field StartGame
+    // checks before asserting "!m_loadGameResult.Valid()".
+    assert_eq!(
+        &text_bytes[at(0x6a0c84)..at(0x6a0c84) + 7],
+        &[0x48, 0x8B, 0x9E, 0xD0, 0x1B, 0x00, 0x00]
+    );
+    assert_eq!(
+        &text_bytes[at(0x6a3676)..at(0x6a3676) + 7],
+        &[0x48, 0x8B, 0x81, 0xD0, 0x1B, 0x00, 0x00]
     );
 
     // A required target's bytes changed: resolution fails closed.
