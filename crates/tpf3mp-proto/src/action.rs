@@ -934,6 +934,31 @@ pub enum ActionError {
 }
 
 impl Action {
+    /// The action's kind, as its variant is named (and as the mod's Lua
+    /// tables name it), for logs.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Action::BuildRoad(_) => "BuildRoad",
+            Action::BuildTrack(_) => "BuildTrack",
+            Action::Bulldoze(_) => "Bulldoze",
+            Action::BuildConstruction(_) => "BuildConstruction",
+            Action::BuyVehicle(_) => "BuyVehicle",
+            Action::SellVehicle { .. } => "SellVehicle",
+            Action::CreateLine(_) => "CreateLine",
+            Action::EditLine(_) => "EditLine",
+            Action::AssignLine(_) => "AssignLine",
+            Action::PlaceStop(_) => "PlaceStop",
+            Action::Terraform(_) => "Terraform",
+            Action::CompanyOp(_) => "CompanyOp",
+            Action::Loan(_) => "Loan",
+            Action::VehicleOp(_) => "VehicleOp",
+            Action::ReplaceVehicle(_) => "ReplaceVehicle",
+            Action::Prospect(_) => "Prospect",
+            Action::NotificationSeen { .. } => "NotificationSeen",
+            Action::ApplyRank { .. } => "ApplyRank",
+        }
+    }
+
     /// The payload of an intent carrying this action: the schema version,
     /// then the action, both postcard-encoded.
     pub fn to_payload(&self) -> Result<Payload, ActionError> {

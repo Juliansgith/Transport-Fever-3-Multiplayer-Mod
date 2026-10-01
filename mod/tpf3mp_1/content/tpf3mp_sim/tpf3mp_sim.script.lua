@@ -424,7 +424,9 @@ function data()
 					end
 					l:applied(i, ok, entity, why)
 					if not ok then
-						l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
+						local okAbout, about = pcall(apply.about, action)
+						l:log("action " .. i .. " of this step (" .. (okAbout and about or tostring(name))
+							.. ") was not applied: " .. tostring(why))
 					elseif name == "CompanyOp" then
 						-- What became of the room's companies, for the log: the
 						-- operation, whose, and whether a seal came with it;

@@ -830,11 +830,15 @@ impl<G: RoomGate> StepDriver<G> {
         }
         let mut commands = commands.into_iter();
         for (ticket, payload, secret) in commands.by_ref() {
+            // Its kind, for the log; one this game cannot read goes all the
+            // same, and the room judges it.
+            let kind = Action::from_payload(&payload).map_or("unreadable", |a| a.kind());
             match self.gate.command(payload, secret) {
                 Ok(number) => {
                     self.tickets.insert(number, ticket);
-                    self.log
-                        .push(format!("handed the player's action {number} to the room"));
+                    self.log.push(format!(
+                        "handed the player's action {number} ({kind}) to the room"
+                    ));
                 }
                 Err(error) => {
                     self.refused.push((ticket, format!("{error}")));
@@ -1817,6 +1821,12 @@ pub(crate) mod tests {
             "the password went to the room"
         );
         assert!(d.take_refused().is_empty());
+        let log = d.take_log();
+        assert!(
+            log.iter()
+                .any(|l| l == "handed the player's action 0 (BuildConstruction) to the room"),
+            "the log names the action's kind: {log:?}"
+        );
     }
 
     #[test]

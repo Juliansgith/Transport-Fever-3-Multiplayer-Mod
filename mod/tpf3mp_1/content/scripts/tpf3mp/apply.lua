@@ -90,6 +90,17 @@ local function seq(list)
 	return out
 end
 
+-- The game's reasons for refusing a command, where its data has them (a
+-- build's resultProposalData, cmd.d.tl): ": Collision; ...", else "".
+function apply.reasons(data)
+	local out = {}
+	pcall(function()
+		for _, m in ipairs(data.resultProposalData.errorState.messages) do out[#out + 1] = tostring(m) end
+	end)
+	if #out == 0 then return "" end
+	return ": " .. table.concat(out, "; ")
+end
+
 -- Whether this Lua state's game takes a command's callback here; the game
 -- runs game scripts on a pool of states, so each learns on its own.
 local callbacks = true
@@ -104,7 +115,7 @@ local function send(command)
 			heard, went, data, entities = true, success, d, e
 		end)
 		if sent then
-			if heard and went ~= true then error("the game refused it", 0) end
+			if heard and went ~= true then error("the game refused it" .. apply.reasons(data), 0) end
 			return data, entities
 		end
 		-- The game refuses a callback before it runs anything: sent again
@@ -227,8 +238,13 @@ function HANDLERS.BuildConstruction(build)
 	-- street it joins rebuilt through a junction. Not the construction's own
 	-- entrance edge, which the tool snapped onto that junction: the
 	-- construction makes its entrance again itself, unsnapped, ending a few
-	-- metres short (build 40408).
-	if build.connection ~= nil then networkInto(proposal, nil, nil, nil, build.connection, true) end
+	-- metres short (build 40408). Nothing, where all of it is the
+	-- construction's own (a depot's track snapped onto an existing one): the
+	-- refresh below snaps it.
+	local c = build.connection
+	if c ~= nil and (#apply.ownStreets(c) > 0 or #(c.removals or {}) > 0 or #(c.removed_nodes or {}) > 0) then
+		networkInto(proposal, nil, nil, nil, c, true)
+	end
 	-- Paid by the player, and clearing town buildings in its way, as the
 	-- construction tool builds (the game's bridge and tunnel window names the
 	-- player so, gui/entity_window/bridge_and_tunnel.tl); without a context
@@ -396,27 +412,55 @@ local function lanesFor(link, t)
 	return out
 end
 
--- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
--- street proposal. `network`, `templateName` and `style` are the build's
--- own kind, for the links that name none; nil for a construction's
--- streets, whose every link names its kind. With `dangling` false, a new
--- vertex at the end of a single link, and that link, are left out: in a
--- construction's streets, the construction's own entrance.
-function networkInto(proposal, network, templateName, style, polyline, dangling)
-	local degree = {}
-	for _, link in ipairs(polyline.links) do
+-- The links of a construction tool's streets (BuildConstruction's
+-- `connection`) that are not the construction's own, and the vertices left
+-- out with the rest (skipped[i + 1] for vertex i). The construction's own
+-- tracks and streets end in new nodes nothing else reaches: its entrance,
+-- or a depot's whole track, snapped by the tool onto an existing node at
+-- its far end (build 40408). The construction builds those itself, and
+-- built beside it as well they collide, so its refresh cannot snap it
+-- (2026-09-30: a rail depot left unconnected in every game). So a new
+-- vertex with one link is left out with its link, and again, until none
+-- is; what stays joins existing nodes or the streets the build splits.
+function apply.ownStreets(polyline)
+	local vertices, all = polyline.vertices, polyline.links
+	local out, degree = {}, {}
+	for _, link in ipairs(all) do
 		degree[link.from] = (degree[link.from] or 0) + 1
 		degree[link.to] = (degree[link.to] or 0) + 1
 	end
-	local function loose(i) return polyline.vertices[i + 1].resolve == "New" and degree[i] == 1 end
-	local links = {}
-	for _, link in ipairs(polyline.links) do
-		if not (dangling and (loose(link.from) or loose(link.to))) then links[#links + 1] = link end
+	local function loose(i) return vertices[i + 1].resolve == "New" and degree[i] == 1 end
+	local changed = true
+	while changed do
+		changed = false
+		for k, link in ipairs(all) do
+			if not out[k] and (loose(link.from) or loose(link.to)) then
+				out[k], changed = true, true
+				degree[link.from] = degree[link.from] - 1
+				degree[link.to] = degree[link.to] - 1
+			end
+		end
 	end
-	local skipped = {}
-	if dangling then
-		for i = 0, #polyline.vertices - 1 do skipped[i + 1] = loose(i) end
+	local links, skipped = {}, {}
+	for k, link in ipairs(all) do
+		if not out[k] then links[#links + 1] = link end
 	end
+	for i = 0, #vertices - 1 do
+		skipped[i + 1] = vertices[i + 1].resolve == "New" and (degree[i] or 0) == 0
+	end
+	return links, skipped
+end
+
+-- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
+-- street proposal. `network`, `templateName` and `style` are the build's
+-- own kind, for the links that name none; nil for a construction's
+-- streets, whose every link names its kind. With `dangling` true, what
+-- hangs off the rest at a new vertex with no other link is left out, link
+-- by link until none does: in a construction's streets, the construction's
+-- own (ownStreets).
+function networkInto(proposal, network, templateName, style, polyline, dangling)
+	local links, skipped = polyline.links, {}
+	if dangling then links, skipped = apply.ownStreets(polyline) end
 	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
 		removed_nodes = polyline.removed_nodes }
 	local nodesOf = {}
@@ -1277,6 +1321,41 @@ function HANDLERS.ApplyRank(r, ctx)
 		end
 	end
 	return run(event())
+end
+
+-- An action in a few words, for the log: its kind and what it names (its
+-- vehicles, line, file, depot, place), e.g. "AssignLine vehicles 3,4 line 7".
+local ABOUT = { "file", "model", "vehicle", "vehicles", "line", "first_stop", "depot", "town", "cargo",
+	"change", "level", "notification" }
+function apply.about(action)
+	if type(action) ~= "table" then return tostring(action) end
+	local kind, body = next(action)
+	local out = { tostring(kind) }
+	if type(body) ~= "table" then return out[1] end
+	if body.Construction or body.Edges or body.EdgeObject or body.Take or body.Repay then
+		out[#out + 1] = tostring(next(body))
+		body = body.Construction or body.EdgeObject or body
+	end
+	for _, key in ipairs(ABOUT) do
+		local v = body[key]
+		if type(v) == "table" and v.file then v = v.file end
+		if type(v) == "table" and #v > 0 then
+			local list = {}
+			for i, e in ipairs(v) do list[i] = tostring(e) end
+			v = table.concat(list, ",")
+		elseif type(v) == "table" then
+			v = next(v)
+		end
+		if v ~= nil and type(v) ~= "table" then out[#out + 1] = key .. " " .. tostring(v) end
+	end
+	local at = (type(body.transform) == "table" and body.transform.origin) or body.at
+	if type(at) == "table" and type(at.x) == "number" and type(at.y) == "number" then
+		out[#out + 1] = string.format("at (%.1f,%.1f)", at.x, at.y)
+	end
+	if type(body.polyline) == "table" and type(body.polyline.links) == "table" then
+		out[#out + 1] = #body.polyline.links .. " link(s)"
+	end
+	return table.concat(out, " ")
 end
 
 -- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the

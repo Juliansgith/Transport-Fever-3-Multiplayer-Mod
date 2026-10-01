@@ -1695,12 +1695,26 @@ fn a_construction_the_tool_placed_becomes_the_rooms_action() {
              why(unnamed) \
              local odd = {CONSTRUCTION_PROPOSAL} odd.toAdd[1].params.f = print \
              why(odd) \
+             local farm = {CONSTRUCTION_PROPOSAL} \
+             farm.toAdd[2] = {{ fileName = '::/industries/farm/farm.con' }} farm.toRemove = {{ 18888 }} \
+             local get = api.engine.getComponent \
+             api.engine.getComponent = function(e, kind) \
+                 if e == 18888 then return {{ fileName = '::/industries/farm/farm.con', townBuildings = {{}}, \
+                     transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 5,6,7,1 }} }} end \
+                 return get(e, kind) end \
+             why(farm) \
+             api.engine.getComponent = get \
              return out"
         ))
         .eval()
         .unwrap();
     assert_eq!(refusals[0], "more than one construction at once");
     assert_eq!(refusals[1], "an unnamed construction");
+    assert_eq!(
+        refusals[3],
+        "it would rebuild ::/industries/farm/farm.con, whose streets it changes: place it clear of them",
+        "a placement that crosses another construction's streets names it"
+    );
     assert!(
         refusals[2].contains("parameter f is a function"),
         "{}",
@@ -2253,6 +2267,102 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
     );
 }
 
+/// A construction whose own track the tool snapped onto an existing track
+/// node (2026-09-30: a rail depot placed against the end of a track). Every
+/// game builds the construction alone, then its refresh snaps its track:
+/// built beside it as well, the track collided with the construction's own,
+/// the refresh was refused and the depot stood unconnected in every game.
+#[test]
+fn a_construction_whose_own_track_the_tool_snapped_is_built_alone_then_snapped() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let joined = RAIL_STATION_OPEN.replace(
+        "{JOIN}",
+        ", { entity = -6, type = 1, comp = { node0 = -3, node1 = 8, type = 0, typeIndex = -1, \
+           tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+           roadTemplate = '::/track/standard.track_template', roadStyle = '' } }",
+    );
+    let links: usize = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             ACTION = capture.construction({joined}) \
+             return #ACTION.BuildConstruction.connection.links"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(links, 3, "the tool's proposal, as it was");
+    // Node 8 a track node too, and the track's template known.
+    lua.load(
+        "api.engine.system.streetSystem.getNode2TrackEdgeMap = function() return { [8] = { 100 } } end \
+         local find, get = api.res.streetTemplateRep.find, api.res.streetTemplateRep.get \
+         api.res.streetTemplateRep.find = function(n) \
+             if n == '::/track/standard.track_template' then return 6 end return find(n) end \
+         api.res.streetTemplateRep.get = function(id) \
+             if id == 6 then return { laneConfigs = { 'track lanes' }, streetStyle = '' } end return get(id) end \
+         api.type.ComponentType.CONSTRUCTION = 2 \
+         CONSTRUCTIONS = {} \
+         local getc = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 2 then return CONSTRUCTIONS[e] end return getc(e, kind) end \
+         api.engine.getEntitiesWithComponent = function(kind) \
+             local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
+         local send = api.cmd.sendCommand \
+         api.cmd.sendCommand = function(cmd, ...) \
+             local c = cmd.proposal and cmd.proposal.constructionsToAdd and cmd.proposal.constructionsToAdd[1] \
+             if c then CONSTRUCTIONS[5000] = { fileName = c.fileName, \
+                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } end \
+             return send(cmd, ...) \
+         end \
+         api.engine.util.proposal = { refreshConstruction = function(e) return { refreshed = e, \
+             proposal = { addedSegments = { { entity = -1, comp = { node0 = 8, node1 = -2 } } }, \
+                          removedSegments = { { entity = 6000 } } } } end } \
+         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let built: String = lua
+        .load(
+            "local p = SENT[1].proposal local s = p.streetProposal \
+             return table.concat({ #SENT, p.constructionsToAdd[1].fileName, #(s.edgesToAdd or {}), \
+                 #(s.nodesToAdd or {}), tostring(SENT[2] and SENT[2].proposal.refreshed), \
+                 tostring(HOOK.applied[1].ok) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        built,
+        "2|::/stations/rail/rail_station.con|0|0|5000|true",
+        "the construction alone, then its refresh, which snaps its own track: {:?}",
+        lua.load("return HOOK.logged").eval::<Vec<String>>()
+    );
+}
+
+#[test]
+fn a_refused_action_is_named_in_the_log_with_the_games_reasons() {
+    let (lua, _script) = engine();
+    let (about, reasons, none): (String, String, String) = lua
+        .load(
+            "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+             return apply.about({ AssignLine = { vehicles = { 3, 4 }, line = 7 } }) .. '|' \
+                 .. apply.about({ Bulldoze = { Construction = { file = 'depot.con', at = { x = 1, y = 2, z = 3 } } } }), \
+                 apply.reasons({ resultProposalData = { errorState = { messages = { 'Collision', 'Too steep' } } } }), \
+                 apply.reasons(nil)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        about,
+        "AssignLine vehicles 3,4 line 7|Bulldoze Construction file depot.con at (1.0,2.0)"
+    );
+    assert_eq!(reasons, ": Collision; Too steep");
+    assert_eq!(none, "");
+}
+
 #[test]
 fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     let (lua, _script) = engine();
@@ -2416,16 +2526,16 @@ fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
     // One the game ran and answered as failed.
     assert_eq!(
         logged[3],
-        "action 1 of this step was not applied: the game refused it"
+        "action 1 of this step (BuildConstruction file depot/road_depot_era_a.con at (1250.5,-300.0)) was not applied: the game refused it"
     );
     assert_eq!(logged[0], "the game script is linked");
     assert_eq!(
         logged[1],
-        "action 1 of this step was not applied: this version of the mod does not apply Teleport yet"
+        "action 1 of this step (Teleport) was not applied: this version of the mod does not apply Teleport yet"
     );
     // The game's own refusal, as it raised it.
     assert!(
-        logged[2].starts_with("action 1 of this step was not applied: ")
+        logged[2].starts_with("action 1 of this step (BuildConstruction file depot/road_depot_era_a.con at (1250.5,-300.0)) was not applied: ")
             && logged[2].ends_with("the proposal collides"),
         "{}",
         logged[2]
@@ -6466,9 +6576,9 @@ fn a_terraform_no_build_took_or_of_another_grid_fails_in_every_game() {
     .unwrap();
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
     for line in [
-        "action 1 of this step was not applied: the hook filled no build with the grid",
-        "action 1 of this step was not applied: a grid of 4 m cells; this map's are 8",
-        "action 1 of this step was not applied: the hook would not take the grid: this hook cannot apply a terraform",
+        "action 1 of this step (Terraform) was not applied: the hook filled no build with the grid",
+        "action 1 of this step (Terraform) was not applied: a grid of 4 m cells; this map's are 8",
+        "action 1 of this step (Terraform) was not applied: the hook would not take the grid: this hook cannot apply a terraform",
     ] {
         assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
     }

@@ -1481,7 +1481,7 @@ In `hook.log`, prospecting for coal near a town shows first, in the game
 of the player who picked the town:
 
 ```
-handed the player's action 42 to the room
+handed the player's action 42 (Prospect) to the room
 ```
 
 then in every game of the room, at the same step:
@@ -1619,11 +1619,19 @@ terrain tools through the hook, and a construction's window its edits:
   replay builds, in one action, the construction with the rest of the
   connection (the road rebuilt through the junction), then the refresh of
   the new construction, free (no context) and not as a click of the
-  player's; the refresh finds the junction the tool chose. The town
-  buildings in its way the replay clears again (`gatherBuildings`, and
-  `gatherFields` for fields). Several
+  player's; the refresh finds the junction the tool chose. Whatever of the
+  connection hangs off the rest at new nodes nothing else reaches is the
+  construction's own and is left out, edge by edge: the entrance, or a
+  rail depot's whole track snapped onto the end of an existing track.
+  Built beside the construction's own track as well, it collided, the
+  refresh was refused and the depot stood unconnected in every game
+  (2026-09-30); now the depot is built alone and the refresh snaps it. The
+  town buildings in its way the replay clears again (`gatherBuildings`,
+  and `gatherFields` for fields). Several
   constructions at once, or one replacing more than one construction that
-  is not a town building, is refused. Before sending, the replay asks the
+  is not a town building, is refused; a placement whose streets cross
+  another construction's own (the game rebuilds that one too, a farm say)
+  is refused naming it. Before sending, the replay asks the
   game's verdict (`makeProposalData`) and refuses what it calls critical,
   with its reasons.
 

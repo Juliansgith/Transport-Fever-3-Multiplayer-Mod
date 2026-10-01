@@ -139,7 +139,19 @@ function capture.construction(proposal)
 		end
 	end
 	local toAdd = get(proposal, "toAdd")
-	if length(toAdd) ~= 1 then return nil, "more than one construction at once" end
+	if length(toAdd) ~= 1 then
+		-- With it, the game rebuilds a construction whose own streets the
+		-- placement changes (2026-09-30: a rail depot whose connection
+		-- crossed a farm's street rebuilt the farm). The room carries one
+		-- construction an action: say which other one is in the way.
+		for i = 1, (length(toAdd) or 0) do
+			local other = get(get(toAdd, i), "fileName")
+			if replaced and type(other) == "string" and other == get(replaced.component, "fileName") then
+				return nil, "it would rebuild " .. other .. ", whose streets it changes: place it clear of them"
+			end
+		end
+		return nil, "more than one construction at once"
+	end
 	local con = get(toAdd, 1)
 	local file = get(con, "fileName")
 	if type(file) ~= "string" or file == "" then return nil, "a construction of no file" end
