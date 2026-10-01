@@ -338,6 +338,14 @@ These travel on the control stream.
     `Debug` shows `<hidden>`. The server cannot tell a right password from
     a wrong one, so it counts them all: 20 intents with a secret per member
     in 10 minutes, then `IntentRejected(RateLimited)`.
+- **`Loading`** (protocol 12): where the player's game is with the room's
+  world while it comes in, for the others to see: `Fetching { percent }`
+  while it receives it, `Loading` while the game loads it, and `None` once
+  it plays. The room shows it in each member's entry (`MemberView::loading`)
+  to every member. A new stage shows at once; a new percent of the same
+  fetch at most every 400 ms (the agent sends at most two a second), and a
+  percent over 100 shows as 100. It shares the progress messages' rate
+  limit, and neither the room nor the server log keeps it.
 - **`Progress`**: the last step the client executed. It drives pacing.
 - **`Checkpoint`**: per-lane digests at every checkpoint step (a room
   setting). The server compares members' digests, as described in

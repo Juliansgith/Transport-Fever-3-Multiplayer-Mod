@@ -19,10 +19,10 @@ use tokio::{
 use tpf3mp_net::{bulk, close};
 use tpf3mp_proto::{
     BannerId, ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN,
-    FixedBytes, IntentRejection, Invite, LaneDigest, MemberView, Payload, Platform, PlayerId,
-    RequestError, Resume, RoomId, RoomListing, RoomPhase, RoomSettings, RoomView, RulesName,
-    SavedWorld, Seal, Secret, ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn,
-    TurnMessage, TurnStart, WorldOffer, decode_frame, encode_frame,
+    FixedBytes, IntentRejection, Invite, LaneDigest, LoadingStage, MemberView, Payload, Platform,
+    PlayerId, RequestError, Resume, RoomId, RoomListing, RoomPhase, RoomSettings, RoomView,
+    RulesName, SavedWorld, Seal, Secret, ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text,
+    Turn, TurnMessage, TurnStart, WorldOffer, decode_frame, encode_frame,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -224,6 +224,11 @@ pub(crate) enum RoomCommand {
         player: PlayerId,
         link: u64,
         step: u64,
+    },
+    /// Where a member's game is with the room's world while it comes in.
+    Loading {
+        player: PlayerId,
+        stage: Option<LoadingStage>,
     },
     Checkpoint {
         player: PlayerId,
@@ -493,6 +498,10 @@ struct Member {
     player: PlayerId,
     name: Text<32>,
     platform: Platform,
+    /// Where its game is with the room's world while it comes in, as it
+    /// last said, and when the room last showed a change; not logged.
+    loading: Option<LoadingStage>,
+    loading_at: Option<Instant>,
     /// The banner the player picked; not logged, so a restored room shows
     /// the default until the player says again.
     banner: Option<BannerId>,
@@ -754,6 +763,10 @@ pub(crate) enum RecoverError {
     Rules(String),
 }
 
+/// How often a member's loading progress is shown again while it stays
+/// fetching: about two a second.
+const LOADING_EVERY: Duration = Duration::from_millis(400);
+
 /// What the room list shows of a room, kept current by the room (on every
 /// change its members see) for the directory to read without asking it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -999,6 +1012,8 @@ impl Room {
                 name,
                 platform,
                 banner: None,
+                loading: None,
+                loading_at: None,
                 ready: true,
                 content,
                 declared: None,
@@ -1192,6 +1207,7 @@ impl Room {
                     content: member.content,
                     connected: member.link.is_some(),
                     banner: member.banner.clone(),
+                    loading: member.loading,
                 })
                 .collect(),
             competitive: self.competitive,
@@ -1326,6 +1342,7 @@ impl Room {
                 secret,
             } => self.intent(player, client_seq, payload, secret.as_ref()),
             RoomCommand::Progress { player, link, step } => self.progress(player, link, step),
+            RoomCommand::Loading { player, stage } => self.loading(player, stage, Instant::now()),
             RoomCommand::Checkpoint {
                 player,
                 link,
@@ -1543,6 +1560,41 @@ impl Room {
 
     /// Passes a member's message to everyone in the room, the sender too, so
     /// every member sees the same conversation.
+    /// A member says how far its game is with the room's world. The room
+    /// shows it to every member, at most every [`LOADING_EVERY`] while the
+    /// stage stays the same (a stage change, and the end, show at once), and
+    /// logs none of it.
+    fn loading(&mut self, player: PlayerId, stage: Option<LoadingStage>, now: Instant) {
+        let Some(member) = self.members.iter_mut().find(|m| m.player == player) else {
+            return;
+        };
+        if member.loading == stage {
+            return;
+        }
+        let same_kind = matches!(
+            (member.loading, stage),
+            (
+                Some(LoadingStage::Fetching { .. }),
+                Some(LoadingStage::Fetching { .. })
+            )
+        );
+        if same_kind
+            && member
+                .loading_at
+                .is_some_and(|at| now.saturating_duration_since(at) < LOADING_EVERY)
+        {
+            return;
+        }
+        member.loading = stage.map(|stage| match stage {
+            LoadingStage::Fetching { percent } => LoadingStage::Fetching {
+                percent: percent.min(100),
+            },
+            other => other,
+        });
+        member.loading_at = Some(now);
+        self.broadcast_view();
+    }
+
     fn chat(&mut self, player: PlayerId, text: ChatText) -> Result<(), RequestError> {
         let now = Instant::now();
         let member = self
@@ -3000,6 +3052,8 @@ impl Member {
             name: new.name,
             platform: new.platform,
             banner: new.banner,
+            loading: None,
+            loading_at: None,
             ready: false,
             content: new.content.as_ref().map(|declared| declared.fingerprint),
             declared: new.content,
@@ -4229,6 +4283,8 @@ mod tests {
             name: Text::new("t").unwrap(),
             platform: Platform::current(),
             banner: None,
+            loading: None,
+            loading_at: None,
             ready: false,
             content: None,
             declared: None,

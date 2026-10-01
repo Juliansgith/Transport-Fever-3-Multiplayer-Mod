@@ -148,6 +148,7 @@ fn member(n: u8, name: &str, owner: bool, you: bool, ready: bool) -> LobbyMember
         you,
         same_content: Some(true),
         banner: None,
+        loading: None,
     }
 }
 
@@ -1051,6 +1052,47 @@ fn the_players_show_as_cards_of_their_banners_or_their_default() {
             .get::<String>("text")
             .unwrap()
             .contains("Not ready")
+    );
+}
+
+/// While the room's world comes in, each player's row says how far their
+/// game is: its download, then its load, then in the game.
+#[test]
+fn each_players_row_shows_their_loading_progress() {
+    use tpf3mp_proto::LoadingStage;
+    fn text_of(view: &LobbyView, name: &str) -> String {
+        let lua = menu();
+        show(&lua, Some(view));
+        open(&lua, None);
+        all_cards(&lua)
+            .iter()
+            .map(|card| card.get::<String>("text").unwrap())
+            .find(|text| text.starts_with(name))
+            .unwrap_or_else(|| panic!("no card for {name}"))
+    }
+    let mut ann = member(1, "Ann", true, true, true);
+    ann.loading = Some(LoadingStage::Loading);
+    let mut bob = member(2, "Bob", false, false, true);
+    bob.loading = Some(LoadingStage::Fetching { percent: 42 });
+    let cat = member(3, "Cat", false, false, true);
+    let mut view = in_room(vec![ann, bob, cat], true);
+    if let Some(room) = view.room.as_mut() {
+        room.running = true;
+    }
+    let ann = text_of(&view, "Ann");
+    assert!(ann.contains("Loading..."), "{ann}");
+    let bob = text_of(&view, "Bob");
+    assert!(bob.contains("Downloading 42%"), "{bob}");
+    let cat = text_of(&view, "Cat");
+    assert!(cat.contains("Playing") && !cat.contains("Ready"), "{cat}");
+    // Before the room starts, a player still loading shows that, not ready.
+    let mut dan = member(4, "Dan", false, false, true);
+    dan.loading = Some(LoadingStage::Fetching { percent: 7 });
+    let view = in_room(vec![member(1, "Ann", true, true, true), dan], true);
+    let dan = text_of(&view, "Dan");
+    assert!(
+        dan.contains("Downloading 7%") && !dan.contains("Ready"),
+        "{dan}"
     );
 }
 

@@ -449,6 +449,8 @@ pub struct Member {
     pub content: MemberContent,
     /// The banner the member picked, if any (`tpf3mp_proto::BANNERS`).
     pub banner: Option<String>,
+    /// Where the member's game is with the room's world while it comes in.
+    pub loading: Option<tpf3mp_proto::LoadingStage>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -543,6 +545,7 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
                         _ => MemberContent::Unknown,
                     },
                     banner: member.banner.as_ref().map(|id| id.as_str().to_owned()),
+                    loading: member.loading,
                 })
                 .collect(),
             competitive: room.competitive,

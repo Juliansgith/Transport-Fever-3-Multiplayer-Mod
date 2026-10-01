@@ -69,6 +69,7 @@ fn room_view() -> RoomView {
                 content: Some(ContentFingerprint(FixedBytes([9; 32]))),
                 connected: true,
                 banner: Some(Text::new("m03").unwrap()),
+                loading: None,
             },
             MemberView {
                 player: player(2),
@@ -78,6 +79,7 @@ fn room_view() -> RoomView {
                 content: None,
                 connected: false,
                 banner: None,
+                loading: None,
             },
         ],
         competitive: false,

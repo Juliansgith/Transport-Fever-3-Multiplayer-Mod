@@ -69,6 +69,11 @@ pub struct Member {
     pub content: String,
     /// The banner the player picked, if any: empty for their default.
     pub banner: String,
+    /// Where the player's game is with the room's world while it comes in:
+    /// `fetching` (with [`Member::percent`]), `loading`, or empty.
+    pub loading: String,
+    /// How much of the world it has fetched, in percent, while `fetching`.
+    pub percent: u8,
 }
 
 /// The room the player is in.
@@ -497,6 +502,18 @@ impl LobbyState {
                             .as_ref()
                             .map(|id| id.as_str().to_owned())
                             .unwrap_or_default(),
+                        loading: match member.loading {
+                            Some(tpf3mp_proto::LoadingStage::Fetching { .. }) => "fetching",
+                            Some(tpf3mp_proto::LoadingStage::Loading) => "loading",
+                            None => "",
+                        }
+                        .to_owned(),
+                        percent: match member.loading {
+                            Some(tpf3mp_proto::LoadingStage::Fetching { percent }) => {
+                                percent.min(100)
+                            }
+                            _ => 0,
+                        },
                     })
                     .collect(),
             }),
@@ -701,7 +718,7 @@ impl LobbyState {
                 ));
                 for member in &room.members {
                     out.push_str(&format!(
-                        " {{ id = {}, name = {}, ready = {}, owner = {}, you = {}, connected = {}, content = {}, banner = {} }},",
+                        " {{ id = {}, name = {}, ready = {}, owner = {}, you = {}, connected = {}, content = {}, banner = {}, loading = {}, percent = {} }},",
                         lua_str(&member.id),
                         lua_str(&member.name),
                         member.ready,
@@ -709,7 +726,9 @@ impl LobbyState {
                         member.you,
                         member.connected,
                         lua_str(&member.content),
-                        lua_str(&member.banner)
+                        lua_str(&member.banner),
+                        lua_str(&member.loading),
+                        member.percent
                     ));
                 }
                 out.push_str(" } }");
@@ -974,6 +993,7 @@ mod tests {
                     you: true,
                     same_content: None,
                     banner: None,
+                    loading: None,
                 }])
                 .unwrap(),
                 competitive: false,

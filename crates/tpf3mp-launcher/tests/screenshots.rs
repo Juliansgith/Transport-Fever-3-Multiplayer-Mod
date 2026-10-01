@@ -158,6 +158,7 @@ fn member(
         you,
         content,
         banner: None,
+        loading: None,
     }
 }
 

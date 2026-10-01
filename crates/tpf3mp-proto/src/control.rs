@@ -461,6 +461,18 @@ pub struct MemberView {
     pub connected: bool,
     /// The banner this player picked, if any.
     pub banner: Option<BannerId>,
+    /// How far this player's game is with the room's world while it comes
+    /// in ([`GameMessage::Loading`]); `None` otherwise.
+    pub loading: Option<LoadingStage>,
+}
+
+/// Where a player's game is with the room's world while it comes in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoadingStage {
+    /// Receiving it: this many percent so far (0 to 100).
+    Fetching { percent: u8 },
+    /// The game loads it.
+    Loading,
 }
 
 /// A client's game traffic, carried on the control stream.
@@ -489,6 +501,12 @@ pub enum GameMessage {
         lanes: Vec<LaneDigest>,
         world: Option<SavedWorld>,
     },
+    // Last, so the earlier variants keep their tags on the wire.
+    /// Where this player's game is with the room's world while it comes in,
+    /// for the other members to see (`MemberView::loading`); `None` once it
+    /// plays or has none coming. At most about two a second; the room keeps
+    /// no more of them, and logs none.
+    Loading(Option<LoadingStage>),
 }
 
 /// A password a player typed for an intent: a company's, to join it or to

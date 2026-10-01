@@ -13,7 +13,10 @@
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -29,8 +32,8 @@ use tpf3mp_bridge::{
 use tpf3mp_net::close;
 use tpf3mp_proto::{
     BoundedVec, ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom,
-    LaneDigest, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomPhase, RoomView,
-    SavedWorld, SessionId, SnapshotId, Speed, Text, WorldOffer,
+    LaneDigest, LoadingStage, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomPhase,
+    RoomView, SavedWorld, SessionId, SnapshotId, Speed, Text, WorldOffer,
 };
 use tpf3mp_snapshot::ManifestId;
 use tracing::{debug, info, warn};
@@ -193,6 +196,10 @@ pub enum Control {
     GameClosed,
 }
 
+/// How often the room hears this game's loading progress again while it
+/// stays fetching: about two a second (`GameMessage::Loading`).
+const LOADING_EVERY: Duration = Duration::from_millis(500);
+
 /// Chat lines and notices a status keeps.
 const STATUS_HISTORY: usize = 100;
 
@@ -271,6 +278,38 @@ pub enum WorldStatus {
 
 /// A status shared between a bridge and a front end.
 pub type SharedStatus = Arc<Mutex<Status>>;
+
+/// `part` of `whole` in whole percent, 0 to 100.
+fn percent_of(part: u64, whole: u64) -> u8 {
+    if whole == 0 {
+        return 0;
+    }
+    let percent = u128::from(part.min(whole)) * 100 / u128::from(whole);
+    u8::try_from(percent).unwrap_or(100)
+}
+
+/// Whether `stage` should be told the room, which last heard `reported`.
+fn loading_due(
+    reported: Option<(Option<LoadingStage>, Instant)>,
+    stage: Option<LoadingStage>,
+    now: Instant,
+) -> bool {
+    let Some((last, at)) = reported else {
+        // Nothing told on this connection: nothing to clear either.
+        return stage.is_some();
+    };
+    if last == stage {
+        return false;
+    }
+    let same_fetch = matches!(
+        (last, stage),
+        (
+            Some(LoadingStage::Fetching { .. }),
+            Some(LoadingStage::Fetching { .. })
+        )
+    );
+    !same_fetch || now.saturating_duration_since(at) >= LOADING_EVERY
+}
 
 fn push_bounded<T>(list: &mut VecDeque<T>, item: T) {
     if list.len() == STATUS_HISTORY {
@@ -404,6 +443,11 @@ pub struct Bridge<L> {
     progress: Option<u64>,
     /// The progress last reported on the current connection.
     reported: Option<u64>,
+    /// How much of the world being fetched is here, in percent.
+    fetch_percent: Arc<AtomicU8>,
+    /// The loading stage last told the room on the current connection, and
+    /// when; `None` before any.
+    loading_reported: Option<(Option<LoadingStage>, Instant)>,
     last_report: Instant,
     wait_until: Option<Instant>,
     hook_beat: (u64, Instant),
@@ -465,6 +509,8 @@ impl<L: HookLink> Bridge<L> {
             commands: 0,
             progress: None,
             reported: None,
+            fetch_percent: Arc::new(AtomicU8::new(0)),
+            loading_reported: None,
             last_report: now,
             wait_until: None,
             buf: Vec::new(),
@@ -574,6 +620,7 @@ impl<L: HookLink> Bridge<L> {
             self.hand_over_start_world(client);
             self.start_generated_world(client);
             self.report_progress(client, now).await?;
+            self.report_loading(client, now).await?;
             self.lobby_news();
             // Turns wait while the world they continue is being fetched.
             if !matches!(self.world, World::Fetching { .. })
@@ -978,6 +1025,30 @@ impl<L: HookLink> Bridge<L> {
         Ok(())
     }
 
+    /// Where this game is with the room's world while it comes in.
+    fn loading_stage(&self) -> Option<LoadingStage> {
+        match self.world {
+            World::Ready => None,
+            World::Fetching { .. } => Some(LoadingStage::Fetching {
+                percent: self.fetch_percent.load(Ordering::Relaxed),
+            }),
+            World::Loading { .. } => Some(LoadingStage::Loading),
+        }
+    }
+
+    /// Tells the room where this game is with its world when that changed:
+    /// a new stage at once, a new percent of the same fetch at most every
+    /// [`LOADING_EVERY`].
+    async fn report_loading(&mut self, client: &Client, now: Instant) -> Result<(), BridgeFault> {
+        let stage = self.loading_stage();
+        if !loading_due(self.loading_reported, stage, now) {
+            return Ok(());
+        }
+        client.report_loading(stage).await?;
+        self.loading_reported = Some((stage, now));
+        Ok(())
+    }
+
     /// Handles one event from the server. Returns how the session ended, if
     /// it did.
     fn on_event(
@@ -990,6 +1061,7 @@ impl<L: HookLink> Bridge<L> {
                 // A new stream, perhaps on a new connection: tell it where
                 // the game stands.
                 self.reported = None;
+                self.loading_reported = None;
                 self.playout = Some(Playout::new(
                     start.steps_per_second,
                     self.options.playout_margin,
@@ -1270,11 +1342,17 @@ impl<L: HookLink> Bridge<L> {
         info!(snapshot = %offer.snapshot, bytes = offer.size, "fetching the world to load");
         let total = offer.size;
         self.status(|status| status.world = WorldStatus::Fetching { bytes: 0, total });
+        self.fetch_percent.store(0, Ordering::Relaxed);
+        let percent = Arc::clone(&self.fetch_percent);
         let opener = client.bulk();
         let done = self.done_tx.clone();
         let status = self.options.status.clone();
         let task = tokio::spawn(async move {
             let progress = |progress: tpf3mp_snapshot::Progress| {
+                percent.store(
+                    percent_of(progress.bytes_present, progress.bytes_total),
+                    Ordering::Relaxed,
+                );
                 if let Some(status) = &status {
                     let mut status = status.lock().unwrap_or_else(PoisonError::into_inner);
                     status.world = WorldStatus::Fetching {
@@ -1846,6 +1924,37 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn fetch_percent_is_whole_and_bounded() {
+        assert_eq!(percent_of(0, 0), 0);
+        assert_eq!(percent_of(0, 1000), 0);
+        assert_eq!(percent_of(421, 1000), 42);
+        assert_eq!(percent_of(1000, 1000), 100);
+        assert_eq!(percent_of(5000, 1000), 100);
+        assert_eq!(percent_of(u64::MAX, u64::MAX), 100);
+    }
+
+    /// The room hears a new stage at once and a new percent of the same
+    /// fetch at most about twice a second; nothing twice.
+    #[test]
+    fn loading_is_told_on_change_and_throttled_while_fetching() {
+        let now = Instant::now();
+        let fetching = |percent| Some(LoadingStage::Fetching { percent });
+        // Nothing told yet on this connection.
+        assert!(!loading_due(None, None, now));
+        assert!(loading_due(None, fetching(0), now));
+        let told = Some((fetching(10), now));
+        assert!(!loading_due(told, fetching(10), now + LOADING_EVERY));
+        assert!(!loading_due(told, fetching(11), now + LOADING_EVERY / 2));
+        assert!(loading_due(told, fetching(11), now + LOADING_EVERY));
+        // A new stage, or its end, at once.
+        assert!(loading_due(told, Some(LoadingStage::Loading), now));
+        assert!(loading_due(told, None, now));
+        let loading = Some((Some(LoadingStage::Loading), now));
+        assert!(!loading_due(loading, Some(LoadingStage::Loading), now));
+        assert!(loading_due(loading, None, now));
+    }
+
     fn start() -> TurnStart {
         TurnStart {
             room: RoomId(FixedBytes([0; 16])),
@@ -1915,6 +2024,7 @@ mod tests {
             content: None,
             connected,
             banner: None,
+            loading: None,
         };
         let room = RoomView {
             id: RoomId(FixedBytes([7; 16])),

@@ -689,6 +689,7 @@ mod tests {
                     you: i == 0,
                     content: MemberContent::Same,
                     banner: None,
+                    loading: None,
                 })
                 .collect(),
             competitive: false,
