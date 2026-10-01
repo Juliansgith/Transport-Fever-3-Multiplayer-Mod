@@ -1439,7 +1439,17 @@ state, which the game saves with the world:
   one back names it by its id and amount: the game's finance window lists
   the loan script's loans, the room's first company's, whose ids count
   from 0 as the room's count from 1, so another company's Repay there is
-  refused unless the amount is its own loan's too. The game script books the months since the last
+  refused unless the amount is its own loan's too. A company has four
+  loans at most, as the loan script allows. In the GUI states the finance
+  window shows a player of another company that company's own loans and
+  the offers it can take: `tpf3mp/follow.lua` answers the loan script's
+  `GAME_SCRIPT` component there with `companies.loanTable` (the loan
+  script's offers, one on the first company's cooldown replaced by a fresh
+  one of the game's `loan_util`, and the company's loans by their room id
+  and amount), so its Obtain and Repay go to the room as that company's.
+  The simulation's states keep the loan script's own state; where the
+  company's loans cannot be read the window shows none, never the first
+  company's. The game script books the months since the last
   on the first update of a new month, in every game alike.
 - *Subsidies.* The game's subsidy script
   (`::/game_mechanics/subventions/subventions.gs`) draws its offers in

@@ -401,8 +401,10 @@ protected folder such as Program Files.
   that have ended, when your game starts and each time it loads a room's
   world; the copy of a game still running stays. Your own saves are never
   touched.
-- **Loans.** Take and pay back loans in the company window as usual: every
-  player's game books them together.
+- **Loans.** Take and pay back loans in the finance window as usual: every
+  player's game books them together. The window shows your own company's
+  loans and offers, up to four loans at once; the interest and repayments
+  are your company's alone.
 - **Subsidies, entity renaming, vehicle recolouring, line waypoints, bridge/tunnel
   window type changes, Industry Greenification marketing campaigns and Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.
