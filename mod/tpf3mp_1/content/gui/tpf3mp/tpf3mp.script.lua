@@ -40,7 +40,7 @@ function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
 	local MODULES = { "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
-		"bridge", "guard", "worldload" }
+		"bridge", "guard", "hudguard", "worldload" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -1353,6 +1353,9 @@ function data()
 			if link and guardedCmd then
 				local delivered, why = pcall(function()
 					local results = link:results()
+					-- The answers to the HUD's state's commands go on to it
+					-- (tpf3mp/hudguard.lua), which waits for them there.
+					pcall(require("tpf3mp.hudguard").forward, link, results)
 					require("tpf3mp.guard").deliver(guardedCmd, results, sees, clock)
 					local shared = ui()
 					for _, r in ipairs(results or {}) do

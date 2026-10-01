@@ -626,6 +626,48 @@ offset = 0
 prologue = "8B 44 24 78 3B C7 74 09"
 required = false
 
+# The claim loop's watcher (crates/tpf3mp-hook/src/order.rs, `claims`), logging only,
+# inside ecs::LandVehicleMoveSystem::Update2 (vf12, 0xac0f90). The head (0xac1d9d):
+# `mov esi,[rbx+0x44]; movsxd r14,[rbx+0x48]` (7 bytes, stolen), right after rbx is
+# the vehicle's MovePath (records + index*0xa0) and r12 its node record; the
+# decision (0xac2235): `mov [rbx+0x70],cl; lea rdx,[r14+r14*2]` (7 bytes, stolen),
+# the platform-decision flag TransportVehicleSystem::Update2 reads (0xb8bdb3).
+# Nothing in the function branches into either's stolen bytes past the first.
+[[target]]
+name = "ecs::LandVehicleMoveSystem::Update2/claim head"
+signature = "8B 73 44 4C 63 73 48 C4 C1 7A 10 75 04 8B 43 3C"
+offset = 0
+prologue = "8B 73 44 4C 63 73 48"
+required = false
+
+[[target]]
+name = "ecs::LandVehicleMoveSystem::Update2/terminal decision"
+signature = "88 4B 70 4B 8D 14 76 48 8B 0B 4C 8D 04 91"
+offset = 0
+prologue = "88 4B 70 4B 8D 14 76"
+required = false
+
+# The ship and aircraft move systems' node watcher (crates/tpf3mp-hook/src/order.rs,
+# `nodes`), logging only. Each Update2 reloads its node list's begin every iteration
+# (`mov rax,[r14+8]; mov <reg>,[rax]`), then `add <reg>,rdx` (rdx the byte offset,
+# 16-byte records) and `mov <reg2>,[r14+0x10]`: those 7 bytes are stolen. Ships:
+# ecs::ShipMoveSystem::vf12 (0xaf6120) at 0xaf644e, the count at [rsp+0x188];
+# aircraft: ecs::AircraftMoveSystem::vf12 (0xa83a40) at 0xa83ca7, the count at
+# [rsp+0x1f8]. Nothing branches into either's stolen bytes past the first.
+[[target]]
+name = "ecs::ShipMoveSystem::Update2/node head"
+signature = "48 03 DA 49 8B 56 10 48 63 43 04 48 8D 0C 40"
+offset = 0
+prologue = "48 03 DA 49 8B 56 10"
+required = false
+
+[[target]]
+name = "ecs::AircraftMoveSystem::Update2/node head"
+signature = "48 03 FA 49 8B 46 10 48 63 57 04 48 C1 E2 04"
+offset = 0
+prologue = "48 03 FA 49 8B 46 10"
+required = false
+
 # transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
 [[target]]
 name = "transport::EdgeReservationManager::Reserve"

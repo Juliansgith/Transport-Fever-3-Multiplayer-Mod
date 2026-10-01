@@ -1346,16 +1346,22 @@ own ("Companies" below). The one the game renders its React recipes in
 gets the same guard (`tpf3mp/hudguard.lua`, installed from
 `gui/tpf3mp/gui_state.script.lua`), so no window sends a command past the
 room from either state ([COVERAGE.md](COVERAGE.md), U1). The room's
-answers (`results()`) have one reader, the plugin's state, so there a
-command handed to the room is answered as sent, and a command whose window
-waits on what it made (`guard.RESULT`: a purchase, a new line, a
-replacement) sent with a callback is refused, `a window that waits on what
-it made, in a Lua state the room's answers do not reach`. That state has
-no frame the mod runs in: the callbacks the guard defers run from the
-HUD's next reads of the player's company, two clock ticks on. hook.log:
-`the guard is on N command factories in the HUD's state`, and each
-refusal there `... in the HUD's state: <why>`. Which windows render in that
-state is not known on build 40408; the log says if any sends a command.
+answers (`results()`) have one reader, the plugin's state, so the HUD's
+state notes the tickets of its commands it waits on
+(`tpf3mp_native.note("tpf3mp.hud.tickets", …)`), the plugin's state passes
+on the answers to those (`hudguard.forward`, a note
+`tpf3mp.hud.answers` of `ticket ok entity;`), and the HUD's state hears
+them through the same `guard.deliver` as the plugin's: the vehicle store,
+which renders there (2026-10-01), is told the vehicle it bought once the
+registry names it, and puts it on its line; a new line's window opens the
+line. Only a hook without `note` leaves the answers unrouted: a command is
+then answered as sent, and one whose window waits on what it made
+(`guard.RESULT`) is refused. That state has no frame the mod runs in: the
+deferred callbacks and the answers run from the HUD's next reads of the
+player's company, two clock ticks on. hook.log: `the guard is on N command
+factories in the HUD's state`, and each refusal there `... in the HUD's
+state: <why>`. Which windows render in that state is not known on build
+40408 beyond the store; the log says if any sends a command.
 
 Before the room begins, and after it ends, every command is sent as it
 would be, and every tool builds. A kind the room comes to carry is
@@ -3058,6 +3064,68 @@ step gate: <n> call(s) held for the other buffer before the checkpoint after ste
 
 The cost is pace: one step a frame at most, so a game below the room's
 steps a second in frames falls behind and the room waits for it.
+
+Tried in the playtest of 2026-10-01 (round B, `0e04aa3`, the switch in all
+three games): every game ran every step on the same buffer as the others
+(the `watch:` lines' engines alternate step by step, in one parity
+everywhere), and the step-3300 split came all the same, in bob's game.
+The buffers' histories are not the cause of that split.
+
+**The claim loop's watcher** (on with the vehicle watcher; logging only).
+In that round only bob's game asked `FindNextFreeTerminal` for vehicle
+217708 at step 3201 (`watch: ... candidates`); the others never asked, so
+no free check differed. `TransportVehicleSystem::Update2` asks only for a
+vehicle whose `MovePath` flag `+0x70` is set (`0xb8bdb3`), and
+`LandVehicleMoveSystem::Update2`'s reservation loop sets it
+(`0xac2235`): when its claim reaches the path index where the platform is
+decided. Two splices there, logging only:
+
+```
+claim: step <s> vehicle <entity> terminal decision <0|1> (claimed to <index>, decided at <index>)
+claim: step <s> vehicle <entity> priority <p> path <edges>/<fnv64> movepath <word> ...
+```
+
+The first, for every land vehicle whose flag changes
+(`ecs::LandVehicleMoveSystem::Update2/terminal decision`). The second,
+every update, only for the entities `TPF3MP_HOOK_WATCH_ENTITIES` lists
+(comma-separated ids; `ecs::LandVehicleMoveSystem::Update2/claim head`,
+`0xac1d9d`): the vehicle's `MovePath` from `+0x18` as hex words, its
+position and speed among them, bit for bit, with its path's length and
+hash and its claim priority. Two games' lines for one vehicle and step
+must be equal; the first that differs says when the vehicle's own state
+split, or, when it never does before the decision, that what it ran into
+(another vehicle's claim or place) did.
+
+Round D (`ce52d45`, `TPF3MP_HOOK_WATCH_ENTITIES=217708`, cat's game the
+odd one) logged no `claim:` head line for 217708 at all: it is not in the
+land claim loop, whose contenders are the save's six trains (`n=6`, and
+the six vehicles of every `terminal decision` line). So 217708 is a road
+vehicle, a ship or an aircraft. Ships and aircraft keep the decision flag
+in their 0x238-byte movement component instead (`TransportVehicleSystem`
+reads `+0x1b8` for carrier 4, `+0xa0 == 3` or `+0xb0` for carrier 3;
+`ShipMoveSystem::Update2` sets `+0x1b8` at `0xaf779b`), and both systems
+claim space in their node list's own order (survey item 5, never fixed).
+Three more watcher lines, logging only:
+
+```
+watch: step <s> engine <n> vehicle <entity> transport <word> ...
+nodes: step <s> ships|aircraft n=<count> order=<fnv64> in entity order: yes|no[, first <ids>]
+nodes: step <s> ships|aircraft vehicle <entity> component <word> ...
+```
+
+The first, every visit of a watched entity in the platform loop: its
+whole `TransportVehicle` component (the first word is its carrier). The
+second, from each ship and aircraft `Update2`'s loop head
+(`ecs::ShipMoveSystem::Update2/node head` `0xaf644e`,
+`ecs::AircraftMoveSystem::Update2/node head` `0xa83ca7`), when the order of
+its node list changes: two games whose lines differ walk their ships or
+aircraft in different orders. The third, every update, a watched
+entity's movement component bit for bit. For an entity `TPF3MP_HOOK_WATCH_ENTITIES`
+lists, the `candidates` and `checks` lines are said at every call, not
+only on a change: the change filter is per engine, so a call that asks
+for the same candidates as an earlier call on that engine was silent,
+and round D's logs cannot tell whether james's and bob's games asked at
+step 3201.
 
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game

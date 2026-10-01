@@ -167,6 +167,45 @@ local function madeBy(field, data, entities)
 	return nil
 end
 
+-- What else a refused build's proposal data says, for the log: the game's
+-- warnings and the entities it collides with, each by what it is (a
+-- construction's file and place, an edge's ends and template, a town
+-- building's construction), a few at most. "" when it says nothing more.
+function apply.refusalDetails(data)
+	local parts = {}
+	pcall(function()
+		local warnings = {}
+		for _, w in ipairs(data.errorState.warnings or {}) do warnings[#warnings + 1] = tostring(w) end
+		if #warnings > 0 then parts[#parts + 1] = "warnings " .. table.concat(warnings, ", ") end
+	end)
+	pcall(function()
+		local CT = api.type.ComponentType
+		local list = data.collisionInfo.collisionEntities
+		local hit = {}
+		for i = 1, #list do
+			if i > 6 then hit[#hit + 1] = "and " .. (#list - 6) .. " more" break end
+			local e = list[i].entity
+			local text = "entity " .. tostring(e)
+			local c = api.engine.getComponent(e, CT.CONSTRUCTION)
+			local edge = api.engine.getComponent(e, CT.BASE_EDGE)
+			local node = api.engine.getComponent(e, CT.BASE_NODE)
+			if c and c.transf then
+				text = string.format("%s at (%.1f, %.1f, %.1f)", tostring(c.fileName), c.transf[13], c.transf[14], c.transf[15])
+			elseif edge then
+				local a, b = edge.position0 or {}, edge.position1 or {}
+				text = string.format("edge (%.1f, %.1f)-(%.1f, %.1f) %s", a.x or 0, a.y or 0, b.x or 0, b.y or 0,
+					tostring(edge.roadTemplate))
+			elseif node and node.position then
+				text = string.format("node (%.1f, %.1f, %.1f)", node.position.x, node.position.y, node.position.z)
+			end
+			hit[#hit + 1] = text
+		end
+		if #list > 0 then parts[#parts + 1] = "collides with " .. table.concat(hit, ", ") end
+	end)
+	if #parts == 0 then return "" end
+	return " (" .. table.concat(parts, "; ") .. ")"
+end
+
 -- Builds `proposal` as the player's own build. The game's verdict first, as
 -- its tools ask it: a build it would refuse (a collision, too steep, not
 -- enough money) fails here with its reasons, the same in every game, and is
@@ -179,7 +218,7 @@ local function buildProposal(proposal, context)
 		local messages = {}
 		for _, m in ipairs(state and state.messages or {}) do messages[#messages + 1] = tostring(m) end
 		if state and state.critical then
-			error("the game refuses the build: " .. table.concat(messages, "; "), 0)
+			error("the game refuses the build: " .. table.concat(messages, "; ") .. apply.refusalDetails(data), 0)
 		end
 		if #messages > 0 then log("the game warns of the build: " .. table.concat(messages, "; ")) end
 	end
@@ -278,13 +317,20 @@ function HANDLERS.BuildConstruction(build)
 	-- for free, as part of this action.
 	local con = constructionAt({ file = build.file, at = build.transform.origin })
 	local refresh = api.engine.util.proposal.refreshConstruction(con)
-	local street, shape = refresh.proposal, {}
+	local street, shape, joins = refresh.proposal, {}, {}
 	for i = 1, #street.addedSegments do
 		local s = street.addedSegments[i]
 		shape[#shape + 1] = "+e" .. s.entity .. ":" .. tostring(s.comp.node0) .. ">" .. tostring(s.comp.node1)
+		-- An existing node (an entity, not one the refresh makes) is what
+		-- the construction's own street or track joins.
+		for _, n in ipairs({ s.comp.node0, s.comp.node1 }) do
+			if type(n) == "number" and n >= 0 then joins[#joins + 1] = tostring(n) end
+		end
 	end
 	for i = 1, #street.removedSegments do shape[#shape + 1] = "-e" .. tostring(street.removedSegments[i].entity) end
-	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " "))
+	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " ") .. "; "
+		.. (#joins > 0 and ("it joins existing node " .. table.concat(joins, ", "))
+			or "it joins no existing node: its entrance stands alone"))
 	-- The game's verdict takes simple proposals only ("SimpleProposal
 	-- expected, got Proposal", build 40408): a refresh the game refuses
 	-- fails in the command's own answer instead (run).
@@ -1102,6 +1148,19 @@ end
 -- A ConsistPart as the game's TransportVehiclePart, bought at `time`. Every
 -- compartment loads automatically, as the store sends it
 -- (vehicle_react_util.tl).
+-- How many compartments a vehicle model has (its transportVehicle
+-- metadata), or nil where the game does not say.
+function apply.compartments(model)
+	local ok, n = pcall(function()
+		local tv = api.res.modelRep.get(model).metadata.transportVehicle
+		local count = 0
+		for _ in ipairs(tv.compartments) do count = count + 1 end
+		return count
+	end)
+	if ok and type(n) == "number" then return n end
+	return nil
+end
+
 local function vehiclePart(p, time)
 	local model = api.res.modelRep.find(p.model)
 	if type(model) ~= "number" or model < 0 then error("no vehicle model " .. tostring(p.model), 0) end
@@ -1114,6 +1173,23 @@ local function vehiclePart(p, time)
 		lc.loadConfigIndex = l.config
 		lc.cargoTypeId = l.cargo
 		loads[k], auto[k] = lc, true
+	end
+	-- The game takes a load for every compartment of the model, and throws
+	-- ("Unknown exception", build 40408) for a part with fewer. A part that
+	-- names none gets the store's own: the first load configuration of each
+	-- compartment (gui/line_vehicle_mgmt/vehicle_util.tl); one that names
+	-- some but not all is refused, the same in every game.
+	local compartments = apply.compartments(model)
+	if compartments ~= nil and #loads ~= compartments then
+		if #loads > 0 then
+			error(string.format("%s has %d compartments, and the part loads %d", tostring(p.model), compartments,
+				#loads), 0)
+		end
+		for k = 1, compartments do
+			local lc = api.type.LoadConfig.new()
+			lc.loadConfigIndex = 0
+			loads[k], auto[k] = lc, true
+		end
 	end
 	part.part.compartment2loadConfig = loads
 	part.part.color = tint(p.color)
@@ -1150,6 +1226,14 @@ function HANDLERS.BuyVehicle(buy)
 			local account = api.engine.getComponent(company(), api.type.ComponentType.ACCOUNT)
 			facts[#facts + 1] = "the company has " .. string.format("%d", account.balance)
 		end)
+		for i, p in ipairs(buy.consist) do
+			pcall(function()
+				local model = api.res.modelRep.find(p.model)
+				facts[#facts + 1] = string.format("part %d %s: %s compartments, %d loads", i, tostring(p.model),
+					tostring(apply.compartments(model)), #p.loads)
+			end)
+		end
+		facts[#facts + 1] = "depot entity " .. tostring(depot)
 		pcall(function()
 			local d = api.engine.getComponent(depot, api.type.ComponentType.VEHICLE_DEPOT)
 			if d and d.vehicles then facts[#facts + 1] = "the depot holds " .. #d.vehicles end

@@ -30,10 +30,11 @@
 --
 -- Positions in metres, to the centimetre. Towns by their entity, lowest
 -- first, as every game of the same save has them; a town's centre is the
--- mean of its buildings'. A spot is a free flat place near a town: a square
--- of 120 m whose heights differ by at most 3 m, dry, at least 150 m from
--- the town's buildings and 60 m from any street or track node, on rings 300,
--- 450 and 600 m out, eight directions each, east first, counter-clockwise.
+-- mean of its buildings'. A spot is a free flat place near a town, where a
+-- scenario builds: 300 m east-west by 250 m north-south (100 m west and
+-- south of it, 200 m east, 150 m north), its heights within 4 m, dry, no
+-- town building or street or track node within 40 m of it; on rings 400 to
+-- 1000 m out, eight directions each, east first, counter-clockwise.
 -- A town's streets are the ones nearest its centre.
 --
 -- Every part is read on its own: one that cannot be read is named in
@@ -175,27 +176,33 @@ end
 -- distance each) and `nodes`.
 local function spots(api, x, y, buildings, nodes)
 	local out = {}
-	for _, r in ipairs({ 300, 450, 600 }) do
+	for _, r in ipairs({ 400, 600, 800, 1000 }) do
 		for k = 0, 7 do
 			if #out >= observe.MAX_SPOTS then return out end
 			local a = k * math.pi / 4
 			local sx, sy = x + r * math.cos(a), y + r * math.sin(a)
 			local ok, free = pcall(function()
 				local lo, hi = math.huge, -math.huge
-				for _, dx in ipairs({ -60, 0, 60 }) do
-					for _, dy in ipairs({ -60, 0, 60 }) do
+				for _, dx in ipairs({ -100, -50, 0, 50, 100, 150, 200 }) do
+					for _, dy in ipairs({ -100, -50, 0, 50, 100, 150 }) do
 						if onWater(api, sx + dx, sy + dy) then return false end
 						local h = height(api, sx + dx, sy + dy)
 						if h < lo then lo = h end
 						if h > hi then hi = h end
 					end
 				end
-				if hi - lo > 3 then return false end
+				if hi - lo > 4 then return false end
+				-- The scenarios build within 100 m west and south and 200 m
+				-- east and 150 m north of a spot: nothing else may stand
+				-- there, nor within 40 m of it.
+				local function inside(px, py)
+					return px > sx - 140 and px < sx + 240 and py > sy - 140 and py < sy + 190
+				end
 				for _, b in ipairs(buildings) do
-					if (b[1] - sx) ^ 2 + (b[2] - sy) ^ 2 < 150 ^ 2 then return false end
+					if inside(b[1], b[2]) then return false end
 				end
 				for _, n in ipairs(nodes) do
-					if (n[1] - sx) ^ 2 + (n[2] - sy) ^ 2 < 60 ^ 2 then return false end
+					if inside(n[1], n[2]) then return false end
 				end
 				return true
 			end)

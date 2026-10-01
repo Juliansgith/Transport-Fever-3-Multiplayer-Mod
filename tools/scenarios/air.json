@@ -73,6 +73,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario airfield 0",
@@ -304,6 +310,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario airfield 1",
@@ -534,6 +546,12 @@
        "key": "seed",
        "value": {
         "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
        }
       }
      ],

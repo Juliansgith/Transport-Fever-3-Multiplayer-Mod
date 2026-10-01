@@ -404,6 +404,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario HQ 0",
@@ -446,6 +452,12 @@
        "key": "seed",
        "value": {
         "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
        }
       }
      ],
@@ -882,6 +894,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario HQ 1",
@@ -924,6 +942,12 @@
        "key": "seed",
        "value": {
         "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
        }
       }
      ],
@@ -1360,6 +1384,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario HQ 2",
@@ -1402,6 +1432,12 @@
        "key": "seed",
        "value": {
         "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
        }
       }
      ],

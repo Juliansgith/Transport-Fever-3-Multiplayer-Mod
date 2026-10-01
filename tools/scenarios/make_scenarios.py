@@ -27,8 +27,10 @@ COUNTRY_STREET = "::/infrastructure/street/country/country_old_small.street_temp
 TOWN_STREET = "::/infrastructure/street/town/town_old_small.street_template"
 TRAM_STREET = "::/infrastructure/street/town/town_old_small_tram.street_template"
 BUS_STREET = "::/infrastructure/street/country/country_new_medium_bus.street_template"
-TRACK = "::/infrastructure/track/standard/standard.street_template"
-TRACK_CATENARY = "::/infrastructure/track/standard/standard_catenary.street_template"
+# The track of 1912, as a player's build there names it.
+TRACK = "::/infrastructure/track/simple/simple.street_template"
+TRACK_STYLE = "::/infrastructure/track/simple/simple.street"
+TRACK_CATENARY = "::/infrastructure/track/simple/simple_catenary.street_template"
 STOP = "::/stations/street/small_stops/small_old.con"
 ROAD_DEPOT = "::/depots/road/road_depot/road_depot.con"
 RAIL_DEPOT = "::/depots/rail/rail_depot.con"
@@ -40,17 +42,25 @@ AIRFIELD = "::/stations/air/airfield.con"
 HQ = "::/landmarks/hq/headquarter.con"
 SIGNAL = "::/infrastructure/signal/signal_path_a.con"
 
-# Vehicle models, by the game's resource names (INFERRED from the content
-# folders: the baseline lists the names this game has, under "models").
+# Vehicle models, by the game's resource names (the baseline lists the names
+# this game has, under "models"), each in service in 1912, the fixture
+# save's year (the models' availability, build 40408). Their loads are left
+# out: every game gives each compartment the store's own (apply.lua).
 BUS = "::/vehicle/bus/american_post_coach/american_post_coach.mdl"
 TRUCK = "::/vehicle/truck/benz1912/benz1912_box.mdl"
 LOCOMOTIVE = "::/vehicle/train/atlantic_4_4_2/atlantic_4_4_2.mdl"
 WAGGON = "::/vehicle/waggon/boxcar_1_20/boxcar_1_20.mdl"
-SHIP = "::/vehicle/ship/sternwheeler/sternwheeler.mdl"
+SHIP = "::/vehicle/ship/british_columbia/british_columbia.mdl"
+# No plane is in service before 1920 (the Junkers F 13): the air scenario
+# needs a later save, and in 1912 its buy is the game's to refuse.
 PLANE = "::/vehicle/plane/junkers_f_13/junkers_f_13.mdl"
 
 # Transport modes, as TF3 numbers them (api.type.TransportMode).
 MODE_BUS, MODE_TRUCK, MODE_TRAIN, MODE_AIRCRAFT, MODE_SHIP = 3, 4, 7, 9, 10
+
+# The fixture save's year: a construction's "year" parameter, as the
+# construction tool sets it (a player's rail depot, captured 2026-10-01).
+YEAR = 1912
 
 IDENTITY = [1_000_000, 0, 0, 0, 1_000_000, 0, 0, 0, 1_000_000]
 
@@ -95,7 +105,7 @@ def road(points, resolves=None, street=COUNTRY_STREET, bus_lane=False, tram="Non
 
 
 def track(points, resolves=None, kind=TRACK, catenary=False):
-    return {"BuildTrack": {"track": kind, "style": None, "catenary": catenary,
+    return {"BuildTrack": {"track": kind, "style": TRACK_STYLE, "catenary": catenary,
                            "polyline": polyline(points, resolves)}}
 
 
@@ -108,15 +118,15 @@ def construction(file, at, name, params=None):
     return {"BuildConstruction": {
         "file": file,
         "transform": {"basis": IDENTITY, "origin": pos(*at)},
-        "params": [{"key": "seed", "value": {"Int": 0}}] + params,
+        "params": [{"key": "seed", "value": {"Int": 0}}, {"key": "year", "value": {"Int": YEAR}}] + params,
         "name": name, "replaces": None, "connection": None}}
 
 
-def place_stop(network, a, b, at, model=STOP, kind="Stop"):
+def place_stop(network, a, b, at, model=STOP, kind="Stop", left=True):
     d = (b[0] - a[0], b[1] - a[1])
     length = (d[0] ** 2 + d[1] ** 2) ** 0.5
     return {"PlaceStop": {
-        "edge": edge(network, a, b), "at": pos(*at), "left": True,
+        "edge": edge(network, a, b), "at": pos(*at), "left": left,
         "direction": {"x": int(round(d[0] / length * 1e6)), "y": int(round(d[1] / length * 1e6)), "z": 0},
         "model": model, "two_sided": False, "object": kind, "one_way": False}}
 
@@ -133,8 +143,10 @@ def buy(file, at, model, loads=None):
         "groups": [1], "multiple_units": [""]}}
 
 
-def line_stop(group):
-    return {"group": {"$id": group}, "terminal": {"station": 0, "terminal": 0}, "alternatives": [],
+def line_stop(group, station=0):
+    """A line's stop at a station group's `station`th station (its place in
+    the group, from 0), terminal 0."""
+    return {"group": {"$id": group}, "terminal": {"station": station, "terminal": 0}, "alternatives": [],
             "load_mode": "LoadIfAvailable", "min_wait": 0, "max_wait": 180_000_000,
             "max_extra_wait": 0,
             "rules": {"load": [], "max_load": [], "force_unload": False,
@@ -143,7 +155,8 @@ def line_stop(group):
 
 def create_line(name, groups, mode):
     return {"CreateLine": {"name": name, "color": {"r": 130000, "g": 420000, "b": 850000},
-                           "line": {"stops": [line_stop(g) for g in groups], "modes": [mode],
+                           "line": {"stops": [line_stop(*g) if isinstance(g, tuple) else line_stop(g)
+                                              for g in groups], "modes": [mode],
                                     "custom_filters": False, "reservation_priority": 0}}}
 
 
@@ -187,15 +200,19 @@ class Scenario:
 # one.
 FUND = 3_000_000
 
-# Where a depot's entrance meets the street or track it snaps to, from its
-# origin with the basis used here (the game's road_depot.script.lua and
-# rail_depot.script.lua, build 40408: the road depot's entrance street runs
-# from (0, -35) to (0, -20.26), the rail depot's track from (-2.2, -70) to
-# (-2.2, -65), both along +y).
-ROAD_DEPOT_ENTRANCE = (0, -35)
-# The rail depot turned so its track runs east: local +y is world +x.
-EAST = [0, -1_000_000, 0, 1_000_000, 0, 0, 0, 0, 1_000_000]
-RAIL_DEPOT_ENTRANCE_EAST = (-70, 2.2)
+# A depot's basis for each way it faces: local +y (the way its entrance
+# runs into it) turned to world east, north or west.
+FACING = {
+    "east": [0, -1_000_000, 0, 1_000_000, 0, 0, 0, 0, 1_000_000],
+    "north": IDENTITY,
+    "west": [0, 1_000_000, 0, -1_000_000, 0, 0, 0, 0, 1_000_000],
+}
+
+
+def turn(facing, local):
+    """A depot-local (x, y) as world east and north offsets."""
+    b = FACING[facing]
+    return (local[0] * b[0] / 1e6 + local[1] * b[3] / 1e6, local[0] * b[1] / 1e6 + local[1] * b[4] / 1e6)
 
 
 def construction_at(file, at, name, basis=IDENTITY):
@@ -204,15 +221,68 @@ def construction_at(file, at, name, basis=IDENTITY):
     return action
 
 
-def road_depot_at(node):
-    """A road depot north of `node`, its entrance on it: `node` must be the
-    free end of a street running north into it."""
-    return (node[0] - ROAD_DEPOT_ENTRANCE[0], node[1] - ROAD_DEPOT_ENTRANCE[1])
+# The road depot's entrance street runs from (0, -35) to (0, -20.26) in its
+# own frame (road_depot.script.lua, build 40408). Its entrance stops SHORT
+# metres before the street's free end and the connection names that end:
+# the game's refresh snaps it on (round B, 2026-10-01: "snapping ... +e-2:
+# <the street's node>>-1"). A construction's node right on the street's
+# node was refused ("Construction Not Possible").
+ROAD_DEPOT_ENTRANCE = (0, -35)
+SHORT = 3
 
 
-def rail_depot_at(node):
-    """A rail depot east of `node`, the free end of a track running east."""
-    return (node[0] - RAIL_DEPOT_ENTRANCE_EAST[0], node[1] - RAIL_DEPOT_ENTRANCE_EAST[1])
+def road_depot(node, name, facing="north"):
+    """A road depot beyond `node`, the free end of a street running `facing`
+    into it. Returns the action and the depot's origin, which a BuyVehicle
+    names it by."""
+    way = turn(facing, (0, 1))
+    end = (node[0] + SHORT * way[0], node[1] + SHORT * way[1])
+    entrance = turn(facing, ROAD_DEPOT_ENTRANCE)
+    at = (end[0] - entrance[0], end[1] - entrance[1])
+    action = construction_at(ROAD_DEPOT, at, name, FACING[facing])
+    action["BuildConstruction"]["connection"] = polyline([end, node], {1: {"Node": "Street"}})
+    return action, at
+
+
+# A player's rail depot snapped onto a track's end, as the construction tool
+# proposed it (captured in test mode, 2026-10-01), in the depot's own frame:
+# its track graph, the first vertex the existing track's end node, which the
+# depot's own node stands on. Each link: from, to, tangent0, tangent1.
+RAIL_DEPOT_VERTICES = [(-2.2, -70.0), (-2.2, -65.0), (-2.2, -50.0), (6.0, -16.0), (6.0, 50.0), (-2.2, -16.0),
+                       (-2.2, 25.0)]
+RAIL_DEPOT_LINKS = [(0, 1, (0, 5), (0, 5)), (2, 1, (0, -15), (0, -15)), (3, 1, (0, -72), (0, -45)),
+                    (3, 4, (0, 66), (0, 66)), (5, 2, (0, -34), (0, -34)), (6, 5, (0, -41), (0, -41))]
+# A track lane as the tool made the depot's (simple track, 1912).
+RAIL_DEPOT_LANE = {"speed": 27777, "width": 4000, "height": 530, "offset": 0, "forward": True, "modes": 16512}
+
+
+def rail_depot(node, name, facing="east", template=None):
+    """A rail depot beyond `node`, the free end of a track running `facing`
+    into it, in the shape the construction tool proposes it: its own node on
+    `node`, and its track graph as the connection."""
+    template = template or TRACK
+    first = turn(facing, RAIL_DEPOT_VERTICES[0])
+    at = (node[0] - first[0], node[1] - first[1])
+    world = []
+    for v in RAIL_DEPOT_VERTICES:
+        d = turn(facing, v)
+        world.append((round(at[0] + d[0], 3), round(at[1] + d[1], 3)))
+    vertices = [{"pos": pos(*q), "resolve": "New"} for q in world]
+    vertices[0]["resolve"] = {"Node": "Track"}
+    links = []
+    for f, t, t0, t1 in RAIL_DEPOT_LINKS:
+        w0, w1 = turn(facing, t0), turn(facing, t1)
+        links.append({"from": f, "to": t,
+                      "tangent0": {"x": mm(w0[0]), "y": mm(w0[1]), "z": 0},
+                      "tangent1": {"x": mm(w1[0]), "y": mm(w1[1]), "z": 0},
+                      "structure": "Ground",
+                      "kind": {"network": "Track", "template": template, "style": TRACK_STYLE},
+                      "decorations": [], "locked": False, "owned": False, "lanes": [RAIL_DEPOT_LANE],
+                      "precedence": None})
+    action = construction_at(RAIL_DEPOT, at, name, FACING[facing])
+    action["BuildConstruction"]["connection"] = {"vertices": vertices, "links": links, "removals": [],
+                                                 "removed_nodes": []}
+    return action, at
 
 
 def fund(s, k, t, amount=FUND):
@@ -257,8 +327,8 @@ def bulldoze_edges(network, pairs):
 
 
 def roads():
-    """Streets, a T junction, a crossroads, two bus stops, a road depot on
-    the T's free end, a bus line with three buses bought at once, a track
+    """Streets, a T junction, a crossroads, a bus street with two stops and a
+    road depot snapped onto its end, a bus line with three buses bought at once, a track
     with a rail depot snapped to its end, a loan taken first and repaid, a
     town street no building stands by bulldozed, and a bus at no depot,
     which every game must refuse. Each actor plays for its own company (a
@@ -273,21 +343,32 @@ def roads():
               f"{c}: a T junction, splitting the street at 60 m")
         s.act(t + 150, k, road([(90, -60), (90, 0), (90, 60)], {1: split(S, (60, 0), (120, 0))}),
               f"{c}: a crossroads, splitting the street's east half at 90 m")
-        s.act(t + 200, k, place_stop(S, (0, 0), (60, 0), (30, 0)), f"{c}: a bus stop on the street's west part")
-        s.act(t + 230, k, place_stop(S, (90, 0), (90, 60), (90, 30)), f"{c}: a bus stop on the crossroads' north arm")
-        depot = road_depot_at((60, 60))
-        s.act(t + 260, k, construction(ROAD_DEPOT, depot, f"Scenario depot {k}"),
-              f"{c}: a road depot whose entrance meets the T's free end at (60, 60)")
-        g, v = 2 * k, 3 * k
-        s.act(t + 320, k, create_line(f"Scenario bus line {k}", [f"groups+{g}", f"groups+{g + 1}"], MODE_BUS),
-              f"{c}: a bus line between the two stops (station groups +{g} and +{g + 1})")
+        # The bus line runs on a street of its own: a scripted junction has
+        # no turns (the game makes no node configuration for it), so a line
+        # through the T or the crossroads would have no route.
+        s.act(t + 180, k, road([(20, -50), (170, -50)]), f"{c}: the bus street, south of the junctions")
+        s.act(t + 200, k, place_stop(S, (20, -50), (170, -50), (70, -50)), f"{c}: a bus stop on the bus street")
+        # The other side: an edge takes one stop a side (round C, 2026-10-01:
+        # "the edge has a stop on that side already"). A bus calls at the
+        # first eastbound and at this one westbound, after turning at the
+        # street's dead end.
+        s.act(t + 230, k, place_stop(S, (20, -50), (170, -50), (140, -50), left=False),
+              f"{c}: a second stop on the bus street's other side")
+        action, depot = road_depot((20, -50), f"Scenario depot {k}", "west")
+        s.act(t + 260, k, action, f"{c}: a road depot west of the bus street, its entrance snapped onto the end")
+        # Two stops on one edge are two stations of one station group
+        # (round D, 2026-10-01: the registry's next group went 100 to 101,
+        # the stations 120 to 122): the line stops at its stations 0 and 1.
+        g, v = f"groups+{k}", 3 * k
+        s.act(t + 320, k, create_line(f"Scenario bus line {k}", [(g, 0), (g, 1)], MODE_BUS),
+              f"{c}: a bus line between the two stops, stations 0 and 1 of station group +{k}")
         for n in range(3):
             s.act(t + 360 + n, k, buy(ROAD_DEPOT, depot, BUS), f"{c}: bus {n + 1} of 3, bought in one burst")
         s.act(t + 420, k, assign([f"vehicles+{v}", f"vehicles+{v + 1}", f"vehicles+{v + 2}"], f"lines+{k}"),
               f"{c}: the three buses onto the line")
         s.act(t + 480, k, track([(0, -80), (150, -80)]), f"{c}: a straight track south of the streets")
-        s.act(t + 520, k, construction_at(RAIL_DEPOT, rail_depot_at((150, -80)), f"Scenario rail depot {k}", EAST),
-              f"{c}: a rail depot whose track meets the track's east end")
+        s.act(t + 520, k, rail_depot((150, -80), f"Scenario rail depot {k}")[0],
+              f"{c}: a rail depot on the track's east end, as the construction tool proposes it")
         s.act(t + 800, k, {"Bulldoze": {"Edges": {"network": S, "edges": [{"$edge": f"#{k}:free:0"}],
                                                   "buildings": []}}},
               f"{c}: a street of town #{k} no building stands by, bulldozed", origin="none")
@@ -338,9 +419,8 @@ def rail():
         s.act(t + 50, k, track([(0, 0), (100, 0), (200, 0)]), f"{c}: a straight track in two edges")
         s.act(t + 100, k, place_stop(T, (0, 0), (100, 0), (50, 0), model=SIGNAL, kind="Signal"),
               f"{c}: a signal on the track's west edge")
-        depot = rail_depot_at((200, 0))
-        s.act(t + 200, k, construction_at(RAIL_DEPOT, depot, f"Scenario rail depot {k}", EAST),
-              f"{c}: a rail depot whose track meets the track's east end")
+        action, depot = rail_depot((200, 0), f"Scenario rail depot {k}")
+        s.act(t + 200, k, action, f"{c}: a rail depot on the track's east end, as the construction tool proposes it")
         s.act(t + 260, k, rebuilt(track([(100, 0), (200, 0)], kind=TRACK_CATENARY, catenary=True),
                                   "BuildTrack", T, (100, 0), (200, 0)),
               f"{c}: the east edge electrified (an upgrade)")
@@ -381,15 +461,17 @@ def road_vehicles():
         t, c = ACTOR_GAP * k, f"Actor {k}"
         fund(s, k, t)
         s.act(t + 50, k, road([(0, 0), (150, 0)]), f"{c}: a street")
-        s.act(t + 70, k, road([(150, 0), (150, 40)], {0: {"Node": S}}), f"{c}: a short street north off its east end")
         s.act(t + 100, k, place_stop(S, (0, 0), (150, 0), (40, 0)), f"{c}: a truck stop (a street stop)")
-        s.act(t + 130, k, place_stop(S, (0, 0), (150, 0), (110, 0)), f"{c}: a second stop on the same street")
-        depot = road_depot_at((150, 40))
-        s.act(t + 200, k, construction(ROAD_DEPOT, depot, f"Scenario truck depot {k}"),
-              f"{c}: a road depot on the short street's end")
-        g, v = 2 * k, 3 * k
-        s.act(t + 260, k, create_line(f"Scenario truck line {k}", [f"groups+{g}", f"groups+{g + 1}"], MODE_TRUCK),
-              f"{c}: a truck line between the stops")
+        s.act(t + 130, k, place_stop(S, (0, 0), (150, 0), (110, 0), left=False),
+              f"{c}: a second stop, on the street's other side (one stop a side an edge)")
+        # On the street's own end, so no scripted junction (which has no
+        # turns) lies between the depot and the stops.
+        action, depot = road_depot((0, 0), f"Scenario truck depot {k}", "west")
+        s.act(t + 200, k, action, f"{c}: a road depot west of the street, snapped onto its end")
+        # The two stops are two stations of one group, as roads' bus stops.
+        g, v = f"groups+{k}", 3 * k
+        s.act(t + 260, k, create_line(f"Scenario truck line {k}", [(g, 0), (g, 1)], MODE_TRUCK),
+              f"{c}: a truck line between the stops, stations 0 and 1 of station group +{k}")
         for n in range(3):
             s.act(t + 300 + n, k, buy(ROAD_DEPOT, depot, TRUCK), f"{c}: truck {n + 1} of 3, in one burst")
         s.act(t + 360, k, assign([f"vehicles+{v}", f"vehicles+{v + 1}", f"vehicles+{v + 2}"], f"lines+{k}"),
