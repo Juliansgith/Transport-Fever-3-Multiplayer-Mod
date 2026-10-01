@@ -75,6 +75,14 @@ pub(crate) fn view(state: &State) -> LobbyView {
     });
     LobbyView {
         banner: state.banner.as_deref().and_then(banner),
+        portraits: BoundedVec::new(
+            crate::portraits::available()
+                .into_iter()
+                .filter_map(|id| Text::new(id).ok())
+                .take(tpf3mp_bridge::MAX_LOBBY_PORTRAITS)
+                .collect(),
+        )
+        .unwrap_or_default(),
         connection: match state.connection {
             Connection::Disconnected => LobbyConnection::Disconnected,
             Connection::Connecting => LobbyConnection::Connecting,
@@ -272,9 +280,11 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
     }
 }
 
-/// A banner id as the window may show it: one of the known ones.
+/// A banner id as the window may show it: one of the known ones, and a
+/// portrait only where this game has it (`crate::portraits::shown`): the
+/// window shows the player's default banner instead.
 fn banner(id: &str) -> Option<tpf3mp_proto::BannerId> {
-    tpf3mp_proto::is_banner(id)
+    (tpf3mp_proto::is_banner(id) && crate::portraits::shown(id))
         .then(|| Text::new(id).ok())
         .flatten()
 }
@@ -677,6 +687,33 @@ pub(crate) mod tests {
                 id: "schbrongx_minimap".into(),
                 chosen: false
             }
+        );
+    }
+
+    /// A portrait this game lacks reaches the window as no pick at all, so
+    /// the window shows the player's default banner; a banner always
+    /// reaches it. (No test makes portraits available.)
+    #[test]
+    fn a_portrait_this_game_lacks_shows_as_the_default_banner() {
+        let mut with = state();
+        with.banner = Some("dr_karl_brandt".into());
+        let members = &mut with.room.as_mut().unwrap().members;
+        members[0].banner = Some("andrew".into());
+        let shown = view(&with);
+        assert!(crate::portraits::available().is_empty());
+        assert!(shown.portraits.is_empty());
+        assert_eq!(shown.banner, None);
+        assert_eq!(shown.room.unwrap().members[0].banner, None);
+        with.banner = Some("dry".into());
+        with.room.as_mut().unwrap().members[0].banner = Some("m03".into());
+        let shown = view(&with);
+        assert_eq!(shown.banner.as_ref().map(Text::as_str), Some("dry"));
+        assert_eq!(
+            shown.room.unwrap().members[0]
+                .banner
+                .as_ref()
+                .map(Text::as_str),
+            Some("m03")
         );
     }
 

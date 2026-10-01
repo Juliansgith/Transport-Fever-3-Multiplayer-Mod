@@ -143,6 +143,13 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   refused (`UnknownBanner`). The launcher sends it on every connection.
   Rooms do not log banners: a restored room shows the defaults until each
   player says again.
+- **Portraits** (protocol 13). The same `SetBanner` may name one of the
+  campaign's characters instead (`tpf3mp_proto::PORTRAITS`, such as
+  `dr_karl_brandt`), and banner ids grow to 32 bytes (`BannerId`) to hold
+  them. The server checks the id against both sets alike; an id in
+  neither is still `UnknownBanner`. Each game shows the portrait from its
+  own install, or the player's default banner where it has none
+  ([LOBBY.md](LOBBY.md), "Portraits").
 - **Play style** (protocol 11). The owner creates a room co-op (every
   player for the room's one company, as a room starts, D21) or competitive
   (`CreateRoom::competitive`: each player for a company of their own). The

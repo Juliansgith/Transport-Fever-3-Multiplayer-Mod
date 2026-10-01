@@ -121,8 +121,9 @@ pub enum Action {
     /// The player's server setting: play on `server`, a `host:port`, from
     /// now on; empty goes back to the default ([`State::server_default`]).
     /// Remembered; reconnects there if connected; refused in a room.
-    /// Shows this banner in rooms: one of `tpf3mp_proto::BANNERS`, or
-    /// `None` for the default. Remembered for next time.
+    /// Shows this banner in rooms: one of `tpf3mp_proto::BANNERS` or
+    /// `tpf3mp_proto::PORTRAITS`, or `None` for the default. Remembered for
+    /// next time.
     SetBanner {
         #[serde(default)]
         banner: Option<String>,

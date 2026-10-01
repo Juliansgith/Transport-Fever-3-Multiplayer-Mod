@@ -938,6 +938,15 @@ function data()
 			if p.me then tags[#tags + 1] = "you" end
 			if not p.connected then tags[#tags + 1] = "away" end
 			if p.connected then online = online + 1 end
+            local banners = require("tpf3mp.banners")
+            local stage = banners.stage(p, true)
+            if stage then tags[#tags + 1] = stage end
+            local portrait = banners.portraitOf(p)
+            if portrait then
+                players[#players + 1] = builtin.ImageView{
+                    meta = { styleSheet = sheet(40, 40) }, path = portrait,
+                }
+            end
 			players[#players + 1] = box({
 				label(p.name, "font-scale-body", PLAYERS_WIDTH - 40, 16),
 				label(#tags > 0 and table.concat(tags, " · ") or "playing", "font-scale-annotation" .. (p.me and ", info" or ""), nil, 16),

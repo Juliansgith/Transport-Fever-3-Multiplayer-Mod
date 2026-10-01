@@ -1601,6 +1601,11 @@ fn room_info(room: &RoomView) -> RoomInfo {
             player: member.player,
             name: member.name.clone(),
             connected: member.connected,
+            banner: member
+                .banner
+                .clone()
+                .filter(|id| crate::portraits::shown(id.as_str())),
+            loading: member.loading,
         })
         .collect();
     RoomInfo {
@@ -2047,6 +2052,17 @@ mod tests {
             .map(|m| (m.name.as_str(), m.connected))
             .collect();
         assert_eq!(members, [("Ann", true), ("Bo", false)]);
+        // A banner reaches the game; a portrait it lacks does not, so the
+        // game shows that member's default banner.
+        let mut pictured = room.clone();
+        pictured.members[0].banner = Some(Text::new("dry").unwrap());
+        pictured.members[1].banner = Some(Text::new("lasse").unwrap());
+        let info = room_info(&pictured);
+        assert_eq!(
+            info.members[0].banner.as_ref().map(Text::as_str),
+            Some("dry")
+        );
+        assert_eq!(info.members[1].banner, None);
     }
 
     #[test]

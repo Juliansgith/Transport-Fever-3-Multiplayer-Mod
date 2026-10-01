@@ -54,6 +54,7 @@
         "scripts/tpf3mp/roads.lua",
         "scripts/tpf3mp/worldload.lua",
         "tpf3mp_sim/tpf3mp_sim.gs.lua",
-        "tpf3mp_sim/tpf3mp_sim.script.lua"
+        "tpf3mp_sim/tpf3mp_sim.script.lua",
+        "scripts/tpf3mp/banners.lua"
     ]
 }

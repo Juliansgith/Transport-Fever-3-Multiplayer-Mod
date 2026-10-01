@@ -213,6 +213,33 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
     );
 }
 
+/// A player who picked a campaign character shows its portrait beside
+/// their name, after their key's banner; an id that is no portrait shows
+/// nothing more (docs/LOBBY.md, "Portraits").
+#[test]
+fn the_multiplayer_window_shows_a_players_portrait_beside_their_name() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let pictures: Vec<String> = lua
+        .load(
+            "HOOK.room = true              HOOK.status = { room = 'Sunday line', speed = 200, players = {                  { name = 'Julian', connected = true, owner = true, me = false, id = '00000000',                    banner = 'dr_karl_brandt' },                  { name = 'Sam', connected = true, owner = false, me = true, id = '00000001',                    banner = 'selfie' } } }              BAR = mount(loadPlugin()) BAR.step() BAR.render()              views(BAR.layout)[1].params.onClick()              WINDOWS.Tpf3mpWindow.step()              local pictures = {}              for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do                  if v.view == 'ImageView' then pictures[#pictures + 1] = v.params.path end              end              return pictures",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}
+{}", log(&lua)));
+    assert_eq!(
+        pictures,
+        [
+            // Julian's key banner, the first, then his portrait.
+            "::/gui/menu/images/m01_ingame.tga",
+            "tpf3mp_1::/gui/tpf3mp/portraits/dr_karl_brandt.tga",
+            // Sam's unknown id: his key's banner alone.
+            "::/gui/menu/images/m02_ingame.tga",
+        ]
+    );
+}
+
 #[test]
 fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     let lua = gui();

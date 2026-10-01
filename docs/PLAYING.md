@@ -228,7 +228,12 @@ window too.
    invite only joins rooms on your own server. Not while in a room.
    **Your banner**, next to it, picks the picture the others see on your
    card in a room, from the game's own pictures; **Default** goes back to
-   the one chosen for you. The launcher remembers it.
+   the one chosen for you. Under **Characters** you can pick one of the
+   campaign's characters instead, by name: their portrait then shows
+   beside your name. The launcher takes the portraits from your own game's
+   campaign when it starts, so they are there only if your game has the
+   campaign; a player whose game lacks your portrait sees your default
+   banner. The launcher remembers your pick.
 4. **Join a room, or host one.**
    - **Join a room**: the rooms their owners made public, as cards like
      the main menu's, each with the picture of its map's climate, its
@@ -265,7 +270,8 @@ window too.
 5. **The room.** On the left, the room's name (a lock if it has a
    password), its **invite code** to send your friends (**Copy** beside it
    puts it on the clipboard), and its players
-   as picture cards of their banners, each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
+   as picture cards of their banners (and their portrait beside it, if
+   they picked a character), each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
    and **Other mods** when their game differs from the owner's. On the
    right, the room's chat: type and press Enter or **Send**.
 6. **Get ready.** At the main menu you are marked ready by yourself: a

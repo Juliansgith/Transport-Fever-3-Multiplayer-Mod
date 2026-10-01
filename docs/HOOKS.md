@@ -380,7 +380,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (`set_banner` from the window, empty for the default). Since version 17 the room, the
     room list and create carry the play style (`competitive`). Since version 18 each member
     carries where their game is with the room's world while it comes in (`loading`:
-    `fetching` with a `percent`, or `loading`, in the window's state). Since bridge version 15 it carries the
+    `fetching` with a `percent`, or `loading`, in the window's state). Since version 19 it
+    carries the campaign portraits this game has (`portraits`, LOBBY.md "Portraits"), and a
+    banner id of up to 32 bytes may name one; a member's portrait this game lacks is left
+    out, for their default. Since bridge version 15 it carries the
     server's address (`server_address`) and the launcher's default server
     (`server_default`), for the server setting.
   - `End`: the session is over. Sent only once the room's game has begun:

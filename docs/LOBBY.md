@@ -104,9 +104,13 @@ A game Steam started has no hook and keeps the plain menu.
     `app.findAllSavegames`, `app.getSavegameInfo`), rules and a password.
     **Your mods** opens from Join, Host and the room: the player's
     installed mods to turn on or off (`choose_mod`), and in a room the
-    room's own and whether the player has each;
+    room's own and whether the player has each. **Your banner** opens
+    from the first page: the game's pictures a player shows on their card
+    in a room, and under **Characters** the campaign's portraits this game
+    has ("Portraits" below), both sent as `set_banner`;
   - in a room: its name, invite (with **Copy**, which the hook puts on
-    the clipboard: `crate::clipboard`) and counts, the players with their marks
+    the clipboard: `crate::clipboard`) and counts, the players as cards
+    of their banners (a portrait, if they picked one, beside the card) with their marks
     (owner, you, ready, away, other mods) and, for the owner, a Remove
     button that asks first; the chat; **Leave room** (asks first),
     **Ready** or **Not ready**, and, for the owner, **Start the game**,
@@ -186,6 +190,42 @@ name it listed, never a path, finds the file and hands it to the room as
 `--start-save` does (`BridgeOptions::start_world`); a save it cannot find
 creates no room. The launcher's own `--start-save` is offered first, then
 the save last picked.
+
+## Portraits
+
+A player may show one of the campaign's characters instead of a banner:
+25 of them, by the name the game gives their picture
+(`tpf3mp_proto::PORTRAITS`, such as `dr_karl_brandt`). The id travels as a
+banner id does (`SetBanner`, protocol 13; bridge version 19), the server
+checks it against the same list, and the launcher remembers it in
+`launcher.json`'s `banner`.
+
+The pictures are the game's own art, so TPF3-MP never ships them, nor
+anything made from them. Each player's launcher makes its own copies at
+startup (`crates/tpf3mp-agent/src/portraits.rs`):
+
+- it reads each campaign mission's `mission.zip` in the player's game
+  (`<game>/mods/release/urbangames_campaign_mission_0N/content/`, N 1 to
+  8) for `mission/dialogue/<id>_neutral.tga` (1024 pixels square), makes
+  each 256 square, and writes it as the game writes its TGAs into the
+  installed mod the game loads (the first `tpf3mp_1` in its mod folders,
+  usually `staging_area/tpf3mp_1`) as
+  `content/gui/tpf3mp/portraits/<id>.tga`, listed in that copy's
+  `_content.json`; the windows load it as
+  `tpf3mp_1::/gui/tpf3mp/portraits/<id>.tga`;
+- it does this once per game build (`portraits/build.txt` names the build
+  they came from): later starts only check the files are there and make
+  any missing ones, as after the mod is installed again. All 25 take
+  about 0.15 s;
+- without the campaign's missions (another build, a game without them) it
+  makes nothing, keeps what it has, and says so in the launcher's log.
+
+The window offers only the portraits the launcher has (`LobbyView::portraits`).
+A room member's portrait reaches either window only when this game has it
+(`portraits::shown`); otherwise the member shows as before, their key's
+banner. A member who picked a portrait shows their key's banner on their
+card, with the portrait square beside it: in the main menu's room and on the
+room page in the game (`tpf3mp/banners.lua`, `portraitOf`).
 
 ## The mod's copies
 

@@ -284,6 +284,15 @@ function texts()
 	return table.concat(out, "\n")
 end
 
+-- Every picture an ImageView shows, in drawing order.
+function images()
+	local out = {}
+	walk(tree, function(node)
+		if node.view == "ImageView" then out[#out + 1] = node.params.path end
+	end)
+	return out
+end
+
 -- The button showing `text` (or with that tooltip), nil if none.
 function find(text)
 	local found
