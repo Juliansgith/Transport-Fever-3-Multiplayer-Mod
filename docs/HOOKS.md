@@ -1574,8 +1574,8 @@ hook, and a construction's window its edits:
   - the game tells game scripts of the proposals of six tools only, under
     the ids `UI::CGameUI`'s constructor names them by:
     `constructionBuilder`, `streetTerminalBuilder`, `streetBuilder`,
-    `trackBuilder`, `streetTrackModifier` (the street and track upgrade
-    tool, not carried yet) and `bulldozer`. The **module editor**
+    `trackBuilder`, `streetTrackModifier` (the road and track modifiers,
+    "The road and track modifiers" below) and `bulldozer`. The **module editor**
     (`UI::ModuleBuilder`, opened from a station's window) is not among
     them: it queues its `WorldBuildProposal` itself and game scripts hear
     nothing of it (its click was stopped with "no proposal seen" in the
@@ -1723,6 +1723,36 @@ track across open ground ($22,054), a track across a street, and a bus
 depot snapped onto a town street, clearing three town buildings
 ($825,816): identical in both games, towns included.
 
+
+### The road and track modifiers
+
+The tools of the road menu's tools tab and the track menu's (tram tracks,
+bus lanes, noise barriers, alleys, the towns' lock, electrification, a
+track type) tell game scripts their builds as `streetTrackModifier`. Seen
+on build 40408 (a room, 2026-09-30; `hook.log` names the tool, e.g.
+`ACTION_TRAM_TRACK_TOOL ::/gui/construction/tools/tram_track_tool.res`,
+and what it changes): each rebuilds the stretch of road it is used on,
+edge by edge, between the same places (a node between two edges may be
+removed and added again at the same place), with its new template (a
+tram track or bus lane is the road's template on TF3), decorations
+(`edgeDecorations`: `barrier_b.edge` as `{ 3, false }`, `alley.edge` as `{
+0, false }`), `roadDevelopmentLocked` and owner (the player-owned tool:
+`false>true`, `nil>` the player), new node configurations at its ends, and
+the town buildings along it cleared and put back.
+
+The mod carries such a build as the `BuildRoad` or `BuildTrack` of the
+network of its first edge (`capture.modify`, `engine.captureModify`): each
+link names its template (`kind`), its decorations by name
+(`edgeDecorationRep.getName`; every game finds its own id with `find`), and
+whether it is locked and owned by the acting company. The town buildings it
+clears every game's build clears again (the build is the player's own,
+`ignoreErrors`), and the node configurations every game makes anew, as for
+a road. Stops and signals on the stretch stay: a new edge between the same
+places in the same direction as a removed one, listing exactly its objects,
+is the edge rebuilt in place, and every game's build gives it the objects
+of the edge it replaces under their own entities (`engine.keptInPlace`,
+`networkInto`); a stop moved onto another edge is refused. The same rule
+lets the road and track tools build through an edge with a stop on it.
 ### The world's lanes
 
 A room finds a game that drifted from the others by comparing the world's

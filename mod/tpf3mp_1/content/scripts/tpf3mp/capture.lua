@@ -297,6 +297,11 @@ function capture.track(proposal)
 	return module("engine").captureBuild(proposal, "Track")
 end
 
+-- The road and track modifiers' builds (tpf3mp/engine.lua captureModify).
+function capture.modify(proposal)
+	return module("engine").captureModify(proposal)
+end
+
 -- A stop placed on a street or track with the stop tool (tpf3mp_proto
 -- action::PlaceStop), read off its proposal by tpf3mp/engine.lua. Returns
 -- the action table; false for a proposal of nothing; or nil and why.
@@ -306,6 +311,10 @@ end
 -- menu gave the tool; the GUI notes it (capture.STOP_NOTE,
 -- gui/tpf3mp/gui_state.script.lua) and `link` reads the note.
 capture.STOP_NOTE = "stop-tool"
+-- Whether the signal the tool places is one-way: "1" or "0".
+capture.ONE_WAY_NOTE = "stop-tool-one-way"
+-- The tool the construction menu last started: its action and resource.
+capture.TOOL_NOTE = "tool"
 
 -- In a GUI Lua state: notes the stop the construction menu gives the stop
 -- tool, for capture.stop, which runs in another. The menu makes the tool's
@@ -319,12 +328,19 @@ function capture.watchStopTool(util, link)
 	end
 	if type(util) ~= "table" or type(util.getActionParams) ~= "function" or link == nil then return false end
 	local original = util.getActionParams
-	util.getActionParams = function(...)
-		local result = original(...)
+	util.getActionParams = function(definition, ...)
+		local result = original(definition, ...)
+		-- The tool picked, for the log (capture.TOOL_NOTE).
+		pcall(function()
+			link:note(capture.TOOL_NOTE, tostring(definition.action) .. " " .. tostring(definition.resName))
+		end)
 		pcall(function()
 			local builder = result.constructionActionParams.edgeObjectBuilder
 			local name = builder and builder.resName
-			if type(name) == "string" and name ~= "" then link:note(capture.STOP_NOTE, name) end
+			if type(name) == "string" and name ~= "" then
+				link:note(capture.STOP_NOTE, name)
+				link:note(capture.ONE_WAY_NOTE, builder.oneWay == true and "1" or "0")
+			end
 		end)
 		return result
 	end
@@ -336,7 +352,8 @@ end
 
 function capture.stop(proposal, link)
 	local noted = link and link.note and link:note(capture.STOP_NOTE) or nil
-	return module("engine").placeStop(proposal, noted)
+	local oneWay = link and link.note and link:note(capture.ONE_WAY_NOTE) == "1"
+	return module("engine").placeStop(proposal, noted, oneWay)
 end
 
 -- The bulldozer's removal (tpf3mp_proto action::Bulldoze), read off its
@@ -377,6 +394,12 @@ end
 -- "" when it has none.
 function capture.describe(proposal)
 	return module("engine").describe(proposal)
+end
+
+-- What a tool changed of the edges it rebuilt, for the log
+-- (tpf3mp/engine.lua).
+function capture.rebuildDiff(proposal)
+	return module("engine").rebuildDiff(proposal)
 end
 
 -- ------------------------------------------------------ vehicles and lines

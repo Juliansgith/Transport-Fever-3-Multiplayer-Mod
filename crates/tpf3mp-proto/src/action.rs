@@ -40,6 +40,10 @@ pub const ACTION_SCHEMA_VERSION: u32 = 10;
 /// track was the longest single TPF2 build measured.
 pub const MAX_VERTICES: usize = 512;
 pub const MAX_LINKS: usize = 512;
+/// Decorations one edge carries.
+pub const MAX_DECORATIONS: usize = 8;
+/// Lanes one edge has.
+pub const MAX_LANES: usize = 32;
 /// Most edges one action removes or bulldozes.
 pub const MAX_EDGES: usize = 256;
 /// Most parameters of one construction, nested modules counted one by one.
@@ -231,6 +235,28 @@ pub struct EdgeKind {
     pub style: Option<ResName>,
 }
 
+/// One lane of an edge, as TF3's `LaneConfig` has it: its speed (in the
+/// game's units, thousandths), width, height and offset in millimetres, its
+/// direction, and the transport modes it carries, a bit for each
+/// `TransportMode` value (a tram track or bus lane is a lane's modes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lane {
+    pub speed: i32,
+    pub width: i32,
+    pub height: i32,
+    pub offset: i32,
+    pub forward: bool,
+    pub modes: u32,
+}
+
+/// A decoration along an edge (TF3's `BaseEdge.edgeDecorations`: a noise
+/// barrier, an alley of trees), by its resource, with the game's flag for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decoration {
+    pub name: ResName,
+    pub flag: bool,
+}
+
 /// One new edge between two vertices of its polyline, by index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
@@ -241,6 +267,20 @@ pub struct Link {
     pub structure: Structure,
     /// None for the build's own street or track, in the build's style.
     pub kind: Option<EdgeKind>,
+    /// Its decorations, as the tool left them.
+    #[serde(default)]
+    pub decorations: BoundedVec<Decoration, MAX_DECORATIONS>,
+    /// Locked against the towns' road development
+    /// (`roadDevelopmentLocked`).
+    #[serde(default)]
+    pub locked: bool,
+    /// Owned by the acting company (`PLAYER_OWNED`), as the tool made it.
+    #[serde(default)]
+    pub owned: bool,
+    /// Its lanes, as the tool made them (a tram track, a bus lane); empty
+    /// for its template's own.
+    #[serde(default)]
+    pub lanes: BoundedVec<Lane, MAX_LANES>,
 }
 
 /// The geometry of one road or track build, as the tool proposed it: new
@@ -633,6 +673,23 @@ pub struct PlaceStop {
     /// names the side the originator's tool put first.
     #[serde(default)]
     pub two_sided: bool,
+    /// What it is: a stop, or a waypoint or signal on a track (the game's
+    /// edge object category).
+    #[serde(default)]
+    pub object: EdgeObjectKind,
+    /// A one-way signal (the signal tool's "oneWay").
+    #[serde(default)]
+    pub one_way: bool,
+}
+
+/// What an edge object placed with the stop and signal tool is (TF3's
+/// `EdgeObject.category`: 0, 1, 2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EdgeObjectKind {
+    #[default]
+    Stop,
+    Waypoint,
+    Signal,
 }
 
 /// One terrain cell: the height it is set to and the height it had, in
@@ -894,6 +951,10 @@ mod tests {
             tangent1: Tangent { x: 1, y: 0, z: 0 },
             structure: Structure::Ground,
             kind: None,
+            decorations: BoundedVec::default(),
+            locked: false,
+            owned: false,
+            lanes: BoundedVec::default(),
         }
     }
 
@@ -1033,6 +1094,7 @@ mod tests {
                 1, // one link
                 0, 1, 2, 0, 0, 2, 0, 0, 0, // 0 -> 1, tangents, Structure::Ground
                 0, // the build's own kind
+                0, 0, 0, 0, // no decorations, not locked, not owned, no lanes of its own
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
             ]
