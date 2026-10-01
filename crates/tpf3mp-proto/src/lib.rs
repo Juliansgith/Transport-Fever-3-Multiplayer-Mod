@@ -75,7 +75,7 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// is in its lobby, names that save to every member
 /// ([`Request::StartWorld`]'s `save`, [`Request::ClearStartWorld`],
 /// [`RoomView::start`]) and marks everyone not ready when it changes.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

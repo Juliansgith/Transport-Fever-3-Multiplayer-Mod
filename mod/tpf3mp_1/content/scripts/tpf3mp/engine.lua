@@ -193,29 +193,16 @@ local function lanesOf(c)
 	return out
 end
 
--- A whole number the tool set, or raises: a junction's settings are carried
--- as the tool proposed them or not at all.
-local function whole(v, what)
-	if type(v) ~= "number" or v ~= math.floor(v) then
-		error("a junction's " .. what .. " it cannot read: " .. tostring(v), 0)
-	end
-	return v
-end
-
-local function flag(v, what)
-	if v == nil then return false end
-	if type(v) ~= "boolean" then error("a junction's " .. what .. " it cannot read: " .. tostring(v), 0) end
-	return v
-end
-
--- A street's precedence at its two ends (BaseEdgeStreet), or nil where the
--- tool set none.
+-- Street precedence is part of the player's proposal, including an explicit zero.
 local function precedenceOf(seg)
-	local se = get(seg, "streetEdge")
-	if se == nil then return nil end
-	local a, b = get(se, "precedenceNode0"), get(se, "precedenceNode1")
-	if a == nil and b == nil then return nil end
-	return { node0 = whole(a, "precedence"), node1 = whole(b, "precedence") }
+    local se = get(seg, "streetEdge")
+    if se == nil then return nil end
+    local a, b = get(se, "precedenceNode0"), get(se, "precedenceNode1")
+    if a == nil and b == nil then return nil end
+    if type(a) ~= "number" or type(b) ~= "number" or a % 1 ~= 0 or b % 1 ~= 0 then
+        error("a street's precedence cannot be read", 0)
+    end
+    return { node0 = a, node1 = b }
 end
 
 local function segment(seg)
@@ -225,7 +212,6 @@ local function segment(seg)
 	local player = owner and get(owner, "player")
 	local e = {
 		id = get(seg, "entity"),
-		precedence = networkOf(seg) == "Street" and precedenceOf(seg) or nil,
 		node0 = c.node0, node1 = c.node1,
 		network = networkOf(seg),
 		tangent0 = vec3(c.tangent0), tangent1 = vec3(c.tangent1),
@@ -238,6 +224,7 @@ local function segment(seg)
 		owned = type(player) == "number" and player >= 0,
 		lanes = lanesOf(c),
 	}
+	if e.network == "Street" then e.precedence = precedenceOf(seg) end
 	local types = enum("BaseEdgeType")
 	if c.type == types.BRIDGE then
 		e.structure = { Bridge = typeName("bridgeTypeRep", c.typeIndex) }

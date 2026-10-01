@@ -18,6 +18,9 @@
 --
 -- Pure Lua against the game's `api`; the tests give it a fake one.
 
+local acceptance = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/acceptance.lua")
+    or require("tpf3mp.acceptance")
+
 local apply = {}
 
 -- A matrix from a Transform: its basis is elements 1-3, 5-7 and 9-11 of the
@@ -1822,6 +1825,8 @@ end
 -- where the game said), or false and why not; never raises.
 function apply.run(action, ctx)
 	if type(action) ~= "table" then return false, "an action is a table" end
+	local allowed, why = acceptance.check(action)
+	if not allowed then return false, why end
 	local kind, body = next(action)
 	if kind == nil or next(action, kind) ~= nil then
 		return false, "an action is a table of one entry"

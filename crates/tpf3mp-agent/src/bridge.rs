@@ -1103,6 +1103,7 @@ impl<L: HookLink> Bridge<L> {
             );
             return;
         }
+        self.options.start_generated_world = start.is_none();
         self.start_attempt += 1;
         self.start_told = None;
         // Readiness is decided afresh once the room has the new world.

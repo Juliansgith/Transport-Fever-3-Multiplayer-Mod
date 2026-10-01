@@ -39,7 +39,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
+	local MODULES = { "acceptance", "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
 		"bridge", "guard", "hudguard", "worldload" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
@@ -703,10 +703,6 @@ function data()
 	-- height in TF3's StyleSheet; zero would hide the content.
 	local WINDOW_WIDTH, PLAYERS_WIDTH, COMPANIES_WIDTH = 800, 192, 548
 	local BODY_HEIGHT = 310
-	-- A player's key banner, in their card (tpf3mp/banners.lua: the same the
-	-- main menu's window shows), at the card's width; a portrait they picked
-	-- beside their name.
-	local BANNER_W, BANNER_H, PORTRAIT = PLAYERS_WIDTH - 44, 37, 32
 	-- The panels' colour, nearly opaque: a window surface that lets the map
 	-- show through made the page hard to read (build 40408, 2026-10-01).
 	local BACKDROP_ALPHA = 0.97
@@ -1071,6 +1067,30 @@ function data()
 			redraw()
 		end
 		local rows = { label(status.room, "font-scale-title-3", 740, 36), gap(6) }
+		-- The room's invite code alone (without the server the launcher may
+		-- put before it), and Copy: the hook puts it on the clipboard, and
+		-- the button says "Copied" for a moment.
+		local code = type(status.invite) == "string" and status.invite:match("(%S+)%s*$")
+		if code then
+			rows[#rows + 1] = box({
+				label("Invite code  " .. code, "font-scale-body"),
+				builtin.Button{
+					meta = { tooltip = "Copy the invite code, to paste it to your friends" },
+					content = label((shared.copied or 0) > 0 and "Copied" or "Copy"),
+					onClick = function()
+						local l = shared.link
+						local ok, why = false, "not linked"
+						if l then ok, why = l:copy(code) end
+						if ok then
+							shared.copied = COPIED_FRAMES
+						else
+							shared.leaveNote = "Not copied: " .. tostring(why)
+						end
+						shared.version = shared.version + 1
+					end,
+				},
+			}, true)
+		end
 		local statusRow = {}
 		if status.competitive ~= nil then
 			statusRow[#statusRow + 1] = label(status.competitive and "Competitive" or "Co-op",
@@ -1091,33 +1111,6 @@ function data()
 			rows[#rows + 1] = label("Your world differed at step " .. tostring(status.diverged)
 				.. ". The room's world is on its way.", "font-scale-annotation, warning", 740, 64)
 		end
-		-- The room's invite code alone (without the server the launcher may
-		-- put before it), and Copy: the hook puts it on the clipboard, and
-		-- the button says "Copied" for a moment.
-		local code = type(status.invite) == "string" and status.invite:match("(%S+)%s*$")
-		if code then
-			rows[#rows + 1] = gap(6)
-			rows[#rows + 1] = box({
-				label("Invite code", "font-scale-annotation"),
-				gap(8),
-				label(code, "font-scale-title-4, info"),
-				gap(10),
-				windowButton((shared.copied or 0) > 0 and "Copied" or "Copy",
-					"Copy the invite code, to paste it to your friends", function()
-						local l = shared.link
-						local ok, why = false, "not linked"
-						if l then ok, why = l:copy(code) end
-						if ok then
-							shared.copied = COPIED_FRAMES
-						else
-							shared.leaveNote = "Not copied: " .. tostring(why)
-						end
-						redraw()
-					end),
-				gap(10),
-				label("Friends join with it from their game's Multiplayer window.", "font-scale-annotation"),
-			}, true)
-		end
 		rows[#rows + 1] = gap(18)
 		local banners = require("tpf3mp.banners")
 		local players, online = {}, 0
@@ -1127,29 +1120,22 @@ function data()
 			if p.me then tags[#tags + 1] = "you" end
 			if not p.connected then tags[#tags + 1] = "away" end
 			if p.connected then online = online + 1 end
-			-- How far their game is with the room's world: Downloading,
-			-- Loading, Playing (tpf3mp/banners.lua, as the main menu's
-			-- window says it).
-			local stage = p.connected and banners.stage(p, true) or nil
-			local name = { label(p.name, "font-scale-body", PLAYERS_WIDTH - 40 - (banners.portraitOf(p) and PORTRAIT + 8 or 0), 16) }
-			-- A campaign character's portrait the player picked, beside their
-			-- name: the hook passes it only where this game has the picture.
-			local portrait = banners.portraitOf(p)
-			if portrait then name = { picture(portrait, PORTRAIT, PORTRAIT), gap(8), name[1] } end
-			local card = {
-				picture(banners.picture(banners.of(p)), BANNER_W, BANNER_H),
-				gap(6),
-				box(name, true),
-			}
-			if #tags > 0 or not stage then
-				card[#card + 1] = label(#tags > 0 and table.concat(tags, " · ") or "playing",
-					"font-scale-annotation" .. (p.me and ", info" or ""), nil, 16)
-			end
-			if stage then
-				card[#card + 1] = label(stage, "font-scale-annotation, "
-					.. ((stage == "Playing" or stage == "Ready") and "success" or "warning"), nil, 16)
-			end
-			players[#players + 1] = box(card, false, PLAYERS_WIDTH - 24, 10, true)
+            local banners = require("tpf3mp.banners")
+            local stage = banners.stage(p, true)
+            if stage then tags[#tags + 1] = stage end
+            players[#players + 1] = builtin.ImageView{
+                meta = { styleSheet = sheet(PLAYERS_WIDTH - 32, 40) }, path = banners.picture(banners.of(p)),
+            }
+            local portrait = banners.portraitOf(p)
+            if portrait then
+                players[#players + 1] = builtin.ImageView{
+                    meta = { styleSheet = sheet(40, 40) }, path = portrait,
+                }
+            end
+			players[#players + 1] = box({
+				label(p.name, "font-scale-body", PLAYERS_WIDTH - 40, 16),
+				label(#tags > 0 and table.concat(tags, " · ") or "playing", "font-scale-annotation" .. (p.me and ", info" or ""), nil, 16),
+			}, false, PLAYERS_WIDTH - 24, 10, true)
 			players[#players + 1] = gap(8)
 		end
 		local companies = {}

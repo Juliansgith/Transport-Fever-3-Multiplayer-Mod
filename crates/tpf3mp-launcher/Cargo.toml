@@ -33,16 +33,16 @@ tracing-subscriber.workspace = true
 ureq.workspace = true
 zip.workspace = true
 
+[build-dependencies]
+image = { workspace = true, features = ["ico"] }
+tpf3mp-buildinfo.workspace = true
+
 [dev-dependencies]
 # wgpu and snapshot render the screens to images for review
 # (tests/screenshots.rs).
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 tempfile.workspace = true
 
-[build-dependencies]
-# The window's logo as the program's icon (build.rs).
-image = { workspace = true, features = ["ico"] }
-tpf3mp-buildinfo.workspace = true
 
 [lints]
 workspace = true

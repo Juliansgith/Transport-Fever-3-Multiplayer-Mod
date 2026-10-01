@@ -53,6 +53,9 @@
 -- Pure Lua against the game's `api` and a `send` that runs a command at once
 -- and returns its data (tpf3mp/apply.lua); the tests give it fakes.
 
+local acceptance = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/acceptance.lua")
+    or require("tpf3mp.acceptance")
+
 local companies = {}
 
 -- The most companies a room keeps at once.
@@ -946,6 +949,7 @@ end
 -- longer has, or one settled for good, is forgotten. Returns what it did,
 -- as lines for the log.
 function companies.settleSubsidies(roster, state, day, send, api)
+	if not acceptance.subsidies then return end
 	local said, kept = {}, {}
 	if type(state) ~= "table" then return said end
 	roster.subsidyDay = day

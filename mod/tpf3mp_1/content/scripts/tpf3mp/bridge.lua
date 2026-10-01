@@ -105,6 +105,9 @@
 --
 -- Pure Lua; the tests hand attach() a fake table.
 
+local acceptance = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/acceptance.lua")
+    or require("tpf3mp.acceptance")
+
 local bridge = {}
 
 -- 12: company passwords: `command` takes a password beside the action,
@@ -165,6 +168,8 @@ end
 -- is never logged, and no answer quotes it.
 function Link:command(action, password)
 	if type(action) ~= "table" then return nil, "an action is a table" end
+	local allowed, why = acceptance.check(action)
+	if not allowed then return nil, why end
 	if password ~= nil and type(password) ~= "string" then return nil, "a password is text" end
 	local ok, result, reason = pcall(self.native.command, action, password)
 	if not ok then return nil, "the hook refused: " .. tostring(result) end

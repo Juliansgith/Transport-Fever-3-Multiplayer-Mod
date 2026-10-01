@@ -197,6 +197,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
     assert_eq!(
         added,
         [
+            "tpf3mp.acceptance",
             "tpf3mp.banners",
             "tpf3mp.bridge",
             "tpf3mp.capture",
@@ -308,11 +309,9 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
             "Players",
             "2 of 2 online",
             "Julian",
-            "host",
-            "Playing",
+            "host · Playing",
             "Sam",
-            "you",
-            "Downloading 42%",
+            "you ·\nDownloading 42%",
             "Companies",
             "Choose who you build with",
             "Waiting for the companies...",
@@ -467,10 +466,9 @@ fn the_multiplayer_windows_rows_follow_each_players_loading() {
              WINDOWS.Tpf3mpWindow.step() \
              local out = {} \
              for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
-                 if v.view == 'TextView' and (v.params.text:find('Downloading') \
-                     or v.params.text:find('Loading') or v.params.text:find('Playing')) then \
-                     out[#out + 1] = v.params.text \
-                 end \
+                 local t = v.view == 'TextView' and (v.params.text:match('Downloading %d+%%') \
+                     or v.params.text:match('Loading%.%.%.') or v.params.text:match('Playing')) \
+                 if t then out[#out + 1] = t end \
              end \
              return tostring(redrawn) .. ':' .. table.concat(out, '|') \
          end",
@@ -520,10 +518,7 @@ fn the_games_window_copies_the_invite_code() {
                      if v.view == 'TextView' and v.params.text == label then return v end \
                  end \
              end \
-             local shown = find('K7QM2X') ~= nil \
-             for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
-                 if v.view == 'TextView' and v.params.text:find('example', 1, true) then shown = false end \
-             end \
+             local shown = find('Invite code  K7QM2X') ~= nil \
              find('Copy').params.onClick() \
              local label = find('Copied') and 'Copied' or 'none' \
              for _ = 1, 130 do BAR.step() end \
@@ -734,6 +729,7 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {},
          dump = nil, dumped = {} }
 tpf3mp_native = {
+    copy = function(text) HOOK.copied = text return true end,
     version = 12,
     note = function(key, value)
         HOOK.notes = HOOK.notes or {}
@@ -3836,6 +3832,25 @@ fn a_road_the_street_tool_proposed_goes_to_the_room() {
     assert_eq!((edges, removed.as_str()), (4, "100"));
 }
 
+#[test]
+fn street_precedence_survives_capture_and_room_replay() {
+    let (lua, _) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(format!(r#"
+        HOOK.room = true HOOK.clicks = 0
+        local proposal = {STREET_PROPOSAL}
+        proposal.proposal.addedSegments[1].streetEdge = {{ precedenceNode0 = 0, precedenceNode1 = 2 }}
+        SCRIPT.guiUpdate({{}}, nil, nil)
+        SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetBuilder', 'builder.proposalCreate', {{ proposal }})
+        HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil)
+        local p = assert(HOOK.commands[1]).BuildRoad.polyline.links[1].precedence
+        assert(p.node0 == 0 and p.node1 == 2)
+        HOOK.batch = {{ HOOK.commands[1] }} UPDATE({{}}, STATE, 0.2)
+        local e = SENT[1].proposal.streetProposal.edgesToAdd[1].streetEdge
+        assert(e.precedenceNode0 == 0 and e.precedenceNode1 == 2)
+    "#)).exec().unwrap();
+}
+
 /// The street tool's build as the room orders it (metres): from node 7 onto
 /// the country street 8-11-9, whose node 11 the new junction replaces, the
 /// street rebuilt through it in its own kind.
@@ -4301,6 +4316,10 @@ fn every_game_buys_at_the_constructions_depot_the_store_bought_at() {
 #[test]
 fn a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_room() {
     let lua = gui();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').rename = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_HOOK).exec().unwrap();
     lua.load(FAKE_CMD).exec().unwrap();
     lua.load(
@@ -4366,6 +4385,10 @@ fn a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_ro
 #[test]
 fn every_game_renames_and_recolours_what_the_room_names() {
     let (lua, _script) = engine();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').rename = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_FLEET).exec().unwrap();
     lua.load(
         "api.cmd.makeEntitySetColorCmd = function(e, color) return { setColor = color, entity = e } end \
@@ -4669,6 +4692,10 @@ fn a_line_travels_by_its_stations_ids_and_is_made_again_the_same() {
 #[test]
 fn a_lines_waypoints_on_track_and_in_the_open_are_made_again_the_same() {
     let (lua, _script) = engine();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').waypoints = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_FLEET).exec().unwrap();
     lua.load(
         r#"
@@ -5261,7 +5288,8 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
         "{logged}"
     );
     assert!(
-        logged.contains("trees: after the rebuild 1 group(s) hold the first tree kept, of 4 assets"),
+        logged
+            .contains("trees: after the rebuild 1 group(s) hold the first tree kept, of 4 assets"),
         "{logged}"
     );
     // A game whose group is not the player's (a tree fewer) refuses, and
@@ -8906,6 +8934,10 @@ end
 #[test]
 fn in_the_rooms_game_a_subsidys_answer_goes_to_the_room() {
     let lua = gui();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').subsidies = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_HOOK).exec().unwrap();
     lua.load(FAKE_CMD).exec().unwrap();
     lua.load(
@@ -8966,6 +8998,10 @@ fn in_the_rooms_game_a_subsidys_answer_goes_to_the_room() {
 #[test]
 fn every_game_gives_a_subsidy_to_the_first_company_to_accept_it() {
     let (lua, _script) = engine();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').subsidies = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_SUBSIDIES).exec().unwrap();
     lua.load(
         r#"
@@ -10314,4 +10350,30 @@ fn a_refused_buy_says_the_price_and_the_money() {
             && why.contains("the consist costs 2500000"),
         "{why}"
     );
+}
+
+/// Both the sender and replay refuse new channels with production defaults.
+#[test]
+fn unaccepted_ports_cannot_be_sent_or_replayed() {
+    let (lua, _) = engine();
+    lua.load(r#"
+        HOOK.room = true
+        local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
+        local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')
+        local link = assert(bridge.attach(bridge.find()))
+        local actions = {
+            { Subsidy = { Decline = { uid = 1, kind = 'x' } } },
+            { Rename = { what = { Vehicle = 1 }, name = 'x' } },
+            { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
+            { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
+            { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
+        }
+        for _, action in ipairs(actions) do
+            local sent, reason = link:command(action)
+            assert(not sent and reason:find('awaits two%-player game acceptance'), tostring(reason))
+            local applied, why = apply.run(action, {})
+            assert(not applied and why:find('awaits two%-player game acceptance'), tostring(why))
+        end
+        assert(#HOOK.commands == 0)
+    "#).exec().unwrap();
 }

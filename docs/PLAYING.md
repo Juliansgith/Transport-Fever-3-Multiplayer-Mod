@@ -145,7 +145,7 @@ game's own **Multiplayer** button (next section).
 
 **Which launcher is this?** The bottom left of the window says its
 version, the protocol it speaks to servers and the commit it was built
-from, as `v0.1.0 · protocol 13 · 1316710abc`; **Settings**, **About this
+from, as `v1.1.0 · protocol 15 · <commit>`; **Settings**, **About this
 launcher** lists them too. The first line of its log names the file that
 runs. On Windows, the file's **Properties**, **Details** show the same
 version and commit.
@@ -299,14 +299,12 @@ window too.
    Game to press. New worlds created through the lobby start automatically
    after the owner finishes the normal world-generation screens.
 8. **Play.** While the world comes, the window says how far it is
-   ("Receiving the room's world: 42% (48.0 MB of 112 MB)"), and the chat
-   and **Leave room** still work. Each player's row says how far their
-   game is: **Downloading 42%**, then **Loading...**, then **Playing**.
-   The window stays open while the world downloads and closes as the
-   world starts loading; once you are in the world, the game's own
-   Multiplayer window, with the same room, opens, and you close it with
-   its X or **Close** (see "While you play"). If you closed the window
-   before, it stays closed.
+   ("Receiving the room's world: 42% (48.0 MB of 112 MB)", then "Loading
+   the room's world..."), and the chat and **Leave room** still work.
+   Each player's row says how far their game is: **Downloading 42%**,
+   then **Loading...**, then **Playing**. In
+   the game, the Multiplayer window on the game bar has the room (see
+   "While you play").
 
 What the window says:
 
@@ -388,16 +386,10 @@ protected folder such as Program Files.
   player's game books them together. The window shows your own company's
   loans and offers, up to four loans at once; the interest and repayments
   are your company's alone.
-- **Subsidies.** Accept or decline a subsidy in its window as usual:
-  every player's game answers it together, a moment after your click.
-  Every company is offered the same subsidies. The first company to
-  accept one gets it; if another company took it a moment before you, the
-  game bar says so ("Taking the subsidy: not done, the subsidy was taken
-  already, by ..."). The money up front, the reward when it is completed
-  and the penalty when it fails all go to the company that took it.
-  Declining an offer takes it away for every company, as in single
-  player. Any company's deliveries count towards a subsidy, whoever took
-  it, as the game counts them.
+- **Subsidies, entity renaming, vehicle recolouring and line waypoints.**
+  These new channels are refused pending a two-player game acceptance run.
+  Their mechanics are implemented but are not enabled for play yet; see
+  [COVERAGE.md](COVERAGE.md).
 - **Prospecting.** Prospect for resources near a town from the
   construction menu as usual: every player's game starts the prospection
   together, a moment after your click, and uses your company's permit.
@@ -423,17 +415,6 @@ protected folder such as Program Files.
   a track's type and its decorations (seen with the road tools; the track
   tools are not yet tried in a real game). Remove them, and roads and
   tracks, with the bulldozer.
-- **Traffic lights, crosswalks and lanes at junctions.** The road tools'
-  traffic light tool, the crosswalk tool and the crossing tool (a
-  junction's road lanes, and in its tram mode its tram lanes, which can
-  join a tram track to a railway's) work as usual, and so do a junction's
-  own window (its traffic light phases and type) and a track junction's
-  double slip switch: every player's game changes the same junction the
-  same way, a moment after your click. Opening one of these tools does
-  nothing by itself; only a click changes a junction. If the room cannot
-  name the junction or the streets at it, or your game reads the tool's
-  change as more than the junction, the click changes nothing and the
-  hook's log says why. Not yet tried in a real game.
 - **Town buildings.** Bulldoze a town's building as usual: every player's
   game removes the same building, a moment after your click; your company
   pays the demolition, and the town's opinion of it changes as in single
@@ -678,3 +659,6 @@ before sharing it publicly if you want to be sure.
 - **"too many requests; try again in a moment"** when joining: too many
   wrong codes or passwords came from your network in the last 10
   minutes. Wait, then check the code.
+
+The lobby and in-game Multiplayer window show **Copy** beside the invite code.
+It copies only the room code, with brief **Copied** feedback.

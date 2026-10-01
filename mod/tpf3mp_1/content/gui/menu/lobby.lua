@@ -29,8 +29,6 @@ local react = ug_require "::/gui/main/react.lua"
 local builtin = ug_require "::/gui/main/builtin.lua"
 local gui_react_util = ug_require "::/gui/main/gui_react_util.tl"
 local button_react_util = ug_require "::/gui/main/button_react_util.tl"
--- The players' banners and loading words, shared with the game's window.
-local banners = ug_require "tpf3mp_1::/scripts/tpf3mp/banners.lua"
 
 local lobby = {}
 
@@ -273,7 +271,7 @@ end
 lobby.worldText = worldText
 
 -- The player closed the window (main_page.tl's close): the hook has nothing
--- to close or hand over when the room's world comes up.
+-- to close when the room's world comes up.
 function lobby.closed()
 	if type(resolveutil) == "table" then
 		pcall(function() resolveutil.__tpf3mp_close = nil end)
@@ -605,8 +603,7 @@ local PICK_POLLS = 8
 
 -- Banners ---------------------------------------------------------------------
 
--- The pictures players show in rooms (tpf3mp/banners.lua, which the game's
--- Multiplayer window shares).
+local banners = ug_require "tpf3mp_1::/scripts/tpf3mp/banners.lua"
 local BANNERS = banners.LIST
 lobby.BANNERS = BANNERS
 lobby.bannerOf = banners.of
@@ -615,9 +612,9 @@ lobby.portraitOf = banners.portraitOf
 lobby.portraitName = banners.portraitName
 lobby.portraitPicture = banners.portrait
 
--- A room member as a banner: a wide, short strip, one to a row of the
--- players' column, with room at its right end for the owner's Remove.
-local MEMBER_WIDTH, MEMBER_HEIGHT = 400, 80
+-- A room member's size as a card, two to a row of the players' column.
+local MEMBER_WIDTH, MEMBER_HEIGHT = 208, 128
+local PORTRAIT_SIZE = 44
 
 -- A picture card in the main menu's style: title and a line under it, a
 -- word on the right; `onClick` nil for a card that only shows.
@@ -648,9 +645,17 @@ local function pictureCard(picture, title, line, right, onClick, enabled, width,
 end
 lobby.pictureCard = pictureCard
 
--- Where a member's game is with the room's world (tpf3mp/banners.lua).
+-- Where a member's game is with the room's world: its download, its load,
+-- then in the game; before the room starts, whether it is ready.
 function lobby.memberStage(member, playing)
-	return banners.stage(member, playing, _)
+	if member.loading == "fetching" then
+		return string.format(_("Downloading %d%%"), math.floor(tonumber(member.percent) or 0))
+	elseif member.loading == "loading" then
+		return _("Loading...")
+	elseif playing then
+		return member.connected and _("Playing") or nil
+	end
+	return member.ready and _("Ready") or _("Not ready")
 end
 
 -- A room member as a card: their banner, name, and what marks them.
@@ -673,10 +678,10 @@ function lobby.memberCard(member, playing)
 	-- their key's banner (tpf3mp/banners.lua).
 	local portrait = lobby.portraitOf(member)
 	local card = pictureCard(lobby.bannerPicture(lobby.bannerOf(member)), member.name,
-		table.concat(marks, " · "), nil, nil, true,
-		portrait and MEMBER_WIDTH - MEMBER_HEIGHT - 8 or MEMBER_WIDTH, MEMBER_HEIGHT, ready and { ready } or {})
+		table.concat(marks, " · "), member.you and _("You") or nil, nil, true,
+		portrait and MEMBER_WIDTH - PORTRAIT_SIZE - 8 or MEMBER_WIDTH, MEMBER_HEIGHT, ready and { ready } or {})
 	if not portrait then return card end
-	return row({ icon(portrait, MEMBER_HEIGHT), gap(8), card })
+	return row({ icon(portrait, PORTRAIT_SIZE), gap(8), card })
 end
 
 -- A campaign character's portrait as a card of the banner picker: the
@@ -702,7 +707,8 @@ lobby.COMPETITIVE_PICTURE = COMPETITIVE_PICTURE
 function lobby.styleCard(competitive, picked, onClick, enabled)
 	local title = competitive and _("Competitive") or _("Co-op")
 	return pictureCard(competitive and COMPETITIVE_PICTURE or COOP_PICTURE,
-		title, picked and _("Picked") or nil, nil, onClick, enabled, RIGHT - 10, 150)
+		picked and ("> " .. title) or title,
+		picked and _("Picked") or nil, nil, onClick, enabled, 190, 104)
 end
 
 -- A big choice of the first page (Join, Host), as a card in the main
@@ -831,19 +837,10 @@ function lobby.content(onClose, focus, onNewGame)
 	local competitiveS = react.useState(false)
 	local joiningS = react.useState(nil)
 	local listAtRef = react.useRef(LIST_POLLS)
-	-- Polls the room page's Copy says "Copied" for after a click.
-	local copiedS = react.useState(0)
-	-- Whether this window already connected by itself: once per opening,
-	-- so a refused connect is not retried in a loop.
-	local autoConnectedRef = react.useRef(false)
-	-- The window stays open while the room's world downloads. It lives in
-	-- the main menu's window container, which the world's GUI leaves behind
-	-- where nothing could close it (2026-10-01), so the hook closes it just
-	-- before the room's world starts loading, while the menu still runs,
-	-- with the close it leaves here while it is open
-	-- (crates/tpf3mp-hook/src/menu.rs, close_lobby), and the game's own
-	-- Multiplayer window opens once the world runs. Closed by the
-	-- player (lobby.closed), it leaves nothing to close or hand over.
+	-- The hook also closes the window as the room's world comes up, should
+	-- it still be open then (crates/tpf3mp-hook/src/menu.rs, close_lobby),
+	-- with the close it leaves here while it is open; closed by the player
+	-- (lobby.closed), it leaves nothing.
 	if type(resolveutil) == "table" then
 		pcall(function() resolveutil.__tpf3mp_close = onClose end)
 	end
@@ -852,6 +849,7 @@ function lobby.content(onClose, focus, onNewGame)
 	local queued = react.useRef(nil)
 	local generate = react.useRef(false)
 	local lastSnapshot = react.useRef(nil)
+	local copiedS = react.useState(0)
 
 	-- What the view shows, in one string: when it changes, an action sent
 	-- has been answered.
@@ -896,6 +894,29 @@ function lobby.content(onClose, focus, onNewGame)
 				lastSnapshot:set(snapshot)
 				stateS:set(state)
 			end
+			local nextAction = queued:get()
+			if nextAction then
+				nextAction.left = nextAction.left - 1
+				if state.error and state.error ~= nextAction.error or not state.linked or not state.heard or nextAction.left <= 0 then
+					queued:set(nil)
+					pendingS:set(nil)
+					refusedS:set(state.error or _("Connection timed out. Please try again."))
+				elseif state.connection == "connected" and state.name == nextAction.name then
+					queued:set(nil)
+					local refused = act(nextAction.fields)
+					refusedS:set(refused)
+					if nextAction.fields.action == "create" then
+						generate:set(not refused and nextAction.fields.start_save == "" and onNewGame and { error = state.error } or nil)
+					end
+					if not refused then pendingS:set({ nextAction.doing, PENDING_POLLS, signature(state) }) end
+				end
+			end
+			if generate:get() and state.room and state.room.you_own then
+				generate:set(false)
+				if onNewGame then onNewGame() end
+			elseif generate:get() and state.error and state.error ~= generate:get().error then
+				generate:set(false)
+			end
 			local room = state.room
 			local owning = room and room.you_own and room.phase == "lobby"
 			-- A start save picked on the room page goes once the game read its
@@ -926,41 +947,7 @@ function lobby.content(onClose, focus, onNewGame)
 						act({ action = "choose_start", save = start.name, map = details.map, year = details.year })
 					end
 				end
-			end
-			-- Opened while not connected: connect to the launcher's server
-			-- under the player's name at once, as a click on Connect would.
-			-- Not on the Join a friend page, which connects under the name
-			-- typed there when Join room is clicked.
-			if not autoConnectedRef:get() and state.linked and state.heard and pageOf(state) ~= "friend"
-				and state.connection ~= "connected" and state.connection ~= "connecting"
-				and type(state.name) == "string" and not state.name:match("^%s*$") then
-				autoConnectedRef:set(true)
-				local refused = act({ action = "connect", name = state.name })
-				if refused then refusedS:set(refused) end
-			end
-			local nextAction = queued:get()
-			if nextAction then
-				nextAction.left = nextAction.left - 1
-				if state.error and state.error ~= nextAction.error or not state.linked or not state.heard or nextAction.left <= 0 then
-					queued:set(nil)
-					pendingS:set(nil)
-					refusedS:set(state.error or _("Connection timed out. Please try again."))
-				elseif state.connection == "connected" and state.name == nextAction.name then
-					queued:set(nil)
-					local refused = act(nextAction.fields)
-					refusedS:set(refused)
-					if nextAction.fields.action == "create" then
-						generate:set(not refused and nextAction.fields.start_save == "" and onNewGame and { error = state.error } or nil)
-					end
-					if not refused then pendingS:set({ nextAction.doing, PENDING_POLLS, signature(state) }) end
-				end
-			end
-			if generate:get() and state.room and state.room.you_own then
-				generate:set(false)
-				if onNewGame then onNewGame() end
-			elseif generate:get() and state.error and state.error ~= generate:get().error then
-				generate:set(false)
-			end
+						end
 			-- The room list, while it is shown: asked for at once, then
 			-- every LIST_POLLS polls (the server allows one a second).
 			local browsing = state.linked and state.connection == "connected" and pageOf(state) == "join" and not modsS:old()
@@ -1540,7 +1527,7 @@ function lobby.content(onClose, focus, onNewGame)
 					not connected and field(_("Your name"), name, state.name ~= "" and state.name or _("Your name"), { maxLength = 32 }) or gap(1),
 					field(_("Room name"), roomName, string.format(_("%s's room"), state.name), { maxLength = 48 }),
 					choice(_("Start from this save"), pickedSave, saveItems, function(value) saveS:set(value) end,
-						pickedSave ~= "" and _("Every player's game loads it from the menu when you start. You can change it in the room.")
+						pickedSave ~= "" and _("Every player's game loads it from the menu when you start.")
 							or _("Choose your map and settings on the next screen.")),
 					choice(_("Players"), playersS:old(), playersItems, function(value) playersS:set(value) end),
 				}, style{ size = { LEFT, AUTO } }),
@@ -1548,9 +1535,11 @@ function lobby.content(onClose, focus, onNewGame)
 				column({
 					note(_("How you play")),
 					gap(4),
-					lobby.styleCard(false, competitiveS:old() ~= true, function() competitiveS:set(false) end, canAct),
-					gap(10),
-					lobby.styleCard(true, competitiveS:old() == true, function() competitiveS:set(true) end, canAct),
+					row({
+						lobby.styleCard(false, competitiveS:old() ~= true, function() competitiveS:set(false) end, canAct),
+						gap(12),
+						lobby.styleCard(true, competitiveS:old() == true, function() competitiveS:set(true) end, canAct),
+					}),
 					gap(4),
 					note(competitiveS:old() and _("Each player founds a company of their own in the game.")
 						or _("Everyone plays for the room's one company.")),
@@ -1576,15 +1565,23 @@ function lobby.content(onClose, focus, onNewGame)
 	local me = you(room)
 	local playing = room.phase == "playing"
 	local confirm = confirmS:old()
-	-- The players as banners, one to a row; for the owner, Remove at the
-	-- right end of each other player's, asked first.
+	-- The players as cards of their banners, two to a row; for the owner,
+	-- a Remove under each other player's, asked first.
 	local memberRows = {}
+	local cells = {}
+	local function flush()
+		if #cells > 0 then
+			memberRows[#memberRows + 1] = row(cells)
+			memberRows[#memberRows + 1] = gap(10)
+			cells = {}
+		end
+	end
 	for _i, member in ipairs(room.members) do
-		local cells = { lobby.memberCard(member, playing) }
+		local parts = { lobby.memberCard(member, playing) }
 		if room.you_own and not member.you then
-			cells[#cells + 1] = gap(8)
+			parts[#parts + 1] = gap(4)
 			if confirm and confirm.kind == "kick" and confirm.id == member.id then
-				cells[#cells + 1] = column({
+				parts[#parts + 1] = row({
 					button(_("Remove"), function()
 						send({ action = "kick", player = member.id }, string.format(_("Removing %s..."), member.name))
 					end, "primary", canAct),
@@ -1592,14 +1589,18 @@ function lobby.content(onClose, focus, onNewGame)
 					button(_("Keep"), function() confirmS:set(nil) end),
 				})
 			else
-				cells[#cells + 1] = button_react_util.makeIconButton(nil, ICON.kick, function()
-					confirmS:set({ kind = "kick", id = member.id, name = member.name })
-				end, string.format(_("Remove %s from the room"), member.name))
+				parts[#parts + 1] = row({
+					button_react_util.makeIconButton(nil, ICON.kick, function()
+						confirmS:set({ kind = "kick", id = member.id, name = member.name })
+					end, string.format(_("Remove %s from the room"), member.name)),
+				})
 			end
 		end
-		memberRows[#memberRows + 1] = row(cells)
-		memberRows[#memberRows + 1] = gap(8)
+		if #cells > 0 then cells[#cells + 1] = gap(12) end
+		cells[#cells + 1] = column(parts)
+		if #cells >= 3 then flush() end
 	end
+	flush()
 
 	local roomHeader = column({
 		row({
@@ -1679,7 +1680,7 @@ function lobby.content(onClose, focus, onNewGame)
 		elseif start then
 			line = lobby.startLine(start)
 		elseif room.you_own then
-			line = _("None: load a world in your game; it is saved for everyone when you start.")
+			line = _("Choose Set up world to create the map and settings for everyone.")
 		else
 			line = _("The world the owner's game has.")
 		end
@@ -1693,7 +1694,7 @@ function lobby.content(onClose, focus, onNewGame)
 			end
 			-- The room's own, even once it left the newest saves listed.
 			if current ~= "" and not listed then table.insert(items, 1, { current, current }) end
-			items[#items + 1] = { "", _("None: I load a world myself") }
+			items[#items + 1] = { "", _("New world: choose map and settings") }
 			children[#children + 1] = choice(_("Start from this save"), current, items, function(value)
 				if value == current or not canAct then return end
 				confirmS:set(nil)

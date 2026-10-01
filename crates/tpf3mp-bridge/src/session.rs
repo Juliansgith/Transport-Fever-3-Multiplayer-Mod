@@ -1226,6 +1226,8 @@ mod tests {
         assert_eq!(heard(&agent), ToAgent::MenuUp { menu: 1 });
         let mut view = lobby_view("connected");
         view.room = Some(crate::LobbyRoom {
+            start: None,
+            upload: None,
             name: Text::new("New room").unwrap(),
             rules: Text::new("native").unwrap(),
             invite: Some(Text::new("K7QM2X").unwrap()),
@@ -1235,8 +1237,6 @@ mod tests {
             has_password: false,
             members: Default::default(),
             competitive: false,
-            start: None,
-            upload: None,
         });
         say(&agent, &ToHook::Lobby(Box::new(view.clone())));
         session.poll_lobby().unwrap();

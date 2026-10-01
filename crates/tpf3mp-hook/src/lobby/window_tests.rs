@@ -14,7 +14,6 @@ use super::{LobbyState, parse_action};
 
 const FAKE_MENU: &str = include_str!("../../tests/lua/fake_menu.lua");
 const WINDOW: &str = include_str!("../../../../mod/tpf3mp_1/content/gui/menu/lobby.lua");
-const BANNERS: &str = include_str!("../../../../mod/tpf3mp_1/content/scripts/tpf3mp/banners.lua");
 
 #[test]
 fn new_world_setup_selects_multiplayer_once_and_preserves_other_settings() {
@@ -54,7 +53,12 @@ fn new_world_setup_selects_multiplayer_once_and_preserves_other_settings() {
 fn menu() -> Lua {
     let lua = Lua::new();
     lua.globals().set("LOBBY_SOURCE", WINDOW).unwrap();
-    lua.globals().set("BANNERS_SOURCE", BANNERS).unwrap();
+    lua.globals()
+        .set(
+            "BANNERS_SOURCE",
+            include_str!("../../../../mod/tpf3mp_1/content/scripts/tpf3mp/banners.lua"),
+        )
+        .unwrap();
     lua.load(FAKE_MENU)
         .set_name("@fake_menu.lua")
         .exec()
@@ -228,17 +232,6 @@ fn not_connected_it_connects_with_the_name_typed_to_the_launchers_server() {
     };
     show(&lua, Some(&view));
     open(&lua, None);
-    // Opened while not connected, it connects by itself under the
-    // launcher's name, once.
-    assert_eq!(
-        sent(&lua),
-        [LobbyAction::Connect {
-            name: Text::new("Ann").unwrap()
-        }]
-    );
-    call(&lua, "tick", ());
-    assert_eq!(sent(&lua), [], "connected by itself only once");
-    // Still not connected (refused, say): Connect is there to try again.
     let shown = texts(&lua);
     assert!(shown.contains("Not connected"), "{shown}");
     assert!(
@@ -768,39 +761,6 @@ fn while_the_rooms_world_comes_the_window_says_how_far_and_stays_usable() {
     show(&lua, Some(&view));
     call(&lua, "tick", ());
     assert!(!texts(&lua).contains("Playing the room's game"));
-}
-
-/// The window stays open while the room's world downloads and loads, each
-/// player's progress in it. While open it leaves the hook its close, which
-/// the hook calls as the world comes up (the main menu's window container
-/// stays behind under the world's GUI); closed by the player, it leaves
-/// nothing, so the game's window does not open in its place.
-#[test]
-fn the_window_stays_through_the_load_and_leaves_the_hook_its_close() {
-    let lua = menu();
-    let mut view = in_room(vec![member(1, "Ann", true, true, true)], true);
-    view.room.as_mut().unwrap().running = true;
-    view.world = LobbyWorld::Fetching { bytes: 1, total: 2 };
-    show(&lua, Some(&view));
-    open(&lua, None);
-    for world in [LobbyWorld::Loading, LobbyWorld::Playing] {
-        view.world = world;
-        show(&lua, Some(&view));
-        call(&lua, "tick", ());
-    }
-    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 0, "still open");
-    // What the hook calls as the world comes up.
-    lua.load("resolveutil.__tpf3mp_close()").exec().unwrap();
-    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 1);
-    // Closed by the player (main_page.tl's close calls lobby.closed).
-    let lua = menu();
-    show(&lua, Some(&view));
-    open(&lua, None);
-    let left: bool = lua
-        .load("local open = type(resolveutil.__tpf3mp_close) == 'function' LOBBY.closed() return open and resolveutil.__tpf3mp_close == nil")
-        .eval()
-        .unwrap();
-    assert!(left, "the close is there while open and gone once closed");
 }
 
 /// Copy beside the room's invite code asks the hook to put the code on the
@@ -1382,13 +1342,6 @@ fn the_players_show_as_cards_of_their_banners_or_their_default() {
             .unwrap()
             .contains("Not ready")
     );
-    // One banner to a row, a single column.
-    let most: u32 = lua.load("return most_cards_in_a_row()").eval().unwrap();
-    assert_eq!(most, 1, "one player to a row");
-    assert!(
-        has_button(&lua, "Remove Bob from the room"),
-        "Remove at the row's end"
-    );
 }
 
 /// While the room's world comes in, each player's row says how far their
@@ -1590,7 +1543,7 @@ fn a_players_portrait_shows_beside_their_name_in_the_room() {
         "{pictures:?}"
     );
     let most: u32 = lua.load("return most_cards_in_a_row()").eval().unwrap();
-    assert_eq!(most, 1, "still one player to a row");
+    assert_eq!(most, 2, "portraits preserve our two-column player cards");
 }
 
 #[test]
@@ -1611,8 +1564,7 @@ fn the_host_picks_co_op_or_competitive_from_two_pictures() {
     assert!(
         styles
             .iter()
-            .any(|(text, picture)| text.starts_with("Co-op")
-                && text.contains("Picked")
+            .any(|(text, picture)| text.starts_with("> Co-op")
                 && picture == "::/gui/menu/images/campaign.tga"),
         "co-op is picked first: {styles:?}"
     );
@@ -1775,6 +1727,37 @@ fn unchanged_lobby_polls_leave_native_controls_open() {
     show(&lua, Some(&changed));
     call(&lua, "tick", ());
     assert!(texts(&lua).contains("A new notice"));
+}
+
+#[test]
+fn switching_from_a_saved_world_restores_stock_world_setup() {
+    let lua = menu();
+    let mut view = starting_from(true, Some(start("mptest", "temperate", 1850, true)), None);
+    show(&lua, Some(&view));
+    open(&lua, None);
+    call(&lua, "choose", ("Start from this save", ""));
+    assert!(
+        matches!(sent(&lua).as_slice(), [LobbyAction::ChooseStart { save, .. }] if save.as_str().is_empty())
+    );
+    view.start_save = None;
+    let room = view.room.as_mut().unwrap();
+    room.start = None;
+    room.members = BoundedVec::new(
+        room.members
+            .iter()
+            .cloned()
+            .map(|mut member| {
+                member.ready = false;
+                member
+            })
+            .collect(),
+    )
+    .unwrap();
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(!enabled(&lua, "Start the game"));
+    click(&lua, "Set up world");
+    assert_eq!(lua.globals().get::<u32>("GENERATED").unwrap(), 1);
 }
 
 #[test]

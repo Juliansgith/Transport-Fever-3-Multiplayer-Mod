@@ -1,5 +1,13 @@
 # Protocol
 
+Current integration: protocol **15**, bridge **21**, action schema **22**
+on `dev`; the local combined line (`local/combined-dev`) keeps protocol 15
+and bridge 21 and speaks action schema **23**, its extra actions after
+dev's (see COVERAGE.md, "Local extras").
+This selective combination differs from both prior dev and PR #37; all
+participants and the relay must be upgraded together. Numbers in feature
+history below describe their original introduction.
+
 This page defines the semantics and invariants of the TPF3-MP protocol. The
 exact fields live in `crates/tpf3mp-proto`, which is the source of truth; this
 page explains what they mean and which orderings are guaranteed. Design
