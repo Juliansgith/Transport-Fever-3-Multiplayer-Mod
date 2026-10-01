@@ -728,6 +728,35 @@ pub mod platform {
         0x48, 0xF7, 0xE9, // imul rcx
     ];
     pub const CANDIDATES_STEAL: usize = 6;
+    /// The free check, for the vehicle watcher only (it changes nothing):
+    /// right after `FindNextFreeTerminal` asks
+    /// `transport::EdgeReservationManager` (`0x255bce0`, `this` at
+    /// `[rsp+0x38]`) who holds one of a candidate terminal's edges (the
+    /// `EdgeId` at `r15`), `mov eax,[rsp+0x78]; cmp eax,edi` (6 bytes,
+    /// stolen; the call's return address, never a branch target) reads the
+    /// answer and compares it with the vehicle (`edi`, `[rbp+0xe0]`). The
+    /// answer is the edge's reservation holder (the manager's map at
+    /// `[this+8]`) or else the nearest vehicle on it in
+    /// `transport::EdgeUseManager` (`[this]`, `0x255f340`), or -1: free.
+    pub const OCCUPANT_SITE: &str = "FindNextFreeTerminal/occupant check";
+    pub const OCCUPANT_EXPECTED: [u8; 8] = [
+        0x8B, 0x44, 0x24, 0x78, // mov eax, [rsp+0x78]
+        0x3B, 0xC7, // cmp eax, edi
+        0x74, 0x09, // je +9
+    ];
+    pub const OCCUPANT_STEAL: usize = 6;
+    /// The candidate being checked: its first two words at `[rsp+0x40]`
+    /// (the station in the high one), its terminal at `[rsp+0x60]`; the
+    /// answer at `[rsp+0x78]`, the reservation manager at `[rsp+0x38]`.
+    const CHECKED: u64 = 0x40;
+    const CHECKED_TERMINAL: u64 = 0x60;
+    const ANSWER: u64 = 0x78;
+    const RESERVATIONS: u64 = 0x38;
+    /// `FindNextFreeTerminal`'s vehicle entity, its stack argument at
+    /// `[rbp+0xe0]` (read into `edi` at `0xb855e2`).
+    const VEHICLE_ARG: u64 = 0xe0;
+    /// Most entries of one edge a check line lists.
+    const MAX_LISTED: u64 = 16;
     /// Update2's `int` argument, the node count, spilled at `[rbp+0x5b0]`.
     const COUNT: i64 = 0x5b0;
     pub const RECORD_LEN: u64 = 8;
@@ -794,11 +823,126 @@ pub mod platform {
         )
     }
 
+    /// The watcher's line for one free check of a candidate terminal's edge
+    /// (`edge` is the `EdgeId`'s entity, index and direction byte): who
+    /// holds it (`-1` free) and the vehicles on it in `EdgeUseManager`,
+    /// each `entity:component:back:front:forward` (`None`: unreadable). An
+    /// occupant that is not on the edge holds a reservation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn check_line(
+        step: u64,
+        engine: usize,
+        vehicle: i32,
+        station: i32,
+        terminal: i32,
+        edge: EdgeKey,
+        occupant: i32,
+        entries: Option<&[super::road::Entry]>,
+    ) -> String {
+        let listed = match entries {
+            None => "unreadable".to_owned(),
+            Some(entries) => {
+                let mut text = format!("{}", entries.len());
+                for entry in entries.iter().take(MAX_LISTED as usize) {
+                    let word = |i: usize| [entry[i], entry[i + 1], entry[i + 2], entry[i + 3]];
+                    text.push_str(&format!(
+                        " {}:{}:{:?}:{:?}:{}",
+                        i32::from_le_bytes(word(0)),
+                        i32::from_le_bytes(word(4)),
+                        f32::from_le_bytes(word(8)),
+                        f32::from_le_bytes(word(12)),
+                        entry[16]
+                    ));
+                }
+                text
+            }
+        };
+        format!(
+            "watch: step {step} engine {engine} vehicle {vehicle} checks {station}/{terminal} edge {}/{}/{} occupant {occupant} entries {listed}",
+            edge.0, edge.1, edge.2
+        )
+    }
+
+    /// The watcher's line for the candidate terminals a vehicle's choice
+    /// weighs, in the order the cost sort gets them (each
+    /// `first/station/terminal`).
+    pub fn candidates_line(
+        step: u64,
+        engine: usize,
+        vehicle: i32,
+        candidates: &[[u32; 3]],
+    ) -> String {
+        let mut text = format!(
+            "watch: step {step} engine {engine} vehicle {vehicle} candidates {}",
+            candidates.len()
+        );
+        for c in candidates.iter().take(MAX_LISTED as usize) {
+            text.push_str(&format!(" {}/{}/{}", c[0] as i32, c[1] as i32, c[2] as i32));
+        }
+        text
+    }
+
+    /// An edge as a check line names it: entity, index, direction byte.
+    pub type EdgeKey = (i32, i32, u8);
+    /// The occupant and the entities on the edge.
+    type Answer = (i32, Vec<i32>);
+    /// The candidates last said per `(engine, vehicle)`.
+    type CandidatesSaid = std::collections::HashMap<(usize, i32), Vec<[u32; 3]>>;
+
+    /// What the watcher said last of each `(engine, vehicle, edge)` free
+    /// check: the occupant and the entities on the edge. A check is said
+    /// when that changes, and a free edge only after it was said held, so a
+    /// vehicle waiting for a platform says each change once.
+    #[derive(Default)]
+    pub struct Checks {
+        said: std::collections::HashMap<(usize, i32, EdgeKey), Answer>,
+    }
+
+    impl Checks {
+        /// Most checks kept; past it the memory starts again.
+        const MAX: usize = 1 << 16;
+
+        /// Whether this answer is to be said.
+        pub fn note(
+            &mut self,
+            engine: usize,
+            vehicle: i32,
+            edge: EdgeKey,
+            occupant: i32,
+            on_edge: Vec<i32>,
+        ) -> bool {
+            let key = (engine, vehicle, edge);
+            let now = (occupant, on_edge);
+            match self.said.get(&key) {
+                Some(before) if *before == now => false,
+                Some(_) if occupant < 0 => {
+                    self.said.remove(&key);
+                    true
+                }
+                None if occupant < 0 => false,
+                _ => {
+                    if self.said.len() >= Self::MAX {
+                        self.said.clear();
+                    }
+                    self.said.insert(key, now);
+                    true
+                }
+            }
+        }
+    }
+
     thread_local! {
         static WATCHED: RefCell<std::collections::HashMap<(u64, i32), Seen>> =
             RefCell::new(std::collections::HashMap::new());
         static ENGINES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+        /// The vehicle the visit loop is looking at, once the watcher read
+        /// it: the room's step, the engine's number and the entity.
+        static CURRENT: std::cell::Cell<Option<(u64, usize, i32)>> = const { std::cell::Cell::new(None) };
+        static CHECKS: RefCell<Checks> = RefCell::new(Checks::default());
+        static CANDIDATES_SAID: RefCell<CandidatesSaid> =
+            RefCell::new(std::collections::HashMap::new());
     }
+    static OCCUPANT_BROKEN: AtomicBool = AtomicBool::new(false);
 
     /// The watcher, at each iteration of the loop: the vehicle the engine
     /// is about to look at (the record at `list + offset`), its state, stop
@@ -860,6 +1004,7 @@ pub mod platform {
                 }
             }
         });
+        CURRENT.with(|current| current.set(Some((step, engine, entity))));
         let changed =
             WATCHED.with(|watched| watched.borrow_mut().insert((this, entity), seen) != Some(seen));
         if changed {
@@ -877,7 +1022,7 @@ pub mod platform {
         }
         let watching = crate::ticks::wanted(std::env::var(WATCH_ENV).ok().as_deref());
         WATCH.store(watching, Ordering::Release);
-        vec![
+        let mut outcomes = vec![
             splice(
                 resolved,
                 VISIT_SITE,
@@ -894,7 +1039,19 @@ pub mod platform {
                 candidates_hook,
                 "the candidate terminals are in one order before the cost sort",
             ),
-        ]
+        ];
+        // The watcher's free-check lines: logging only, with the watcher.
+        if watching {
+            outcomes.push(splice(
+                resolved,
+                OCCUPANT_SITE,
+                &OCCUPANT_EXPECTED,
+                OCCUPANT_STEAL,
+                occupant_hook,
+                "the vehicle watcher logs who holds a candidate platform's edges (logging only)",
+            ));
+        }
+        outcomes
     }
 
     fn splice(
@@ -1050,6 +1207,7 @@ pub mod platform {
                     regs.rdi = visit.sorted.as_ptr() as u64;
                 }
                 if WATCH.load(Ordering::Relaxed) {
+                    CURRENT.with(|current| current.set(None));
                     watch(regs.r13, regs.rdi, regs.rsi);
                 }
             });
@@ -1117,6 +1275,9 @@ pub mod platform {
                 }
                 Err(why) => CANDIDATE_REFUSALS.note(FIX, why),
             }
+            if WATCH.load(Ordering::Relaxed) {
+                watch_candidates(regs.rbp, regs.r13, regs.r14);
+            }
             if n == 1 || n.is_multiple_of(1 << 16) {
                 log::line(&format!(
                     "order fix {FIX}: candidates alive, sorts={n} reordered={} refused={}",
@@ -1125,6 +1286,130 @@ pub mod platform {
                 ));
             }
         });
+    }
+
+    /// The vehicle `FindNextFreeTerminal` runs for, if it is the one the
+    /// visit loop's watcher just read (always, inside the room's step).
+    fn current_vehicle(rbp: u64) -> Option<(u64, usize, i32)> {
+        let (step, engine, entity) = CURRENT.with(|current| current.get())?;
+        if !in_step() {
+            return None;
+        }
+        let vehicle: i32 = read(rbp.checked_add(VEHICLE_ARG)?)?;
+        (vehicle == entity).then_some((step, engine, entity))
+    }
+
+    /// The watcher at the candidate site: the candidates of the vehicle's
+    /// choice, in the order the cost sort gets them, when they changed.
+    fn watch_candidates(rbp: u64, begin: u64, end: u64) {
+        let Some((step, engine, vehicle)) = current_vehicle(rbp) else {
+            return;
+        };
+        if end < begin || !(end - begin).is_multiple_of(CANDIDATE_LEN) {
+            return;
+        }
+        let count = (end - begin) / CANDIDATE_LEN;
+        if count > MAX_CANDIDATES {
+            return;
+        }
+        let mut probe = Probe::new();
+        let mut candidates = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let Some(candidate) = probe.read::<[u32; 3]>(begin + i * CANDIDATE_LEN) else {
+                return;
+            };
+            candidates.push(candidate);
+        }
+        let changed = CANDIDATES_SAID.with(|said| {
+            let mut said = said.borrow_mut();
+            if said.get(&(engine, vehicle)) == Some(&candidates) {
+                return false;
+            }
+            if said.len() >= Checks::MAX {
+                said.clear();
+            }
+            said.insert((engine, vehicle), candidates.clone());
+            true
+        });
+        if changed {
+            log::line(&candidates_line(step, engine, vehicle, &candidates));
+        }
+    }
+
+    /// The watcher at the free check: who holds the candidate terminal's
+    /// edge just asked about. Reads only.
+    pub(super) unsafe extern "system" fn occupant_hook(regs: *mut SavedRegs) {
+        guarded(FIX, &OCCUPANT_BROKEN, || {
+            let rsp = SavedRegs::rsp(regs);
+            // SAFETY: the stub's block, held until the hook returns.
+            let regs = unsafe { &*regs };
+            let Some((step, engine, vehicle)) = current_vehicle(regs.rbp) else {
+                return;
+            };
+            if regs.rdi as u32 as i32 != vehicle {
+                return;
+            }
+            let mut probe = Probe::new();
+            let (Some(checked), Some(terminal), Some(occupant), Some(reservations), Some(edge)) = (
+                probe.read::<u64>(rsp + CHECKED),
+                probe.read::<i32>(rsp + CHECKED_TERMINAL),
+                probe.read::<i32>(rsp + ANSWER),
+                probe.read::<u64>(rsp + RESERVATIONS),
+                probe.read::<[u8; 12]>(regs.r15),
+            ) else {
+                return;
+            };
+            let word =
+                |i: usize| i32::from_le_bytes([edge[i], edge[i + 1], edge[i + 2], edge[i + 3]]);
+            let edge_key = (word(0), word(4), edge[8]);
+            let entries = edge_entries(&mut probe, reservations, regs.r15);
+            let on_edge: Vec<i32> = entries
+                .as_deref()
+                .map(|entries| entries.iter().map(super::road::key).collect())
+                .unwrap_or_default();
+            let say = CHECKS.with(|checks| {
+                checks
+                    .borrow_mut()
+                    .note(engine, vehicle, edge_key, occupant, on_edge)
+            });
+            if say {
+                log::line(&check_line(
+                    step,
+                    engine,
+                    vehicle,
+                    (checked >> 32) as u32 as i32,
+                    terminal,
+                    edge_key,
+                    occupant,
+                    entries.as_deref(),
+                ));
+            }
+        });
+    }
+
+    /// The entries of the edge `edge_id` names in the `EdgeUseManager` the
+    /// reservation manager `reservations` falls back on (`[reservations]`;
+    /// its data at `+0x18`, as `GetEdgeDataPtr` `0x255f2a0` reads it).
+    fn edge_entries(
+        probe: &mut Probe,
+        reservations: u64,
+        edge_id: u64,
+    ) -> Option<Vec<super::road::Entry>> {
+        let manager: u64 = probe.read(reservations)?;
+        let data: u64 = probe.read(manager.checked_add(super::road::MANAGER_DATA)?)?;
+        let vector = super::road::entries_of(probe, data, edge_id).ok()?;
+        let begin: u64 = probe.read(vector)?;
+        let end: u64 = probe.read(vector.checked_add(8)?)?;
+        let len = super::road::ENTRY_LEN;
+        if end < begin
+            || !(end - begin).is_multiple_of(len)
+            || (end - begin) / len > super::road::MAX_ENTRIES
+        {
+            return None;
+        }
+        (0..(end - begin) / len)
+            .map(|i| probe.read::<super::road::Entry>(begin + i * len))
+            .collect()
     }
 
     fn sort_candidates(begin: u64, end: u64) -> Result<Sorted, &'static str> {
@@ -1385,7 +1670,11 @@ pub mod road {
     /// `[data+0]..[data+8]` (int32s); its slots `[data+0x18]..[data+0x20]`
     /// (72 bytes each); the slot's edges `[slot]..[slot+8]` (32 bytes each);
     /// the entries at `edge+8`.
-    fn entries_of(probe: &mut Probe, data: u64, edge_id: u64) -> Result<u64, &'static str> {
+    pub(super) fn entries_of(
+        probe: &mut Probe,
+        data: u64,
+        edge_id: u64,
+    ) -> Result<u64, &'static str> {
         let (entity, index): (i32, i32) = (
             probe.read(edge_id).ok_or("the edge id is unreadable")?,
             edge_id
@@ -2230,6 +2519,45 @@ mod tests {
     }
 
     #[test]
+    fn the_free_check_lines_name_the_holder_and_the_vehicles_on_the_edge() {
+        let mut entry = [0u8; road::ENTRY_LEN as usize];
+        entry[..4].copy_from_slice(&4711i32.to_le_bytes());
+        entry[4..8].copy_from_slice(&3i32.to_le_bytes());
+        entry[8..12].copy_from_slice(&1.5f32.to_le_bytes());
+        entry[12..16].copy_from_slice(&13.25f32.to_le_bytes());
+        entry[16] = 1;
+        assert_eq!(
+            platform::check_line(3201, 1, 217708, 0, 0, (900, 2, 1), 4711, Some(&[entry])),
+            "watch: step 3201 engine 1 vehicle 217708 checks 0/0 edge 900/2/1 occupant 4711 entries 1 4711:3:1.5:13.25:1"
+        );
+        assert_eq!(
+            platform::check_line(3201, 0, 217708, 0, 0, (900, 2, 1), -1, None),
+            "watch: step 3201 engine 0 vehicle 217708 checks 0/0 edge 900/2/1 occupant -1 entries unreadable"
+        );
+        assert_eq!(
+            platform::candidates_line(3201, 0, 217708, &[[7, 0, 0], [7, 0, 1]]),
+            "watch: step 3201 engine 0 vehicle 217708 candidates 2 7/0/0 7/0/1"
+        );
+    }
+
+    #[test]
+    fn a_free_check_is_said_when_its_answer_changes_and_a_free_edge_only_after_a_held_one() {
+        let mut checks = platform::Checks::default();
+        let edge = (900, 2, 1);
+        // Free from the start: nothing to say.
+        assert!(!checks.note(0, 7, edge, -1, vec![]));
+        // Held: said once, then quiet while it stays held by the same.
+        assert!(checks.note(0, 7, edge, 4711, vec![4711]));
+        assert!(!checks.note(0, 7, edge, 4711, vec![4711]));
+        // Another vehicle on it, or another engine: said.
+        assert!(checks.note(0, 7, edge, 4711, vec![4711, 4712]));
+        assert!(checks.note(1, 7, edge, 4711, vec![4711]));
+        // Freed: said once, then quiet again.
+        assert!(checks.note(0, 7, edge, -1, vec![]));
+        assert!(!checks.note(0, 7, edge, -1, vec![]));
+    }
+
+    #[test]
     fn the_land_vehicle_sort_orders_entries_by_their_nodes_entity_id() {
         // Records: node 0 is entity 30, node 1 entity 10, node 2 entity 20.
         let entity_of = |node: u32| [30u32, 10, 20].get(node as usize).copied();
@@ -2308,6 +2636,10 @@ mod tests {
         assert_eq!(
             prologue(platform::CANDIDATES_SITE),
             platform::CANDIDATES_EXPECTED.to_vec()
+        );
+        assert_eq!(
+            prologue(platform::OCCUPANT_SITE),
+            platform::OCCUPANT_EXPECTED.to_vec()
         );
         for name in [
             land_vehicle::RECORDS,
@@ -2430,9 +2762,11 @@ mod tests {
             on.iter()
                 .all(|o| !o.installed && o.reason.contains("the profile has no"))
         );
-        // The platform fix: both sites, each off on its own; and its switch.
+        // The platform fix: both sites and the watcher's free check (the
+        // watcher is on unless its switch says otherwise), each off on its
+        // own; and its switch.
         let platform = platform::install(&resolved, true);
-        assert_eq!(platform.len(), 2);
+        assert_eq!(platform.len(), 3);
         assert!(platform.iter().all(|o| !o.installed));
         let switched = platform::install(&resolved, false);
         assert!(switched[0].reason.contains(platform::TOGGLE_ENV));

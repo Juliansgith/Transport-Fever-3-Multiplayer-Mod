@@ -613,6 +613,19 @@ offset = 0
 prologue = "49 8B CE 49 2B CD 48 8B C7 48 F7 E9"
 required = false
 
+# FindNextFreeTerminal's free check, for the vehicle watcher only (logging; it
+# changes nothing). 0xb85732 is the return address of its call of
+# transport::EdgeReservationManager's occupant query (0x255bce0, this at
+# [rsp+0x38], the EdgeId at r15): `mov eax,[rsp+0x78]; cmp eax,edi` (6 bytes,
+# stolen; nothing branches into 0xb85733..0xb85737), then `je`. The answer is
+# the edge's reservation holder, else the nearest vehicle on it, else -1.
+[[target]]
+name = "FindNextFreeTerminal/occupant check"
+signature = "8B 44 24 78 3B C7 74 09 C6 85 E8 00 00 00 00 EB 0B 0F B6 8D E8 00 00 00"
+offset = 0
+prologue = "8B 44 24 78 3B C7 74 09"
+required = false
+
 # transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
 [[target]]
 name = "transport::EdgeReservationManager::Reserve"

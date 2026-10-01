@@ -67,6 +67,7 @@ const TARGETS: &[(&str, u64)] = &[
     // The platform-order fix (crates/tpf3mp-hook/src/order.rs, `platform`).
     ("ecs::TransportVehicleSystem::Update2/visit", 0xb8bccb),
     ("FindNextFreeTerminal/candidate sort", 0xb85430),
+    ("FindNextFreeTerminal/occupant check", 0xb85732),
     // The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs).
     ("GameSim::Step/paused GameTime advance", 0x159412),
     ("CGameTime::Advance", 0xbace10),
@@ -173,6 +174,8 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     // whose candidate sort follows the candidate site.
     assert_eq!(callee(0xb8bea1), 0xb84e20);
     assert_eq!(callee(0xb85453), 0xb76b30);
+    // The watcher's free check follows the call of the occupant query.
+    assert_eq!(callee(0xb8572d), 0x255bce0);
     // The road-entry fix: Add appends in place (`add qword [rcx+8], 0x14`).
     assert_eq!(
         &text_bytes[at(0x255ea6d)..at(0x255ea6d) + 5],

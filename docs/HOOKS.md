@@ -2979,6 +2979,33 @@ split. A vehicle's stop or platform changes a few times a minute, so the
 lines are few. `engine` numbers the system objects in the order the
 watcher met them, not their addresses.
 
+With the watcher on, two more kinds of line say why a vehicle got the
+platform it got, or none (added after the 2026-10-01 playtests, where
+vehicle 217708 on `twomptest` lost its platform at step 3200 in every game
+and took it back at step 3202 in some games only):
+
+```
+watch: step <s> engine <n> vehicle <entity> candidates <count> <first>/<station>/<terminal> ...
+watch: step <s> engine <n> vehicle <entity> checks <station>/<terminal> edge <entity>/<index>/<dir> occupant <entity or -1> entries <count> <entity>:<component>:<back>:<front>:<forward> ...
+```
+
+The first, from the candidate site, lists the candidate terminals
+`FindNextFreeTerminal` weighs, in the order its cost sort gets them, when
+they changed for that vehicle and engine. The second, from a splice of
+its own (`FindNextFreeTerminal/occupant check`, `0xb85732`: the return of
+its call of `transport::EdgeReservationManager`'s occupant query
+`0x255bce0`), logs only and changes nothing: for one edge of a candidate
+terminal, who holds it and which vehicles `transport::EdgeUseManager` has
+on it, with their places in full. The query answers the edge's
+reservation holder (the manager's map at `[this+8]`), else the nearest
+vehicle on the edge in the `EdgeUseManager` at `[this]` (`0x255f340`), else
+`-1`; an occupant missing from `entries` is therefore a reservation. A
+check is said when its occupant or the entities on the edge change, and a
+free edge only after it was said held, so a vehicle waiting for a platform
+says each change once. In two games' logs, the first `checks` line one has
+and the other lacks names the vehicle or reservation that kept a platform
+in one game only.
+
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
 inherits it; a number above 1 is the interval, default 100 updates), three
