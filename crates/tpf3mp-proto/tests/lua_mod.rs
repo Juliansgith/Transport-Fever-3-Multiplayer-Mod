@@ -5191,11 +5191,18 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
             .eval::<String>()
             .unwrap_or_else(|error| panic!("{code}: {error}\n{}", log(&lua)))
     };
+    // Yours first, marked, with its head and players; the room's first
+    // company to leave to.
+    let shown = eval("return texts()");
     assert!(
-        eval("return texts()").contains("Rival  james (you), bob  (yours, head: james)"),
-        "{}",
-        eval("return texts()")
+        shown.contains("Rival · Your company\nHead: james · Players: james (you), bob\n"),
+        "{shown}"
     );
+    assert!(
+        shown.contains("First\nThe room's first company: everyone's, no head · Players: nobody"),
+        "{shown}"
+    );
+    assert!(shown.contains("Leave to First"), "{shown}");
     // The head types a password: it goes beside the action, and the field
     // hides it.
     assert_eq!(
@@ -5237,11 +5244,12 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
              ROSTER.members = { { player = JAMES, company = 1 } } \
              as(BOB) for _ = 1, 20 do BAR.step() end \
              local n = #HOOK.commands \
-             button('Join').onClick() \
-             local refused = #HOOK.commands == n \
+             local asked = find('TextInputField', function(p) return p.passwordMode end) == nil \
+             button('Switch to Rival').onClick() \
+             local refused = #HOOK.commands == n and asked \
              local f = find('TextInputField', function(p) return p.passwordMode end) \
              f.onTyping('s3cret') \
-             button('Join').onClick() \
+             button('Switch to Rival').onClick() \
              local action, password = last() \
              return tostring(refused) .. '|' .. action.CompanyOp.Join .. '|' .. password"
         ),
@@ -5249,16 +5257,35 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
     );
     let shown = eval("return texts()");
     assert!(
-        shown.contains("Rival  james  (head: james, password, stations closed)"),
+        shown.contains("Rival\nHead: james · Players: james\nPassword · Stations closed"),
         "{shown}"
     );
-    assert!(shown.contains("Joining Rival..."), "{shown}");
+    assert!(shown.contains("Switching to Rival..."), "{shown}");
     assert!(!shown.contains("s3cret"), "{shown}");
     let logged = eval("return table.concat(HOOK.logged, '|')");
     assert!(!logged.contains("s3cret"), "{logged}");
     assert!(
         logged.contains("the line manager offers other companies' open stations"),
         "{logged}"
+    );
+    // Bob in Rival, not its head: he renames it, leaves to the first
+    // company in one click, or founds his own; the head's controls are not
+    // his.
+    assert_eq!(
+        eval(
+            "ROSTER.members = { { player = JAMES, company = 1 }, { player = BOB, company = 1 } } \
+             for _ = 1, 20 do BAR.step() end \
+             local headless = button('Send out') == nil and button('Close') == nil and button('Set') == nil \
+             button('Leave to First').onClick() \
+             local left = last().CompanyOp.Join \
+             find('TextInputField', function(p) return p.placeholderText == 'A company of your own' end) \
+                 .onTyping('Bob Bus') \
+             button('Found a company').onClick() \
+             local founded = last().CompanyOp.Create.name \
+             return tostring(headless) .. '|' .. left .. '|' .. founded .. '|' \
+                 .. tostring(button('Rename') ~= nil)"
+        ),
+        "true|0|Bob Bus|true"
     );
 }
 

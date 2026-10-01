@@ -311,11 +311,16 @@ protected folder such as Program Files.
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window
   hears it a moment after your click.
-- **Companies.** Everyone starts in the save's own company, together. In
-  the Multiplayer window you can found a company of your own, join
-  another, rename or recolour yours, and dissolve it once you are its last
-  player and it owns nothing; any split works, two players in one company
-  and one in another included. What you build and buy is your company's
+- **Companies.** Everyone starts in the save's own company, together. The
+  Multiplayer window lists every company as a card: its colour, name,
+  head, players, money, and whether it has a password; yours comes first,
+  marked **Your company**. **Switch to** on any other company moves you
+  there in one click (one with a password asks for it first, then
+  **Switch to** again), **Leave to** on yours takes you back to the room's
+  first company, and **Found a company** makes one of your own. Under the
+  cards you can rename yours, recolour it with its colour button, and
+  dissolve it once you are its last player and it owns nothing; any split
+  works, two players in one company and one in another included. What you build and buy is your company's
   and paid by it, and what another company owns (its vehicles, lines,
   depots, stations and roads) is theirs: you cannot change or remove it.
   The game's own windows show your company: its money in the corner, and
@@ -330,7 +335,7 @@ protected folder such as Program Files.
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows
   each company's head. The head can give the company a password: then
-  others join it only by typing the password next to its Join button.
+  others join it only by typing the password **Switch to** asks for.
   The password goes to the server, which keeps it from every game and
   every log; nobody, the head included, can read it back, so share it
   the way you share a room's. The head can also remove or change the
