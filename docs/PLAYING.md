@@ -364,7 +364,17 @@ protected folder such as Program Files.
 - **Losing the connection.** If your connection or the server drops, the
   launcher rejoins the room by itself, and your game only pauses. If you
   were away too long to catch up, the room sends you its world again.
-- **Leaving.** **Leave room** gives up your seat. The owner can also remove
+  The server keeps your seat for 5 minutes (its operator may set longer).
+  The launcher stops trying when the server says the room is gone, after
+  5 minutes without getting back in, or when the connection drops again
+  right after each of 5 rejoins in a row. Both windows then say **The
+  room is gone (closed or the server restarted)**, or that it could not
+  rejoin, and you are back on the server in no room: create or join
+  another. **Leave room** works while it is rejoining too, in the
+  launcher and in the game's Multiplayer window: it stops at once.
+- **Leaving.** **Leave room** gives up your seat. It always works: if the
+  server cannot be told, you leave anyway, and the server lets the seat
+  go after its 5 minutes. The owner can also remove
   a player whose game froze; a removed player cannot come back to that
   room. If the room's game had not begun yet, your game keeps running and
   follows you into the next room you create or join: no need to restart
