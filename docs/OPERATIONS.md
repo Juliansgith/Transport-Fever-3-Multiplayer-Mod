@@ -474,7 +474,12 @@ runs on distributions with an older C library too.
 - **Updates.** The launcher installs a release only if it is signed with
   a key it trusts. Whoever holds that key can run code on every player's
   machine, so it lives where no branch or workflow but one can read it,
-  and every signing needs your approval. Set it up once:
+  and every signing needs your approval. Set it up once, the repository's
+  owner, by hand: `tools/github/setup-update-key.cmd` (double-click it on
+  Windows; it needs `gh` signed in as the owner) does the three steps
+  below, keeps the private key in a folder you pick outside every
+  repository, never prints it, and re-runs the last release run of `main`.
+  Or by hand:
 
   1. Create the key on a trusted machine, and keep a copy of the `.pem`
      offline:

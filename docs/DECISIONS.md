@@ -83,7 +83,7 @@ regional VPS nodes.
 
 ## D5 (2026-09-18): one team, both TPF2 codebases as input
 
-Julian Cooper (TPF2MP, `tf2mp-relay`) and silver2127 (`tpf2-multiplayer`)
+_Sep (TPF2MP, `tf2mp-relay`) and silver2127 (`tpf2-multiplayer`)
 work on this repository together. Both TPF2 codebases are MIT licensed. Code
 or test vectors taken from them are credited in the file that uses them.
 

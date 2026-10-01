@@ -185,11 +185,11 @@ the hook reads it.
 | module editor (`UI::ModuleBuilder`), station and airport modules, upgrades | carried: `BuildConstruction` with `replaces`, read natively (INFERRED, not seen) | `a_module_editor_click_goes_to_the_room_as_the_hook_read_it`; `modules.rs` unit tests |
 | terrain tools (raise, lower, smooth, flatten, heightmap) | carried: `Terraform`, read natively (not seen) | `a_terrain_tools_click_goes_to_the_room_as_terraform_actions`; `terrain.rs` unit tests |
 | module bulldozer | carried as the edit it is, if it reaches game scripts as the bulldozer (INFERRED); else stopped by the build gate | `a_station_edit_a_click_saw_goes_to_the_room_and_unhandled_events_are_logged` |
-| crossing tool (`lane_modifier_tool`, `UI::LaneModifier`), traffic light tool, crosswalk tool | carried: `EditJunctions` (the street detail work, a043140; HOOKS.md, "The street detail tools") | `the_traffic_light_tools_proposal_goes_to_the_room_and_every_game_lights_it_alike`, `a_crossing_tools_tram_lanes_join_a_railway_in_every_game_alike` |
+| crossing tool (`lane_modifier_tool`, `UI::LaneModifier`), traffic light tool, crosswalk tool | carried behind `strict_junctions`, off until the two-player check (PLAN.md Part 3): `EditJunctions` (dev's junction tools, cafef85, with the tool named in the log; HOOKS.md, "Junction tools") | `the_traffic_light_tools_proposal_goes_to_the_room_and_every_game_lights_it_alike`, `a_crossing_tools_tram_lanes_join_a_railway_in_every_game_alike`, `a_crosswalk_tools_click_goes_to_the_room_and_every_game_sets_it_alike`, `junction_tools_round_trip_through_the_wire_and_apply_with_each_games_ids` |
 | terrain painter, asset brush (trees, rocks, plants), vegetation and asset erasers | refused (build gate; the hook names why) | `terrain.rs` `what_is_not_only_a_height_grid_is_refused_with_why` |
 | town builder tools | refused (build gate) | `in_the_rooms_game_the_build_tools_are_refused` |
 | bridge and tunnel window (bridge type) | refused ("building from this window") | `a_construction_edited_in_its_window_goes_to_the_room` |
-| a junction's window: traffic light phases, double slip switch | carried: `EditJunctions` (a043140) | `a_junctions_window_sends_its_phases_and_double_slip_to_the_room` |
+| a junction's window: traffic light phases, double slip switch | carried behind `strict_junctions`: `EditJunctions` | `a_junctions_window_sends_its_phases_and_double_slip_to_the_room` |
 | industry window's extend, removal | refused | generic |
 | line manager's map clicks (stops, waypoints) | carried through `makeLineUpdateCmd`, waypoints included | `a_lines_waypoints_on_track_and_in_the_open_are_made_again_the_same` |
 | vehicle store | carried through `makeVehicleBuyCmd` | see the vehicle rows |

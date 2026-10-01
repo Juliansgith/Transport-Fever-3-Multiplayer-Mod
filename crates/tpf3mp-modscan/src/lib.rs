@@ -79,6 +79,7 @@ pub const ROOM_CARRIED: &[&str] = &[
     "makeLineDestroyCmd",
     "makeLineUpdateCmd",
     "makeScriptingSendEventCmd",
+    "makeStockListDiscardCargoCmd",
     "makeVehicleBuyCmd",
     "makeVehicleReplaceCmd",
     "makeVehicleReverseCmd",
@@ -835,6 +836,88 @@ fn assigns_after(tokens: &[Located], i: usize) -> bool {
     }
 }
 
+/// The names a script binds to `game`, `game.config` or a resource
+/// repository (`local g = game`, `local rep = api.res.modelRep`), which the
+/// checks below follow as they follow the paths themselves.
+#[derive(Default)]
+struct Aliases {
+    game: BTreeSet<String>,
+    config: BTreeSet<String>,
+    res: BTreeSet<String>,
+}
+
+impl Aliases {
+    fn of(tokens: &[Located]) -> Self {
+        let mut aliases = Self::default();
+        for i in 0..tokens.len() {
+            let Some(name) = name_at(tokens, i) else {
+                continue;
+            };
+            if is_field(tokens, i) || !punct_at(tokens, i + 1, '=') || punct_at(tokens, i + 2, '=')
+            {
+                continue;
+            }
+            // The value: a plain path, `a.b.c`, and nothing after it.
+            let mut at = i + 2;
+            let mut path = Vec::new();
+            while let Some(part) = name_at(tokens, at) {
+                path.push(part);
+                if punct_at(tokens, at + 1, '.') && name_at(tokens, at + 2).is_some() {
+                    at += 2;
+                } else {
+                    at += 1;
+                    break;
+                }
+            }
+            if path.is_empty()
+                || punct_at(tokens, at, '(')
+                || punct_at(tokens, at, '[')
+                || punct_at(tokens, at, ':')
+            {
+                continue;
+            }
+            let set = match path.as_slice() {
+                [root] if *root == "game" || aliases.game.contains(*root) => &mut aliases.game,
+                ["game", "config"] => &mut aliases.config,
+                [root, "config"] if aliases.game.contains(*root) => &mut aliases.config,
+                ["api", "res", ..] => &mut aliases.res,
+                [root, ..] if aliases.res.contains(*root) => &mut aliases.res,
+                _ => continue,
+            };
+            set.insert(name.to_owned());
+        }
+        aliases
+    }
+
+    fn is_game(&self, name: Option<&str>) -> bool {
+        name.is_some_and(|n| n == "game" || self.game.contains(n))
+    }
+
+    fn is_rep(&self, name: Option<&str>) -> bool {
+        name.is_some_and(|n| n.ends_with("Rep") || self.res.contains(n))
+    }
+}
+
+/// The names whose fields a script must name as written: an index by a
+/// string (`api["cmd"]`) or a computed one hides what it reaches.
+fn hides_its_field(tokens: &[Located], i: usize, aliases: &Aliases) -> Option<String> {
+    let name = name_at(tokens, i)?;
+    if !punct_at(tokens, i + 1, '[') {
+        return None;
+    }
+    let field = is_field(tokens, i);
+    let watched = match name {
+        "api" | "game" => !field,
+        "cmd" | "res" => field,
+        "interface" | "config" => field && i >= 2 && aliases.is_game(name_at(tokens, i - 2)),
+        n => {
+            (!field && (aliases.is_game(Some(n)) || aliases.config.contains(n)))
+                || aliases.is_rep(Some(n))
+        }
+    };
+    watched.then(|| name.to_owned())
+}
+
 /// What a loaded script calls.
 fn calls(
     rel: &str,
@@ -844,11 +927,34 @@ fn calls(
 ) {
     let mut factories = BTreeSet::new();
     let mut first_command = None;
+    let aliases = Aliases::of(tokens);
     for (i, located) in tokens.iter().enumerate() {
         let Token::Name(name) = &located.token else {
             continue;
         };
         let line = Some(located.line);
+        if let Some(indexed) = hides_its_field(tokens, i, &aliases) {
+            add(
+                reasons,
+                Kind::Dynamic,
+                rel,
+                line,
+                format!("{indexed} indexed by a string or a computed name"),
+            );
+        }
+        if !is_field(tokens, i)
+            && aliases.config.contains(name.as_str())
+            && (punct_at(tokens, i + 1, '.') || punct_at(tokens, i + 1, '['))
+            && assigns_after(tokens, i)
+        {
+            add(
+                reasons,
+                Kind::ConfigWrite,
+                rel,
+                line,
+                format!("sets game.config through {name}"),
+            );
+        }
         let called = punct_at(tokens, i + 1, '(')
             || matches!(
                 tokens.get(i + 1).map(|t| &t.token),
@@ -882,7 +988,7 @@ fn calls(
                 }
             }
             "interface"
-                if is_field(tokens, i) && i >= 2 && name_at(tokens, i - 2) == Some("game") =>
+                if is_field(tokens, i) && i >= 2 && aliases.is_game(name_at(tokens, i - 2)) =>
             {
                 add(
                     reasons,
@@ -895,7 +1001,7 @@ fn calls(
             "config"
                 if is_field(tokens, i)
                     && i >= 2
-                    && name_at(tokens, i - 2) == Some("game")
+                    && aliases.is_game(name_at(tokens, i - 2))
                     && assigns_after(tokens, i) =>
             {
                 add(
@@ -915,7 +1021,7 @@ fn calls(
                     "addModifier changes resources as they load".into(),
                 );
             }
-            "addAsTable" | "setAsTable" if is_field(tokens, i) => {
+            "addAsTable" | "setAsTable" | "removeAsTable" if is_field(tokens, i) => {
                 add(
                     reasons,
                     Kind::ResourceWrite,
@@ -924,11 +1030,11 @@ fn calls(
                     format!("{name} writes a resource"),
                 );
             }
-            "add" | "setVisible"
+            "add" | "set" | "remove" | "setVisible"
                 if is_field(tokens, i)
                     && called
                     && i >= 2
-                    && name_at(tokens, i - 2).is_some_and(|rep| rep.ends_with("Rep")) =>
+                    && aliases.is_rep(name_at(tokens, i - 2)) =>
             {
                 add(
                     reasons,

@@ -164,56 +164,8 @@ function roads.convert(capture, world)
 		removedNodes[#removedNodes + 1] = { network = network, at = at }
 	end
 
-	-- The junctions' configurations the tool added, by the polyline's own
-	-- names: a node by its vertex, an edge by its link or, for one the build
-	-- keeps, by its ends. One that names what the room cannot name fails the
-	-- whole build: never a junction half configured.
-	local linkOf, removedId = {}, {}
-	for k, e in ipairs(capture.edges or {}) do
-		if type(e.id) == "number" then linkOf[e.id] = k - 1 end
-	end
-	for _, r in ipairs(capture.removed or {}) do
-		if type(r.id) == "number" then removedId[r.id] = true end
-	end
-	local function edgeOf(id)
-		if linkOf[id] then return { Link = linkOf[id] } end
-		if type(id) ~= "number" or id < 0 or removedId[id] then
-			return nil, "a junction's setting names edge " .. tostring(id) .. ", which the build does not keep"
-		end
-		local network, a, b = nil, nil, nil
-		if world.edgeEnds then network, a, b = world.edgeEnds(id) end
-		local pa, pb = a and vec3(a), b and vec3(b)
-		if not (network and pa and pb) then
-			return nil, "a junction's setting names edge " .. tostring(id) .. ", which the room cannot name"
-		end
-		return { Existing = { network = network, ends = { a = pa, b = pb } } }
-	end
-	local configs = {}
-	for k, c in ipairs(capture.nodeConfigs or {}) do
-		local node, err = vertexFor(c.node)
-		if not node then return nil, "junction " .. k .. ": " .. tostring(err) end
-		local connections = {}
-		for _, lc in ipairs(c.lane_connections) do
-			local e0, why0 = edgeOf(lc.segment0)
-			local e1, why1 = edgeOf(lc.segment1)
-			if not (e0 and e1) then return nil, why0 or why1 end
-			connections[#connections + 1] = { edge0 = e0, lane0 = lc.lane0, edge1 = e1, lane1 = lc.lane1,
-				with_road = lc.with_road, with_tram = lc.with_tram }
-		end
-		local crosswalks = {}
-		for _, id in ipairs(c.crosswalks) do
-			local e, why = edgeOf(id)
-			if not e then return nil, why end
-			crosswalks[#crosswalks + 1] = e
-		end
-		configs[#configs + 1] = { node = node, lane_connections = connections, crosswalks = crosswalks,
-			light_preference = c.light_preference, light_type = c.light_type, phases = c.phases,
-			double_slip_switch = c.double_slip_switch, user_modified_lanes = c.user_modified_lanes,
-			user_modified_lights = c.user_modified_lights }
-	end
-
 	local polyline = { vertices = vertices, links = links, removals = removals, removed_nodes = removedNodes,
-		node_configs = configs }
+		junctions = capture.junctions or {} }
 	if own == "Street" then
 		return { BuildRoad = {
 			street = capture.street, style = capture.style, bus_lane = capture.bus_lane == true,

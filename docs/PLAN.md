@@ -156,7 +156,10 @@ Dev A where it can):
   pace, and the speed row's value, pause included, goes to the room as a
   speed request (`ToAgent::Speed`); the owner's sets the room's speed
   (measured 1x, 2x, 4x and pause), anyone else's is refused as a notice.
-  Other players' speed rows still show their own value, not the room's.
+  *Changed:* guests' speed rows now highlight the room's accepted speed,
+  including pause; guests' buttons and keyboard speed shortcuts are
+  disabled with "Host controls speed" help. The host still requests changes
+  through the game's speed helper. Two-game visual acceptance is pending.
 - [ ] *Added:* whether the stock tools send their commands through
   `api.cmd.sendCommand`. If they do, the caller-RVA filter cannot tell a
   click from our replay (HOOKS.md), and the hook needs another way to
@@ -254,7 +257,14 @@ Dev A (moves to whoever finishes Part 2 first where Dev A is still on
 the hook):
 
 - [ ] Traffic light phases: the intersection by position, the full phase
-  table.
+  table. *Built 2026-10-01:* action schema 11, native junction-only
+  capture on Windows build 40408, Lua capture/replay and checkpoint
+  coverage for crosswalks, lane connections and light settings. The
+  `strict_junctions` switch remains off. The 2026-10-01 two-player test
+  demonstrated crosswalk toggles, a lane-connection change and traffic
+  lights with matching network checkpoints. Custom phases/reset,
+  geometry preservation and the remaining HOOKS.md acceptance checks
+  are still required before enabling it.
 - [ ] Line priority per line; loading rules per station or line.
 - [ ] The new click-to-assign line creation: a new UI flow, captured from
   scratch.

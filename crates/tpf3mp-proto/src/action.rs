@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 20;
+pub const ACTION_SCHEMA_VERSION: u32 = 21;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -44,6 +44,10 @@ pub const MAX_LINKS: usize = 512;
 pub const MAX_DECORATIONS: usize = 8;
 /// Lanes one edge has.
 pub const MAX_LANES: usize = 32;
+/// Junctions changed by one tool stroke, and connections/phases per junction.
+pub const MAX_JUNCTIONS: usize = 64;
+pub const MAX_CONNECTIONS: usize = 256;
+pub const MAX_PHASES: usize = 64;
 /// Most edges one action removes or bulldozes.
 pub const MAX_EDGES: usize = 256;
 /// Most town buildings one bulldoze of streets removes with them.
@@ -73,18 +77,6 @@ pub const MAX_WAYPOINTS: usize = 32;
 pub const MAX_NOTIFICATION_TYPES: usize = 128;
 /// Most stocks one discard names.
 pub const MAX_STOCKS: usize = 64;
-/// Most node configurations one road or track build adds: its junctions,
-/// and the junctions at the ends of the edges it rebuilds.
-pub const MAX_NODE_CONFIGS: usize = 64;
-/// Most lane connections one junction has (four streets of four lanes each
-/// way, every lane to every lane, is 256).
-pub const MAX_LANE_CONNECTIONS: usize = 512;
-/// Most crosswalks one junction has.
-pub const MAX_CROSSWALKS: usize = 16;
-/// Most traffic light phases one junction has.
-pub const MAX_LIGHT_PHASES: usize = 32;
-/// Most indices one traffic light phase locks.
-pub const MAX_LOCKED_LANES: usize = 512;
 /// Most industry types one prospection may find. Build 40408's economy has
 /// at most a handful per cargo.
 pub const MAX_INDUSTRY_TYPES: usize = 32;
@@ -205,6 +197,59 @@ pub struct NodeRef {
     pub at: Pos,
 }
 
+/// A turn through a junction. Lane indices are counted from the junction,
+/// as in TF3, so reversing an edge's local entity numbering changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneConnection {
+    pub incoming: EdgeRef,
+    pub lane_in: u16,
+    pub outgoing: EdgeRef,
+    pub lane_out: u16,
+    pub road: bool,
+    pub tram: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrafficPreference {
+    Auto,
+    Yes,
+    No,
+}
+
+/// Durations in milliseconds. Locked indices address connections followed
+/// by crosswalks, in the order carried by JunctionConfig (never entity ids).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrafficPhase {
+    pub locked: BoundedVec<u16, MAX_CONNECTIONS>,
+    pub duration: u32,
+    pub minimum: u32,
+    pub skip: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JunctionConfig {
+    pub connections: BoundedVec<LaneConnection, MAX_CONNECTIONS>,
+    pub crosswalks: BoundedVec<EdgeRef, MAX_CONNECTIONS>,
+    pub preference: TrafficPreference,
+    /// None is the game's default light type (-1); otherwise a resource name.
+    pub light: Option<ResName>,
+    pub phases: BoundedVec<TrafficPhase, MAX_PHASES>,
+    pub double_slip: bool,
+    pub custom_phases: bool,
+}
+
+/// None removes a configuration and restores the game's defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JunctionChange {
+    pub node: NodeRef,
+    pub config: Option<JunctionConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JunctionEdit {
+    pub changes: BoundedVec<JunctionChange, MAX_JUNCTIONS>,
+}
+
 /// An existing construction, named by its file and its position (the
 /// transform's origin). Matched within 2 m.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -316,141 +361,6 @@ pub struct Precedence {
     pub node1: i32,
 }
 
-/// An edge a node configuration names: a link of its polyline, by index, or
-/// an existing edge the build keeps.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ConfigEdge {
-    Link(u16),
-    Existing(EdgeRef),
-}
-
-/// A turn at a junction, from a lane of one edge to a lane of another, as
-/// TF3's `LaneConnection` has it (lanes zero-based, from the left looking
-/// from the node).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaneConnection {
-    pub edge0: ConfigEdge,
-    pub lane0: i32,
-    pub edge1: ConfigEdge,
-    pub lane1: i32,
-    pub with_road: bool,
-    pub with_tram: bool,
-}
-
-/// One phase of a junction's traffic lights (`TrafficLightState`): the
-/// indices it locks, its duration and least duration in milliseconds, and
-/// whether it may be skipped.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LightPhase {
-    pub locked: BoundedVec<i32, MAX_LOCKED_LANES>,
-    pub duration: i32,
-    pub min_duration: i32,
-    pub can_skip: bool,
-}
-
-/// A junction's own configuration as the street tool proposed it
-/// (`BaseNodeConfig`, a proposal's `nodeConfigsToAdd`): TF3 makes none of
-/// its own for a scripted build, so without it a junction has no turns, no
-/// lights and no crosswalks. Its node is a vertex of the polyline.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeConfig {
-    pub node: u16,
-    pub lane_connections: BoundedVec<LaneConnection, MAX_LANE_CONNECTIONS>,
-    pub crosswalks: BoundedVec<ConfigEdge, MAX_CROSSWALKS>,
-    /// The game's `TrafficLightPreference` value.
-    pub light_preference: i32,
-    /// The traffic lights' type (`trafficLightType`) and phases.
-    pub light_type: i32,
-    pub phases: BoundedVec<LightPhase, MAX_LIGHT_PHASES>,
-    pub double_slip_switch: bool,
-    pub user_modified_lanes: bool,
-    pub user_modified_lights: bool,
-}
-
-/// A change to existing junctions alone, as a street detail tool made it
-/// (schema 16): the traffic light tool, the crosswalk tool, the crossing
-/// tool (a junction's road and tram lanes), and a junction's window (its
-/// traffic light phases, a double slip switch). The tool takes a node's
-/// configuration out (`nodeConfigsToRemove`) and puts the one it changed in
-/// (`nodeConfigsToAdd`), in one proposal.
-///
-/// Every node it names is an existing one, by position; each configuration
-/// names its node by its index in `nodes`, and every edge as an existing edge
-/// by its ends ([`ConfigEdge::Existing`]): the change builds no edge.
-/// Decoding checks both, and that it changes something.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "JunctionEditFields")]
-pub struct JunctionEdit {
-    /// The nodes it names, by position.
-    pub nodes: BoundedVec<NodeRef, MAX_NODE_CONFIGS>,
-    /// The nodes, by index in `nodes`, whose configuration it takes out.
-    pub removed: BoundedVec<u16, MAX_NODE_CONFIGS>,
-    /// The configurations it puts in, as the tool set them.
-    pub configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
-}
-
-#[derive(Deserialize)]
-struct JunctionEditFields {
-    nodes: BoundedVec<NodeRef, MAX_NODE_CONFIGS>,
-    removed: BoundedVec<u16, MAX_NODE_CONFIGS>,
-    configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum JunctionEditError {
-    #[error("a junction edit that changes nothing")]
-    Empty,
-    #[error("a junction edit that names node {0}, which it does not list")]
-    NoSuchNode(usize),
-    #[error("junction configuration {0} names an edge of a build, where only existing edges go")]
-    NotExisting(usize),
-}
-
-impl JunctionEdit {
-    pub fn new(
-        nodes: BoundedVec<NodeRef, MAX_NODE_CONFIGS>,
-        removed: BoundedVec<u16, MAX_NODE_CONFIGS>,
-        configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
-    ) -> Result<Self, JunctionEditError> {
-        if removed.is_empty() && configs.is_empty() {
-            return Err(JunctionEditError::Empty);
-        }
-        let count = nodes.len();
-        for index in removed.iter() {
-            if usize::from(*index) >= count {
-                return Err(JunctionEditError::NoSuchNode(usize::from(*index)));
-            }
-        }
-        let existing = |e: &ConfigEdge| matches!(e, ConfigEdge::Existing(_));
-        for (k, c) in configs.iter().enumerate() {
-            if usize::from(c.node) >= count {
-                return Err(JunctionEditError::NoSuchNode(usize::from(c.node)));
-            }
-            if !(c
-                .lane_connections
-                .iter()
-                .all(|l| existing(&l.edge0) && existing(&l.edge1))
-                && c.crosswalks.iter().all(existing))
-            {
-                return Err(JunctionEditError::NotExisting(k));
-            }
-        }
-        Ok(Self {
-            nodes,
-            removed,
-            configs,
-        })
-    }
-}
-
-impl TryFrom<JunctionEditFields> for JunctionEdit {
-    type Error = JunctionEditError;
-
-    fn try_from(fields: JunctionEditFields) -> Result<Self, JunctionEditError> {
-        Self::new(fields.nodes, fields.removed, fields.configs)
-    }
-}
-
 /// The geometry of one road or track build, as the tool proposed it: new
 /// edges between vertices, and the existing edges and nodes it removes (an
 /// upgrade's, a span the build passes under, the stretch of road TF3's tools
@@ -470,8 +380,8 @@ pub struct Polyline {
     /// Existing nodes removed: TF3's tools move a junction that was near the
     /// new one onto it.
     pub removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
-    /// The junctions' configurations the tool added (schema 14).
-    pub node_configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
+    /// Full junction settings, including those a rebuilt edge must preserve.
+    pub junctions: BoundedVec<JunctionChange, MAX_JUNCTIONS>,
 }
 
 #[derive(Deserialize)]
@@ -481,7 +391,7 @@ struct PolylineFields {
     removals: BoundedVec<EdgeRef, MAX_EDGES>,
     removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
     #[serde(default)]
-    node_configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
+    junctions: BoundedVec<JunctionChange, MAX_JUNCTIONS>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -492,8 +402,6 @@ pub enum PolylineError {
     NoSuchVertex(usize),
     #[error("link {0} joins a vertex to itself")]
     Loop(usize),
-    #[error("node configuration {0} names a vertex or link the polyline does not have")]
-    NoSuchConfigTarget(usize),
 }
 
 impl Polyline {
@@ -520,33 +428,8 @@ impl Polyline {
             links,
             removals,
             removed_nodes: BoundedVec::empty(),
-            node_configs: BoundedVec::empty(),
+            junctions: BoundedVec::empty(),
         })
-    }
-
-    /// This polyline, with these junction configurations; each must name
-    /// its own vertices and links.
-    pub fn with_node_configs(
-        mut self,
-        configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
-    ) -> Result<Self, PolylineError> {
-        let links = self.links.len();
-        let edge_ok = |e: &ConfigEdge| match e {
-            ConfigEdge::Link(i) => usize::from(*i) < links,
-            ConfigEdge::Existing(_) => true,
-        };
-        for (index, c) in configs.iter().enumerate() {
-            let ok = usize::from(c.node) < self.vertices.len()
-                && c.lane_connections
-                    .iter()
-                    .all(|l| edge_ok(&l.edge0) && edge_ok(&l.edge1))
-                && c.crosswalks.iter().all(edge_ok);
-            if !ok {
-                return Err(PolylineError::NoSuchConfigTarget(index));
-            }
-        }
-        self.node_configs = configs;
-        Ok(self)
     }
 
     /// This polyline, removing these existing nodes too.
@@ -555,15 +438,21 @@ impl Polyline {
         self.removed_nodes = nodes;
         self
     }
+
+    #[must_use]
+    pub fn with_junctions(mut self, changes: BoundedVec<JunctionChange, MAX_JUNCTIONS>) -> Self {
+        self.junctions = changes;
+        self
+    }
 }
 
 impl TryFrom<PolylineFields> for Polyline {
     type Error = PolylineError;
 
     fn try_from(fields: PolylineFields) -> Result<Self, PolylineError> {
-        Self::new(fields.vertices, fields.links, fields.removals)?
+        Ok(Self::new(fields.vertices, fields.links, fields.removals)?
             .with_removed_nodes(fields.removed_nodes)
-            .with_node_configs(fields.node_configs)
+            .with_junctions(fields.junctions))
     }
 }
 
@@ -1239,13 +1128,13 @@ pub enum Action {
         /// The rank to take, 1 to 15 in the game.
         level: u8,
     },
-    /// Accepting or declining a subsidy offer (`SubsidyOp`). Appended under
-    /// schema version 13: the variants before it keep their bytes.
-    Subsidy(SubsidyOp),
-    /// A change to existing junctions alone (`JunctionEdit`): the street
-    /// detail tools' and a junction window's. Appended under schema version
-    /// 16: the variants before it keep their bytes.
+    /// Crosswalks, turning lanes and the full traffic-light configuration.
+    /// Appended under schema version 11.
     EditJunctions(JunctionEdit),
+    /// Accepting or declining a subsidy offer (`SubsidyOp`). Appended under
+    /// schema version 21 (13 before dev's junction tools took 18): the
+    /// variants before it keep their bytes.
+    Subsidy(SubsidyOp),
     /// Renaming what is not a line or a company (`Renamed`): a vehicle, a
     /// station, a town, a construction. Appended under schema version 17:
     /// the variants before it keep their bytes.
@@ -1263,6 +1152,8 @@ pub enum Action {
 
 #[derive(Debug, Error)]
 pub enum ActionError {
+    #[error("invalid junction configuration: {0}")]
+    Junction(&'static str),
     #[error("action schema {found}; this game speaks {ACTION_SCHEMA_VERSION}")]
     Schema { found: u32 },
     #[error("malformed action: {0}")]
@@ -1304,9 +1195,55 @@ impl Action {
         }
     }
 
+    /// Validate relationships within a junction, beyond the wire's bounds.
+    pub fn validate(&self) -> Result<(), ActionError> {
+        let changes = match self {
+            Self::EditJunctions(edit) => {
+                if edit.changes.is_empty() {
+                    return Err(ActionError::Junction("empty edit"));
+                }
+                &edit.changes
+            }
+            Self::BuildRoad(road) => &road.polyline.junctions,
+            Self::BuildTrack(track) => &track.polyline.junctions,
+            Self::BuildConstruction(build) => match &build.connection {
+                Some(line) => &line.junctions,
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        for (i, change) in changes.iter().enumerate() {
+            if changes[..i].iter().any(|other| other.node == change.node) {
+                return Err(ActionError::Junction("node changed twice"));
+            }
+            let Some(config) = &change.config else {
+                continue;
+            };
+            for turn in config.connections.iter() {
+                if usize::from(turn.lane_in) >= MAX_LANES || usize::from(turn.lane_out) >= MAX_LANES
+                {
+                    return Err(ActionError::Junction("lane index out of bounds"));
+                }
+            }
+            let count = config.connections.len() + config.crosswalks.len();
+            for phase in config.phases.iter() {
+                if phase.minimum > phase.duration || phase.duration > 86_400_000 {
+                    return Err(ActionError::Junction("invalid phase duration"));
+                }
+                for (j, lane) in phase.locked.iter().enumerate() {
+                    if usize::from(*lane) >= count || phase.locked[..j].contains(lane) {
+                        return Err(ActionError::Junction("invalid or duplicate locked lane"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The payload of an intent carrying this action: the schema version,
     /// then the action, both postcard-encoded.
     pub fn to_payload(&self) -> Result<Payload, ActionError> {
+        self.validate()?;
         let mut bytes = postcard::to_stdvec(&ACTION_SCHEMA_VERSION)?;
         bytes.extend(postcard::to_stdvec(self)?);
         Ok(Payload::new(bytes)?)
@@ -1319,10 +1256,11 @@ impl Action {
         if version != ACTION_SCHEMA_VERSION {
             return Err(ActionError::Schema { found: version });
         }
-        let (action, rest) = postcard::take_from_bytes(rest)?;
+        let (action, rest): (Self, _) = postcard::take_from_bytes(rest)?;
         if !rest.is_empty() {
             return Err(ActionError::TrailingBytes(rest.len()));
         }
+        action.validate()?;
         Ok(action)
     }
 }
@@ -1393,14 +1331,14 @@ mod tests {
             links: BoundedVec<Link, MAX_LINKS>,
             removals: BoundedVec<EdgeRef, MAX_EDGES>,
             removed_nodes: BoundedVec<NodeRef, MAX_EDGES>,
-            node_configs: BoundedVec<NodeConfig, MAX_NODE_CONFIGS>,
+            junctions: BoundedVec<JunctionChange, MAX_JUNCTIONS>,
         }
         let raw = Raw {
             vertices: vertices(1),
             links: BoundedVec::new(vec![link(0, 1)]).unwrap(),
             removals: BoundedVec::empty(),
             removed_nodes: BoundedVec::empty(),
-            node_configs: BoundedVec::empty(),
+            junctions: BoundedVec::empty(),
         };
         let bytes = postcard::to_stdvec(&raw).unwrap();
         assert!(postcard::from_bytes::<Polyline>(&bytes).is_err());
@@ -1437,7 +1375,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                20, // schema version
+                21, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1480,7 +1418,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                21, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1493,7 +1431,7 @@ mod tests {
                 0, // no precedence
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
-                0, // no junction configurations
+                0, // no junction changes
             ]
         );
         // Appended with Prospect under schema version 7: the variants
@@ -1516,7 +1454,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                21, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1534,7 +1472,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                21, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1549,7 +1487,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                21, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1560,7 +1498,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                21, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1572,8 +1510,8 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
-                18, // Action::Subsidy, appended under schema version 13
+                21, // schema version
+                19, // Action::Subsidy, renumbered under schema version 21
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
                 1, b's', // the kind
@@ -1619,7 +1557,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                21, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10
@@ -1632,82 +1570,40 @@ mod tests {
         );
     }
 
-    fn junction(node: u16, edge: ConfigEdge) -> NodeConfig {
-        NodeConfig {
-            node,
-            lane_connections: BoundedVec::empty(),
-            crosswalks: BoundedVec::new(vec![edge]).unwrap(),
-            light_preference: 2,
-            light_type: 1,
-            phases: BoundedVec::empty(),
-            double_slip_switch: false,
-            user_modified_lanes: false,
-            user_modified_lights: false,
-        }
-    }
-
+    /// The junction tools' action keeps dev's number (18, schema 11) and
+    /// the actions appended on the companies branch follow it.
     #[test]
-    fn a_junction_edit_names_its_own_nodes_and_existing_edges_only() {
-        let nodes = BoundedVec::new(vec![NodeRef {
+    fn junction_edits_keep_their_number_and_ours_follow() {
+        let node = NodeRef {
             network: Network::Street,
             at: pos(1, 0, 0),
-        }])
-        .unwrap();
-        let walk = ConfigEdge::Existing(EdgeRef {
-            network: Network::Street,
-            ends: EdgeEnds {
-                a: pos(1, 0, 0),
-                b: pos(0, 1, 0),
-            },
+        };
+        let reset = Action::EditJunctions(JunctionEdit {
+            changes: BoundedVec::new(vec![JunctionChange { node, config: None }]).unwrap(),
         });
-        let one = |c| BoundedVec::new(vec![c]).unwrap();
-        assert_eq!(
-            JunctionEdit::new(nodes.clone(), BoundedVec::empty(), BoundedVec::empty()),
-            Err(JunctionEditError::Empty)
-        );
-        assert_eq!(
-            JunctionEdit::new(
-                nodes.clone(),
-                BoundedVec::empty(),
-                one(junction(1, walk.clone()))
-            ),
-            Err(JunctionEditError::NoSuchNode(1))
-        );
-        assert_eq!(
-            JunctionEdit::new(
-                nodes.clone(),
-                BoundedVec::empty(),
-                one(junction(0, ConfigEdge::Link(0)))
-            ),
-            Err(JunctionEditError::NotExisting(0))
-        );
-        let edit = JunctionEdit::new(
-            nodes,
-            BoundedVec::new(vec![0]).unwrap(),
-            one(junction(0, walk)),
-        )
-        .unwrap();
-        let action = Action::EditJunctions(edit);
-        let payload = action.to_payload().unwrap();
+        let payload = reset.to_payload().unwrap();
         assert_eq!(
             payload.as_bytes(),
             [
-                20, // schema version
-                19, // Action::EditJunctions, appended under schema version 16
-                1, 0, 2, 0, 0, // a node: Street, (1, 0, 0)
-                1, 0, // its configuration removed
-                1, 0, // one configuration, at node 0
-                0, // no lane connections
-                1, 1, 0, 2, 0, 0, 0, 2, 0, // a crosswalk: Existing, Street, its ends
-                4, 2, 0, // preference 2, type 1, no phases
-                0, 0, 0, // no double slip, nothing set by hand
+                21, // schema version
+                18, // Action::EditJunctions, appended under schema version 11
+                1, 0, 2, 0, 0, // one change: Street, (1, 0, 0)
+                0, // no configuration: the game's defaults
             ]
         );
-        assert_eq!(Action::from_payload(&payload).unwrap(), action);
-        // A payload that names a node it does not list does not decode.
-        let mut bad = payload.as_bytes().to_vec();
-        bad[8] = 3;
-        assert!(Action::from_payload(&Payload::new(bad).unwrap()).is_err());
+        assert_eq!(Action::from_payload(&payload).unwrap(), reset);
+        // An edit of nothing is refused, both ways.
+        let empty = Action::EditJunctions(JunctionEdit {
+            changes: BoundedVec::empty(),
+        });
+        assert!(empty.to_payload().is_err());
+        let rename = Action::Rename {
+            what: Renamed::Town(TownId(3)),
+            name: Text::new("a").unwrap(),
+        };
+        assert_eq!(rename.to_payload().unwrap().as_bytes()[..3], [21, 20, 2]);
+        let note = Action::Notification(NotificationOp::Dismiss(4));
+        assert_eq!(note.to_payload().unwrap().as_bytes()[..3], [21, 21, 0]);
     }
 
     #[test]

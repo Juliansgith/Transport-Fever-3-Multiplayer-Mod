@@ -48,11 +48,16 @@ it shared, with the file and line:
   `rename_scheme_component`, `firstStopToSend_scheme`, `menu_category`,
   `menu_filter_category`, `drag_and_drop`, those of the game's own
   `gui.zip`);
-- resource writes (`addAsTable`, `setAsTable`, `<x>Rep.add`, `<x>Rep.setVisible`);
+- resource writes (`addAsTable`, `setAsTable`, `removeAsTable`,
+  `<x>Rep.add`, `.set`, `.remove`, `.setVisible`);
 - `game.interface`, and setting `game.config`;
+- the same through a name bound to `game`, `game.config` or `api.res...`
+  (`local rep = api.res.modelRep; rep.add(...)`);
 - code the scan cannot read: `load`, `loadstring`, `dofile`, `loadfile`,
   `setfenv`, `_ENV`, `_G[...]`, `setmetatable` or `rawset` on `_G`, `api` or
-  `game`, the `debug` library's setters;
+  `game`, the `debug` library's setters, and `api`, `game`, `api.cmd`,
+  `api.res`, a repository or `game.interface` indexed by a string or a
+  computed name (`api["cmd"]`);
 - `sendCommand` kept as a value or replaced (a mod that captures it before
   the guard is on could send past it);
 - a file of a kind not known to be inert, under `content/` (outside
@@ -177,9 +182,12 @@ deterministic across the room, at the cost of the lead: a hold ordered for
 update `s + lead` misses a vehicle that leaves within the lead.
 
 A state without `debug.getinfo` cannot tell a personal mod's command from
-the game's own; hook.log then says "the personal mods' guard is not on",
-and such a mod would act in its own game alone. This is why carried mods
-stay shared unless the player asks (`--personal-game-scripts`).
+the game's own. It fails closed: hook.log says "the personal mods' guard is
+not on", and the hook loads the room's worlds without this player's
+personal mods from then on (the note `personal-mods-unguarded`). What one
+did before is this game's alone, which the room's check finds; the resync
+loads the world anew, without them. This is also why carried mods stay
+shared unless the player asks (`--personal-game-scripts`).
 
 ## The room's content check
 

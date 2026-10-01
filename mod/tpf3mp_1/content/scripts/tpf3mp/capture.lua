@@ -208,20 +208,40 @@ function capture.replaced(component)
 end
 
 -- Whether an edit's street part removes only the old construction's own
--- nodes and edges (its CONSTRUCTION component's frozenNodes and
--- frozenEdges). true, or nil and why not.
+-- nodes and edges. Track ends may not be in frozenNodes (Steam 40408:
+-- a two-track station has 50 nodes, only 46 frozen). Such a node belongs
+-- to the rebuild only if every incident edge is frozen in this construction
+-- and is being removed. Shared endpoints touching external tracks refuse.
+-- true, or nil and why not.
 function capture.ownStreets(street, component)
-	local own = {}
+	local own = { frozenNodes = {}, frozenEdges = {} }
 	for _, key in ipairs({ "frozenNodes", "frozenEdges" }) do
 		local list = get(component, key)
-		for i = 1, (length(list) or 0) do own[get(list, i)] = true end
+		for i = 1, (length(list) or 0) do own[key][get(list, i)] = true end
 	end
-	for _, key in ipairs({ "removedSegments", "removedNodes" }) do
-		local list = get(street, key)
-		for i = 1, (length(list) or 0) do
-			if not own[get(get(list, i), "entity")] then
-				return nil, "a construction edit that changes the streets around it"
-			end
+	local removed = {}
+	local segments = get(street, "removedSegments")
+	for i = 1, (length(segments) or 0) do
+		local id = get(get(segments, i), "entity")
+		if not own.frozenEdges[id] then
+			return nil, "a construction edit that changes the streets around it"
+		end
+		removed[id] = true
+	end
+	local function ownEnd(id)
+		local ok, edges = pcall(function() return api.engine.system.streetSystem.getNodeSegments(id) end)
+		local n = ok and length(edges)
+		if not n or n < 1 then return false end
+		for i = 1, n do
+			if not removed[get(edges, i)] then return false end
+		end
+		return true
+	end
+	local nodes = get(street, "removedNodes")
+	for i = 1, (length(nodes) or 0) do
+		local id = get(get(nodes, i), "entity")
+		if not own.frozenNodes[id] and not ownEnd(id) then
+			return nil, "a construction edit that changes the streets around it"
 		end
 	end
 	return true
@@ -281,10 +301,6 @@ function capture.connection(proposal)
 	if not ok then return nil, tostring(part) end
 	if part == nil then return false end
 	local removes = #part.removed > 0 or #part.removedNodes > 0
-	-- A junction's configurations name the construction's own entrance,
-	-- which every game makes itself (and snaps by refreshing it): not
-	-- carried with a construction yet.
-	part.nodeConfigs = nil
 	joinedOnly(part)
 	if #part.edges == 0 then
 		if removes then return nil, "a construction that removes streets and builds none" end
@@ -318,20 +334,20 @@ function capture.modify(proposal)
 	return module("engine").captureModify(proposal)
 end
 
--- A street detail tool's change to existing junctions alone
--- (tpf3mp_proto action::JunctionEdit, tpf3mp/engine.lua captureJunctions):
--- the crosswalk tool's and the crossing tool's as the hook read them at the
--- click (tpf3mp_native.built: the shape game scripts see a proposal in, its
--- `junctions` naming the tool), and the traffic light tool's, which reaches
--- game scripts (capture.modify). Returns the action table; false for a
--- change of nothing; or nil and why.
-function capture.junctions(proposal)
-	return module("engine").captureJunctions(proposal)
+-- A change to existing junctions alone (tpf3mp_proto action::JunctionEdit,
+-- tpf3mp/junctions.lua edit): the traffic light tool's, which reaches game
+-- scripts (capture.modify), and the crosswalk and crossing tools' and a
+-- junction window's, as the hook read them at the click
+-- (tpf3mp_native.built, `junctionEdit` set). Returns the action table;
+-- false for a change of nothing; raises why the room cannot carry it.
+function capture.junction(proposal)
+	return module("junctions").edit(proposal)
 end
 
--- A junction change in one line for the log, or nil for any other action.
+-- A junction change in one line for the log, or nil for an action with
+-- none (tpf3mp/junctions.lua summary).
 function capture.junctionSummary(action)
-	local ok, text = pcall(module("engine").junctionSummary, action)
+	local ok, text = pcall(module("junctions").summary, action)
 	if ok then return text end
 	return nil
 end
@@ -515,13 +531,13 @@ end
 -- A junction's window changes the junction alone (its traffic light phases,
 -- api.engine.util.proposal.createTrafficLightProposal; a double slip switch,
 -- createDoubleSlipSwitchProposal; gui/entity_window/double_slip_switch.tl):
--- carried as the street detail tools' are (capture.junctions).
+-- carried as the street detail tools' are (capture.junction).
 function capture.windowBuild(_ctx, proposal)
-	local engine = module("engine")
-	if engine.junctionsOnly(proposal) then
-		local edit, why = engine.captureJunctions(proposal)
-		if not edit then error(why or "a change to junctions of nothing", 0) end
-		return edit
+	local p = proposal and proposal.proposal
+	if p and #(proposal.toAdd or {}) == 0 and #(proposal.toRemove or {}) == 0
+		and ((p.nodeConfigsToAdd and #p.nodeConfigsToAdd > 0)
+		or (p.nodeConfigsToRemove and #p.nodeConfigsToRemove > 0)) then
+		return capture.junction(proposal)
 	end
 	local action, why = capture.construction(proposal)
 	if not action then error(why, 0) end
