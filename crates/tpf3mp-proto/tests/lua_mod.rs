@@ -265,6 +265,7 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
         [
             "Sunday line",
             "Speed: 2x",
+            "Host controls speed",
             "Worlds match",
             "Players",
             "2 of 2 online",
@@ -600,6 +601,20 @@ api.cmd = {
     end,
 }
 "#;
+
+#[test]
+fn the_speed_row_shows_the_room_and_only_the_host_can_use_it() {
+    for with_hook in [false, true] {
+        let lua = gui();
+        if with_hook {
+            lua.load(FAKE_HOOK).exec().unwrap();
+        }
+        lua.load(include_str!("lua/speed_ui.lua"))
+            .set_name("@speed_ui.lua")
+            .exec()
+            .unwrap_or_else(|error| panic!("hook={with_hook}: {error}"));
+    }
+}
 
 /// The game's save and load, as the GUI state has them.
 const FAKE_APP: &str = r#"

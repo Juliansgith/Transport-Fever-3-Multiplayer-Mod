@@ -856,6 +856,8 @@ function data()
 		local statusRow = {}
 		if status.speed then statusRow[#statusRow + 1] = label("Speed: " .. speedText(status.speed), "font-scale-annotation") end
 		statusRow[#statusRow + 1] = gap(16)
+		statusRow[#statusRow + 1] = label("Host controls speed", "font-scale-annotation")
+		statusRow[#statusRow + 1] = gap(16)
 		if status.diverged then
 			statusRow[#statusRow + 1] = label("Resyncing your world", "font-scale-annotation, warning")
 		else

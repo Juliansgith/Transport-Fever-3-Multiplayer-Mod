@@ -11,6 +11,8 @@
         "gui/tpf3mp/company_markers.script.lua",
         "gui/tpf3mp/gui_state.res.lua",
         "gui/tpf3mp/gui_state.script.lua",
+        "gui/tpf3mp/speed_control.res.lua",
+        "gui/tpf3mp/speed_control.script.lua",
         "gui/tpf3mp/icons/button_chat.tga",
         "gui/tpf3mp/icons/button_chat_selected.tga",
         "gui/tpf3mp/icons/button_chat_unavailable.tga",
