@@ -191,6 +191,17 @@ fn not_connected_it_connects_with_the_name_typed_to_the_launchers_server() {
     };
     show(&lua, Some(&view));
     open(&lua, None);
+    // Opened while not connected, it connects by itself under the
+    // launcher's name, once.
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::Connect {
+            name: Text::new("Ann").unwrap()
+        }]
+    );
+    call(&lua, "tick", ());
+    assert_eq!(sent(&lua), [], "connected by itself only once");
+    // Still not connected (refused, say): Connect is there to try again.
     let shown = texts(&lua);
     assert!(shown.contains("Not connected"), "{shown}");
     assert!(

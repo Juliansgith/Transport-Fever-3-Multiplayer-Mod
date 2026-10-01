@@ -768,6 +768,9 @@ function lobby.content(onClose, focus)
 	local listAtRef = react.useRef(LIST_POLLS)
 	-- Polls the room page's Copy says "Copied" for after a click.
 	local copiedS = react.useState(0)
+	-- Whether this window already connected by itself: once per opening,
+	-- so a refused connect is not retried in a loop.
+	local autoConnectedRef = react.useRef(false)
 	-- The window stays open while the room's world downloads and loads. It
 	-- lives in the main menu's window container, which the world's GUI
 	-- leaves behind where nothing could close it (2026-10-01), so the hook
@@ -819,6 +822,15 @@ function lobby.content(onClose, focus)
 				end
 			end
 			stateS:set(state)
+			-- Opened while not connected: connect to the launcher's server
+			-- under the player's name at once, as a click on Connect would.
+			if not autoConnectedRef:get() and state.linked and state.heard
+				and state.connection ~= "connected" and state.connection ~= "connecting"
+				and type(state.name) == "string" and not state.name:match("^%s*$") then
+				autoConnectedRef:set(true)
+				local refused = act({ action = "connect", name = state.name })
+				if refused then refusedS:set(refused) end
+			end
 			-- The room list, while it is shown: asked for at once, then
 			-- every LIST_POLLS polls (the server allows one a second).
 			local browsing = state.linked and pageOf(state) == "join" and not modsS:old()
