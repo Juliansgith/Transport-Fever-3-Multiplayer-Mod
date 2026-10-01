@@ -73,6 +73,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario shipyard 0",
@@ -115,6 +121,12 @@
        "key": "seed",
        "value": {
         "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
        }
       }
      ],
@@ -347,6 +359,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario shipyard 1",
@@ -389,6 +407,12 @@
        "key": "seed",
        "value": {
         "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
        }
       }
      ],
@@ -621,6 +645,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario shipyard 2",
@@ -663,6 +693,12 @@
        "key": "seed",
        "value": {
         "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
        }
       }
      ],

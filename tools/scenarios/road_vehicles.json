@@ -98,67 +98,6 @@
    }
   },
   {
-   "at": 70,
-   "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "applied",
-   "note": "Actor 0: a short street north off its east end",
-   "action": {
-    "BuildRoad": {
-     "street": "::/infrastructure/street/country/country_old_small.street_template",
-     "style": null,
-     "bus_lane": false,
-     "tram": "None",
-     "polyline": {
-      "vertices": [
-       {
-        "pos": {
-         "$pos": [
-          150,
-          0,
-          0
-         ]
-        },
-        "resolve": {
-         "Node": "Street"
-        }
-       },
-       {
-        "pos": {
-         "$pos": [
-          150,
-          40,
-          0
-         ]
-        },
-        "resolve": "New"
-       }
-      ],
-      "links": [
-       {
-        "from": 0,
-        "to": 1,
-        "tangent0": {
-         "x": 0,
-         "y": 40000,
-         "z": 0
-        },
-        "tangent1": {
-         "x": 0,
-         "y": 40000,
-         "z": 0
-        },
-        "structure": "Ground",
-        "kind": null
-       }
-      ],
-      "removals": [],
-      "removed_nodes": []
-     }
-    }
-   }
-  },
-  {
    "at": 100,
    "actor": 0,
    "origin": "spot:#0:0",
@@ -257,17 +196,17 @@
    "actor": 0,
    "origin": "spot:#0:0",
    "expect": "applied",
-   "note": "Actor 0: a road depot snapped onto the short street's end",
+   "note": "Actor 0: a road depot west of the street, snapped onto its end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/road/road_depot/road_depot.con",
      "transform": {
       "basis": [
-       1000000,
-       0,
-       0,
        0,
        1000000,
+       0,
+       -1000000,
+       0,
        0,
        0,
        0,
@@ -275,8 +214,8 @@
       ],
       "origin": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -287,6 +226,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario truck depot 0",
@@ -296,8 +241,8 @@
        {
         "pos": {
          "$pos": [
-          150,
-          43,
+          -3.0,
+          0.0,
           0
          ]
         },
@@ -306,8 +251,8 @@
        {
         "pos": {
          "$pos": [
-          150,
-          40,
+          0,
+          0,
           0
          ]
         },
@@ -321,13 +266,13 @@
         "from": 0,
         "to": 1,
         "tangent0": {
-         "x": 0,
-         "y": -3000,
+         "x": 3000,
+         "y": 0,
          "z": 0
         },
         "tangent1": {
-         "x": 0,
-         "y": -3000,
+         "x": 3000,
+         "y": 0,
          "z": 0
         },
         "structure": "Ground",
@@ -420,8 +365,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -459,8 +404,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -498,8 +443,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -893,67 +838,6 @@
    }
   },
   {
-   "at": 1570,
-   "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "applied",
-   "note": "Actor 1: a short street north off its east end",
-   "action": {
-    "BuildRoad": {
-     "street": "::/infrastructure/street/country/country_old_small.street_template",
-     "style": null,
-     "bus_lane": false,
-     "tram": "None",
-     "polyline": {
-      "vertices": [
-       {
-        "pos": {
-         "$pos": [
-          150,
-          0,
-          0
-         ]
-        },
-        "resolve": {
-         "Node": "Street"
-        }
-       },
-       {
-        "pos": {
-         "$pos": [
-          150,
-          40,
-          0
-         ]
-        },
-        "resolve": "New"
-       }
-      ],
-      "links": [
-       {
-        "from": 0,
-        "to": 1,
-        "tangent0": {
-         "x": 0,
-         "y": 40000,
-         "z": 0
-        },
-        "tangent1": {
-         "x": 0,
-         "y": 40000,
-         "z": 0
-        },
-        "structure": "Ground",
-        "kind": null
-       }
-      ],
-      "removals": [],
-      "removed_nodes": []
-     }
-    }
-   }
-  },
-  {
    "at": 1600,
    "actor": 1,
    "origin": "spot:#1:0",
@@ -1052,17 +936,17 @@
    "actor": 1,
    "origin": "spot:#1:0",
    "expect": "applied",
-   "note": "Actor 1: a road depot snapped onto the short street's end",
+   "note": "Actor 1: a road depot west of the street, snapped onto its end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/road/road_depot/road_depot.con",
      "transform": {
       "basis": [
-       1000000,
-       0,
-       0,
        0,
        1000000,
+       0,
+       -1000000,
+       0,
        0,
        0,
        0,
@@ -1070,8 +954,8 @@
       ],
       "origin": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -1082,6 +966,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario truck depot 1",
@@ -1091,8 +981,8 @@
        {
         "pos": {
          "$pos": [
-          150,
-          43,
+          -3.0,
+          0.0,
           0
          ]
         },
@@ -1101,8 +991,8 @@
        {
         "pos": {
          "$pos": [
-          150,
-          40,
+          0,
+          0,
           0
          ]
         },
@@ -1116,13 +1006,13 @@
         "from": 0,
         "to": 1,
         "tangent0": {
-         "x": 0,
-         "y": -3000,
+         "x": 3000,
+         "y": 0,
          "z": 0
         },
         "tangent1": {
-         "x": 0,
-         "y": -3000,
+         "x": 3000,
+         "y": 0,
          "z": 0
         },
         "structure": "Ground",
@@ -1215,8 +1105,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -1254,8 +1144,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -1293,8 +1183,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -1704,67 +1594,6 @@
    }
   },
   {
-   "at": 3070,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "applied",
-   "note": "Actor 2: a short street north off its east end",
-   "action": {
-    "BuildRoad": {
-     "street": "::/infrastructure/street/country/country_old_small.street_template",
-     "style": null,
-     "bus_lane": false,
-     "tram": "None",
-     "polyline": {
-      "vertices": [
-       {
-        "pos": {
-         "$pos": [
-          150,
-          0,
-          0
-         ]
-        },
-        "resolve": {
-         "Node": "Street"
-        }
-       },
-       {
-        "pos": {
-         "$pos": [
-          150,
-          40,
-          0
-         ]
-        },
-        "resolve": "New"
-       }
-      ],
-      "links": [
-       {
-        "from": 0,
-        "to": 1,
-        "tangent0": {
-         "x": 0,
-         "y": 40000,
-         "z": 0
-        },
-        "tangent1": {
-         "x": 0,
-         "y": 40000,
-         "z": 0
-        },
-        "structure": "Ground",
-        "kind": null
-       }
-      ],
-      "removals": [],
-      "removed_nodes": []
-     }
-    }
-   }
-  },
-  {
    "at": 3100,
    "actor": 2,
    "origin": "spot:#2:0",
@@ -1863,17 +1692,17 @@
    "actor": 2,
    "origin": "spot:#2:0",
    "expect": "applied",
-   "note": "Actor 2: a road depot snapped onto the short street's end",
+   "note": "Actor 2: a road depot west of the street, snapped onto its end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/road/road_depot/road_depot.con",
      "transform": {
       "basis": [
-       1000000,
-       0,
-       0,
        0,
        1000000,
+       0,
+       -1000000,
+       0,
        0,
        0,
        0,
@@ -1881,8 +1710,8 @@
       ],
       "origin": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -1893,6 +1722,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario truck depot 2",
@@ -1902,8 +1737,8 @@
        {
         "pos": {
          "$pos": [
-          150,
-          43,
+          -3.0,
+          0.0,
           0
          ]
         },
@@ -1912,8 +1747,8 @@
        {
         "pos": {
          "$pos": [
-          150,
-          40,
+          0,
+          0,
           0
          ]
         },
@@ -1927,13 +1762,13 @@
         "from": 0,
         "to": 1,
         "tangent0": {
-         "x": 0,
-         "y": -3000,
+         "x": 3000,
+         "y": 0,
          "z": 0
         },
         "tangent1": {
-         "x": 0,
-         "y": -3000,
+         "x": 3000,
+         "y": 0,
          "z": 0
         },
         "structure": "Ground",
@@ -2026,8 +1861,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -2065,8 +1900,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -2104,8 +1939,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        150,
-        78,
+        -38.0,
+        0.0,
         0
        ]
       }
@@ -2455,6 +2290,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario truck station 0",
@@ -2498,6 +2339,12 @@
        "value": {
         "Int": 0
        }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
       }
      ],
      "name": "Scenario truck station 1",
@@ -2540,6 +2387,12 @@
        "key": "seed",
        "value": {
         "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
        }
       }
      ],

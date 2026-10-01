@@ -317,13 +317,20 @@ function HANDLERS.BuildConstruction(build)
 	-- for free, as part of this action.
 	local con = constructionAt({ file = build.file, at = build.transform.origin })
 	local refresh = api.engine.util.proposal.refreshConstruction(con)
-	local street, shape = refresh.proposal, {}
+	local street, shape, joins = refresh.proposal, {}, {}
 	for i = 1, #street.addedSegments do
 		local s = street.addedSegments[i]
 		shape[#shape + 1] = "+e" .. s.entity .. ":" .. tostring(s.comp.node0) .. ">" .. tostring(s.comp.node1)
+		-- An existing node (an entity, not one the refresh makes) is what
+		-- the construction's own street or track joins.
+		for _, n in ipairs({ s.comp.node0, s.comp.node1 }) do
+			if type(n) == "number" and n >= 0 then joins[#joins + 1] = tostring(n) end
+		end
 	end
 	for i = 1, #street.removedSegments do shape[#shape + 1] = "-e" .. tostring(street.removedSegments[i].entity) end
-	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " "))
+	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " ") .. "; "
+		.. (#joins > 0 and ("it joins existing node " .. table.concat(joins, ", "))
+			or "it joins no existing node: its entrance stands alone"))
 	-- The game's verdict takes simple proposals only ("SimpleProposal
 	-- expected, got Proposal", build 40408): a refresh the game refuses
 	-- fails in the command's own answer instead (run).

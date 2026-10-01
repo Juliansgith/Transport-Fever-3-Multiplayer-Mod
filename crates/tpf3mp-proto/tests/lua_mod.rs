@@ -2793,7 +2793,7 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
     assert!(
         logged
             .iter()
-            .any(|l| l == "snapping 5000 +e-2:-1>7777 -e6000"),
+            .any(|l| l == "snapping 5000 +e-2:-1>7777 -e6000; it joins existing node 7777"),
         "{logged:?}"
     );
 }
