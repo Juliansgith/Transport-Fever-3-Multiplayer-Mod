@@ -578,7 +578,14 @@ removes, one the room cannot name, or a value it cannot read refuses the
 whole build at the click. Every game adds them in the same proposal as the
 edges, removing the configuration an existing node had first; one that
 names what this game cannot find fails the whole build there, never a
-junction half configured. A construction's streets carry none yet: they
+junction half configured. The game's objects take only the members their
+binding declares writable (build 40408's BaseNodeConfig has no
+`userModifiedLaneConnections` to write, 2026-10-01): every node and edge
+is named before any object is made, the user-modified flags are written
+only where the tool set them and the game takes them, and a member the
+game will not take leaves every junction of that build as the game makes
+it, the road built, the same in every game of a build, and says why. A
+construction's streets carry none yet: they
 name the construction's own entrance, which every game makes itself. The
 log's "handed the player's build" line shows the tool's (`^a/b` after a
 new edge for its precedence at each end, `+cfg<node>{tl= lc= cw= phases=

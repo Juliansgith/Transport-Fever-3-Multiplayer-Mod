@@ -2237,8 +2237,9 @@ function CONFIG_WORDS(configs, nodeAt, edgeAt)
         end
         out[#out + 1] = nodeAt(c.entity) .. ' tl' .. tostring(comp.trafficLightPreference) .. ' type'
             .. tostring(comp.trafficLightConfig.trafficLightType) .. ' ' .. table.concat(phases)
-            .. ' dss=' .. tostring(comp.doubleSlipSwitch) .. ' um=' .. tostring(comp.userModifiedLaneConnections)
-            .. '/' .. tostring(comp.userModifiedTrafficLightStates)
+            .. ' dss=' .. tostring(comp.doubleSlipSwitch == true)
+            .. ' um=' .. tostring(comp.userModifiedLaneConnections == true)
+            .. '/' .. tostring(comp.userModifiedTrafficLightStates == true)
             .. ' turns ' .. table.concat(turns, ' ') .. ' walks ' .. table.concat(walks, ' ')
     end
     return table.concat(out, ' || ')
@@ -2276,8 +2277,14 @@ end
 /// The tool's proposal for a junction, its action as the hook hands it
 /// (through the schema, both ways), applied in this game.
 fn junction_through_the_room(lua: &Lua, proposal: &str) -> String {
+    junction_through_the_room_with(lua, proposal, "")
+}
+
+/// As `junction_through_the_room`, with `setup` run on the fake game first.
+fn junction_through_the_room_with(lua: &Lua, proposal: &str, setup: &str) -> String {
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(CONFIG_WORDS).exec().unwrap();
+    lua.load(setup).exec().unwrap();
     lua.load(format!(
         "CONFIGS[7] = true \
          PROPOSAL = {proposal} \
@@ -2347,6 +2354,106 @@ fn a_t_junction_built_through_the_room_is_configured_as_the_tool_proposed() {
             == "junctions: +cfg-4{tl=1 lc=3 cw=2 phases=2 dss=false um=false/true} \
                 +cfg7{tl=2 lc=1 cw=0 phases=0 dss=false um=false/false}"),
         "what every game applied, for the log: {logged:?}"
+    );
+}
+
+/// The game's own objects, as build 40408 binds them: a member the binding
+/// does not declare writable raises "no writable member" (2026-10-01:
+/// BaseNodeConfig refused userModifiedLaneConnections, and every road that
+/// made a junction failed). `{CONFIG}` lists BaseNodeConfig's writable
+/// members.
+const STRICT_NODE_CONFIG: &str = r#"
+function STRICT(writable, values)
+    local store = values or {}
+    return setmetatable({}, {
+        __index = store,
+        __newindex = function(_, key, value)
+            if not writable[key] then error("no writable member '" .. tostring(key) .. "'") end
+            store[key] = value
+        end,
+    })
+end
+local function set(list) local out = {} for _, k in ipairs(list) do out[k] = true end return out end
+api.type.LaneConnection = { new = function()
+    return STRICT(set({ 'segment0', 'lane0', 'segment1', 'lane1', 'withRoad', 'withTram' })) end }
+api.type.TrafficLightState = { new = function()
+    return STRICT(set({ 'lockedLanes', 'duration', 'minDuration', 'canSkip' })) end }
+api.type.BaseNodeLaneConnectionAndEntity = { new = function()
+    local light = STRICT(set({ 'trafficLightType', 'states' }))
+    local comp = STRICT(set({CONFIG}), { trafficLightConfig = light })
+    return STRICT(set({ 'entity' }), { comp = comp })
+end }
+"#;
+
+#[test]
+fn a_junction_takes_only_what_the_games_objects_take() {
+    // As build 40408: the user-modified flags are not writable. The T
+    // junction's lights were set by hand (um=false/true): its turns, lights
+    // and crosswalks go in, the flag the game will not take is said.
+    let (lua, _script) = engine();
+    let strict = STRICT_NODE_CONFIG.replace(
+        "{CONFIG}",
+        "{ 'laneConnections', 'crosswalks', 'trafficLightPreference', 'trafficLightConfig',          'doubleSlipSwitch' }",
+    );
+    let tool = junction_through_the_room_with(
+        &lua,
+        &TOOL_JUNCTION
+            .replace("{NODES}", "")
+            .replace("{SEGMENTS}", "")
+            .replace("{TURNS}", ""),
+        &strict,
+    );
+    let (ok, sent): (bool, String) = lua
+        .load("return HOOK.applied[1].ok, SENT_WORDS(SENT[1])")
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}
+{}",
+                log(&lua)
+            )
+        });
+    assert!(ok, "the road is built: {}", log(&lua));
+    assert_eq!(
+        sent,
+        tool.replace("um=false/true", "um=false/false"),
+        "everything but the flag the game will not take, as the tool proposed"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l
+            == "junctions: +cfg-4{tl=1 lc=3 cw=2 phases=2 dss=false um=false/true}(the game takes no userModifiedTrafficLightStates) +cfg7{tl=2 lc=1 cw=0 phases=0 dss=false um=false/false}"),
+        "{logged:?}"
+    );
+
+    // A game whose BaseNodeConfig takes none of it: the road is still built,
+    // every junction as the game makes it, none half configured, and why.
+    let (lua, _script) = engine();
+    let strict = STRICT_NODE_CONFIG.replace("{CONFIG}", "{}");
+    junction_through_the_room_with(
+        &lua,
+        &TOOL_JUNCTION
+            .replace("{NODES}", "")
+            .replace("{SEGMENTS}", "")
+            .replace("{TURNS}", ""),
+        &strict,
+    );
+    let (ok, edges, configs): (bool, usize, Option<usize>) = lua
+        .load(
+            "local s = SENT[1].proposal.streetProposal              return HOOK.applied[1].ok, #s.edgesToAdd, s.nodeConfigsToAdd and #s.nodeConfigsToAdd",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}
+{}", log(&lua)));
+    assert!(ok, "{}", log(&lua));
+    assert_eq!(edges, 3, "the road is built");
+    assert_eq!(configs, None, "no junction half configured");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.starts_with(
+            "junctions: none: the junctions are left as the game makes them, as the game takes no laneConnections"
+        )),
+        "{logged:?}"
     );
 }
 

@@ -468,15 +468,32 @@ function apply.describeConfig(node, c)
 		tostring(c.double_slip_switch), tostring(c.user_modified_lanes), tostring(c.user_modified_lights))
 end
 
+-- Writes `value` to the game object's member `key`, or raises naming it:
+-- the game's objects take only the members their binding declares writable
+-- (build 40408: BaseNodeConfig refuses userModifiedLaneConnections, "no
+-- writable member", 2026-10-01).
+local function put(object, key, value)
+	local ok, err = pcall(function() object[key] = value end)
+	if not ok then error("the game takes no " .. key .. " (" .. tostring(err) .. ")", 0) end
+end
+
 -- The junctions' configurations of a polyline (tpf3mp_proto action::
 -- NodeConfig) as the game's BaseNodeLaneConnectionAndEntity, each value as
 -- the tool proposed it, every node and edge it names as this game names it:
 -- `names.node(vertex)`, `names.link(index)` and `names.existing(edgeRef)`
--- give the entity, or nil. One it cannot name fails the whole build, in
--- every game alike: never a junction half configured. Returns the list and
--- each in a word for the log.
+-- give the entity, or nil.
+--
+-- All of it is named first, before any game object is made: one it cannot
+-- name fails the whole build, in every game alike (raises). Then the game's
+-- objects are made: what a member the game will not take (the same in every
+-- game of a build, as it is the game's binding, not the world) leaves every
+-- junction of the build as the game makes it, none half configured, and
+-- says why. The user-modified flags are set only where the tool set them,
+-- and only where the game takes them: a fresh configuration has them off.
+-- Returns the list (empty when the game took none) and the log's words.
 function apply.nodeConfigsFor(configs, names)
-	local out, said = {}, {}
+	-- Named, every one, first.
+	local plain = {}
 	for k, c in ipairs(configs) do
 		local function edge(ref)
 			local e
@@ -492,45 +509,66 @@ function apply.nodeConfigsFor(configs, names)
 		if node == nil then error("junction " .. k .. " is at a node this game cannot name", 0) end
 		local connections = {}
 		for i, l in ipairs(c.lane_connections) do
-			local lc = made("LaneConnection")
-			lc.segment0, lc.lane0 = edge(l.edge0), l.lane0
-			lc.segment1, lc.lane1 = edge(l.edge1), l.lane1
-			lc.withRoad, lc.withTram = l.with_road == true, l.with_tram == true
-			connections[i] = lc
+			connections[i] = { segment0 = edge(l.edge0), lane0 = l.lane0, segment1 = edge(l.edge1), lane1 = l.lane1,
+				withRoad = l.with_road == true, withTram = l.with_tram == true }
 		end
 		local crosswalks = {}
 		for i, e in ipairs(c.crosswalks) do crosswalks[i] = edge(e) end
-		local states = {}
-		for i, p in ipairs(c.phases) do
-			local st = made("TrafficLightState")
-			st.lockedLanes = seq(p.locked)
-			st.duration = p.duration
-			st.minDuration = p.min_duration
-			st.canSkip = p.can_skip == true
-			states[i] = st
+		plain[k] = { node = node, connections = connections, crosswalks = crosswalks, c = c }
+	end
+	-- Then the game's objects.
+	local out, said = {}, {}
+	local ok, err = pcall(function()
+		for k, p in ipairs(plain) do
+			local c = p.c
+			local connections = {}
+			for i, l in ipairs(p.connections) do
+				local lc = made("LaneConnection")
+				for _, key in ipairs({ "segment0", "lane0", "segment1", "lane1", "withRoad", "withTram" }) do
+					put(lc, key, l[key])
+				end
+				connections[i] = lc
+			end
+			local states = {}
+			for i, ph in ipairs(c.phases) do
+				local st = made("TrafficLightState")
+				put(st, "lockedLanes", seq(ph.locked))
+				put(st, "duration", ph.duration)
+				put(st, "minDuration", ph.min_duration)
+				put(st, "canSkip", ph.can_skip == true)
+				states[i] = st
+			end
+			local entry = made("BaseNodeLaneConnectionAndEntity")
+			put(entry, "entity", p.node)
+			local comp = entry.comp
+			if comp == nil then
+				comp = made("BaseNodeConfig")
+				put(entry, "comp", comp)
+			end
+			put(comp, "laneConnections", connections)
+			put(comp, "crosswalks", seq(p.crosswalks))
+			put(comp, "trafficLightPreference", c.light_preference)
+			local tl = comp.trafficLightConfig
+			if tl == nil then
+				tl = made("TrafficLightConfig")
+				put(comp, "trafficLightConfig", tl)
+			end
+			put(tl, "trafficLightType", c.light_type)
+			put(tl, "states", states)
+			if c.double_slip_switch == true then put(comp, "doubleSlipSwitch", true) end
+			local flags = {}
+			for key, on in pairs({ userModifiedLaneConnections = c.user_modified_lanes,
+				userModifiedTrafficLightStates = c.user_modified_lights }) do
+				if on == true and not pcall(function() comp[key] = true end) then flags[#flags + 1] = key end
+			end
+			table.sort(flags)
+			out[k] = entry
+			said[k] = apply.describeConfig(p.node, c)
+				.. (#flags > 0 and ("(the game takes no " .. table.concat(flags, ", ") .. ")") or "")
 		end
-		local entry = made("BaseNodeLaneConnectionAndEntity")
-		entry.entity = node
-		local comp = entry.comp
-		if comp == nil then
-			comp = made("BaseNodeConfig")
-			entry.comp = comp
-		end
-		comp.laneConnections = connections
-		comp.crosswalks = crosswalks
-		comp.trafficLightPreference = c.light_preference
-		local tl = comp.trafficLightConfig
-		if tl == nil then
-			tl = made("TrafficLightConfig")
-			comp.trafficLightConfig = tl
-		end
-		tl.trafficLightType = c.light_type
-		tl.states = states
-		comp.doubleSlipSwitch = c.double_slip_switch == true
-		comp.userModifiedLaneConnections = c.user_modified_lanes == true
-		comp.userModifiedTrafficLightStates = c.user_modified_lights == true
-		out[k] = entry
-		said[k] = apply.describeConfig(node, c)
+	end)
+	if not ok then
+		return {}, { "none: the junctions are left as the game makes them, as " .. tostring(err) }
 	end
 	return out, said
 end
