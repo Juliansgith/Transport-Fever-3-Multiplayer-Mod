@@ -1,0 +1,17 @@
+[package]
+name = "tpf3mp-buildinfo"
+description = "Build scripts' helper: the git commit and build time built into TPF3-MP's programs, and their Windows version resource"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Only Windows hosts compile the version resource (rc.exe from the Windows
+# SDK, or windres); Linux and macOS builds never pull it in.
+[target.'cfg(windows)'.dependencies]
+embed-resource = "3.0.11"
+
+[lints]
+workspace = true

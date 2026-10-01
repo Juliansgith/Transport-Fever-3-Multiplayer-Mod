@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=images/logo.png");
     println!("cargo:rerun-if-changed=build.rs");
     if env::var("CARGO_CFG_TARGET_OS")? != "windows" {
+        tpf3mp_buildinfo::emit(tpf3mp_buildinfo::Artifact::Program, "Transport Fever 3 Multiplayer", "TPF3-MP.exe");
         return Ok(());
     }
     let logo = image::open("images/logo.png")?;
@@ -30,12 +31,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let path = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR missing")?).join("tpf3mp.ico");
     IcoEncoder::new(File::create(&path)?).encode_images(&frames)?;
-    winresource::WindowsResource::new()
-        .set_icon(path.to_str().ok_or("the icon path is not UTF-8")?)
-        .set("ProductName", "TPF3-MP")
-        .set("FileDescription", "Transport Fever 3 Multiplayer")
-        .set("CompanyName", "TPF3-MP contributors")
-        .set("OriginalFilename", "TPF3-MP.exe")
-        .compile()?;
+    tpf3mp_buildinfo::emit_with_icon(
+        tpf3mp_buildinfo::Artifact::Program,
+        "Transport Fever 3 Multiplayer",
+        "TPF3-MP.exe",
+        Some(&path),
+    );
     Ok(())
 }
