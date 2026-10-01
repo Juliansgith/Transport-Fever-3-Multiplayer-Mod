@@ -4382,7 +4382,7 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tpf3mp-agent"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4413,7 +4413,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-bigmap"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "clap",
  "mlua",
@@ -4426,7 +4426,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-bridge"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -4438,14 +4438,14 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-buildinfo"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "embed-resource",
 ]
 
 [[package]]
 name = "tpf3mp-canon"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "mlua",
  "proptest",
@@ -4453,7 +4453,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-hook"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "ctor",
  "mlua",
@@ -4470,7 +4470,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-hookcore"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "iced-x86",
  "libc",
@@ -4483,7 +4483,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-ipc"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "libc",
  "thiserror 2.0.20",
@@ -4492,7 +4492,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-launch"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "tempfile",
  "thiserror 2.0.20",
@@ -4502,7 +4502,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-launcher"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -4534,7 +4534,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-modscan"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "clap",
  "serde",
@@ -4545,7 +4545,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-net"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -4566,7 +4566,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-proto"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "mlua",
@@ -4581,7 +4581,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-server"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4608,7 +4608,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-snapshot"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "blake3",
  "fastcdc",
@@ -4622,7 +4622,7 @@ dependencies = [
 
 [[package]]
 name = "tpf3mp-testkit"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "clap",

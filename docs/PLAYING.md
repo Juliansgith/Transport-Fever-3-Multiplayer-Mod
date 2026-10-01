@@ -1,8 +1,7 @@
 # Playing
 
-How to play Transport Fever 3 together with TPF3-MP. The network side is
-ready. The part that runs inside the game waits for the game's release:
-this page says so where it applies.
+How to play Transport Fever 3 together with TPF3-MP. Windows is the first
+supported game platform; Linux and macOS packages remain for development.
 
 ## What you need
 
@@ -19,14 +18,46 @@ this page says so where it applies.
   personal ones in the lobby, and it remembers them; a room you create
   takes its shared mods from its start save, and the lobby shows each
   player which of them they have.
-- The TPF3-MP package for your system, from the project's releases:
-  Windows x64, Linux x64 or macOS on Apple silicon. Players on different
-  systems can share one room.
+- The Windows x64 launcher from the project's releases. Linux x64 and
+  macOS on Apple silicon packages are available for development; their
+  real-game acceptance is still pending.
 
 You do not need to forward any port or open anything on your router: your
 launcher connects out to the server, and everything goes through it.
 
 ## Installing
+
+### Windows: one EXE (recommended)
+
+Download `TPF3-MP.exe` from the latest GitHub release and run it. Click
+**Install TPF3-MP**: the launcher downloads and checks the signed package,
+installs itself under `%LOCALAPPDATA%\Programs\TPF3-MP`, installs the mod
+through its readable `tools\install.ps1`, and creates Start menu and desktop
+shortcuts. You can clear the desktop shortcut option in setup. No
+administrator rights are needed.
+
+Setup shows the detected Steam mods folder. If several accounts have played
+the game, choose yours; if detection fails, paste its `staging_area` path.
+Start the game through Steam once if its user folder does not exist yet,
+then close it before installing. Open the launcher when setup finishes.
+Creating a world from **Multiplayer** selects TPF3-MP automatically in the
+world's **Mods** tab. Keep it active. When preparing a world separately,
+find **TPF3-MP** in that tab and click **Activate**. Future updates install
+the matching mod before opening the launcher.
+
+Reopening the downloaded EXE opens the installed launcher, including when
+offline. An initial install needs an internet connection and a signed
+published release. A failed download can be retried; a failed mod install
+shows its error and keeps Play unavailable until setup succeeds.
+
+**Settings → Repair installation** restores a managed installation from
+the latest signed package and reinstalls its mod. In a portable package it
+reinstalls the bundled mod. **Uninstall** removes the mod, and for managed
+installs also removes the launcher and shortcuts after the setup window
+closes. Windows Settings → Apps has the same uninstall entry. Saves,
+identities and settings remain; removed files go to TPF3-MP's backups.
+
+### Portable packages and other platforms
 
 1. Unpack the package anywhere you can write to, such as your Documents
    folder: the launcher updates the files in it (see "Updates").
@@ -40,9 +71,9 @@ launcher connects out to the server, and everything goes through it.
    changes. It puts the TPF3-MP mod, `tpf3mp_1`, in Steam's folder for
    your Transport Fever 3 mods, `<Steam>/userdata/<account>/3493540/local/staging_area`,
    and notes its version in TPF3-MP's data folder, which the launcher
-   shows. Then start the game once, open **Mod Hub**, find TPF3-MP under
-   your mods and click **Activate**: a mod that is not activated does
-   nothing. To put it in another mods folder, drop that folder onto
+   shows. Creating a world from **Multiplayer** activates it automatically.
+   For a world prepared separately, select **TPF3-MP** in its **Mods** tab
+   and click **Activate**. To put it in another mods folder, drop that folder onto
    `INSTALL_TPF3MP.cmd`, or run `./install.sh "<the mods folder>"`.
 
    Nothing goes into the game's own folder, and no launch option is set.
@@ -52,8 +83,8 @@ launcher connects out to the server, and everything goes through it.
    TPF3-MP's data folder. `UNINSTALL_TPF3MP.cmd` or `./uninstall.sh` takes
    the mod out again.
 
-   Run the installer again after an update of TPF3-MP. Until the game is
-   out, packages carry no mod yet, and the installer says so.
+   On Windows the launcher installs the matching mod after an update.
+   On Linux and macOS, run the installer again after an update of TPF3-MP.
 
 The part of TPF3-MP that runs inside the game is not installed at all: the
 launcher loads it into the game it starts, into that game alone, for as
@@ -182,10 +213,12 @@ window too.
    you are (not connected, online on EU, your room and how many are ready),
    and **Join a friend**. The top bar has a **Multiplayer** button too,
    next to Settings. Each opens the Multiplayer window, one page at a
-   time; **Join a friend** opens it on the Join page.
+   time. **Join a friend** opens a focused form for your name, six-character
+   invite and optional password. **Join room** connects and joins in one step;
+   a failed connection stays on the form so you can retry.
 3. **Connect.** The first page: type the name others will see, or keep the
    one the launcher remembers, and press **Connect to EU** (the server is
-   the launcher's; there is none to type). Then it offers two big cards:
+   the launcher's; there is none to type). You can also go straight to either of the two cards:
    **Join a room** and **Host a room**. Each opens its page, and **Back**
    returns to this one. **Server...**, at its bottom, shows the server you play
    on by its name, marked (default) when it is the launcher's own (the
@@ -212,11 +245,11 @@ window too.
      the top, opens a small popup for a friend's room: the **invite code**
      they sent you, such as `K7QM2X` (upper or lower case), the room's
      password if it has one, and **Join** or **Cancel**. A private room is
-     joined only this way.
+     joined by invite, either here or through **Join a friend** on the main menu.
    - **Host a room**: a **room name** (your name's room if you leave it
      empty); **Start from this save**, one of your saves, newest first, or
-     **None: I load a world myself** (you can change it in the room until
-     its game starts); **Players**, 2 to 16; **How you
+     **Create a new world...** (offered first; you can change the save in
+     the room until its game starts); **Players**, 2 to 16; **How you
      play**, two pictures: **Co-op**, everyone for the room's one company,
      or **Competitive**, each player in a company of their own, founded
      for them as they arrive in the game (see "Companies"); **Who can find
@@ -225,7 +258,10 @@ window too.
      server offers more than one (`native` is the game's own rules and
      economy, as in single player; a description says what the others
      are); and an optional **password**. Then **Create room**. You own the
-     room: you start its game and can remove players.
+     room: you start its game and can remove players. When creating a new
+     world, the game opens its normal setup screens for climate, map and
+     settings. Completing those screens generates the room's world. Once
+     it has loaded and everyone is ready, multiplayer starts automatically.
    - **Your mods**, at the bottom of both pages and of the room's: the
      mods you have installed. Turn on or off those only you play with
      (only you see them); those every player needs are marked so and stay
@@ -260,9 +296,8 @@ window too.
    ready and the room has its save (until then it says it is waiting for
    everyone, or that the save is still on its way). Every player's
    game loads the room's world from the menu and starts it, with no Start
-   Game to press. Without a save picked, the owner loads the world to play
-   with **Load Game** instead, as in single player, and it becomes the
-   room's.
+   Game to press. New worlds created through the lobby start automatically
+   after the owner finishes the normal world-generation screens.
 8. **Play.** While the world comes, the window says how far it is
    ("Receiving the room's world: 42% (48.0 MB of 112 MB)"), and the chat
    and **Leave room** still work. Each player's row says how far their
@@ -284,8 +319,9 @@ What the window says:
 - "This game has no link to the TPF3-MP launcher": the game was not
   started from the launcher. Close it and start it from there.
 - **Remove** (the bin, for the owner) and **Leave room** ask first.
-  **Disconnect** leaves the server. After a room's game has ended, start
-  the game again from the launcher to play the next room's game.
+  **Disconnect** leaves the server. To leave from a running game, use
+  **Quit → Return to Main Menu**, then **Multiplayer → Leave room**.
+  You can join again without restarting the game or launcher.
 
 ## Updates
 

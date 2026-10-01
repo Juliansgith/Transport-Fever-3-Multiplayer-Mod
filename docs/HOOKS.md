@@ -1051,7 +1051,10 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   menu's Lua (no load, no window close): the host's game hung on
   2026-09-30 when the frame asked the progress monitor (`getTask`) during
   a load, whose lock the loader holds while it runs frames. The chunk no
-  longer asks the progress monitor at all. A menu frame the game runs
+  longer asks the progress monitor at all (dev's `busy()` check of it,
+  from #36, is left out of the merged chunk for this reason); before a
+  load it closes the lobby through the close the lobby leaves it
+  (`__tpf3mp_before_load`) and lets the menu draw one frame. A menu frame the game runs
   inside its own `DoStep` (a nested frame, as a load's screen may run) is
   left alone entirely; only the outermost frame does the menu's work.
 - **Follows the room from the menu's frame.** `UI::CMenuUI::DoStep`

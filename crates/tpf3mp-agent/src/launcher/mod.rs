@@ -756,6 +756,12 @@ async fn act(
                 .await
                 .map_err(|error| error.to_string())?;
             shared.status().room = Some(room);
+            let generate_world = start_save
+                .as_deref()
+                .is_some_and(|save| save.trim().is_empty());
+            if generate_world {
+                shared.view().start_save = None;
+            }
             if let Some(picked) = start_save.filter(|picked| !picked.trim().is_empty()) {
                 // Offered first next time.
                 shared.view().start_save = Some(picked.trim().to_owned());
@@ -769,6 +775,7 @@ async fn act(
                 invite,
                 create.password,
                 start_world,
+                generate_world,
             )
         }
         Action::ChooseStart { save, map, year } => {
@@ -1093,6 +1100,7 @@ fn begin_session(
     invite: Invite,
     password: Option<Text<64>>,
     start_world: Option<(PathBuf, StartSave)>,
+    generate_world: bool,
 ) -> Result<(), String> {
     let Connected {
         client,
@@ -1129,6 +1137,7 @@ fn begin_session(
             .filter(|_| owned)
             .map(|(_, save)| save.clone()),
         start_world: start_world.filter(|_| owned).map(|(file, _)| file),
+        start_generated_world: owned && generate_world,
         mods: config.mods.clone(),
         picker: shared.picker_link(),
         ..BridgeOptions::default()
@@ -1523,6 +1532,7 @@ async fn join(
             let save = start_save_named(&file, "", 0);
             (file, save)
         }),
+        false,
     )
 }
 

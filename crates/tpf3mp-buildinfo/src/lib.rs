@@ -40,6 +40,13 @@ pub enum Artifact {
 /// launcher"; `file` the name the file is built as, such as
 /// `tpf3mp-launcher.exe`.
 pub fn emit(artifact: Artifact, description: &str, file: &str) {
+    emit_with_icon(artifact, description, file, None);
+}
+
+/// As [`emit`], with `icon`, an `.ico` file, as the program's icon in the
+/// same resource (one resource script: a second VERSIONINFO, as a second
+/// resource compiler would add, would not link).
+pub fn emit_with_icon(artifact: Artifact, description: &str, file: &str, icon: Option<&Path>) {
     let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
     for name in ["TPF3MP_COMMIT", "TPF3MP_BUILD_NUMBER", "SOURCE_DATE_EPOCH"] {
         println!("cargo:rerun-if-env-changed={name}");
@@ -81,7 +88,7 @@ pub fn emit(artifact: Artifact, description: &str, file: &str) {
             &std::env::var("CARGO_PKG_VERSION_PATCH").unwrap_or_default(),
             number,
         );
-        let rc = version_rc(&Resource {
+        let mut rc = version_rc(&Resource {
             artifact,
             version,
             product: &std::env::var("CARGO_PKG_VERSION").unwrap_or_default(),
@@ -89,6 +96,9 @@ pub fn emit(artifact: Artifact, description: &str, file: &str) {
             description,
             file,
         });
+        if let Some(icon) = icon {
+            rc.push_str(&icon_rc(icon));
+        }
         let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());
         let path = out.join("tpf3mp-version.rc");
         if let Err(error) = std::fs::write(&path, rc) {
@@ -195,6 +205,17 @@ pub fn utc(seconds: u64) -> String {
     )
 }
 
+/// The resource script line that makes `icon` the program's icon, its path
+/// with forward slashes and quotes doubled, as the resource compiler reads
+/// a string.
+pub fn icon_rc(icon: &Path) -> String {
+    let path = icon
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace('"', "\"\"");
+    format!("1 ICON \"{path}\"\n")
+}
+
 /// What the version resource says.
 #[derive(Debug, Clone)]
 pub struct Resource<'a> {
@@ -258,6 +279,14 @@ END
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_icon_line_names_its_file_as_the_resource_compiler_reads_it() {
+        assert_eq!(
+            icon_rc(Path::new(r#"C:\out\a "b".ico"#)),
+            "1 ICON \"C:/out/a \"\"b\"\".ico\"\n"
+        );
+    }
 
     #[test]
     fn the_file_version_is_the_crates_and_the_build_number() {
