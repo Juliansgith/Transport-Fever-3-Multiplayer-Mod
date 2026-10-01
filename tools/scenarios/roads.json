@@ -533,7 +533,7 @@
    "actor": 0,
    "origin": "spot:#0:0",
    "expect": "applied",
-   "note": "Actor 0: a bus line between the two stops (station groups +0 and +1)",
+   "note": "Actor 0: a bus line between the two stops, stations 0 and 1 of station group +0",
    "action": {
     "CreateLine": {
      "name": "Scenario bus line 0",
@@ -567,10 +567,10 @@
        },
        {
         "group": {
-         "$id": "groups+1"
+         "$id": "groups+0"
         },
         "terminal": {
-         "station": 0,
+         "station": 1,
          "terminal": 0
         },
         "alternatives": [],
@@ -1744,7 +1744,7 @@
    "actor": 1,
    "origin": "spot:#1:0",
    "expect": "applied",
-   "note": "Actor 1: a bus line between the two stops (station groups +2 and +3)",
+   "note": "Actor 1: a bus line between the two stops, stations 0 and 1 of station group +1",
    "action": {
     "CreateLine": {
      "name": "Scenario bus line 1",
@@ -1757,7 +1757,7 @@
       "stops": [
        {
         "group": {
-         "$id": "groups+2"
+         "$id": "groups+1"
         },
         "terminal": {
          "station": 0,
@@ -1778,10 +1778,10 @@
        },
        {
         "group": {
-         "$id": "groups+3"
+         "$id": "groups+1"
         },
         "terminal": {
-         "station": 0,
+         "station": 1,
          "terminal": 0
         },
         "alternatives": [],
@@ -2955,7 +2955,7 @@
    "actor": 2,
    "origin": "spot:#2:0",
    "expect": "applied",
-   "note": "Actor 2: a bus line between the two stops (station groups +4 and +5)",
+   "note": "Actor 2: a bus line between the two stops, stations 0 and 1 of station group +2",
    "action": {
     "CreateLine": {
      "name": "Scenario bus line 2",
@@ -2968,7 +2968,7 @@
       "stops": [
        {
         "group": {
-         "$id": "groups+4"
+         "$id": "groups+2"
         },
         "terminal": {
          "station": 0,
@@ -2989,10 +2989,10 @@
        },
        {
         "group": {
-         "$id": "groups+5"
+         "$id": "groups+2"
         },
         "terminal": {
-         "station": 0,
+         "station": 1,
          "terminal": 0
         },
         "alternatives": [],

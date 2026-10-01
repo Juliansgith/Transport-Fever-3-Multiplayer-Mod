@@ -143,8 +143,10 @@ def buy(file, at, model, loads=None):
         "groups": [1], "multiple_units": [""]}}
 
 
-def line_stop(group):
-    return {"group": {"$id": group}, "terminal": {"station": 0, "terminal": 0}, "alternatives": [],
+def line_stop(group, station=0):
+    """A line's stop at a station group's `station`th station (its place in
+    the group, from 0), terminal 0."""
+    return {"group": {"$id": group}, "terminal": {"station": station, "terminal": 0}, "alternatives": [],
             "load_mode": "LoadIfAvailable", "min_wait": 0, "max_wait": 180_000_000,
             "max_extra_wait": 0,
             "rules": {"load": [], "max_load": [], "force_unload": False,
@@ -153,7 +155,8 @@ def line_stop(group):
 
 def create_line(name, groups, mode):
     return {"CreateLine": {"name": name, "color": {"r": 130000, "g": 420000, "b": 850000},
-                           "line": {"stops": [line_stop(g) for g in groups], "modes": [mode],
+                           "line": {"stops": [line_stop(*g) if isinstance(g, tuple) else line_stop(g)
+                                              for g in groups], "modes": [mode],
                                     "custom_filters": False, "reservation_priority": 0}}}
 
 
@@ -353,9 +356,12 @@ def roads():
               f"{c}: a second stop on the bus street's other side")
         action, depot = road_depot((20, -50), f"Scenario depot {k}", "west")
         s.act(t + 260, k, action, f"{c}: a road depot west of the bus street, its entrance snapped onto the end")
-        g, v = 2 * k, 3 * k
-        s.act(t + 320, k, create_line(f"Scenario bus line {k}", [f"groups+{g}", f"groups+{g + 1}"], MODE_BUS),
-              f"{c}: a bus line between the two stops (station groups +{g} and +{g + 1})")
+        # Two stops on one edge are two stations of one station group
+        # (round D, 2026-10-01: the registry's next group went 100 to 101,
+        # the stations 120 to 122): the line stops at its stations 0 and 1.
+        g, v = f"groups+{k}", 3 * k
+        s.act(t + 320, k, create_line(f"Scenario bus line {k}", [(g, 0), (g, 1)], MODE_BUS),
+              f"{c}: a bus line between the two stops, stations 0 and 1 of station group +{k}")
         for n in range(3):
             s.act(t + 360 + n, k, buy(ROAD_DEPOT, depot, BUS), f"{c}: bus {n + 1} of 3, bought in one burst")
         s.act(t + 420, k, assign([f"vehicles+{v}", f"vehicles+{v + 1}", f"vehicles+{v + 2}"], f"lines+{k}"),
@@ -462,9 +468,10 @@ def road_vehicles():
         # turns) lies between the depot and the stops.
         action, depot = road_depot((0, 0), f"Scenario truck depot {k}", "west")
         s.act(t + 200, k, action, f"{c}: a road depot west of the street, snapped onto its end")
-        g, v = 2 * k, 3 * k
-        s.act(t + 260, k, create_line(f"Scenario truck line {k}", [f"groups+{g}", f"groups+{g + 1}"], MODE_TRUCK),
-              f"{c}: a truck line between the stops")
+        # The two stops are two stations of one group, as roads' bus stops.
+        g, v = f"groups+{k}", 3 * k
+        s.act(t + 260, k, create_line(f"Scenario truck line {k}", [(g, 0), (g, 1)], MODE_TRUCK),
+              f"{c}: a truck line between the stops, stations 0 and 1 of station group +{k}")
         for n in range(3):
             s.act(t + 300 + n, k, buy(ROAD_DEPOT, depot, TRUCK), f"{c}: truck {n + 1} of 3, in one burst")
         s.act(t + 360, k, assign([f"vehicles+{v}", f"vehicles+{v + 1}", f"vehicles+{v + 2}"], f"lines+{k}"),
