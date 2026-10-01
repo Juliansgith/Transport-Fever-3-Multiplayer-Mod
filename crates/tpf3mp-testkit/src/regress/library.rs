@@ -175,6 +175,7 @@ pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
         ),
         groups: list(vec![u8::try_from(consist.len()).expect("a short consist")]),
         multiple_units: list(vec![text("")]),
+        depot_index: 0,
     })
 }
 

@@ -1265,7 +1265,9 @@ reference of its own to either. Once linked, the GUI wraps every
     (`makeStockListDiscardCargoCmd`), as `DiscardCargo`, the warehouse by
     its construction;
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
-    file and position, the consist part by part, as the store configured
+    file and position and its index among that construction's depots, an
+    airport's second hangar say; a depot no street reaches by the
+    construction that lists it; the consist part by part, as the store configured
     it), selling, putting on a line, and the vehicle window's stop, start,
     to the depot (sold there or not), reverse and depart; replacing
     (`makeVehicleReplaceCmd`, the vehicle window's "modify" and the store's

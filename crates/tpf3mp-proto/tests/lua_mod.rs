@@ -3754,8 +3754,8 @@ fn a_ship_or_aircraft_is_bought_at_the_harbour_or_airport_that_lists_its_depot()
     .unwrap();
     let (handed, depot): (usize, String) = lua
         .load(
-            "local d = HOOK.commands[1].BuyVehicle.depot \
-             return #HOOK.commands, d.file .. '|' .. d.at.x .. '|' .. d.at.y",
+            "local b = HOOK.commands[1].BuyVehicle local d = b.depot \
+             return #HOOK.commands, d.file .. '|' .. d.at.x .. '|' .. d.at.y .. '|' .. b.depot_index",
         )
         .eval()
         .unwrap();
@@ -3763,7 +3763,10 @@ fn a_ship_or_aircraft_is_bought_at_the_harbour_or_airport_that_lists_its_depot()
         handed, 1,
         "the depot no construction lists is not handed over"
     );
-    assert_eq!(depot, "station/water/harbour.con|1200|40");
+    assert_eq!(
+        depot, "station/water/harbour.con|1200|40|1",
+        "the harbour's second depot"
+    );
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
     assert!(
         logged.iter().any(|l| l.contains(
@@ -3772,6 +3775,38 @@ fn a_ship_or_aircraft_is_bought_at_the_harbour_or_airport_that_lists_its_depot()
         )),
         "{logged:?}"
     );
+}
+
+/// Every game buys at the depot of the construction the store bought at,
+/// by its index there (an airport's second hangar), not at its first.
+#[test]
+fn every_game_buys_at_the_constructions_depot_the_store_bought_at() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(format!(
+        "local base = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             local c = base(e, kind) \
+             if c and e == 201 and kind == api.type.ComponentType.CONSTRUCTION then c.depots = {{ 202, 203 }} end \
+             return c \
+         end \
+         HOOK.room = true UPDATE({{}}, STATE, 0.2) \
+         local buy = {BUY_BUS} \
+         buy.BuyVehicle.depot_index = 1 \
+         local far = {BUY_BUS} \
+         far.BuyVehicle.depot_index = 2 \
+         HOOK.batch = {{ buy, far }} \
+         UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let (depot, ok, why): (i64, bool, String) = lua
+        .load("return SENT[1].buy.depot, HOOK.applied[2].ok, HOOK.applied[2].why")
+        .eval()
+        .unwrap();
+    assert_eq!(depot, 203);
+    assert!(!ok);
+    assert_eq!(why, "the construction there has no depot 3");
 }
 
 /// Renaming in an entity window's title, and recolouring a vehicle: a

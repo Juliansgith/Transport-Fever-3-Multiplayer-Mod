@@ -550,7 +550,8 @@ end
 --   ctx.vehicle(e), ctx.line(e), ctx.group(e) -> canonical id, or nil
 --                                               (tpf3mp/registry.lua)
 --   ctx.depot(e) -> { file =, at = { x, y, z } } of the depot's
---                   construction, or nil
+--                   construction, and the depot's index among its
+--                   depots from 0 (capture.depotRef); or nil
 --   ctx.model(id) -> a vehicle model's file name, or nil
 --   ctx.parts(e) -> a vehicle's parts, front to back, each
 --                   { model = modelId, purchased = purchaseTime }, or nil
@@ -608,7 +609,8 @@ end
 -- street reaches; a ship depot or an aircraft hangar may have none
 -- (INFERRED, not seen on build 40408), so failing that, the construction
 -- whose CONSTRUCTION component lists the depot among its `depots`, the
--- lowest entity on a tie. Returns { file =, at = { x, y, z } }, or nil.
+-- lowest entity on a tie. Returns { file =, at = { x, y, z } } and the
+-- depot's index among the construction's depots, from 0; or nil.
 function capture.depotRef(api, depot)
 	local ok, CONSTRUCTION = pcall(function() return api.type.ComponentType.CONSTRUCTION end)
 	if not ok or CONSTRUCTION == nil then return nil end
@@ -637,13 +639,21 @@ function capture.depotRef(api, depot)
 	if type(file) ~= "string" or file == "" or type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
 		return nil
 	end
-	return { file = file, at = { x = x, y = y, z = z } }
+	-- Which of its depots (an airport's second hangar): the first that is
+	-- this one, else the first, as before the index was carried.
+	local index, depots = 0, get(c, "depots")
+	for k = 1, (length(depots) or 0) do
+		if get(depots, k) == depot then index = k - 1 break end
+	end
+	return { file = file, at = { x = x, y = y, z = z } }, index
 end
 
 -- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
 function capture.vehicleBuy(ctx, _player, depot, config)
+	local ref, index = ctx.depot(depot)
 	return { BuyVehicle = {
-		depot = named("a depot the room cannot name", ctx.depot(depot)),
+		depot = named("a depot the room cannot name", ref),
+		depot_index = index or 0,
 		consist = each(get(config, "vehicles"), function(tvp) return consistPart(ctx, tvp) end),
 		groups = each(get(config, "vehicleGroups"), function(n) return n end),
 		multiple_units = each(get(config, "muFileNames"), function(name) return name end),
