@@ -8048,6 +8048,21 @@ fn each_company_builds_one_headquarters_of_its_own() {
         owners, "25,901",
         "one each, the first company's and Rival's"
     );
+    // What each company owns, as hook.log says it once a world is up: a
+    // world loaded from a save says so whether its owners came back.
+    let ownership = eval(
+        "local C = ug_require('tpf3mp_1::/scripts/tpf3mp/companies.lua')          return C.ownership(STATE.value.companies, api)",
+    );
+    assert!(
+        ownership.contains("Rival #1 (entity 901): 2 construction(s), headquarters "),
+        "{ownership}"
+    );
+    assert!(
+        ownership.contains("#0 (entity 25): 1 construction(s), headquarters "),
+        "{ownership}"
+    );
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(logged.contains("ownership: "), "{logged}");
 }
 
 /// In the GUI, the game's permit counts count the player's company's own
@@ -8102,6 +8117,7 @@ fn the_guis_permits_count_the_players_company_own_constructions() {
         end
         SEVERAL = true
         C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        REQUIRE = require_
         OK, WHY = C.followPermits(api, require_, function() return SEVERAL end)
         function counts()
             local used = UTIL.countUsedConstructionPermits({})
@@ -8127,6 +8143,14 @@ fn the_guis_permits_count_the_players_company_own_constructions() {
         eval("return tostring(OK) .. ' ' .. tostring(WHY)"),
         "1 nil",
         "one table, changed once"
+    );
+    // A second GUI state of the same Lua state finds it changed: counted
+    // as done, not as a failure.
+    assert_eq!(
+        eval(
+            "local n, why = C.followPermits(api, REQUIRE, function() return SEVERAL end)              return tostring(n) .. ' ' .. tostring(why)"
+        ),
+        "1 nil"
     );
     // Rival's player: the first company's headquarters is not Rival's, so
     // Rival has used none; its depot counts.

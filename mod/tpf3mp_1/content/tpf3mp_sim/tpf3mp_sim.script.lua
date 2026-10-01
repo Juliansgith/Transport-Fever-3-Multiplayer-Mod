@@ -82,7 +82,7 @@ function data()
 		false, nil, nil, nil, nil, nil, nil, nil
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
-	local told, toldRegistry = false, false
+	local told, toldRegistry, toldOwnership = false, false, false
 	-- Events subscribed to from this state.
 	local subscribed = false
 	-- Says what a prospection did (below).
@@ -378,6 +378,14 @@ function data()
 				-- The room's companies: begun at its first update, as the
 				-- registry, the same in every game (tpf3mp/companies.lua).
 				local roster = companies.ensure(saved.companies, api)
+				-- What each company owns, once in this game's state, with
+				-- more than one company: whether a world loaded from a save
+				-- kept its owners (read only, tpf3mp/companies.lua).
+				if not toldOwnership and #companies.live(roster) > 1 then
+					toldOwnership = true
+					local line = companies.ownership(roster, api)
+					l:log("ownership: " .. (line or "this game cannot list the constructions"))
+				end
 				-- The companies' ranks (tpf3mp/progression.lua).
 				local prog = progression.ensure(saved.progression)
 				if #failed > 0 and not toldRegistry then
