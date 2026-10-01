@@ -125,13 +125,31 @@ struct MenuSight {
     /// What the frames saw last, and what was logged last.
     seen: Option<Seen>,
     logged: Option<Seen>,
+    /// When the world came up, while the main menu's Multiplayer window is
+    /// still to be handed over to the game's ([`hand_over_lobby`]).
+    hand_over_due: Option<u64>,
 }
 
 static MENU_SIGHT: Mutex<MenuSight> = Mutex::new(MenuSight {
     gate: crate::at_menu::MenuGate::new(),
     seen: None,
     logged: None,
+    hand_over_due: None,
 });
+
+/// What one of the menu's frames saw ([`menu_seen`]).
+struct MenuFrame {
+    seen: Seen,
+    /// No load may be running: neither the game's (`m_loadGameResult`) nor
+    /// one the hook started. Only then does the frame call the menu's Lua:
+    /// a call during a load can wait on the loader's locks, which hung the
+    /// host's game (2026-09-30).
+    lua_ok: bool,
+    /// The world that came up has run a step since: the load is over, and
+    /// the main menu's Multiplayer window is handed over now.
+    hand_over: bool,
+    lines: Vec<String>,
+}
 
 fn menu_sight() -> std::sync::MutexGuard<'static, MenuSight> {
     MENU_SIGHT.lock().unwrap_or_else(PoisonError::into_inner)
@@ -149,45 +167,52 @@ fn menu_now_ms() -> u64 {
     now_ms()
 }
 
-/// Where the game is at this menu frame (`crate::at_menu`), whether the
-/// world came up at it, and the lines that say where it went. `menu` is the
-/// `UI::CMenuUI` whose frame this is.
-fn menu_seen(menu: usize) -> (Seen, bool, Vec<String>) {
+/// Where the game is at this menu frame (`crate::at_menu`), whether its
+/// Lua may be called, and the lines that say where it went. `menu` is the
+/// `UI::CMenuUI` whose frame this is. Reads only: the menu's two fields and
+/// the hook's own state, never the game's Lua or its locks.
+fn menu_seen(menu: usize) -> MenuFrame {
     // SAFETY: DoStep's `this`, live, on its thread, after its frame.
     let world_loaded = unsafe { crate::menu::world_loaded(menu) };
-    let last_step_ms = LAST_STEP.load(Ordering::Acquire);
-    let world_gui_started = lua::any_world_started();
-    let after_world = menu_sight().gate.after_world()
-        || last_step_ms != 0
-        || world_gui_started
-        || world_loaded == Some(true);
-    // Lua runs only when its answer counts, and never under the lock.
-    let loading = if after_world && world_loaded == Some(false) {
-        // SAFETY: the menu's frame, on the thread that runs its Lua, after
-        // the game's own frame: no Lua runs on it now.
-        unsafe { crate::menu::loading() }
+    // SAFETY: as above.
+    let engine_loading = unsafe { crate::menu::load_in_progress(menu) };
+    // A load the hook started counts from its start until its world's GUI
+    // starts, whatever the game's field says.
+    let loading = if lua::load_started() || engine_loading == Some(true) {
+        Some(true)
     } else {
-        None
+        engine_loading
     };
+    let last_step_ms = LAST_STEP.load(Ordering::Acquire);
+    let now_ms = menu_now_ms();
     let frame = crate::at_menu::Frame {
-        now_ms: menu_now_ms(),
+        now_ms,
         last_step_ms,
-        world_gui_started,
+        world_gui_started: lua::any_world_started(),
         world_loaded,
         loading,
     };
     let mut sight = menu_sight();
     let seen = sight.gate.frame(&frame);
     let before = sight.seen.replace(seen);
-    let came_up = seen == Seen::WorldUp && before != Some(Seen::WorldUp);
     let mut lines = Vec::new();
+    if seen == Seen::WorldUp && before != Some(Seen::WorldUp) {
+        sight.hand_over_due = Some(now_ms);
+    }
     if before == Some(Seen::WorldUp) && seen != Seen::WorldUp {
+        sight.hand_over_due = None;
         let forgotten = crate::menu::forget_world_states();
         lines.push(format!(
             "menu: the world closed (CMenuUI::m_game cleared); the {forgotten} Lua state(s) its GUI was given are never used by the main menu"
         ));
     }
-    // Once per change; a load's task coming and going is one wait.
+    let lua_ok = loading == Some(false);
+    let hand_over =
+        seen == Seen::WorldUp && lua_ok && sight.hand_over_due.is_some_and(|up| last_step_ms > up);
+    if hand_over {
+        sight.hand_over_due = None;
+    }
+    // Once per change; a load coming and going is one wait.
     let waiting = |seen: Option<Seen>| matches!(seen, Some(Seen::Loading | Seen::Closing));
     if sight.logged != Some(seen) && !(waiting(sight.logged) && waiting(Some(seen))) {
         sight.logged = Some(seen);
@@ -195,11 +220,17 @@ fn menu_seen(menu: usize) -> (Seen, bool, Vec<String>) {
             lines.push(format!("menu: {}", seen.describe()));
         }
     }
-    (seen, came_up, lines)
+    MenuFrame {
+        seen,
+        lua_ok,
+        hand_over,
+        lines,
+    }
 }
 
-/// The room's world came up: the main menu's Multiplayer window, open
-/// through the download and the load, is closed while the menu still runs
+/// The room's world came up and has stepped, so its load is over: the main
+/// menu's Multiplayer window, open through the download and the load, is
+/// closed while the menu still runs
 /// (its window container stays behind under the world's GUI, where nothing
 /// could close it), and the game's own Multiplayer window opens in its place
 /// ([`lua::hand_over`]). A window the player closed before stays closed.
@@ -232,8 +263,13 @@ pub(crate) fn menu_frame(menu: usize) {
     // frames there hung the owner's game (measured, 2026-09-30); a world
     // loaded before its first step neither (the owner's save for the room
     // comes then). After a world, only once it closed and nothing loads.
-    let (seen, came_up, mut lines) = menu_seen(menu);
-    if came_up {
+    let MenuFrame {
+        seen,
+        lua_ok,
+        hand_over,
+        mut lines,
+    } = menu_seen(menu);
+    if hand_over {
         hand_over_lobby(&mut lines);
     }
     if !seen.allows() || !crate::menu::available() {
@@ -273,8 +309,12 @@ pub(crate) fn menu_frame(menu: usize) {
             seen.describe()
         ));
     }
-    let room_load = lua::take_menu_load();
-    lines.extend(auto_load_frame(room_load.is_some() || in_room));
+    // The menu's Lua only while no load runs: a load the room ordered
+    // waits for the next frame where none does.
+    let room_load = if lua_ok { lua::take_menu_load() } else { None };
+    if lua_ok {
+        lines.extend(auto_load_frame(room_load.is_some() || in_room));
+    }
     if let Some(name) = room_load {
         // SAFETY: the menu's frame, on the thread that runs its Lua, after
         // the game's own frame: no Lua runs on it now.
@@ -1090,7 +1130,6 @@ mod tests {
         menu.run(
             "LOADS = {} api = { type = { SavegameId = { new = function() return {} end } } } \
              app = { SaveGameNamespace = { getSavegame = function() return 'savegame' end }, \
-                     getProgressMonitor = function() return { getTask = function() return '' end } end, \
                      loadGame = function(id) LOADS[#LOADS + 1] = id.saveGameName end }",
         )
         .unwrap();
@@ -1105,22 +1144,27 @@ mod tests {
             Box::new(crate::worlds::GuiWorlds::in_folder(Ok(dir.clone()))),
         )));
         LAST_STEP.store(0, Ordering::Release);
+        // The menu: no load runs (m_loadGameResult, its third word, clear);
+        // whether a world is loaded, the hook cannot read here.
+        let cmenu = [0usize; 4];
+        crate::menu::set_load_field(16);
+        let at = cmenu.as_ptr() as usize;
 
         // No menu state yet: the menu does nothing (fail closed).
-        menu_frame(0);
+        menu_frame(at);
         assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
         assert!(!DRIVER.lock().unwrap().as_ref().unwrap().in_room());
 
         assert_eq!(unsafe { crate::menu::adopt(menu.state()) }, Ok(true));
         // The lobby: nothing to load.
-        menu_frame(0);
+        menu_frame(at);
         assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
         // The room begins and orders its save: the menu loads it.
-        menu_frame(0);
+        menu_frame(at);
         let name = format!("tpf3mp_room_{}", std::process::id());
         assert_eq!(menu.run("return #LOADS, LOADS[1]"), Ok(format!("1|{name}")));
         assert!(dir.join(format!("{name}.sav")).is_file());
-        menu_frame(0);
+        menu_frame(at);
         assert_eq!(menu.run("return #LOADS"), Ok("1".into()), "loaded once");
         // A world's GUI has started: the menu keeps out, even before its
         // first step (the owner's save for the room comes then).
@@ -1132,7 +1176,7 @@ mod tests {
             world.register();
             world.run("tpf3mp_native.world()").unwrap();
         }
-        menu_frame(0);
+        menu_frame(at);
         assert_eq!(
             menu.run("return #LOADS"),
             Ok("1".into()),
@@ -1143,7 +1187,7 @@ mod tests {
         // player), and even with an order waiting.
         lua::forget_worlds();
         LAST_STEP.store(now_ms().max(1), Ordering::Release);
-        menu_frame(0);
+        menu_frame(at);
         assert_eq!(
             menu.run("return #LOADS"),
             Ok("1".into()),
@@ -1168,9 +1212,11 @@ mod tests {
         sight.gate = crate::at_menu::MenuGate::new();
         sight.seen = None;
         sight.logged = None;
+        sight.hand_over_due = None;
         drop(sight);
         MENU_CLOCK_SKEW.store(0, Ordering::Release);
         crate::menu::set_game_field(0);
+        crate::menu::set_load_field(0);
     }
 
     /// A game that had a world up and closed it: the menu keeps out while
@@ -1192,9 +1238,8 @@ mod tests {
         std::fs::write(&room, b"the room's world").unwrap();
         let menu = Lua::new();
         menu.run(
-            "LOADS = {} TASK = '' api = { type = { SavegameId = { new = function() return {} end } } } \
+            "LOADS = {} api = { type = { SavegameId = { new = function() return {} end } } } \
              app = { SaveGameNamespace = { getSavegame = function() return 'savegame' end }, \
-                     getProgressMonitor = function() return { getTask = function() return TASK end } end, \
                      loadGame = function(id) LOADS[#LOADS + 1] = id.saveGameName end }",
         )
         .unwrap();
@@ -1209,12 +1254,17 @@ mod tests {
             script,
             Box::new(crate::worlds::GuiWorlds::in_folder(Ok(dir.clone()))),
         )));
-        // The menu: m_game is its second word here.
+        // The menu: m_game is its second word here, m_loadGameResult its
+        // third.
         let mut cmenu = [0usize; 4];
         crate::menu::set_game_field(8);
+        crate::menu::set_load_field(16);
         let at = cmenu.as_mut_ptr() as usize;
         let set_world = |loaded: bool| unsafe {
             std::ptr::write_volatile((at + 8) as *mut usize, usize::from(loaded));
+        };
+        let set_loading = |loading: bool| unsafe {
+            std::ptr::write_volatile((at + 16) as *mut usize, usize::from(loading));
         };
         // A world is loaded, then steps, then stops stepping (a save): the
         // menu keeps out all along.
@@ -1228,7 +1278,7 @@ mod tests {
         assert!(hook_log().contains("menu: a world is loaded (CMenuUI::m_game set)"));
         // The world closes, and the next one loads: still out.
         set_world(false);
-        menu.run("TASK = 'Loading'").unwrap();
+        set_loading(true);
         menu_frame(at);
         MENU_CLOCK_SKEW.store(20 * crate::at_menu::QUIET_MS, Ordering::Release);
         menu_frame(at);
@@ -1236,7 +1286,7 @@ mod tests {
         assert!(hook_log().contains("menu: no world loaded, but the game is loading one"));
         // Nothing loads: quiet for the stretch, then the menu follows the
         // room, which begins, and loads the room's save.
-        menu.run("TASK = ''").unwrap();
+        set_loading(false);
         menu_frame(at);
         assert_eq!(menu.run("return #LOADS"), Ok("0".into()), "not quiet yet");
         MENU_CLOCK_SKEW.store(21 * crate::at_menu::QUIET_MS, Ordering::Release);
@@ -1280,6 +1330,186 @@ mod tests {
         let _ = lua::take_load_failure();
         forget_menu_sight();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// While a load may run (the game's `m_loadGameResult` set, or a load
+    /// the hook started whose world's GUI has not started), the menu's
+    /// frame never calls into the menu's Lua: a call there can wait on the
+    /// loader's locks, which hung the host's game (2026-09-30). The room's
+    /// next load waits, and the Multiplayer window is handed over only once
+    /// the world that came up has stepped.
+    #[test]
+    fn the_menu_frame_makes_no_lua_call_while_a_load_runs() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        lua::forget_worlds();
+        forget_menu_sight();
+        crate::menu::tests::menu51();
+        let dir = std::env::temp_dir().join(format!("tpf3mp-menu-noload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let room = dir.join("room.sav");
+        std::fs::write(&room, b"the room's world").unwrap();
+        let menu = Lua::new();
+        menu.run(
+            "LOADS = {} CLOSED = 0 \
+             api = { type = { SavegameId = { new = function() return {} end } } } \
+             resolveutil = { __tpf3mp_close = function() CLOSED = CLOSED + 1 end } \
+             app = { SaveGameNamespace = { getSavegame = function() return 'savegame' end }, \
+                     loadGame = function(id) LOADS[#LOADS + 1] = id.saveGameName end }",
+        )
+        .unwrap();
+        assert_eq!(unsafe { crate::menu::adopt(menu.state()) }, Ok(true));
+        let mut script = Script::default();
+        script.begin.extend([None, Some(begin())]);
+        script.gates.push_back(StepGate::Load(Load {
+            file: Some(room.clone()),
+            next_step: 9,
+        }));
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            script,
+            Box::new(crate::worlds::GuiWorlds::in_folder(Ok(dir.clone()))),
+        )));
+        LAST_STEP.store(0, Ordering::Release);
+        let mut cmenu = [0usize; 4];
+        crate::menu::set_game_field(8);
+        crate::menu::set_load_field(16);
+        let at = cmenu.as_mut_ptr() as usize;
+        let set = |word: usize, on: bool| unsafe {
+            std::ptr::write_volatile((at + 8 * word) as *mut usize, usize::from(on));
+        };
+        let calls = || crate::menu::tests::PCALLS.load(Ordering::SeqCst);
+
+        // The game is loading something of its own when the room begins:
+        // the room's load waits, no Lua runs.
+        set(2, true);
+        let before = calls();
+        for _ in 0..4 {
+            menu_frame(at);
+        }
+        assert!(DRIVER.lock().unwrap().as_ref().unwrap().in_room(), "began");
+        assert_eq!(calls(), before, "no Lua while the game loads");
+        assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
+        // Its load ends: the room's starts, once.
+        set(2, false);
+        menu_frame(at);
+        assert_eq!(menu.run("return #LOADS"), Ok("1".into()));
+        assert!(lua::load_started());
+        // The room's load runs: the game's future, then the world built
+        // (m_game set, steps run inside the load, its GUI not yet started),
+        // with another load ordered meanwhile: still no Lua.
+        lua::request_menu_load("again");
+        let before = calls();
+        set(2, true);
+        menu_frame(at);
+        set(2, false);
+        menu_frame(at);
+        LAST_STEP.store(now_ms().max(1), Ordering::Release);
+        menu_frame(at);
+        set(1, true);
+        for _ in 0..3 {
+            menu_frame(at);
+        }
+        assert_eq!(calls(), before, "no Lua while the room's load runs");
+        assert_eq!(menu.run("return CLOSED"), Ok("0".into()));
+        // The world's GUI starts: the load is the hook's no more, but the
+        // world has not stepped since it came up: still no Lua.
+        {
+            let world = Lua::new();
+            world.register();
+            world.run("tpf3mp_native.world()").unwrap();
+        }
+        assert!(!lua::load_started());
+        menu_frame(at);
+        assert_eq!(calls(), before);
+        // It steps: the load is over, and the window is handed over, once.
+        MENU_CLOCK_SKEW.store(1_000, Ordering::Release);
+        LAST_STEP.store(menu_now_ms(), Ordering::Release);
+        menu_frame(at);
+        menu_frame(at);
+        assert_eq!(menu.run("return CLOSED"), Ok("1".into()));
+        assert_eq!(calls(), before + 1, "the hand-over's one call");
+        assert_eq!(menu.run("return #LOADS"), Ok("1".into()));
+
+        *DRIVER.lock().unwrap() = None;
+        LAST_STEP.store(0, Ordering::Release);
+        IN_ROOM.store(false, Ordering::Release);
+        lua::set_in_room(false);
+        crate::menu::tests::forget_all();
+        let _ = lua::take_menu_load();
+        lua::menu_load_failed(String::new());
+        let _ = lua::take_load_failure();
+        lua::forget_worlds();
+        forget_menu_sight();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    static NEST: AtomicBool = AtomicBool::new(false);
+    static INNER_CALLS: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+    /// A `DoStep` that runs one of the menu's frames inside itself, as a
+    /// load's screen does, and records the Lua calls that inner frame made.
+    unsafe extern "C-unwind" fn do_step_with_a_frame_inside(
+        menu: usize,
+        _a: usize,
+        _b: usize,
+        _c: usize,
+    ) -> usize {
+        if NEST.swap(false, Ordering::SeqCst) {
+            let before = crate::menu::tests::PCALLS.load(Ordering::SeqCst);
+            crate::menu::tests::nested_frame(menu);
+            let after = crate::menu::tests::PCALLS.load(Ordering::SeqCst);
+            INNER_CALLS.store(after - before, Ordering::SeqCst);
+        }
+        7
+    }
+
+    /// A menu frame the game runs inside its own `DoStep` (where it holds
+    /// its locks) does nothing; the outer frame, once the game's is done,
+    /// does the menu's work.
+    #[test]
+    fn a_menu_frame_inside_the_games_own_frame_is_left_alone() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        lua::forget_worlds();
+        forget_menu_sight();
+        crate::menu::tests::menu51();
+        let menu = Lua::new();
+        menu.run(
+            "LOADS = {} api = { type = { SavegameId = { new = function() return {} end } } } \
+             app = { SaveGameNamespace = { getSavegame = function() return 'savegame' end }, \
+                     loadGame = function(id) LOADS[#LOADS + 1] = id.saveGameName end }",
+        )
+        .unwrap();
+        assert_eq!(unsafe { crate::menu::adopt(menu.state()) }, Ok(true));
+        let dir = std::env::temp_dir();
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            Script::default(),
+            Box::new(crate::worlds::GuiWorlds::in_folder(Ok(dir))),
+        )));
+        LAST_STEP.store(0, Ordering::Release);
+        let cmenu = [0usize; 4];
+        crate::menu::set_load_field(16);
+        let at = cmenu.as_ptr() as usize;
+        lua::request_menu_load("x");
+        NEST.store(true, Ordering::SeqCst);
+        let result = crate::menu::tests::frame_through_detour(do_step_with_a_frame_inside, at);
+        assert_eq!(result, 7, "the game's result passes through");
+        assert_eq!(
+            INNER_CALLS.load(Ordering::SeqCst),
+            0,
+            "the inner frame made no Lua call"
+        );
+        assert_eq!(
+            menu.run("return #LOADS, LOADS[1]"),
+            Ok("1|x".into()),
+            "the outer one did"
+        );
+
+        *DRIVER.lock().unwrap() = None;
+        crate::menu::tests::forget_all();
+        let _ = lua::take_menu_load();
+        lua::menu_load_failed(String::new());
+        let _ = lua::take_load_failure();
+        forget_menu_sight();
     }
 
     static PRINTED: AtomicUsize = AtomicUsize::new(0);

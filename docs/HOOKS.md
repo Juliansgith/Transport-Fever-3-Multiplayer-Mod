@@ -769,8 +769,9 @@ for the table (`bridge.find`). Its contract is in
   hands the launcher.
 - `tpf3mp_native.handover()`: in the GUI: `true` once after the main
   menu's Multiplayer window, open as the room's world came up, was closed
-  for it (`crate::menu::close_lobby` at the menu frame the world came up):
-  the game's own Multiplayer window opens in its place.
+  for it (`crate::menu::close_lobby` at the first menu frame after the
+  world came up and stepped, once no load runs): the game's own
+  Multiplayer window opens in its place.
 - `tpf3mp_native.leave()`: in the GUI: the player leaves the room, as the
   launcher's Leave room does: queued for the launcher as
   `LobbyAction::Leave`, `true` or `false` and why.
@@ -978,8 +979,22 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   r13`), and its displacement is the field's offset, which the menu's
   frame reads in the `CMenuUI` it is handed. A state given `app` while
   `m_game` is set is the world's GUI's: the menu never loads from it, and
-  forgets it when the world closes. Loading is the menu's own sign, the
-  progress monitor's task, asked through the chunk's `busy()`.
+  forgets it when the world closes.
+- **Knows whether a load runs, without asking the game.** `DoStep` polls
+  `CMenuUI::m_loadGameResult`, the future of a load under way, which it
+  hands to `StartGame` when ready; that read is the optional profile
+  target `UI::CMenuUI::DoStep/m_loadGameResult read` (`0x6a0c84`, `mov
+  rbx, [rsi+0x1bd0]`), and the menu's frame reads the field the same way
+  as `m_game`: a plain read on the menu's own thread, no Lua, no lock. A
+  load the hook started (the GUI or the menu took it) counts too, from
+  its start until its world's GUI starts or it fails. While either may
+  run, or the field cannot be read, the menu's frame never calls into the
+  menu's Lua (no load, no window close): the host's game hung on
+  2026-09-30 when the frame asked the progress monitor (`getTask`) during
+  a load, whose lock the loader holds while it runs frames. The chunk no
+  longer asks the progress monitor at all. A menu frame the game runs
+  inside its own `DoStep` (a nested frame, as a load's screen may run) is
+  left alone entirely; only the outermost frame does the menu's work.
 - **Follows the room from the menu's frame.** `UI::CMenuUI::DoStep`
   (`0x6a0160`, the menu's per-frame update on the main thread) is
   detoured. After the game's own frame, the driver runs
@@ -994,14 +1009,16 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
     owner's world and hung it, and the owner's menu frame once took it
     while saving the room's world before that world's first step (both
     measured 2026-09-30);
-  - after a world, the menu is back once `m_game` is clear and the
-    progress monitor has no task for 2 s with no step between. A load
-    blocks: the GUI's load stops the world first and loads after, and a
-    moment without a task restarts the 2 s;
-  - after a world, a game whose `m_game` the hook cannot read (the target
-    missing) or whose menu cannot say whether it loads is never taken for
-    the menu (fail closed): as before this rule, only a fresh game follows
-    the room from its menu.
+  - after a world, the menu is back once `m_game` is clear and no load
+    runs (above) for 2 s with no step between. A load blocks: the GUI's
+    load stops the world first and loads after, and a moment without one
+    restarts the 2 s;
+  - after a world, a game whose `m_game` or `m_loadGameResult` the hook
+    cannot read (a target missing) is never taken for the menu (fail
+    closed).
+
+  In a fresh game `on_menu` runs through a load too (it only reads the
+  room's link), but the menu's Lua waits for a frame where no load runs.
 
   hook.log says where the menu sees the game on each change:
   `menu: a world is loaded (CMenuUI::m_game set)`, `menu: the world closed
@@ -1017,9 +1034,9 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   loading it from the menu, as the menu's own Load Game page does:
   `api.type.SavegameId.new()` with the name and the `savegame` namespace
   (`app.SaveGameNamespace.getSavegame()`), then `app.loadGame(id, false,
-  nil)`. A load the game is busy with already (the progress monitor has a
-  task, the menu's own sign of it) is tried again on the next frame. Any
-  other failure holds the world.
+  nil)`. It is started only on a frame where no load runs; while the
+  game reads the save's details it answers busy and is tried again on the
+  next such frame. Any other failure holds the world.
 - **Starts the world without Start Game.** The menu's pages call
   `app.setWaitForStartReadyGame()` before they load, which is what makes
   the loading screen wait for the player's Start Game

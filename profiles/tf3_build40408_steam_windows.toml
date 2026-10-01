@@ -337,6 +337,21 @@ offset = 0
 prologue = "4C 39 AE"
 required = false
 
+# DoStep's read of CMenuUI::m_loadGameResult (rva 0x6a0c84, DoStep + 0xb24):
+# `mov rbx, [rsi+0x1bd0]; test rbx, rbx; je; cmp byte [rsi+0x1bd8], 0; je`,
+# the future of a load under way, which DoStep polls and hands to StartGame
+# when it is ready (StartGame asserts "!m_loadGameResult.Valid()" on the same
+# field). Read only: the hook takes the offset from the displacement and reads
+# the field in the menu's frame to know a load runs, without the game's locks;
+# while one does it never calls the menu's Lua (a call there hung the host's
+# load, 2026-09-30). Without it the menu never calls its Lua (fail closed).
+[[target]]
+name = "UI::CMenuUI::DoStep/m_loadGameResult read"
+signature = "48 8B 9E ?? ?? ?? ?? 48 85 DB 0F 84 ?? ?? ?? ?? 80 BE ?? ?? ?? ?? 00 74"
+offset = 0
+prologue = "48 8B 9E"
+required = false
+
 # Lua 5.2 C API, address only (never detoured). (rva 0x2fbe0c0)
 [[target]]
 name = "lua_pcallk"

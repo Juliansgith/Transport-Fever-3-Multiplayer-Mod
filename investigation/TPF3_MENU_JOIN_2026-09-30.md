@@ -269,3 +269,43 @@ Failure lines: `menu: after a world, the hook cannot tell whether one is
 loaded (fail closed)` (the target or the menu's `busy` missing), and no
 `back at the main menu` line while the menu shows (the task never clears,
 or `m_game` stays set).
+
+## 9. The host's load hung on the menu frame (2026-09-30)
+
+Seen in the game with `eb6c661`: the host loaded the room's world from the
+main menu (a fresh game) and its main thread stopped about 70 s into the
+load ("Thread did not respond to ping"); "Game is ready" never came. The
+host's dump (thread 8092, a wait in ntdll) has `tpf3mp_hook::menu::loading`
+on its stack: the menu frame called the chunk's `busy()`, which asked
+`app.getProgressMonitor():getTask()`, and that waited on the progress
+monitor's lock, which the loader held while it ran the frame. The hook.log
+of that run shows how the frame got there in a fresh game: `menu: no world
+loaded, but the game is loading one` 5 s before `menu: a world is loaded`,
+so the world stepped (or its GUI started) before `CMenuUI::m_game` was
+set, which made the frame take the "after a world" path that asked Lua.
+
+The fix: nothing on the menu frame asks the game during a load.
+
+- **CONFIRMED-static.** `CMenuUI+0x1bd0` is `m_loadGameResult`, the future
+  of the load: `DoStep` reads it at `0x6a0c84` (`mov rbx,[rsi+0x1bd0];
+  test rbx,rbx; je`, then `[rsi+0x1bd8]` and the state's ready byte at
+  `+0xe8`) and moves it out (`sub_68f2a0`, `0x68f2c5`) when ready, before
+  `StartGame`; `StartGame` reads the same field (`0x6a3676`) before its
+  assert `!m_loadGameResult.Valid()`; `sub_6a1190` (called from the load
+  entry `sub_6a5850`) sets it (`0x6a12a3`). The read's signature is unique
+  in `.text`; it is the profile target `UI::CMenuUI::DoStep/m_loadGameResult
+  read`.
+- **CONFIRMED-static.** `StartGame` does not set `m_game` at a load's
+  start: it asserts it clear first and sets it partway (`0x6a4aee`), after
+  the async load is over. So `m_game` is no sign of a load under way.
+- The hook reads `m_loadGameResult` as it reads `m_game`: one aligned
+  pointer of the menu object on the menu's own thread, never
+  dereferenced, no lock. A load the hook started counts from its start to
+  its world's GUI. While either may run (or the field is unknown), the
+  frame makes no Lua call: no `serve`, no `close_lobby`, no `busy`. The
+  chunk asks the progress monitor nowhere any more. The Multiplayer
+  window's hand-over (`close_lobby`) waits for the first frame after the
+  world came up *and stepped*. A frame the game runs inside its own
+  `DoStep` is skipped whole.
+- **UNKNOWN.** Whether the load's screen runs `DoStep` nested; the dump's
+  stack read stops short of it. The nesting guard covers it either way.
