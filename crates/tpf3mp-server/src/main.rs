@@ -123,7 +123,7 @@ struct Args {
     /// games restored at start wait. Longer keeps games for players who
     /// come back another day, and keeps their rooms counting against the
     /// address that created them all the while.
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 5)]
     abandon_after_mins: u64,
 
     /// Seconds a player's game may stop advancing, for an autosave or a

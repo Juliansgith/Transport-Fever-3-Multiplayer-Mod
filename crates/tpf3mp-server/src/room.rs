@@ -810,6 +810,10 @@ pub(crate) struct Summary {
     pub(crate) rules: RulesName,
     pub(crate) owner: PlayerId,
     pub(crate) players: u8,
+    /// Members connected now. A room nobody is connected to is waiting
+    /// out its grace period ([`Timeouts::abandoned`]) for its players, and
+    /// the list leaves it out: nobody else has a game to join there.
+    pub(crate) connected: u8,
     pub(crate) max_players: u8,
     pub(crate) has_password: bool,
     pub(crate) phase: RoomPhase,
@@ -876,6 +880,7 @@ impl Room {
                 rules: Text::lossy(""),
                 owner: owner.player,
                 players: 0,
+                connected: 0,
                 max_players: 0,
                 has_password: false,
                 phase: RoomPhase::Lobby,
@@ -1148,6 +1153,7 @@ impl Room {
                 rules: Text::lossy(""),
                 owner,
                 players: 0,
+                connected: 0,
                 max_players: 0,
                 has_password: false,
                 phase: RoomPhase::Running,
@@ -1178,6 +1184,7 @@ impl Room {
         summary.rules.clone_from(&self.rules);
         summary.owner = self.owner;
         summary.players = u8::try_from(self.members.len()).unwrap_or(u8::MAX);
+        summary.connected = self.connected();
         summary.max_players = self.max_players;
         summary.has_password = self.secrets.password_tag.is_some();
         summary.competitive = self.competitive;
@@ -2926,7 +2933,17 @@ impl Room {
             self.unattended_since = None;
             return;
         }
-        let since = *self.unattended_since.get_or_insert(now);
+        let since = match self.unattended_since {
+            Some(since) => since,
+            None => {
+                info!(
+                    room = %self.id,
+                    grace_secs = self.timeouts.abandoned.as_secs(),
+                    "nobody is connected to the game; it closes unless a player returns in time"
+                );
+                *self.unattended_since.insert(now)
+            }
+        };
         if now.saturating_duration_since(since) < self.timeouts.abandoned {
             return;
         }
@@ -2970,7 +2987,49 @@ impl Room {
         }
     }
 
+    /// Members connected now.
+    fn connected(&self) -> u8 {
+        let connected = self.members.iter().filter(|m| m.link.is_some()).count();
+        u8::try_from(connected).unwrap_or(u8::MAX)
+    }
+
+    /// Lets go of links whose connection has closed, as the notice of the
+    /// disconnect would have ([`Self::disconnected`]). That notice is lost
+    /// when the room's queue is full, and a link left behind would count as
+    /// a player connected: the room would wait for it forever, and never
+    /// close. Keeps the room list's count of connected players current.
+    fn sweep_closed_links(&mut self) {
+        let mut changed = false;
+        for member in &mut self.members {
+            let closed = member
+                .link
+                .as_ref()
+                .is_some_and(|link| link.connection.close_reason().is_some());
+            if closed {
+                debug!(room = %self.id, player = %member.player, "letting go of a closed connection");
+                member.link = None;
+                member.streaming = false;
+                member.pace = Pace::CatchingUp(None);
+                changed = true;
+            }
+        }
+        if changed && matches!(self.phase, Phase::Running(_)) {
+            self.broadcast_view();
+        }
+        let connected = self.connected();
+        let stale = self
+            .summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .connected
+            != connected;
+        if stale {
+            self.refresh_summary();
+        }
+    }
+
     fn on_tick(&mut self, now: Instant) {
+        self.sweep_closed_links();
         self.sweep_lobby();
         self.expire_if_abandoned(now);
         if self.closed {

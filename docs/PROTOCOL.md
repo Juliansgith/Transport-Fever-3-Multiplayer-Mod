@@ -98,9 +98,14 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   the server orders commands without judging them. The room view and every
   `TurnStart` name the room's rules, and they never change for the life of
   the room.
-- **Closing.** A room closes when its last member leaves. A running game
-  also closes when nobody has been connected to it for 10 minutes; until
-  then, disconnected players keep their seats and can resume.
+- **Closing.** A room closes when its last member leaves; a lobby also
+  when its last member disconnects. A running game also closes when nobody
+  has been connected to it for the server's grace period, 5 minutes by
+  default (OPERATIONS.md, "Room lifetime"); until then, disconnected
+  players keep their seats and can resume, and the room is left out of the
+  room list. Joining a room that closed is refused as `BadInvite`, like
+  any unknown room: the agent takes that answer to a rejoin as the room
+  being gone, and stops rejoining.
 - **Chat.** Any member can say something to the room (`Chat`, up to 280
   bytes). Every member hears it, the sender too, so everyone sees one
   conversation. A player may send one message a second, with a burst of
@@ -136,8 +141,9 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   invite is for anyone to join with, and its password still guards it. A
   private room is never listed, and its invite never leaves the server
   but as the answer to its creator. The server keeps a public room's
-  invite in memory only: a room restored after a restart is private. The
-  owner updates the listing with `DescribeRoom(RoomListing)`, such as the
+  invite in memory only: a room restored after a restart is private. A
+  public room nobody is connected to is not listed while it waits out its
+  grace period. The owner updates the listing with `DescribeRoom(RoomListing)`, such as the
   year and companies once the game runs; anyone else gets `NotOwner`, and
   a private room `NotListed`. A connection may ask for one page a second,
   with a burst of five (`RateLimited` beyond), within its general request
