@@ -82,6 +82,11 @@ jobs:
       TPF3MP_DISTRIBUTABLE: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The whole history: the build number in the Windows binaries'
+          # file version counts its commits (docs/DEVELOPMENT.md, "Which
+          # build is this"); a shallow clone has none.
+          fetch-depth: 0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check the settings built in
         shell: bash

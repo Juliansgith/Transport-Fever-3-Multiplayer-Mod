@@ -1095,6 +1095,8 @@ mod tests {
                 ])
                 .unwrap(),
                 BoundedVec::new(vec![Link {
+                    precedence: None,
+
                     from: 0,
                     to: 1,
                     tangent0: tangent,
@@ -1290,7 +1292,8 @@ mod tests {
             "unknown variant `Nonsense`, expected one of `BuildRoad`, `BuildTrack`, \
              `Bulldoze`, `BuildConstruction`, `BuyVehicle`, `SellVehicle`, `CreateLine`, \
              `EditLine`, `AssignLine`, `PlaceStop`, `Terraform`, `CompanyOp`, `Loan`, `VehicleOp`, \
-             `ReplaceVehicle`, `Prospect`, `NotificationSeen`, `ApplyRank`, `EditJunctions`"
+             `ReplaceVehicle`, `Prospect`, `NotificationSeen`, `ApplyRank`, `EditJunctions`, \
+             `Subsidy`, `Rename`"
         );
     }
 

@@ -56,8 +56,16 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// [`LobbyMember::banner`], the player's own ([`LobbyView::banner`]) and
 /// [`LobbyAction::SetBanner`]; 17 a room's play style, co-op or
 /// competitive ([`LobbyRoom::competitive`], in [`LobbyAction::Create`] and
-/// the room list).
-pub const BRIDGE_VERSION: u32 = 17;
+/// the room list); 18 each member's loading progress
+/// ([`LobbyMember::loading`]), and in the game's Multiplayer window each
+/// member's banner and loading progress ([`RoomMember`]), and its Leave
+/// as [`LobbyAction::Leave`]; 19 the campaign portraits this player's game
+/// can show ([`LobbyView::portraits`]), and banner ids of up to 32 bytes
+/// that may name one (protocol 13's `tpf3mp_proto::PORTRAITS`); 20 the save
+/// a room starts from on its page ([`LobbyRoom::start`]), the owner's
+/// upload of it ([`LobbyRoom::upload`]) and the owner's choice of another
+/// in the lobby ([`LobbyAction::ChooseStart`]; protocol 14).
+pub const BRIDGE_VERSION: u32 = 21;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -157,8 +165,13 @@ pub struct LobbyView {
     /// The launcher's default server, `host:port`, which the setting's
     /// "Reset to default" goes back to; empty without one.
     pub server_default: Text<128>,
-    /// The banner this player picked, if any.
+    /// The banner this player picked, if any: one of
+    /// `tpf3mp_proto::BANNERS` or of [`LobbyView::portraits`].
     pub banner: Option<tpf3mp_proto::BannerId>,
+    /// The campaign portraits this player's game can show
+    /// (`tpf3mp_proto::PORTRAITS`), in that order: those the launcher took
+    /// from this player's install. Empty without the campaign.
+    pub portraits: BoundedVec<tpf3mp_proto::BannerId, MAX_LOBBY_PORTRAITS>,
     /// The player's name.
     pub name: Text<32>,
     /// What went wrong last, until something succeeds.
@@ -192,6 +205,10 @@ pub struct LobbyView {
     /// The room's shared mods beyond those listed.
     pub room_mods_more: u32,
 }
+
+/// Most portraits a [`LobbyView`] offers: room for all of
+/// `tpf3mp_proto::PORTRAITS`.
+pub const MAX_LOBBY_PORTRAITS: usize = 32;
 
 /// Most installed mods a [`LobbyView`] lists.
 pub const MAX_LOBBY_MODS: usize = 64;
@@ -311,6 +328,7 @@ impl Default for LobbyView {
             server_address: Text::lossy(""),
             server_default: Text::lossy(""),
             banner: None,
+            portraits: BoundedVec::empty(),
             name: Text::lossy(""),
             error: None,
             notice: None,
@@ -353,6 +371,33 @@ pub struct LobbyRoom {
     pub members: BoundedVec<LobbyMember, { MAX_ROOM_MEMBERS as usize }>,
     /// Co-op (`false`) or competitive (`true`).
     pub competitive: bool,
+    /// In the lobby: the save the room's game starts from, as the room
+    /// names it to everyone; `None` when the owner's game provides the
+    /// world.
+    pub start: Option<LobbyStart>,
+    /// For the owner: the save they picked on its way to the room. Start
+    /// waits for it.
+    pub upload: Option<LobbyUpload>,
+}
+
+/// The save a room starts from, as its page shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyStart {
+    pub name: SaveName,
+    /// Its climate, such as `temperate`; empty unknown.
+    pub map: Text<32>,
+    /// Its year; 0 unknown.
+    pub year: u16,
+    /// Whether the room has it: until then the game cannot start.
+    pub arrived: bool,
+}
+
+/// The owner's save on its way to the room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LobbyUpload {
+    pub save: SaveName,
+    /// How much of it went up, 0 to 100; 0 while it is being read.
+    pub percent: u8,
 }
 
 /// One member of the room, as its lobby shows it.
@@ -367,8 +412,12 @@ pub struct LobbyMember {
     /// Whether this member's game matches the owner's: `None` while either
     /// has not said.
     pub same_content: Option<bool>,
-    /// The banner this member picked (`tpf3mp_proto::BANNERS`), if any.
+    /// The banner this member picked (`tpf3mp_proto::BANNERS`), or the
+    /// portrait (`tpf3mp_proto::PORTRAITS`) this player's game can show, if
+    /// any: a portrait it cannot show is left out, for the default banner.
     pub banner: Option<tpf3mp_proto::BannerId>,
+    /// Where this member's game is with the room's world while it comes in.
+    pub loading: Option<tpf3mp_proto::LoadingStage>,
 }
 
 /// One line of the room's chat.
@@ -436,9 +485,20 @@ pub enum LobbyAction {
     SetServer {
         server: Text<128>,
     },
-    /// Show this banner in rooms; `None` for the default.
+    /// Show this banner or portrait in rooms; `None` for the default.
     SetBanner {
         banner: Option<tpf3mp_proto::BannerId>,
+    },
+    /// The room's owner, in its lobby: the room starts from the save `save`
+    /// now, one of [`LobbyView::saves`], which the launcher hands over in
+    /// place of the one before; empty for none, the owner's game then
+    /// providing the world. `map` and `year` are what the owner's game read
+    /// of the save, for the room to show (empty and 0 unknown). Every player
+    /// is asked to get ready again.
+    ChooseStart {
+        save: SaveName,
+        map: Text<32>,
+        year: u16,
     },
 }
 
@@ -456,6 +516,12 @@ pub struct RoomMember {
     pub player: PlayerId,
     pub name: Text<32>,
     pub connected: bool,
+    /// The banner this member picked (`tpf3mp_proto::BANNERS`), or the
+    /// portrait (`tpf3mp_proto::PORTRAITS`) this player's game can show, if
+    /// any: a portrait it cannot show is left out, for the default banner.
+    pub banner: Option<tpf3mp_proto::BannerId>,
+    /// Where this member's game is with the room's world while it comes in.
+    pub loading: Option<tpf3mp_proto::LoadingStage>,
 }
 
 /// From the hook to the agent.
@@ -637,7 +703,8 @@ mod tests {
             owner: n == 0,
             you: n == 1,
             same_content: Some(true),
-            banner: None,
+            banner: Some(Text::new("x".repeat(32)).unwrap()),
+            loading: Some(tpf3mp_proto::LoadingStage::Fetching { percent: 100 }),
         };
         let line = LobbyLine {
             from: Text::new("y".repeat(32)).unwrap(),
@@ -649,7 +716,12 @@ mod tests {
             server: Text::new("s".repeat(128)).unwrap(),
             server_address: Text::new("a".repeat(128)).unwrap(),
             server_default: Text::new("d".repeat(128)).unwrap(),
-            banner: Some(Text::new("b".repeat(16)).unwrap()),
+            banner: Some(Text::new("b".repeat(32)).unwrap()),
+            portraits: BoundedVec::new(vec![
+                Text::new("p".repeat(32)).unwrap();
+                MAX_LOBBY_PORTRAITS
+            ])
+            .unwrap(),
             name: Text::new("n".repeat(32)).unwrap(),
             error: Some(Text::new("e".repeat(256)).unwrap()),
             notice: Some(Text::new("o".repeat(256)).unwrap()),
@@ -663,6 +735,16 @@ mod tests {
                 has_password: true,
                 members: BoundedVec::new((0..MAX_ROOM_MEMBERS).map(member).collect()).unwrap(),
                 competitive: false,
+                start: Some(LobbyStart {
+                    name: Text::new("s".repeat(MAX_SAVE_NAME)).unwrap(),
+                    map: Text::new("m".repeat(32)).unwrap(),
+                    year: u16::MAX,
+                    arrived: false,
+                }),
+                upload: Some(LobbyUpload {
+                    save: Text::new("u".repeat(MAX_SAVE_NAME)).unwrap(),
+                    percent: 100,
+                }),
             }),
             chat: BoundedVec::new(vec![line; MAX_LOBBY_CHAT]).unwrap(),
             rules: BoundedVec::new(vec![
@@ -758,6 +840,12 @@ mod tests {
             server: Text::new("s".repeat(128)).unwrap(),
         });
         assert_eq!(decode::<ToAgent>(&encode(&set).unwrap()).unwrap(), set);
+        let pick = ToAgent::Lobby(LobbyAction::ChooseStart {
+            save: Text::new("s".repeat(MAX_SAVE_NAME)).unwrap(),
+            map: Text::new("temperate").unwrap(),
+            year: 1900,
+        });
+        assert_eq!(decode::<ToAgent>(&encode(&pick).unwrap()).unwrap(), pick);
     }
 
     #[test]

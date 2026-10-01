@@ -13,6 +13,7 @@
 
 mod api;
 mod http;
+pub mod instance;
 pub(crate) mod lobby;
 pub mod setup;
 
@@ -35,13 +36,15 @@ use tokio::{
 use tpf3mp_bridge::{LobbyAction, LobbyView};
 use tpf3mp_net::{Identity, ServerTrust};
 use tpf3mp_proto::{
-    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomSettings, Text,
+    ContentDiff, ContentManifest, CreateRoom, Invite, JoinRoom, RequestError, RoomPhase,
+    RoomSettings, StartSave, Text,
 };
 use tracing::{info, warn};
 
 pub use self::api::{
     Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent,
-    ModClass, ModHave, ModRow, Phase, Room, RoomModRow, RulesChoice, State, World,
+    ModClass, ModHave, ModRow, Phase, Room, RoomModRow, RoomStart, RulesChoice, StartProgress,
+    State, World,
 };
 use self::{api::View, http::Page, lobby::IdleLink};
 use crate::{
@@ -68,6 +71,11 @@ const SAVES_TICK: Duration = Duration::from_secs(5);
 /// How long the launcher watches a game link it finds already made for
 /// another launcher's heartbeat, before taking it.
 const LINK_HELD_WAIT: Duration = Duration::from_millis(350);
+/// How long the hook of a game this launcher did not start may fall silent
+/// before the game counts as closed: a game that followed the link from a
+/// launcher that closed ([`instance`]), whose process this one cannot
+/// watch. Long enough for a save to load at the menu.
+const ADOPTED_GAME_QUIET: Duration = Duration::from_secs(60);
 
 /// What a launcher needs.
 #[derive(Debug, Clone)]
@@ -427,6 +435,8 @@ async fn control(
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut saves_tick = tokio::time::interval(SAVES_TICK);
     saves_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // The bridge version of another TPF3-MP's hook, once said.
+    let mut told_other_hook: Option<u32> = None;
     loop {
         tokio::select! {
             _ = saves_tick.tick() => {
@@ -478,6 +488,27 @@ async fn control(
                     }
                     None => Vec::new(),
                 };
+                // A game this launcher did not start: one that followed the
+                // link from a launcher that closed for this one. Only its
+                // hook falling silent says it closed.
+                if session.is_none()
+                    && game.is_none()
+                    && idle.as_ref().is_some_and(|link| {
+                        link.build().is_some()
+                            && link.hook_quiet(std::time::Instant::now()) > ADOPTED_GAME_QUIET
+                    })
+                {
+                    info!("the game another launcher started stopped answering; it counts as closed");
+                    shared.status().game = None;
+                    idle = idle.take().map(IdleLink::forget_game);
+                }
+                let other_hook = idle.as_ref().and_then(IdleLink::other_bridge);
+                if other_hook != told_other_hook {
+                    told_other_hook = other_hook;
+                    if let Some(version) = other_hook {
+                        shared.view().error = Some(other_hook_message(version));
+                    }
+                }
                 for asked in asked {
                     lobby_act(&shared, &config, asked, &mut connected, &mut session, &mut game, &mut idle).await;
                 }
@@ -596,6 +627,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::ListRooms { .. } => "list_rooms",
         Action::SetServer { .. } => "set_server",
         Action::SetBanner { .. } => "set_banner",
+        Action::ChooseStart { .. } => "choose_start",
     }
 }
 
@@ -704,6 +736,20 @@ async fn act(
                 }),
                 competitive,
             };
+            // What the room shows everyone of its start save: the list's
+            // map and year, when the owner's game read them.
+            let start_world = start_world.map(|file| {
+                let save = start_save_named(
+                    &file,
+                    create
+                        .listing
+                        .as_ref()
+                        .map(|l| l.map.as_str())
+                        .unwrap_or(""),
+                    create.listing.as_ref().map_or(0, |l| l.year),
+                );
+                (file, save)
+            });
             let (invite, room) = current
                 .client
                 .create_room(create.clone())
@@ -731,6 +777,9 @@ async fn act(
                 start_world,
                 generate_world,
             )
+        }
+        Action::ChooseStart { save, map, year } => {
+            choose_start(shared, config, session, &save, &map, year).await
         }
         Action::Join { invite, password } => {
             let passed = passed_invite(&invite).ok_or("that is not an invite")?;
@@ -862,6 +911,16 @@ async fn act(
     }
 }
 
+/// What the player is told of a game whose hook speaks bridge `version`:
+/// one started by another TPF3-MP's launcher, which this one cannot serve.
+fn other_hook_message(version: u32) -> String {
+    format!(
+        "Transport Fever 3 runs the hook of another TPF3-MP (game link version {version}, this \
+        launcher {}), started by another launcher: close the game, then start it again from here.",
+        tpf3mp_bridge::BRIDGE_VERSION
+    )
+}
+
 /// Starts Transport Fever 3 with the hook in it, told the launcher's link:
 /// the only way the hook runs (D11). A game started from Steam is the plain
 /// game. It may start before a room is chosen: its main menu's Multiplayer
@@ -883,6 +942,14 @@ fn launch_game(
     {
         return Err(
             "Transport Fever 3 is already running from here; it joins once it has loaded".into(),
+        );
+    }
+    // A game started by a launcher this one took over from, linked here.
+    if game.is_none() && idle.as_ref().is_some_and(|link| link.build().is_some()) {
+        return Err(
+            "Transport Fever 3 is already running with TPF3-MP, linked to this launcher: use its \
+            Multiplayer window"
+                .into(),
         );
     }
     // The game needs Steam to start; without it, it would quit or start
@@ -966,6 +1033,60 @@ fn save_name(file: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// What the room shows everyone of the save `file`: its name, and the map
+/// and year the owner's game read of it.
+fn start_save_named(file: &Path, map: &str, year: u16) -> StartSave {
+    StartSave {
+        name: Text::lossy(&save_name(file).unwrap_or_default()),
+        map: Text::lossy(map.trim()),
+        year,
+    }
+}
+
+/// The owner picks another save for the room to start from, in its lobby,
+/// or none (an empty `picked`): checked as a new room's is, the room's
+/// shared mods follow it, and the room session hands it over in place of
+/// the one before, asking everyone to get ready again.
+async fn choose_start(
+    shared: &Arc<Shared>,
+    config: &LauncherConfig,
+    session: &Option<Session>,
+    picked: &str,
+    map: &str,
+    year: u16,
+) -> Result<(), String> {
+    if session.is_none() {
+        return Err("join a room first".into());
+    }
+    {
+        let status = shared.status();
+        let room = status.room.as_ref().ok_or("join a room first")?;
+        if room.owner != config.identity.player() {
+            return Err("only the room's owner chooses the save it starts from".into());
+        }
+        if room.phase != RoomPhase::Lobby {
+            return Err("the room's game has begun: it plays the world it has".into());
+        }
+    }
+    let listed = shared.view().saves.clone();
+    let file = start_world(Some(picked), &listed, None, crate::steam::find_save)?;
+    let declare = own_start(shared, file.as_deref());
+    let picked = picked.trim();
+    if !picked.is_empty() {
+        // Offered first next time.
+        shared.view().start_save = Some(picked.to_owned());
+    }
+    info!(
+        none = picked.is_empty(),
+        "the owner picks the save the room starts from"
+    );
+    let start = file.map(|file| {
+        let save = start_save_named(&file, map, year);
+        (file, save)
+    });
+    forward(session, Control::StartWorld { start, declare }).await
+}
+
 /// Hands the connection to a bridge, which runs the room from its lobby to
 /// the end of its game, and plays it through the game's hook. A room this
 /// player owns starts from `start_world`, if it names a save.
@@ -978,7 +1099,7 @@ fn begin_session(
     idle: &mut Idle,
     invite: Invite,
     password: Option<Text<64>>,
-    start_world: Option<PathBuf>,
+    start_world: Option<(PathBuf, StartSave)>,
     generate_world: bool,
 ) -> Result<(), String> {
     let Connected {
@@ -1011,7 +1132,11 @@ fn begin_session(
         status: Some(Arc::clone(&shared.status)),
         lobby: Some(shared.lobby.clone()),
         // A room this player created starts from the save named for it.
-        start_world: start_world.filter(|_| owned),
+        start_save: start_world
+            .as_ref()
+            .filter(|_| owned)
+            .map(|(_, save)| save.clone()),
+        start_world: start_world.filter(|_| owned).map(|(file, _)| file),
         start_generated_world: owned && generate_world,
         mods: config.mods.clone(),
         picker: shared.picker_link(),
@@ -1075,7 +1200,7 @@ async fn reconnect(
             Ok(()) => Ok((client, events)),
             Err(error) => Err(error.to_string()),
         },
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(error.for_player()),
     };
     match connected {
         Ok((client, events)) => {
@@ -1123,7 +1248,10 @@ async fn connect_to(
         },
         Err(error) => {
             shared.view().outdated = error.client_is_older();
-            Err(error.to_string())
+            if let Some((client, server)) = error.mismatch() {
+                warn!(client, server, "the server speaks another protocol");
+            }
+            Err(error.for_player())
         }
     };
     let mut view = shared.view();
@@ -1400,7 +1528,10 @@ async fn join(
         idle,
         invite,
         password,
-        config.start_save.clone(),
+        config.start_save.clone().map(|file| {
+            let save = start_save_named(&file, "", 0);
+            (file, save)
+        }),
         false,
     )
 }
@@ -1613,6 +1744,20 @@ mod tests {
     }
 
     #[test]
+    fn a_game_with_another_tpf3mps_hook_is_told_to_restart_from_here() {
+        let message = other_hook_message(tpf3mp_bridge::BRIDGE_VERSION - 1);
+        assert!(
+            message.starts_with(&format!(
+                "Transport Fever 3 runs the hook of another TPF3-MP (game link version {}, this launcher {})",
+                tpf3mp_bridge::BRIDGE_VERSION - 1,
+                tpf3mp_bridge::BRIDGE_VERSION
+            )),
+            "{message}"
+        );
+        assert!(!message.contains("  "), "{message}");
+    }
+
+    #[test]
     fn the_server_and_name_are_remembered_for_next_time() {
         let dir = std::env::temp_dir().join(format!("tpf3mp-remember-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -1748,6 +1893,13 @@ mod tests {
         assert_eq!(
             save_name(Path::new("/x/y/twomptest.sav")).as_deref(),
             Some("twomptest")
+        );
+        // What the room shows everyone of it: its name, with what the
+        // owner's game read.
+        let named = start_save_named(Path::new("/saves/Güterzug.sav"), " dry ", 1900);
+        assert_eq!(
+            (named.name.as_str(), named.map.as_str(), named.year),
+            ("Güterzug", "dry", 1900)
         );
     }
 

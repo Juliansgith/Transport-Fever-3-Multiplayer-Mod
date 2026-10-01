@@ -4,14 +4,23 @@
 // keep the console, for running from a terminal.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use std::{process::ExitCode, time::Duration};
+use std::{
+    process::ExitCode,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use eframe::egui;
 use tpf3mp_agent::{
+    about,
     diagnostics::Recorder,
-    launcher::{Launcher, LauncherConfig, Remembered, setup},
+    launcher::{
+        Launcher, LauncherConfig, Remembered,
+        instance::{self, Arrived},
+        setup,
+    },
 };
 use tpf3mp_launcher::{
     app::{Extras, LauncherApp, Shown},
@@ -144,11 +153,12 @@ fn main() -> ExitCode {
     let _logging = logs
         .as_deref()
         .and_then(|dir| logs::start(dir, Some(diagnostics.clone())).ok());
+    // First, which file runs and which build it is, so every log says.
     info!(
-        version = update::VERSION,
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
-        "the launcher starts"
+        "{}",
+        about::startup_line(about::exe().as_deref(), &about::Build::this(), about::BUILT)
     );
     // An update downloaded last time installs before anything connects.
     if update::at_start() {
@@ -168,12 +178,35 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
     if tpf3mp_launcher::installation::before_launch(args.repair, args.uninstall)? {
         return Ok(());
     }
+    // The owner of an automatic room takes the last room's invite away
+    // first thing, before the seconds the configuration takes (the mods are
+    // scanned): joiners started beside it read the file meanwhile, and took
+    // the last room's invite, a room the server may still hold running
+    // (2026-10-01).
+    if args.auto.auto_create.is_some()
+        && let Some(file) = &args.auto.invite_file
+    {
+        let _ = std::fs::remove_file(file);
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("tpf3mp")
         .build()
         .context("starting the launcher")?;
-    let mut config = args.launcher.config()?;
+    // Never quietly next to a launcher of another build: it would keep the
+    // game, and play with its own protocol. Before the configuration, which
+    // takes the link's worlds for this launcher.
+    let arrived = instance::arrive(&args.launcher.game_link).map_err(anyhow::Error::msg)?;
+    // Its record stays beside the link while `arrived` lives: to the end.
+    let serving = matches!(arrived, Arrived::Serving(_));
+    let mut config = match (&arrived, args.launcher.config()) {
+        (_, Ok(config)) => config,
+        // One of this build has the game's link, and so its worlds.
+        (Arrived::Beside(other), Err(error)) => {
+            return Err(error.context(instance::already_running(other)));
+        }
+        (Arrived::Serving(_), Err(error)) => return Err(error),
+    };
     if let Some(save) = &args.auto.auto_load {
         config
             .game_env
@@ -199,12 +232,29 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
     }
     config.diagnostics = Some(diagnostics);
     if args.browser {
-        return in_browser(&runtime, config);
+        return in_browser(&runtime, config, serving);
     }
     let launcher = {
         let _entered = runtime.enter();
         Launcher::start_local(config.clone())
     };
+    // A launcher of another build asks this one to close: the window
+    // closes, or the process ends before the window is open.
+    let window: Arc<OnceLock<egui::Context>> = Arc::default();
+    if serving {
+        let window = Arc::clone(&window);
+        instance::watch(
+            config.link.clone(),
+            launcher.handle(),
+            move || match window.get() {
+                Some(ctx) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.request_repaint();
+                }
+                None => std::process::exit(0),
+            },
+        );
+    }
     auto_room(&runtime, &launcher, &config, args.auto.clone());
     // Whether the package's own server is up, shown before connecting.
     let probe = config
@@ -232,6 +282,7 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
             // The window and its renderer exist: this version works, so an
             // update just installed is complete.
             update::started();
+            let _ = window.set(creation.egui_ctx.clone());
             backend.repaint_with(creation.egui_ctx.clone());
             updater.repaint_with(creation.egui_ctx.clone());
             Ok(Box::new(LauncherApp::new(
@@ -255,7 +306,7 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         }
         Err(error) => {
             warn!(%error, "cannot open the launcher's window; opening it in the browser instead");
-            in_browser(&runtime, config)
+            in_browser(&runtime, config, serving)
         }
     }
 }
@@ -361,11 +412,13 @@ fn auto_room(
                 }
             }
         }
-        // Join: wait for the owner's invite.
+        // Join: wait for the owner's invite. One that is refused may be the
+        // last room's, read before the owner took it away: wait for another.
+        let mut refused: Option<String> = None;
         for _ in 0..600 {
             if let Ok(invite) = std::fs::read_to_string(&file) {
                 let invite = invite.trim().to_owned();
-                if !invite.is_empty() {
+                if !invite.is_empty() && !stale_invite(refused.as_deref(), &invite) {
                     match handle
                         .act(Action::Join {
                             invite: invite.clone(),
@@ -378,16 +431,25 @@ fn auto_room(
                             if auto.auto_play {
                                 play(&handle).await;
                             }
+                            return;
                         }
-                        Err(error) => warn!(%error, "auto room: could not join"),
+                        Err(error) => {
+                            warn!(%error, %invite, "auto room: could not join; waiting for another invite");
+                            refused = Some(invite);
+                        }
                     }
-                    return;
                 }
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        warn!("auto room: no invite appeared in {}", file.display());
+        warn!("auto room: no invite to join appeared in {}", file.display());
     });
+}
+
+/// Whether `invite`, read from the invite file, is the one a join was just
+/// refused with: the last room's, until the owner writes its own.
+fn stale_invite(refused: Option<&str>, invite: &str) -> bool {
+    refused == Some(invite)
 }
 
 /// `--auto-play`: starts the game as the launcher's button does.
@@ -406,13 +468,23 @@ fn ready_to_start(room: &tpf3mp_agent::launcher::Room, players: usize) -> bool {
         && room.members.iter().all(|member| member.ready)
 }
 
-/// Runs the launcher as a page in the browser until Ctrl-C.
-fn in_browser(runtime: &tokio::runtime::Runtime, config: LauncherConfig) -> Result<()> {
+/// Runs the launcher as a page in the browser until Ctrl-C, or until a
+/// launcher of another build takes over (`serving`: this one holds the
+/// game's link).
+fn in_browser(
+    runtime: &tokio::runtime::Runtime,
+    config: LauncherConfig,
+    serving: bool,
+) -> Result<()> {
     runtime.block_on(async {
         let listen = config.listen;
+        let link = config.link.clone();
         let launcher = Launcher::start(config)
             .await
             .with_context(|| format!("serving the launcher on {listen}"))?;
+        if serving {
+            instance::watch(link, launcher.handle(), || std::process::exit(0));
+        }
         let url = launcher
             .url()
             .context("the launcher serves no page")?
@@ -476,8 +548,24 @@ mod tests {
 
     use tpf3mp_agent::launcher::{Member, MemberContent, Phase, Room};
 
-    use super::{Args, package_server, ready_to_start};
+    use super::{Args, package_server, ready_to_start, stale_invite};
     use tpf3mp_agent::launcher::setup::{RELAY, RELAY_NAME};
+
+    /// A joiner started beside the owner may read the last room's invite
+    /// before the owner takes it away; refused there, it waits for another
+    /// (2026-10-01: both guests were refused by the last, running room).
+    #[test]
+    fn a_refused_invite_is_not_tried_again() {
+        assert!(!stale_invite(None, "QHK8QR"), "the first is tried");
+        assert!(
+            stale_invite(Some("CP8HKQ"), "CP8HKQ"),
+            "the refused one waits"
+        );
+        assert!(
+            !stale_invite(Some("CP8HKQ"), "QHK8QR"),
+            "the owner's new one is tried"
+        );
+    }
 
     #[test]
     fn the_default_server_is_the_packages_else_the_relay() {
@@ -601,6 +689,7 @@ mod tests {
                     you: i == 0,
                     content: MemberContent::Same,
                     banner: None,
+                    loading: None,
                 })
                 .collect(),
             competitive: false,

@@ -6,7 +6,7 @@
 use mlua::{Function, Lua, Table};
 use tpf3mp_bridge::{
     LobbyAction, LobbyConnection, LobbyLine, LobbyListing, LobbyMember, LobbyPublicRoom, LobbyRoom,
-    LobbyRoomList, LobbyRules, LobbyView, LobbyWorld,
+    LobbyRoomList, LobbyRules, LobbyStart, LobbyUpload, LobbyView, LobbyWorld,
 };
 use tpf3mp_proto::{BoundedVec, FixedBytes, PlayerId, Text};
 
@@ -53,6 +53,12 @@ fn new_world_setup_selects_multiplayer_once_and_preserves_other_settings() {
 fn menu() -> Lua {
     let lua = Lua::new();
     lua.globals().set("LOBBY_SOURCE", WINDOW).unwrap();
+    lua.globals()
+        .set(
+            "BANNERS_SOURCE",
+            include_str!("../../../../mod/tpf3mp_1/content/scripts/tpf3mp/banners.lua"),
+        )
+        .unwrap();
     lua.load(FAKE_MENU)
         .set_name("@fake_menu.lua")
         .exec()
@@ -148,6 +154,7 @@ fn member(n: u8, name: &str, owner: bool, you: bool, ready: bool) -> LobbyMember
         you,
         same_content: Some(true),
         banner: None,
+        loading: None,
     }
 }
 
@@ -189,6 +196,8 @@ fn in_room(members: Vec<LobbyMember>, you_own: bool) -> LobbyView {
             has_password: true,
             members: BoundedVec::new(members).unwrap(),
             competitive: false,
+            start: None,
+            upload: None,
         }),
         chat: BoundedVec::new(vec![LobbyLine {
             from: Text::new("Bob").unwrap(),
@@ -447,6 +456,214 @@ fn in_the_room_the_owner_starts_once_everyone_is_ready() {
     assert_eq!(sent(&lua), [LobbyAction::Start]);
 }
 
+/// A room in its lobby, Ann owning it if `you_own` (else Bob), both ready,
+/// starting from `start` while `upload` goes up.
+fn starting_from(
+    you_own: bool,
+    start: Option<LobbyStart>,
+    upload: Option<(&str, u8)>,
+) -> LobbyView {
+    let mut view = in_room(
+        vec![
+            member(1, "Ann", you_own, you_own, true),
+            member(2, "Bob", !you_own, !you_own, true),
+        ],
+        you_own,
+    );
+    let room = view.room.as_mut().unwrap();
+    room.start = start;
+    room.upload = upload.map(|(save, percent)| LobbyUpload {
+        save: Text::new(save).unwrap(),
+        percent,
+    });
+    view
+}
+
+fn start(name: &str, map: &str, year: u16, arrived: bool) -> LobbyStart {
+    LobbyStart {
+        name: Text::new(name).unwrap(),
+        map: Text::new(map).unwrap(),
+        year,
+        arrived,
+    }
+}
+
+/// The values the choice under `caption` offers and the one chosen; no
+/// choice there, `None`.
+fn offered(lua: &Lua, caption: &str) -> (Vec<String>, Option<String>) {
+    lua.globals()
+        .get::<Function>("offered")
+        .unwrap()
+        .call(caption)
+        .unwrap()
+}
+
+#[test]
+fn the_owner_picks_the_rooms_save_on_its_page() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("mptest", "", 0, true)),
+            None,
+        )),
+    );
+    open(&lua, None);
+    // The saves the Host page offers, newest first, the room's chosen, and
+    // a way to load a world by hand.
+    let (values, chosen) = offered(&lua, "Start from this save");
+    assert_eq!(values, ["newest", "mptest", ""]);
+    assert_eq!(chosen.as_deref(), Some("mptest"));
+    assert!(enabled(&lua, "Start the game"), "the room has its save");
+    // The same one again sends nothing.
+    call(&lua, "choose", ("Start from this save", "mptest"));
+    assert_eq!(sent(&lua), []);
+    call(&lua, "choose", ("Start from this save", "newest"));
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::ChooseStart {
+            save: Text::new("newest").unwrap(),
+            map: Text::new("").unwrap(),
+            year: 0,
+        }]
+    );
+    assert!(texts(&lua).contains("Changing the save..."));
+    call(&lua, "choose", ("Start from this save", ""));
+    let actions = sent(&lua);
+    assert!(
+        matches!(&actions[..], [LobbyAction::ChooseStart { save, .. }] if save.as_str().is_empty()),
+        "none: {actions:?}"
+    );
+}
+
+#[test]
+fn a_pick_carries_the_map_and_year_the_game_read_of_the_save() {
+    let lua = menu();
+    lua.load(
+        r#"LOBBY.saveDetails = function(name)
+            if name == "newest" then return { map = "dry", year = 1925 } end
+            return { map = "", year = 0 }
+        end"#,
+    )
+    .exec()
+    .unwrap();
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("mptest", "temperate", 1850, true)),
+            None,
+        )),
+    );
+    open(&lua, None);
+    call(&lua, "choose", ("Start from this save", "newest"));
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::ChooseStart {
+            save: Text::new("newest").unwrap(),
+            map: Text::new("dry").unwrap(),
+            year: 1925,
+        }]
+    );
+}
+
+#[test]
+fn a_private_rooms_save_is_described_once_the_game_read_it() {
+    let lua = menu();
+    lua.load(r#"LOBBY.saveDetails = function(name) return { map = "tropical", year = 1960 } end"#)
+        .exec()
+        .unwrap();
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("mptest", "", 0, false)),
+            None,
+        )),
+    );
+    open(&lua, None);
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::ChooseStart {
+            save: Text::new("mptest").unwrap(),
+            map: Text::new("tropical").unwrap(),
+            year: 1960,
+        }],
+        "the room named it without them"
+    );
+    call(&lua, "tick", ());
+    assert_eq!(sent(&lua), [], "once");
+}
+
+#[test]
+fn start_waits_while_the_owners_save_goes_up() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("mptest", "", 0, true)),
+            Some(("newest", 40)),
+        )),
+    );
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("Sending newest to the room: 40%"), "{shown}");
+    assert!(
+        !enabled(&lua, "Start the game"),
+        "everyone is ready, but the save is on its way"
+    );
+    let (_, chosen) = offered(&lua, "Start from this save");
+    assert_eq!(chosen.as_deref(), Some("newest"), "the pick on its way");
+    // Uploaded, but the room not told yet that it has it.
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("newest", "dry", 1925, false)),
+            None,
+        )),
+    );
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("on its way to the room"));
+    assert!(!enabled(&lua, "Start the game"));
+    show(
+        &lua,
+        Some(&starting_from(
+            true,
+            Some(start("newest", "dry", 1925, true)),
+            None,
+        )),
+    );
+    call(&lua, "tick", ());
+    assert!(enabled(&lua, "Start the game"));
+    click(&lua, "Start the game");
+    assert_eq!(sent(&lua), [LobbyAction::Start]);
+}
+
+#[test]
+fn a_guest_sees_the_rooms_save_but_cannot_pick_it() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&starting_from(
+            false,
+            Some(start("Güterzug", "dry", 1900, true)),
+            None,
+        )),
+    );
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("Starts from"), "{shown}");
+    assert!(shown.contains("Güterzug · Dry · 1900"), "{shown}");
+    assert_eq!(offered(&lua, "Start from this save").1, None, "no picker");
+    // Without one handed over, the owner's game has the world.
+    show(&lua, Some(&starting_from(false, None, None)));
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("The world the owner's game has."));
+}
+
 #[test]
 fn removing_a_player_and_leaving_ask_first() {
     let lua = menu();
@@ -546,6 +763,44 @@ fn while_the_rooms_world_comes_the_window_says_how_far_and_stays_usable() {
     show(&lua, Some(&view));
     call(&lua, "tick", ());
     assert!(!texts(&lua).contains("Playing the room's game"));
+}
+
+/// Copy beside the room's invite code asks the hook to put the code on the
+/// clipboard, and says "Copied" for a moment.
+#[test]
+fn the_invite_code_is_copied_with_a_click() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&in_room(vec![member(1, "Ann", true, true, true)], true)),
+    );
+    open(&lua, None);
+    assert!(enabled(&lua, "Copy"));
+    click(&lua, "Copy");
+    let asked: Vec<String> = lua
+        .load(
+            "local out = {} for i, json in ipairs(SENT) do out[i] = json end SENT = {} return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(asked, [r#"{"action":"copy","text":"K7QM2X"}"#]);
+    call(&lua, "render", ());
+    assert!(has_button(&lua, "Copied") && !has_button(&lua, "Copy"));
+    for _ in 0..5 {
+        call(&lua, "tick", ());
+    }
+    assert!(has_button(&lua, "Copy"), "back after a moment");
+    // A refusal shows as any other.
+    lua.load("REPLY = 'error: the clipboard is busy'")
+        .exec()
+        .unwrap();
+    click(&lua, "Copy");
+    assert!(
+        texts(&lua).contains("the clipboard is busy"),
+        "{}",
+        texts(&lua)
+    );
+    assert!(!has_button(&lua, "Copied"));
 }
 
 #[test]
@@ -1054,6 +1309,47 @@ fn the_players_show_as_cards_of_their_banners_or_their_default() {
     );
 }
 
+/// While the room's world comes in, each player's row says how far their
+/// game is: its download, then its load, then in the game.
+#[test]
+fn each_players_row_shows_their_loading_progress() {
+    use tpf3mp_proto::LoadingStage;
+    fn text_of(view: &LobbyView, name: &str) -> String {
+        let lua = menu();
+        show(&lua, Some(view));
+        open(&lua, None);
+        all_cards(&lua)
+            .iter()
+            .map(|card| card.get::<String>("text").unwrap())
+            .find(|text| text.starts_with(name))
+            .unwrap_or_else(|| panic!("no card for {name}"))
+    }
+    let mut ann = member(1, "Ann", true, true, true);
+    ann.loading = Some(LoadingStage::Loading);
+    let mut bob = member(2, "Bob", false, false, true);
+    bob.loading = Some(LoadingStage::Fetching { percent: 42 });
+    let cat = member(3, "Cat", false, false, true);
+    let mut view = in_room(vec![ann, bob, cat], true);
+    if let Some(room) = view.room.as_mut() {
+        room.running = true;
+    }
+    let ann = text_of(&view, "Ann");
+    assert!(ann.contains("Loading..."), "{ann}");
+    let bob = text_of(&view, "Bob");
+    assert!(bob.contains("Downloading 42%"), "{bob}");
+    let cat = text_of(&view, "Cat");
+    assert!(cat.contains("Playing") && !cat.contains("Ready"), "{cat}");
+    // Before the room starts, a player still loading shows that, not ready.
+    let mut dan = member(4, "Dan", false, false, true);
+    dan.loading = Some(LoadingStage::Fetching { percent: 7 });
+    let view = in_room(vec![member(1, "Ann", true, true, true), dan], true);
+    let dan = text_of(&view, "Dan");
+    assert!(
+        dan.contains("Downloading 7%") && !dan.contains("Ready"),
+        "{dan}"
+    );
+}
+
 #[test]
 fn a_banner_is_picked_from_the_first_page() {
     let lua = menu();
@@ -1085,6 +1381,134 @@ fn a_banner_is_picked_from_the_first_page() {
     assert!(texts(&lua).contains("Yours"));
     click(&lua, "Default");
     assert_eq!(sent(&lua), [LobbyAction::SetBanner { banner: None }]);
+}
+
+fn images(lua: &Lua) -> Vec<String> {
+    let list: Table = lua
+        .globals()
+        .get::<Function>("images")
+        .unwrap()
+        .call(())
+        .unwrap();
+    list.sequence_values::<String>()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The campaign's characters this game has are picked like banners, by
+/// their names; the launcher sends only those it has.
+#[test]
+fn a_campaign_portrait_is_picked_beside_the_banners() {
+    let lua = menu();
+    let portraits = |ids: &[&str]| {
+        BoundedVec::new(ids.iter().map(|id| Text::new(*id).unwrap()).collect()).unwrap()
+    };
+    show(
+        &lua,
+        Some(&LobbyView {
+            portraits: portraits(&["andrew", "dr_karl_brandt", "richard_o_sullivan"]),
+            ..online()
+        }),
+    );
+    open(&lua, None);
+    click(&lua, "Your banner");
+    let cards = all_cards(&lua);
+    assert_eq!(cards.len(), tpf3mp_proto::BANNERS.len() + 3);
+    let shown = texts(&lua);
+    assert!(shown.contains("Characters"), "{shown}");
+    let karl = cards
+        .iter()
+        .find(|card| {
+            card.get::<String>("text")
+                .unwrap()
+                .starts_with("Dr. Karl Brandt")
+        })
+        .expect("a card named for the character");
+    assert_eq!(
+        karl.get::<String>("picture").unwrap(),
+        "tpf3mp_1::/gui/tpf3mp/portraits/dr_karl_brandt.tga"
+    );
+    assert!(shown.contains("Richard O'Sullivan"), "{shown}");
+    karl.get::<Function>("click")
+        .unwrap()
+        .call::<()>(())
+        .unwrap();
+    assert_eq!(
+        sent(&lua),
+        [LobbyAction::SetBanner {
+            banner: Some(Text::new("dr_karl_brandt").unwrap())
+        }]
+    );
+    show(
+        &lua,
+        Some(&LobbyView {
+            banner: Some(Text::new("dr_karl_brandt").unwrap()),
+            portraits: portraits(&["andrew", "dr_karl_brandt"]),
+            ..online()
+        }),
+    );
+    call(&lua, "tick", ());
+    let karl: String = all_cards(&lua)
+        .iter()
+        .map(|card| card.get::<String>("text").unwrap())
+        .find(|text| text.starts_with("Dr. Karl Brandt"))
+        .unwrap();
+    assert!(karl.contains("Yours"), "{karl}");
+    assert!(enabled(&lua, "Default"));
+
+    // Without the campaign, the picker offers the banners alone.
+    show(&lua, Some(&online()));
+    call(&lua, "tick", ());
+    assert_eq!(all_cards(&lua).len(), tpf3mp_proto::BANNERS.len());
+    assert!(!texts(&lua).contains("Characters"));
+}
+
+/// A member's portrait shows beside their card, which keeps their key's
+/// banner; an id the window does not know shows the banner alone.
+#[test]
+fn a_players_portrait_shows_beside_their_name_in_the_room() {
+    let lua = menu();
+    let mut ann = member(1, "Ann", true, true, true);
+    ann.banner = Some(Text::new("tom_mclaren").unwrap());
+    let mut bob = member(0x2a, "Bob", false, false, false);
+    bob.banner = Some(Text::new("selfie").unwrap());
+    show(&lua, Some(&in_room(vec![ann, bob], true)));
+    open(&lua, None);
+    let pictures = images(&lua);
+    let portrait = "tpf3mp_1::/gui/tpf3mp/portraits/tom_mclaren.tga";
+    assert_eq!(
+        pictures.iter().filter(|path| *path == portrait).count(),
+        1,
+        "{pictures:?}"
+    );
+    let card = |name: &str| {
+        all_cards(&lua)
+            .into_iter()
+            .find(|card| card.get::<String>("text").unwrap().starts_with(name))
+            .unwrap()
+            .get::<String>("picture")
+            .unwrap()
+    };
+    let key_banner = |n: usize| -> String {
+        lua.load(format!(
+            "return LOBBY.bannerPicture(\"{}\")",
+            tpf3mp_proto::BANNERS[n % tpf3mp_proto::BANNERS.len()]
+        ))
+        .eval()
+        .unwrap()
+    };
+    assert_eq!(card("Ann"), key_banner(0x0101_0101), "her key's banner");
+    assert_eq!(
+        card("Bob"),
+        key_banner(0x2a2a_2a2a),
+        "an unknown id: the default"
+    );
+    assert!(
+        !pictures.iter().any(|path| path.contains("selfie")),
+        "{pictures:?}"
+    );
+    let most: u32 = lua.load("return most_cards_in_a_row()").eval().unwrap();
+    assert_eq!(most, 2, "portraits preserve our two-column player cards");
 }
 
 #[test]
@@ -1268,6 +1692,37 @@ fn unchanged_lobby_polls_leave_native_controls_open() {
     show(&lua, Some(&changed));
     call(&lua, "tick", ());
     assert!(texts(&lua).contains("A new notice"));
+}
+
+#[test]
+fn switching_from_a_saved_world_restores_stock_world_setup() {
+    let lua = menu();
+    let mut view = starting_from(true, Some(start("mptest", "temperate", 1850, true)), None);
+    show(&lua, Some(&view));
+    open(&lua, None);
+    call(&lua, "choose", ("Start from this save", ""));
+    assert!(
+        matches!(sent(&lua).as_slice(), [LobbyAction::ChooseStart { save, .. }] if save.as_str().is_empty())
+    );
+    view.start_save = None;
+    let room = view.room.as_mut().unwrap();
+    room.start = None;
+    room.members = BoundedVec::new(
+        room.members
+            .iter()
+            .cloned()
+            .map(|mut member| {
+                member.ready = false;
+                member
+            })
+            .collect(),
+    )
+    .unwrap();
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(!enabled(&lua, "Start the game"));
+    click(&lua, "Set up world");
+    assert_eq!(lua.globals().get::<u32>("GENERATED").unwrap(), 1);
 }
 
 #[test]

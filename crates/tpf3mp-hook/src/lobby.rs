@@ -69,6 +69,11 @@ pub struct Member {
     pub content: String,
     /// The banner the player picked, if any: empty for their default.
     pub banner: String,
+    /// Where the player's game is with the room's world while it comes in:
+    /// `fetching` (with [`Member::percent`]), `loading`, or empty.
+    pub loading: String,
+    /// How much of the world it has fetched, in percent, while `fetching`.
+    pub percent: u8,
 }
 
 /// The room the player is in.
@@ -84,6 +89,24 @@ pub struct Room {
     pub members: Vec<Member>,
     /// Co-op (`false`) or competitive.
     pub competitive: bool,
+    /// In the lobby: the save the room starts from, as the room names it;
+    /// `None` when the owner's game provides the world.
+    pub start: Option<StartSave>,
+    /// For the owner: the save they picked on its way to the room, and how
+    /// much of it went up, in percent.
+    pub upload: Option<(String, u8)>,
+}
+
+/// The save a room starts from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartSave {
+    pub name: String,
+    /// Its climate, such as `temperate`; empty unknown.
+    pub map: String,
+    /// Its year; 0 unknown.
+    pub year: u16,
+    /// Whether the room has it.
+    pub arrived: bool,
 }
 
 /// One line of the room's chat.
@@ -136,6 +159,10 @@ pub struct LobbyState {
     pub server_default: String,
     /// The banner this player picked: empty for their default.
     pub banner: String,
+    /// The campaign portraits this game can show, by id
+    /// (`tpf3mp_proto::PORTRAITS`): what the banner picker offers besides
+    /// the banners.
+    pub portraits: Vec<String>,
     pub name: String,
     /// The last thing that went wrong, for the window to show.
     pub error: Option<String>,
@@ -243,6 +270,16 @@ enum WindowAction {
         #[serde(default)]
         banner: String,
     },
+    /// The owner's save for the room to start from now; empty for none.
+    /// The map and year are what the window read of it.
+    ChooseStart {
+        #[serde(default)]
+        save: String,
+        #[serde(default)]
+        map: String,
+        #[serde(default)]
+        year: u16,
+    },
 }
 
 fn default_max_players() -> u32 {
@@ -285,7 +322,37 @@ pub(crate) fn hex(player: &PlayerId) -> String {
         .collect()
 }
 
+/// What the window asks of the hook itself, never the launcher.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum LocalAction {
+    /// Puts the text, the room's invite code, on the clipboard.
+    Copy { text: String },
+}
+
+/// Does what the window asks of the hook itself (`{"action":"copy",
+/// "text":"K7QM2X"}`: the clipboard, [`crate::clipboard`]): `None` for an
+/// action the launcher takes ([`parse_action`]).
+pub fn local_action(json: &str) -> Option<Result<(), String>> {
+    let action: LocalAction = serde_json::from_str(json).ok()?;
+    Some(match action {
+        LocalAction::Copy { text } => crate::clipboard::copy(&text),
+    })
+}
+
+/// The room's invite as the launcher last told it, if the player is in a
+/// room: the game's Multiplayer window shows it with its Copy.
+pub fn invite() -> Option<String> {
+    let menu = menu();
+    let invite = menu.view.as_ref()?.room.as_ref()?.invite.as_ref()?;
+    Some(invite.as_str().to_owned())
+}
+
 /// Parses one action from the window's JSON into what the launcher takes.
+pub fn competitive() -> Option<bool> {
+    Some(menu().view.as_ref()?.room.as_ref()?.competitive)
+}
+
 pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
     let action: WindowAction =
         serde_json::from_str(json).map_err(|error| format!("not an action: {error}"))?;
@@ -353,6 +420,13 @@ pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
                 _ => return Err("there is no such banner".to_owned()),
             },
         },
+        WindowAction::ChooseStart { save, map, year } => LobbyAction::ChooseStart {
+            save: text::<{ tpf3mp_bridge::MAX_SAVE_NAME }>(&save, "save name")?,
+            // What the game read of the save is only shown: too long, it is
+            // cut short rather than refused.
+            map: Text::lossy(map.trim()),
+            year,
+        },
     })
 }
 
@@ -373,6 +447,7 @@ pub fn kind(action: &LobbyAction) -> &'static str {
         LobbyAction::ListRooms { .. } => "list_rooms",
         LobbyAction::SetServer { .. } => "set_server",
         LobbyAction::SetBanner { .. } => "set_banner",
+        LobbyAction::ChooseStart { .. } => "choose_start",
     }
 }
 
@@ -418,6 +493,7 @@ impl LobbyState {
             server_address: String::new(),
             server_default: String::new(),
             banner: String::new(),
+            portraits: Vec::new(),
             name: String::new(),
             error: None,
             notice: None,
@@ -461,6 +537,12 @@ impl LobbyState {
                 .as_ref()
                 .map(|id| id.as_str().to_owned())
                 .unwrap_or_default(),
+            portraits: view
+                .portraits
+                .iter()
+                .map(|id| id.as_str().to_owned())
+                .filter(|id| tpf3mp_proto::is_portrait(id))
+                .collect(),
             name: view.name.as_str().to_owned(),
             error: view.error.as_ref().map(|text| text.as_str().to_owned()),
             notice: view.notice.as_ref().map(|text| text.as_str().to_owned()),
@@ -476,6 +558,16 @@ impl LobbyState {
                 max_players: u32::from(room.max_players),
                 has_password: room.has_password,
                 competitive: room.competitive,
+                start: room.start.as_ref().map(|start| StartSave {
+                    name: start.name.as_str().to_owned(),
+                    map: start.map.as_str().to_owned(),
+                    year: start.year,
+                    arrived: start.arrived,
+                }),
+                upload: room
+                    .upload
+                    .as_ref()
+                    .map(|upload| (upload.save.as_str().to_owned(), upload.percent.min(100))),
                 members: room
                     .members
                     .iter()
@@ -497,6 +589,18 @@ impl LobbyState {
                             .as_ref()
                             .map(|id| id.as_str().to_owned())
                             .unwrap_or_default(),
+                        loading: match member.loading {
+                            Some(tpf3mp_proto::LoadingStage::Fetching { .. }) => "fetching",
+                            Some(tpf3mp_proto::LoadingStage::Loading) => "loading",
+                            None => "",
+                        }
+                        .to_owned(),
+                        percent: match member.loading {
+                            Some(tpf3mp_proto::LoadingStage::Fetching { percent }) => {
+                                percent.min(100)
+                            }
+                            _ => 0,
+                        },
                     })
                     .collect(),
             }),
@@ -593,7 +697,13 @@ impl LobbyState {
         out.push_str(&lua_str(&self.server_default));
         out.push_str(", banner = ");
         out.push_str(&lua_str(&self.banner));
-        out.push_str(", name = ");
+        out.push_str(", portraits = {");
+        for id in &self.portraits {
+            out.push(' ');
+            out.push_str(&lua_str(id));
+            out.push(',');
+        }
+        out.push_str(" }, name = ");
         out.push_str(&lua_str(&self.name));
         out.push_str(", error = ");
         out.push_str(&lua_opt(self.error.as_deref()));
@@ -701,7 +811,7 @@ impl LobbyState {
                 ));
                 for member in &room.members {
                     out.push_str(&format!(
-                        " {{ id = {}, name = {}, ready = {}, owner = {}, you = {}, connected = {}, content = {}, banner = {} }},",
+                        " {{ id = {}, name = {}, ready = {}, owner = {}, you = {}, connected = {}, content = {}, banner = {}, loading = {}, percent = {} }},",
                         lua_str(&member.id),
                         lua_str(&member.name),
                         member.ready,
@@ -709,10 +819,31 @@ impl LobbyState {
                         member.you,
                         member.connected,
                         lua_str(&member.content),
-                        lua_str(&member.banner)
+                        lua_str(&member.banner),
+                        lua_str(&member.loading),
+                        member.percent
                     ));
                 }
-                out.push_str(" } }");
+                out.push_str(" }");
+                match &room.start {
+                    None => out.push_str(", start = nil"),
+                    Some(start) => out.push_str(&format!(
+                        ", start = {{ name = {}, map = {}, year = {}, arrived = {} }}",
+                        lua_str(&start.name),
+                        lua_str(&start.map),
+                        start.year,
+                        start.arrived
+                    )),
+                }
+                match &room.upload {
+                    None => out.push_str(", upload = nil"),
+                    Some((save, percent)) => out.push_str(&format!(
+                        ", upload = {{ save = {}, percent = {} }}",
+                        lua_str(save),
+                        percent
+                    )),
+                }
+                out.push_str(" }");
             }
         }
         out.push_str(" }");
@@ -869,6 +1000,26 @@ mod tests {
             Ok(LobbyAction::SetBanner { banner: None })
         );
         assert!(parse_action(r#"{"action":"set_banner","banner":"selfie"}"#).is_err());
+        assert_eq!(
+            parse_action(r#"{"action":"choose_start","save":"mptest","map":"dry","year":1900}"#),
+            Ok(LobbyAction::ChooseStart {
+                save: Text::new("mptest").unwrap(),
+                map: Text::new("dry").unwrap(),
+                year: 1900,
+            })
+        );
+        assert!(
+            matches!(
+                parse_action(r#"{"action":"choose_start","save":""}"#),
+                Ok(LobbyAction::ChooseStart { save, year: 0, .. }) if save.as_str().is_empty()
+            ),
+            "none: the owner's game provides the world"
+        );
+        let long = "s".repeat(tpf3mp_bridge::MAX_SAVE_NAME + 1);
+        assert!(
+            parse_action(&format!(r#"{{"action":"choose_start","save":"{long}"}}"#)).is_err(),
+            "a save named only in part would be another"
+        );
         assert!(
             matches!(
                 parse_action(r#"{"action":"create","room":"Alps","start_save":""}"#),
@@ -954,6 +1105,11 @@ mod tests {
             server_address: Text::new("eu.example.org:29470").unwrap(),
             server_default: Text::new("relay.example.org:29470").unwrap(),
             banner: None,
+            portraits: BoundedVec::new(vec![
+                Text::new("andrew").unwrap(),
+                Text::new("selfie").unwrap(),
+            ])
+            .unwrap(),
             name: Text::new("Ann").unwrap(),
             error: None,
             notice: Some(Text::new("created the room").unwrap()),
@@ -974,9 +1130,20 @@ mod tests {
                     you: true,
                     same_content: None,
                     banner: None,
+                    loading: None,
                 }])
                 .unwrap(),
                 competitive: false,
+                start: Some(tpf3mp_bridge::LobbyStart {
+                    name: Text::new("Güterzug").unwrap(),
+                    map: Text::new("dry").unwrap(),
+                    year: 1925,
+                    arrived: false,
+                }),
+                upload: Some(tpf3mp_bridge::LobbyUpload {
+                    save: Text::new("Güterzug").unwrap(),
+                    percent: 35,
+                }),
             }),
             chat: BoundedVec::new(vec![LobbyLine {
                 from: Text::new("Bo").unwrap(),
@@ -1065,6 +1232,12 @@ mod tests {
         let lua = mlua::Lua::new();
         let state: mlua::Table = lua.load(format!("return {literal}")).eval().unwrap();
         assert_eq!(state.get::<String>("connection").unwrap(), "connected");
+        // The portraits this game has, an id that is none left out.
+        assert_eq!(
+            state.get::<Vec<String>>("portraits").unwrap(),
+            ["andrew"],
+            "{literal}"
+        );
         assert_eq!(
             state.get::<String>("server_address").unwrap(),
             "eu.example.org:29470"
@@ -1080,6 +1253,15 @@ mod tests {
         let members: mlua::Table = room.get("members").unwrap();
         let first: mlua::Table = members.get(1).unwrap();
         assert!(first.get::<bool>("you").unwrap());
+        // The save the room starts from, and the owner's upload of it.
+        let start: mlua::Table = room.get("start").unwrap();
+        assert_eq!(start.get::<String>("name").unwrap(), "Güterzug");
+        assert_eq!(start.get::<String>("map").unwrap(), "dry");
+        assert_eq!(start.get::<u16>("year").unwrap(), 1925);
+        assert!(!start.get::<bool>("arrived").unwrap());
+        let upload: mlua::Table = room.get("upload").unwrap();
+        assert_eq!(upload.get::<String>("save").unwrap(), "Güterzug");
+        assert_eq!(upload.get::<u8>("percent").unwrap(), 35);
         let chat: mlua::Table = state.get("chat").unwrap();
         let line: mlua::Table = chat.get(1).unwrap();
         assert_eq!(line.get::<String>("text").unwrap(), "hi");
@@ -1166,6 +1348,17 @@ mod tests {
         exchange(&mut launcher);
         assert_eq!(state().name, "Ann");
         reset();
+    }
+
+    /// Copy is the hook's own: never queued for the launcher.
+    #[test]
+    fn copy_is_done_by_the_hook_itself() {
+        assert_eq!(
+            local_action(r#"{"action":"copy","text":"  "}"#),
+            Some(Err("nothing to copy".to_owned()))
+        );
+        assert_eq!(local_action(r#"{"action":"leave"}"#), None);
+        assert!(parse_action(r#"{"action":"copy","text":"K7QM2X"}"#).is_err());
     }
 
     #[test]

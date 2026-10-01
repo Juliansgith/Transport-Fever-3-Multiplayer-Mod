@@ -68,7 +68,8 @@ guard.CARRY = {
 	-- events, with the loans as the script keeps them. The construction
 	-- menu's prospecting: the company script's spawnIndustry
 	-- (capture.prospect). The company window's ranks: the growth script's
-	-- applyLevel.
+	-- applyLevel. The subsidy window's answers: the subsidy script's
+	-- onAccept and onDecline.
 	makeScriptingSendEventCmd = function(ctx, _src, id, name, param)
 		if id == "Loan" and type(param) == "table" then
 			if name == "Obtain" and type(param[1]) == "table" and type(param[2]) == "table" then
@@ -92,6 +93,10 @@ guard.CARRY = {
 			-- A popup played a notification's first sound (the game's
 			-- notification_popups.tl): marked so in every game.
 			return { NotificationSeen = { notification = param.notificationId } }
+		elseif id == "Subvention" and (name == "onAccept" or name == "onDecline") then
+			-- The subsidy window's Accept and Decline (subventions_gui.tl):
+			-- the offer by its number and kind (capture.subsidy).
+			return capture().subsidy(ctx, name, param)
 		end
 		-- Which event, for the log.
 		error("the " .. tostring(id) .. " script's " .. tostring(name) .. " event", 0)
@@ -129,6 +134,21 @@ guard.RESULT = {
 	makeVehicleReplaceCmd = function(entity, args)
 		return { vehicleEntity = entity, config = args[2] }
 	end,
+}
+
+-- Why a RESULT kind with a callback is refused where answers do not reach.
+guard.UNTOLD = "a window that waits on what it made, in a Lua state the room's answers do not reach"
+
+-- What a command makes that the window may name in its next command, by
+-- the registry's kind (tpf3mp/registry.lua): the store's "buy and put on a
+-- line" puts the new vehicle on its line in the buy's callback, and that
+-- command names the vehicle by its id, which the GUI reads from the game
+-- script's state a moment after its world has the vehicle (2026-09-30:
+-- "a vehicle the room cannot name"). So deliver() holds such an answer
+-- until the GUI can name what it made, as it holds one for the world.
+guard.NAMED = {
+	makeVehicleBuyCmd = "vehicles",
+	makeLineCreateCmd = "lines",
 }
 
 -- What the player is told a refused kind is, where "this" would not do.
@@ -286,8 +306,15 @@ local waiting = setmetatable({}, { __mode = "k" })
 local held = setmetatable({}, { __mode = "k" })
 
 -- Calls to deliver() an answer waits at most for the GUI to see the entity
--- it made (one a frame: a few seconds).
+-- it made, where deliver() has no clock (one a frame: a few seconds at
+-- 60 frames a second, one at 240).
 guard.HOLD = 240
+-- Seconds an answer waits at most, where deliver() has a clock: frames are
+-- no measure of time (2026-10-01: five vehicles bought onto a line in a
+-- burst, all but one answered before the GUI could name them, so their
+-- line assignments were refused). Each answer has its own, counted from
+-- when it is first the one waited on.
+guard.HOLD_SECONDS = 20
 
 -- Puts the guard in front of `cmd` (the GUI state's api.cmd). `env` is:
 --   inRoom()      -> whether the room's game runs;
@@ -302,6 +329,11 @@ guard.HOLD = 240
 --   shared()      -> optional: the room's shared mods, a list of names, or
 --                    nil (then no personal mod's event is its own);
 --   caller()      -> optional: the mod a command came from (guard.caller).
+--   caller()      -> optional: the mod a command came from (guard.caller);
+--   untold        -> optional: true in a Lua state the room's answers do not
+--                    reach (tpf3mp/hudguard.lua): a command whose window
+--                    waits on what it made (RESULT) is refused there, why
+--                    guard.UNTOLD.
 -- refused() is also given the mod the command came from, if one did.
 -- Returns the number of factories wrapped, or nil and why the guard could
 -- not be put there.
@@ -371,6 +403,11 @@ function guard.install(cmd, env)
 		if carry and args then
 			made, action = pcall(carry, env.context, unpackArgs(args, 1, args.n))
 		end
+		-- A window that waits on what its command made (RESULT) hears it
+		-- only where the room's answers reach (env.untold: not here).
+		if made and action and env.untold and callback ~= nil and guard.RESULT[kind] then
+			made, action = false, guard.UNTOLD
+		end
 		if made and action then
 			local ok, ticket = env.command(action)
 			if ok then
@@ -402,25 +439,45 @@ end
 -- What became of the commands the guard handed to the room: `results` is
 -- the hook's list ({ ticket =, ok =, entity =, why = }, bridge.lua's
 -- results()). Each waiting callback hears it, with what the room's action
--- made, as the game's own command would have answered, once `sees(entity)`
--- says the GUI's world has what it made: the game script made it in the
--- simulation, and a window that hears of it opens it at once. Answers keep
--- their order; one held back holds those after it, for HOLD calls at most.
+-- made, as the game's own command would have answered, once `sees(entity,
+-- kind)` says the GUI's world has what it made, and for the kinds in NAMED
+-- that the GUI names it by its id (`kind`, the registry's): the game script
+-- made it in the simulation, and a window that hears of it opens it, or
+-- puts it on a line, at once. Answers keep
+-- their order; one held back holds those after it. Each answer waits on
+-- its own entity for HOLD_SECONDS by `now()` (seconds; HOLD calls where
+-- there is no clock), counted from when it is first the one waited on, so
+-- answers queued behind it keep all of theirs.
 -- A command that should have made something and made nothing the game
 -- could name is answered as failed, which the windows handle, not as made.
 -- Returns how many heard.
-function guard.deliver(cmd, results, sees)
+function guard.deliver(cmd, results, sees, now)
 	local pending = waiting[cmd]
 	if pending == nil then return 0 end
 	local queue = held[cmd] or {}
 	for _, r in ipairs(results or {}) do queue[#queue + 1] = { r = r, calls = 0 } end
+	local t = nil
+	if now ~= nil then
+		local ok, v = pcall(now)
+		if ok and type(v) == "number" then t = v end
+	end
+	local function patient(h)
+		if t ~= nil then
+			h.since = h.since or t
+			return t - h.since < guard.HOLD_SECONDS
+		end
+		return h.calls < guard.HOLD
+	end
 	local heard, later = 0, {}
 	for _, h in ipairs(queue) do
 		local r = h.r
 		local w = r.ticket and pending[r.ticket]
 		if w then
-			local unseen = r.entity ~= nil and sees ~= nil and not sees(r.entity)
-			if #later > 0 or (unseen and h.calls < guard.HOLD) then
+			local unseen = r.entity ~= nil and sees ~= nil and not sees(r.entity, guard.NAMED[w.kind])
+			if #later > 0 then
+				-- Behind one waited on: in order, its own wait not begun.
+				later[#later + 1] = h
+			elseif unseen and patient(h) then
 				h.calls = h.calls + 1
 				later[#later + 1] = h
 			else

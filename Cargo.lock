@@ -1299,6 +1299,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "embed-resource"
+version = "3.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbfdaacccebec3b28e4866b8973543c7647797db5ada1bdab552e48fe665fbbd"
+dependencies = [
+ "cc",
+ "memchr",
+ "rustc_version",
+ "toml",
+ "vswhom",
+ "winreg",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4375,6 +4389,7 @@ dependencies = [
  "dirs",
  "flate2",
  "getrandom 0.4.3",
+ "image",
  "proptest",
  "quinn",
  "ring",
@@ -4384,6 +4399,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tpf3mp-bridge",
+ "tpf3mp-buildinfo",
  "tpf3mp-ipc",
  "tpf3mp-launch",
  "tpf3mp-modscan",
@@ -4421,6 +4437,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tpf3mp-buildinfo"
+version = "1.1.0"
+dependencies = [
+ "embed-resource",
+]
+
+[[package]]
 name = "tpf3mp-canon"
 version = "1.1.0"
 dependencies = [
@@ -4438,6 +4461,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tpf3mp-bridge",
+ "tpf3mp-buildinfo",
  "tpf3mp-hookcore",
  "tpf3mp-ipc",
  "tpf3mp-proto",
@@ -4498,13 +4522,13 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tpf3mp-agent",
+ "tpf3mp-buildinfo",
  "tpf3mp-ipc",
  "tpf3mp-proto",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
  "ureq",
- "winresource",
  "zip",
 ]
 
@@ -4574,6 +4598,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tpf3mp-agent",
+ "tpf3mp-buildinfo",
  "tpf3mp-net",
  "tpf3mp-proto",
  "tpf3mp-snapshot",
@@ -4930,6 +4955,26 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vswhom"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be979b7f07507105799e854203b470ff7c78a1639e330a58f183b5fea574608b"
+dependencies = [
+ "libc",
+ "vswhom-sys",
+]
+
+[[package]]
+name = "vswhom-sys"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
+dependencies = [
+ "cc",
+ "libc",
+]
 
 [[package]]
 name = "walkdir"
@@ -5661,13 +5706,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "winresource"
-version = "0.1.31"
+name = "winreg"
+version = "0.55.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0986a8b1d586b7d3e4fe3d9ea39fb451ae22869dcea4aa109d287a374d866087"
+checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
 dependencies = [
- "toml",
- "version_check",
+ "cfg-if",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -39,7 +39,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
+	local MODULES = { "acceptance", "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
 		"bridge", "guard", "worldload" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
@@ -135,19 +135,18 @@ function data()
 			if ok and type(player) == "number" then return player end
 			return nil
 		end,
-		depot = function(depot)
-			local c
-			pcall(function()
-				local con = api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(depot)
-				c = con and api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
-			end)
-			if c == nil then return nil end
-			local t = c.transf
-			return { file = c.fileName, at = { x = t[13], y = t[14], z = t[15] } }
-		end,
+		-- A depot by its construction (capture.depotRef): a street's, a
+		-- harbour's or an airport's.
+		depot = function(depot) return require("tpf3mp.capture").depotRef(api, depot) end,
 		model = function(id)
 			local ok, name = pcall(function() return api.res.modelRep.getName(id) end)
 			if ok and type(name) == "string" and name ~= "" then return name end
+			return nil
+		end,
+		subsidy = function(uid)
+			local companies = require("tpf3mp.companies")
+			local where, s = companies.findSubsidy(companies.subsidyState(api), uid)
+			if where == "offered" and type(s.id) == "string" then return s.id end
 			return nil
 		end,
 		-- A vehicle's parts as its TRANSPORT_VEHICLE component has them.
@@ -168,12 +167,26 @@ function data()
 
 	-- The GUI state's api.cmd, which the guard is on.
 	local guardedCmd = nil
+	local answers = {}
 
 	-- Whether the GUI's world has `entity` yet: what the room's action made
-	-- in the simulation reaches it a moment later.
-	local function sees(entity)
+	-- in the simulation reaches it a moment later. With `kind`, also whether
+	-- the registry names it yet (tpf3mp/guard.lua, NAMED): the game script's
+	-- state, which binds its id, reaches the GUI later still.
+	local function sees(entity, kind)
 		local ok, there = pcall(function() return api.engine.entityExists(entity) end)
-		return not ok or there == true
+		if ok and there ~= true then return false end
+		if kind == nil then return true end
+		local okId, id = pcall(function() return idOf(kind)(entity) end)
+		return okId and id ~= nil
+	end
+
+	-- Seconds by the wall clock, for how long an answer waits on what its
+	-- command made (tpf3mp/guard.lua, HOLD_SECONDS); nil without one.
+	local function clock()
+		local ok, t = pcall(function() return os.time() end)
+		if ok and type(t) == "number" then return t end
+		return nil
 	end
 
 	-- Puts the guard in front of the GUI's commands.
@@ -182,7 +195,14 @@ function data()
 		guardedCmd = ok and cmd or nil
 		local wrapped, why = require("tpf3mp.guard").install(guardedCmd, {
 			inRoom = function() return link:room() end,
-			command = function(action) return link:command(action) end,
+			command = function(action)
+				local ok, ticket = link:command(action)
+				local subsidy = ok and type(action) == "table" and action.Subsidy
+				if subsidy and ticket ~= nil then
+					answers[ticket] = subsidy.Accept and "Taking the subsidy" or "Declining the subsidy"
+				end
+				return ok, ticket
+			end,
 			refused = refused,
 			later = function(fn) pending[#pending + 1] = fn end,
 			context = context,
@@ -243,6 +263,19 @@ function data()
 	-- one company in the room: each company's own, as the room's rule keeps
 	-- them (tpf3mp/progression.lua), read from the mod's game script's
 	-- state. With one company the game's own.
+	-- The game's permit counts, as the construction menu and tool read them,
+	-- count the player's company's own constructions while the room has
+	-- more than one company (tpf3mp/companies.lua, followPermits): each its
+	-- own headquarters.
+	local function countOwnPermits()
+		local ok, why = require("tpf3mp.companies").followPermits(api, ug_require, function()
+			local roster = ui().companies
+			return roster ~= nil and #(roster.list or {}) > 1
+		end)
+		link:log(ok and ("the game's permits count each company's own constructions (" .. ok .. " company_util table(s))")
+			or ("the game's permits count the whole world's constructions: " .. tostring(why)))
+	end
+
 	local function showRanks()
 		local ok, why = require("tpf3mp.progression").follow(scriptState)
 		link:log(ok and "the company window shows each company's own rank"
@@ -324,6 +357,7 @@ function data()
 		guardCommands()
 		followMyCompany()
 		showRanks()
+		countOwnPermits()
 		offerOpenStations()
 		-- The stop the construction menu gives the stop tool, wherever the
 		-- menu runs (gui/tpf3mp/gui_state.script.lua watches the other state).
@@ -421,6 +455,16 @@ function data()
 					local account = api.engine.getComponent(c.entity, api.type.ComponentType.ACCOUNT)
 					balance = account and account.balance
 					owed = account and account.loan
+				end)
+				-- The money the game's own windows show (the finance window,
+				-- the game bar: api.engine.util.finance.getPlayersBalance),
+				-- where the game answers. The room's first company's card
+				-- showed $0 in a real game (build 40408, 2026-09-30) while
+				-- the game bar showed its money; INFERRED that its ACCOUNT
+				-- component does not hold what the game shows.
+				pcall(function()
+					local shown = api.engine.util.finance.getPlayersBalance(c.entity)
+					if type(shown) == "number" then balance = shown end
 				end)
 				-- The name the game shows (the player entity's NAME, which a
 				-- rename sets), else the roster's.
@@ -538,6 +582,7 @@ function data()
 	-- height in TF3's StyleSheet; zero would hide the content.
 	local WINDOW_WIDTH, PLAYERS_WIDTH, COMPANIES_WIDTH = 800, 192, 548
 	local BODY_HEIGHT = 310
+	local COPIED_FRAMES = 120
 	local function sheet(width, height, padding, background)
 		local s = api.gui.StyleSheet.new()
 		s.size = api.type.Vec2f.new(width or -1, height or -1)
@@ -853,6 +898,30 @@ function data()
 			shared.version = shared.version + 1
 		end
 		local rows = { label(status.room, "font-scale-title-3", 740, 36), gap(6) }
+		-- The room's invite code alone (without the server the launcher may
+		-- put before it), and Copy: the hook puts it on the clipboard, and
+		-- the button says "Copied" for a moment.
+		local code = type(status.invite) == "string" and status.invite:match("(%S+)%s*$")
+		if code then
+			rows[#rows + 1] = box({
+				label("Invite code  " .. code, "font-scale-body"),
+				builtin.Button{
+					meta = { tooltip = "Copy the invite code, to paste it to your friends" },
+					content = label((shared.copied or 0) > 0 and "Copied" or "Copy"),
+					onClick = function()
+						local l = shared.link
+						local ok, why = false, "not linked"
+						if l then ok, why = l:copy(code) end
+						if ok then
+							shared.copied = COPIED_FRAMES
+						else
+							shared.leaveNote = "Not copied: " .. tostring(why)
+						end
+						shared.version = shared.version + 1
+					end,
+				},
+			}, true)
+		end
 		local statusRow = {}
 		if status.speed then statusRow[#statusRow + 1] = label("Speed: " .. speedText(status.speed), "font-scale-annotation") end
 		statusRow[#statusRow + 1] = gap(16)
@@ -876,6 +945,18 @@ function data()
 			if p.me then tags[#tags + 1] = "you" end
 			if not p.connected then tags[#tags + 1] = "away" end
 			if p.connected then online = online + 1 end
+            local banners = require("tpf3mp.banners")
+            local stage = banners.stage(p, true)
+            if stage then tags[#tags + 1] = stage end
+            players[#players + 1] = builtin.ImageView{
+                meta = { styleSheet = sheet(PLAYERS_WIDTH - 32, 40) }, path = banners.picture(banners.of(p)),
+            }
+            local portrait = banners.portraitOf(p)
+            if portrait then
+                players[#players + 1] = builtin.ImageView{
+                    meta = { styleSheet = sheet(40, 40) }, path = portrait,
+                }
+            end
 			players[#players + 1] = box({
 				label(p.name, "font-scale-body", PLAYERS_WIDTH - 40, 16),
 				label(#tags > 0 and table.concat(tags, " · ") or "playing", "font-scale-annotation" .. (p.me and ", info" or ""), nil, 16),
@@ -1025,6 +1106,11 @@ function data()
 			if not ok then say("serving the hook failed: " .. tostring(err)) end
 			local followed, why = pcall(follow)
 			if not followed then say("reading the room failed: " .. tostring(why)) end
+			local copied = ui().copied
+			if copied and copied > 0 then
+				ui().copied = copied - 1
+				if copied == 1 then ui().version = ui().version + 1 end
+			end
 			if ui().version ~= seen:get() then
 				seen:set(ui().version)
 				room:set(ui().version)
@@ -1033,7 +1119,7 @@ function data()
 			if link and guardedCmd then
 				local delivered, why = pcall(function()
 					local results = link:results()
-					require("tpf3mp.guard").deliver(guardedCmd, results, sees)
+					require("tpf3mp.guard").deliver(guardedCmd, results, sees, clock)
 					local shared = ui()
 					for _, r in ipairs(results or {}) do
 						local doing = shared.asked and r.ticket and shared.asked[r.ticket]
@@ -1042,6 +1128,11 @@ function data()
 							shared.companyNote = r.ok and (doing .. ": done")
 								or (doing .. ": not done, " .. tostring(r.why))
 							shared.version = shared.version + 1
+						end
+						local asked = r.ticket and answers[r.ticket]
+						if asked then
+							answers[r.ticket] = nil
+							if r.ok ~= true then notice = asked .. ": not done, " .. tostring(r.why) end
 						end
 					end
 				end)

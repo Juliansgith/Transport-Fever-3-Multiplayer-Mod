@@ -2,14 +2,17 @@
 //! and exposes rooms and the turn stream to the game side. The shared-memory
 //! link to the in-game hook builds on this (see `docs/ARCHITECTURE.md`).
 
+pub mod about;
 pub mod bridge;
 pub mod content;
 pub mod diagnostics;
 mod follower;
 pub mod launcher;
 pub mod logs;
+pub mod own_mod;
 pub mod picker;
 mod playout;
+pub mod portraits;
 pub mod save_check;
 pub mod steam;
 pub mod transfer;
@@ -212,6 +215,28 @@ impl ConnectError {
             Self::VersionMismatch { client, server } => server > client,
             Self::NoRoute { udp, tunnel, .. } => udp.client_is_older() || tunnel.client_is_older(),
             _ => false,
+        }
+    }
+
+    /// The protocols of a mismatch, this client's and the server's, also
+    /// when it was one of the routes tried.
+    pub fn mismatch(&self) -> Option<(u32, u32)> {
+        match self {
+            Self::VersionMismatch { client, server } => Some((*client, *server)),
+            Self::NoRoute { udp, tunnel, .. } => udp.mismatch().or_else(|| tunnel.mismatch()),
+            _ => None,
+        }
+    }
+
+    /// What the player is told: for a protocol mismatch, which side is old,
+    /// what to do and which file they started ([`about::protocol_mismatch`]);
+    /// otherwise the error itself.
+    pub fn for_player(&self) -> String {
+        match self.mismatch() {
+            Some((client, server)) => {
+                about::protocol_mismatch(client, server, about::exe().as_deref())
+            }
+            None => self.to_string(),
         }
     }
 }
@@ -716,6 +741,15 @@ impl Client {
         .await
     }
 
+    /// Tells the room where this player's game is with its world while it
+    /// comes in; `None` once it plays.
+    pub async fn report_loading(
+        &self,
+        stage: Option<tpf3mp_proto::LoadingStage>,
+    ) -> Result<(), ClientError> {
+        self.send(GameMessage::Loading(stage)).await
+    }
+
     pub async fn report_progress(&self, step: u64) -> Result<(), ClientError> {
         self.send(GameMessage::Progress { step }).await
     }
@@ -988,5 +1022,19 @@ mod tests {
             tunnel: Box::new(newer),
         };
         assert!(routes.client_is_older());
+        assert_eq!(routes.mismatch(), Some((3, 4)));
+        assert!(
+            routes.for_player().starts_with(
+                "This launcher is too old for the server (it speaks protocol 3, the server 4)."
+            ),
+            "{}",
+            routes.for_player()
+        );
+        assert!(older.for_player().contains("the server needs updating"));
+        assert_eq!(ConnectError::Timeout.mismatch(), None);
+        assert_eq!(
+            ConnectError::Timeout.for_player(),
+            ConnectError::Timeout.to_string()
+        );
     }
 }

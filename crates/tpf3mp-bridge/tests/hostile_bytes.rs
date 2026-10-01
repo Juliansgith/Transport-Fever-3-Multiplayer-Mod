@@ -92,11 +92,17 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             owner: PlayerId(FixedBytes([1; 32])),
             members: BoundedVec::new(vec![
                 RoomMember {
+                    banner: None,
+                    loading: None,
+
                     player: PlayerId(FixedBytes([1; 32])),
                     name: Text::new("Ann").unwrap(),
                     connected: true,
                 },
                 RoomMember {
+                    banner: None,
+                    loading: None,
+
                     player: PlayerId(FixedBytes([2; 32])),
                     name: Text::new("Bo").unwrap(),
                     connected: false,
@@ -109,7 +115,8 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             server: Text::new("EU").unwrap(),
             server_address: Text::new("tpf3mp.example.org:29470").unwrap(),
             server_default: Text::new("tpf3mp.example.org:29470").unwrap(),
-            banner: Some(Text::new("m03").unwrap()),
+            banner: Some(Text::new("freiherr_von_schlitzwiesen").unwrap()),
+            portraits: BoundedVec::new(vec![Text::new("andrew").unwrap()]).unwrap(),
             name: Text::new("Ann").unwrap(),
             error: None,
             notice: Some(Text::new("created the room").unwrap()),
@@ -130,9 +137,17 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                     you: true,
                     same_content: Some(true),
                     banner: None,
+                    loading: None,
                 }])
                 .unwrap(),
                 competitive: false,
+                start: Some(tpf3mp_bridge::LobbyStart {
+                    name: Text::new("mptest").unwrap(),
+                    map: Text::new("temperate").unwrap(),
+                    year: 1900,
+                    arrived: true,
+                }),
+                upload: None,
             }),
             chat: BoundedVec::new(vec![LobbyLine {
                 from: Text::new("Ann").unwrap(),
@@ -206,6 +221,11 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         ToAgent::Lobby(LobbyAction::Join {
             invite: Text::new("tpf3mp.example.org:29470 K7QM2X").unwrap(),
             password: Some(Text::new("pw").unwrap()),
+        }),
+        ToAgent::Lobby(LobbyAction::ChooseStart {
+            save: Text::new("Güterzug").unwrap(),
+            map: Text::new("dry").unwrap(),
+            year: 1925,
         }),
     ];
     let mut samples: Vec<(Check, Vec<u8>)> = Vec::new();

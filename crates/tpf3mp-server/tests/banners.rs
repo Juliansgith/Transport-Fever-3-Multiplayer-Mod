@@ -1,6 +1,7 @@
 //! Players' banners (`Request::SetBanner`, PROTOCOL.md "Rooms"): one of
 //! the fixed set or none, kept for the connection, shown in the room's
-//! member list to everyone, and an unknown one refused.
+//! member list to everyone, and an unknown one refused; a campaign
+//! character's portrait the same way (protocol 13).
 
 #![allow(clippy::unwrap_used)]
 
@@ -8,7 +9,7 @@ mod common;
 
 use common::{FAST, RunningServer, join, room};
 use tpf3mp_agent::ClientError;
-use tpf3mp_proto::{BANNERS, Request, RequestError, Text};
+use tpf3mp_proto::{BANNERS, PORTRAITS, Request, RequestError, Text};
 
 fn banner(id: &str) -> Request {
     Request::SetBanner(Some(Text::new(id).unwrap()))
@@ -72,5 +73,39 @@ async fn a_banner_is_one_of_the_set_and_everyone_in_the_room_sees_it() {
     })
     .await;
     let _ = &mut bob;
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn a_portrait_travels_as_a_banner_and_an_unknown_one_is_refused() {
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    // The longest portrait id, past the old 16-byte limit, is taken.
+    ann.client
+        .request(banner("freiherr_von_schlitzwiesen"))
+        .await
+        .unwrap();
+    let (_invite, created) = ann
+        .client
+        .create_room(room("portraits", FAST))
+        .await
+        .unwrap();
+    assert_eq!(
+        created.members[0].banner.as_ref().map(Text::as_str),
+        Some("freiherr_von_schlitzwiesen")
+    );
+    // Within the connection's request limit: the first and the last; the
+    // whole set is checked in tpf3mp-proto.
+    for id in [PORTRAITS[0], PORTRAITS[PORTRAITS.len() - 1]] {
+        ann.client.request(banner(id)).await.unwrap();
+    }
+    // The dialogue's empty speaker and a file's name are no portraits.
+    for unknown in ["none", "andrew_neutral"] {
+        assert_eq!(
+            ann.client.request(banner(unknown)).await.unwrap_err(),
+            ClientError::Refused(RequestError::UnknownBanner),
+            "{unknown}"
+        );
+    }
     server.shut_down().await;
 }

@@ -38,7 +38,8 @@ The shape tells the tool apart (measured unless noted):
 | stop, signal, waypoint placement | the edge removed and re-added, plus one edge-object record |
 | stop or signal bulldoze | the edge removed and re-added without the object |
 | construction bulldoze | `toRemove` populated, nothing added |
-| road or track bulldoze | removed nodes and segments, nothing added |
+| road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408) |
+| tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file: the group rebuilt without the assets removed (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408) |
 | terraform | no nodes or segments; a `Grid<{height, base}>` of 4 m cells |
 | paint | no nodes or segments; the material index grid and its mask |
 | asset brush | `toAdd` records of an asset-group type whose per-asset data is a vector of `{model path, matrix}` (decompiled); its commit clears `old2new` first |
@@ -457,8 +458,10 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (10; 9 had no manual departure (`VehicleChange::ManualDeparture`), no signals (`PlaceStop::object`, `one_way`) and no link decorations, lock, owner or lanes (`Link::decorations`, `locked`, `owned`, `lanes`), 8 had no two-sided stop (`PlaceStop::two_sided`), no notification sound (`NotificationSeen`), no company ranks (`ApplyRank`) and no company head's operations (`CompanyOp::Lock`, `Unlock`, `Dismiss`, `ShareStations`), 7 had no company colour (`CompanyOp::Recolor`), 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
-vehicles and lines, 2 no edge kinds or removed nodes, 1 no road style). The Lua mod builds an action from a captured
+`ACTION_SCHEMA_VERSION` (**22**). This integration combines the existing
+junction schema with the selected vehicle, depot, demolition, precedence
+and gated action additions described in [COVERAGE.md](COVERAGE.md).
+The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
 command carried as text travels here as typed, bounded fields.
@@ -489,18 +492,18 @@ appended.
 |---|---|
 | `BuildRoad` | street type (TF3: its road template), road style (TF3), bus lane, tram track (none, plain, electric), a polyline whose links may each name their own kind, decorations, the towns' lock and the company's ownership (the road modifiers) |
 | `BuildTrack` | track type (TF3: its road template), road style (TF3), catenary, a polyline |
-| `Bulldoze` | edges of one network by their ends; or a construction by file and position; or a stop, signal or waypoint by its edge, position and model |
+| `Bulldoze` | edges of one network by their ends, with the town buildings the game removes along them, each by file and position; or a construction (a town building among them) by file and position; or a stop, signal or waypoint by its edge, position and model |
 | `BuildConstruction` | file, transform, every parameter (`seed` included), name, the construction it replaces for a module edit, and its connection: the streets and tracks its tool built with it, as a polyline whose every link names its kind |
-| `BuyVehicle` | the depot by file and position, the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |
+| `BuyVehicle` | the depot by its construction's file and position and its index among the construction's depots (an airport's second hangar), the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |
 | `SellVehicle` | vehicles |
-| `CreateLine` | name, colour, the line as the game keeps it: stops (station group, terminal, other terminals, load mode, waiting times, loading rules per cargo), transport modes, settings |
+| `CreateLine` | name, colour, the line as the game keeps it: stops (station group, terminal, other terminals, load mode, waiting times, loading rules per cargo, the waypoints after it), transport modes, settings. A waypoint is on a lane of a street's, track's or construction's transport network (the edge by its ends, node 0 first, which must run the same way in every game; the construction by file and place), the lane's index and the place along it; or, for ships and aircraft, a position in the open; with the line manager's tag |
 | `EditLine` | a line and one change: rename, recolour, the whole line anew, or delete |
 | `AssignLine` | vehicles, the line or none, the first stop or none for the game's choice ("Next Reachable Stop") |
 | `PlaceStop` | a stop, waypoint or signal (`object`): the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, its construction, whether a stop is two-sided and whether a signal is one-way |
 | `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
 | `CompanyOp` | create, join, rename or delete a company |
 | `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
-| `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (sold there or not), reverse, depart |
+| `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (sold there or not), reverse, depart, its colour |
 | `ReplaceVehicle` | a vehicle and its new consist, as `BuyVehicle` carries one, each part also saying which of the vehicle's own parts it keeps (by index, same model), or none for a part bought new; its groups and multiple units. One vehicle each: a group edit is one action per vehicle, as the game sends it |
 | `NotificationSeen` | a notification's popup played its first sound: every game's Notifications script marks it (its `initialSound` event), so no game plays it again |
 | `Prospect` | prospecting near a town: the town, the cargo, the industry types that may be found in the originator's menu's order, and the company permit it uses. The outcome is not in it: every game's company script draws it from the game time, months later, alike ([investigation](../investigation/TPF3_PROSPECTING_2026-09-30.md)) |

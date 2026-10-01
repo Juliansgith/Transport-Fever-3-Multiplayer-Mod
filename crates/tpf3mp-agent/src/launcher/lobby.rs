@@ -10,13 +10,15 @@
 //! whenever it changes and hands the window's actions back. A session takes
 //! the link over already greeted, and gives it back when it ends.
 
+use std::time::{Duration, Instant};
 use tpf3mp_bridge::{
     BRIDGE_VERSION, LobbyAction, LobbyConnection, LobbyHave, LobbyLine, LobbyMember, LobbyMod,
-    LobbyModClass, LobbyPublicRoom, LobbyRoom, LobbyRoomList, LobbyRoomMod, LobbyRules, LobbyView,
-    LobbyWorld, MAX_LOBBY_CHAT, MAX_LOBBY_MODS, MAX_LOBBY_ROOM_MODS, MAX_LOBBY_RULES,
-    MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName, SaveName, ToAgent, ToHook, check_version, decode,
-    encode,
+    LobbyModClass, LobbyPublicRoom, LobbyRoom, LobbyRoomList, LobbyRoomMod, LobbyRules, LobbyStart,
+    LobbyUpload, LobbyView, LobbyWorld, MAX_LOBBY_CHAT, MAX_LOBBY_MODS, MAX_LOBBY_ROOM_MODS,
+    MAX_LOBBY_RULES, MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName, SaveName, ToAgent, ToHook,
+    check_version, decode, encode,
 };
+
 use tpf3mp_proto::{BoundedVec, Text};
 use tracing::{debug, info, warn};
 
@@ -62,6 +64,7 @@ pub(crate) fn view(state: &State) -> LobbyView {
                             MemberContent::Unknown => None,
                         },
                         banner: member.banner.as_deref().and_then(banner),
+                        loading: member.loading,
                     })
                 })
                 .take(usize::from(tpf3mp_proto::MAX_ROOM_MEMBERS))
@@ -69,9 +72,27 @@ pub(crate) fn view(state: &State) -> LobbyView {
         )
         .unwrap_or_default(),
         competitive: room.competitive,
+        start: state.start.as_ref().map(|start| LobbyStart {
+            name: Text::lossy(&start.name),
+            map: Text::lossy(&start.map),
+            year: start.year,
+            arrived: start.arrived,
+        }),
+        upload: state.start_upload.as_ref().map(|upload| LobbyUpload {
+            save: Text::lossy(&upload.save),
+            percent: upload.percent.min(100),
+        }),
     });
     LobbyView {
         banner: state.banner.as_deref().and_then(banner),
+        portraits: BoundedVec::new(
+            crate::portraits::available()
+                .into_iter()
+                .filter_map(|id| Text::new(id).ok())
+                .take(tpf3mp_bridge::MAX_LOBBY_PORTRAITS)
+                .collect(),
+        )
+        .unwrap_or_default(),
         connection: match state.connection {
             Connection::Disconnected => LobbyConnection::Disconnected,
             Connection::Connecting => LobbyConnection::Connecting,
@@ -266,12 +287,19 @@ pub(crate) fn action(action: LobbyAction, state: &State) -> Action {
         LobbyAction::SetBanner { banner } => Action::SetBanner {
             banner: banner.map(|id| id.as_str().to_owned()),
         },
+        LobbyAction::ChooseStart { save, map, year } => Action::ChooseStart {
+            save: save.as_str().to_owned(),
+            map: map.as_str().to_owned(),
+            year,
+        },
     }
 }
 
-/// A banner id as the window may show it: one of the known ones.
+/// A banner id as the window may show it: one of the known ones, and a
+/// portrait only where this game has it (`crate::portraits::shown`): the
+/// window shows the player's default banner instead.
 fn banner(id: &str) -> Option<tpf3mp_proto::BannerId> {
-    tpf3mp_proto::is_banner(id)
+    (tpf3mp_proto::is_banner(id) && crate::portraits::shown(id))
         .then(|| Text::new(id).ok())
         .flatten()
 }
@@ -284,6 +312,11 @@ pub(crate) struct IdleLink<L> {
     buf: Vec<u8>,
     /// The lobby the hook was last sent.
     told: Option<LobbyView>,
+    /// The bridge version of a hook that said hello in another, not
+    /// greeted: a game started by another TPF3-MP.
+    other_bridge: Option<u32>,
+    /// The hook's heartbeat as last seen to move, and when.
+    hook_beat: Option<(u64, Instant)>,
 }
 
 impl<L: HookLink> IdleLink<L> {
@@ -300,7 +333,22 @@ impl<L: HookLink> IdleLink<L> {
             build,
             buf: Vec::new(),
             told: None,
+            other_bridge: None,
+            hook_beat: None,
         }
+    }
+
+    /// The bridge version of a hook this launcher cannot greet, which spoke
+    /// last: a game that another TPF3-MP's launcher started.
+    pub(crate) fn other_bridge(&self) -> Option<u32> {
+        self.other_bridge
+    }
+
+    /// How long the hook's heartbeat has stood still, as of `now`: for a
+    /// game this launcher did not start, and so cannot see close.
+    pub(crate) fn hook_quiet(&self, now: Instant) -> Duration {
+        self.hook_beat
+            .map_or(Duration::ZERO, |(_, at)| now.saturating_duration_since(at))
     }
 
     /// The game's build, if its hook said hello.
@@ -332,6 +380,10 @@ impl<L: HookLink> IdleLink<L> {
     /// player took in the menu's window.
     pub(crate) fn pump(&mut self, lobby: &LobbyView) -> Result<Vec<LobbyAction>, BridgeFault> {
         self.link.heartbeat();
+        let beat = self.link.peer_heartbeat();
+        if self.hook_beat.is_none_or(|(last, _)| last != beat) {
+            self.hook_beat = Some((beat, Instant::now()));
+        }
         let mut actions = Vec::new();
         while self.link.recv(&mut self.buf)? {
             match decode::<ToAgent>(&self.buf)? {
@@ -339,9 +391,11 @@ impl<L: HookLink> IdleLink<L> {
                     if let Err(error) = check_version(version) {
                         warn!(%error, "the game's hook speaks another bridge version");
                         self.build = None;
+                        self.other_bridge = Some(version);
                         continue;
                     }
                     info!(%build, "the game's hook attached");
+                    self.other_bridge = None;
                     // A game started again says hello again: answer it anew.
                     self.link.send(&encode(&ToHook::Hello {
                         version: BRIDGE_VERSION,
@@ -381,6 +435,8 @@ pub(crate) mod tests {
     pub(crate) struct FakeLink {
         pub(crate) to_hook: Arc<Mutex<VecDeque<Vec<u8>>>>,
         pub(crate) to_agent: Arc<Mutex<VecDeque<Vec<u8>>>>,
+        /// The hook's heartbeat.
+        pub(crate) beat: Arc<Mutex<u64>>,
     }
 
     impl FakeLink {
@@ -417,7 +473,7 @@ pub(crate) mod tests {
         }
         fn heartbeat(&mut self) {}
         fn peer_heartbeat(&self) -> u64 {
-            0
+            *self.beat.lock().unwrap()
         }
     }
 
@@ -489,6 +545,31 @@ pub(crate) mod tests {
         assert!(idle.pump(&lobby("Ann")).unwrap().is_empty());
         assert!(fake.hook_hears().is_empty());
         assert_eq!(idle.build(), None);
+        assert_eq!(
+            idle.other_bridge(),
+            Some(BRIDGE_VERSION + 1),
+            "said, so the player hears why"
+        );
+        fake.hook_says(&hello());
+        idle.pump(&lobby("Ann")).unwrap();
+        assert_eq!(idle.other_bridge(), None, "a game of this version came");
+    }
+
+    #[test]
+    fn a_hooks_heartbeat_that_stands_still_shows() {
+        let fake = FakeLink::default();
+        let mut idle = IdleLink::new(fake.clone());
+        let start = Instant::now();
+        assert_eq!(idle.hook_quiet(start), Duration::ZERO, "nothing seen yet");
+        idle.pump(&lobby("Ann")).unwrap();
+        let later = Instant::now() + Duration::from_secs(30);
+        assert!(idle.hook_quiet(later) >= Duration::from_secs(29));
+        *fake.beat.lock().unwrap() += 1;
+        idle.pump(&lobby("Ann")).unwrap();
+        assert!(
+            idle.hook_quiet(Instant::now()) < Duration::from_secs(1),
+            "it moved"
+        );
     }
 
     fn state() -> State {
@@ -521,6 +602,7 @@ pub(crate) mod tests {
                         you: true,
                         content: MemberContent::Same,
                         banner: None,
+                        loading: None,
                     },
                     Member {
                         id: "not a player".into(),
@@ -532,6 +614,7 @@ pub(crate) mod tests {
                         you: false,
                         content: MemberContent::Unknown,
                         banner: None,
+                        loading: None,
                     },
                 ],
                 competitive: false,
@@ -553,6 +636,16 @@ pub(crate) mod tests {
                 "older".into(),
             ],
             start_save: Some("mptest".into()),
+            start: Some(api::RoomStart {
+                name: "mptest".into(),
+                map: "dry".into(),
+                year: 1900,
+                arrived: false,
+            }),
+            start_upload: Some(api::StartProgress {
+                save: "mptest".into(),
+                percent: 40,
+            }),
             game: Game {
                 world: World::Fetching,
                 bytes: 10,
@@ -622,6 +715,33 @@ pub(crate) mod tests {
         );
     }
 
+    /// A portrait this game lacks reaches the window as no pick at all, so
+    /// the window shows the player's default banner; a banner always
+    /// reaches it. (No test makes portraits available.)
+    #[test]
+    fn a_portrait_this_game_lacks_shows_as_the_default_banner() {
+        let mut with = state();
+        with.banner = Some("dr_karl_brandt".into());
+        let members = &mut with.room.as_mut().unwrap().members;
+        members[0].banner = Some("andrew".into());
+        let shown = view(&with);
+        assert!(crate::portraits::available().is_empty());
+        assert!(shown.portraits.is_empty());
+        assert_eq!(shown.banner, None);
+        assert_eq!(shown.room.unwrap().members[0].banner, None);
+        with.banner = Some("dry".into());
+        with.room.as_mut().unwrap().members[0].banner = Some("m03".into());
+        let shown = view(&with);
+        assert_eq!(shown.banner.as_ref().map(Text::as_str), Some("dry"));
+        assert_eq!(
+            shown.room.unwrap().members[0]
+                .banner
+                .as_ref()
+                .map(Text::as_str),
+            Some("m03")
+        );
+    }
+
     #[test]
     fn the_menus_window_sees_what_the_launcher_shows() {
         let view = view(&state());
@@ -654,6 +774,20 @@ pub(crate) mod tests {
         let saves: Vec<&str> = view.saves.iter().map(Text::as_str).collect();
         assert_eq!(saves, ["mptest", "older"], "a name too long is left out");
         assert_eq!(view.start_save.as_ref().unwrap().as_str(), "mptest");
+        // The save the room starts from, as the room names it, and the
+        // owner's upload of it.
+        let room_start = room.start.as_ref().unwrap();
+        assert_eq!(
+            (
+                room_start.name.as_str(),
+                room_start.map.as_str(),
+                room_start.year,
+                room_start.arrived
+            ),
+            ("mptest", "dry", 1900, false)
+        );
+        let upload = room.upload.as_ref().unwrap();
+        assert_eq!((upload.save.as_str(), upload.percent), ("mptest", 40));
         assert_eq!(
             view.world,
             LobbyWorld::Fetching {
@@ -735,6 +869,21 @@ pub(crate) mod tests {
         );
         assert_eq!(action(LobbyAction::Start, &state), Action::Start);
         assert_eq!(action(LobbyAction::Leave, &state), Action::Leave);
+        assert_eq!(
+            action(
+                LobbyAction::ChooseStart {
+                    save: Text::lossy("older"),
+                    map: Text::lossy("tropical"),
+                    year: 1950,
+                },
+                &state
+            ),
+            Action::ChooseStart {
+                save: "older".into(),
+                map: "tropical".into(),
+                year: 1950,
+            }
+        );
         assert_eq!(
             action(
                 LobbyAction::SetServer {

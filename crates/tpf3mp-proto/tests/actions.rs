@@ -14,9 +14,9 @@ use tpf3mp_proto::{
         EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData, LineId,
         LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network,
         NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle,
-        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent, Terminal,
-        Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleChange,
-        VehicleId, VehicleOp, Vertex,
+        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef,
+        Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
+        UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -61,6 +61,8 @@ fn polyline() -> Polyline {
         ]),
         list(vec![
             Link {
+                precedence: None,
+
                 from: 0,
                 to: 1,
                 tangent0: Tangent {
@@ -81,6 +83,8 @@ fn polyline() -> Polyline {
                 lanes: BoundedVec::default(),
             },
             Link {
+                precedence: None,
+
                 from: 1,
                 to: 2,
                 tangent0: Tangent {
@@ -143,6 +147,31 @@ fn line_data() -> LineData {
         max_wait: 180_000_000,
         max_extra_wait: 30_500_000,
         rules,
+        waypoints: list(vec![
+            tpf3mp_proto::action::Waypoint {
+                at: tpf3mp_proto::action::WaypointAt::Lane {
+                    of: tpf3mp_proto::action::NetworkOf::Edge(EdgeRef {
+                        network: Network::Track,
+                        ends: ends(pos(0, 0, 0), pos(80_000, 0, 0)),
+                    }),
+                    index: 1,
+                    param: Fraction(250_000),
+                },
+                tag: 3,
+            },
+            tpf3mp_proto::action::Waypoint {
+                at: tpf3mp_proto::action::WaypointAt::Lane {
+                    of: tpf3mp_proto::action::NetworkOf::Construction(depot()),
+                    index: 12,
+                    param: Fraction(1_000_000),
+                },
+                tag: 4,
+            },
+            tpf3mp_proto::action::Waypoint {
+                at: tpf3mp_proto::action::WaypointAt::Open(pos(-1_200_000, 340_000, 0)),
+                tag: 5,
+            },
+        ]),
     };
     LineData {
         stops: list(vec![
@@ -213,6 +242,15 @@ fn samples() -> Vec<Action> {
         Action::Bulldoze(Bulldoze::Edges {
             network: Network::Track,
             edges: list(vec![ends(pos(1, 2, 3), pos(4, 5, 6))]),
+            buildings: list(vec![]),
+        }),
+        Action::Bulldoze(Bulldoze::Edges {
+            network: Network::Street,
+            edges: list(vec![ends(pos(1, 2, 3), pos(4, 5, 6))]),
+            buildings: list(vec![ConstructionRef {
+                file: text("buildings/a/c1/4x4_02/a_com_l1_4x4_02.con"),
+                at: pos(2_000, 9_000, 3_000),
+            }]),
         }),
         Action::Bulldoze(Bulldoze::Construction(depot())),
         Action::Bulldoze(Bulldoze::EdgeObject {
@@ -272,6 +310,7 @@ fn samples() -> Vec<Action> {
             ]),
             groups: list(vec![1, 1]),
             multiple_units: list(vec![text(""), text("")]),
+            depot_index: 1,
         }),
         Action::SellVehicle {
             vehicles: list(vec![VehicleId(1), VehicleId(70_000)]),
@@ -424,6 +463,14 @@ fn samples() -> Vec<Action> {
             vehicle: VehicleId(2),
             change: VehicleChange::ManualDeparture(true),
         }),
+        Action::VehicleOp(VehicleOp {
+            vehicle: VehicleId(2),
+            change: VehicleChange::Recolor(Tint {
+                r: 1_000_000,
+                g: 500_000,
+                b: 0,
+            }),
+        }),
         Action::ReplaceVehicle(replacement()),
         Action::Prospect(Prospect {
             town: TownId(4),
@@ -436,6 +483,30 @@ fn samples() -> Vec<Action> {
         Action::NotificationSeen { notification: 12 },
         Action::ApplyRank { level: 6 },
         junction_action(),
+        Action::Subsidy(SubsidyOp::Accept(SubsidyRef {
+            uid: 1_234_560_000,
+            kind: text("::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"),
+        })),
+        Action::Subsidy(SubsidyOp::Decline(SubsidyRef {
+            uid: 7,
+            kind: text("::/game_mechanics/subventions/deliver_passengers/deliver_passengers.res"),
+        })),
+        Action::Rename {
+            what: tpf3mp_proto::action::Renamed::Vehicle(VehicleId(2)),
+            name: text("Blue Arrow"),
+        },
+        Action::Rename {
+            what: tpf3mp_proto::action::Renamed::Station(StationId(5)),
+            name: text("Central"),
+        },
+        Action::Rename {
+            what: tpf3mp_proto::action::Renamed::Town(TownId(1)),
+            name: text("Newtown"),
+        },
+        Action::Rename {
+            what: tpf3mp_proto::action::Renamed::Construction(depot()),
+            name: text("North depot"),
+        },
     ]
 }
 
@@ -576,13 +647,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=18.
+    // Every top-level variant is sampled: postcard tags them 0..=20.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=18).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=20).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

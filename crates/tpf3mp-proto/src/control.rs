@@ -157,9 +157,21 @@ pub enum Request {
     /// save the owner's client holds, and not from one the owner's game
     /// saves once the game began. The room asks for it at once
     /// ([`ServerMessage::Upload`] with event 0), and when the game starts
-    /// every member loads it, the owner too. Declaring another replaces it.
-    /// Only on a server that keeps snapshots.
-    StartWorld(SavedWorld),
+    /// every member loads it, the owner too. Declaring another replaces it,
+    /// for as long as the room is in its lobby, and marks every member not
+    /// ready again: they agreed to the world before. The first one named
+    /// leaves readiness as it is: it is the world the room was waiting for.
+    /// The same world again only updates what the room shows of it
+    /// (`save`). Only on a server that keeps snapshots.
+    StartWorld {
+        world: SavedWorld,
+        save: StartSave,
+    },
+    /// The owner, in the lobby: the room's game starts from no handed-over
+    /// world after all, but from the owner's game, as without
+    /// [`Request::StartWorld`]. Marks every member not ready again if the
+    /// room had one. Done when it had none.
+    ClearStartWorld,
     /// The server's list of public rooms (those created with a
     /// [`CreateRoom::listing`]), [`ROOMS_PER_PAGE`] a page from `page` 0.
     /// Answered with [`Response::Rooms`]. A private room is never listed.
@@ -170,15 +182,16 @@ pub enum Request {
     /// as the game's year and its companies once it runs. A private room
     /// stays private (`NotListed`).
     DescribeRoom(RoomListing),
-    /// The picture this player shows in rooms, one of [`BANNERS`] by id;
-    /// `None` for their default. Kept for the connection, and shown to the
+    /// The picture this player shows in rooms, one of [`BANNERS`] or
+    /// [`PORTRAITS`] by id; `None` for their default. Kept for the connection, and shown to the
     /// room this player is in at once. Unknown ids are refused
     /// (`UnknownBanner`).
     SetBanner(Option<BannerId>),
 }
 
-/// A player's banner: one of [`BANNERS`], by id.
-pub type BannerId = Text<16>;
+/// A player's picture: one of [`BANNERS`] or [`PORTRAITS`], by id. Long
+/// enough for the longest portrait id.
+pub type BannerId = Text<32>;
 
 /// The banners players pick from: short ids, each standing for one of the
 /// game's own pictures (the window maps them; the server only checks the
@@ -208,9 +221,48 @@ pub const BANNERS: &[&str] = &[
     "loading4",
 ];
 
-/// Whether `id` names one of [`BANNERS`].
+/// The campaign's characters a player may show instead of a banner, by
+/// the name their portrait has in the game's campaign missions
+/// (`mission/dialogue/<id>_neutral.tga`). The pictures are the game's: each
+/// player's launcher takes them from their own install, and a game without
+/// one shows the player's banner instead (docs/LOBBY.md, "Portraits").
+pub const PORTRAITS: &[&str] = &[
+    "andrew",
+    "katie_baker",
+    "major",
+    "anton_zurbriggen",
+    "dr_karl_brandt",
+    "lorenzo_bianchi",
+    "freiherr_von_schlitzwiesen",
+    "nasra_ramahi",
+    "salim_al_zalabia",
+    "bart_korner",
+    "richard_o_sullivan",
+    "sun_flowers",
+    "andrea",
+    "astrid_larsson",
+    "lasse",
+    "nils_eriksen",
+    "mateo_cruz",
+    "richard_cleese",
+    "salita_ananda_cruz",
+    "holly_travers",
+    "monaro_namatjira",
+    "tom_mclaren",
+    "chisato_murai",
+    "sayoko_tanizaki",
+    "takumi_arakawa",
+];
+
+/// Whether `id` names one of [`PORTRAITS`].
+pub fn is_portrait(id: &str) -> bool {
+    PORTRAITS.contains(&id)
+}
+
+/// Whether `id` names a picture a player may show: one of [`BANNERS`] or
+/// [`PORTRAITS`].
 pub fn is_banner(id: &str) -> bool {
-    BANNERS.contains(&id)
+    BANNERS.contains(&id) || is_portrait(id)
 }
 
 /// Most rooms a page of the room list holds.
@@ -229,6 +281,28 @@ pub struct RoomListing {
     pub year: u16,
     /// The companies playing in the room's game.
     pub companies: u8,
+}
+
+/// The save a room's game starts from, as its owner names it
+/// ([`Request::StartWorld`]) and every member sees it ([`RoomView::start`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartSave {
+    /// The save's name in the owner's save folder, without `.sav`.
+    pub name: Text<64>,
+    /// Its map type, its climate as the game names it (`temperate`); empty
+    /// when the owner's game did not say.
+    pub map: Text<32>,
+    /// Its year; 0 when unknown.
+    pub year: u16,
+}
+
+/// The world a room in its lobby starts from, as its members see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartView {
+    pub save: StartSave,
+    /// Whether the room has received it: until then the game cannot start
+    /// (`StartWorldPending`).
+    pub arrived: bool,
 }
 
 /// One public room, as the room list shows it.
@@ -344,7 +418,7 @@ pub enum RequestError {
     StartWorldPending,
     /// The room is private: it is in no list to describe.
     NotListed,
-    /// No such banner (see [`BANNERS`]).
+    /// No such banner or portrait (see [`BANNERS`], [`PORTRAITS`]).
     UnknownBanner,
 }
 
@@ -443,6 +517,10 @@ pub struct RoomView {
     pub members: Vec<MemberView>,
     /// The play style ([`CreateRoom::competitive`]).
     pub competitive: bool,
+    /// In the lobby: the save the owner handed over for the game to start
+    /// from ([`Request::StartWorld`]); `None` when the owner's game provides
+    /// the world, and once the game runs.
+    pub start: Option<StartView>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -461,6 +539,18 @@ pub struct MemberView {
     pub connected: bool,
     /// The banner this player picked, if any.
     pub banner: Option<BannerId>,
+    /// How far this player's game is with the room's world while it comes
+    /// in ([`GameMessage::Loading`]); `None` otherwise.
+    pub loading: Option<LoadingStage>,
+}
+
+/// Where a player's game is with the room's world while it comes in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoadingStage {
+    /// Receiving it: this many percent so far (0 to 100).
+    Fetching { percent: u8 },
+    /// The game loads it.
+    Loading,
 }
 
 /// A client's game traffic, carried on the control stream.
@@ -489,6 +579,12 @@ pub enum GameMessage {
         lanes: Vec<LaneDigest>,
         world: Option<SavedWorld>,
     },
+    // Last, so the earlier variants keep their tags on the wire.
+    /// Where this player's game is with the room's world while it comes in,
+    /// for the other members to see (`MemberView::loading`); `None` once it
+    /// plays or has none coming. At most about two a second; the room keeps
+    /// no more of them, and logs none.
+    Loading(Option<LoadingStage>),
 }
 
 /// A password a player typed for an intent: a company's, to join it or to

@@ -73,6 +73,8 @@ local MIN_PLAYERS, MAX_PLAYERS, DEFAULT_PLAYERS = 2, 16, 4
 -- many of those asks an action is shown as under way at most.
 local POLL = 0.4
 local PENDING_POLLS = 20
+-- How many polls Copy says "Copied" for: about two seconds.
+local COPIED_POLLS = 5
 
 -- The request channel -------------------------------------------------------
 
@@ -571,54 +573,40 @@ function lobby.saveDetails(name)
 	return read
 end
 
+-- The save a room starts from, in a line: its name, its map and year when
+-- the room knows them, and whether the room has it yet.
+function lobby.startLine(start)
+	local parts = { start.name }
+	if type(start.map) == "string" and start.map ~= "" then parts[#parts + 1] = lobby.climateName(start.map) end
+	if (tonumber(start.year) or 0) > 0 then parts[#parts + 1] = tostring(start.year) end
+	if not start.arrived then parts[#parts + 1] = _("on its way to the room") end
+	return table.concat(parts, " · ")
+end
+
+-- Whether the room's game must wait for its start save: the owner's still
+-- going up, or the room not having it yet.
+function lobby.startWaits(room)
+	return room.upload ~= nil or (room.start ~= nil and not room.start.arrived)
+end
+
+-- Polls a pick of the room's start save waits at most for the game to read
+-- the save's map and year.
+local PICK_POLLS = 8
+
 -- Banners ---------------------------------------------------------------------
 
--- The pictures players show in rooms: the server's set of banner ids
--- (tpf3mp_proto::BANNERS, in its order), each one of the game's own
--- pictures: its campaign's and climates' menu cards, the map editor's and
--- the mods', the main menu's and its loading screens.
-local BANNERS = {
-	{ "m01", "::/gui/menu/images/m01_ingame.tga" },
-	{ "m02", "::/gui/menu/images/m02_ingame.tga" },
-	{ "m03", "::/gui/menu/images/m03_ingame.tga" },
-	{ "m04", "::/gui/menu/images/m04_ingame.tga" },
-	{ "m05", "::/gui/menu/images/m05_ingame.tga" },
-	{ "m06", "::/gui/menu/images/m06_ingame.tga" },
-	{ "m07", "::/gui/menu/images/m07_ingame.tga" },
-	{ "m08", "::/gui/menu/images/m08_ingame.tga" },
-	{ "temperate", "::/gui/menu/images/temperate_ingame.tga" },
-	{ "subarctic", "::/gui/menu/images/subarctic_ingame.tga" },
-	{ "tropical", "::/gui/menu/images/tropical_ingame.tga" },
-	{ "dry", "::/gui/menu/images/dry_ingame.tga" },
-	{ "mapeditor", "::/gui/menu/images/mapeditor_ingame.tga" },
-	{ "mapeditor2", "::/gui/menu/images/mapeditor_ingame_2.tga" },
-	{ "mod01", "::/gui/menu/images/mod01_ingame.tga" },
-	{ "mod02", "::/gui/menu/images/mod02_ingame.tga" },
-	{ "main", "::/gui/menu/images/main.tga" },
-	{ "loadgame", "::/gui/menu/images/loadgame.tga" },
-	{ "loading1", "::/gui/menu/images/loading_background_1.tga" },
-	{ "loading2", "::/gui/menu/images/loading_background_2.tga" },
-	{ "loading3", "::/gui/menu/images/loading_background_3.tga" },
-	{ "loading4", "::/gui/menu/images/loading_background_4.tga" },
-}
+local banners = ug_require "tpf3mp_1::/scripts/tpf3mp/banners.lua"
+local BANNERS = banners.LIST
 lobby.BANNERS = BANNERS
-local BANNER_PATH = {}
-for _i, banner in ipairs(BANNERS) do BANNER_PATH[banner[1]] = banner[2] end
-
--- The banner a player shows: the one they picked, or one chosen from their
--- key (its first eight hex digits, modulo the set), the same in every
--- player's game.
-function lobby.bannerOf(member)
-	if member.banner and BANNER_PATH[member.banner] then return member.banner end
-	local n = tonumber(tostring(member.id or ""):sub(1, 8), 16) or 0
-	return BANNERS[(n % #BANNERS) + 1][1]
-end
-function lobby.bannerPicture(id)
-	return BANNER_PATH[id] or BANNERS[1][2]
-end
+lobby.bannerOf = banners.of
+lobby.bannerPicture = banners.picture
+lobby.portraitOf = banners.portraitOf
+lobby.portraitName = banners.portraitName
+lobby.portraitPicture = banners.portrait
 
 -- A room member's size as a card, two to a row of the players' column.
 local MEMBER_WIDTH, MEMBER_HEIGHT = 208, 128
+local PORTRAIT_SIZE = 44
 
 -- A picture card in the main menu's style: title and a line under it, a
 -- word on the right; `onClick` nil for a card that only shows.
@@ -649,15 +637,28 @@ local function pictureCard(picture, title, line, right, onClick, enabled, width,
 end
 lobby.pictureCard = pictureCard
 
+-- Where a member's game is with the room's world: its download, its load,
+-- then in the game; before the room starts, whether it is ready.
+function lobby.memberStage(member, playing)
+	if member.loading == "fetching" then
+		return string.format(_("Downloading %d%%"), math.floor(tonumber(member.percent) or 0))
+	elseif member.loading == "loading" then
+		return _("Loading...")
+	elseif playing then
+		return member.connected and _("Playing") or nil
+	end
+	return member.ready and _("Ready") or _("Not ready")
+end
+
 -- A room member as a card: their banner, name, and what marks them.
 function lobby.memberCard(member, playing)
 	local marks = {}
 	if member.you then marks[#marks + 1] = _("You") end
 	if member.owner then marks[#marks + 1] = _("Owner") end
 	if not member.connected then marks[#marks + 1] = _("Away") end
-	if not playing then marks[#marks + 1] = member.ready and _("Ready") or _("Not ready") end
+	marks[#marks + 1] = lobby.memberStage(member, playing)
 	if member.content == "differs" then marks[#marks + 1] = _("Other mods") end
-	local ready = member.ready and not playing and builtin.FloatingLayoutChild{
+	local ready = member.ready and not playing and (member.loading or "") == "" and builtin.FloatingLayoutChild{
 		h = 0.95,
 		v = 0.06,
 		item = builtin.ImageView{
@@ -665,9 +666,22 @@ function lobby.memberCard(member, playing)
 			path = ICON.ready,
 		},
 	} or nil
-	return pictureCard(lobby.bannerPicture(lobby.bannerOf(member)), member.name,
-		table.concat(marks, " · "), nil, nil, true,
-		MEMBER_WIDTH, MEMBER_HEIGHT, ready and { ready } or {})
+	-- A member who picked a portrait: it beside their card, which shows
+	-- their key's banner (tpf3mp/banners.lua).
+	local portrait = lobby.portraitOf(member)
+	local card = pictureCard(lobby.bannerPicture(lobby.bannerOf(member)), member.name,
+		table.concat(marks, " · "), member.you and _("You") or nil, nil, true,
+		portrait and MEMBER_WIDTH - PORTRAIT_SIZE - 8 or MEMBER_WIDTH, MEMBER_HEIGHT, ready and { ready } or {})
+	if not portrait then return card end
+	return row({ icon(portrait, PORTRAIT_SIZE), gap(8), card })
+end
+
+-- A campaign character's portrait as a card of the banner picker: the
+-- picture, the character's name, and whether it is yours.
+local PORTRAIT_WIDTH, PORTRAIT_HEIGHT = 150, 190
+function lobby.portraitCard(id, picked, onClick, enabled)
+	return pictureCard(banners.portrait(id), banners.portraitName(id) or id, picked and _("Yours") or " ",
+		nil, onClick, enabled, PORTRAIT_WIDTH, PORTRAIT_HEIGHT)
 end
 
 -- The pictures of the Host page's play styles. Co-op: the busy harbour of
@@ -791,6 +805,11 @@ function lobby.content(onClose, focus, onNewGame)
 	local playersS = react.useState(DEFAULT_PLAYERS)
 	local rulesS = react.useState(nil)
 	local saveS = react.useState(nil)
+	-- The room page's pick of its start save while the game reads its map
+	-- and year: { save, polls }.
+	local pickS = react.useState(nil)
+	-- The start save this window already told the room the map and year of.
+	local describedRef = react.useRef(nil)
 	-- The page shown: "choose" (Join or Host), "join" (the public rooms
 	-- and an invite) or "host" (the room's settings); in a room, always the
 	-- room's. Your mods show over it while modsS is on.
@@ -815,6 +834,7 @@ function lobby.content(onClose, focus, onNewGame)
 	local queued = react.useRef(nil)
 	local generate = react.useRef(false)
 	local lastSnapshot = react.useRef(nil)
+	local copiedS = react.useState(0)
 
 	-- What the view shows, in one string: when it changes, an action sent
 	-- has been answered.
@@ -826,6 +846,7 @@ function lobby.content(onClose, focus, onNewGame)
 			tostring(state.connection), tostring(room and room.name), tostring(room and room.phase),
 			tostring(room and #room.members), tostring(me and me.ready), tostring(state.error),
 			tostring(state.notice), tostring(#(state.chat or {})), tostring(state.server_address),
+			tostring(room and room.start and room.start.name), tostring(room and room.upload and room.upload.save),
 		}, "|")
 	end
 
@@ -842,6 +863,7 @@ function lobby.content(onClose, focus, onNewGame)
 	-- Poll the hook for the lobby a few times a second: the room and chat
 	-- change without anything happening in this window.
 	react.onStepTimer(function()
+		if copiedS:old() > 0 then copiedS:set(copiedS:old() - 1) end
 		local state, why, snapshot = fetchState()
 		if state then
 			if problemS:old() ~= nil then problemS:set(nil) end
@@ -880,6 +902,37 @@ function lobby.content(onClose, focus, onNewGame)
 			elseif generate:get() and state.error and state.error ~= generate:get().error then
 				generate:set(false)
 			end
+			local room = state.room
+			local owning = room and room.you_own and room.phase == "lobby"
+			-- A start save picked on the room page goes once the game read its
+			-- map and year, or could not in a few polls.
+			local pick = pickS:old()
+			if pick then
+				local details = lobby.saveDetails(pick.save)
+				if not details.async or pick.polls >= PICK_POLLS then
+					pickS:set(nil)
+					if owning then
+						refusedS:set(act({ action = "choose_start", save = pick.save, map = details.map or "",
+							year = details.year or 0 }))
+					end
+				else
+					pickS:set({ save = pick.save, polls = pick.polls + 1 })
+				end
+			end
+			-- The room names its start save without its map and year when the
+			-- room was made private: this window tells it what the game read,
+			-- once, so every player sees them.
+			local start = owning and room.start
+			if start and room.upload == nil and start.map == "" and (tonumber(start.year) or 0) == 0
+				and describedRef:get() ~= start.name then
+				local details = lobby.saveDetails(start.name)
+				if not details.async then
+					describedRef:set(start.name)
+					if details.map ~= "" or details.year > 0 then
+						act({ action = "choose_start", save = start.name, map = details.map, year = details.year })
+					end
+				end
+						end
 			-- The room list, while it is shown: asked for at once, then
 			-- every LIST_POLLS polls (the server allows one a second).
 			local browsing = state.linked and state.connection == "connected" and pageOf(state) == "join" and not modsS:old()
@@ -1112,6 +1165,30 @@ function lobby.content(onClose, focus, onNewGame)
 			end
 		end
 		if #cellsRow > 0 then rows[#rows + 1] = row(cellsRow) end
+		-- The campaign's characters this game has (the launcher takes their
+		-- portraits from the game): one shows beside your name instead.
+		local portraits = {}
+		for _i, id in ipairs(state.portraits or {}) do
+			if banners.portrait(id) then portraits[#portraits + 1] = id end
+		end
+		if #portraits > 0 then
+			rows[#rows + 1] = gap(16)
+			rows[#rows + 1] = heading(_("Characters"), _("A character of the campaign, beside your name."))
+			rows[#rows + 1] = gap(10)
+			cellsRow = {}
+			for _i, id in ipairs(portraits) do
+				if #cellsRow > 0 then cellsRow[#cellsRow + 1] = gap(10) end
+				cellsRow[#cellsRow + 1] = lobby.portraitCard(id, state.banner == id, function()
+					send({ action = "set_banner", banner = id }, nil)
+				end, canAct)
+				if #cellsRow >= 9 then
+					rows[#rows + 1] = row(cellsRow)
+					rows[#rows + 1] = gap(10)
+					cellsRow = {}
+				end
+			end
+			if #cellsRow > 0 then rows[#rows + 1] = row(cellsRow) end
+		end
 		return frame(_("Your banner"), status, column({
 			row({
 				button(_("Back"), function() bannerS:set(false) end),
@@ -1523,6 +1600,14 @@ function lobby.content(onClose, focus, onNewGame)
 		row({
 			note(_("Invite code  ")),
 			label(room.invite ~= "" and inviteCode(room.invite) or "-", "font-scale-title-4, info"),
+			gap(10),
+			-- The hook puts it on the clipboard (the game's GUI has no
+			-- clipboard of its own); "Copied" for a moment after.
+			button(copiedS:old() > 0 and _("Copied") or _("Copy"), function()
+				local refused = act({ action = "copy", text = inviteCode(room.invite) })
+				refusedS:set(refused)
+				if not refused then copiedS:set(COPIED_POLLS) end
+			end, nil, room.invite ~= "", _("Copy the invite code, to paste it to your friends")),
 		}),
 		note(_("Send it to friends: they join with it from their game's Multiplayer window.")),
 		gap(10),
@@ -1563,10 +1648,77 @@ function lobby.content(onClose, focus, onNewGame)
 			send({ action = "chat", text = msg }, nil)
 		end
 	end
+	-- The save the room starts from, for everyone; the owner picks it here
+	-- while the room is in its lobby, from the saves the Host page offers.
+	local startBlock
+	-- The chat takes what the start save leaves of the column.
+	local chatHeight = HEIGHT - 330
+	if playing then
+		startBlock = gap(1)
+	else
+		local start, upload, pick = room.start, room.upload, pickS:old()
+		local line
+		if pick then
+			line = string.format(_("Reading %s..."), pick.save)
+		elseif upload then
+			line = string.format(_("Sending %s to the room: %d%%"), upload.save, upload.percent)
+		elseif start then
+			line = lobby.startLine(start)
+		elseif room.you_own then
+			line = _("Choose Set up world to create the map and settings for everyone.")
+		else
+			line = _("The world the owner's game has.")
+		end
+		local children = {}
+		if room.you_own then
+			local current = (pick and pick.save) or (upload and upload.save) or (start and start.name) or ""
+			local items, listed = {}, false
+			for _i, save in ipairs(state.saves or {}) do
+				items[#items + 1] = { save, save }
+				if save == current then listed = true end
+			end
+			-- The room's own, even once it left the newest saves listed.
+			if current ~= "" and not listed then table.insert(items, 1, { current, current }) end
+			items[#items + 1] = { "", _("New world: choose map and settings") }
+			children[#children + 1] = choice(_("Start from this save"), current, items, function(value)
+				if value == current or not canAct then return end
+				confirmS:set(nil)
+				if value == "" then
+					send({ action = "choose_start", save = "" }, _("Changing the save..."))
+					return
+				end
+				local details = lobby.saveDetails(value)
+				if details.async then
+					pickS:set({ save = value, polls = 0 })
+				else
+					send({ action = "choose_start", save = value, map = details.map, year = details.year },
+						_("Changing the save..."))
+				end
+			end, line)
+			chatHeight = chatHeight - 92
+		else
+			children[#children + 1] = note(_("Starts from"))
+			children[#children + 1] = gap(4)
+			children[#children + 1] = label(line, "font-scale-body")
+			children[#children + 1] = gap(12)
+			chatHeight = chatHeight - 54
+		end
+		if upload then
+			children[#children + 1] = builtin.Component{
+				meta = { styleSheet = style{ size = { RIGHT - 20, 14 } } },
+				layout = builtin.BoxLayout{ children = { builtin.ProgressBar{ value = math.min(1, upload.percent / 100) } } },
+			}
+			children[#children + 1] = gap(8)
+			chatHeight = chatHeight - 22
+		end
+		startBlock = column(children)
+	end
+
 	local chat = column({
+		startBlock,
 		heading(_("Chat")),
 		builtin.ScrollArea{
-			meta = { styleSheet = style{ size = { RIGHT, HEIGHT - 330 } } },
+			meta = { styleSheet = style{ size = { RIGHT, chatHeight } } },
 			horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
 			verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
 			content = column(chatRows),
@@ -1611,10 +1763,12 @@ function lobby.content(onClose, focus, onNewGame)
 		end
 		if room.you_own then
 			local all = everyoneReady(room)
+			local waits = lobby.startWaits(room) or pickS:old() ~= nil
 			footer[#footer + 1] = primary(_("Start the game"), function()
 				send({ action = "start" }, _("Starting the room's game..."))
-			end, canAct and all and not busy,
-				all and _("Every player's game loads the room's world") or _("Waiting for everyone to be ready"))
+			end, canAct and all and not waits and not busy,
+				(waits and _("The save is still on its way to the room"))
+					or (all and _("Every player's game loads the room's world")) or _("Waiting for everyone to be ready"))
 		end
 	end
 

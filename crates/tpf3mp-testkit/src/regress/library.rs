@@ -90,6 +90,8 @@ pub fn polyline(vertices: Vec<Vertex>, structure: &Structure) -> Polyline {
                 z: b.z - a.z,
             };
             Link {
+                precedence: None,
+
                 from: u16::try_from(i).expect("few vertices"),
                 to: u16::try_from(i + 1).expect("few vertices"),
                 tangent0: tangent,
@@ -173,6 +175,7 @@ pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
         ),
         groups: list(vec![u8::try_from(consist.len()).expect("a short consist")]),
         multiple_units: list(vec![text("")]),
+        depot_index: 0,
     })
 }
 
@@ -231,6 +234,7 @@ fn line_data(stations: &[u32]) -> LineData {
                         destroy_for_config_change: false,
                         destroy_for_refresh: false,
                     },
+                    waypoints: BoundedVec::empty(),
                 })
                 .collect(),
         ),
@@ -280,6 +284,7 @@ pub fn bulldoze_edges(network: Network, edges: &[(Pos, Pos)]) -> Action {
                 .map(|(a, b)| EdgeEnds { a: *a, b: *b })
                 .collect(),
         ),
+        buildings: list(Vec::new()),
     })
 }
 

@@ -381,19 +381,27 @@ function capture.stop(proposal, link)
 end
 
 -- The bulldozer's removal (tpf3mp_proto action::Bulldoze), read off its
--- proposal by tpf3mp/engine.lua: a construction, edges, or a stop. Returns the action table; false for a
--- proposal of nothing; or nil and why.
+-- proposal by tpf3mp/engine.lua: a construction (a town building among
+-- them), edges with the town buildings the game removes along them, or a
+-- stop. Returns the action table; false for a proposal of nothing; or nil
+-- and why.
 --
 -- A proposal that removes a construction and adds one is an edit: a module
 -- taken off with the module bulldozer, if that reaches game scripts as the
 -- bulldozer's (INFERRED, not seen in the game), is carried as the edit it is
--- (capture.construction), or refused.
+-- (capture.construction), or refused. One that removes something that is no
+-- construction and adds a construction of no file is the asset
+-- bulldozer's (trees and other assets: their group rebuilt without the ones
+-- removed), refused with what it removes (tpf3mp/engine.lua,
+-- notConstruction).
 function capture.bulldoze(proposal)
 	local toRemove = get(proposal, "toRemove")
 	if (length(get(proposal, "toAdd")) or 0) > 0 and (length(toRemove) or 0) > 0 then
 		for i = 1, length(toRemove) do
-			local c = api.engine.getComponent(get(toRemove, i), api.type.ComponentType.CONSTRUCTION)
-			if (length(c and get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
+			local entity = get(toRemove, i)
+			local c = api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
+			if c == nil then return nil, module("engine").notConstruction(entity) end
+			if (length(get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
 		end
 		return nil, "a bulldozer proposal that builds"
 	end
@@ -441,7 +449,8 @@ end
 --   ctx.vehicle(e), ctx.line(e), ctx.group(e) -> canonical id, or nil
 --                                               (tpf3mp/registry.lua)
 --   ctx.depot(e) -> { file =, at = { x, y, z } } of the depot's
---                   construction, or nil
+--                   construction, and the depot's index among its
+--                   depots from 0 (capture.depotRef); or nil
 --   ctx.model(id) -> a vehicle model's file name, or nil
 --   ctx.parts(e) -> a vehicle's parts, front to back, each
 --                   { model = modelId, purchased = purchaseTime }, or nil
@@ -494,10 +503,56 @@ local function consistPart(ctx, tvp)
 	}
 end
 
+-- A depot as actions name one (action::ConstructionRef): its construction's
+-- file and place. The street connector names the construction of a depot a
+-- street reaches; a ship depot or an aircraft hangar may have none
+-- (INFERRED, not seen on build 40408), so failing that, the construction
+-- whose CONSTRUCTION component lists the depot among its `depots`, the
+-- lowest entity on a tie. Returns { file =, at = { x, y, z } } and the
+-- depot's index among the construction's depots, from 0; or nil.
+function capture.depotRef(api, depot)
+	local ok, CONSTRUCTION = pcall(function() return api.type.ComponentType.CONSTRUCTION end)
+	if not ok or CONSTRUCTION == nil then return nil end
+	local c
+	pcall(function()
+		local con = api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(depot)
+		if type(con) == "number" and con >= 0 then c = api.engine.getComponent(con, CONSTRUCTION) end
+	end)
+	if c == nil then
+		pcall(function()
+			local list = api.engine.getEntitiesWithComponent(CONSTRUCTION)
+			local best
+			for i = 1, #list do
+				local e = list[i]
+				local comp = api.engine.getComponent(e, CONSTRUCTION)
+				local depots = comp and comp.depots
+				for k = 1, (depots and #depots or 0) do
+					if depots[k] == depot and (best == nil or e < best) then best, c = e, comp end
+				end
+			end
+		end)
+	end
+	if c == nil then return nil end
+	local t = get(c, "transf")
+	local file, x, y, z = get(c, "fileName"), get(t, 13), get(t, 14), get(t, 15)
+	if type(file) ~= "string" or file == "" or type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
+		return nil
+	end
+	-- Which of its depots (an airport's second hangar): the first that is
+	-- this one, else the first, as before the index was carried.
+	local index, depots = 0, get(c, "depots")
+	for k = 1, (length(depots) or 0) do
+		if get(depots, k) == depot then index = k - 1 break end
+	end
+	return { file = file, at = { x = x, y = y, z = z } }, index
+end
+
 -- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
 function capture.vehicleBuy(ctx, _player, depot, config)
+	local ref, index = ctx.depot(depot)
 	return { BuyVehicle = {
-		depot = named("a depot the room cannot name", ctx.depot(depot)),
+		depot = named("a depot the room cannot name", ref),
+		depot_index = index or 0,
 		consist = each(get(config, "vehicles"), function(tvp) return consistPart(ctx, tvp) end),
 		groups = each(get(config, "vehicleGroups"), function(n) return n end),
 		multiple_units = each(get(config, "muFileNames"), function(name) return name end),
@@ -578,13 +633,54 @@ function capture.vehicleManualDeparture(ctx, vehicle, manual)
 	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ManualDeparture = manual == true } } }
 end
 
+-- A line's waypoint (the game's Waypoint) as the schema's Waypoint: on a
+-- street or track, the lane its EdgePos names, in the transport network of
+-- a street or track edge (by its ends, node 0 first) or of a construction
+-- (by its file and place), and where along it; a ship's or aircraft's in the
+-- open by its position. Its tag goes as it is. Raises why the room cannot
+-- name one.
+function capture.waypoint(w)
+	local tag = get(w, "tag")
+	if type(tag) ~= "number" or tag ~= math.floor(tag) then error("a waypoint without its tag", 0) end
+	local edgePos = get(w, "edgePos")
+	local id = edgePos and get(edgePos, "edgeId")
+	local entity = id and get(id, "entity")
+	if type(entity) == "number" and entity >= 0 then
+		local index, param = get(id, "index"), get(edgePos, "param")
+		if type(index) ~= "number" or type(param) ~= "number" then error("a waypoint it cannot read", 0) end
+		local of
+		pcall(function()
+			local CT = api.type.ComponentType
+			local edge = api.engine.getComponent(entity, CT.BASE_EDGE)
+			if edge ~= nil then
+				local a = api.engine.getComponent(edge.node0, CT.BASE_NODE).position
+				local b = api.engine.getComponent(edge.node1, CT.BASE_NODE).position
+				local street = api.engine.getComponent(entity, CT.BASE_EDGE_STREET) ~= nil
+				local function xyz(p) return { x = p.x or p[1], y = p.y or p[2], z = p.z or p[3] } end
+				of = { Edge = { network = street and "Street" or "Track", ends = { a = xyz(a), b = xyz(b) } } }
+			else
+				local ref = capture.replaced(api.engine.getComponent(entity, CT.CONSTRUCTION))
+				if ref then of = { Construction = ref } end
+			end
+		end)
+		if of == nil then error("a waypoint on a network the room cannot name", 0) end
+		return { at = { Lane = { of = of, index = index, param = param } }, tag = tag }
+	end
+	local p = get(w, "pos")
+	local x, y, z = get(p, "x"), get(p, "y"), get(p, "z")
+	if type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
+		error("a waypoint with no place", 0)
+	end
+	return { at = { Open = { x = x, y = y, z = z } }, tag = tag }
+end
+
 -- The game's load modes (Line.LoadMode), numbers to the schema's names.
 local LOAD_MODES = { [0] = "LoadIfAvailable", [1] = "FullLoadAny", [2] = "FullLoadAll", [3] = "LegacyUnloadOnly" }
 
 -- A Line component as the schema's LineData.
 function capture.lineData(ctx, line)
 	local stops = each(get(line, "stops"), function(s)
-		if (length(get(s, "waypoints")) or 0) > 0 then error("a line through waypoints", 0) end
+		local waypoints = each(get(s, "waypoints"), capture.waypoint)
 		local config = get(s, "stopConfig")
 		local mode = tonumber(get(s, "loadMode"))
 		return {
@@ -604,6 +700,7 @@ function capture.lineData(ctx, line)
 				destroy_for_config_change = get(config, "destroyForConfigChange") == true,
 				destroy_for_refresh = get(config, "destroyForRefresh") == true,
 			},
+			waypoints = waypoints,
 		}
 	end)
 	local info = get(line, "vehicleInfo")
@@ -669,20 +766,69 @@ function capture.prospect(ctx, param)
 	} }
 end
 
+-- Answering a subsidy offer: the subsidy window's Accept or Decline
+-- (game_mechanics/subventions/subventions_gui.tl sends the subsidy script
+-- `onAccept` or `onDecline` with { uid }), as the offer by its number and
+-- its kind, which `ctx.subsidy(uid)` reads from the subsidy script's offers
+-- as this game has them. Every game checks the offer again when the room
+-- orders it (tpf3mp/companies.lua, acceptSubsidy).
+function capture.subsidy(ctx, name, param)
+	local uid = get(param, "uid")
+	if type(uid) ~= "number" or uid ~= math.floor(uid) then error("a subsidy by no number", 0) end
+	local kind = ctx.subsidy and ctx.subsidy(uid) or nil
+	if type(kind) ~= "string" or kind == "" then error("a subsidy no longer offered", 0) end
+	local ref = { uid = uid, kind = kind }
+	if name == "onAccept" then return { Subsidy = { Accept = ref } } end
+	return { Subsidy = { Decline = ref } }
+end
+
 -- Renaming and recolouring: lines, and the room's companies (the game's
 -- company window renames the player's company by its player entity,
 -- game_mechanics/company/company.tl), which every game checks is the
 -- player's own (tpf3mp/companies.lua).
+-- Anything else an entity window's title renames (gui/entity_window/
+-- view_manager.tl renames whatever entity the window shows), and the line
+-- manager's vehicle names: a vehicle, a station group or a town by its
+-- canonical id, any other construction by its file and place (action::
+-- Renamed). Every game checks the acting company may (tpf3mp/apply.lua).
 function capture.setName(ctx, entity, name)
 	local company = ctx.company and ctx.company(entity)
 	if company ~= nil then return { CompanyOp = { Rename = { company = company, name = name } } } end
-	return { EditLine = { line = named("renaming this", ctx.line(entity)), change = { Rename = name } } }
+	local line = ctx.line(entity)
+	if line ~= nil then return { EditLine = { line = line, change = { Rename = name } } } end
+	local what
+	local vehicle = ctx.vehicle and ctx.vehicle(entity)
+	local group = vehicle == nil and ctx.group and ctx.group(entity) or nil
+	local town = vehicle == nil and group == nil and ctx.town and ctx.town(entity) or nil
+	if vehicle ~= nil then
+		what = { Vehicle = vehicle }
+	elseif group ~= nil then
+		what = { Station = group }
+	elseif town ~= nil then
+		what = { Town = town }
+	else
+		local ok, c = pcall(function()
+			return api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
+		end)
+		local ref = ok and c ~= nil and capture.replaced(c) or nil
+		if ref == nil then error("renaming this", 0) end
+		what = { Construction = ref }
+	end
+	return { Rename = { what = what, name = name } }
 end
 
+-- Recolouring: a line, the room's company, or a vehicle (the vehicle
+-- window's and the line manager's colour buttons, VehicleChange::Recolor).
 function capture.setColor(ctx, entity, color)
 	local company = ctx.company and ctx.company(entity)
 	if company ~= nil then return { CompanyOp = { Recolor = { company = company, color = tintOf(color) } } } end
-	return { EditLine = { line = named("recolouring this", ctx.line(entity)), change = { Recolor = tintOf(color) } } }
+	local line = ctx.line(entity)
+	if line ~= nil then return { EditLine = { line = line, change = { Recolor = tintOf(color) } } } end
+	local vehicle = ctx.vehicle and ctx.vehicle(entity)
+	if vehicle ~= nil then
+		return { VehicleOp = { vehicle = vehicle, change = { Recolor = tintOf(color) } } }
+	end
+	error("recolouring this", 0)
 end
 
 return capture

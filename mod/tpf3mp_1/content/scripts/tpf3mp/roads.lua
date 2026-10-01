@@ -128,7 +128,7 @@ function roads.convert(capture, world)
 		if not (t0 and t1) then return nil, "edge " .. k .. " tangent: " .. tostring(errT0 or errT1) end
 		local link = { from = i1, to = i2, tangent0 = t0, tangent1 = t1, structure = e.structure or "Ground",
 			decorations = e.decorations or {}, locked = e.locked == true, owned = e.owned == true,
-			lanes = e.lanes or {} }
+			lanes = e.lanes or {}, precedence = e.precedence }
 		if capture.explicit or e.network ~= own or e.template ~= ownTemplate or e.style ~= capture.style then
 			if e.network ~= "Street" and e.network ~= "Track" then
 				return nil, "edge " .. k .. " is in no network"

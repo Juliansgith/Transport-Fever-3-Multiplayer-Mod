@@ -104,8 +104,13 @@ A game Steam started has no hook and keeps the plain menu.
     `app.findAllSavegames`, `app.getSavegameInfo`), rules and a password.
     **Your mods** opens from Join, Host and the room: the player's
     installed mods to turn on or off (`choose_mod`), and in a room the
-    room's own and whether the player has each;
-  - in a room: its name, invite and counts, the players with their marks
+    room's own and whether the player has each. **Your banner** opens
+    from the first page: the game's pictures a player shows on their card
+    in a room, and under **Characters** the campaign's portraits this game
+    has ("Portraits" below), both sent as `set_banner`;
+  - in a room: its name, invite (with **Copy**, which the hook puts on
+    the clipboard: `crate::clipboard`) and counts, the players as cards
+    of their banners (a portrait, if they picked one, beside the card) with their marks
     (owner, you, ready, away, other mods) and, for the owner, a Remove
     button that asks first; the chat; **Leave room** (asks first),
     **Ready** or **Not ready**, and, for the owner, **Start the game**,
@@ -185,6 +190,76 @@ name it listed, never a path, finds the file and hands it to the room as
 `--start-save` does (`BridgeOptions::start_world`); a save it cannot find
 creates no room. The launcher's own `--start-save` is offered first, then
 the save last picked.
+
+**Changing the start save in the room** (bridge version 20, protocol 14).
+The Host page keeps its **Start from this save** (the launcher's save or
+the newest picked, or none), so a room usually starts as it was made; the
+room's page shows the save it starts from to everyone and lets its owner
+change it until the game starts:
+
+- The room in the lobby carries `start` (`{ name, map, year, arrived }`,
+  as the room names it to every member: `RoomView::start`; `nil` when the
+  owner's game provides the world) and, for the owner, `upload` (`{ save,
+  percent }` while their pick goes up to the room). Others see the line
+  under **Starts from**: the save's name, its climate and year when the
+  room knows them, and "on its way to the room" until it arrived.
+- The owner sees **Start from this save** instead: the Host page's saves,
+  newest first, the room's own first if it has dropped off the list, and
+  **New world: choose map and settings**. A pick sends
+  `{"action":"choose_start","save":"<name>","map":"<climate>","year":<year>}`
+  (`"save":""` for a new world), with the climate and year the game reads of the
+  save (`lobby.saveDetails`, as the Host page lists a public room); the
+  window waits up to eight polls for them. The launcher takes only a
+  listed name, as Create does, works out the room's shared mods from the
+  save again (`picker::Mods::own_start`), and the room session declares
+  them and hands the save over (`Control::StartWorld`). The room marks
+  everyone not ready, as it replaced the save they agreed to; each guest
+  is told so, and presses Ready again.
+- While the save goes up, the page shows "Sending <save> to the room: N%"
+  with a bar (the share of its chunks served), and **Start the game** is
+  disabled, as it is while the room does not have the save
+  (`arrived` false), with "The save is still on its way to the room".
+- A room made private names its save without a map and year; once the
+  game has read them, the owner's window tells the room once, with the
+  same save (`choose_start` with its name): the room only updates what it
+  shows, and nobody is asked to agree again. The same save picked again,
+  unchanged on disk, is not uploaded again either.
+
+## Portraits
+
+A player may show one of the campaign's characters instead of a banner:
+25 of them, by the name the game gives their picture
+(`tpf3mp_proto::PORTRAITS`, such as `dr_karl_brandt`). The id travels as a
+banner id does (`SetBanner`, protocol 13; bridge version 19), the server
+checks it against the same list, and the launcher remembers it in
+`launcher.json`'s `banner`.
+
+The pictures are the game's own art, so TPF3-MP never ships them, nor
+anything made from them. Each player's launcher makes its own copies at
+startup (`crates/tpf3mp-agent/src/portraits.rs`):
+
+- it reads each campaign mission's `mission.zip` in the player's game
+  (`<game>/mods/release/urbangames_campaign_mission_0N/content/`, N 1 to
+  8) for `mission/dialogue/<id>_neutral.tga` (1024 pixels square), makes
+  each 256 square, and writes it as the game writes its TGAs into the
+  installed mod the game loads (the first `tpf3mp_1` in its mod folders,
+  usually `staging_area/tpf3mp_1`) as
+  `content/gui/tpf3mp/portraits/<id>.tga`, listed in that copy's
+  `_content.json`; the windows load it as
+  `tpf3mp_1::/gui/tpf3mp/portraits/<id>.tga`;
+- it does this once per game build (`portraits/build.txt` names the build
+  they came from): later starts only check the files are there and make
+  any missing ones, as after the mod is installed again. All 25 take
+  about 0.15 s;
+- without the campaign's missions (another build, a game without them) it
+  makes nothing, keeps what it has, and says so in the launcher's log.
+
+The window offers only the portraits the launcher has (`LobbyView::portraits`).
+A room member's portrait reaches either window only when this game has it
+(`portraits::shown`); otherwise the member shows as before, their key's
+banner. A member who picked a portrait shows their key's banner on their
+card, with the portrait square beside it: in the main menu's room and on the
+room page in the game (`tpf3mp/banners.lua`, `portraitOf`).
 
 ## The mod's copies
 

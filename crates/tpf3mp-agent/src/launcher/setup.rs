@@ -299,6 +299,12 @@ impl LauncherArgs {
         let remember = identity_file.with_file_name("launcher.json");
         let remembered = Remembered::load(&remember);
         let build = game_build(self.game_build.as_deref(), installed.as_ref());
+        // The campaign's portraits, from this player's own install into the
+        // installed mod, once per game build (docs/LOBBY.md, "Portraits").
+        match installed.as_ref() {
+            Some(game) => crate::portraits::prepare_installed(&game.dir, &build),
+            None => tracing::info!("portraits: the game is not installed; no portraits"),
+        }
         let split = split_mods(
             &build,
             self.mods.as_deref(),
@@ -352,6 +358,8 @@ impl LauncherArgs {
                 .name
                 .clone()
                 .or(remembered.name)
+                // Unchosen, the player is called what Steam calls them.
+                .or_else(crate::steam::persona_name)
                 .unwrap_or_else(|| "player".to_owned()),
             content: split.manifest,
             mods: split.lists,

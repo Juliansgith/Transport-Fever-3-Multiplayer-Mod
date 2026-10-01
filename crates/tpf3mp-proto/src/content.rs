@@ -29,6 +29,26 @@ pub const MAX_DIFF_LISTED: usize = 32;
 /// project, and names their format.
 const FINGERPRINT_DOMAIN: &[u8] = b"tpf3mp content 1\0";
 
+/// TPF3-MP's own mod, which every game of a room runs. Its version in a
+/// manifest is its `revision`, a `+`, and a fingerprint of the files the
+/// game loads from it (`tpf3mp-agent`'s `own_mod`), so that two copies of
+/// the same revision whose files differ do not match.
+pub const OWN_MOD: &str = "tpf3mp_1";
+
+/// The fingerprint part of a version of [`OWN_MOD`], shortened for players
+/// to compare: what follows the `+`, else the whole version, else "none".
+pub fn own_mod_short(version: &str) -> &str {
+    let fingerprint = version.rsplit_once('+').map_or(version, |(_, after)| after);
+    let end = fingerprint
+        .char_indices()
+        .nth(8)
+        .map_or(fingerprint.len(), |(at, _)| at);
+    match &fingerprint[..end] {
+        "" => "none",
+        short => short,
+    }
+}
+
 /// One mod a game runs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ModRef {
@@ -206,6 +226,19 @@ pub struct ContentDiff {
 impl fmt::Display for ContentDiff {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut parts = Vec::new();
+        // TPF3-MP's own mod first: a copy of it whose files differ runs the
+        // room's actions differently, whatever its revision says.
+        if let Some(own) = self
+            .changed
+            .iter()
+            .find(|change| change.id.as_str() == OWN_MOD)
+        {
+            parts.push(format!(
+                "Your TPF3-MP mod differs from the host's (yours {}, host {}): reinstall the same version",
+                own_mod_short(own.yours.as_str()),
+                own_mod_short(own.room.as_str())
+            ));
+        }
         if let Some(builds) = &self.game {
             parts.push(format!(
                 "the room runs game build {}, you run {}",
@@ -236,10 +269,17 @@ impl fmt::Display for ContentDiff {
                 named(&self.extra, self.extra_total)
             ));
         }
-        if self.changed_total > 0 {
+        // Said above.
+        let own_told = self
+            .changed
+            .iter()
+            .filter(|change| change.id.as_str() == OWN_MOD)
+            .count();
+        if self.changed_total > u32::try_from(own_told).unwrap_or(u32::MAX) {
             let mut text = self
                 .changed
                 .iter()
+                .filter(|change| change.id.as_str() != OWN_MOD)
                 .map(|change| {
                     format!(
                         "{} (the room has {}, you have {})",
@@ -251,7 +291,9 @@ impl fmt::Display for ContentDiff {
             let more = self
                 .changed_total
                 .saturating_sub(u32::try_from(self.changed.len()).unwrap_or(u32::MAX));
-            if more > 0 {
+            if more > 0 && text.is_empty() {
+                text = format!("{more} mods");
+            } else if more > 0 {
                 text.push_str(&format!(" and {more} more"));
             }
             parts.push(format!("other versions: {text}"));
@@ -330,6 +372,42 @@ mod tests {
             "the room runs game build 35924, you run 35925; you lack stations 3; \
              the room lacks trees 2; other versions: trains (the room has 1.2, you have 1.1)"
         );
+    }
+
+    #[test]
+    fn another_copy_of_tpf3mp_itself_is_told_first_and_plainly() {
+        let room = game(
+            "40408",
+            &[("trains", "1.2"), (OWN_MOD, "1+0123456789abcdef")],
+        );
+        let same = game(
+            "40408",
+            &[("trains", "1.2"), (OWN_MOD, "1+0123456789abcdef")],
+        );
+        assert_eq!(room.compare(&same), None, "the same files match");
+        let yours = game(
+            "40408",
+            &[("trains", "1.1"), (OWN_MOD, "1+fedcba9876543210")],
+        );
+        assert_ne!(room.fingerprint(), yours.fingerprint());
+        assert_eq!(
+            room.compare(&yours).unwrap().to_string(),
+            "Your TPF3-MP mod differs from the host's (yours fedcba98, host 01234567): \
+             reinstall the same version; other versions: trains (the room has 1.2, you have 1.1)"
+        );
+        // Only TPF3-MP differs: that alone is said.
+        let only = game(
+            "40408",
+            &[("trains", "1.2"), (OWN_MOD, "1+fedcba9876543210")],
+        );
+        assert_eq!(
+            room.compare(&only).unwrap().to_string(),
+            "Your TPF3-MP mod differs from the host's (yours fedcba98, host 01234567): \
+             reinstall the same version"
+        );
+        // An agent before fingerprints declares the revision alone.
+        assert_eq!(own_mod_short("1"), "1");
+        assert_eq!(own_mod_short(""), "none");
     }
 
     #[test]

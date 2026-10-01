@@ -31,15 +31,15 @@ pub use bounded::{BoundedVec, TooMany};
 pub use bytes::{FixedBytes, MAX_PAYLOAD, Payload, PayloadTooLarge};
 pub use content::{
     ContentDiff, ContentManifest, GameBuilds, MAX_DIFF_LISTED, MAX_LISTED_MODS, MAX_MANIFEST_BYTES,
-    ModChange, ModId, ModRef, ModVersion, Unlisted,
+    ModChange, ModId, ModRef, ModVersion, OWN_MOD, Unlisted, own_mod_short,
 };
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
     ContentFingerprint, CreateRoom, GameMessage, Hello, IntentRejection, JoinRoom, LaneDigest,
-    ListedRoom, MAX_CHECKPOINT_LANES, MAX_ROOM_MEMBERS, MemberView, ROOMS_PER_PAGE, Reject,
-    RejectReason, Request, RequestError, Response, Resume, RoomListing, RoomPage, RoomPhase,
-    RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage, Speed, Welcome,
-    is_banner,
+    ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_ROOM_MEMBERS, MemberView, PORTRAITS,
+    ROOMS_PER_PAGE, Reject, RejectReason, Request, RequestError, Response, Resume, RoomListing,
+    RoomPage, RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage,
+    Speed, StartSave, StartView, Welcome, is_banner, is_portrait,
 };
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText,
@@ -67,8 +67,15 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// ([`Request::ListRooms`], [`CreateRoom::listing`]); version 10 carries
 /// each member's banner ([`Request::SetBanner`], [`MemberView::banner`]);
 /// version 11 a room's play style ([`CreateRoom::competitive`],
-/// [`RoomView::competitive`]).
-pub const PROTOCOL_VERSION: u32 = 11;
+/// [`RoomView::competitive`]); version 12 each member's loading progress
+/// ([`GameMessage::Loading`], [`MemberView::loading`]); version 13 lets a
+/// player show a campaign character's portrait ([`PORTRAITS`]) as their
+/// banner, with banner ids of up to 32 bytes ([`BannerId`]); version 14
+/// lets the owner change or clear the world the room starts from while it
+/// is in its lobby, names that save to every member
+/// ([`Request::StartWorld`]'s `save`, [`Request::ClearStartWorld`],
+/// [`RoomView::start`]) and marks everyone not ready when it changes.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
@@ -273,6 +280,16 @@ mod tests {
         let frame = encode_frame(&progress, CONTROL_MAX_FRAME).unwrap();
         // Game variant, Progress variant, varint 300.
         assert_eq!(frame, [4, 0, 0, 0, 2, 1, 0xac, 0x02]);
+        // Version 12: a member's loading progress, the last variant.
+        let loading = ClientMessage::Game(GameMessage::Loading(Some(LoadingStage::Fetching {
+            percent: 42,
+        })));
+        let frame = encode_frame(&loading, CONTROL_MAX_FRAME).unwrap();
+        assert_eq!(
+            payload(&frame),
+            [2, 4, 1, 0, 42],
+            "Game, Loading, Some, Fetching, percent"
+        );
         // Version 8: an intent carries an optional secret after its payload.
         let intent = ClientMessage::Game(GameMessage::Intent {
             client_seq: 1,
@@ -421,5 +438,23 @@ mod tests {
         let mut settings = RoomSettings::DEFAULT;
         settings.steps_per_second = 0;
         assert!(!settings.is_valid());
+    }
+
+    /// Version 13: every portrait id is a banner id that fits, apart from
+    /// the banners, so either travels as one `SetBanner`.
+    #[test]
+    fn portraits_are_banner_ids_of_their_own() {
+        for id in PORTRAITS {
+            assert!(is_banner(id) && is_portrait(id), "{id}");
+            assert!(!BANNERS.contains(id), "{id} is a banner too");
+            assert!(BannerId::new(*id).is_ok(), "{id} is too long");
+            assert!(
+                id.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{id} is a file name"
+            );
+        }
+        assert_eq!(PORTRAITS.len(), 25);
+        assert!(!is_banner("none"), "the dialogue's empty speaker");
+        assert!(!is_portrait(BANNERS[0]));
     }
 }

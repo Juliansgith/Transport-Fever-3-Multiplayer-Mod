@@ -48,6 +48,9 @@
 -- Pure Lua against the game's `api` and a `send` that runs a command at once
 -- and returns its data (tpf3mp/apply.lua); the tests give it fakes.
 
+local acceptance = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/acceptance.lua")
+    or require("tpf3mp.acceptance")
+
 local companies = {}
 
 -- The most companies a room keeps at once.
@@ -213,6 +216,177 @@ function companies.ownerOf(api, entity)
 	local owner = c.player
 	if type(owner) ~= "number" or owner < 0 then return nil end
 	return owner
+end
+
+-- Headquarters, one a company (DECISIONS.md, D22, proposed; docs/HOOKS.md,
+-- "Headquarters"). Transport Fever 3 keeps one headquarters a player: its
+-- PLAYER component names it (`headquarters`), and its headquarters permit
+-- is one at rank 1 (`permitKeys/hq.res.lua`). But the game counts a
+-- permit's constructions in the whole world, whoever owns them
+-- (`company_util.countUsedConstructionPermits` and the construction menu's
+-- `getConstructionDisableCacheData`, game_mechanics/company/company_util.tl,
+-- build 40408): once one company has its headquarters, every other
+-- company's menu says "Already Built" and its tool "All 1 Permits Used Up".
+
+-- The construction file names whose company metadata says they are
+-- headquarters (`metadata.company.headquarters`, as
+-- landmarks/hq/headquarter.con declares it), as the game's construction
+-- resources say; nil where this game cannot tell.
+local hqFiles = {}
+function companies.isHeadquarters(api, file)
+	if type(file) ~= "string" then return nil end
+	if hqFiles[file] ~= nil then return hqFiles[file] end
+	local ok, hq = pcall(function()
+		local id = api.res.constructionRep.find(file)
+		if type(id) ~= "number" or id < 0 then return nil end
+		local meta = api.res.constructionRep.get(id).metadata
+		local company = meta and meta.company
+		return type(company) == "table" and company.headquarters == true
+	end)
+	if not ok or hq == nil then return nil end
+	hqFiles[file] = hq
+	return hq
+end
+
+-- The headquarters construction `company` (a player entity) owns, if any;
+-- nil and why where this game cannot tell. The same in every game: the
+-- same world, the same owners.
+function companies.headquartersOf(api, company)
+	local found, unknown = nil, nil
+	local ok, why = pcall(api.engine.forEachEntityWithComponent, function(e)
+		if found then return end
+		if companies.ownerOf(api, e) ~= company then return end
+		local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+		local hq = c and companies.isHeadquarters(api, c.fileName)
+		if hq == nil then unknown = c and c.fileName or e
+		elseif hq then found = e end
+	end, api.type.ComponentType.CONSTRUCTION)
+	if not ok then return nil, "this game cannot list the constructions: " .. tostring(why) end
+	if found == nil and unknown ~= nil then
+		return nil, "this game cannot tell whether " .. tostring(unknown) .. " is a headquarters"
+	end
+	return found
+end
+
+-- Whether `company` may build the construction `file`: anything but a
+-- headquarters, and a headquarters while it has none. Else false and why.
+-- Every game checks it when the room orders the build.
+function companies.mayBuild(roster, company, file, api)
+	local hq = companies.isHeadquarters(api, file)
+	if hq == nil then return true end
+	if not hq then return true end
+	local have, why = companies.headquartersOf(api, company)
+	if why then return false, why end
+	if have then
+		local c = roster and companies.byEntity(roster, company)
+		return false, (c and c.name or "the company") .. " has its headquarters already"
+	end
+	return true
+end
+
+-- In a GUI Lua state: the game's permit counts count what the player's
+-- company owns (PLAYER_OWNED, the company `api.engine.util.getPlayer()`
+-- answers there, tpf3mp/follow.lua), not the whole world's, while the room
+-- has more than one company (`several()`); with one, the game's own. The
+-- same counting as the game's, owner aside; what cannot be counted by
+-- owner is counted as the game counts it. The game loads company_util as
+-- "/game_mechanics/..." and as "::/game_mechanics/...": each table either
+-- gives is changed, once. Returns how many tables it changed, or nil and
+-- why.
+function companies.followPermits(api, require_, several)
+	local okM, meta = pcall(require_, "/game_mechanics/company/company_metadata.tl")
+	if not (okM and type(meta) == "table" and type(meta.getKey) == "function") then
+		return nil, "the game's company_metadata did not load: " .. tostring(meta)
+	end
+	local function mine(entity)
+		local ok, me = pcall(function() return api.engine.util.getPlayer() end)
+		return ok and companies.ownerOf(api, entity) == me
+	end
+	local function each(withInstances, fn)
+		api.engine.system.streetConnectorSystem.forEachConstructionWithMetadata(meta.getKey(), true, withInstances,
+			function(entity, construction, id)
+				if mine(entity) then fn(entity, construction, id) end
+			end)
+	end
+	local function wrap(util)
+		local count, cache = util.countUsedConstructionPermits, util.getConstructionDisableCacheData
+		util.countUsedConstructionPermits = function(keys, ...)
+			local ok, more = pcall(several)
+			if not (ok and more) then return count(keys, ...) end
+			local used = {}
+			local counted = pcall(each, false, function(_, construction, id)
+				local m = api.res.constructionRep.get(id).metadata
+				local key = m and util.getActualPermitKey(construction.fileName, m)
+				if key then used[key] = 1 + (used[key] or 0) end
+			end)
+			if not counted then return count(keys, ...) end
+			return used
+		end
+		util.getConstructionDisableCacheData = function(defs, ...)
+			local result = cache(defs, ...)
+			local ok, more = pcall(several)
+			if not (ok and more) or type(result) ~= "table" then return result end
+			local data = {}
+			local function add(key)
+				local entry = data[key]
+				if entry then entry.numBuilt = entry.numBuilt + 1 else data[key] = { numBuilt = 1 } end
+			end
+			local counted = pcall(each, true, function(_, construction)
+				if construction.fileName ~= nil then
+					add(construction.fileName)
+					local instance = meta.constructionInstance and meta.constructionInstance.get(construction.persistentMetadata)
+					if instance and instance.permitKey then add(instance.permitKey) end
+				end
+			end)
+			if counted then result.data = data end
+			return result
+		end
+		util.tpf3mpOwnPermits = true
+	end
+	local changed, already, why, seen = 0, 0, nil, {}
+	for _, path in ipairs({ "/game_mechanics/company/company_util.tl", "::/game_mechanics/company/company_util.tl" }) do
+		local ok, util = pcall(require_, path)
+		if ok and type(util) == "table" and seen[util] then
+			-- The same table under its other name.
+		elseif ok and type(util) == "table" and type(util.countUsedConstructionPermits) == "function"
+				and type(util.getConstructionDisableCacheData) == "function" then
+			seen[util] = true
+			if not util.tpf3mpOwnPermits then
+				wrap(util)
+				changed = changed + 1
+			else
+				already = already + 1
+			end
+		else
+			why = why or ("the game's company_util did not load: " .. tostring(util))
+		end
+	end
+	-- Another GUI state of the same Lua state changed it first: it counts
+	-- each company's own already.
+	if changed == 0 and already > 0 then return already end
+	if changed == 0 then return nil, why or "the game's company_util did not load" end
+	return changed + already
+end
+
+-- What each live company owns, as the engine records it (PLAYER_OWNED), in
+-- one line for hook.log: its constructions and its headquarters. Read
+-- only. Written once a world is up, so a world loaded from a save says
+-- whether its owners came back with it (a company owning nothing it
+-- built is an owner lost); nil where this game cannot list them.
+function companies.ownership(roster, api)
+	local counts = {}
+	local ok = pcall(api.engine.forEachEntityWithComponent, function(e)
+		local owner = companies.ownerOf(api, e)
+		if owner then counts[owner] = (counts[owner] or 0) + 1 end
+	end, api.type.ComponentType.CONSTRUCTION)
+	if not ok then return nil end
+	local out = {}
+	for _, c in ipairs(companies.live(roster)) do
+		local hq = companies.headquartersOf(api, c.entity)
+		out[#out + 1] = tostring(c.name) .. " #" .. c.id .. " (entity " .. tostring(c.entity) .. "): "
+			.. (counts[c.entity] or 0) .. " construction(s)" .. (hq and (", headquarters " .. hq) or "")
+	end
+	return table.concat(out, "; ")
 end
 
 -- Whether `company` (a player entity) may change `entity`: what no company
@@ -483,10 +657,19 @@ function companies.borrow(roster, id, terms, send, api)
 	return true
 end
 
--- Company `id` pays loan `loanId` back, all that is still owed.
-function companies.repay(roster, id, loanId, send, api)
+-- Company `id` pays its loan back, all that is still owed.
+-- `terms` names the loan by its id and amount: the game's finance window
+-- lists the loan script's loans, the room's first company's, whose ids
+-- count from 0 as the room's own count from 1, so an id alone could name
+-- another loan of this company's; one whose amount differs is refused.
+function companies.repay(roster, id, terms, send, api)
+	local loanId = type(terms) == "table" and terms.id or nil
+	local amount = type(terms) == "table" and tonumber(terms.amount) or nil
 	for i, loan in ipairs(roster.loans or {}) do
 		if loan.id == loanId and loan.company == id then
+			if amount ~= loan.amount then
+				return false, "that loan is not this company's: its own are in the Multiplayer window"
+			end
 			local c = companies.find(roster, id)
 			book(api, send, c.entity, -loan.remaining, "LOAN")
 			table.remove(roster.loans, i)
@@ -529,6 +712,211 @@ end
 function companies.due(roster, month)
 	return type(roster) == "table" and type(month) == "number" and roster.month ~= nil
 		and month > roster.month and #(roster.loans or {}) > 0
+end
+
+-- ------------------------------------------------------------- subsidies
+--
+-- The game's subsidy script (::/game_mechanics/subventions/subventions.gs,
+-- build 40408's subventions.script.tl) draws the offers in every game alike:
+-- in its update, from the world and the game time, its math.random reseeded
+-- per call by the hook (docs/HOOKS.md, "Seeds, as built"). It keeps them in
+-- its state, offered (`proposedSubventions`), taken (`activeSubventions`),
+-- completed and failed, each by its number (`uid`) and its kind (`id`, the
+-- subsidy resource). Accepting moves an offer to the taken and books its
+-- money up front; the script books the money for completing it, or the
+-- penalty for failing it, itself, months later. It books all of it to the
+-- save's own player (subvention_util.tl, applyBonusMalus: getPlayer()),
+-- which in a game script's state is the room's first company.
+--
+-- So a subsidy another company takes is the room's to settle: every game
+-- moves what the script booked to the first company on to the company that
+-- took it, as SUBSIDY journal entries (the first company's books show the
+-- money in and out again, so they net to nothing), at accepting and when the
+-- script completes or fails it, at the same update in every game.
+--
+--   roster.subsidies = { { uid =, kind =, company =, state = "taken" |
+--                          "completed" }, ... }
+--   roster.subsidyDay = the last game day the subsidies were settled
+
+companies.SUBSIDY_SCRIPT = "::/game_mechanics/subventions/subventions.gs"
+
+-- The subsidy script's lists, and what each says of a subsidy in it.
+local SUBSIDY_LISTS = {
+	{ "proposedSubventions", "offered" },
+	{ "activeSubventions", "taken" },
+	{ "completedSubventions", "completed" },
+	{ "failedSubventions", "failed" },
+}
+
+-- The subsidy script's state as the game keeps it, or nil.
+function companies.subsidyState(api)
+	local ok, state = pcall(function()
+		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(companies.SUBSIDY_SCRIPT)
+		if type(entity) ~= "number" or entity < 0 then return nil end
+		local c = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+		return c and c.state
+	end)
+	if ok and type(state) == "table" then return state end
+	return nil
+end
+
+-- Where the subsidy `uid` is in the script's `state`: "offered", "taken",
+-- "completed" or "failed", and the subsidy, the first the script would find
+-- under that number; and how many offers share the number. Nil when it is
+-- in none.
+function companies.findSubsidy(state, uid)
+	if type(state) ~= "table" or type(uid) ~= "number" then return nil end
+	local found, where, offers = nil, nil, 0
+	for _, list in ipairs(SUBSIDY_LISTS) do
+		for _, s in ipairs(type(state[list[1]]) == "table" and state[list[1]] or {}) do
+			if type(s) == "table" and s.uid == uid then
+				if list[2] == "offered" then offers = offers + 1 end
+				if found == nil then found, where = s, list[2] end
+			end
+		end
+	end
+	return where, found, offers
+end
+
+-- The money a subsidy's bonuses or penalties book (`list`, the script's
+-- SubventionBonusMalus list): the sum of the Money ones' amounts, as the
+-- script floors them.
+function companies.subsidyMoney(list)
+	local sum = 0
+	for _, b in ipairs(type(list) == "table" and list or {}) do
+		local amount = type(b) == "table" and b.type == "Money" and type(b.params) == "table" and b.params.amount
+		if type(amount) == "number" then sum = sum + math.floor(amount) end
+	end
+	return sum
+end
+
+-- The record of subsidy `uid` of kind `kind` the room keeps, and its index.
+local function subsidyRecord(roster, uid, kind)
+	for i, r in ipairs(roster.subsidies or {}) do
+		if r.uid == uid and r.kind == kind then return r, i end
+	end
+	return nil
+end
+
+-- Moves `amount` of subsidy money the script booked to the first company on
+-- to company `c` (a negative amount, a penalty, back from it).
+local function moveSubsidy(roster, c, amount, send, api)
+	local first = companies.find(roster, 0)
+	if amount == 0 or not c or c.id == 0 or not first then return end
+	book(api, send, first.entity, -amount, "SUBSIDY")
+	book(api, send, c.entity, amount, "SUBSIDY")
+end
+
+-- Checks that the offer `ref` ({ uid, kind }) can be answered: returns the
+-- subsidy, or nil and why, the same in every game.
+local function offered(roster, ref, state)
+	if type(ref) ~= "table" or type(ref.uid) ~= "number" or type(ref.kind) ~= "string" then
+		return nil, "a subsidy by its number and kind"
+	end
+	if state == nil then return nil, "this game has no subsidy script" end
+	local where, s, offers = companies.findSubsidy(state, ref.uid)
+	if s == nil then return nil, "the subsidy is no longer offered" end
+	if s.id ~= ref.kind then return nil, "the subsidy under that number is another one" end
+	if where ~= "offered" then
+		local r = subsidyRecord(roster, ref.uid, ref.kind)
+		local taker = r and companies.find(roster, r.company)
+		if where == "taken" then
+			return nil, "the subsidy was taken already, by " .. (taker and taker.name or "the room's first company")
+		end
+		return nil, "the subsidy is " .. where .. " already"
+	end
+	if offers > 1 then return nil, "two offers share that number" end
+	return s
+end
+
+-- Company `id` takes the subsidy offer `ref`: `sendEvent()` sends the
+-- script's own onAccept, which runs at once and books the money up front
+-- to the first company; for another company, every game moves it on.
+-- Returns true, or false and why; nothing changes when it returns false.
+function companies.acceptSubsidy(roster, id, ref, state, sendEvent, send, api)
+	local c = companies.find(roster, id)
+	if not c or c.gone then return false, "there is no such company" end
+	local s, why = offered(roster, ref, state)
+	if not s then return false, why end
+	local upfront = companies.subsidyMoney(type(s.data) == "table" and s.data.upfront)
+	sendEvent()
+	moveSubsidy(roster, c, upfront, send, api)
+	roster.subsidies = roster.subsidies or {}
+	local kept = {}
+	for _, r in ipairs(roster.subsidies) do
+		if not (r.uid == ref.uid and r.kind == ref.kind) then kept[#kept + 1] = r end
+	end
+	kept[#kept + 1] = { uid = ref.uid, kind = ref.kind, company = id, state = "taken" }
+	roster.subsidies = kept
+	return true
+end
+
+-- Declines the subsidy offer `ref`, for every company: `sendEvent()` sends
+-- the script's own onDecline. Returns true, or false and why.
+function companies.declineSubsidy(roster, ref, state, sendEvent)
+	local s, why = offered(roster, ref, state)
+	if not s then return false, why end
+	sendEvent()
+	return true
+end
+
+-- The game day now, counted from the game's start; nil where the game does
+-- not say.
+function companies.dayNow(api)
+	local ok, day = pcall(function()
+		local gt = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME)
+		local length = api.util.getDefaultDayDuration()
+		if type(length) ~= "number" or length <= 0 or type(gt.gameTime) ~= "number" then return nil end
+		return math.floor(gt.gameTime / length)
+	end)
+	if ok then return day end
+	return nil
+end
+
+-- Whether another company's subsidies are to be settled: one it took is
+-- still open, and a game day has begun since the last settled.
+function companies.subsidiesDue(roster, day)
+	if type(roster) ~= "table" or type(day) ~= "number" then return false end
+	if roster.subsidyDay ~= nil and day <= roster.subsidyDay then return false end
+	for _, r in ipairs(roster.subsidies or {}) do
+		if r.company ~= 0 and r.state == "taken" then return true end
+	end
+	return false
+end
+
+-- Settles the subsidies the room keeps against the script's `state`: a
+-- subsidy another company took that the script completed has its reward
+-- moved on to that company, one that failed its penalty; one the script no
+-- longer has, or one settled for good, is forgotten. Returns what it did,
+-- as lines for the log.
+function companies.settleSubsidies(roster, state, day, send, api)
+	if not acceptance.subsidies then return end
+	local said, kept = {}, {}
+	if type(state) ~= "table" then return said end
+	roster.subsidyDay = day
+	for _, r in ipairs(roster.subsidies or {}) do
+		local where, s = companies.findSubsidy(state, r.uid)
+		local c = companies.find(roster, r.company)
+		local keep = s ~= nil and s.id == r.kind and where ~= "failed"
+		if s ~= nil and s.id == r.kind and c and not c.gone and c.id ~= 0 and r.state == "taken" then
+			local data = type(s.data) == "table" and s.data or {}
+			if where == "completed" then
+				local amount = companies.subsidyMoney(data.complete)
+				moveSubsidy(roster, c, amount, send, api)
+				r.state = "completed"
+				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name .. ": " .. amount
+			elseif where == "failed" then
+				local amount = companies.subsidyMoney(data.failure)
+				moveSubsidy(roster, c, -amount, send, api)
+				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name .. ": -" .. amount
+			end
+		end
+		-- Completed, it stays the company's in the script for years: kept
+		-- so a second accept names who took it.
+		if keep then kept[#kept + 1] = r end
+	end
+	roster.subsidies = kept
+	return said
 end
 
 -- Applies one `CompanyOp` for `player`. `send(command)` runs a command at

@@ -1,5 +1,10 @@
 # The native hook
 
+Acceptance status: subsidy, entity rename/recolour and waypoint mechanics
+described below are implemented but disabled by `tpf3mp/acceptance.lua`.
+They are refused on submission and replay until ordinary two-player game
+acceptance. See [COVERAGE.md](COVERAGE.md) for the selected integration.
+
 The native hook is the small library that runs *inside* the game process. It
 captures and cancels player commands, gates the simulation step, controls speed
 and save/load, and talks to the [agent](ARCHITECTURE.md#components) over
@@ -378,7 +383,12 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     rooms last asked for (`rooms`). Since version 16 each member carries the banner they
     picked, and the view the player's own (`banner`); `SetBanner` sets it
     (`set_banner` from the window, empty for the default). Since version 17 the room, the
-    room list and create carry the play style (`competitive`). Since bridge version 15 it carries the
+    room list and create carry the play style (`competitive`). Since version 18 each member
+    carries where their game is with the room's world while it comes in (`loading`:
+    `fetching` with a `percent`, or `loading`, in the window's state). Since version 19 it
+    carries the campaign portraits this game has (`portraits`, LOBBY.md "Portraits"), and a
+    banner id of up to 32 bytes may name one; a member's portrait this game lacks is left
+    out, for their default. Since bridge version 15 it carries the
     server's address (`server_address`) and the launcher's default server
     (`server_default`), for the server setting.
   - `End`: the session is over. Sent only once the room's game has begun:
@@ -437,6 +447,11 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     or empty for the launcher's default; the launcher checks, remembers
     and reconnects, and refuses it in a room (D12, proposed amendment).
     Connect still names no server, and an invite never switches it.
+    Since version 20, `ChooseStart { save, map, year }` is the room
+    owner's pick of the save the room starts from, in its lobby (empty
+    for none; LOBBY.md, "Changing the start save in the room"), and the
+    lobby's room carries the save it starts from and the owner's upload
+    of it.
   - `Log`: a line for the agent's log.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
@@ -892,7 +907,10 @@ money, ran in the game script's `postUpdate`.
   `makeScriptingSendEventCmd("", "Companies", "spawnIndustry", {
   companyEntity, townEntity, types, permitKey, cargoType })`, with the
   player's company, the town the registry names, and the industry types in
-  the order the action carries them ("Prospecting" below).
+  the order the action carries them ("Prospecting" below);
+- `Subsidy`: the subsidy script's own event, `makeScriptingSendEventCmd("",
+  "Subvention", "onAccept" | "onDecline", { uid })`, once every game has
+  checked the offer against its own script's state ("Subsidies" below).
 
 Every other action is refused with a line in `hook.log`, the same on every
 game, so the worlds stay alike. The native build tools come next.
@@ -1145,7 +1163,15 @@ reference of its own to either. Once linked, the GUI wraps every
   line, the line manager made a second line at the next stop clicked (seen
   on build 40408). So an answer waits until the GUI's world has the entity
   it names (`api.engine.entityExists`; the game script made it in the
-  simulation), a few seconds at most, and answers keep their order; a
+  simulation) and, for a bought vehicle or a new line, until the game
+  script's state the GUI reads names it by its id (`guard.NAMED`): that
+  state reaches the GUI after the entity, and the store's "buy and put on
+  a line" sent its line assignment in between, which no game could name
+  ("a vehicle the room cannot name", 2026-09-30). Each answer waits on its
+  own entity for up to 20 seconds by the clock, counted from when it is the
+  one waited on (`guard.HOLD_SECONDS`; a frame count ran out before the GUI
+  named a burst of five vehicles, 2026-10-01), and answers keep their
+  order; a
   command that should have made something and made nothing the game could
   name is answered as failed, which the windows handle. With both, a new
   line took its stops one by one as in single player (build 40408). So
@@ -1161,8 +1187,17 @@ reference of its own to either. Once linked, the GUI wraps every
     "Companies", "applyLevel", { level })`, as an `ApplyRank` action
     ("Company ranks" below). The company's other events (greening an
     industry, `MakeGreen`; a marketing campaign) stay refused;
+  - answering a subsidy offer, the subsidy window's
+    `makeScriptingSendEventCmd("", "Subvention", "onAccept" | "onDecline",
+    { uid })`, as a `Subsidy` action naming the offer by its number and
+    its kind, read from the subsidy script's offers as this game has them
+    (`capture.subsidy`); an offer this game no longer has is refused at
+    the click ("a subsidy no longer offered"). A refusal by the room is
+    told the player in the game bar;
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
-    file and position, the consist part by part, as the store configured
+    file and position and its index among that construction's depots, an
+    airport's second hangar say; a depot no street reaches by the
+    construction that lists it; the consist part by part, as the store configured
     it), selling, putting on a line, and the vehicle window's stop, start,
     to the depot (sold there or not), reverse and depart; replacing
     (`makeVehicleReplaceCmd`, the vehicle window's "modify" and the store's
@@ -1183,8 +1218,16 @@ reference of its own to either. Once linked, the GUI wraps every
     field, so the same entity is INFERRED), before the registry's sync
     would retire it;
   - lines: creating, changing (the line whole, as the line manager built
-    it: stops, terminals, loading rules), deleting, renaming and
-    recolouring;
+    it: stops, terminals, loading rules, waypoints), deleting, renaming and
+    recolouring. A waypoint on a street or track names its lane by the
+    edge's ends, node 0 first, or by the construction whose network it is
+    in, with the lane's index and the place along it; a game whose edge
+    runs the other way refuses the line rather than guess. A ship's or
+    aircraft's waypoint in the open goes by its position;
+  - renaming a vehicle, a station, a town or another construction in its
+    window's title or the line manager, and a vehicle's colour, as `Rename`
+    (by canonical id, a construction by its file and place) and `VehicleOp`
+    `Recolor`; every game checks the acting company may;
   - a construction's edit sent from its window
     (`makeWorldBuildProposalCmd` with the game's replacement proposal), as
     a `BuildConstruction` that replaces it ("The build tools" below).
@@ -1215,6 +1258,22 @@ reference of its own to either. Once linked, the GUI wraps every
   game bar shows "Not in multiplayer yet: …" for a few seconds, and
   `hook.log` gets a line for the first refusal of each kind and every
   hundredth after.
+
+The GUI runs in more than one Lua state, each with an `api.cmd` of its
+own ("Companies" below). The one the game renders its React recipes in
+gets the same guard (`tpf3mp/hudguard.lua`, installed from
+`gui/tpf3mp/gui_state.script.lua`), so no window sends a command past the
+room from either state ([COVERAGE.md](COVERAGE.md), U1). The room's
+answers (`results()`) have one reader, the plugin's state, so there a
+command handed to the room is answered as sent, and a command whose window
+waits on what it made (`guard.RESULT`: a purchase, a new line, a
+replacement) sent with a callback is refused, `a window that waits on what
+it made, in a Lua state the room's answers do not reach`. That state has
+no frame the mod runs in: the callbacks the guard defers run from the
+HUD's next reads of the player's company, two clock ticks on. hook.log:
+`the guard is on N command factories in the HUD's state`, and each
+refusal there `... in the HUD's state: <why>`. Which windows render in that
+state is not known on build 40408; the log says if any sends a command.
 
 Before the room begins, and after it ends, every command is sent as it
 would be, and every tool builds. A kind the room comes to carry is
@@ -1259,8 +1318,38 @@ state, which the game saves with the world:
   entry, `makeJournalBookAssetCmd`, which raises the account's balance and
   loan alike, seen on build 40408), and paid back each month of the game's
   calendar as an annuity, the interest as `INTEREST` and the rest as
-  `LOAN`, or all at once. The game script books the months since the last
+  `LOAN`, or all at once. Each company pays its own loans only. Paying
+  one back names it by its id and amount: the game's finance window lists
+  the loan script's loans, the room's first company's, whose ids count
+  from 0 as the room's count from 1, so another company's Repay there is
+  refused unless the amount is its own loan's too. The game script books the months since the last
   on the first update of a new month, in every game alike.
+- *Subsidies.* The game's subsidy script
+  (`::/game_mechanics/subventions/subventions.gs`) draws its offers in
+  every game alike: in its `update`, from the world and the game time,
+  with `math.random` reseeded per call ("Seeds, as built"); INFERRED from
+  its code (build 40408), not yet compared between games. Offers belong to
+  no company. Accepting one (`Subsidy::Accept`) is checked by every game
+  against its script's state first: the offer under that number must
+  still be offered, of the kind the action names, and the only offer under
+  that number; else it is refused, alike in every game, naming who took
+  it ("the subsidy was taken already, by Rival"). So when two companies
+  accept one offer in the same step, the first in the room's order gets
+  it. Then the script's own `onAccept` runs, which books the money up
+  front. The script books every amount, up front, the reward for
+  completing and the penalty for failing, to `getPlayer()`, the room's
+  first company in a game script's state (`subvention_util.tl`,
+  `applyBonusMalus`). For a subsidy another company took, every game moves
+  each amount on to that company as `SUBSIDY` journal entries (out of the
+  first company's account and into the taker's): the money up front at
+  once, and the reward or penalty on the first update of the game day
+  after the script completed or failed it, while the room keeps a record
+  of who took which (`roster.subsidies`), saved with the world. Declining
+  (`Subsidy::Decline`) runs the script's `onDecline`: the offer is gone for
+  every company, as in single player. Not carried: the script counts any
+  company's deliveries towards a subsidy, and its reputation and town
+  growth bonuses are the towns', as the game has them; the pace of new
+  offers follows the first company's rank (`subventions.script.tl`).
 - *Colours.* With more than one company, a vehicle bought is painted in its
   company's colour (`makeEntitySetColorCmd`), and a new colour repaints the
   company's vehicles, in the engine's own order. With one company the
@@ -1485,6 +1574,69 @@ one line per town someone carried for, then one per company. Compare the
 lines of the same game time across the games: any difference is a
 divergence.
 
+### Headquarters
+
+What the game does (build 40408, its scripts): a headquarters is the
+construction `landmarks/hq/headquarter.con`, whose company metadata says
+`headquarters = true` and names the permit `permitKeys/hq.res`, one at
+rank 1. The engine keeps one headquarters a player entity, its `PLAYER`
+component's `headquarters` (`api/tealdef/api/engine.d.tl`), which the
+game's capital town reads (`town_util.isCapital`, for `getPlayer()`).
+But the game counts a permit's constructions over the whole world,
+whoever owns them: the construction menu's
+`company_util.getConstructionDisableCacheData` (its `numBuilt`, "Already
+Built") and the tool's `company_util.countUsedConstructionPermits`
+("All 1 Permits Used Up"), both through
+`streetConnectorSystem.forEachConstructionWithMetadata`. So once one
+company had its headquarters, no other company could build one
+(2026-10-01, three players).
+
+What the mod does, with more than one company in the room:
+
+- **Every game** refuses a second headquarters of the same company when
+  the room orders it (`companies.mayBuild`, from `apply.lua`'s
+  `BuildConstruction`): "<company> has its headquarters already". What
+  counts is a construction whose resource's metadata says headquarters
+  and which the acting company owns (`PLAYER_OWNED`). An edit of the
+  headquarters (its modules, `replaces`) is no second one. A construction
+  this game cannot tell is refused with why.
+- **In both GUI states** (the plugin's and the HUD's), the two
+  `company_util` functions count the player's company's constructions
+  only (`companies.followPermits`; the module as the game loads it under
+  both `/game_mechanics/...` and `::/game_mechanics/...`): the menu
+  offers each company its own headquarters, and its upgrades by its own
+  rank. With one company, the game's own counts. `hook.log`: `the game's
+  permits count each company's own constructions (N company_util
+  table(s))`, and the same `in the HUD's state`.
+- After a headquarters is built, every game logs what the engine made of
+  it: `headquarters for company entity <e>: its PLAYER names <entity>`
+  (INFERRED that the engine sets `headquarters` for the paying company's
+  player entity; this line says, in a real game).
+
+Once a world is up, with more than one company, each game logs what each
+company owns as the engine records it, read only: `ownership: <company>
+#<id> (entity <e>): N construction(s), headquarters <entity>; ...`. A world
+loaded from a save that shows a company owning nothing it built has lost
+its owners in the save.
+
+The game's own tools act as the save's player, not the player's company:
+its street, track and construction tools put the engine's player
+(`playerEntity`, the room's first company) in their proposals whatever
+company the player plays for, so a company's own stops and stations are
+another player's to them (no snapping), and the HQ's Configure opens the
+native module builder under the same player (its button shows for every
+headquarters: `perk.tl` gates it on `isHeadquarters` alone, and its click
+on `entity_util.isOwnedByPlayer`, which the mod answers). Not solved yet:
+see the investigation of the engine's player in
+[investigation/TF3_LOCAL_PLAYER_2026-10-01.md](../investigation/TF3_LOCAL_PLAYER_2026-10-01.md).
+
+Not per company, as the game has no way to ask for another company's:
+`api.engine.util.headquarters.getTransportedData()` and
+`getCompaniesValue()` take no company and answer for the engine's local
+player, the room's first company; the windows that show them (the game
+bar's transported figures, the finance window's company value) show that
+company's for everyone.
+
 ### The build tools
 
 The street, track and construction tools are native: a click queues a
@@ -1662,7 +1814,21 @@ hook, and a construction's window its edits:
   their ends. The replay removes them as the game makes such a removal
   itself, `createProposalRemove` for the construction and
   `makeSegmentsRemoveProposal` for the edges (on build 40408 the first
-  gave exactly the bulldozer's proposal), and the player pays. A stop it
+  gave exactly the bulldozer's proposal), and the player's company pays.
+  A town building is a construction like any (one that lists its
+  `townBuildings`) and goes the same way. A town street's proposal lists
+  the town buildings along it in `toRemove` too; they travel beside the
+  edges (`Bulldoze::Edges::buildings`, by file and position), and every
+  game checks that its own `makeSegmentsRemoveProposal`, which gathers
+  them through the same `street_util::FinishProposal`, removes exactly
+  those, else refuses the bulldoze. The replay is the player's own build
+  (`playerInitiated`), so the game's towns script charges the town's
+  reputation from it in every game alike (`onPreBuildProposal`,
+  `town_util.getProposalStats`). The asset bulldozer's proposal (trees
+  and other assets: the asset group removed and rebuilt without them as
+  a construction of no file) and anything else that is no construction
+  are refused, naming what was hit (an asset group, or the components
+  the entity has). A stop it
   removes is carried as the stop tool's builds are (below): its edge
   rebuilt without it, the stop named by its edge, where it stands and its
   construction (the `EDGE_OBJECT` component's `transf` and
@@ -2870,3 +3036,6 @@ change disables one feature rather than the mod.
   something replays, so it is switched on by fresh evidence from the script
   half on disk (its per-tick status file). With the mod's Lua side absent, the
   hooks capture nothing and cancel nothing, and the base game is unchanged.
+
+The GUI hook exposes `copy(text)` for the room invite. The lobby uses the
+local `copy` action; clipboard errors are reported and never sent to the server.

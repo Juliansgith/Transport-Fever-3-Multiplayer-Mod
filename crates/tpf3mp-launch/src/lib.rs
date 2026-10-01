@@ -159,6 +159,28 @@ pub fn steam_running() -> Option<bool> {
     running_programs().map(|names| names.iter().any(|name| is_steam(name)))
 }
 
+/// The file process `pid` runs, where the system says: to name another
+/// launcher that is running. `None` when the process is gone, or the
+/// system does not tell (macOS).
+pub fn process_path(pid: u32) -> Option<PathBuf> {
+    process_path_on_this_system(pid)
+}
+
+#[cfg(windows)]
+fn process_path_on_this_system(pid: u32) -> Option<PathBuf> {
+    windows::process_path(pid)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn process_path_on_this_system(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn process_path_on_this_system(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
 /// Steam's client, by the file name of its program in lower case.
 fn is_steam(program: &str) -> bool {
     matches!(program, "steam.exe" | "steam" | "steam_osx")
@@ -295,6 +317,21 @@ fn is_helper(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_running_program_is_named_by_its_file() {
+        let own = process_path(std::process::id());
+        if cfg!(target_os = "macos") {
+            assert_eq!(own, None, "macOS does not say");
+        } else {
+            let own = own.expect("this test's own file");
+            assert_eq!(
+                own.canonicalize().unwrap(),
+                std::env::current_exe().unwrap().canonicalize().unwrap()
+            );
+        }
+        assert_eq!(process_path(u32::MAX - 1), None, "no such process");
+    }
 
     #[test]
     fn the_game_is_found_by_its_name_or_as_the_only_program() {

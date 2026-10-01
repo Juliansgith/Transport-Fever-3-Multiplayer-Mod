@@ -143,6 +143,34 @@ game's own **Multiplayer** button (next section).
   Transport Fever 3 closed", and you are back on the server, out of the
   room. Join it again with its invite and start the game again.
 
+**Which launcher is this?** The bottom left of the window says its
+version, the protocol it speaks to servers and the commit it was built
+from, as `v1.1.0 · protocol 15 · <commit>`; **Settings**, **About this
+launcher** lists them too. The first line of its log names the file that
+runs. On Windows, the file's **Properties**, **Details** show the same
+version and commit.
+
+**One launcher at a time.** Starting the launcher while another one runs
+does not leave you with two:
+
+- another one of the very same build is already running: it says so,
+  names its file, and does not start; use the window that runs (it may be
+  minimised or behind the game);
+- an older one of another build is running, for example one left open
+  before you installed a new version: the new one asks it to close, waits
+  a moment and takes its place. A game that the old one started and that
+  is still at its main menu follows the new one, unless it runs an older
+  TPF3-MP hook; then the launcher says to close the game and start it again
+  from here. The old one stays open while it is in a room, and the new one
+  then says so instead of starting: leave the room, close the old one,
+  and start the new one again;
+- a newer one is running and you started an older one, for example from a
+  shortcut to an old install: the older one does not start, and names
+  both files;
+- a launcher from before this check (it does not say its version) is
+  running: the new one does not start, names that one's file and asks you
+  to close it.
+
 **Lobby in this window instead**, under the big button, brings the whole
 lobby into the launcher, as it was before the game had its Multiplayer
 button: connect with your name (and an invite, to join in one step),
@@ -200,7 +228,12 @@ window too.
    invite only joins rooms on your own server. Not while in a room.
    **Your banner**, next to it, picks the picture the others see on your
    card in a room, from the game's own pictures; **Default** goes back to
-   the one chosen for you. The launcher remembers it.
+   the one chosen for you. Under **Characters** you can pick one of the
+   campaign's characters instead, by name: their portrait then shows
+   beside your name. The launcher takes the portraits from your own game's
+   campaign when it starts, so they are there only if your game has the
+   campaign; a player whose game lacks your portrait sees your default
+   banner. The launcher remembers your pick.
 4. **Join a room, or host one.**
    - **Join a room**: the rooms their owners made public, as cards like
      the main menu's, each with the picture of its map's climate, its
@@ -235,21 +268,40 @@ window too.
      from its start save, and whether you have each. You can change your
      choice until the room's game starts.
 5. **The room.** On the left, the room's name (a lock if it has a
-   password), its **invite code** to send your friends, and its players
-   as picture cards of their banners, each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
+   password), its **invite code** to send your friends (**Copy** beside it
+   puts it on the clipboard), and its players
+   as picture cards of their banners (and their portrait beside it, if
+   they picked a character), each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
    and **Other mods** when their game differs from the owner's. On the
-   right, the room's chat: type and press Enter or **Send**.
+   right, above the room's chat (type and press Enter or **Send**), the
+   save the room starts from:
+   - everyone sees it under **Starts from**: its name, and its climate
+     and year when the room knows them, "on its way to the room" until the
+     room has it, or "The world the owner's game has" without one;
+   - the owner picks it there under **Start from this save**, from the
+     same list as the Host page, until the game starts. A new pick goes up
+     to the room ("Sending mptest to the room: 42%", with a bar) and the
+     room's shared mods follow it; **Start the game** waits until the room
+     has it. Everyone is then asked to get ready again, since they agreed
+     to the save before: each guest is told the owner changed it, and
+     presses **Ready**. Picking the save first, when the room had none,
+     asks nobody again. A public room's card in the room list shows the
+     new save's climate and year.
 6. **Get ready.** At the main menu you are marked ready by yourself: a
-   guest at once, the owner once the room has the save picked in step 4.
-   **Ready** and **Not ready** set it by hand.
+   guest at once, the owner once the room has the save picked in step 4
+   or 5. **Ready** and **Not ready** set it by hand. When the owner
+   changes the save in the room, guests press **Ready** again.
 7. **Start.** The owner presses **Start the game** once everyone is
-   ready (until then it says it is waiting for everyone). Every player's
+   ready and the room has its save (until then it says it is waiting for
+   everyone, or that the save is still on its way). Every player's
    game loads the room's world from the menu and starts it, with no Start
    Game to press. New worlds created through the lobby start automatically
    after the owner finishes the normal world-generation screens.
 8. **Play.** While the world comes, the window says how far it is
    ("Receiving the room's world: 42% (48.0 MB of 112 MB)", then "Loading
-   the room's world..."), and the chat and **Leave room** still work. In
+   the room's world..."), and the chat and **Leave room** still work.
+   Each player's row says how far their game is: **Downloading 42%**,
+   then **Loading...**, then **Playing**. In
    the game, the Multiplayer window on the game bar has the room (see
    "While you play").
 
@@ -324,6 +376,10 @@ protected folder such as Program Files.
   which you notice as a short pause, like an autosave.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
+- **Subsidies, entity renaming, vehicle recolouring and line waypoints.**
+  These new channels are refused pending a two-player game acceptance run.
+  Their mechanics are implemented but are not enabled for play yet; see
+  [COVERAGE.md](COVERAGE.md).
 - **Prospecting.** Prospect for resources near a town from the
   construction menu as usual: every player's game starts the prospection
   together, a moment after your click, and uses your company's permit.
@@ -347,6 +403,15 @@ protected folder such as Program Files.
   lock against the town's changes, and a road built through a stretch
   with stops keeps them. Remove them, and roads and tracks, with the
   bulldozer.
+- **Town buildings.** Bulldoze a town's building as usual: every player's
+  game removes the same building, a moment after your click; your company
+  pays the demolition, and the town's opinion of it changes as in single
+  player, the same in every game. Bulldozing a town street takes the
+  buildings along it with it, as in single player; if by the time it
+  arrives the game would take another building than the ones you saw go
+  (the town grew meanwhile), nothing is removed in any game and the
+  hook's log says why. Bulldozing trees and other assets is not in
+  multiplayer yet: the bulldozer says so and removes nothing.
 - **Vehicles and lines.** Buy vehicles in a depot's store, make and change
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window
@@ -366,6 +431,11 @@ protected folder such as Program Files.
   markers on the map wear their company's colour, and a new colour
   repaints them. The colour button offers the companies' colours first,
   then the game's own.
+- **Headquarters.** Each company builds one headquarters of its own, from
+  the construction menu as usual, once its rank allows: another
+  company's headquarters does not use up yours. A second one for the
+  same company is refused. The game bar's transported figures and the
+  finance window's company value still show the room's first company's.
 - **Your company's head, passwords and stations** (proposed, D22). The
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows
@@ -436,6 +506,17 @@ send: while you are connected, the launcher sends its log to the server
 by itself (see "Diagnostics"), so the operator finds what happened to you
 from your support code alone. The launcher also keeps its log on your machine
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
+
+**"This launcher is too old for the server"?** The server speaks a newer
+protocol than the launcher you started. The message names the file that
+runs, such as `C:\Users\you\AppData\Local\Programs\TPF3-MP\TPF3-MP.exe`. If
+that is not the newest TPF3-MP you installed, an old copy is still open
+or a shortcut points at an old install: close every TPF3-MP window, then
+start the newest one (check the version at the bottom left of its
+window). Otherwise update it (**Settings**, **Restart and update**), or
+download and install the newest package. **"This launcher is newer than
+the server"** means the server has not been updated yet: tell its
+operator.
 
 **No Multiplayer button on the game's main menu?** Only a game started
 from the launcher has it, and only when the TPF3-MP mod is installed and
@@ -524,3 +605,6 @@ before sharing it publicly if you want to be sure.
 - **"too many requests; try again in a moment"** when joining: too many
   wrong codes or passwords came from your network in the last 10
   minutes. Wait, then check the code.
+
+The lobby and in-game Multiplayer window show **Copy** beside the invite code.
+It copies only the room code, with brief **Copied** feedback.

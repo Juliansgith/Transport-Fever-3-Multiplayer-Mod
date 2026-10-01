@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 11;
+pub const ACTION_SCHEMA_VERSION: u32 = 22;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -50,6 +50,8 @@ pub const MAX_CONNECTIONS: usize = 256;
 pub const MAX_PHASES: usize = 64;
 /// Most edges one action removes or bulldozes.
 pub const MAX_EDGES: usize = 256;
+/// Most town buildings one bulldoze of streets removes with them.
+pub const MAX_BUILDINGS: usize = 64;
 /// Most parameters of one construction, nested modules counted one by one.
 pub const MAX_PARAMS: usize = 1024;
 /// Most vehicle models in one consist.
@@ -69,6 +71,8 @@ pub const MAX_CARGOS: usize = 64;
 pub const MAX_ALTERNATIVES: usize = 32;
 /// Most transport modes a line lists.
 pub const MAX_MODES: usize = 32;
+/// Most waypoints after one stop of a line.
+pub const MAX_WAYPOINTS: usize = 32;
 /// Most industry types one prospection may find. Build 40408's economy has
 /// at most a handful per cargo.
 pub const MAX_INDUSTRY_TYPES: usize = 32;
@@ -338,6 +342,19 @@ pub struct Link {
     /// for its template's own.
     #[serde(default)]
     pub lanes: BoundedVec<Lane, MAX_LANES>,
+    /// A street's precedence at each end, as the tool set it
+    /// (`BaseEdgeStreet.precedenceNode0`, `precedenceNode1`, the game's
+    /// `PrecedencePreference` values); none for a track, or where the tool
+    /// set none.
+    #[serde(default)]
+    pub precedence: Option<Precedence>,
+}
+
+/// A street's precedence at its two ends, the game's own values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Precedence {
+    pub node0: i32,
+    pub node1: i32,
 }
 
 /// The geometry of one road or track build, as the tool proposed it: new
@@ -475,6 +492,11 @@ pub enum Bulldoze {
     Edges {
         network: Network,
         edges: BoundedVec<EdgeEnds, MAX_EDGES>,
+        /// The town buildings the game removes with the edges, as the
+        /// player's bulldozer showed them (schema 15): every game removes
+        /// these, by file within 2 m of where each stands, and refuses the
+        /// bulldoze if its game would remove any other or not all of them.
+        buildings: BoundedVec<ConstructionRef, MAX_BUILDINGS>,
     },
     Construction(ConstructionRef),
     /// The stop, signal or waypoint of this model on this edge, nearest to
@@ -580,6 +602,11 @@ pub struct BuyVehicle {
     pub groups: BoundedVec<u8, MAX_CONSIST>,
     /// For each group, the multiple unit's file, or empty.
     pub multiple_units: BoundedVec<Text<128>, MAX_CONSIST>,
+    /// Which of the construction's depots, from 0 (`CONSTRUCTION.depots`):
+    /// an airport's or harbour's second hangar or ship depot. Added under
+    /// schema version 20.
+    #[serde(default)]
+    pub depot_index: u8,
 }
 
 /// One vehicle of a replacement consist: the part as a purchase carries it,
@@ -652,6 +679,43 @@ pub struct LineStop {
     pub max_wait: i64,
     pub max_extra_wait: i64,
     pub rules: StopRules,
+    /// The waypoints after this stop, in order (`Line.Stop.waypoints`).
+    /// Added under schema version 18.
+    #[serde(default)]
+    pub waypoints: BoundedVec<Waypoint, MAX_WAYPOINTS>,
+}
+
+/// Whose transport network a waypoint's lane is in: a street or track edge,
+/// its ends in the originator's own order (node 0, then node 1: the lane's
+/// index and place along it depend on which way the edge runs), or a
+/// construction's, a station's tracks among them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NetworkOf {
+    Edge(EdgeRef),
+    Construction(ConstructionRef),
+}
+
+/// Where a line's waypoint is (TF3's `Waypoint`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaypointAt {
+    /// On a street or track: lane `index` of `of`'s transport network
+    /// (`EdgePos.edgeId`), at `param` along it.
+    Lane {
+        of: NetworkOf,
+        index: u16,
+        param: Fraction,
+    },
+    /// A place in the open, which ships and aircraft are routed through
+    /// (`Waypoint.pos`).
+    Open(Pos),
+}
+
+/// A waypoint of a line, and the tag the line manager gave it, which names
+/// it across edits (`Waypoint.tag`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Waypoint {
+    pub at: WaypointAt,
+    pub tag: i32,
 }
 
 /// A line as the game keeps it (`Line`): its stops, the transport modes that
@@ -716,6 +780,10 @@ pub enum VehicleChange {
     /// Appended under schema version 10: the variants before it keep their
     /// bytes.
     ManualDeparture(bool),
+    /// Its colour, as the vehicle window's and the line manager's colour
+    /// buttons set it (`makeEntitySetColorCmd` on the vehicle). Appended
+    /// under schema version 17.
+    Recolor(Tint),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -910,6 +978,32 @@ pub enum LoanOp {
     Repay { loan: LoanTerms },
 }
 
+/// A subsidy the game offers, as Transport Fever 3's subsidy script keeps
+/// it (`game_mechanics/subventions/subventions.script.tl`): its own number
+/// (`uid`) and its kind, the subsidy resource that drew it (`id`, such as
+/// `::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res`). Every
+/// game draws the same offers from the same world; the kind is there so a
+/// game whose offer under that number is another kind refuses it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubsidyRef {
+    pub uid: i64,
+    pub kind: ResName,
+}
+
+/// Answering a subsidy offer: what TF3's subsidy window sends the subsidy
+/// script (`Subvention` `onAccept` and `onDecline`, `subventions_gui.tl`).
+/// Appended under schema version 13.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubsidyOp {
+    /// The acting player's company takes the offer: the first in the
+    /// room's order to accept it gets it, every later one is refused alike
+    /// in every game.
+    Accept(SubsidyRef),
+    /// The offer is declined: it is gone for every company, as in single
+    /// player.
+    Decline(SubsidyRef),
+}
+
 /// Prospecting near a town for one cargo: what TF3's construction menu sends
 /// the company script when the player picks a town with a prospection
 /// (`gui/construction/construction_react_util.tl`, the event `Companies`
@@ -927,6 +1021,19 @@ pub struct Prospect {
     pub industries: BoundedVec<ResName, MAX_INDUSTRY_TYPES>,
     /// The company permit it uses (`permitKey`), if it names one.
     pub permit: Option<ResName>,
+}
+
+/// What an entity window's title, or the line manager's vehicle list,
+/// renames (`makeEntitySetNameCmd`), when it is not a line or a company
+/// (those are [`LineChange::Rename`] and [`CompanyOp::Rename`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Renamed {
+    Vehicle(VehicleId),
+    /// A station group, which the station's window names.
+    Station(StationId),
+    Town(TownId),
+    /// Any other construction: a depot, an industry, a landmark.
+    Construction(ConstructionRef),
 }
 
 /// One player action.
@@ -968,6 +1075,16 @@ pub enum Action {
     },
     /// Crosswalks, turning lanes and the full traffic-light configuration.
     EditJunctions(JunctionEdit),
+    /// Accepting or declining a subsidy offer (`SubsidyOp`). Appended under
+    /// schema version 13: the variants before it keep their bytes.
+    Subsidy(SubsidyOp),
+    /// Renaming what is not a line or a company (`Renamed`): a vehicle, a
+    /// station, a town, a construction. Appended under schema version 17:
+    /// the variants before it keep their bytes.
+    Rename {
+        what: Renamed,
+        name: ObjectName,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -1064,6 +1181,8 @@ mod tests {
 
     fn link(from: u16, to: u16) -> Link {
         Link {
+            precedence: None,
+
             from,
             to,
             tangent0: Tangent { x: 1, y: 0, z: 0 },
@@ -1161,7 +1280,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                11, // schema version
+                22, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1204,7 +1323,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                11, // schema version
+                22, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1213,7 +1332,7 @@ mod tests {
                 1, // one link
                 0, 1, 2, 0, 0, 2, 0, 0, 0, // 0 -> 1, tangents, Structure::Ground
                 0, // the build's own kind
-                0, 0, 0, 0, // no decorations, not locked, not owned, no lanes of its own
+                0, 0, 0, 0, 0, // no decorations, lock, ownership, lanes or precedence
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
                 0, // no junction changes
@@ -1239,7 +1358,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                11, // schema version
+                22, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1257,7 +1376,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                11, // schema version
+                22, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1272,7 +1391,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                11, // schema version
+                22, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1283,9 +1402,23 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                11, // schema version
+                22, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
+            ]
+        );
+        let accept = Action::Subsidy(SubsidyOp::Accept(SubsidyRef {
+            uid: 1_234_560_000,
+            kind: Text::new("s").unwrap(),
+        }));
+        assert_eq!(
+            accept.to_payload().unwrap().as_bytes(),
+            [
+                22, // schema version
+                19, // Action::Subsidy, appended under schema version 13
+                0,  // SubsidyOp::Accept
+                0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
+                1, b's', // the kind
             ]
         );
         // Appended under schema version 9: the company's head's own.
@@ -1309,7 +1442,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [11, 11]);
+            assert_eq!(payload.as_bytes()[..2], [22, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         let hold = Action::VehicleOp(VehicleOp {
@@ -1319,7 +1452,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                11, // schema version
+                22, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

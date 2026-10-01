@@ -13,7 +13,10 @@
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -29,8 +32,8 @@ use tpf3mp_bridge::{
 use tpf3mp_net::close;
 use tpf3mp_proto::{
     BoundedVec, ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom,
-    LaneDigest, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomPhase, RoomView,
-    SavedWorld, SessionId, SnapshotId, Speed, Text, WorldOffer,
+    LaneDigest, LoadingStage, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomPhase,
+    RoomView, SavedWorld, SessionId, SnapshotId, Speed, StartSave, Text, WorldOffer,
 };
 use tpf3mp_snapshot::ManifestId;
 use tracing::{debug, info, warn};
@@ -111,10 +114,15 @@ pub struct BridgeOptions {
     /// lobby (`Request::StartWorld`), and every game, this one too, loads
     /// it from its main menu when the game starts. Without it, the owner's
     /// game has the world up and saves it for the room once the game began.
+    /// The owner may name another while the room is in its lobby
+    /// ([`Control::StartWorld`]).
     pub start_world: Option<PathBuf>,
     /// A newly generated world starts once its owner has loaded it and
     /// every member is ready. Existing-save rooms keep their Start button.
     pub start_generated_world: bool,
+    /// What the room shows every member of [`Self::start_world`]: its name,
+    /// map and year. Without, its file's name, the map and year unknown.
+    pub start_save: Option<StartSave>,
     /// This player's mods for the room's worlds: the shared ones it
     /// declared and its personal ones (`crate::content::split`), handed to
     /// the hook when the game begins. Without them a world loads with the
@@ -167,6 +175,7 @@ impl Default for BridgeOptions {
             lobby: None,
             start_world: None,
             start_generated_world: false,
+            start_save: None,
             mods: None,
             picker: None,
         }
@@ -183,6 +192,15 @@ pub enum Control {
     Chat(ChatText),
     /// Show this banner in the room from now on.
     Banner(Option<tpf3mp_proto::BannerId>),
+    /// The room's owner, in its lobby: the room starts from this save now,
+    /// in place of the one before; `None` for none, the owner's game then
+    /// providing the world. `declare` is what this game declares first,
+    /// when the room's shared mods change with the save (`crate::picker`).
+    /// Everyone is asked to get ready again.
+    StartWorld {
+        start: Option<(PathBuf, StartSave)>,
+        declare: Option<ContentManifest>,
+    },
     /// Leave the room, which ends the session.
     Leave,
     /// The game the front end started has exited. Once its hook attached,
@@ -192,6 +210,10 @@ pub enum Control {
     /// then the game never joined, and the session waits for the next one.
     GameClosed,
 }
+
+/// How often the room hears this game's loading progress again while it
+/// stays fetching: about two a second (`GameMessage::Loading`).
+const LOADING_EVERY: Duration = Duration::from_millis(500);
 
 /// Chat lines and notices a status keeps.
 const STATUS_HISTORY: usize = 100;
@@ -222,6 +244,18 @@ pub struct Status {
     pub outdated: bool,
     /// The operator's latest notice, such as a restart coming.
     pub announcement: Option<String>,
+    /// The save this player, the room's owner, is handing the room to start
+    /// from, while it is on its way.
+    pub start_upload: Option<StartUpload>,
+}
+
+/// The owner's save on its way to the room.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartUpload {
+    /// Its name, as the room will show it.
+    pub save: String,
+    /// How much of it went up, 0 to 100; 0 while it is read.
+    pub percent: u8,
 }
 
 impl Default for Status {
@@ -238,6 +272,7 @@ impl Default for Status {
             session: None,
             outdated: false,
             announcement: None,
+            start_upload: None,
         }
     }
 }
@@ -271,6 +306,38 @@ pub enum WorldStatus {
 
 /// A status shared between a bridge and a front end.
 pub type SharedStatus = Arc<Mutex<Status>>;
+
+/// `part` of `whole` in whole percent, 0 to 100.
+fn percent_of(part: u64, whole: u64) -> u8 {
+    if whole == 0 {
+        return 0;
+    }
+    let percent = u128::from(part.min(whole)) * 100 / u128::from(whole);
+    u8::try_from(percent).unwrap_or(100)
+}
+
+/// Whether `stage` should be told the room, which last heard `reported`.
+fn loading_due(
+    reported: Option<(Option<LoadingStage>, Instant)>,
+    stage: Option<LoadingStage>,
+    now: Instant,
+) -> bool {
+    let Some((last, at)) = reported else {
+        // Nothing told on this connection: nothing to clear either.
+        return stage.is_some();
+    };
+    if last == stage {
+        return false;
+    }
+    let same_fetch = matches!(
+        (last, stage),
+        (
+            Some(LoadingStage::Fetching { .. }),
+            Some(LoadingStage::Fetching { .. })
+        )
+    );
+    !same_fetch || now.saturating_duration_since(at) >= LOADING_EVERY
+}
 
 fn push_bounded<T>(list: &mut VecDeque<T>, item: T) {
     if list.len() == STATUS_HISTORY {
@@ -352,12 +419,16 @@ enum Done {
         snapshot: SnapshotId,
         result: Result<u64, String>,
     },
-    /// The save the room starts from is cut into the store.
+    /// The save the room starts from is cut into the store. `attempt`
+    /// counts the saves named ([`Bridge::start_attempt`]).
     StartCut {
-        result: Result<(ManifestId, SavedWorld), String>,
+        attempt: u64,
+        result: Result<(ManifestId, SavedWorld, Option<FileStamp>), String>,
     },
     /// The room would not take the save it was to start from.
-    StartRefused { error: String },
+    StartRefused { attempt: u64, error: String },
+    /// The room took back the save it was to start from.
+    StartCleared { attempt: u64 },
 }
 
 /// Where the save the room starts from stands, when this player hands one
@@ -375,11 +446,21 @@ enum StartWorld {
     Told(SnapshotId),
     /// The room has it: every game loads it when the game starts.
     Uploaded(SnapshotId),
+    /// The owner took it back; the room is being told.
+    Clearing,
 }
 
 /// Saves of this game the store keeps, newest last: the room asks for the
 /// newest, and the one before may still be in flight.
 const SAVES_KEPT: usize = 2;
+
+/// A file's size and last write, to tell whether it changed since.
+type FileStamp = (u64, std::time::SystemTime);
+
+fn file_stamp(file: &Path) -> Option<FileStamp> {
+    let metadata = std::fs::metadata(file).ok()?;
+    Some((metadata.len(), metadata.modified().ok()?))
+}
 
 /// Couples one game's hook to one client.
 pub struct Bridge<L> {
@@ -404,6 +485,11 @@ pub struct Bridge<L> {
     progress: Option<u64>,
     /// The progress last reported on the current connection.
     reported: Option<u64>,
+    /// How much of the world being fetched is here, in percent.
+    fetch_percent: Arc<AtomicU8>,
+    /// The loading stage last told the room on the current connection, and
+    /// when; `None` before any.
+    loading_reported: Option<(Option<LoadingStage>, Instant)>,
     last_report: Instant,
     wait_until: Option<Instant>,
     hook_beat: (u64, Instant),
@@ -423,6 +509,18 @@ pub struct Bridge<L> {
     /// Its snapshot, kept in the store for the upload and for this game's
     /// own load of it.
     start_kept: Option<ManifestId>,
+    /// Counts the saves named to start from, so the work for one replaced
+    /// since is ignored.
+    start_attempt: u64,
+    /// The save the room holds to start from, as far as this agent handed
+    /// it over: named again, it needs no upload.
+    start_held: Option<SnapshotId>,
+    /// What to declare to the room before naming the save on its way: the
+    /// room's shared mods follow it.
+    start_declare: Option<ContentManifest>,
+    /// The save told to the room to start from, and its file's size and
+    /// time as it was read.
+    start_told: Option<(SavedWorld, FileStamp)>,
     /// What a front end asks of the session.
     controls: Option<mpsc::Receiver<Control>>,
     /// The room as the server last showed it: the game's Multiplayer window
@@ -465,6 +563,8 @@ impl<L: HookLink> Bridge<L> {
             commands: 0,
             progress: None,
             reported: None,
+            fetch_percent: Arc::new(AtomicU8::new(0)),
+            loading_reported: None,
             last_report: now,
             wait_until: None,
             buf: Vec::new(),
@@ -480,6 +580,10 @@ impl<L: HookLink> Bridge<L> {
                 StartWorld::None
             },
             start_kept: None,
+            start_attempt: 0,
+            start_held: None,
+            start_declare: None,
+            start_told: None,
             controls: None,
             room: None,
             room_phase: options.status.as_ref().and_then(|status| {
@@ -574,6 +678,7 @@ impl<L: HookLink> Bridge<L> {
             self.hand_over_start_world(client);
             self.start_generated_world(client);
             self.report_progress(client, now).await?;
+            self.report_loading(client, now).await?;
             self.lobby_news();
             // Turns wait while the world they continue is being fetched.
             if !matches!(self.world, World::Fetching { .. })
@@ -873,7 +978,7 @@ impl<L: HookLink> Bridge<L> {
     fn start_world_on_its_way(&self, client: &Client) -> bool {
         matches!(
             self.start,
-            StartWorld::Named | StartWorld::Cutting | StartWorld::Told(_)
+            StartWorld::Named | StartWorld::Cutting | StartWorld::Told(_) | StartWorld::Clearing
         ) && self.room_owner == Some(client.player())
             && !self.begun
     }
@@ -902,21 +1007,181 @@ impl<L: HookLink> Bridge<L> {
             return;
         };
         info!(file = %file.display(), "handing the room the save it starts from");
+        let save = self.start_save_named();
         self.status(|status| {
             status.notice(format!(
                 "the room starts from your save {}: handing it over",
-                file.display()
+                save.name
             ));
+            status.start_upload = Some(StartUpload {
+                save: save.name.as_str().to_owned(),
+                percent: 0,
+            });
         });
         self.start = StartWorld::Cutting;
+        let attempt = self.start_attempt;
         let done = self.done_tx.clone();
         tokio::task::spawn_blocking(move || {
+            // Read before the save is: one written over meanwhile is newer.
+            let stamp = file_stamp(&file);
             let result = worlds
                 .ingest_copy(&file)
-                .map(|(manifest, world)| (manifest.id(), world))
+                .map(|(manifest, world)| (manifest.id(), world, stamp))
                 .map_err(|error| format!("cannot read the save {}: {error}", file.display()));
-            let _ = done.send(Done::StartCut { result });
+            let _ = done.send(Done::StartCut { attempt, result });
         });
+    }
+
+    /// What the room shows of the save named to start from.
+    fn start_save_named(&self) -> StartSave {
+        self.options
+            .start_save
+            .clone()
+            .unwrap_or_else(|| StartSave {
+                name: Text::lossy(
+                    self.options
+                        .start_world
+                        .as_deref()
+                        .and_then(Path::file_stem)
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or_default(),
+                ),
+                map: Text::lossy(""),
+                year: 0,
+            })
+    }
+
+    /// The owner names another save for the room to start from, or none
+    /// ([`Control::StartWorld`]): it replaces the one before, and the room
+    /// asks everyone to get ready again. Only in the room's lobby, as its
+    /// owner; the room refuses it otherwise too.
+    fn change_start_world(
+        &mut self,
+        start: Option<(PathBuf, StartSave)>,
+        declare: Option<ContentManifest>,
+        client: &Client,
+    ) {
+        if self.begun || self.room_phase != Some(RoomPhase::Lobby) {
+            self.status(|status| {
+                status.notice("the room's game has begun: it plays the world it has");
+            });
+            return;
+        }
+        if self.room_owner != Some(client.player()) {
+            self.status(|status| {
+                status.notice("only the room's owner chooses the save it starts from");
+            });
+            return;
+        }
+        // The save the room has or receives, unchanged on disk, named again:
+        // only what the room shows of it changes, such as the map and year
+        // the owner's game read once the room was made.
+        if let Some((file, save)) = &start
+            && let Some((told, stamp)) = &self.start_told
+            && matches!(self.start, StartWorld::Told(_) | StartWorld::Uploaded(_))
+            && self.options.start_world.as_deref() == Some(file.as_path())
+            && file_stamp(file).as_ref() == Some(stamp)
+        {
+            info!(file = %file.display(), "the owner describes the save the room starts from");
+            self.options.start_save = Some(save.clone());
+            self.request(
+                client,
+                Request::StartWorld {
+                    world: *told,
+                    save: save.clone(),
+                },
+            );
+            return;
+        }
+        self.options.start_generated_world = start.is_none();
+        self.start_attempt += 1;
+        self.start_told = None;
+        // Readiness is decided afresh once the room has the new world.
+        self.readied = self.world_up.saturating_sub(1);
+        self.menu_readied = self.menu_up.saturating_sub(1);
+        match start {
+            Some((file, save)) => {
+                info!(file = %file.display(), "the owner names another save for the room to start from");
+                self.options.start_world = Some(file);
+                self.options.start_save = Some(save);
+                self.start_declare = declare;
+                self.start = StartWorld::Named;
+                self.hand_over_start_world(client);
+            }
+            None => {
+                info!("the owner takes back the save the room starts from");
+                self.options.start_world = None;
+                self.options.start_save = None;
+                // Readiness waits until the room took it back.
+                self.start = StartWorld::Clearing;
+                self.start_kept = None;
+                self.start_held = None;
+                self.status(|status| {
+                    status.start_upload = None;
+                    status.notice("the room starts from the world your game has: load it");
+                });
+                let requests = client.requests();
+                let done = self.done_tx.clone();
+                let status = self.options.status.clone();
+                let attempt = self.start_attempt;
+                tokio::spawn(async move {
+                    let declared = match declare {
+                        Some(manifest) => requests.done(Request::DeclareContent(manifest)).await,
+                        None => Ok(()),
+                    };
+                    match declared.and(requests.done(Request::ClearStartWorld).await) {
+                        Ok(()) => {
+                            let _ = done.send(Done::StartCleared { attempt });
+                        }
+                        Err(error) => {
+                            let _ = done.send(Done::StartCleared { attempt });
+                            if let Some(status) = status {
+                                status
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .notice(error.to_string());
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// The room's start world as the room shows it changed: a player other
+    /// than the owner is told, and asked to get ready again when it replaced
+    /// another, as the room asks.
+    fn start_news(&self, before: Option<&RoomView>, now: &RoomView, client: &Client) {
+        let Some(before) = before else {
+            return;
+        };
+        if now.owner == client.player() || now.phase != RoomPhase::Lobby {
+            return;
+        }
+        let name = |room: &RoomView| {
+            room.start
+                .as_ref()
+                .map(|start| start.save.name.as_str().to_owned())
+        };
+        let (was, is) = (name(before), name(now));
+        if was == is {
+            return;
+        }
+        // A save in place of another asks everyone to agree again; the first
+        // is the world the room was waiting for.
+        let notice = match (was, is) {
+            (Some(_), Some(save)) => format!(
+                "the owner changed the save the room starts from to {save}: press Ready once you agree"
+            ),
+            (Some(_), None) => {
+                "the room now starts from the world the owner's game has: press Ready once you agree"
+                    .to_owned()
+            }
+            (None, Some(save)) => format!("the room starts from the owner's save {save}"),
+            (None, None) => return,
+        };
+        info!(save = ?name(now), "the room's start save changed");
+        self.status(|status| status.notice(notice));
     }
 
     /// The game saved its world at a save event: cut the save into the
@@ -978,6 +1243,30 @@ impl<L: HookLink> Bridge<L> {
         Ok(())
     }
 
+    /// Where this game is with the room's world while it comes in.
+    fn loading_stage(&self) -> Option<LoadingStage> {
+        match self.world {
+            World::Ready => None,
+            World::Fetching { .. } => Some(LoadingStage::Fetching {
+                percent: self.fetch_percent.load(Ordering::Relaxed),
+            }),
+            World::Loading { .. } => Some(LoadingStage::Loading),
+        }
+    }
+
+    /// Tells the room where this game is with its world when that changed:
+    /// a new stage at once, a new percent of the same fetch at most every
+    /// [`LOADING_EVERY`].
+    async fn report_loading(&mut self, client: &Client, now: Instant) -> Result<(), BridgeFault> {
+        let stage = self.loading_stage();
+        if !loading_due(self.loading_reported, stage, now) {
+            return Ok(());
+        }
+        client.report_loading(stage).await?;
+        self.loading_reported = Some((stage, now));
+        Ok(())
+    }
+
     /// Handles one event from the server. Returns how the session ended, if
     /// it did.
     fn on_event(
@@ -990,6 +1279,7 @@ impl<L: HookLink> Bridge<L> {
                 // A new stream, perhaps on a new connection: tell it where
                 // the game stands.
                 self.reported = None;
+                self.loading_reported = None;
                 self.playout = Some(Playout::new(
                     start.steps_per_second,
                     self.options.playout_margin,
@@ -1087,6 +1377,22 @@ impl<L: HookLink> Bridge<L> {
                 if self.begun {
                     self.outbox.push_back(ToHook::Room(room_info(&room)));
                 }
+                self.start_news(self.room.as_ref(), &room, client);
+                // The room gave up on the save on its way (it did not start
+                // arriving in time): the owner may pick it again.
+                if matches!(self.start, StartWorld::Told(_))
+                    && room.owner == client.player()
+                    && room.phase == RoomPhase::Lobby
+                    && room.start.is_none()
+                    && self.room.as_ref().is_some_and(|before| {
+                        before
+                            .start
+                            .as_ref()
+                            .is_some_and(|start| start.save.name == self.start_save_named().name)
+                    })
+                {
+                    self.start_failed("the room gave up waiting for it", client);
+                }
                 self.room = Some(room.clone());
                 self.room_phase = Some(room.phase);
                 self.room_owner = Some(room.owner);
@@ -1182,14 +1488,7 @@ impl<L: HookLink> Bridge<L> {
                 match result {
                     Ok(bytes) if starting => {
                         info!(%snapshot, bytes, "uploaded the save the room starts from; the game waits at its menu to load it with everyone");
-                        self.start = StartWorld::Uploaded(snapshot);
-                        self.status(|status| {
-                            status.notice(
-                                "the room has your save: every game loads it from its main menu when the game starts",
-                            );
-                        });
-                        self.ready_for_world(client);
-                        self.ready_at_menu(client);
+                        self.start_arrived(snapshot, client);
                     }
                     Ok(bytes) => info!(%snapshot, bytes, "uploaded a save the room asked for"),
                     Err(error) if starting => {
@@ -1198,37 +1497,90 @@ impl<L: HookLink> Bridge<L> {
                     Err(error) => warn!(%snapshot, %error, "uploading a save failed"),
                 }
             }
-            Done::StartCut { result } => {
-                if self.start != StartWorld::Cutting {
+            Done::StartCut { attempt, result } => {
+                if self.start != StartWorld::Cutting || attempt != self.start_attempt {
                     return Ok(None);
                 }
                 match result {
-                    Ok((id, world)) => {
+                    Ok((id, world, stamp)) => {
                         info!(snapshot = %world.snapshot, bytes = world.size, "told the room the save it starts from");
                         self.start_kept = Some(id);
+                        self.start_told = stamp.map(|stamp| (world, stamp));
+                        self.tidy();
                         self.start = StartWorld::Told(world.snapshot);
                         self.tell_start_world(client, world);
+                        // The save the room has already, named again: the
+                        // room only updates what it shows of it, and asks
+                        // for nothing.
+                        if self.start_held == Some(world.snapshot) {
+                            info!(snapshot = %world.snapshot, "the room has this save already");
+                            self.start_arrived(world.snapshot, client);
+                        } else {
+                            // The room lets go of the one it held.
+                            self.start_held = None;
+                        }
                     }
                     Err(error) => self.start_failed(&error, client),
                 }
             }
-            Done::StartRefused { error } => {
-                if matches!(self.start, StartWorld::Told(_)) {
+            Done::StartRefused { attempt, error } => {
+                if matches!(self.start, StartWorld::Told(_)) && attempt == self.start_attempt {
                     self.start_failed(&format!("the room refused it: {error}"), client);
+                }
+            }
+            Done::StartCleared { attempt } => {
+                if attempt == self.start_attempt && self.start == StartWorld::Clearing {
+                    self.start = StartWorld::None;
+                    // Readiness waited for the room to take it back.
+                    self.ready_for_world(client);
+                    self.ready_at_menu(client);
                 }
             }
         }
         Ok(None)
     }
 
+    /// The room has the save it starts from: every game loads it from its
+    /// menu when the game starts, the owner's too, so the owner is ready
+    /// as a guest is.
+    fn start_arrived(&mut self, snapshot: SnapshotId, client: &Client) {
+        self.start = StartWorld::Uploaded(snapshot);
+        self.start_held = Some(snapshot);
+        self.status(|status| {
+            status.start_upload = None;
+            status.notice(
+                "the room has your save: every game loads it from its main menu when the game starts",
+            );
+        });
+        self.ready_for_world(client);
+        self.ready_at_menu(client);
+    }
+
     /// Tells the room the save it starts from, on a task of its own: the
-    /// room asks for it with [`ClientEvent::Upload`].
-    fn tell_start_world(&self, client: &Client, world: SavedWorld) {
+    /// room asks for it with [`ClientEvent::Upload`]. What this game
+    /// declares for it goes first, on the same task, so the room compares
+    /// everyone's mods with the new save's.
+    fn tell_start_world(&mut self, client: &Client, world: SavedWorld) {
         let requests = client.requests();
         let done = self.done_tx.clone();
+        let save = self.start_save_named();
+        let declare = self.start_declare.take();
+        if let Some(manifest) = &declare {
+            self.declared = Some(manifest.clone());
+        }
+        let attempt = self.start_attempt;
         tokio::spawn(async move {
-            if let Err(error) = requests.done(Request::StartWorld(world)).await {
+            let declared = match declare {
+                Some(manifest) => requests.done(Request::DeclareContent(manifest)).await,
+                None => Ok(()),
+            };
+            let told = match declared {
+                Ok(()) => requests.done(Request::StartWorld { world, save }).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = told {
                 let _ = done.send(Done::StartRefused {
+                    attempt,
                     error: error.to_string(),
                 });
             }
@@ -1240,7 +1592,10 @@ impl<L: HookLink> Bridge<L> {
     fn start_failed(&mut self, why: &str, client: &Client) {
         warn!(reason = why, "the room cannot start from the save named");
         self.start = StartWorld::None;
+        self.start_held = None;
+        self.start_told = None;
         self.status(|status| {
+            status.start_upload = None;
             status.notice(format!(
                 "the room cannot start from your save ({why}); load the world the room will play instead"
             ));
@@ -1270,11 +1625,17 @@ impl<L: HookLink> Bridge<L> {
         info!(snapshot = %offer.snapshot, bytes = offer.size, "fetching the world to load");
         let total = offer.size;
         self.status(|status| status.world = WorldStatus::Fetching { bytes: 0, total });
+        self.fetch_percent.store(0, Ordering::Relaxed);
+        let percent = Arc::clone(&self.fetch_percent);
         let opener = client.bulk();
         let done = self.done_tx.clone();
         let status = self.options.status.clone();
         let task = tokio::spawn(async move {
             let progress = |progress: tpf3mp_snapshot::Progress| {
+                percent.store(
+                    percent_of(progress.bytes_present, progress.bytes_total),
+                    Ordering::Relaxed,
+                );
                 if let Some(status) = &status {
                     let mut status = status.lock().unwrap_or_else(PoisonError::into_inner);
                     status.world = WorldStatus::Fetching {
@@ -1319,6 +1680,10 @@ impl<L: HookLink> Bridge<L> {
             Control::Kick(player) => Request::Kick(player),
             Control::Chat(text) => Request::Chat(text),
             Control::Banner(banner) => Request::SetBanner(banner),
+            Control::StartWorld { start, declare } => {
+                self.change_start_world(start, declare, client);
+                return Ok(None);
+            }
             Control::Leave => {
                 if let Err(error) = client.leave_room().await {
                     debug!(%error, "leaving the room failed; ending the session anyway");
@@ -1404,8 +1769,29 @@ impl<L: HookLink> Bridge<L> {
         };
         let opener = client.bulk();
         let done = self.done_tx.clone();
+        // The save the room starts from: how far it went up shows on the
+        // owner's room page, where Start waits for it.
+        let status = self
+            .options
+            .status
+            .clone()
+            .filter(|_| event == 0 && self.start == StartWorld::Told(snapshot));
+        let name = self.start_save_named().name;
         tokio::spawn(async move {
-            let result = transfer::upload_world(&opener, &worlds, snapshot)
+            // Only while this save is the one on its way: one the owner
+            // replaced may still be going up.
+            let progress = |percent: u8| {
+                if let Some(status) = &status
+                    && let Some(upload) = &mut status
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .start_upload
+                    && upload.save == name.as_str()
+                {
+                    upload.percent = percent;
+                }
+            };
+            let result = transfer::upload_world_with_progress(&opener, &worlds, snapshot, progress)
                 .await
                 .map(|served| served.bytes)
                 .map_err(|error| error.to_string());
@@ -1523,6 +1909,11 @@ fn room_info(room: &RoomView) -> RoomInfo {
             player: member.player,
             name: member.name.clone(),
             connected: member.connected,
+            banner: member
+                .banner
+                .clone()
+                .filter(|id| crate::portraits::shown(id.as_str())),
+            loading: member.loading,
         })
         .collect();
     RoomInfo {
@@ -1707,7 +2098,7 @@ async fn rejoin_room<L: HookLink>(
         let attempt = async {
             let (client, events) = connect(options.clone()).await.map_err(|error| {
                 if error.client_is_older() {
-                    Failed::Outdated(error.to_string())
+                    Failed::Outdated(error.for_player())
                 } else {
                     Failed::Retry(error.to_string())
                 }
@@ -1846,6 +2237,37 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn fetch_percent_is_whole_and_bounded() {
+        assert_eq!(percent_of(0, 0), 0);
+        assert_eq!(percent_of(0, 1000), 0);
+        assert_eq!(percent_of(421, 1000), 42);
+        assert_eq!(percent_of(1000, 1000), 100);
+        assert_eq!(percent_of(5000, 1000), 100);
+        assert_eq!(percent_of(u64::MAX, u64::MAX), 100);
+    }
+
+    /// The room hears a new stage at once and a new percent of the same
+    /// fetch at most about twice a second; nothing twice.
+    #[test]
+    fn loading_is_told_on_change_and_throttled_while_fetching() {
+        let now = Instant::now();
+        let fetching = |percent| Some(LoadingStage::Fetching { percent });
+        // Nothing told yet on this connection.
+        assert!(!loading_due(None, None, now));
+        assert!(loading_due(None, fetching(0), now));
+        let told = Some((fetching(10), now));
+        assert!(!loading_due(told, fetching(10), now + LOADING_EVERY));
+        assert!(!loading_due(told, fetching(11), now + LOADING_EVERY / 2));
+        assert!(loading_due(told, fetching(11), now + LOADING_EVERY));
+        // A new stage, or its end, at once.
+        assert!(loading_due(told, Some(LoadingStage::Loading), now));
+        assert!(loading_due(told, None, now));
+        let loading = Some((Some(LoadingStage::Loading), now));
+        assert!(!loading_due(loading, Some(LoadingStage::Loading), now));
+        assert!(loading_due(loading, None, now));
+    }
+
     fn start() -> TurnStart {
         TurnStart {
             room: RoomId(FixedBytes([0; 16])),
@@ -1915,6 +2337,7 @@ mod tests {
             content: None,
             connected,
             banner: None,
+            loading: None,
         };
         let room = RoomView {
             id: RoomId(FixedBytes([7; 16])),
@@ -1927,6 +2350,7 @@ mod tests {
             settings: RoomSettings::DEFAULT,
             members: vec![member(1, "Ann", true), member(2, "Bo", false)],
             competitive: false,
+            start: None,
         };
         let info = room_info(&room);
         assert_eq!(info.name.as_str(), "Sunday line");
@@ -1937,6 +2361,17 @@ mod tests {
             .map(|m| (m.name.as_str(), m.connected))
             .collect();
         assert_eq!(members, [("Ann", true), ("Bo", false)]);
+        // A banner reaches the game; a portrait it lacks does not, so the
+        // game shows that member's default banner.
+        let mut pictured = room.clone();
+        pictured.members[0].banner = Some(Text::new("dry").unwrap());
+        pictured.members[1].banner = Some(Text::new("lasse").unwrap());
+        let info = room_info(&pictured);
+        assert_eq!(
+            info.members[0].banner.as_ref().map(Text::as_str),
+            Some("dry")
+        );
+        assert_eq!(info.members[1].banner, None);
     }
 
     #[test]
@@ -1945,6 +2380,8 @@ mod tests {
         let owner = PlayerId(FixedBytes([1; 32]));
         let guest = PlayerId(FixedBytes([2; 32]));
         let mut room = RoomView {
+            start: None,
+
             id: RoomId(FixedBytes([7; 16])),
             name: Text::new("New world").unwrap(),
             rules: Text::new("native").unwrap(),
@@ -1956,6 +2393,8 @@ mod tests {
             competitive: false,
             members: [owner, guest]
                 .map(|player| MemberView {
+                    loading: None,
+
                     player,
                     name: Text::new("Player").unwrap(),
                     platform: Platform::current(),

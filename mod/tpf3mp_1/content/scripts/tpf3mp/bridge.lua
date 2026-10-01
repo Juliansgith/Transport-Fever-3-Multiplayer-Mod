@@ -91,6 +91,9 @@
 --
 -- Pure Lua; the tests hand attach() a fake table.
 
+local acceptance = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/acceptance.lua")
+    or require("tpf3mp.acceptance")
+
 local bridge = {}
 
 -- 12: company passwords: `command` takes a password beside the action,
@@ -151,6 +154,8 @@ end
 -- is never logged, and no answer quotes it.
 function Link:command(action, password)
 	if type(action) ~= "table" then return nil, "an action is a table" end
+	local allowed, why = acceptance.check(action)
+	if not allowed then return nil, why end
 	if password ~= nil and type(password) ~= "string" then return nil, "a password is text" end
 	local ok, result, reason = pcall(self.native.command, action, password)
 	if not ok then return nil, "the hook refused: " .. tostring(result) end
@@ -196,6 +201,16 @@ function Link:say(text)
 	local ok, said, why = pcall(self.native.say, tostring(text))
 	if not ok then return nil, tostring(said) end
 	if said ~= true then return nil, tostring(why or "the hook did not take it") end
+	return true
+end
+
+-- Puts `text`, the room's invite code, on the clipboard: true, or nil and
+-- why not.
+function Link:copy(text)
+	if type(self.native.copy) ~= "function" then return nil, "this hook cannot copy" end
+	local ok, copied, why = pcall(self.native.copy, tostring(text))
+	if not ok then return nil, tostring(copied) end
+	if copied ~= true then return nil, tostring(why or "the hook did not copy it") end
 	return true
 end
 

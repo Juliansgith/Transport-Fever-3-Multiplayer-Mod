@@ -178,6 +178,18 @@ local function lanesOf(c)
 	return out
 end
 
+-- Street precedence is part of the player's proposal, including an explicit zero.
+local function precedenceOf(seg)
+    local se = get(seg, "streetEdge")
+    if se == nil then return nil end
+    local a, b = get(se, "precedenceNode0"), get(se, "precedenceNode1")
+    if a == nil and b == nil then return nil end
+    if type(a) ~= "number" or type(b) ~= "number" or a % 1 ~= 0 or b % 1 ~= 0 then
+        error("a street's precedence cannot be read", 0)
+    end
+    return { node0 = a, node1 = b }
+end
+
 local function segment(seg)
 	local c = get(seg, "comp")
 	if c == nil then error("an edge with no component", 0) end
@@ -196,6 +208,7 @@ local function segment(seg)
 		owned = type(player) == "number" and player >= 0,
 		lanes = lanesOf(c),
 	}
+	if e.network == "Street" then e.precedence = precedenceOf(seg) end
 	local types = enum("BaseEdgeType")
 	if c.type == types.BRIDGE then
 		e.structure = { Bridge = typeName("bridgeTypeRep", c.typeIndex) }
@@ -547,12 +560,46 @@ end
 -- A stop's removal ("stops", below).
 local removeStop
 
+-- What an entity the bulldozer removes is, when it is no construction, in a
+-- few words for the player and the log. An asset group (trees, rocks and
+-- other assets, which the asset bulldozer takes out of their group and
+-- rebuilds the rest: build 40408, construction_builder_util::
+-- CreateProposalAddAsset) has words of its own; anything else is named by
+-- the components it has, so a test in the game says what it was.
+local KINDS = { "ASSET_GROUP", "TOWN_BUILDING", "SUBCONSTRUCTION", "INDUSTRY", "FIELD", "TOWN",
+	"MODEL_INSTANCE_LIST", "BASE_EDGE", "BASE_NODE", "EDGE_OBJECT", "STATION_GROUP", "PLAYER_OWNED" }
+function engine.notConstruction(entity)
+	local types = get(get(api, "type"), "ComponentType")
+	local has = {}
+	for _, kind in ipairs(KINDS) do
+		local id = types and get(types, kind)
+		if id ~= nil then
+			local ok, c = pcall(api.engine.getComponent, entity, id)
+			if ok and c ~= nil then has[#has + 1] = kind end
+		end
+	end
+	if has[1] == "ASSET_GROUP" then
+		return "removing trees or other assets (asset group " .. tostring(entity)
+			.. "), which the room does not carry yet"
+	end
+	return "removing something that is no construction (entity " .. tostring(entity) .. ": "
+		.. (#has > 0 and table.concat(has, ", ") or "no component it knows") .. ")"
+end
+
+-- Whether a CONSTRUCTION component is a town building's: one that lists
+-- its town buildings (as capture.construction tells them).
+local function isTownBuilding(c)
+	return #list(c and get(c, "townBuildings")) > 0
+end
+
 -- The bulldozer's proposal as a Bulldoze action (tpf3mp_proto
 -- action::Bulldoze): one construction, by its file and position, whose own
 -- entrance edge and node the game removes with it; or edges of one network,
--- by their ends, with the nodes they leave on their own (build 40408, the
--- bulldozer hovered and clicked). false for a proposal of nothing; nil and
--- why the room cannot carry it.
+-- by their ends, with the nodes they leave on their own and the town
+-- buildings the game removes with them, each by its file and position
+-- (build 40408, the bulldozer hovered and clicked: a street of a town
+-- proposed with the buildings along it, street_util::FinishProposal). false
+-- for a proposal of nothing; nil and why the room cannot carry it.
 function engine.bulldoze(proposal)
 	local ok, action = pcall(function()
 		local street = get(proposal, "proposal")
@@ -571,18 +618,39 @@ function engine.bulldoze(proposal)
 			if v ~= nil and #list(v) > 0 then error("removing a stop or signal", 0) end
 		end
 		local toRemove = list(get(proposal, "toRemove"))
-		if #toRemove > 1 then error("removing more than one construction at once", 0) end
-		if #toRemove == 1 then
-			local c = api.engine.getComponent(toRemove[1], api.type.ComponentType.CONSTRUCTION)
-			if c == nil then error("removing something that is no construction", 0) end
-			local t = c.transf
-			return { Bulldoze = { Construction = {
-				file = resName(c.fileName, "a construction's file"),
-				at = { x = t[13], y = t[14], z = t[15] },
-			} } }
-		end
 		local segments = list(get(street, "removedSegments"))
-		if #segments == 0 then return false end
+		-- The constructions it removes: town buildings, and any other.
+		local buildings, others = {}, 0
+		for _, e in ipairs(toRemove) do
+			local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+			if c == nil then error(engine.notConstruction(e), 0) end
+			if isTownBuilding(c) then
+				local t = c.transf
+				buildings[#buildings + 1] = { file = resName(c.fileName, "a town building's file"),
+					at = { x = t[13], y = t[14], z = t[15] } }
+			else
+				others = others + 1
+			end
+		end
+		-- One construction, with what is its own (a depot and its entrance
+		-- edge), or a town building alone: the construction by its file and
+		-- place, removed as the game removes it (createProposalRemove).
+		if #segments == 0 or others > 0 then
+			if #toRemove > 1 then error("removing more than one construction at once", 0) end
+			if #toRemove == 1 then
+				local c = api.engine.getComponent(toRemove[1], api.type.ComponentType.CONSTRUCTION)
+				local t = c.transf
+				return { Bulldoze = { Construction = {
+					file = resName(c.fileName, "a construction's file"),
+					at = { x = t[13], y = t[14], z = t[15] },
+				} } }
+			end
+			return false
+		end
+		-- Streets, and the town buildings along them the game removes too.
+		if #buildings > 64 then
+			error("removing " .. #buildings .. " town buildings at once, more than the room carries (64)", 0)
+		end
 		local network, edges = nil, {}
 		for k, seg in ipairs(segments) do
 			local n = networkOf(seg)
@@ -596,7 +664,7 @@ function engine.bulldoze(proposal)
 			if a == nil or b == nil then error("removed edge " .. k .. " has no position here", 0) end
 			edges[k] = { a = { x = a[1], y = a[2], z = a[3] }, b = { x = b[1], y = b[2], z = b[3] } }
 		end
-		return { Bulldoze = { Edges = { network = network, edges = edges } } }
+		return { Bulldoze = { Edges = { network = network, edges = edges, buildings = buildings } } }
 	end)
 	if not ok then return nil, tostring(action) end
 	return action

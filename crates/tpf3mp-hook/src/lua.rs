@@ -81,6 +81,8 @@
 
 #![allow(unsafe_code)]
 
+use tpf3mp_proto::LoadingStage;
+
 use std::{
     collections::VecDeque,
     ffi::{CStr, c_char, c_int, c_void},
@@ -655,6 +657,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"status", native_status),
                 (b"chat", native_chat),
                 (b"say", native_say),
+                (b"copy", native_copy),
                 (b"dump", native_dump),
                 (b"dumped", native_dumped),
                 (b"mods", native_mods),
@@ -1277,6 +1280,9 @@ pub fn take_said() -> Vec<ChatText> {
 
 /// The room as `status()` gives it, or `None` before the room's game.
 fn room_status() -> Option<LuaValue> {
+    // Before this module's lock: the lobby's is never taken under it.
+    let invite = crate::lobby::invite();
+    let competitive = crate::lobby::competitive();
     let shared = shared();
     let room = &shared.room;
     let info = room.info.as_ref()?;
@@ -1309,6 +1315,27 @@ fn room_status() -> Option<LuaValue> {
                             LuaValue::string("id"),
                             LuaValue::string(&crate::lobby::hex(&member.player)),
                         ),
+                        (
+                            LuaValue::string("banner"),
+                            LuaValue::string(
+                                member.banner.as_ref().map_or("", |banner| banner.as_str()),
+                            ),
+                        ),
+                        (
+                            LuaValue::string("loading"),
+                            LuaValue::string(match member.loading {
+                                Some(LoadingStage::Fetching { .. }) => "fetching",
+                                Some(LoadingStage::Loading) => "loading",
+                                None => "",
+                            }),
+                        ),
+                        (
+                            LuaValue::string("percent"),
+                            LuaValue::Number(f64::from(match member.loading {
+                                Some(LoadingStage::Fetching { percent }) => percent.min(100),
+                                _ => 0,
+                            })),
+                        ),
                     ]),
                 )
             })
@@ -1321,6 +1348,17 @@ fn room_status() -> Option<LuaValue> {
         ),
         (LuaValue::string("players"), players),
     ];
+    if let Some(invite) = invite {
+        fields.push((LuaValue::string("invite"), LuaValue::string(&invite)));
+    }
+    // Left out where the launcher has not said: the GUI then founds no
+    // company for the player (fail closed).
+    if let Some(competitive) = competitive {
+        fields.push((
+            LuaValue::string("competitive"),
+            LuaValue::Boolean(competitive),
+        ));
+    }
     if let Some(me) = &room.me {
         fields.push((
             LuaValue::string("me_id"),
@@ -1451,6 +1489,34 @@ unsafe extern "C-unwind" fn native_say(l: State) -> c_int {
     // SAFETY: a C function's call has room for its results.
     unsafe {
         match said {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
+/// `copy(text)`: in the GUI: puts `text`, the room's invite code, on the
+/// clipboard ([`crate::clipboard`]): `true`, or `false` and why.
+unsafe extern "C-unwind" fn native_copy(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let text = unsafe { string_arg(api, l, 1, 4 * crate::clipboard::MAX_CHARS) };
+    let copied = match text {
+        Some(text) => crate::clipboard::copy(&text),
+        None => Err("nothing to copy".to_owned()),
+    };
+    // SAFETY: a C function's call has room for its results.
+    unsafe {
+        match copied {
             Ok(()) => {
                 (api.pushboolean)(l, 1);
                 1
@@ -2611,11 +2677,17 @@ my_timetables";
             owner: player(1),
             members: BoundedVec::new(vec![
                 RoomMember {
+                    banner: None,
+                    loading: None,
+
                     player: player(1),
                     name: Text::new("Julian").unwrap(),
                     connected: true,
                 },
                 RoomMember {
+                    banner: None,
+                    loading: None,
+
                     player: player(2),
                     name: Text::new("Sam").unwrap(),
                     connected: false,
