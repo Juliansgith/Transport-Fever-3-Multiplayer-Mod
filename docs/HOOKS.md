@@ -3365,11 +3365,53 @@ copycheck: alive, checks=<n> engine changes=<n> at step <s>: <n> vehicles, <n> s
 ```
 
 `engine0` and `engine1` are the engines in the order the checker met them
-since the last load. A difference is said the first time and then at most
-every 500 room steps, at most 24 lines a check (the rest wait). The step is
+since the last load. A difference is said when it is new, whenever the
+number of entities it differs in changes, and else every 500 room steps,
+at most 64 lines a check (the rest wait); `MovePath +0x70` is said first
+every check it differs, and every `alive` line (every 256 checks) counts
+it (`, MovePath +0x70 differs in <k> of <n>`). A field that stops
+differing is said once (`... now equal in all <n> vehicles`). The step is
 the room's step about to run; the copy holds the world after the one
-before. With `TPF3MP_HOOK_DECISION_SYNC=0`, `MovePath +0x70` must differ;
-with the fix on, it must not.
+before.
+
+Three vectors' words (begin, end, capacity) are compared by length, an
+empty vector equal to a null one. Not compared, from build 40408's own
+code: padding, the bytes the game's replication skips in its field-by-field
+moves and assignments (`ReplicaCompVec<MovePath>::vf4` `0x259ae0`,
+`TransportVehicle`'s assignment `0x2018c0`, `CarriageList`'s `0x1e72d0`,
+`Line`'s `0x1e7930`): `MovePath +0x24..+0x28`, `+0x39..+0x3c`;
+`TransportVehicle +0x04`, `+0x54`, `+0xa1..+0xa8`, `+0xad`, `+0xb5`,
+`+0xc9..+0xd0`, `+0x194`, `+0x1b1`, `+0x1bd`, `+0x1c9`, `+0x1e4` (each to
+the next field); `CarriageList +0x19..+0x20`; `Line +0x21..+0x24`. And
+`MovePath +0x74..+0xa0`, per-copy scratch: a snapshot of `+0x4c..+0x74`
+that `LandVehicleMoveSystem` takes (`0xabc974`, `if (!mp[0x9c]) { copy
++0x4c..+0x74 to +0x74..+0x9c; mp[0x9c] = 1; }`) and its flag; no system of
+the simulation was found reading it (INFERRED: the interpolation's start),
+and in the watch lines it equals the current block at each batch's first
+update and lags it by one update after.
+
+**Round A** (2026-10-01, `543cf12`, james and cat, `twomptest`,
+`TPF3MP_HOOK_DECISION_SYNC=0`; split at step 3300 as before):
+
+- `MovePath +0x70` never differed at a check. All 133 vehicles' `MovePath`s
+  are in the contiguous store, and the game's own `MovePath` copy
+  (`0x2699f0`) carries `+0x4c..+0x74` of every one of them at each
+  replication. So the flag is the same in both engines whenever an engine
+  starts a batch, and `decision-sync` copies nothing: a run of 11 800 steps
+  with it on never logged its first-copy line. The `decision flag` lines'
+  "stale" flag was each engine's own reading, which is logged only when it
+  changes for that engine. The step-3300 split's cause is elsewhere: in that
+  round 217708's path was already 26 edges in one game and 10 in the other
+  at step 3200, before its flag differed at 3201.
+- Padding and the snapshot above: the rest of round A's `MovePath`,
+  `CarriageList` and `Line` lines and 13 of `TransportVehicle`'s.
+- `TransportVehicle +0x198..+0x1b0`: an empty vector with a capacity in one
+  engine, never allocated in the other (now compared by length).
+- Left, real state one engine has and the other not:
+  `TransportVehicle +0x1b8` (a dword, one apart, in 15 to 23 vehicles at a
+  time) and `+0x1cc` (an entity, `-1` in the other engine, in 1 to 4; the
+  maintenance code writes it, `0xb83010`, with the `maintained` and
+  `unmaintained` strings, from a callback `Init` registers, not a system).
 
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game

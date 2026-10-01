@@ -23,18 +23,25 @@
 //! [`COMPONENTS`] in both engines through the game's own const getter and
 //! compares them byte for byte, by dword:
 //!
+//! - three 8-byte words that are a vector (begin, end, capacity) in each
+//!   copy, or null in one, are compared by the vector's length;
 //! - an 8-byte word that holds a heap address in both copies is masked (the
 //!   copies' heaps differ legitimately); a run of two or more such words
 //!   starting there, a vector's begin and end, is compared by the distance
 //!   between the first two instead;
+//! - the bytes of [`MASKS`] are not compared: padding the game's own copy
+//!   skips, and `MovePath`'s per-copy snapshot;
 //! - a component one engine has and the other does not is a difference too;
 //! - a component at one address in both engines (a shared page) is equal.
 //!
-//! Each difference is aggregated per component and offset, and said at its
-//! first check and then at most every [`LOG_EVERY_STEPS`] room steps:
+//! Each difference is aggregated per component and offset, and said when it
+//! is new, whenever the number of entities it differs in changes, and else
+//! every [`LOG_EVERY_STEPS`] room steps (the [`WATCHED`] decision flag every
+//! check it differs, first); one that stops differing is said once:
 //!
 //! ```text
 //! copycheck: step S component C offset +0xNN differs in K of N vehicles (e.g. vehicle V (slot I): engine0=0x..., engine1=0x...; engine1 ran the update before)
+//! copycheck: step S component C offset +0xNN now equal in all N vehicles
 //! ```
 //!
 //! It writes nothing. Every read is checked readable first (the hook's
@@ -65,10 +72,13 @@ pub const ENV: &str = "TPF3MP_PROBE_ENGINE_COPY";
 pub const MAX_PER_CHECK: usize = 256;
 /// A difference already said is said again at most this often (room steps).
 pub const LOG_EVERY_STEPS: u64 = 500;
+/// Fields always said first, and counted in every `alive` line: the
+/// platform-decision flag.
+pub const WATCHED: &[(&str, usize)] = &[("MovePath", 0x70)];
 /// Difference lines one check says at most; the rest wait for later checks.
-pub const MAX_LINES_PER_CHECK: usize = 24;
+pub const MAX_LINES_PER_CHECK: usize = 64;
 /// Checks between two `alive` lines.
-pub const ALIVE_EVERY: u64 = 1 << 10;
+pub const ALIVE_EVERY: u64 = 1 << 8;
 /// `TransportVehicle`'s line and current station (the vehicle watcher's).
 const TV_LINE: usize = 0xb8;
 const TV_STATION: usize = 0xc0;
@@ -154,9 +164,85 @@ pub const COMPONENTS: &[Component] = &[
     },
 ];
 
-/// Fields known to be each engine's own scratch, masked as such:
-/// `(component, dword offset)`. None is known yet.
-pub const SCRATCH: &[(&str, usize)] = &[];
+/// Why a byte range of a component is not compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Why {
+    /// Bytes no field holds: the game's own copy and assignment of the
+    /// component skip them, so each engine keeps whatever its allocation
+    /// left there.
+    Padding,
+    /// A field each engine keeps for itself.
+    Scratch,
+}
+
+/// A byte range `[start, end)` of a component of `size` bytes not compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mask {
+    pub component: &'static str,
+    pub size: usize,
+    pub start: usize,
+    pub end: usize,
+    pub why: Why,
+}
+
+const fn pad(component: &'static str, size: usize, start: usize, end: usize) -> Mask {
+    Mask {
+        component,
+        size,
+        start,
+        end,
+        why: Why::Padding,
+    }
+}
+
+/// The ranges not compared, from build 40408's own code (docs/HOOKS.md, "The
+/// engine-copy checker"):
+///
+/// - padding: the bytes the game's replication skips in its field by field
+///   moves and assignments (`ReplicaCompVec<MovePath>::vf4` `0x259ae0`,
+///   `TransportVehicle`'s assignment `0x2018c0`, `CarriageList`'s
+///   `0x1e72d0`, `Line`'s `0x1e7930`): byte fields' tails and the gaps
+///   before 8-byte members;
+/// - `MovePath +0x74..+0xa0`, scratch: a snapshot of `+0x4c..+0x74` that
+///   `LandVehicleMoveSystem` (`0xabc974`) takes while `+0x9c` is clear, and
+///   that flag; no simulation system was found reading it (the
+///   interpolation's start, INFERRED), and its values in an engine are
+///   that engine's own batches'.
+///
+/// A component of another size than the one listed is compared whole.
+pub const MASKS: &[Mask] = &[
+    pad("MovePath", 0xa0, 0x24, 0x28),
+    pad("MovePath", 0xa0, 0x39, 0x3c),
+    Mask {
+        component: "MovePath",
+        size: 0xa0,
+        start: 0x74,
+        end: 0xa0,
+        why: Why::Scratch,
+    },
+    pad("TransportVehicle", 0x1e8, 0x04, 0x08),
+    pad("TransportVehicle", 0x1e8, 0x54, 0x58),
+    pad("TransportVehicle", 0x1e8, 0xa1, 0xa8),
+    pad("TransportVehicle", 0x1e8, 0xad, 0xb0),
+    pad("TransportVehicle", 0x1e8, 0xb5, 0xb8),
+    pad("TransportVehicle", 0x1e8, 0xc9, 0xd0),
+    pad("TransportVehicle", 0x1e8, 0x194, 0x198),
+    pad("TransportVehicle", 0x1e8, 0x1b1, 0x1b4),
+    pad("TransportVehicle", 0x1e8, 0x1bd, 0x1c0),
+    pad("TransportVehicle", 0x1e8, 0x1c9, 0x1cc),
+    pad("TransportVehicle", 0x1e8, 0x1e4, 0x1e8),
+    pad("CarriageList", 0x20, 0x19, 0x20),
+    pad("Line", 0x28, 0x21, 0x24),
+];
+
+/// The ranges of [`MASKS`] for `component` at `size` bytes.
+pub fn masks_for(component: &str, size: usize) -> Vec<Mask> {
+    MASKS
+        .iter()
+        .filter(|m| m.component == component && m.size == size)
+        .copied()
+        .collect()
+}
 
 /// The type descriptor's decorated name of `ecs::component::<name>`, as it
 /// stands at the descriptor's `+0x10`.
@@ -341,13 +427,13 @@ pub struct Compared {
 /// Compares a component's two copies `a` and `b` (engine 0's and 1's): by
 /// dword, except the words `pointer` says hold a heap address in both (only
 /// when `words` says the component is laid out in 8-byte words), compared
-/// as vector lengths where two or more begin a run, and the `scratch`
-/// dwords.
+/// as vector lengths where two or more begin a run, and the bytes `masks`
+/// covers (a dword partly masked is compared by its other bytes).
 pub fn compare(
     a: &[u8],
     b: &[u8],
     words: bool,
-    scratch: &[usize],
+    masks: &[Mask],
     pointer: &mut dyn FnMut(u64) -> bool,
 ) -> Compared {
     let n = a.len().min(b.len());
@@ -358,10 +444,51 @@ pub fn compare(
     };
     if words {
         let count = n / 8;
+        // Vectors first: three words that are a vector's begin, end and
+        // capacity in each copy, or all null (never allocated), and not
+        // null in both: compared by length (an empty vector with a
+        // capacity equals an unallocated one).
+        let mut vector = vec![false; count];
+        let mut i = 0;
+        while i + 3 <= count {
+            let at = i * 8;
+            let mut length = |bytes: &[u8]| -> Option<Option<u64>> {
+                let (b, e, c) = (word(bytes, at), word(bytes, at + 8), word(bytes, at + 16));
+                if b == 0 && e == 0 && c == 0 {
+                    return Some(None);
+                }
+                let shaped = pointer_like(b)
+                    && pointer_like(e)
+                    && pointer_like(c)
+                    && b <= e
+                    && e <= c
+                    && c - b < 1 << 32;
+                (shaped && pointer(b)).then(|| Some(e - b))
+            };
+            match (length(a), length(b)) {
+                (Some(la), Some(lb)) if la.is_some() || lb.is_some() => {
+                    let (la, lb) = (la.unwrap_or(0), lb.unwrap_or(0));
+                    vector[i..i + 3].fill(true);
+                    skip[at..at + 24].fill(true);
+                    out.masked
+                        .push((at, word(a, at) != word(b, at) || la != lb));
+                    if la != lb {
+                        out.diffs.push(FieldDiff {
+                            offset: at,
+                            what: What::Length,
+                            a: la,
+                            b: lb,
+                        });
+                    }
+                    i += 3;
+                }
+                _ => i += 1,
+            }
+        }
         let heap: Vec<bool> = (0..count)
             .map(|i| {
                 let (x, y) = (word(a, i * 8), word(b, i * 8));
-                pointer_like(x) && pointer_like(y) && pointer(x) && pointer(y)
+                !vector[i] && pointer_like(x) && pointer_like(y) && pointer(x) && pointer(y)
             })
             .collect();
         for i in 0..count {
@@ -387,9 +514,9 @@ pub fn compare(
             }
         }
     }
-    for &at in scratch {
-        if at < n {
-            skip[at..(at + 4).min(n)].fill(true);
+    for m in masks {
+        if m.start < n {
+            skip[m.start..m.end.min(n)].fill(true);
         }
     }
     let dword = |bytes: &[u8], at: usize| {
@@ -401,7 +528,7 @@ pub fn compare(
     let mut at = 0;
     while at < n {
         let end = (at + 4).min(n);
-        if !skip[at] && a[at..end] != b[at..end] {
+        if (at..end).any(|i| !skip[i] && a[i] != b[i]) {
             out.diffs.push(FieldDiff {
                 offset: at,
                 what: What::Value,
@@ -461,6 +588,8 @@ pub struct Tally {
     pub masked_example: Vec<Option<(usize, Example)>>,
     /// Per component: entities in the contiguous store, paged, unknown.
     pub places: Vec<[u64; 3]>,
+    /// Per component: its size in bytes (0 when not known).
+    pub sizes: Vec<usize>,
 }
 
 impl Tally {
@@ -472,6 +601,7 @@ impl Tally {
             masked: vec![BTreeMap::new(); components],
             masked_example: vec![None; components],
             places: vec![[0; 3]; components],
+            sizes: vec![0; components],
         }
     }
 
@@ -536,6 +666,8 @@ impl Tally {
 #[derive(Debug, Default)]
 pub struct Reporter {
     said: BTreeMap<Key, u64>,
+    /// Per key said: how many entities differed when it was last said.
+    counts: BTreeMap<Key, u64>,
     masked_said: Vec<BTreeSet<usize>>,
     layout_said: Vec<bool>,
 }
@@ -560,19 +692,33 @@ impl Reporter {
         self.layout_said.resize(components, false);
         let mut lines = Vec::new();
         let mut held = 0usize;
-        for (&(component, offset, what), &(count, ex)) in &tally.diffs {
-            let due = self
-                .said
-                .get(&(component, offset, what))
-                .is_none_or(|&last| step >= last.saturating_add(LOG_EVERY_STEPS));
-            if !due {
-                continue;
-            }
+        // Due: a watched field, a new one, one whose count changed, one last
+        // said LOG_EVERY_STEPS ago; in that order of priority.
+        let mut due: Vec<(u8, Key, u64, Example)> = Vec::new();
+        for (&key, &(count, ex)) in &tally.diffs {
+            let (component, offset, what) = key;
+            let watched = what == What::Value
+                && COMPONENTS
+                    .get(component)
+                    .is_some_and(|c| WATCHED.contains(&(c.name, offset)));
+            let rank = match (self.said.get(&key), self.counts.get(&key)) {
+                _ if watched => 0,
+                (None, _) => 1,
+                (Some(_), last) if last != Some(&count) => 2,
+                (Some(&at), _) if step >= at.saturating_add(LOG_EVERY_STEPS) => 3,
+                _ => continue,
+            };
+            due.push((rank, key, count, ex));
+        }
+        due.sort_by_key(|(rank, key, _, _)| (*rank, *key));
+        for (_, key, count, ex) in due {
             if lines.len() >= MAX_LINES_PER_CHECK {
                 held += 1;
                 continue;
             }
-            self.said.insert((component, offset, what), step);
+            let (component, offset, what) = key;
+            self.said.insert(key, step);
+            self.counts.insert(key, count);
             let c = COMPONENTS.get(component);
             let (name, kind) = c.map_or(("?", Kind::Vehicle), |c| (c.name, c.kind));
             lines.push(format!(
@@ -585,6 +731,29 @@ impl Reporter {
                 ex.place,
                 ex.a,
                 ex.b,
+            ));
+        }
+        // Fields said differing that no longer do, in a check that compared
+        // their component.
+        let gone: Vec<Key> = self
+            .counts
+            .keys()
+            .filter(|key| {
+                !tally.diffs.contains_key(key) && tally.compared.get(key.0).is_some_and(|n| *n > 0)
+            })
+            .copied()
+            .collect();
+        for key in gone {
+            self.counts.remove(&key);
+            self.said.remove(&key);
+            let (component, offset, what) = key;
+            let c = COMPONENTS.get(component);
+            let (name, kind) = c.map_or(("?", Kind::Vehicle), |c| (c.name, c.kind));
+            lines.push(format!(
+                "copycheck: step {step} component {name} {} now equal in all {} {}s",
+                offset_text(offset, what),
+                tally.compared[component],
+                kind.one(),
             ));
         }
         if held > 0 {
@@ -601,21 +770,26 @@ impl Reporter {
             if !self.layout_said[component] {
                 self.layout_said[component] = true;
                 let [slot, paged, unknown] = tally.places[component];
-                let scratch: Vec<String> = SCRATCH
-                    .iter()
-                    .filter(|(n, _)| *n == name)
-                    .map(|(_, at)| format!("+{at:#04x}"))
-                    .collect();
+                let size = tally.sizes.get(component).copied().unwrap_or(0);
+                let ranges = |why: Why| {
+                    let r: Vec<String> = masks_for(name, size)
+                        .iter()
+                        .filter(|m| m.why == why)
+                        .map(|m| format!("+{:#04x}..+{:#04x}", m.start, m.end))
+                        .collect();
+                    if r.is_empty() {
+                        "none".to_string()
+                    } else {
+                        r.join(" ")
+                    }
+                };
                 lines.push(format!(
-                    "copycheck: component {name}: {} {}s compared at step {step}: {} at one address in both engines, {slot} in the contiguous store, {paged} paged, {unknown} store unknown; scratch fields masked: {}",
+                    "copycheck: component {name}: {} {}s compared at step {step}: {} at one address in both engines, {slot} in the contiguous store, {paged} paged, {unknown} store unknown; not compared: padding {} (bytes the game's own copy skips), scratch {}",
                     tally.compared[component],
                     kind.one(),
                     tally.shared[component],
-                    if scratch.is_empty() {
-                        "none known".to_string()
-                    } else {
-                        scratch.join(" ")
-                    },
+                    ranges(Why::Padding),
+                    ranges(Why::Scratch),
                 ));
             }
             let new: Vec<(usize, (u64, u64))> = tally.masked[component]
@@ -699,6 +873,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     cursors: [0; 3],
     reporter: Reporter {
         said: BTreeMap::new(),
+        counts: BTreeMap::new(),
         masked_said: Vec::new(),
         layout_said: Vec::new(),
     },
@@ -980,6 +1155,22 @@ fn store_of(probe: &mut Probe, engine: usize, ptr: usize) -> Option<(usize, usiz
     })
 }
 
+/// The watched fields' counts in one check, for the `alive` line.
+pub fn watched_text(tally: &Tally) -> String {
+    WATCHED
+        .iter()
+        .filter_map(|&(name, offset)| {
+            let component = COMPONENTS.iter().position(|c| c.name == name)?;
+            let n = *tally.compared.get(component)?;
+            let k = tally
+                .diffs
+                .get(&(component, offset, What::Value))
+                .map_or(0, |d| d.0);
+            Some(format!(", {name} +{offset:#04x} differs in {k} of {n}"))
+        })
+        .collect()
+}
+
 fn check(s: &mut State, step: u64, before: usize, engine: usize) {
     let started = Instant::now();
     let n_before = number(&mut s.engines, before);
@@ -1040,11 +1231,8 @@ fn check(s: &mut State, step: u64, before: usize, engine: usize) {
             Kind::Station => &stations,
             Kind::Line => &lines,
         };
-        let scratch: Vec<usize> = SCRATCH
-            .iter()
-            .filter(|(n, _)| *n == c.name)
-            .map(|(_, at)| *at)
-            .collect();
+        let masks = masks_for(c.name, f.size);
+        tally.sizes[f.component] = f.size;
         let mut store: Option<(usize, usize)> = None;
         let mut store_tries = 0;
         for &entity in entities {
@@ -1091,7 +1279,7 @@ fn check(s: &mut State, step: u64, before: usize, engine: usize) {
                     .entry(v >> 16)
                     .or_insert_with(|| usize::try_from(v).is_ok_and(|v| probe.readable(v, 1)))
             };
-            let compared = compare(a, b, f.size % 8 == 0, &scratch, &mut heap);
+            let compared = compare(a, b, f.size % 8 == 0, &masks, &mut heap);
             if tally.masked_example[f.component].is_none()
                 && let Some(&(at, _)) = compared.masked.iter().find(|(_, differs)| *differs)
             {
@@ -1118,13 +1306,14 @@ fn check(s: &mut State, step: u64, before: usize, engine: usize) {
     s.max_nanos = s.max_nanos.max(nanos);
     if s.checks == 1 || s.checks.is_multiple_of(ALIVE_EVERY) {
         out.push(format!(
-            "copycheck: alive, checks={} engine changes={} at step {step}: {} vehicles, {} stations, {} lines compared, {} differing field(s); {} us a check on average, {} us at most",
+            "copycheck: alive, checks={} engine changes={} at step {step}: {} vehicles, {} stations, {} lines compared, {} differing field(s){}; {} us a check on average, {} us at most",
             s.checks,
             s.changes,
             vehicles.len(),
             stations.len(),
             lines.len(),
             tally.fields(),
+            watched_text(&tally),
             s.nanos / s.checks / 1000,
             s.max_nanos / 1000,
         ));
@@ -1255,10 +1444,8 @@ mod tests {
         let c = compare(&a, &b, true, &[], &mut heap);
         // Begin, end, capacity and the lone address are masked; the
         // lengths agree (0x40 each) though the capacities do not.
-        assert_eq!(
-            c.masked,
-            vec![(0, true), (8, true), (0x10, true), (0x20, true)]
-        );
+        // The vector is masked as one, at its begin.
+        assert_eq!(c.masked, vec![(0, true), (0x20, true)]);
         assert_eq!(
             c.diffs,
             vec![FieldDiff {
@@ -1336,7 +1523,14 @@ mod tests {
                 },
             ]
         );
-        let c = compare(&a, &b, false, &[0x70], &mut heap);
+        let scratch = Mask {
+            component: "MovePath",
+            size: 0xa2,
+            start: 0x70,
+            end: 0x74,
+            why: Why::Scratch,
+        };
+        let c = compare(&a, &b, false, &[scratch], &mut heap);
         assert_eq!(c.diffs.len(), 1);
         assert_eq!(c.diffs[0].offset, 0xa0);
     }
@@ -1380,7 +1574,10 @@ mod tests {
     #[test]
     fn a_difference_is_said_when_new_then_at_most_every_500_steps() {
         let mut t = Tally::new(COMPONENTS.len());
-        t.add(0, 217708, Place::Paged, &flag_diff(1));
+        // MovePath +0x44 (not a watched field).
+        let mut d = flag_diff(1);
+        d.diffs[0].offset = 0x44;
+        t.add(0, 217708, Place::Paged, &d);
         t.masked_example[0] = Some((
             0x18,
             Example {
@@ -1394,11 +1591,13 @@ mod tests {
         let lines = r.lines(3300, 1, &t);
         assert_eq!(
             lines[0],
-            "copycheck: step 3300 component MovePath offset +0x70 differs in 1 of 1 vehicles (e.g. vehicle 217708 (paged): engine0=0x1, engine1=0x0; engine1 ran the update before)"
+            "copycheck: step 3300 component MovePath offset +0x44 differs in 1 of 1 vehicles (e.g. vehicle 217708 (paged): engine0=0x1, engine1=0x0; engine1 ran the update before)"
         );
         // Once per component: its layout and its masked words.
         assert!(lines[1].starts_with("copycheck: component MovePath: 1 vehicles compared at step 3300: 0 at one address in both engines, 0 in the contiguous store, 1 paged"));
-        assert!(lines[1].ends_with("scratch fields masked: none known"));
+        assert!(lines[1].ends_with(
+            "not compared: padding none (bytes the game's own copy skips), scratch none"
+        ));
         assert!(lines[2].starts_with("copycheck: component MovePath: masks as heap addresses"));
         assert!(lines[2].contains("+0x18 (1, 1 differing)"));
         assert!(
@@ -1422,9 +1621,9 @@ mod tests {
     }
 
     #[test]
-    fn a_check_says_at_most_24_lines_and_holds_the_rest() {
+    fn a_check_says_at_most_64_lines_and_holds_the_rest() {
         let mut t = Tally::new(COMPONENTS.len());
-        let diffs: Vec<FieldDiff> = (0..30)
+        let diffs: Vec<FieldDiff> = (0..70)
             .map(|i| FieldDiff {
                 offset: i * 4,
                 what: What::Value,
@@ -1549,5 +1748,151 @@ mod tests {
         assert!(!entity_in_tables(1, lists, 0, &mut all));
         let mut not_bits = |at: u64, _: usize| at < 0x9000;
         assert!(!entity_in_tables(1, lists, 0x9000, &mut not_bits));
+    }
+
+    #[test]
+    fn padding_is_not_compared_but_the_field_beside_it_is() {
+        // TransportVehicle +0x1c8: a byte field, then three bytes of
+        // padding (round A: engine0=0x1, engine1=0x20202001).
+        let masks = masks_for("TransportVehicle", 0x1e8);
+        let mut a = vec![0u8; 0x1e8];
+        let mut b = vec![0u8; 0x1e8];
+        a[0x1c8] = 1;
+        b[0x1c8..0x1cc].copy_from_slice(&0x2020_2001u32.to_le_bytes());
+        // +0x04: padding whole (engine1=0x6628726f).
+        b[0x04..0x08].copy_from_slice(&0x6628_726fu32.to_le_bytes());
+        let mut heap = |_: u64| false;
+        assert!(compare(&a, &b, true, &masks, &mut heap).diffs.is_empty());
+        // The byte field itself differing is said.
+        b[0x1c8] = 0;
+        let c = compare(&a, &b, true, &masks, &mut heap);
+        assert_eq!(c.diffs.len(), 1);
+        assert_eq!((c.diffs[0].offset, c.diffs[0].a), (0x1c8, 1));
+        // MovePath: the snapshot +0x74..+0xa0 and padding +0x24 are not
+        // compared, the flag +0x70 is.
+        let masks = masks_for("MovePath", 0xa0);
+        let mut a = vec![0u8; 0xa0];
+        let b = vec![0u8; 0xa0];
+        a[0x24] = 0x3d;
+        a[0x78] = 7;
+        a[0x98] = 1;
+        assert!(compare(&a, &b, true, &masks, &mut heap).diffs.is_empty());
+        a[0x70] = 1;
+        let c = compare(&a, &b, true, &masks, &mut heap);
+        assert_eq!(c.diffs.len(), 1);
+        assert_eq!(c.diffs[0].offset, 0x70);
+        // Another size: nothing masked.
+        assert!(masks_for("MovePath", 0xa8).is_empty());
+    }
+
+    #[test]
+    fn every_padding_range_lies_inside_its_component() {
+        for m in MASKS {
+            assert!(m.start < m.end && m.end <= m.size, "{m:?}");
+            assert!(COMPONENTS.iter().any(|c| c.name == m.component), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn a_field_is_said_again_when_its_count_changes_and_when_it_is_equal_again() {
+        let tv = 1;
+        let diff = |offset| Compared {
+            diffs: vec![FieldDiff {
+                offset,
+                what: What::Value,
+                a: 3,
+                b: 4,
+            }],
+            masked: Vec::new(),
+        };
+        let mut r = Reporter::default();
+        let mut t = Tally::new(COMPONENTS.len());
+        t.add(tv, 7, Place::Slot(0), &diff(0x1b8));
+        let said = |lines: &[String]| lines.iter().filter(|l| l.contains(" differs in ")).count();
+        assert_eq!(said(&r.lines(10, 0, &t)), 1);
+        // The same count: not again.
+        assert_eq!(said(&r.lines(11, 1, &t)), 0);
+        // Another vehicle differs too: said, with the new count.
+        t.add(tv, 8, Place::Slot(1), &diff(0x1b8));
+        let lines = r.lines(12, 0, &t);
+        assert_eq!(said(&lines), 1);
+        assert!(lines[0].contains("+0x1b8 differs in 2 of 2 vehicles"));
+        // Equal again: said once.
+        let mut t = Tally::new(COMPONENTS.len());
+        t.add(tv, 7, Place::Slot(0), &Compared::default());
+        let lines = r.lines(13, 1, &t);
+        assert_eq!(
+            lines,
+            vec![
+                "copycheck: step 13 component TransportVehicle offset +0x1b8 now equal in all 1 vehicles"
+            ]
+        );
+        assert!(r.lines(14, 0, &t).is_empty());
+    }
+
+    #[test]
+    fn the_decision_flag_is_said_first_every_check_it_differs() {
+        let mut t = Tally::new(COMPONENTS.len());
+        let many: Vec<FieldDiff> = (0..100)
+            .map(|i| FieldDiff {
+                offset: i * 4,
+                what: What::Value,
+                a: 1,
+                b: 2,
+            })
+            .collect();
+        // TransportVehicle sorts after MovePath anyway; put the flag last
+        // among MovePath's by giving MovePath 100 new fields too.
+        t.add(
+            0,
+            217708,
+            Place::Slot(5),
+            &Compared {
+                diffs: many.clone(),
+                masked: Vec::new(),
+            },
+        );
+        let mut r = Reporter::default();
+        let lines = r.lines(3201, 1, &t);
+        assert!(lines[0].contains("component MovePath offset +0x70 differs in 1 of 1"));
+        // Said again the next check though its count is the same.
+        let lines = r.lines(3202, 0, &t);
+        assert!(lines[0].contains("component MovePath offset +0x70 differs"));
+        assert!(watched_text(&t).contains("MovePath +0x70 differs in 1 of 1"));
+        let empty = Tally::new(COMPONENTS.len());
+        assert!(watched_text(&empty).contains("MovePath +0x70 differs in 0 of 0"));
+    }
+
+    #[test]
+    fn an_empty_vector_equals_an_unallocated_one_and_lengths_are_compared() {
+        // TransportVehicle +0x198 in round A: an empty vector with room for
+        // two entries in one engine, never allocated in the other.
+        let mut a = words(&[0x1d0_5464_4f30, 0x1d0_5464_4f30, 0x1d0_5464_4f50, 9]);
+        let b = words(&[0, 0, 0, 9]);
+        let mut heap = |_: u64| true;
+        let c = compare(&a, &b, true, &[], &mut heap);
+        assert!(c.diffs.is_empty(), "{c:?}");
+        assert_eq!(c.masked, vec![(0, true)]);
+        // One entry in it: a length that differs.
+        a[8..16].copy_from_slice(&0x1d0_5464_4f40u64.to_le_bytes());
+        let c = compare(&a, &b, true, &[], &mut heap);
+        assert_eq!(
+            c.diffs,
+            vec![FieldDiff {
+                offset: 0,
+                what: What::Length,
+                a: 0x10,
+                b: 0
+            }]
+        );
+        // Three nulls in both copies: plain equal words, nothing masked.
+        let z = words(&[0, 0, 0]);
+        let c = compare(&z, &z, true, &[], &mut heap);
+        assert!(c.diffs.is_empty() && c.masked.is_empty());
+        // Not a vector's shape (end before begin): compared as words.
+        let x = words(&[0x2_0000_1040, 0x2_0000_1000, 0x2_0000_1080]);
+        let c = compare(&x, &z, true, &[], &mut heap);
+        assert!(!c.diffs.is_empty());
+        assert!(c.diffs.iter().all(|d| d.what == What::Value));
     }
 }
