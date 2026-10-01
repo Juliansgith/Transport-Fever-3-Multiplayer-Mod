@@ -643,9 +643,11 @@ end
 local function buildNetwork(network, templateName, style, polyline)
 	local proposal = api.type.SimpleProposal.new()
 	networkInto(proposal, network, templateName, style, polyline)
-	-- Paid by the player, as the tool builds.
+	-- Paid by the player, as the tool builds; the town buildings in the way
+	-- cleared, as the tool clears them (the capture lets only those through).
 	local context = api.type.Context.new()
 	context.player = company()
+	context.gatherBuildings = true
 	return buildProposal(proposal, context)
 end
 

@@ -415,13 +415,16 @@ fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
                                 [20] = {{ 102 }}, [21] = {{ 102 }} }}
              api = {{
                  type = {{ enum = {{ BaseEdgeType = {{ NORMAL = 0, BRIDGE = 1, TUNNEL = 2 }} }},
-                          ComponentType = {{ BASE_NODE = 1 }} }},
+                          ComponentType = {{ BASE_NODE = 1, CONSTRUCTION = 2 }} }},
                  res = {{ bridgeTypeRep = {{ getName = function(i) if i == 3 then return 'bridge/stone.lua' end end }},
                           edgeDecorationRep = {{ getName = function(i)
                               if i == 3 then return '::/infrastructure/edge_addons/barrier_b.edge' end end }} }},
                  engine = {{
                      getComponent = function(id, kind)
                          if kind == 1 and NODES[id] then return {{ position = NODES[id] }} end
+                         -- 900 a town's house, 901 a station.
+                         if kind == 2 and id == 900 then return {{ townBuildings = {{ 1 }} }} end
+                         if kind == 2 and id == 901 then return {{ townBuildings = {{}} }} end
                      end,
                      system = {{ streetSystem = {{
                          getNodeStreetSegments = function(n) return STREETS[n] or {{}} end,
@@ -635,4 +638,22 @@ fn a_stop_moves_with_a_road_only_on_the_edge_rebuilt_in_place() {
     let why =
         capture_modify(&modify_proposal("{ { 555, 0 }, { -400000000, 0 } }", "{}")).unwrap_err();
     assert!(why.contains("adds a stop or signal"), "{why}");
+}
+
+/// A road the tool draws through a town's house: the house goes with the
+/// build, which every game's build clears again; a station in the way does
+/// not.
+#[test]
+fn a_road_through_a_town_house_is_carried_and_through_a_station_is_not() {
+    let through_house = capture_with(
+        SPLIT_PROPOSAL,
+        "captureBuild({ toAdd = {}, toRemove = { 900 }, proposal = street }, 'Street')",
+    );
+    assert!(through_house.is_ok(), "{through_house:?}");
+    let why = capture_with(
+        SPLIT_PROPOSAL,
+        "captureBuild({ toAdd = {}, toRemove = { 901 }, proposal = street }, 'Street')",
+    )
+    .unwrap_err();
+    assert!(why.contains("removes a construction"), "{why}");
 }

@@ -806,8 +806,11 @@ end
 
 -- The action table of a street or track tool's proposal; false for a
 -- proposal of nothing; or nil and why the room cannot carry it.
+-- The town buildings a road or track clears go with it: every game's build
+-- clears them again (tpf3mp/apply.lua, gatherBuildings); any other
+-- construction in the way is refused.
 function engine.captureBuild(proposal, network)
-	local ok, capture = pcall(engine.fromProposal, proposal, network)
+	local ok, capture = pcall(engine.fromProposal, proposal, network, "town")
 	if not ok then return nil, tostring(capture) end
 	if capture == nil then return false end
 	return roads.capture(capture, engine.world())
