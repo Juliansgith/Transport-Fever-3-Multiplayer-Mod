@@ -356,7 +356,7 @@ pub fn list_saves_in(roots: &[PathBuf], active: Option<u32>) -> Vec<String> {
                 else {
                     continue;
                 };
-                if !meta.is_file() || stem.is_empty() {
+                if !meta.is_file() || stem.is_empty() || !offered_save(stem) {
                     continue;
                 }
                 let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
@@ -386,6 +386,15 @@ pub fn list_saves_in(roots: &[PathBuf], active: Option<u32>) -> Vec<String> {
     saves.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     saves.dedup_by(|a, b| a.0.eq_ignore_ascii_case(&b.0));
     saves.into_iter().map(|(name, _)| name).collect()
+}
+
+/// Whether a save is one a player picks a room's world from: not the game's
+/// autosaves (`autosave_…`) and not the copies the mod writes for a room's
+/// own use (`tpf3mp_room_…`, `tpf3mp_<game>_<event>`), which crowd the
+/// player's own saves out of the list.
+fn offered_save(stem: &str) -> bool {
+    let lower = stem.to_ascii_lowercase();
+    !(lower.starts_with("autosave_") || lower.starts_with("tpf3mp_"))
 }
 
 fn read_small(path: &Path) -> Option<String> {
@@ -853,6 +862,19 @@ mod tests {
         assert!(find_save_in(&roots, None, "mptest").is_err());
         assert_eq!(find_save_in(&roots, Some(222), "mptest").unwrap(), theirs);
         assert_eq!(find_save_in(&roots, Some(111), "mptest").unwrap(), mine);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn autosaves_and_the_mods_room_copies_are_not_offered() {
+        let root = temp("save-list-filter");
+        put_save(&root, "111", "twomptest.sav");
+        put_save(&root, "111", "autosave_two_1913-02-01.sav");
+        put_save(&root, "111", "Autosave_New Game_1912-1-1.sav");
+        put_save(&root, "111", "tpf3mp_room_56032.sav");
+        put_save(&root, "111", "tpf3mp_84808_26.sav");
+        let roots = [root.clone()];
+        assert_eq!(list_saves_in(&roots, None), ["twomptest"]);
         fs::remove_dir_all(&root).unwrap();
     }
 

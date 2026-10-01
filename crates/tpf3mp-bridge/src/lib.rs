@@ -64,8 +64,9 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// that may name one (protocol 13's `tpf3mp_proto::PORTRAITS`); 20 the save
 /// a room starts from on its page ([`LobbyRoom::start`]), the owner's
 /// upload of it ([`LobbyRoom::upload`]) and the owner's choice of another
-/// in the lobby ([`LobbyAction::ChooseStart`]; protocol 14).
-pub const BRIDGE_VERSION: u32 = 21;
+/// in the lobby ([`LobbyAction::ChooseStart`]; protocol 14); 22 lists up to
+/// 100 saves ([`MAX_LOBBY_SAVES`], 40 before), the player's own only.
+pub const BRIDGE_VERSION: u32 = 22;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -144,8 +145,10 @@ pub enum ToHook {
 pub const MAX_LOBBY_CHAT: usize = 40;
 /// Most rules a [`LobbyView`] offers.
 pub const MAX_LOBBY_RULES: usize = 8;
-/// Most saves a [`LobbyView`] lists: the newest.
-pub const MAX_LOBBY_SAVES: usize = 40;
+/// Most saves a [`LobbyView`] lists: the newest. The game's autosaves and
+/// the mod's own room copies are left out before the cut
+/// (`tpf3mp_agent::steam::list_saves`).
+pub const MAX_LOBBY_SAVES: usize = 100;
 /// Longest save name a [`LobbyView`] lists or a [`LobbyAction::Create`]
 /// names, in UTF-8 bytes.
 pub const MAX_SAVE_NAME: usize = 64;
