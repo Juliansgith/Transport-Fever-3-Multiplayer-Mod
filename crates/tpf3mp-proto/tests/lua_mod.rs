@@ -3863,6 +3863,114 @@ fn a_line_travels_by_its_stations_ids_and_is_made_again_the_same() {
     assert_eq!(named, "1 1 600 1");
 }
 
+/// A line's waypoints travel with it (they were refused before): a train's
+/// on a track's lane, by the edge's ends in its own order, and a ship's or
+/// aircraft's in the open, each with its tag. Every game puts them back on
+/// its own edge; one whose edge runs the other way there is refused, as the
+/// lane's index and place would name another.
+#[test]
+fn a_lines_waypoints_on_track_and_in_the_open_are_made_again_the_same() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        r#"
+        local CT = api.type.ComponentType
+        CT.BASE_EDGE, CT.BASE_NODE, CT.BASE_EDGE_STREET = 11, 12, 13
+        NODES = { [51] = { 0, 0, 0 }, [52] = { 80, 0, 0 }, [53] = { 120, 0, 0 }, [54] = { 200, 0, 0 } }
+        EDGES = { [61] = { node0 = 51, node1 = 52 }, [62] = { node0 = 54, node1 = 53 } }
+        local base = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == CT.BASE_NODE and NODES[e] then
+                local p = NODES[e] return { position = { x = p[1], y = p[2], z = p[3] } }
+            end
+            if kind == CT.BASE_EDGE and EDGES[e] then
+                return { node0 = EDGES[e].node0, node1 = EDGES[e].node1,
+                         tangent0 = { 1, 0, 0 }, tangent1 = { 1, 0, 0 } }
+            end
+            if kind == CT.BASE_EDGE_STREET then return nil end
+            return base(e, kind)
+        end
+        api.engine.system.streetSystem = {
+            getNode2TrackEdgeMap = function() return { [51] = { 61 }, [52] = { 61 }, [53] = { 62 }, [54] = { 62 } } end,
+            getNode2StreetEdgeMap = function() return {} end,
+            getNodeTrackSegments = function(n)
+                if n == 51 or n == 52 then return { 61 } end
+                if n == 53 or n == 54 then return { 62 } end
+                return {}
+            end,
+        }
+        api.type.Line = { new = function() return { vehicleInfo = {} } end,
+            Stop = { new = function() return {} end }, StopConfig = { new = function() return {} end } }
+        api.type.StationTerminal = { new = function(s, t) return { station = s, terminal = t } end }
+        api.type.Waypoint = { new = function() return {} end }
+        api.type.EdgePos = { new = function() return {} end }
+        api.type.EdgeId = { new = function(entity, index) return { entity = entity, index = index } end }
+        api.cmd.makeLineCreateCmd = function(name, color, player, line)
+            return { createLine = { name = name, color = color, player = player, line = line } } end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let (ok, why): (bool, Option<String>) = lua
+        .load(
+            "HOOK.room = true UPDATE({}, STATE, 0.2) \
+             local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua') \
+             local reg = STATE.value.registry \
+             local ctx = { group = function(e) return registry.id(reg, 'groups', e) end } \
+             local function stop(group, waypoints) return { stationGroup = group, station = 0, terminal = 0, \
+                 alternativeTerminals = {}, loadMode = 0, minWaitingTime = 0, maxWaitingTime = 180, \
+                 maxAdditionalWaitingTime = 0, waypoints = waypoints, \
+                 stopConfig = { load = {}, maxLoad = {}, forceUnload = false, \
+                     destroyForConfigChange = false, destroyForRefresh = false } } end \
+             local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             LINE = { stops = { \
+                 stop(90, { { tag = 3, edgePos = { edgeId = { entity = 61, index = 1 }, param = 0.25 } } }), \
+                 stop(91, { { tag = 4, edgePos = { edgeId = { entity = -1, index = 0 }, param = 0 }, \
+                              pos = { x = -1200, y = 340, z = 0 } } }) }, \
+                 customFilters = false, reservationPriority = 0, vehicleInfo = { transportModes = { [3] = true } } } \
+             ACTION = capture.lineCreate(ctx, 'Rail and sea', { x = 0, y = 0, z = 1 }, 25, LINE) \
+             REVERSED = capture.lineCreate(ctx, 'Backwards', { x = 0, y = 0, z = 1 }, 25, { stops = { \
+                 stop(90, { { tag = 1, edgePos = { edgeId = { entity = 62, index = 0 }, param = 0.5 } } }) }, \
+                 customFilters = false, reservationPriority = 0, vehicleInfo = { transportModes = { [3] = true } } }) \
+             return schema_check(ACTION)",
+        )
+        .eval()
+        .unwrap();
+    assert!(ok, "{why:?}");
+    let carried: String = lua
+        .load(
+            "local s1, s2 = ACTION.CreateLine.line.stops[1], ACTION.CreateLine.line.stops[2] \
+             local lane, open = s1.waypoints[1].at.Lane, s2.waypoints[1].at.Open \
+             return table.concat({ lane.of.Edge.network, lane.of.Edge.ends.a.x, lane.of.Edge.ends.b.x, \
+                 lane.index, lane.param, s1.waypoints[1].tag, open.x, open.y, s2.waypoints[1].tag }, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(carried, "Track|0|80|1|0.25|3|-1200|340|4");
+    // In a world where edge 62 runs from 200 to 120, the reversed one's
+    // capture still names it 200 first; flipped here, it is refused.
+    lua.load(
+        "local e = REVERSED.CreateLine.line.stops[1].waypoints[1].at.Lane.of.Edge.ends \
+         e.a, e.b = e.b, e.a \
+         HOOK.batch = { ACTION, REVERSED } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let made: String = lua
+        .load(
+            "local s = SENT[1].createLine.line.stops \
+             local w1, w2 = s[1].waypoints[1], s[2].waypoints[1] \
+             return table.concat({ w1.edgePos.edgeId.entity, w1.edgePos.edgeId.index, w1.edgePos.param, w1.tag, \
+                 w2.pos.x, w2.pos.y, w2.tag, #SENT, tostring(HOOK.applied[2].ok), HOOK.applied[2].why }, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        made,
+        "61|1|0.25|3|-1200|340|4|1|false|a waypoint's edge runs the other way here"
+    );
+}
+
 #[test]
 fn the_bulldozer_removes_a_construction_or_edges_in_every_game() {
     let (lua, _script) = engine();

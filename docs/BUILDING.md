@@ -494,7 +494,7 @@ appended.
 | `BuildConstruction` | file, transform, every parameter (`seed` included), name, the construction it replaces for a module edit, and its connection: the streets and tracks its tool built with it, as a polyline whose every link names its kind |
 | `BuyVehicle` | the depot by file and position, the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |
 | `SellVehicle` | vehicles |
-| `CreateLine` | name, colour, the line as the game keeps it: stops (station group, terminal, other terminals, load mode, waiting times, loading rules per cargo), transport modes, settings |
+| `CreateLine` | name, colour, the line as the game keeps it: stops (station group, terminal, other terminals, load mode, waiting times, loading rules per cargo, the waypoints after it), transport modes, settings. A waypoint is on a lane of a street's, track's or construction's transport network (the edge by its ends, node 0 first, which must run the same way in every game; the construction by file and place), the lane's index and the place along it; or, for ships and aircraft, a position in the open; with the line manager's tag |
 | `EditLine` | a line and one change: rename, recolour, the whole line anew, or delete |
 | `AssignLine` | vehicles, the line or none, the first stop or none for the game's choice ("Next Reachable Stop") |
 | `PlaceStop` | a stop, waypoint or signal (`object`): the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, its construction, whether a stop is two-sided and whether a signal is one-way |

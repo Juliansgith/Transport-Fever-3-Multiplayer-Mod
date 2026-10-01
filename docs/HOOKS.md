@@ -1211,8 +1211,12 @@ reference of its own to either. Once linked, the GUI wraps every
     field, so the same entity is INFERRED), before the registry's sync
     would retire it;
   - lines: creating, changing (the line whole, as the line manager built
-    it: stops, terminals, loading rules), deleting, renaming and
-    recolouring;
+    it: stops, terminals, loading rules, waypoints), deleting, renaming and
+    recolouring. A waypoint on a street or track names its lane by the
+    edge's ends, node 0 first, or by the construction whose network it is
+    in, with the lane's index and the place along it; a game whose edge
+    runs the other way refuses the line rather than guess. A ship's or
+    aircraft's waypoint in the open goes by its position;
   - renaming a vehicle, a station, a town or another construction in its
     window's title or the line manager, and a vehicle's colour, as `Rename`
     (by canonical id, a construction by its file and place) and `VehicleOp`

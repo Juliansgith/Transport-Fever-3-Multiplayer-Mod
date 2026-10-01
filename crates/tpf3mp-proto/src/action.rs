@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 17;
+pub const ACTION_SCHEMA_VERSION: u32 = 18;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -71,6 +71,8 @@ pub const MAX_CARGOS: usize = 64;
 pub const MAX_ALTERNATIVES: usize = 32;
 /// Most transport modes a line lists.
 pub const MAX_MODES: usize = 32;
+/// Most waypoints after one stop of a line.
+pub const MAX_WAYPOINTS: usize = 32;
 /// Most industry types one prospection may find. Build 40408's economy has
 /// at most a handful per cargo.
 pub const MAX_INDUSTRY_TYPES: usize = 32;
@@ -659,6 +661,43 @@ pub struct LineStop {
     pub max_wait: i64,
     pub max_extra_wait: i64,
     pub rules: StopRules,
+    /// The waypoints after this stop, in order (`Line.Stop.waypoints`).
+    /// Added under schema version 18.
+    #[serde(default)]
+    pub waypoints: BoundedVec<Waypoint, MAX_WAYPOINTS>,
+}
+
+/// Whose transport network a waypoint's lane is in: a street or track edge,
+/// its ends in the originator's own order (node 0, then node 1: the lane's
+/// index and place along it depend on which way the edge runs), or a
+/// construction's, a station's tracks among them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NetworkOf {
+    Edge(EdgeRef),
+    Construction(ConstructionRef),
+}
+
+/// Where a line's waypoint is (TF3's `Waypoint`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaypointAt {
+    /// On a street or track: lane `index` of `of`'s transport network
+    /// (`EdgePos.edgeId`), at `param` along it.
+    Lane {
+        of: NetworkOf,
+        index: u16,
+        param: Fraction,
+    },
+    /// A place in the open, which ships and aircraft are routed through
+    /// (`Waypoint.pos`).
+    Open(Pos),
+}
+
+/// A waypoint of a line, and the tag the line manager gave it, which names
+/// it across edits (`Waypoint.tag`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Waypoint {
+    pub at: WaypointAt,
+    pub tag: i32,
 }
 
 /// A line as the game keeps it (`Line`): its stops, the transport modes that
@@ -1221,7 +1260,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                17, // schema version
+                18, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1264,7 +1303,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                17, // schema version
+                18, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1299,7 +1338,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                17, // schema version
+                18, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1317,7 +1356,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                17, // schema version
+                18, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1332,7 +1371,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                17, // schema version
+                18, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1343,7 +1382,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                17, // schema version
+                18, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1355,7 +1394,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                17, // schema version
+                18, // schema version
                 18, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1393,7 +1432,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                17, // schema version
+                18, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10
