@@ -1057,7 +1057,8 @@ fn the_host_picks_co_op_or_competitive_from_two_pictures() {
     assert!(
         styles
             .iter()
-            .any(|(text, picture)| text.starts_with("> Co-op")
+            .any(|(text, picture)| text.starts_with("Co-op")
+                && text.contains("Picked")
                 && picture == "::/gui/menu/images/campaign.tga"),
         "co-op is picked first: {styles:?}"
     );

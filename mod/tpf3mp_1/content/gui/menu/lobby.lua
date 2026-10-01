@@ -666,8 +666,7 @@ lobby.COMPETITIVE_PICTURE = COMPETITIVE_PICTURE
 function lobby.styleCard(competitive, picked, onClick, enabled)
 	local title = competitive and _("Competitive") or _("Co-op")
 	return pictureCard(competitive and COMPETITIVE_PICTURE or COOP_PICTURE,
-		picked and ("> " .. title) or title,
-		picked and _("Picked") or nil, nil, onClick, enabled, 190, 104)
+		title, picked and _("Picked") or nil, nil, onClick, enabled, RIGHT - 10, 150)
 end
 
 -- A big choice of the first page (Join, Host), as a card in the main
@@ -1337,11 +1336,9 @@ function lobby.content(onClose, focus)
 				column({
 					note(_("How you play")),
 					gap(4),
-					row({
-						lobby.styleCard(false, competitiveS:old() ~= true, function() competitiveS:set(false) end, canAct),
-						gap(12),
-						lobby.styleCard(true, competitiveS:old() == true, function() competitiveS:set(true) end, canAct),
-					}),
+					lobby.styleCard(false, competitiveS:old() ~= true, function() competitiveS:set(false) end, canAct),
+					gap(10),
+					lobby.styleCard(true, competitiveS:old() == true, function() competitiveS:set(true) end, canAct),
 					gap(4),
 					note(competitiveS:old() and _("Each player founds a company of their own in the game.")
 						or _("Everyone plays for the room's one company.")),
