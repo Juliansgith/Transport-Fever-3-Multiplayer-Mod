@@ -346,6 +346,10 @@ fn push_bounded<T>(list: &mut VecDeque<T>, item: T) {
     list.push_back(item);
 }
 
+/// What the player is told when rejoining finds the room gone, in the
+/// launcher's window and the game's Multiplayer window alike.
+pub const ROOM_GONE: &str = "The room is gone (closed or the server restarted)";
+
 #[derive(Debug, Error)]
 pub enum BridgeFault {
     #[error("the link to the hook failed: {0}")]
@@ -362,8 +366,14 @@ pub enum BridgeFault {
     Client(#[from] ClientError),
     #[error("the server broke a turn invariant: {0}")]
     Follow(#[from] FollowError),
-    #[error("lost the server and could not rejoin: {0}")]
+    #[error(
+        "Lost the room and could not rejoin it ({0}); it may be gone (closed or the server restarted)"
+    )]
     Rejoin(String),
+    /// Rejoining found no room: it closed, or the server restarted without
+    /// it. Rejoining stops; the player is back on the server, in no room.
+    #[error("{ROOM_GONE}")]
+    RoomGone,
     #[error("the game loaded its world to run step {got} next, but step {expected} was ordered")]
     LoadedElsewhere { expected: u64, got: u64 },
     #[error("the room sent a world to load, but this agent keeps no worlds")]
@@ -543,7 +553,15 @@ pub struct Bridge<L> {
     /// What this game last declared to the room in the session, when the
     /// picker changed it: declared again on a new connection.
     declared: Option<ContentManifest>,
+    /// What the hook said while the bridge had no connection, rejoining:
+    /// read so the game's window still reaches the launcher (its Leave
+    /// above all), and taken up first once the room is back.
+    held: VecDeque<Result<ToAgent, BridgeError>>,
 }
+
+/// Most hook messages held while rejoining; past it, the rest wait in the
+/// link, as they did before.
+const MAX_HELD: usize = 4096;
 
 impl<L: HookLink> Bridge<L> {
     pub fn new(link: L, options: BridgeOptions) -> Self {
@@ -601,6 +619,7 @@ impl<L: HookLink> Bridge<L> {
             options,
             build: None,
             declared: None,
+            held: VecDeque::new(),
         }
     }
 
@@ -767,9 +786,45 @@ impl<L: HookLink> Bridge<L> {
         Ok(())
     }
 
+    /// The hook's next message: those held while rejoining first.
+    fn next_from_hook(&mut self) -> Result<Option<ToAgent>, BridgeFault> {
+        if let Some(held) = self.held.pop_front() {
+            return Ok(Some(held?));
+        }
+        if !self.link.recv(&mut self.buf)? {
+            return Ok(None);
+        }
+        Ok(Some(decode(&self.buf)?))
+    }
+
+    /// While rejoining: keeps the hook waiting, shows it the launcher's
+    /// lobby, passes the game window's actions to the launcher (a Leave
+    /// among them, which ends the rejoining), and holds everything else
+    /// the hook says for when the room is back.
+    fn away(&mut self) {
+        self.link.heartbeat();
+        while self.held.len() < MAX_HELD {
+            match self.link.recv(&mut self.buf) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) => {
+                    debug!(%error, "reading the hook while rejoining failed");
+                    break;
+                }
+            }
+            match decode::<ToAgent>(&self.buf) {
+                Ok(ToAgent::Lobby(action)) if self.hook_ready => self.lobby_action(action),
+                other => self.held.push_back(other),
+            }
+        }
+        self.lobby_news();
+        if let Err(error) = self.flush() {
+            debug!(%error, "writing to the hook while rejoining failed");
+        }
+    }
+
     async fn read_hook(&mut self, client: &Client) -> Result<(), BridgeFault> {
-        while self.link.recv(&mut self.buf)? {
-            let message: ToAgent = decode(&self.buf)?;
+        while let Some(message) = self.next_from_hook()? {
             if !self.hook_ready && !matches!(message, ToAgent::Hello { .. }) {
                 return Err(BridgeFault::Unexpected("a message before its hello"));
             }
@@ -1685,8 +1740,15 @@ impl<L: HookLink> Bridge<L> {
                 return Ok(None);
             }
             Control::Leave => {
-                if let Err(error) = client.leave_room().await {
-                    debug!(%error, "leaving the room failed; ending the session anyway");
+                // Never held up by a server that does not answer: the
+                // player leaves either way, and a seat the server could not
+                // be told about is let go after the room's grace period.
+                match tokio::time::timeout(LEAVE_WAIT, client.leave_room()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        debug!(%error, "leaving the room failed; ending the session anyway");
+                    }
+                    Err(_) => debug!("the server did not answer the leave; ending the session"),
                 }
                 return Ok(Some(BridgeEnd::Left));
             }
@@ -2008,12 +2070,20 @@ pub struct Rejoin {
 /// (a network drop, or the server restarting) it reconnects and resumes
 /// the room where the game stands, so the game sees only a pause. Tells
 /// the hook when the session is over.
+///
+/// Rejoining gives up, and the session ends with the player in no room:
+/// at once when the server no longer has the room
+/// ([`BridgeFault::RoomGone`]); after [`Rejoin::give_up_after`] without a
+/// connection that held; after [`MAX_QUICK_LOSSES`] connections in a row
+/// lost again right after rejoining. A Leave while rejoining ends the
+/// session at once, as left.
 pub async fn play<L: HookLink>(
     bridge: &mut Bridge<L>,
     mut client: Client,
     mut events: Events,
     rejoin: &Rejoin,
 ) -> Result<BridgeEnd, BridgeFault> {
+    let mut losses = Losses::new(rejoin.give_up_after, Instant::now());
     loop {
         let session = client.welcome().session_id;
         bridge.status(|status| status.session = Some(session));
@@ -2047,16 +2117,41 @@ pub async fn play<L: HookLink>(
         }
         let options = rejoin.options.again_after(&client);
         drop(client);
-        match rejoin_room(bridge, rejoin, &options).await {
+        let outcome = match losses.lost(Instant::now()) {
+            Ok(deadline) => rejoin_room(bridge, rejoin, &options, deadline).await,
+            Err(why) => Err(GaveUp::Failed(why)),
+        };
+        match outcome {
             Ok((new_client, new_events)) => {
                 info!("rejoined the room");
                 bridge.status(|status| status.notice("rejoined the room"));
+                losses.connected(Instant::now());
                 client = new_client;
                 events = new_events;
             }
-            Err(error) => {
-                bridge.end(&error);
-                return Err(BridgeFault::Rejoin(error));
+            Err(GaveUp::Left) => {
+                info!("left the room while rejoining it");
+                bridge.end("left the room");
+                return Ok(BridgeEnd::Left);
+            }
+            Err(GaveUp::GameClosed) => {
+                let fault = BridgeFault::GameClosed;
+                bridge.end(&fault.to_string());
+                return Err(fault);
+            }
+            Err(GaveUp::RoomGone) => {
+                warn!("the room is gone; no longer rejoining it");
+                let fault = BridgeFault::RoomGone;
+                bridge.status(|status| status.notice(ROOM_GONE));
+                bridge.end(ROOM_GONE);
+                return Err(fault);
+            }
+            Err(GaveUp::Failed(error)) => {
+                warn!(%error, "no longer rejoining the room");
+                let fault = BridgeFault::Rejoin(error);
+                bridge.status(|status| status.notice(fault.to_string()));
+                bridge.end(&fault.to_string());
+                return Err(fault);
             }
         }
     }
@@ -2065,6 +2160,73 @@ pub async fn play<L: HookLink>(
 /// How long a request that failed for a lost connection waits for the
 /// connection to say it closed, before the failure counts as a fault.
 const CLOSE_NOTICE: Duration = Duration::from_secs(5);
+
+/// How long leaving waits for the server to let the player go.
+const LEAVE_WAIT: Duration = Duration::from_secs(3);
+
+/// A connection rejoined this long ago held: losing it starts afresh.
+const STABLE: Duration = Duration::from_secs(120);
+
+/// Connections in a row lost within [`STABLE`] of rejoining, after which
+/// rejoining stops: a room that keeps dropping the player is not one to
+/// keep them in, unable to leave (seen live: "lost the server; rejoining
+/// the room reason=timed out" over and over after a restart).
+pub const MAX_QUICK_LOSSES: u32 = 5;
+
+/// The lost connections of one session, which say when rejoining stops.
+#[derive(Debug)]
+struct Losses {
+    patience: Duration,
+    /// When the current connection was made.
+    connected: Instant,
+    /// The first loss since a connection last held: the patience runs from
+    /// there, across rejoins that did not hold.
+    first: Option<Instant>,
+    /// Connections in a row lost within [`STABLE`].
+    quick: u32,
+}
+
+impl Losses {
+    fn new(patience: Duration, connected: Instant) -> Self {
+        Self {
+            patience,
+            connected,
+            first: None,
+            quick: 0,
+        }
+    }
+
+    /// A connection is lost at `now`: when rejoining must have succeeded
+    /// by, or why it is not worth trying.
+    fn lost(&mut self, now: Instant) -> Result<Instant, String> {
+        if now.saturating_duration_since(self.connected) >= STABLE {
+            self.first = None;
+            self.quick = 0;
+        } else {
+            self.quick += 1;
+        }
+        if self.quick > MAX_QUICK_LOSSES {
+            return Err(format!(
+                "the connection dropped {} times in a row right after rejoining",
+                self.quick
+            ));
+        }
+        let first = *self.first.get_or_insert(now);
+        let deadline = first + self.patience;
+        if deadline <= now {
+            return Err(format!(
+                "no connection held for {} s",
+                self.patience.as_secs()
+            ));
+        }
+        Ok(deadline)
+    }
+
+    /// A rejoin succeeded at `now`.
+    fn connected(&mut self, now: Instant) {
+        self.connected = now;
+    }
+}
 
 /// Whether a lost connection is worth rejoining after: not when this side
 /// closed it, another connection replaced it, or the protocol broke.
@@ -2082,15 +2244,43 @@ fn worth_rejoining(reason: &quinn::ConnectionError) -> bool {
     }
 }
 
-/// Reconnects and rejoins, backing off between attempts and beating for
-/// the hook all the while. A room that can no longer resume the game where
-/// it stands is joined afresh, and sends a world to load.
+/// Why rejoining stopped.
+#[derive(Debug)]
+enum GaveUp {
+    /// The server has no such room any more.
+    RoomGone,
+    /// The player left the room meanwhile.
+    Left,
+    /// The game closed meanwhile.
+    GameClosed,
+    /// Out of patience, or the server needs a newer client.
+    Failed(String),
+}
+
+/// Reconnects and rejoins, backing off between attempts and keeping the
+/// hook waiting all the while, until `deadline`. A room that can no longer
+/// resume the game where it stands is joined afresh, and sends a world to
+/// load. The front end's requests are taken meanwhile: Leave (from the
+/// launcher's window or, through the hook, the game's) stops it at once.
 async fn rejoin_room<L: HookLink>(
     bridge: &mut Bridge<L>,
     rejoin: &Rejoin,
     options: &ConnectOptions,
-) -> Result<(Client, Events), String> {
-    let deadline = Instant::now() + rejoin.give_up_after;
+    deadline: Instant,
+) -> Result<(Client, Events), GaveUp> {
+    let mut controls = bridge.controls.take();
+    let outcome = rejoin_attempts(bridge, &mut controls, rejoin, options, deadline).await;
+    bridge.controls = controls;
+    outcome
+}
+
+async fn rejoin_attempts<L: HookLink>(
+    bridge: &mut Bridge<L>,
+    controls: &mut Option<mpsc::Receiver<Control>>,
+    rejoin: &Rejoin,
+    options: &ConnectOptions,
+    deadline: Instant,
+) -> Result<(Client, Events), GaveUp> {
     let mut backoff = Duration::from_millis(250);
     let mut resume = bridge.resume_point();
     let declared = bridge.declared.clone();
@@ -2116,23 +2306,33 @@ async fn rejoin_room<L: HookLink>(
                     resume,
                 })
                 .await
-                .map_err(|error| {
-                    if error == ClientError::Refused(RequestError::ResumeUnavailable) {
+                .map_err(|error| match error {
+                    ClientError::Refused(RequestError::ResumeUnavailable) => {
                         Failed::ResumeGone(error.to_string())
-                    } else {
-                        Failed::Retry(error.to_string())
                     }
+                    // The invite found no room: unknown rooms answer as
+                    // bad invites do (D13), and a seated player's own
+                    // invite and password are never bad. A room that closed
+                    // while being joined answers that it has no such member.
+                    ClientError::Refused(RequestError::BadInvite | RequestError::NotInRoom) => {
+                        Failed::Gone
+                    }
+                    other => Failed::Retry(other.to_string()),
                 })?;
             Ok::<_, Failed>((client, events))
         };
-        let outcome = keeping_alive(bridge, attempt).await;
+        let outcome = match away(bridge, controls, attempt).await {
+            Ok(outcome) => outcome,
+            Err(gave_up) => return Err(gave_up),
+        };
         match outcome {
             Ok(rejoined) => return Ok(rejoined),
+            Err(Failed::Gone) => return Err(GaveUp::RoomGone),
             // The server was updated past this client: no attempt can
             // succeed until the player updates too.
             Err(Failed::Outdated(error)) => {
                 bridge.status(|status| status.outdated = true);
-                return Err(error);
+                return Err(GaveUp::Failed(error));
             }
             // The room no longer has these turns: join without them, for a
             // world to load. Joining without them cannot be refused so.
@@ -2143,11 +2343,11 @@ async fn rejoin_room<L: HookLink>(
             Err(Failed::ResumeGone(error) | Failed::Retry(error))
                 if Instant::now() + backoff >= deadline =>
             {
-                return Err(error);
+                return Err(GaveUp::Failed(error));
             }
             Err(Failed::ResumeGone(error) | Failed::Retry(error)) => {
                 debug!(%error, "rejoining failed; trying again");
-                keeping_alive(bridge, tokio::time::sleep(backoff)).await;
+                away(bridge, controls, tokio::time::sleep(backoff)).await?;
                 backoff = (backoff * 2).min(Duration::from_secs(5));
             }
         }
@@ -2160,8 +2360,40 @@ enum Failed {
     Retry(String),
     /// The room no longer has the turns asked for.
     ResumeGone(String),
+    /// The server has no such room.
+    Gone,
     /// The server speaks a newer protocol.
     Outdated(String),
+}
+
+/// Runs `work` while the bridge has no connection ([`Bridge::away`]),
+/// taking the front end's requests: a Leave, or the game closing, stops it.
+async fn away<L: HookLink, T>(
+    bridge: &mut Bridge<L>,
+    controls: &mut Option<mpsc::Receiver<Control>>,
+    work: impl std::future::Future<Output = T>,
+) -> Result<T, GaveUp> {
+    let mut work = std::pin::pin!(work);
+    let mut beat = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        tokio::select! {
+            done = &mut work => return Ok(done),
+            Some(control) = next_control(controls) => match control {
+                Control::Leave => return Err(GaveUp::Left),
+                Control::GameClosed if bridge.hook_ready => return Err(GaveUp::GameClosed),
+                Control::GameClosed => {
+                    info!("the game closed before its hook attached; waiting for the next one");
+                }
+                other => {
+                    debug!(?other, "a request while rejoining the room; not sent");
+                    bridge.status(|status| {
+                        status.notice("not connected to the room: rejoining it, try again then");
+                    });
+                }
+            },
+            _ = beat.tick() => bridge.away(),
+        }
+    }
 }
 
 /// The next request of a front end, or never without one.
@@ -2169,21 +2401,6 @@ async fn next_control(controls: &mut Option<mpsc::Receiver<Control>>) -> Option<
     match controls {
         Some(controls) => controls.recv().await,
         None => std::future::pending().await,
-    }
-}
-
-/// Runs `work` while beating for the hook.
-async fn keeping_alive<L: HookLink, T>(
-    bridge: &mut Bridge<L>,
-    work: impl std::future::Future<Output = T>,
-) -> T {
-    let mut work = std::pin::pin!(work);
-    let mut beat = tokio::time::interval(Duration::from_millis(100));
-    loop {
-        tokio::select! {
-            done = &mut work => return done,
-            _ = beat.tick() => bridge.keep_alive(),
-        }
     }
 }
 
@@ -2236,6 +2453,41 @@ mod tests {
     use tpf3mp_proto::{FixedBytes, MAX_PAYLOAD, Payload, RoomId, Turn, TurnStart};
 
     use super::*;
+
+    #[test]
+    fn rejoining_stops_after_repeated_quick_losses_or_its_patience() {
+        let patience = Duration::from_secs(300);
+        let start = Instant::now();
+        let mut losses = Losses::new(patience, start);
+        // Each rejoin lost again moments later, as in the live loop.
+        let mut now = start;
+        for _ in 0..MAX_QUICK_LOSSES {
+            now += Duration::from_secs(5);
+            let deadline = losses.lost(now).unwrap();
+            assert_eq!(deadline, start + Duration::from_secs(5) + patience);
+            losses.connected(now);
+        }
+        now += Duration::from_secs(5);
+        assert!(losses.lost(now).unwrap_err().contains("in a row"));
+
+        // A connection that held starts afresh, patience and count alike.
+        let mut losses = Losses::new(patience, start);
+        losses.lost(start + Duration::from_secs(1)).unwrap();
+        losses.connected(start + Duration::from_secs(2));
+        let later = start + Duration::from_secs(2) + STABLE;
+        assert_eq!(losses.lost(later).unwrap(), later + patience);
+
+        // Rejoins that never hold run out of patience across them.
+        let mut losses = Losses::new(patience, start);
+        losses.lost(start).unwrap();
+        losses.connected(start + Duration::from_secs(250));
+        assert!(
+            losses
+                .lost(start + Duration::from_secs(301))
+                .unwrap_err()
+                .contains("no connection held")
+        );
+    }
 
     #[test]
     fn fetch_percent_is_whole_and_bounded() {

@@ -136,8 +136,10 @@ impl ServerConfig {
             roomless_timeout: Duration::from_secs(600),
             max_rooms: 10_000,
             max_rooms_per_address: 8,
-            // Long enough to ride out a server restart or a player's crash.
-            abandoned_timeout: Duration::from_secs(600),
+            // Long enough to ride out a server restart or a player's crash,
+            // short enough that a game everyone closed does not linger. The
+            // agent tries to rejoin for as long (`REJOIN_PATIENCE`).
+            abandoned_timeout: Duration::from_secs(300),
             secret,
             rules: RulesMenu::native(),
             tick: Duration::from_millis(100),
