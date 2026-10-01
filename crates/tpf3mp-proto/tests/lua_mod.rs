@@ -7438,3 +7438,246 @@ fn the_games_window_copies_the_invite_code() {
     assert_eq!(back, "Copy");
 }
 
+
+/// The game's subsidy script, as the game keeps it in a game script's
+/// state (`game_mechanics/subventions/subventions.script.tl`): its offers,
+/// those taken, completed and failed, each by its number and kind, with the
+/// money each books (`SubventionBonusMalus`).
+const FAKE_SUBSIDIES: &str = r#"
+CARGO = '::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res'
+PASSENGERS = '::/game_mechanics/subventions/deliver_passengers/deliver_passengers.res'
+local function money(amount) return { { type = 'Money', params = { amount = amount } },
+                                      { type = 'Reputation', params = { amount = 0.1 } } } end
+local function offer(uid, id, upfront, complete, failure)
+    return { uid = uid, id = id, data = { upfront = money(upfront), complete = money(complete),
+                                          failure = money(failure) } }
+end
+SUB = { proposedSubventions = { offer(7, CARGO, 100, 2000, 300), offer(8, CARGO, 0, 0, 0),
+                                offer(9, PASSENGERS, 0, 0, 0), offer(10, CARGO, 50, 500, 400) },
+        activeSubventions = {}, completedSubventions = {}, failedSubventions = {} }
+api.type.ComponentType.GAME_SCRIPT = 77
+api.type.JournalEntry = { new = function() return { category = {} } end,
+                          Type = { LOAN = 'LOAN', INTEREST = 'INTEREST', SUBSIDY = 'SUBSIDY' } }
+api.cmd.makeJournalBookAssetCmd = function(e, entry) return { journal = entry, entity = e } end
+api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+    if name == '::/game_mechanics/subventions/subventions.gs' then return 500 end return -1 end }
+GAME_T = 0
+api.type.ComponentType.GAME_TIME = 99
+api.engine.util.getWorld = function() return 1 end
+api.engine.getComponent = function(e, kind)
+    if kind == 99 then return { gameTime = GAME_T } end
+    if e == 500 and kind == 77 then return { state = SUB } end
+end
+api.util = { getDefaultMonthDuration = function() return 3000 end,
+             getDefaultDayDuration = function() return 100 end }
+-- The script's own events, as its handleEvent runs them: accepting moves
+-- the offer to the taken and books its money up front to the save's own
+-- player; declining drops it.
+local function take(list, uid)
+    for i, s in ipairs(list) do if s.uid == uid then return table.remove(list, i) end end
+end
+local send = api.cmd.sendCommand
+api.cmd.sendCommand = function(command, callback)
+    local e = command.event
+    send(command, callback)
+    if e and e.id == 'Subvention' then
+        local s = take(SUB.proposedSubventions, e.param.uid)
+        if s and e.name == 'onAccept' then
+            SUB.activeSubventions[#SUB.activeSubventions + 1] = s
+            send(api.cmd.makeJournalBookAssetCmd(25, { amount = s.data.upfront[1].params.amount,
+                                                       category = { type = 'SUBSIDY' } }))
+        end
+    end
+end
+-- The script, months later: a subsidy completed or failed, its money booked
+-- to the save's own player.
+function FINISH(uid, how)
+    local s = take(SUB.activeSubventions, uid)
+    local amount = how == 'complete' and s.data.complete[1].params.amount or -s.data.failure[1].params.amount
+    local list = how == 'complete' and SUB.completedSubventions or SUB.failedSubventions
+    list[#list + 1] = s
+    send(api.cmd.makeJournalBookAssetCmd(25, { amount = amount, category = { type = 'SUBSIDY' } }))
+end
+function BOOKED()
+    local out = {}
+    for _, c in ipairs(SENT) do
+        if c.journal then out[#out + 1] = c.journal.category.type .. c.journal.amount .. '@' .. c.entity
+        elseif c.event then out[#out + 1] = c.event.name .. ' ' .. tostring(c.event.param.uid)
+        elseif c.addPlayer then out[#out + 1] = c.addPlayer end
+    end
+    SENT = {}
+    return table.concat(out, ',')
+end
+"#;
+
+/// The subsidy window's Accept and Decline, in the room's game: handed to
+/// the room as the offer by its number and kind, never run here; an offer
+/// this game no longer has is refused at the click, and says why.
+#[test]
+fn in_the_rooms_game_a_subsidys_answer_goes_to_the_room() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "M = mount(loadPlugin()) M.step() HOOK.room = true \
+         api.type = api.type or {} api.type.ComponentType = { GAME_SCRIPT = 77 } \
+         api.engine = api.engine or {} api.engine.system = api.engine.system or {} \
+         api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name) \
+             if name == '::/game_mechanics/subventions/subventions.gs' then return 500 end return -1 end } \
+         api.engine.getComponent = function(e, kind) \
+             if e == 500 and kind == 77 then return { state = { \
+                 proposedSubventions = { { uid = 7, id = 'cargo.res' } }, \
+                 activeSubventions = { { uid = 3, id = 'cargo.res' } } } } end end \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Subvention', 'onAccept', { uid = 7 })) \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Subvention', 'onDecline', { uid = 7 })) \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Subvention', 'onAccept', { uid = 3 })) \
+         M.step()",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let (sent, handed): (usize, usize) = lua.load("return #SENT, #HOOK.commands").eval().unwrap();
+    assert_eq!(sent, 0, "not run here: the room orders it for every game");
+    assert_eq!(handed, 2, "handed to the room, through the schema");
+    let answers: String = lua
+        .load(
+            "local a, d = HOOK.commands[1].Subsidy.Accept, HOOK.commands[2].Subsidy.Decline \
+             return a.uid .. ' ' .. a.kind .. ' | ' .. d.uid .. ' ' .. d.kind",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(answers, "7 cargo.res | 7 cargo.res");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.contains("makeScriptingSendEventCmd")
+                && l.ends_with("a subsidy no longer offered")),
+        "{logged:?}"
+    );
+    // The room refuses an answer (another company took it first): the
+    // player is told why.
+    lua.load(
+        "HOOK.results = { { ticket = 1, ok = false, why = 'the subsidy was taken already, by Rival' } } \
+         M.step() M.render()",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        shown(&lua).unwrap_or_default(),
+        "Taking the subsidy: not done, the subsidy was taken already, by Rival"
+    );
+}
+
+/// Every game answers a subsidy offer alike: the first company in the
+/// room's order to accept it takes it through the game's own event, the
+/// money goes to that company (moved on from the save's own player, to whom
+/// the game's script books it), and every later answer is refused, naming
+/// who took it. Months later its reward, or its penalty, follows it.
+#[test]
+fn every_game_gives_a_subsidy_to_the_first_company_to_accept_it() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_SUBSIDIES).exec().unwrap();
+    lua.load(
+        r#"
+        A, B = string.rep("a", 64), string.rep("b", 64)
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A }
+        UPDATE({}, STATE, 0.2)
+        FOUNDED = BOOKED()
+        local function ref(uid, kind) return { uid = uid, kind = kind } end
+        -- A (Rival) and B (the first company) both accept 7 in one step,
+        -- A first; B accepts 8 under the wrong kind, declines 9 and
+        -- accepts 10; A then answers 9 too.
+        HOOK.batch = { { Subsidy = { Accept = ref(7, CARGO) } }, { Subsidy = { Accept = ref(7, CARGO) } },
+                       { Subsidy = { Accept = ref(8, PASSENGERS) } }, { Subsidy = { Decline = ref(9, PASSENGERS) } },
+                       { Subsidy = { Accept = ref(10, CARGO) } }, { Subsidy = { Accept = ref(9, PASSENGERS) } } }
+        HOOK.origins = { A, B, B, B, B, A }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let applied: Vec<String> = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = tostring(a.ok) .. (a.why and (' ' .. a.why) or '') end return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        &applied[1..],
+        [
+            "true",
+            "false the subsidy was taken already, by Rival",
+            "false the subsidy under that number is another one",
+            "true",
+            "true",
+            "false the subsidy is no longer offered",
+        ]
+    );
+    let booked: String = lua.load("return BOOKED()").eval().unwrap();
+    assert_eq!(
+        booked,
+        "onAccept 7,SUBSIDY100@25,SUBSIDY-100@25,SUBSIDY100@901,onDecline 9,onAccept 10,SUBSIDY50@25",
+        "Rival's 100 up front moved on to it; the first company's 50 stays its own"
+    );
+    // A day later nothing has finished: nothing moves. Then the script
+    // completes 7, Rival's, and 10, the first company's: Rival gets its
+    // reward on the next day, once.
+    lua.load(
+        "HOOK.room = true \
+         GAME_T = 100 UPDATE({}, STATE, 0.2) \
+         FINISH(7, 'complete') FINISH(10, 'complete') BOOKED() \
+         GAME_T = 150 UPDATE({}, STATE, 0.2) \
+         GAME_T = 200 UPDATE({}, STATE, 0.2) \
+         GAME_T = 300 UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let booked: String = lua.load("return BOOKED()").eval().unwrap();
+    assert_eq!(booked, "SUBSIDY-2000@25,SUBSIDY2000@901");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l == "subsidy 7 completed for Rival: 2000"),
+        "{logged:?}"
+    );
+    // A completed subsidy is still its taker's: answering it again says so.
+    // Rival takes 11, which fails: its penalty, booked to the first company
+    // by the script, is Rival's.
+    lua.load(
+        "SUB.proposedSubventions[#SUB.proposedSubventions + 1] = { uid = 11, id = CARGO, \
+             data = { upfront = { { type = 'Money', params = { amount = 0 } } }, \
+                      complete = { { type = 'Money', params = { amount = 700 } } }, \
+                      failure = { { type = 'Money', params = { amount = 250 } } } } } \
+         HOOK.batch = { { Subsidy = { Accept = { uid = 7, kind = CARGO } } }, \
+                        { Subsidy = { Accept = { uid = 11, kind = CARGO } } } } \
+         HOOK.origins = { B, A } \
+         UPDATE({}, STATE, 0.2) BOOKED() \
+         FINISH(11, 'fail') BOOKED() \
+         GAME_T = 400 UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let last: Vec<String> = lua
+        .load(
+            "local n = #HOOK.applied \
+             return { tostring(HOOK.applied[n - 1].why), tostring(HOOK.applied[n].ok) }",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(last, ["the subsidy is completed already", "true"]);
+    let booked: String = lua.load("return BOOKED()").eval().unwrap();
+    assert_eq!(booked, "SUBSIDY250@25,SUBSIDY-250@901");
+    let kept: usize = lua
+        .load("return #STATE.value.companies.subsidies")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        kept, 2,
+        "7 and 10, completed, kept; 11, failed and settled, forgotten"
+    );
+    let founded: String = lua.load("return FOUNDED").eval().unwrap();
+    assert_eq!(founded, "Rival");
+}
+

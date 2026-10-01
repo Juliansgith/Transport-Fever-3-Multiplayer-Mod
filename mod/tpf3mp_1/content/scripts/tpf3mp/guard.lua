@@ -68,7 +68,8 @@ guard.CARRY = {
 	-- events, with the loans as the script keeps them. The construction
 	-- menu's prospecting: the company script's spawnIndustry
 	-- (capture.prospect). The company window's ranks: the growth script's
-	-- applyLevel.
+	-- applyLevel. The subsidy window's answers: the subsidy script's
+	-- onAccept and onDecline.
 	makeScriptingSendEventCmd = function(ctx, _src, id, name, param)
 		if id == "Loan" and type(param) == "table" then
 			if name == "Obtain" and type(param[1]) == "table" and type(param[2]) == "table" then
@@ -92,6 +93,10 @@ guard.CARRY = {
 			-- A popup played a notification's first sound (the game's
 			-- notification_popups.tl): marked so in every game.
 			return { NotificationSeen = { notification = param.notificationId } }
+		elseif id == "Subvention" and (name == "onAccept" or name == "onDecline") then
+			-- The subsidy window's Accept and Decline (subventions_gui.tl):
+			-- the offer by its number and kind (capture.subsidy).
+			return capture().subsidy(ctx, name, param)
 		end
 		-- Which event, for the log.
 		error("the " .. tostring(id) .. " script's " .. tostring(name) .. " event", 0)

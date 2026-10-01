@@ -14,9 +14,9 @@ use tpf3mp_proto::{
         EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData, LineId,
         LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network,
         NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle,
-        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent, Terminal,
-        Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleChange,
-        VehicleId, VehicleOp, Vertex,
+        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef,
+        Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
+        UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -445,6 +445,14 @@ fn samples() -> Vec<Action> {
         Action::NotificationSeen { notification: 12 },
         Action::ApplyRank { level: 6 },
         junction_action(),
+        Action::Subsidy(SubsidyOp::Accept(SubsidyRef {
+            uid: 1_234_560_000,
+            kind: text("::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"),
+        })),
+        Action::Subsidy(SubsidyOp::Decline(SubsidyRef {
+            uid: 7,
+            kind: text("::/game_mechanics/subventions/deliver_passengers/deliver_passengers.res"),
+        })),
     ]
 }
 

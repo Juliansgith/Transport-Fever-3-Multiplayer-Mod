@@ -711,6 +711,210 @@ function companies.due(roster, month)
 		and month > roster.month and #(roster.loans or {}) > 0
 end
 
+-- ------------------------------------------------------------- subsidies
+--
+-- The game's subsidy script (::/game_mechanics/subventions/subventions.gs,
+-- build 40408's subventions.script.tl) draws the offers in every game alike:
+-- in its update, from the world and the game time, its math.random reseeded
+-- per call by the hook (docs/HOOKS.md, "Seeds, as built"). It keeps them in
+-- its state, offered (`proposedSubventions`), taken (`activeSubventions`),
+-- completed and failed, each by its number (`uid`) and its kind (`id`, the
+-- subsidy resource). Accepting moves an offer to the taken and books its
+-- money up front; the script books the money for completing it, or the
+-- penalty for failing it, itself, months later. It books all of it to the
+-- save's own player (subvention_util.tl, applyBonusMalus: getPlayer()),
+-- which in a game script's state is the room's first company.
+--
+-- So a subsidy another company takes is the room's to settle: every game
+-- moves what the script booked to the first company on to the company that
+-- took it, as SUBSIDY journal entries (the first company's books show the
+-- money in and out again, so they net to nothing), at accepting and when the
+-- script completes or fails it, at the same update in every game.
+--
+--   roster.subsidies = { { uid =, kind =, company =, state = "taken" |
+--                          "completed" }, ... }
+--   roster.subsidyDay = the last game day the subsidies were settled
+
+companies.SUBSIDY_SCRIPT = "::/game_mechanics/subventions/subventions.gs"
+
+-- The subsidy script's lists, and what each says of a subsidy in it.
+local SUBSIDY_LISTS = {
+	{ "proposedSubventions", "offered" },
+	{ "activeSubventions", "taken" },
+	{ "completedSubventions", "completed" },
+	{ "failedSubventions", "failed" },
+}
+
+-- The subsidy script's state as the game keeps it, or nil.
+function companies.subsidyState(api)
+	local ok, state = pcall(function()
+		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(companies.SUBSIDY_SCRIPT)
+		if type(entity) ~= "number" or entity < 0 then return nil end
+		local c = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+		return c and c.state
+	end)
+	if ok and type(state) == "table" then return state end
+	return nil
+end
+
+-- Where the subsidy `uid` is in the script's `state`: "offered", "taken",
+-- "completed" or "failed", and the subsidy, the first the script would find
+-- under that number; and how many offers share the number. Nil when it is
+-- in none.
+function companies.findSubsidy(state, uid)
+	if type(state) ~= "table" or type(uid) ~= "number" then return nil end
+	local found, where, offers = nil, nil, 0
+	for _, list in ipairs(SUBSIDY_LISTS) do
+		for _, s in ipairs(type(state[list[1]]) == "table" and state[list[1]] or {}) do
+			if type(s) == "table" and s.uid == uid then
+				if list[2] == "offered" then offers = offers + 1 end
+				if found == nil then found, where = s, list[2] end
+			end
+		end
+	end
+	return where, found, offers
+end
+
+-- The money a subsidy's bonuses or penalties book (`list`, the script's
+-- SubventionBonusMalus list): the sum of the Money ones' amounts, as the
+-- script floors them.
+function companies.subsidyMoney(list)
+	local sum = 0
+	for _, b in ipairs(type(list) == "table" and list or {}) do
+		local amount = type(b) == "table" and b.type == "Money" and type(b.params) == "table" and b.params.amount
+		if type(amount) == "number" then sum = sum + math.floor(amount) end
+	end
+	return sum
+end
+
+-- The record of subsidy `uid` of kind `kind` the room keeps, and its index.
+local function subsidyRecord(roster, uid, kind)
+	for i, r in ipairs(roster.subsidies or {}) do
+		if r.uid == uid and r.kind == kind then return r, i end
+	end
+	return nil
+end
+
+-- Moves `amount` of subsidy money the script booked to the first company on
+-- to company `c` (a negative amount, a penalty, back from it).
+local function moveSubsidy(roster, c, amount, send, api)
+	local first = companies.find(roster, 0)
+	if amount == 0 or not c or c.id == 0 or not first then return end
+	book(api, send, first.entity, -amount, "SUBSIDY")
+	book(api, send, c.entity, amount, "SUBSIDY")
+end
+
+-- Checks that the offer `ref` ({ uid, kind }) can be answered: returns the
+-- subsidy, or nil and why, the same in every game.
+local function offered(roster, ref, state)
+	if type(ref) ~= "table" or type(ref.uid) ~= "number" or type(ref.kind) ~= "string" then
+		return nil, "a subsidy by its number and kind"
+	end
+	if state == nil then return nil, "this game has no subsidy script" end
+	local where, s, offers = companies.findSubsidy(state, ref.uid)
+	if s == nil then return nil, "the subsidy is no longer offered" end
+	if s.id ~= ref.kind then return nil, "the subsidy under that number is another one" end
+	if where ~= "offered" then
+		local r = subsidyRecord(roster, ref.uid, ref.kind)
+		local taker = r and companies.find(roster, r.company)
+		if where == "taken" then
+			return nil, "the subsidy was taken already, by " .. (taker and taker.name or "the room's first company")
+		end
+		return nil, "the subsidy is " .. where .. " already"
+	end
+	if offers > 1 then return nil, "two offers share that number" end
+	return s
+end
+
+-- Company `id` takes the subsidy offer `ref`: `sendEvent()` sends the
+-- script's own onAccept, which runs at once and books the money up front
+-- to the first company; for another company, every game moves it on.
+-- Returns true, or false and why; nothing changes when it returns false.
+function companies.acceptSubsidy(roster, id, ref, state, sendEvent, send, api)
+	local c = companies.find(roster, id)
+	if not c or c.gone then return false, "there is no such company" end
+	local s, why = offered(roster, ref, state)
+	if not s then return false, why end
+	local upfront = companies.subsidyMoney(type(s.data) == "table" and s.data.upfront)
+	sendEvent()
+	moveSubsidy(roster, c, upfront, send, api)
+	roster.subsidies = roster.subsidies or {}
+	local kept = {}
+	for _, r in ipairs(roster.subsidies) do
+		if not (r.uid == ref.uid and r.kind == ref.kind) then kept[#kept + 1] = r end
+	end
+	kept[#kept + 1] = { uid = ref.uid, kind = ref.kind, company = id, state = "taken" }
+	roster.subsidies = kept
+	return true
+end
+
+-- Declines the subsidy offer `ref`, for every company: `sendEvent()` sends
+-- the script's own onDecline. Returns true, or false and why.
+function companies.declineSubsidy(roster, ref, state, sendEvent)
+	local s, why = offered(roster, ref, state)
+	if not s then return false, why end
+	sendEvent()
+	return true
+end
+
+-- The game day now, counted from the game's start; nil where the game does
+-- not say.
+function companies.dayNow(api)
+	local ok, day = pcall(function()
+		local gt = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME)
+		local length = api.util.getDefaultDayDuration()
+		if type(length) ~= "number" or length <= 0 or type(gt.gameTime) ~= "number" then return nil end
+		return math.floor(gt.gameTime / length)
+	end)
+	if ok then return day end
+	return nil
+end
+
+-- Whether another company's subsidies are to be settled: one it took is
+-- still open, and a game day has begun since the last settled.
+function companies.subsidiesDue(roster, day)
+	if type(roster) ~= "table" or type(day) ~= "number" then return false end
+	if roster.subsidyDay ~= nil and day <= roster.subsidyDay then return false end
+	for _, r in ipairs(roster.subsidies or {}) do
+		if r.company ~= 0 and r.state == "taken" then return true end
+	end
+	return false
+end
+
+-- Settles the subsidies the room keeps against the script's `state`: a
+-- subsidy another company took that the script completed has its reward
+-- moved on to that company, one that failed its penalty; one the script no
+-- longer has, or one settled for good, is forgotten. Returns what it did,
+-- as lines for the log.
+function companies.settleSubsidies(roster, state, day, send, api)
+	local said, kept = {}, {}
+	if type(state) ~= "table" then return said end
+	roster.subsidyDay = day
+	for _, r in ipairs(roster.subsidies or {}) do
+		local where, s = companies.findSubsidy(state, r.uid)
+		local c = companies.find(roster, r.company)
+		local keep = s ~= nil and s.id == r.kind and where ~= "failed"
+		if s ~= nil and s.id == r.kind and c and not c.gone and c.id ~= 0 and r.state == "taken" then
+			local data = type(s.data) == "table" and s.data or {}
+			if where == "completed" then
+				local amount = companies.subsidyMoney(data.complete)
+				moveSubsidy(roster, c, amount, send, api)
+				r.state = "completed"
+				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name .. ": " .. amount
+			elseif where == "failed" then
+				local amount = companies.subsidyMoney(data.failure)
+				moveSubsidy(roster, c, -amount, send, api)
+				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name .. ": -" .. amount
+			end
+		end
+		-- Completed, it stays the company's in the script for years: kept
+		-- so a second accept names who took it.
+		if keep then kept[#kept + 1] = r end
+	end
+	roster.subsidies = kept
+	return said
+end
+
 -- Applies one `CompanyOp` for `player`. `send(command)` runs a command at
 -- once and returns its data and result entities. `seal` is the room's seal
 -- of the password sent with it, { scope =, tag = }, or nil. Returns true, or

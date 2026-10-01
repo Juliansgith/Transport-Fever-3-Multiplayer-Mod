@@ -917,6 +917,32 @@ pub enum LoanOp {
     Repay { loan: LoanTerms },
 }
 
+/// A subsidy the game offers, as Transport Fever 3's subsidy script keeps
+/// it (`game_mechanics/subventions/subventions.script.tl`): its own number
+/// (`uid`) and its kind, the subsidy resource that drew it (`id`, such as
+/// `::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res`). Every
+/// game draws the same offers from the same world; the kind is there so a
+/// game whose offer under that number is another kind refuses it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubsidyRef {
+    pub uid: i64,
+    pub kind: ResName,
+}
+
+/// Answering a subsidy offer: what TF3's subsidy window sends the subsidy
+/// script (`Subvention` `onAccept` and `onDecline`, `subventions_gui.tl`).
+/// Appended under schema version 13.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubsidyOp {
+    /// The acting player's company takes the offer: the first in the
+    /// room's order to accept it gets it, every later one is refused alike
+    /// in every game.
+    Accept(SubsidyRef),
+    /// The offer is declined: it is gone for every company, as in single
+    /// player.
+    Decline(SubsidyRef),
+}
+
 /// Prospecting near a town for one cargo: what TF3's construction menu sends
 /// the company script when the player picks a town with a prospection
 /// (`gui/construction/construction_react_util.tl`, the event `Companies`
@@ -975,6 +1001,9 @@ pub enum Action {
     },
     /// Crosswalks, turning lanes and the full traffic-light configuration.
     EditJunctions(JunctionEdit),
+    /// Accepting or declining a subsidy offer (`SubsidyOp`). Appended under
+    /// schema version 13: the variants before it keep their bytes.
+    Subsidy(SubsidyOp),
 }
 
 #[derive(Debug, Error)]
@@ -1293,6 +1322,20 @@ mod tests {
                 15, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
+            ]
+        );
+        let accept = Action::Subsidy(SubsidyOp::Accept(SubsidyRef {
+            uid: 1_234_560_000,
+            kind: Text::new("s").unwrap(),
+        }));
+        assert_eq!(
+            accept.to_payload().unwrap().as_bytes(),
+            [
+                13, // schema version
+                18, // Action::Subsidy, appended under schema version 13
+                0,  // SubsidyOp::Accept
+                0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
+                1, b's', // the kind
             ]
         );
         // Appended under schema version 9: the company's head's own.

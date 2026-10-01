@@ -1261,6 +1261,37 @@ function HANDLERS.Loan(op, ctx)
 	return false, "a loan is taken or paid back"
 end
 
+-- Answering a subsidy offer (tpf3mp/companies.lua, "subsidies"): the
+-- subsidy script's own events, as the game's subsidy window sends them
+-- (game_mechanics/subventions/subventions_gui.tl), here at once, in every
+-- game at the same update. Every game checks the offer against its own
+-- script's state first, alike: the first company in the room's order to
+-- accept an offer takes it, and every later one is refused, naming who took
+-- it. The money goes to the acting player's company.
+function HANDLERS.Subsidy(op, ctx)
+	local roster = ctx and ctx.roster
+	if not roster then return false, "no roster to book the subsidy to" end
+	local mine = companiesModule.byEntity(roster, company())
+	if not mine then return false, "the acting company is not in the room's roster" end
+	local state = companiesModule.subsidyState(api)
+	local function event(name, ref)
+		return function()
+			send(api.cmd.makeScriptingSendEventCmd("", "Subvention", name, { uid = ref.uid }))
+		end
+	end
+	if op.Accept then
+		local ok, why = companiesModule.acceptSubsidy(roster, mine.id, op.Accept, state,
+			event("onAccept", op.Accept), send, api)
+		if not ok then return false, why end
+		log("subsidy " .. string.format("%d", op.Accept.uid) .. " (" .. tostring(op.Accept.kind) .. ") taken by "
+			.. tostring(mine.name))
+		return true
+	elseif op.Decline then
+		return companiesModule.declineSubsidy(roster, op.Decline, state, event("onDecline", op.Decline))
+	end
+	return false, "a subsidy is accepted or declined"
+end
+
 -- A notification's popup played its first sound: the game's Notifications
 -- script's own event marks it (game_mechanics/notifications/
 -- notifications.script.tl, "initialSound"), in every game, so no game

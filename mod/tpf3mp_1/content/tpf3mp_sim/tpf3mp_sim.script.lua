@@ -344,9 +344,16 @@ function data()
 			-- last sampled, with more than one company (tpf3mp/progression.lua).
 			local quarter = progression.quarterNow(api)
 			local sample = l:room() and progression.due(saved, quarter)
-			if not actions and not checkpoint and not begin and not monthly and not sample then return nil end
+			-- A game day begun with a subsidy another company took still
+			-- open: its money is settled (tpf3mp/companies.lua, "subsidies").
+			local day = companies.dayNow(api)
+			local subsidies = l:room() and type(saved) == "table" and companies.subsidiesDue(saved.companies, day)
+			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies then
+				return nil
+			end
 			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint,
-				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil }
+				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil,
+				subsidies = subsidies and day or nil }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
@@ -445,6 +452,20 @@ function data()
 				saved.companies = roster
 				saved.progression = prog
 				state:set(saved)
+			end
+			-- Another company's subsidies, settled once a game day while one
+			-- is open: the money the subsidy script booked to the room's
+			-- first company moved on to the company that took it, alike in
+			-- every game (tpf3mp/companies.lua, "subsidies").
+			if work.subsidies then
+				local saved = state:get()
+				if type(saved) == "table" and type(saved.companies) == "table" then
+					local ok, said = pcall(companies.settleSubsidies, saved.companies, companies.subsidyState(api),
+						work.subsidies, apply.send, api)
+					if not ok then l:log("the companies' subsidies were not settled: " .. tostring(said)) end
+					for _, line in ipairs(ok and said or {}) do l:log(line) end
+					state:set(saved)
+				end
 			end
 			if work.checkpoint then
 				local read, failed = lanes.read(api)
