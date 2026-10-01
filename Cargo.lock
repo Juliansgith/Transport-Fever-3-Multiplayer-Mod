@@ -4561,6 +4561,7 @@ dependencies = [
  "tokio-tungstenite",
  "tpf3mp-proto",
  "tpf3mp-snapshot",
+ "tracing",
  "webpki-roots",
 ]
 
