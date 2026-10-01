@@ -657,6 +657,34 @@ function companies.loansOf(roster, id)
 	return out
 end
 
+-- The most loans a company has at once, as the game's loan script allows
+-- (loan_util.tl, maximalObtainableLoans).
+companies.MAX_LOANS = 4
+
+-- The loan script's state (LoanTable, loan.d.tl) as the game's finance
+-- window should show it to a player of company `id`, not the room's first:
+-- the offers the loan script has (`real.availableLoans`; an offer on the
+-- first company's cooldown replaced by `fresh(type)` where that gives one,
+-- since the room's companies have no cooldowns), and the company's own
+-- loans as the window reads them, each by its room id and amount, which
+-- its Repay sends back (companies.repay). `monthLength` is the game's.
+function companies.loanTable(roster, id, real, monthLength, fresh)
+	local offers = {}
+	for _, offer in ipairs(type(real) == "table" and type(real.availableLoans) == "table" and real.availableLoans or {}) do
+		if type(offer) == "table" and offer.cooldownUntil ~= nil and fresh then
+			offer = fresh(offer.type) or offer
+		end
+		offers[#offers + 1] = offer
+	end
+	local obtained = {}
+	for _, loan in ipairs(type(roster) == "table" and companies.loansOf(roster, id) or {}) do
+		obtained[#obtained + 1] = { type = loan.type or "Custom", amount = loan.amount,
+			duration = loan.months * monthLength, percentage = loan.rate * 12,
+			timesPaid = loan.paid, id = loan.id }
+	end
+	return { availableLoans = offers, obtainedLoans = obtained, freeId = type(roster) == "table" and roster.nextLoan or 1 }
+end
+
 -- Company `id` takes the loan `terms` (the loan script's own: amount, the
 -- duration in the game's milliseconds, the interest a year as a fraction).
 function companies.borrow(roster, id, terms, send, api)
@@ -666,6 +694,9 @@ function companies.borrow(roster, id, terms, send, api)
 	local duration = type(terms) == "table" and tonumber(terms.duration)
 	local percentage = type(terms) == "table" and tonumber(terms.percentage) or 0
 	if not amount or amount <= 0 or not duration or duration <= 0 then return false, "a loan needs an amount and a duration" end
+	if #companies.loansOf(roster, id) >= companies.MAX_LOANS then
+		return false, c.name .. " has " .. companies.MAX_LOANS .. " loans already"
+	end
 	local length = monthLength(api)
 	if not length then return false, "this game does not say how long a month is" end
 	local months = math.max(1, math.floor(duration / length + 0.5))
@@ -674,8 +705,9 @@ function companies.borrow(roster, id, terms, send, api)
 	book(api, send, c.entity, amount, "LOAN")
 	roster.loans = roster.loans or {}
 	roster.nextLoan = (roster.nextLoan or 1)
+	local kind = type(terms.type) == "string" and terms.type or "Custom"
 	roster.loans[#roster.loans + 1] = { id = roster.nextLoan, company = id, amount = amount, remaining = amount,
-		months = months, paid = 0, rate = rate, payment = annuity(amount, rate, months) }
+		months = months, paid = 0, rate = rate, payment = annuity(amount, rate, months), type = kind }
 	roster.nextLoan = roster.nextLoan + 1
 	roster.month = roster.month or companies.monthNow(api)
 	return true

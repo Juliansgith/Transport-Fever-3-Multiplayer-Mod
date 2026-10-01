@@ -341,8 +341,10 @@ protected folder such as Program Files.
   and your game reloads it. A notice says so.
 - **Saving.** The room saves everyone's game together from time to time,
   which you notice as a short pause, like an autosave.
-- **Loans.** Take and pay back loans in the company window as usual: every
-  player's game books them together.
+- **Loans.** Take and pay back loans in the finance window as usual: every
+  player's game books them together. The window shows your own company's
+  loans and offers, up to four loans at once; the interest and repayments
+  are your company's alone.
 - **Subsidies.** Accept or decline a subsidy in its window as usual:
   every player's game answers it together, a moment after your click.
   Every company is offered the same subsidies. The first company to

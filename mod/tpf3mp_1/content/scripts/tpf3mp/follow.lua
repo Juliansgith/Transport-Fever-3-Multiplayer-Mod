@@ -50,6 +50,101 @@ function follow.install(api, mine)
 	if type(package) == "table" and type(package.loaded) == "table" then
 		package.loaded["tpf3mp.followed"] = true
 	end
+	follow.loans(api, mine)
+	return true
+end
+
+-- The game's finance window reads the loans it lists and offers from the
+-- loan script's state (finances_loan_gui.tl, LoanBoard:
+-- getComponent(getEntityForGameScript(LOAN_SCRIPT), GAME_SCRIPT).state),
+-- which keeps the room's first company's loans only. In this GUI state the
+-- loan script's component is answered, for a player of another company,
+-- with that company's own loans and the offers it can take
+-- (tpf3mp/companies.lua, loanTable); its Obtain and Repay then go to the
+-- room as that company's (tpf3mp/guard.lua). The simulation's states, and
+-- the loan script's own state, are left alone. Where the company's loans
+-- cannot be read, the window shows none and offers none, never the first
+-- company's.
+follow.LOAN_SCRIPT = "::/game_mechanics/finance/loan.gs"
+-- Seconds a company's loans are read for, at most.
+follow.LOANS_EVERY = 0.5
+
+function follow.loans(api, mine)
+	if type(package) == "table" and type(package.loaded) == "table" and package.loaded["tpf3mp.loansFollowed"] then
+		return true
+	end
+	local engine = api.engine
+	local original = engine and engine.getComponent
+	if original == nil then return false, "no api.engine.getComponent" end
+	local function companies()
+		local loaded = type(package) == "table" and package.loaded and package.loaded["tpf3mp.companies"]
+		if loaded then return loaded end
+		return ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+	end
+	local function now()
+		local ok, t = pcall(os.clock)
+		return ok and t or 0
+	end
+	local loanEntity, cached, cachedFor, cachedAt = nil, nil, nil, nil
+	-- Offers in place of those on the first company's cooldown, drawn once
+	-- per kind (the game's loan_util), kept until the first company's
+	-- offer of that kind is back.
+	local fresh = {}
+	local function freshOffer(kind)
+		if fresh[kind] == nil then
+			pcall(function()
+				local util = ug_require("::/game_mechanics/finance/loan_util.tl")
+				local make = util and util["create" .. tostring(kind) .. "Loan"]
+				if make then fresh[kind] = make() end
+			end)
+		end
+		return fresh[kind]
+	end
+	local function companyLoans(company)
+		local t = now()
+		if cached ~= nil and cachedFor == company and t - cachedAt < follow.LOANS_EVERY then return cached end
+		local table0 = { availableLoans = {}, obtainedLoans = {}, freeId = 0 }
+		local ok, built = pcall(function()
+			local c = companies()
+			local state = c.scriptState(api)
+			local roster = state and state.companies
+			local own = roster and c.byEntity(roster, company)
+			if not own then return nil end
+			local real = original(loanEntity, api.type.ComponentType.GAME_SCRIPT)
+			real = real and real.state
+			for _, offer in ipairs(type(real) == "table" and real.availableLoans or {}) do
+				if type(offer) == "table" and offer.cooldownUntil == nil then fresh[offer.type] = nil end
+			end
+			return c.loanTable(roster, own.id, real, api.util.getDefaultMonthDuration(), freshOffer)
+		end)
+		cached, cachedFor, cachedAt = (ok and built) or table0, company, t
+		return cached
+	end
+	local replaced = pcall(function()
+		engine.getComponent = function(entity, kind, ...)
+			if kind ~= nil and entity ~= nil then
+				local isLoans = false
+				pcall(function()
+					if loanEntity == nil or loanEntity < 0 then
+						loanEntity = api.engine.system.gameScriptSystem.getEntityForGameScript(follow.LOAN_SCRIPT)
+					end
+					isLoans = type(loanEntity) == "number" and loanEntity >= 0 and entity == loanEntity
+						and kind == api.type.ComponentType.GAME_SCRIPT
+				end)
+				if isLoans then
+					local got, company = pcall(mine)
+					if got and type(company) == "number" then
+						return { state = companyLoans(company) }
+					end
+				end
+			end
+			return original(entity, kind, ...)
+		end
+	end)
+	if not replaced then return false, "api.engine keeps its getComponent" end
+	if type(package) == "table" and type(package.loaded) == "table" then
+		package.loaded["tpf3mp.loansFollowed"] = true
+	end
 	return true
 end
 
