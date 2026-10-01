@@ -351,6 +351,61 @@ impl Block {
             Value::Text(_) => None,
         }
     }
+
+    /// Every entry that is a block, with its key.
+    pub fn blocks(&self) -> impl Iterator<Item = (&str, &Block)> {
+        self.0.iter().filter_map(|(key, value)| match value {
+            Value::Map(block) => Some((key.as_str(), block)),
+            Value::Text(_) => None,
+        })
+    }
+}
+
+/// The Steam account's display name (its persona name), for the player's
+/// name when they have not chosen one: from `config/loginusers.vdf` in the
+/// first Steam folder that has it.
+pub fn persona_name() -> Option<String> {
+    let active = active_account();
+    steam_roots().iter().find_map(|root| {
+        let text = read_small(&root.join("config").join("loginusers.vdf"))?;
+        persona_name_in(&text, active)
+    })
+}
+
+/// The persona name in a `loginusers.vdf`: the active account's when Steam
+/// names one (its 64-bit id is 76561197960265728 plus the account), else the
+/// account marked most recent, else the one used last. At most 32
+/// characters, the longest name the server takes.
+pub fn persona_name_in(text: &str, active: Option<u32>) -> Option<String> {
+    const ACCOUNT_BASE: u64 = 76_561_197_960_265_728;
+    let file = parse(text).ok()?;
+    let users = file.map("users")?;
+    let accounts: Vec<(&str, &Block)> = users.blocks().collect();
+    let chosen = active
+        .and_then(|account| {
+            let id = (ACCOUNT_BASE + u64::from(account)).to_string();
+            accounts.iter().find(|(key, _)| *key == id)
+        })
+        .or_else(|| {
+            accounts
+                .iter()
+                .find(|(_, user)| user.text("MostRecent") == Some("1"))
+        })
+        .or_else(|| {
+            accounts.iter().max_by_key(|(_, user)| {
+                user.text("Timestamp")
+                    .and_then(|t| t.parse::<u64>().ok())
+                    .unwrap_or(0)
+            })
+        })?;
+    let name: String = chosen
+        .1
+        .text("PersonaName")?
+        .trim()
+        .chars()
+        .take(32)
+        .collect();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Reads Valve's text KeyValues: `"key" "value"` pairs and `"key" { … }`
@@ -493,6 +548,48 @@ impl<'a> Tokens<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    const LOGINUSERS: &str = r#""users"
+{
+	"76561198000000001"
+	{
+		"AccountName"		"silver2127"
+		"PersonaName"		"ComradeSilver"
+		"Timestamp"		"1790697642"
+	}
+	"76561198000000002"
+	{
+		"AccountName"		"other"
+		"PersonaName"		"Shiro"
+		"MostRecent"		"1"
+		"Timestamp"		"1700000000"
+	}
+}"#;
+
+    #[test]
+    fn the_players_name_is_the_steam_accounts_persona_name() {
+        // The active account wins: 76561197960265728 + 39734273.
+        assert_eq!(
+            persona_name_in(LOGINUSERS, Some(39_734_273)).as_deref(),
+            Some("ComradeSilver")
+        );
+        // Without one, the account marked most recent.
+        assert_eq!(persona_name_in(LOGINUSERS, None).as_deref(), Some("Shiro"));
+        // Without that, the one used last.
+        let no_recent = LOGINUSERS.replace("\"MostRecent\"		\"1\"", "");
+        assert_eq!(
+            persona_name_in(&no_recent, None).as_deref(),
+            Some("ComradeSilver")
+        );
+        // Long names are cut to what the server takes; nothing is no name.
+        let long = LOGINUSERS.replace("Shiro", &"x".repeat(40));
+        assert_eq!(
+            persona_name_in(&long, None).map(|n| n.chars().count()),
+            Some(32)
+        );
+        assert_eq!(persona_name_in("\"users\" { }", None), None);
+        assert_eq!(persona_name_in("not vdf {", None), None);
+    }
     use super::*;
 
     const LIBRARIES: &str = r#"
