@@ -4409,6 +4409,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zip",
+ "zstd",
 ]
 
 [[package]]

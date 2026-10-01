@@ -384,6 +384,10 @@ pub enum BridgeFault {
     /// it. Rejoining stops; the player is back on the server, in no room.
     #[error("{ROOM_GONE}")]
     RoomGone,
+    /// The room's world does not run TPF3-MP's mod: loaded, it would hold
+    /// paused for good, without a word.
+    #[error("{}", crate::save_check::WORLD_WITHOUT_OWN_MOD)]
+    WorldWithoutOwnMod,
     #[error("the game loaded its world to run step {got} next, but step {expected} was ordered")]
     LoadedElsewhere { expected: u64, got: u64 },
     #[error("the room sent a world to load, but this agent keeps no worlds")]
@@ -1540,6 +1544,7 @@ impl<L: HookLink> Bridge<L> {
                         info!(file = %file.display(), "fetched the world to load");
                         self.received = Some(id);
                         self.tidy();
+                        check_world(&file)?;
                         self.order_load(Some(&file), next_step)?;
                     }
                     Err(error) => {
@@ -2062,6 +2067,23 @@ impl Outbox {
     }
 }
 
+/// Refuses a world to load that does not run TPF3-MP's mod (fail closed: it
+/// would hold paused for good). A world whose mods do not read is loaded:
+/// the hook's own plan of its mods says more (`tpf3mp-hook`, `plan_mods`).
+fn check_world(file: &Path) -> Result<(), BridgeFault> {
+    match crate::save_check::runs_own_mod(file) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            warn!(file = %file.display(), "the room's world does not run TPF3-MP's mod; not loading it");
+            Err(BridgeFault::WorldWithoutOwnMod)
+        }
+        Err(why) => {
+            debug!(%why, "cannot tell whether the room's world runs TPF3-MP's mod");
+            Ok(())
+        }
+    }
+}
+
 fn path_text(path: &Path) -> Result<Text<MAX_PATH>, BridgeFault> {
     Text::new(path.to_string_lossy().into_owned())
         .map_err(|_| BridgeFault::PathTooLong(path.to_owned()))
@@ -2467,6 +2489,27 @@ mod tests {
     use tpf3mp_proto::{FixedBytes, MAX_PAYLOAD, Payload, RoomId, Turn, TurnStart};
 
     use super::*;
+
+    #[test]
+    fn a_world_without_tpf3mps_mod_is_not_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let without = dir.path().join("w-1.sav");
+        crate::save_check::saves::write(&without, &["urbangames_preorder_pack"]);
+        let refused = check_world(&without).unwrap_err();
+        assert!(matches!(refused, BridgeFault::WorldWithoutOwnMod));
+        assert!(
+            refused
+                .to_string()
+                .starts_with("The room's world doesn't have the TPF3-MP mod enabled")
+        );
+        let with = dir.path().join("w-2.sav");
+        crate::save_check::saves::write(&with, &["urbangames_preorder_pack", "tpf3mp_1"]);
+        assert!(check_world(&with).is_ok());
+        // One whose mods do not read loads as before.
+        let junk = dir.path().join("w-3.sav");
+        std::fs::write(&junk, b"not a save").unwrap();
+        assert!(check_world(&junk).is_ok());
+    }
 
     #[test]
     fn rejoining_stops_after_repeated_quick_losses_or_its_patience() {

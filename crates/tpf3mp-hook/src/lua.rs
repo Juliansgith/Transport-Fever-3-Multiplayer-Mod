@@ -1229,7 +1229,25 @@ pub fn plan_mods(save: &str) -> Option<Plan> {
         named(&plan.dropped),
         named(&plan.added)
     ));
+    if !plan
+        .mods
+        .iter()
+        .any(|name| name == tpf3mp_bridge::mods::OWN_MOD)
+    {
+        // Seen live: such a world loads, and then holds paused for good.
+        // The agent refuses such a save and such a world before they get
+        // here; one whose mods it could not read still may.
+        log(without_own_mod());
+    }
     Some(plan)
+}
+
+/// What the hook's log says of a world that loads without TPF3-MP's mod.
+fn without_own_mod() -> String {
+    format!(
+        "the room's world loads without TPF3-MP's mod ({}): the save does not have it enabled, so the mod's game script will not run and the world will hold paused; load the save once, turn TPF3-MP on in its mods, save it, and start a room from it again",
+        tpf3mp_bridge::mods::OWN_MOD
+    )
 }
 
 /// `personal()`: this player's personal mods, one name a line, or nil
@@ -2492,6 +2510,43 @@ pub(crate) mod tests {
         }
         assert_eq!(shared().notes.len(), MAX_NOTES);
         shared().notes.clear();
+    }
+
+    /// Seen live: the room's world loaded with the save's two DLC packs and
+    /// not TPF3-MP's mod, and held paused with nothing in the log to say
+    /// why. The log says so now, and how to fix it.
+    #[test]
+    fn a_world_without_tpf3mps_mod_is_said_in_the_log() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let name = |n: &str| tpf3mp_proto::Text::new(n).unwrap();
+        set_mods(Some(ModLists {
+            shared: tpf3mp_proto::BoundedVec::new(vec![
+                name("urbangames_deluxe_upgrade_pack"),
+                name("urbangames_preorder_pack"),
+                name("tpf3mp_1"),
+            ])
+            .unwrap(),
+            personal: tpf3mp_proto::BoundedVec::default(),
+        }));
+        let _ = take_log();
+        plan_mods("urbangames_deluxe_upgrade_pack\nurbangames_preorder_pack").unwrap();
+        let said = take_log();
+        assert!(
+            said.iter().any(
+                |line| line.contains("loads without TPF3-MP's mod (tpf3mp_1)")
+                    && line.contains("turn TPF3-MP on in its mods")
+            ),
+            "{said:?}"
+        );
+        plan_mods("urbangames_preorder_pack\ntpf3mp_1").unwrap();
+        assert!(
+            !take_log()
+                .iter()
+                .any(|line| line.contains("without TPF3-MP's mod")),
+            "not for a world that has it"
+        );
+        set_mods(None);
     }
 
     /// A simulation state that cannot guard the personal mods says so, and
