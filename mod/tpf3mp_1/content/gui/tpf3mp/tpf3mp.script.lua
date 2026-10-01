@@ -275,6 +275,19 @@ function data()
 	-- one company in the room: each company's own, as the room's rule keeps
 	-- them (tpf3mp/progression.lua), read from the mod's game script's
 	-- state. With one company the game's own.
+	-- The game's permit counts, as the construction menu and tool read them,
+	-- count the player's company's own constructions while the room has
+	-- more than one company (tpf3mp/companies.lua, followPermits): each its
+	-- own headquarters.
+	local function countOwnPermits()
+		local ok, why = require("tpf3mp.companies").followPermits(api, ug_require, function()
+			local roster = ui().companies
+			return roster ~= nil and #(roster.list or {}) > 1
+		end)
+		link:log(ok and ("the game's permits count each company's own constructions (" .. ok .. " company_util table(s))")
+			or ("the game's permits count the whole world's constructions: " .. tostring(why)))
+	end
+
 	local function showRanks()
 		local ok, why = require("tpf3mp.progression").follow(scriptState)
 		link:log(ok and "the company window shows each company's own rank"
@@ -363,6 +376,7 @@ function data()
 		guardCommands()
 		followMyCompany()
 		showRanks()
+		countOwnPermits()
 		offerOpenStations()
 		-- The stop the construction menu gives the stop tool, wherever the
 		-- menu runs (gui/tpf3mp/gui_state.script.lua watches the other state).

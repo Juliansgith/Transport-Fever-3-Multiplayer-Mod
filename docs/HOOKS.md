@@ -1628,6 +1628,52 @@ one line per town someone carried for, then one per company. Compare the
 lines of the same game time across the games: any difference is a
 divergence.
 
+### Headquarters
+
+What the game does (build 40408, its scripts): a headquarters is the
+construction `landmarks/hq/headquarter.con`, whose company metadata says
+`headquarters = true` and names the permit `permitKeys/hq.res`, one at
+rank 1. The engine keeps one headquarters a player entity, its `PLAYER`
+component's `headquarters` (`api/tealdef/api/engine.d.tl`), which the
+game's capital town reads (`town_util.isCapital`, for `getPlayer()`).
+But the game counts a permit's constructions over the whole world,
+whoever owns them: the construction menu's
+`company_util.getConstructionDisableCacheData` (its `numBuilt`, "Already
+Built") and the tool's `company_util.countUsedConstructionPermits`
+("All 1 Permits Used Up"), both through
+`streetConnectorSystem.forEachConstructionWithMetadata`. So once one
+company had its headquarters, no other company could build one
+(2026-10-01, three players).
+
+What the mod does, with more than one company in the room:
+
+- **Every game** refuses a second headquarters of the same company when
+  the room orders it (`companies.mayBuild`, from `apply.lua`'s
+  `BuildConstruction`): "<company> has its headquarters already". What
+  counts is a construction whose resource's metadata says headquarters
+  and which the acting company owns (`PLAYER_OWNED`). An edit of the
+  headquarters (its modules, `replaces`) is no second one. A construction
+  this game cannot tell is refused with why.
+- **In both GUI states** (the plugin's and the HUD's), the two
+  `company_util` functions count the player's company's constructions
+  only (`companies.followPermits`; the module as the game loads it under
+  both `/game_mechanics/...` and `::/game_mechanics/...`): the menu
+  offers each company its own headquarters, and its upgrades by its own
+  rank. With one company, the game's own counts. `hook.log`: `the game's
+  permits count each company's own constructions (N company_util
+  table(s))`, and the same `in the HUD's state`.
+- After a headquarters is built, every game logs what the engine made of
+  it: `headquarters for company entity <e>: its PLAYER names <entity>`
+  (INFERRED that the engine sets `headquarters` for the paying company's
+  player entity; this line says, in a real game).
+
+Not per company, as the game has no way to ask for another company's:
+`api.engine.util.headquarters.getTransportedData()` and
+`getCompaniesValue()` take no company and answer for the engine's local
+player, the room's first company; the windows that show them (the game
+bar's transported figures, the finance window's company value) show that
+company's for everyone.
+
 ### The build tools
 
 The street, track and construction tools are native: a click queues a
