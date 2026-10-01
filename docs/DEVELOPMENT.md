@@ -190,6 +190,9 @@ takes its place, and an older build, or one beside a launcher too old to
 say its build, refuses with both files named. Playtests that run several
 launchers on one PC give each its own `--game-link`, and never meet.
 
+To test in the real game, with several games in one room on one PC, see
+[GAME_TESTING.md](GAME_TESTING.md).
+
 Run a local server with a throwaway certificate, then connect to it:
 
 ```sh

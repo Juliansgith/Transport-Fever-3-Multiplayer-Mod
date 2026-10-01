@@ -3,7 +3,8 @@
 How changes are made and released, for people and coding agents alike. Read
 this before changing anything. [README.md](README.md) says what the project
 is, for players; [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) where it stands
-and how to build it; `docs/` says how it works. Check every task against
+and how to build it; [docs/GAME_TESTING.md](docs/GAME_TESTING.md) how to
+test in the real game; `docs/` says how it works. Check every task against
 [docs/PLAN.md](docs/PLAN.md) and [docs/DECISIONS.md](docs/DECISIONS.md)
 first, and flag a conflict instead of working around it ("Before starting
 a task" below).
@@ -180,7 +181,11 @@ starting any task, check it against that page and
   the body.
 - **Other repositories are read-only.** The sibling TPF2 projects (`tf2mod`,
   `tf2mp-relay`, `tpf2-multiplayer`) and the game install are inputs; never
-  modify them. Never launch or modify the game from automation. Credit code
-  or test vectors taken from them in the file that uses them.
+  modify them. Credit code or test vectors taken from them in the file that
+  uses them.
+- **The real game only as [docs/GAME_TESTING.md](docs/GAME_TESTING.md)
+  says**: with `tools/game`, on the local rig's server, for a real-game test
+  the owner asked for or a fix to something that failed in the game; only
+  games you started; never another player's or the production server.
 - **Secrets stay out of the repository**: keys, certificates and
   `invite.key` included.
