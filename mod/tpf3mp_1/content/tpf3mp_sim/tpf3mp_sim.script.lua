@@ -46,8 +46,15 @@
 -- The module editor tells game scripts nothing on build 40408 (CAPTURE):
 -- the hook reads its build natively at the click, and `guiUpdate` takes it
 -- for that click (tpf3mp_native.built), ahead of any preview, and makes the
--- edit of it as of the construction tool's proposal. A click with neither
--- is stopped with "no proposal seen". Every event of the room's game the
+-- edit of it as of the construction tool's proposal. The terrain tools
+-- tell them nothing either: the hook reads a stroke's height grid at the
+-- click the same way, and `guiUpdate` hands the room Terraform actions of
+-- it (tpf3mp/capture.lua terraform), which every game applies through the
+-- hook (tpf3mp/apply.lua). A click with neither is stopped with "no
+-- proposal seen".
+--
+-- Each upgrade (a road or track modifier's build) and each terraform is
+-- said in the hook's log when handed to the room and when applied. Every event of the room's game the
 -- script does not handle is logged by id and name, once each, a few dozen
 -- at most.
 --
@@ -95,7 +102,8 @@ function data()
 	-- game scripts of the proposals of six tools only, each under the id
 	-- the game's GUI names it by (UI::CGameUI's constructor, read from the
 	-- binary): constructionBuilder, streetTerminalBuilder, streetBuilder,
-	-- trackBuilder, streetTrackModifier (the upgrade tool, not carried yet)
+	-- trackBuilder, streetTrackModifier (the road and track modifiers: tram
+	-- tracks, bus lanes, barriers, trees, a street or track type, catenary)
 	-- and bulldozer. The module editor (UI::ModuleBuilder) tells them
 	-- nothing there. moduleBuilder and moduleBulldozer are its names in the
 	-- construction menu's parameters (ConstructionActionParam); INFERRED
@@ -139,6 +147,19 @@ function data()
 		end
 		if not action then return { why = "the module editor's edit: " .. tostring(whyNot), shape = shape } end
 		return { action = action, shape = shape }
+	end
+
+	-- The snapshot of a terrain tool's click, from its stroke as the hook read
+	-- it (tpf3mp_native.built): its Terraform actions, one a band of rows.
+	local function terraformEdit(built)
+		local actions, why = capture.terraform(built)
+		if not actions then return { why = "the terrain tool's stroke: " .. tostring(why), shape = "terrain tool" } end
+		local said = {}
+		for i, a in ipairs(actions) do
+			said[i] = "terraform handed to the room: " .. capture.terraformSummary(a.Terraform)
+				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
+		end
+		return { actions = actions, said = said, shape = "terrain tool" }
 	end
 
 	-- The guard on what this player's personal mods' game scripts send, in
@@ -237,6 +258,8 @@ function data()
 				if link then
 					local linked = link
 					apply.log = function(line) linked:log(line) end
+					-- A terraform's grid goes to the hook (tpf3mp/apply.lua).
+					apply.terrain = function(grid) return linked:terrain(grid) end
 				end
 				lanes = lanesModule
 				capture = captureModule
@@ -482,7 +505,9 @@ function data()
 							.. (shape and (" [" .. shape .. "]") or ""))
 					end
 				end
-				snapshots[clicks] = { action = action, why = why, shape = shape }
+				-- An upgrade tool's build, for the log (tpf3mp/roads.lua).
+				local upgrade = action and kind == "modify" and capture.upgradeSummary(action) or nil
+				snapshots[clicks] = { action = action, why = why, shape = shape, upgrade = upgrade }
 				if action then return nil end
 				return { errorMessages = { ["Not in multiplayer yet: " .. tostring(why)] = true } }
 			end
@@ -523,12 +548,30 @@ function data()
 				-- The module editor's click: its build as the hook read it,
 				-- whatever preview another tool showed before.
 				local native, whyNot = l:built(handled)
-				if native ~= nil or whyNot ~= nil then seen = moduleEdit(native, whyNot) end
-				if seen and seen.action then
+				if type(native) == "table" and native.terrain ~= nil then
+					seen = terraformEdit(native)
+				elseif native == nil and type(whyNot) == "string" and whyNot:find("terrain tool: ", 1, true) == 1 then
+					-- The painter's, the asset brush's, or a stroke that did not read.
+					seen = { why = whyNot, shape = "terrain tool" }
+				elseif native ~= nil or whyNot ~= nil then
+					seen = moduleEdit(native, whyNot)
+				end
+				if seen and seen.actions then
+					for i, action in ipairs(seen.actions) do
+						local ok, why = l:command(action)
+						if ok then
+							l:log(seen.said[i])
+						else
+							l:log("the player's terraform was not handed to the room: " .. tostring(why))
+							break
+						end
+					end
+				elseif seen and seen.action then
 					local ok, why = l:command(seen.action)
 					if ok then
 						l:log("handed the player's build to the room"
 							.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
+						if seen.upgrade then l:log("upgrade handed to the room: " .. seen.upgrade) end
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
 					end

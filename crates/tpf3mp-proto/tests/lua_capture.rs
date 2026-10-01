@@ -380,7 +380,7 @@ fn a_tf3_proposal_the_mod_cannot_place_fails_the_capture() {
 fn capture_street(street: &str) -> Result<LuaValue, String> {
     capture_with(
         street,
-        "captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street')",
+        "engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street')",
     )
 }
 
@@ -388,7 +388,7 @@ fn capture_street(street: &str) -> Result<LuaValue, String> {
 fn capture_modify(street: &str) -> Result<LuaValue, String> {
     capture_with(
         street,
-        "captureModify({ toAdd = {}, toRemove = {}, proposal = street })",
+        "engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street })",
     )
 }
 
@@ -409,8 +409,11 @@ fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
             "local function v(x, y, z) return {{ x = x, y = y, z = z }} end
              -- The country street 8-9-10 runs north through (50, 0); street
              -- 20-21 east-west under (120, 0), where the new road's bridge ends.
+             -- The track 30-31 runs north at x = 300.
              local NODES = {{ [7] = v(0, 0, 0), [8] = v(50, -40, 0), [9] = v(50, 1, 0), [10] = v(50, 40, 0),
-                              [20] = v(120, -30, 0), [21] = v(120, 30, 0) }}
+                              [20] = v(120, -30, 0), [21] = v(120, 30, 0), [30] = v(300, -30, 0),
+                              [31] = v(300, 30, 0) }}
+             local TRACKS = {{ [30] = {{ 110 }}, [31] = {{ 110 }} }}
              local STREETS = {{ [7] = {{ 104 }}, [8] = {{ 100 }}, [9] = {{ 100, 101 }}, [10] = {{ 101 }},
                                 [20] = {{ 102 }}, [21] = {{ 102 }} }}
              api = {{
@@ -425,12 +428,13 @@ fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
                      end,
                      system = {{ streetSystem = {{
                          getNodeStreetSegments = function(n) return STREETS[n] or {{}} end,
-                         getNodeTrackSegments = function() return {{}} end,
+                         getNodeTrackSegments = function(n) return TRACKS[n] or {{}} end,
                      }} }},
                  }},
              }}
              local street = {street}
-             return require('tpf3mp.engine').{call}"
+             local engine, roads = require('tpf3mp.engine'), require('tpf3mp.roads')
+             return {call}"
         ))
         .eval()
         .map_err(|error| error.to_string())?;
@@ -635,4 +639,70 @@ fn a_stop_moves_with_a_road_only_on_the_edge_rebuilt_in_place() {
     let why =
         capture_modify(&modify_proposal("{ { 555, 0 }, { -400000000, 0 } }", "{}")).unwrap_err();
     assert!(why.contains("adds a stop or signal"), "{why}");
+}
+
+/// A track modifier's proposal (INFERRED from the street tools' seen
+/// shape, not yet seen in the game): the track 30-31 rebuilt in place in
+/// the high-speed template, its one lane electrified (ELECTRIC_TRAIN, mode
+/// 8, beside TRAIN, 7) and faster.
+const TRACK_MODIFY_PROPOSAL: &str = "{
+    addedNodes = {},
+    addedSegments = {
+        { entity = -1, type = 1, comp = { node0 = 30, node1 = 31, tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0),
+          type = 0, typeIndex = -1, roadTemplate = 'track/high_speed.track_template', roadStyle = '',
+          objects = {}, laneConfigs = { { speed = 83.333, width = 1.435, height = 0, offset = 0,
+          forward = true, transportModes = { [7] = true, [8] = true } } } } },
+    },
+    removedSegments = { { entity = 110, type = 1, comp = { node0 = 30, node1 = 31, objects = {} } } },
+    removedNodes = {},
+}";
+
+#[test]
+fn a_track_modifier_carries_its_type_catenary_and_speed() {
+    let action = decode(capture_modify(TRACK_MODIFY_PROPOSAL).unwrap());
+    let Action::BuildTrack(track) = action else {
+        panic!("{action:?}")
+    };
+    assert_eq!(track.track.as_str(), "track/high_speed.track_template");
+    let link = &track.polyline.links[0];
+    assert_eq!(link.lanes.len(), 1);
+    assert_eq!(
+        link.lanes[0].modes,
+        (1 << 7) | (1 << 8),
+        "TRAIN and ELECTRIC_TRAIN"
+    );
+    assert_eq!(
+        link.lanes[0].speed, 83_333,
+        "the lane's speed, in thousandths"
+    );
+    assert_eq!(track.polyline.removals.len(), 1);
+    assert_eq!(track.polyline.removals[0].network, Network::Track);
+}
+
+#[test]
+fn an_upgrade_is_said_in_one_line_and_another_build_is_not_an_upgrade() {
+    let summary = |street: &str, call: &str| match capture_with(street, call).unwrap() {
+        LuaValue::String(text) => String::from_utf8(text).unwrap(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        summary(
+            TRACK_MODIFY_PROPOSAL,
+            "roads.upgradeSummary(engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street }))"
+        ),
+        "track upgrade of 1 edge(s) rebuilt in place; template track/high_speed.track_template; 1 lane(s) carrying TRAIN ELECTRIC_TRAIN; lane speeds 83.333 to 83.333; decorations none; locked 0, owned 0"
+    );
+    assert_eq!(
+        summary(
+            &modify_proposal("{ { 555, 0 } }", "{}"),
+            "roads.upgradeSummary(engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street }))"
+        ),
+        "street upgrade of 2 edge(s) rebuilt in place; template street/country_tram.street_template; 2 edge(s) with their template's lanes; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 1, owned 1"
+    );
+    // A new street onto another's middle is no upgrade.
+    let other = capture_with(
+        SPLIT_PROPOSAL,
+        "roads.upgradeSummary(engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street'))",
+    );
+    assert_eq!(other, Err(String::new()));
 }

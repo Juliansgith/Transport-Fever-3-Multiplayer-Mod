@@ -176,4 +176,88 @@ function roads.convert(capture, world)
 	} }
 end
 
+-- The transport modes by the bit a lane's `modes` has for each: the
+-- TransportMode values 0 to 15 in the order build 40408's tealdef lists
+-- them (api/type.d.tl). INFERRED that each value is its place there, as
+-- tpf3mp/engine.lua reads a lane's modes keyed by value.
+roads.MODES = { "PERSON", "CARGO", "CAR", "BUS", "TRUCK", "TRAM", "ELECTRIC_TRAM", "TRAIN",
+	"ELECTRIC_TRAIN", "AIRCRAFT", "SHIP", "SMALL_AIRCRAFT", "SMALL_SHIP", "HELICOPTER", "TRAM_TRACK",
+	"ELECTRIC_TRAM_TRACK" }
+
+-- A road or track modifier's build, the upgrade tools' (tram tracks, bus
+-- lanes, barriers, trees, a street or track type, catenary), in one line
+-- for the log: a BuildRoad or BuildTrack whose every link rebuilds an edge
+-- it removes, between the same places in the same direction. What each
+-- edge has after it: its template, the transport modes of its lanes (a tram
+-- track is TRAM_TRACK, catenary ELECTRIC_TRAIN or ELECTRIC_TRAM_TRACK), the
+-- lanes' speeds, its decorations, the towns' lock and the company's
+-- ownership. nil for any other build.
+function roads.upgradeSummary(action)
+	if type(action) ~= "table" then return nil end
+	local body, network = action.BuildRoad, "street"
+	if body == nil then body, network = action.BuildTrack, "track" end
+	local polyline = type(body) == "table" and body.polyline
+	if type(polyline) ~= "table" or type(polyline.links) ~= "table" or #polyline.links == 0 then return nil end
+	local vertices, removals = polyline.vertices or {}, polyline.removals or {}
+	local function same(p, q)
+		return type(p) == "table" and type(q) == "table" and math.abs(p.x - q.x) < 0.05
+			and math.abs(p.y - q.y) < 0.05 and math.abs(p.z - q.z) < 0.05
+	end
+	local taken = {}
+	for _, link in ipairs(polyline.links) do
+		local a, b = vertices[(link.from or -1) + 1], vertices[(link.to or -1) + 1]
+		local found
+		for k, r in ipairs(removals) do
+			if not taken[k] and a and b and r.ends and same(a.pos, r.ends.a) and same(b.pos, r.ends.b) then
+				found = k
+				break
+			end
+		end
+		if found == nil then return nil end
+		taken[found] = true
+	end
+	local own = body.street or body.track
+	local templates, decorations, modes = {}, {}, {}
+	local locked, owned, lanes, fromTemplate = 0, 0, 0, 0
+	local slow, fast
+	local function add(set, value)
+		if value ~= nil and not set[value] then
+			set[value] = true
+			set[#set + 1] = tostring(value)
+		end
+	end
+	for _, link in ipairs(polyline.links) do
+		add(templates, (link.kind and link.kind.template) or own)
+		for _, d in ipairs(link.decorations or {}) do add(decorations, d.name) end
+		if link.locked then locked = locked + 1 end
+		if link.owned then owned = owned + 1 end
+		if #(link.lanes or {}) == 0 then fromTemplate = fromTemplate + 1 end
+		for _, lane in ipairs(link.lanes or {}) do
+			lanes = lanes + 1
+			local m = lane.modes or 0
+			for bit = 0, #roads.MODES - 1 do
+				if math.floor(m / 2 ^ bit) % 2 == 1 then modes[bit + 1] = true end
+			end
+			if type(lane.speed) == "number" then
+				slow = math.min(slow or lane.speed, lane.speed)
+				fast = math.max(fast or lane.speed, lane.speed)
+			end
+		end
+	end
+	local named = {}
+	for bit, name in ipairs(roads.MODES) do
+		if modes[bit] then named[#named + 1] = name end
+	end
+	local parts = { network .. " upgrade of " .. #polyline.links .. " edge(s) rebuilt in place",
+		"template " .. table.concat(templates, ", ") }
+	if lanes > 0 then
+		parts[#parts + 1] = lanes .. " lane(s) carrying " .. (#named > 0 and table.concat(named, " ") or "nothing")
+		if slow then parts[#parts + 1] = string.format("lane speeds %g to %g", slow, fast) end
+	end
+	if fromTemplate > 0 then parts[#parts + 1] = fromTemplate .. " edge(s) with their template's lanes" end
+	parts[#parts + 1] = "decorations " .. (#decorations > 0 and table.concat(decorations, ", ") or "none")
+	parts[#parts + 1] = "locked " .. locked .. ", owned " .. owned
+	return table.concat(parts, "; ")
+end
+
 return roads

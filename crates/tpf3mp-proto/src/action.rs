@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 10;
+pub const ACTION_SCHEMA_VERSION: u32 = 11;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -693,7 +693,10 @@ pub enum EdgeObjectKind {
 }
 
 /// One terrain cell: the height it is set to and the height it had, in
-/// millimetres.
+/// millimetres. On Transport Fever 3, the cell's two values as the terrain
+/// tool's height grid (`Proposal.terrain.baseHeightMod`) has them, rounded
+/// to the millimetre; INFERRED that they are TPF2's `{ height, height
+/// before }`. Every game applies the same rounded values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerrainCell {
     pub target: i32,
@@ -702,6 +705,12 @@ pub struct TerrainCell {
 
 /// A terraform stroke as the grid the game computed. Decoding checks that
 /// the cells fill whole rows.
+///
+/// On Transport Fever 3 (schema 11) `origin` is in the terrain's own grid:
+/// the first cell's index times `cell`, the side of the map's height cells
+/// (`api.engine.terrain.getBaseResolution`, 4 m), so every game finds the
+/// same cells by dividing again. A stroke larger than one action carries is
+/// cut into bands of whole rows, each its own action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "TerraformFields")]
 pub struct Terraform {
@@ -1042,7 +1051,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1085,7 +1094,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1119,7 +1128,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1137,7 +1146,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1152,7 +1161,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1163,7 +1172,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1189,7 +1198,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [10, 11]);
+            assert_eq!(payload.as_bytes()[..2], [11, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         let hold = Action::VehicleOp(VehicleOp {
@@ -1199,7 +1208,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

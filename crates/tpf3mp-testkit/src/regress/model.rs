@@ -873,9 +873,15 @@ impl State {
             }
             gone.push((net(node.network), found));
         }
+        // An edge with something on it goes only where a link rebuilds it in
+        // place, between the same ends: a road or track modifier's upgrade,
+        // whose new edge keeps what stood on the old (docs/BUILDING.md).
+        let mut carried = Vec::new();
         for removal in polyline.removals.iter() {
             let key = self.find_edge(net(removal.network), &removal.ends)?;
-            self.unobstructed(&key)?;
+            if self.unobstructed(&key).is_err() {
+                carried.push(key);
+            }
             self.edges.remove(&key);
         }
         // A node goes with its last edge; the game refuses to remove one
@@ -938,6 +944,11 @@ impl State {
                 },
             );
             cost = cost.saturating_add(metres(a, b).saturating_mul(cost_per_m));
+        }
+        for key in carried {
+            if !self.edges.contains_key(&key) {
+                refuse!("something stands on the edge");
+            }
         }
         self.charge(company, cost)
     }

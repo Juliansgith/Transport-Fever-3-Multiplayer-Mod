@@ -48,6 +48,7 @@ pub mod perf;
 mod platform;
 pub mod seeds;
 pub mod step;
+pub mod terrain;
 pub mod ticks;
 pub mod worlds;
 

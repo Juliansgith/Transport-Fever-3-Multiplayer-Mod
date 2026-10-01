@@ -656,6 +656,37 @@ fn the_payload_limit_holds() {
     assert!(action.to_payload().is_err());
 }
 
+/// The mod cuts a stroke into bands of at most 4,096 cells
+/// (`capture.TERRAIN_CELLS`): the largest band, at the worst heights, fits
+/// one payload and round-trips, through bytes and the mod's tables.
+#[test]
+fn the_largest_terraform_band_the_mod_sends_fits_one_payload() {
+    let cells = vec![
+        TerrainCell {
+            target: i32::MIN,
+            before: i32::MAX,
+        };
+        4096
+    ];
+    let action = Action::Terraform(
+        Terraform::new(
+            Pos2 {
+                x: -2_048_000,
+                y: 2_048_000,
+            },
+            4_000,
+            4096,
+            list(cells),
+        )
+        .unwrap(),
+    );
+    let payload = action.to_payload().unwrap();
+    assert!(payload.as_bytes().len() <= MAX_PAYLOAD);
+    assert_eq!(Action::from_payload(&payload).unwrap(), action);
+    let table = lua::action_to_lua(&action).unwrap();
+    assert_eq!(lua::action_from_lua(&table).unwrap(), action);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(4096))]
 

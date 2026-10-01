@@ -302,6 +302,92 @@ function capture.modify(proposal)
 	return module("engine").captureModify(proposal)
 end
 
+-- An upgrade tool's build in one line for the log, or nil for any other
+-- (tpf3mp/roads.lua upgradeSummary).
+function capture.upgradeSummary(action)
+	local ok, text = pcall(module("roads").upgradeSummary, action)
+	if ok then return text end
+	return nil
+end
+
+-- Most cells one Terraform action carries (tpf3mp_proto
+-- action::MAX_TERRAIN_CELLS is 8192; half keeps every action well inside
+-- the room's 48 KiB payload, two varints a cell).
+capture.TERRAIN_CELLS = 4096
+
+-- The side of the map's height cells, in metres
+-- (api.engine.terrain.getBaseResolution, 4 m on build 40408), or nil and why.
+function capture.terrainCell()
+	local ok, resolution = pcall(function() return api.engine.terrain.getBaseResolution() end)
+	local cell = ok and resolution and (resolution.x or resolution[1])
+	if type(cell) ~= "number" or cell <= 0 or cell ~= cell then
+		return nil, "the terrain's resolution does not read"
+	end
+	return cell
+end
+
+-- A terrain tool's stroke, as the hook read it at the click
+-- (tpf3mp_native.built: `{ terrain = { x0 =, y0 =, width =, height =,
+-- cells = { v1, w1, v2, w2, ... } } }`, crates/tpf3mp-hook/src/terrain.rs),
+-- as Terraform actions (tpf3mp_proto action::Terraform): the grid's first
+-- cell by its index times the cell size, its columns, and every cell's two
+-- values, row by row, in bands of whole rows of at most TERRAIN_CELLS
+-- cells, each its own action. Returns the list of actions, or nil and why.
+function capture.terraform(built)
+	local t = type(built) == "table" and built.terrain
+	if type(t) ~= "table" then return nil, "no terrain grid" end
+	local function whole(v) return type(v) == "number" and v == math.floor(v) end
+	local x0, y0, width, height, cells = t.x0, t.y0, t.width, t.height, t.cells
+	if not (whole(x0) and whole(y0) and whole(width) and whole(height)) or width < 1 or height < 1 then
+		return nil, "a terrain grid it cannot read"
+	end
+	if type(cells) ~= "table" or #cells ~= 2 * width * height then
+		return nil, "a terrain grid of " .. width .. " by " .. height .. " cells with " .. tostring(type(cells) == "table"
+			and #cells or 0) .. " values"
+	end
+	if width > capture.TERRAIN_CELLS or width > 65535 then
+		return nil, "a stroke " .. width .. " cells wide, wider than the room carries: use a smaller brush"
+	end
+	local cell, why = capture.terrainCell()
+	if not cell then return nil, why end
+	local rows = math.floor(capture.TERRAIN_CELLS / width)
+	local actions = {}
+	for first = 0, height - 1, rows do
+		local last = math.min(height, first + rows) - 1
+		local band = {}
+		for r = first, last do
+			for c = 0, width - 1 do
+				local i = 2 * (r * width + c)
+				band[#band + 1] = { target = cells[i + 1], before = cells[i + 2] }
+			end
+		end
+		actions[#actions + 1] = { Terraform = {
+			origin = { x = x0 * cell, y = (y0 + first) * cell },
+			cell = cell,
+			columns = width,
+			cells = band,
+		} }
+	end
+	return actions
+end
+
+-- A Terraform action in one line for the log.
+function capture.terraformSummary(t)
+	if type(t) ~= "table" or type(t.cells) ~= "table" or type(t.columns) ~= "number" or t.columns < 1 then
+		return "an unreadable terraform"
+	end
+	local low, high, changed = nil, nil, 0
+	for _, c in ipairs(t.cells) do
+		low = math.min(low or c.target, c.target)
+		high = math.max(high or c.target, c.target)
+		if c.target ~= c.before then changed = changed + 1 end
+	end
+	local cell = t.cell or 0
+	return string.format("%d by %d cells of %g m from cell (%g, %g), %d changed, heights %.2f to %.2f m",
+		t.columns, #t.cells / t.columns, cell, cell > 0 and t.origin.x / cell or 0,
+		cell > 0 and t.origin.y / cell or 0, changed, low or 0, high or 0)
+end
+
 -- A stop placed on a street or track with the stop tool (tpf3mp_proto
 -- action::PlaceStop), read off its proposal by tpf3mp/engine.lua. Returns
 -- the action table; false for a proposal of nothing; or nil and why.

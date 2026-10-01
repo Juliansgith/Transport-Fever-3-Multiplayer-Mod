@@ -2304,7 +2304,7 @@ fn in_the_rooms_game_the_build_tools_are_refused() {
 fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
     let (lua, _script) = engine();
     lua.load(
-        "HOOK.batch = { { Terraform = {} } } UPDATE({}, STATE, 0.2) \
+        "HOOK.batch = { { Teleport = {} } } UPDATE({}, STATE, 0.2) \
          REFUSE = true",
     )
     .exec()
@@ -2326,7 +2326,7 @@ fn an_action_the_game_script_cannot_apply_is_logged_not_raised() {
     assert_eq!(logged[0], "the game script is linked");
     assert_eq!(
         logged[1],
-        "action 1 of this step was not applied: this version of the mod does not apply Terraform yet"
+        "action 1 of this step was not applied: this version of the mod does not apply Teleport yet"
     );
     // The game's own refusal, as it raised it.
     assert!(
@@ -6075,4 +6075,244 @@ fn a_road_modifier_is_built_with_its_lanes_decorations_lock_and_owner() {
             )
         });
     assert_eq!(built, "0,1|2,3,4,5,6|5|3|false|true|25");
+    // Said in the log once built, the same line in every game.
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let said = "upgrade applied: street upgrade of 1 edge(s) rebuilt in place; \
+                template ::/street/country.street_template; 2 lane(s) carrying PERSON CARGO CAR BUS \
+                TRUCK TRAM ELECTRIC_TRAM; lane speeds 22.22 to 22.22; decorations \
+                ::/infrastructure/edge_addons/barrier_b.edge; locked 1, owned 1";
+    assert!(logged.iter().any(|l| l == said), "{logged:?}");
+}
+
+/// The map's height cells, 4 m, and a stroke of the raise tool as the hook
+/// reads it at the click: 3 by 2 cells from cell (-10, 7), each `{ 100 + i,
+/// 100 }`.
+const TERRAIN_STROKE: &str = r#"
+api.engine.terrain = { getBaseResolution = function() return { x = 4, y = 4, z = 0.0625 } end }
+STROKE = { terrain = { x0 = -10, y0 = 7, width = 3, height = 2,
+                       cells = { 100, 100, 101, 100, 102, 100, 103, 100, 104, 100, 105, 100 } } }
+"#;
+
+#[test]
+fn a_terrain_tools_click_goes_to_the_room_as_terraform_actions() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    lua.load(TERRAIN_STROKE).exec().unwrap();
+    // A construction tool's preview before the click, then the raise
+    // tool's click, whose stroke only the hook saw: the stroke's wins.
+    lua.load(format!(
+        "HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({{}}, nil, nil) \
+         SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', \
+             {{ {CONSTRUCTION_PROPOSAL} }}) \
+         HOOK.built[0] = {{ proposal = STROKE }} \
+         HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil) \
+         HOOK.built[1] = {{ why = 'terrain tool: terrain paint: the room does not carry it yet' }} \
+         HOOK.clicks = 2 SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let carried: String = lua
+        .load(
+            "local t = HOOK.commands[1].Terraform \
+             return table.concat({ #HOOK.commands, t.origin.x, t.origin.y, t.cell, t.columns, #t.cells, \
+                 t.cells[1].target, t.cells[1].before, t.cells[6].target }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        carried, "1|-40|28|4|3|6|100|100|105",
+        "the stroke, and nothing else"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for line in [
+        "terraform handed to the room: 3 by 2 cells of 4 m from cell (-10, 7), 5 changed, heights 100.00 to 105.00 m",
+        "stopped a build the room cannot carry: terrain tool: terrain paint: the room does not carry it yet [terrain tool]",
+    ] {
+        assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
+    }
+}
+
+#[test]
+fn a_stroke_larger_than_one_action_goes_in_bands_of_whole_rows() {
+    let (lua, _script) = engine();
+    lua.load(TERRAIN_STROKE).exec().unwrap();
+    // 100 by 50 cells: 40 rows (4,000 cells), then 10.
+    lua.load(
+        "local cells = {} \
+         for i = 1, 100 * 50 do cells[2 * i - 1] = 200 + (i % 7) * 0.25 cells[2 * i] = 200 end \
+         HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({}, nil, nil) \
+         HOOK.built[0] = { proposal = { terrain = { x0 = 5, y0 = -20, width = 100, height = 50, \
+             cells = cells } } } \
+         HOOK.clicks = 1 SCRIPT.guiUpdate({}, nil, nil)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let bands: String = lua
+        .load(
+            "local out = {} \
+             for _, a in ipairs(HOOK.commands) do \
+                 local t = a.Terraform \
+                 out[#out + 1] = t.origin.x .. ',' .. t.origin.y .. ',' .. #t.cells \
+             end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(bands, "20,-80,4000 20,80,1000");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.ends_with("(part 2 of 2)")
+            && l.contains("100 by 10 cells of 4 m from cell (5, 20)")),
+        "{logged:?}"
+    );
+}
+
+/// The hook's `terrain`, as the game script uses it: the grid armed, and
+/// whether a build was filled with it, which the stand-in game's
+/// sendCommand says of the carrier it is sent.
+const FAKE_TERRAIN_HOOK: &str = r#"
+HOOK.grids = {}
+tpf3mp_native.terrain = function(grid)
+    if grid == nil then
+        local armed, filled = HOOK.armed, HOOK.filled
+        HOOK.armed, HOOK.filled = nil, nil
+        if armed == nil then return nil end
+        return filled == true
+    end
+    HOOK.armed = grid
+    HOOK.grids[#HOOK.grids + 1] = grid
+    return true
+end
+api.type.Proposal = { new = function() return { carrier = true } end }
+local send = api.cmd.sendCommand
+api.cmd.sendCommand = function(command, callback)
+    if HOOK.armed and not NO_FILL and type(command.proposal) == 'table' and command.proposal.carrier then
+        HOOK.filled = true
+    end
+    return send(command, callback)
+end
+"#;
+
+/// The 3 by 2 stroke as the room orders it.
+const TERRAFORM: &str = "{ Terraform = { origin = { x = -40, y = 28 }, cell = 4, columns = 3, cells = { \
+    { target = 100, before = 100 }, { target = 101, before = 100 }, { target = 102, before = 100 }, \
+    { target = 103, before = 100 }, { target = 104, before = 100 }, { target = 105, before = 100 } } } }";
+
+#[test]
+fn every_game_applies_a_terraform_through_the_hook_as_the_players_build() {
+    let (lua, _script) = engine();
+    lua.load(TERRAIN_STROKE).exec().unwrap();
+    lua.load(FAKE_TERRAIN_HOOK).exec().unwrap();
+    lua.load(format!(
+        "HOOK.batch = {{ {TERRAFORM} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let armed: String = lua
+        .load(
+            "local g = HOOK.grids[1] \
+             return table.concat({ #HOOK.grids, g.x0, g.y0, g.width, g.height, #g.cells, g.cells[1], \
+                 g.cells[2], g.cells[11], g.cells[12] }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(armed, "1|-10|7|3|2|12|100|100|105|100");
+    let sent: String = lua
+        .load(
+            "local c = SENT[1] \
+             return table.concat({ #SENT, tostring(c.proposal.carrier), tostring(c.playerInitiated), \
+                 tostring(c.ignoreErrors), c.context.player, tostring(HOOK.armed) }, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        sent, "1|true|true|true|25|nil",
+        "the carrier, paid by the player, then disarmed"
+    );
+    let (ok, logged): (bool, Vec<String>) = lua
+        .load("return HOOK.applied[1].ok, HOOK.logged")
+        .eval()
+        .unwrap();
+    assert!(ok, "{logged:?}");
+    assert!(
+        logged.iter().any(|l| l
+            == "terraform applied: 3 by 2 cells from cell (-10, 7), heights 100.00 to 105.00 m"),
+        "{logged:?}"
+    );
+}
+
+#[test]
+fn a_terraform_no_build_took_or_of_another_grid_fails_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(TERRAIN_STROKE).exec().unwrap();
+    lua.load(FAKE_TERRAIN_HOOK).exec().unwrap();
+    // The hook filled nothing.
+    lua.load(format!(
+        "NO_FILL = true HOOK.batch = {{ {TERRAFORM} }} UPDATE({{}}, STATE, 0.2) NO_FILL = false"
+    ))
+    .exec()
+    .unwrap();
+    // A map of 8 m cells.
+    lua.load(format!(
+        "api.engine.terrain.getBaseResolution = function() return {{ x = 8, y = 8 }} end \
+         HOOK.batch = {{ {TERRAFORM} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    // A hook without `terrain`.
+    lua.load(format!(
+        "tpf3mp_native.terrain = nil \
+         api.engine.terrain.getBaseResolution = function() return {{ x = 4, y = 4 }} end \
+         HOOK.batch = {{ {TERRAFORM} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for line in [
+        "action 1 of this step was not applied: the hook filled no build with the grid",
+        "action 1 of this step was not applied: a grid of 4 m cells; this map's are 8",
+        "action 1 of this step was not applied: the hook would not take the grid: this hook cannot apply a terraform",
+    ] {
+        assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
+    }
+    let armed: Option<String> = lua.load("return HOOK.armed").eval().unwrap();
+    assert_eq!(armed, None, "disarmed after every try");
+}
+
+/// The tram track tool on the country street 8-9: the edge rebuilt in place
+/// with a tram track in its lane, a noise barrier, locked and owned.
+const TRAM_PROPOSAL: &str = "{ toAdd = {}, toRemove = {}, proposal = { addedNodes = {}, \
+    addedSegments = { { entity = -1, type = 0, playerOwned = { player = 25 }, comp = { \
+        node0 = 8, node1 = 9, type = 0, typeIndex = -1, \
+        tangent0 = { x = 0, y = 80, z = 0 }, tangent1 = { x = 0, y = 80, z = 0 }, \
+        roadTemplate = '::/street/country.street_template', roadStyle = '', objects = {}, \
+        edgeDecorations = { { 3, false } }, roadDevelopmentLocked = true, \
+        laneConfigs = { { speed = 22.22, width = 2, height = 0, offset = -1, forward = false, \
+            transportModes = { [0] = true, [14] = true } } } } } }, \
+    removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, objects = {} } } }, \
+    removedNodes = {}, edgeObjectsToAdd = {} } }";
+
+#[test]
+fn an_upgrade_handed_to_the_room_is_said_in_the_log() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(format!(
+        "api.res.edgeDecorationRep = {{ getName = function(i) \
+             if i == 3 then return '::/infrastructure/edge_addons/barrier_b.edge' end end }} \
+         HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({{}}, nil, nil) \
+         local r = SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetTrackModifier', 'builder.proposalCreate', \
+             {{ {TRAM_PROPOSAL} }}) \
+         assert(r == nil, 'refused') \
+         HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let said = "upgrade handed to the room: street upgrade of 1 edge(s) rebuilt in place; \
+                template ::/street/country.street_template; 1 lane(s) carrying PERSON TRAM_TRACK; \
+                lane speeds 22.22 to 22.22; decorations ::/infrastructure/edge_addons/barrier_b.edge; \
+                locked 1, owned 1";
+    assert!(logged.iter().any(|l| l == said), "{logged:?}");
+    let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
+    assert_eq!(handed, 1);
 }
