@@ -1023,18 +1023,15 @@ impl<B: Backend> LauncherApp<B> {
         }
     }
 
-    /// "Unofficial launcher" and the version, left; the support code, right.
+    /// "Unofficial launcher", the version, protocol and commit, left; the
+    /// support code, right.
     fn footer(&mut self, ui: &mut Ui, geometry: &Geometry, state: &State) {
         let footer = geometry.footer;
         let painter = ui.painter();
         let mut job = egui::text::LayoutJob::default();
         let format = |color| egui::TextFormat::simple(theme::body(9.0), color);
         job.append("Unofficial launcher", 0.0, format(theme::FOOTER));
-        job.append(
-            &format!("v{}", env!("CARGO_PKG_VERSION")),
-            8.0,
-            format(theme::FOOTER),
-        );
+        job.append(&footer_build(), 8.0, format(theme::FOOTER));
         let galley = painter.layout_job(job);
         painter.galley(
             pos2(footer.min.x, footer.min.y + 5.0),
@@ -1241,6 +1238,22 @@ impl<B: Backend> LauncherApp<B> {
                 (
                     "Multiplayer mod",
                     format!("TPF3-MP {}", env!("CARGO_PKG_VERSION")),
+                ),
+                (
+                    "Protocol",
+                    format!(
+                        "{} · game link {}",
+                        tpf3mp_proto::PROTOCOL_VERSION,
+                        tpf3mp_agent::about::Build::this().bridge
+                    ),
+                ),
+                (
+                    "Build",
+                    format!(
+                        "{} · {}",
+                        tpf3mp_agent::about::COMMIT,
+                        tpf3mp_agent::about::BUILT
+                    ),
                 ),
                 ("Server", server),
                 ("Game version", game),
@@ -1859,7 +1872,35 @@ fn open_folder(folder: &str) {
     let _ = std::process::Command::new(opener).arg(folder).spawn();
 }
 
+/// What the footer says of this build: `v0.1.0 · protocol 13 · 1316710abc`,
+/// so a player can read off which launcher they started.
+pub fn footer_build() -> String {
+    format!(
+        "v{} · protocol {} · {}",
+        env!("CARGO_PKG_VERSION"),
+        tpf3mp_proto::PROTOCOL_VERSION,
+        tpf3mp_agent::about::COMMIT
+    )
+}
+
 fn non_empty(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_footer_names_version_protocol_and_commit() {
+        assert_eq!(
+            super::footer_build(),
+            format!(
+                "v{} · protocol {} · {}",
+                env!("CARGO_PKG_VERSION"),
+                tpf3mp_proto::PROTOCOL_VERSION,
+                tpf3mp_agent::about::COMMIT
+            )
+        );
+        assert_ne!(tpf3mp_agent::about::COMMIT, "", "built in");
+    }
 }

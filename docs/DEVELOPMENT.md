@@ -131,6 +131,7 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-modscan` | Sorts mods into personal, carried and shared, with the reasons, and finds the mods a player has installed ([MODS.md](MODS.md)). |
 | `crates/tpf3mp-bigmap` | Big maps, prototype: the size ladder, the ceilings a size hits, the terms a room shares, which features a build can run ([BIGMAPS.md](BIGMAPS.md)). |
 | `crates/tpf3mp-testkit` | Toy game, bots, network emulator, load tester, regression harness. |
+| `crates/tpf3mp-buildinfo` | The build scripts' helper: the commit, build time and build number built into the binaries, and their Windows version resource ("Which build is this"). |
 | `mod/tpf3mp_1` | The game-side Lua mod, in Transport Fever 3's layout: captures builds as actions for the hook, linked to it by `tpf3mp/bridge.lua`. |
 | `mod/tpf3mp_bigmap_1` | Big maps' New Game side, prototype: the added size rows. Registers nothing with the game yet. |
 | `profiles/` | The hook's per-build signature profiles, built into the hook (Transport Fever 3 Steam build 40408, Windows). |
@@ -152,6 +153,42 @@ automatically by rustup.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+### Which build is this
+
+Every launcher, agent, server and hook says which build it is. The build
+scripts (`crates/tpf3mp-buildinfo`) build in the git commit
+(`TPF3MP_COMMIT`, `unknown` outside a checkout), the build time
+(`TPF3MP_BUILT`, from `SOURCE_DATE_EPOCH` when set) and a build number, the
+count of commits up to the one built (`TPF3MP_BUILD_NUMBER`). Setting any of
+them in the build's environment overrides it. The launcher logs them first
+thing, with its file, `PROTOCOL_VERSION` and `BRIDGE_VERSION`
+(`tpf3mp_agent::about::startup_line`), shows them in its footer and its
+About panel, and names its file when a server refuses its protocol.
+
+On Windows the four binaries carry a VERSIONINFO resource: the file
+version is `Cargo.toml`'s `major.minor.patch` with the build number as its
+fourth part (`0.1.0.442`), the product version is `Cargo.toml`'s, and a
+`Commit` string holds the commit. Explorer shows them under
+**Properties**, **Details**. The resource compiler comes from the Windows
+SDK (embed-resource finds it); a machine without one builds without the
+resource and says so in a warning. Linux and macOS builds are unaffected.
+
+Windows Installer replaces a versioned file only with a higher file
+version, so an installer built from a later commit replaces the old
+binaries by itself. Two builds of the same commit carry the same version;
+so does every build of a shallow clone, which has no build number (it
+warns): fetch the whole history (`actions/checkout` with `fetch-depth: 0`,
+as `release.yml` does) or set `TPF3MP_BUILD_NUMBER`. For a release, bump
+`version` under `[workspace.package]` in `Cargo.toml` on a feature branch
+as AGENTS.md says; the build number keeps counting under it.
+
+Launchers that share a game link (`--game-link`, the same by default) meet
+when the second starts (`tpf3mp_agent::launcher::instance`): the same build
+does not start beside the first, another build asks the first to close and
+takes its place, and an older build, or one beside a launcher too old to
+say its build, refuses with both files named. Playtests that run several
+launchers on one PC give each its own `--game-link`, and never meet.
 
 Run a local server with a throwaway certificate, then connect to it:
 

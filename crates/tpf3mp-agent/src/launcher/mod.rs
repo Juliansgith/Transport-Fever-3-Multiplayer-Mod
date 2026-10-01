@@ -13,6 +13,7 @@
 
 mod api;
 mod http;
+pub mod instance;
 pub(crate) mod lobby;
 pub mod setup;
 
@@ -68,6 +69,11 @@ const SAVES_TICK: Duration = Duration::from_secs(5);
 /// How long the launcher watches a game link it finds already made for
 /// another launcher's heartbeat, before taking it.
 const LINK_HELD_WAIT: Duration = Duration::from_millis(350);
+/// How long the hook of a game this launcher did not start may fall silent
+/// before the game counts as closed: a game that followed the link from a
+/// launcher that closed ([`instance`]), whose process this one cannot
+/// watch. Long enough for a save to load at the menu.
+const ADOPTED_GAME_QUIET: Duration = Duration::from_secs(60);
 
 /// What a launcher needs.
 #[derive(Debug, Clone)]
@@ -427,6 +433,8 @@ async fn control(
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut saves_tick = tokio::time::interval(SAVES_TICK);
     saves_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // The bridge version of another TPF3-MP's hook, once said.
+    let mut told_other_hook: Option<u32> = None;
     loop {
         tokio::select! {
             _ = saves_tick.tick() => {
@@ -478,6 +486,27 @@ async fn control(
                     }
                     None => Vec::new(),
                 };
+                // A game this launcher did not start: one that followed the
+                // link from a launcher that closed for this one. Only its
+                // hook falling silent says it closed.
+                if session.is_none()
+                    && game.is_none()
+                    && idle.as_ref().is_some_and(|link| {
+                        link.build().is_some()
+                            && link.hook_quiet(std::time::Instant::now()) > ADOPTED_GAME_QUIET
+                    })
+                {
+                    info!("the game another launcher started stopped answering; it counts as closed");
+                    shared.status().game = None;
+                    idle = idle.take().map(IdleLink::forget_game);
+                }
+                let other_hook = idle.as_ref().and_then(IdleLink::other_bridge);
+                if other_hook != told_other_hook {
+                    told_other_hook = other_hook;
+                    if let Some(version) = other_hook {
+                        shared.view().error = Some(other_hook_message(version));
+                    }
+                }
                 for asked in asked {
                     lobby_act(&shared, &config, asked, &mut connected, &mut session, &mut game, &mut idle).await;
                 }
@@ -855,6 +884,16 @@ async fn act(
     }
 }
 
+/// What the player is told of a game whose hook speaks bridge `version`:
+/// one started by another TPF3-MP's launcher, which this one cannot serve.
+fn other_hook_message(version: u32) -> String {
+    format!(
+        "Transport Fever 3 runs the hook of another TPF3-MP (game link version {version}, this \
+        launcher {}), started by another launcher: close the game, then start it again from here.",
+        tpf3mp_bridge::BRIDGE_VERSION
+    )
+}
+
 /// Starts Transport Fever 3 with the hook in it, told the launcher's link:
 /// the only way the hook runs (D11). A game started from Steam is the plain
 /// game. It may start before a room is chosen: its main menu's Multiplayer
@@ -876,6 +915,14 @@ fn launch_game(
     {
         return Err(
             "Transport Fever 3 is already running from here; it joins once it has loaded".into(),
+        );
+    }
+    // A game started by a launcher this one took over from, linked here.
+    if game.is_none() && idle.as_ref().is_some_and(|link| link.build().is_some()) {
+        return Err(
+            "Transport Fever 3 is already running with TPF3-MP, linked to this launcher: use its \
+            Multiplayer window"
+                .into(),
         );
     }
     // The game needs Steam to start; without it, it would quit or start
@@ -1066,7 +1113,7 @@ async fn reconnect(
             Ok(()) => Ok((client, events)),
             Err(error) => Err(error.to_string()),
         },
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(error.for_player()),
     };
     match connected {
         Ok((client, events)) => {
@@ -1114,7 +1161,10 @@ async fn connect_to(
         },
         Err(error) => {
             shared.view().outdated = error.client_is_older();
-            Err(error.to_string())
+            if let Some((client, server)) = error.mismatch() {
+                warn!(client, server, "the server speaks another protocol");
+            }
+            Err(error.for_player())
         }
     };
     let mut view = shared.view();
@@ -1600,6 +1650,20 @@ mod tests {
 
     fn invite() -> Invite {
         Invite("K7QM2X".parse().unwrap())
+    }
+
+    #[test]
+    fn a_game_with_another_tpf3mps_hook_is_told_to_restart_from_here() {
+        let message = other_hook_message(tpf3mp_bridge::BRIDGE_VERSION - 1);
+        assert!(
+            message.starts_with(&format!(
+                "Transport Fever 3 runs the hook of another TPF3-MP (game link version {}, this launcher {})",
+                tpf3mp_bridge::BRIDGE_VERSION - 1,
+                tpf3mp_bridge::BRIDGE_VERSION
+            )),
+            "{message}"
+        );
+        assert!(!message.contains("  "), "{message}");
     }
 
     #[test]

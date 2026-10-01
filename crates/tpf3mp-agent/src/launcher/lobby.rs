@@ -10,6 +10,7 @@
 //! whenever it changes and hands the window's actions back. A session takes
 //! the link over already greeted, and gives it back when it ends.
 
+use std::time::{Duration, Instant};
 use tpf3mp_bridge::{
     BRIDGE_VERSION, LobbyAction, LobbyConnection, LobbyHave, LobbyLine, LobbyMember, LobbyMod,
     LobbyModClass, LobbyPublicRoom, LobbyRoom, LobbyRoomList, LobbyRoomMod, LobbyRules, LobbyView,
@@ -17,6 +18,7 @@ use tpf3mp_bridge::{
     MAX_LOBBY_SAVES, MAX_SAVE_NAME, ModName, SaveName, ToAgent, ToHook, check_version, decode,
     encode,
 };
+
 use tpf3mp_proto::{BoundedVec, Text};
 use tracing::{debug, info, warn};
 
@@ -295,6 +297,11 @@ pub(crate) struct IdleLink<L> {
     buf: Vec<u8>,
     /// The lobby the hook was last sent.
     told: Option<LobbyView>,
+    /// The bridge version of a hook that said hello in another, not
+    /// greeted: a game started by another TPF3-MP.
+    other_bridge: Option<u32>,
+    /// The hook's heartbeat as last seen to move, and when.
+    hook_beat: Option<(u64, Instant)>,
 }
 
 impl<L: HookLink> IdleLink<L> {
@@ -311,7 +318,22 @@ impl<L: HookLink> IdleLink<L> {
             build,
             buf: Vec::new(),
             told: None,
+            other_bridge: None,
+            hook_beat: None,
         }
+    }
+
+    /// The bridge version of a hook this launcher cannot greet, which spoke
+    /// last: a game that another TPF3-MP's launcher started.
+    pub(crate) fn other_bridge(&self) -> Option<u32> {
+        self.other_bridge
+    }
+
+    /// How long the hook's heartbeat has stood still, as of `now`: for a
+    /// game this launcher did not start, and so cannot see close.
+    pub(crate) fn hook_quiet(&self, now: Instant) -> Duration {
+        self.hook_beat
+            .map_or(Duration::ZERO, |(_, at)| now.saturating_duration_since(at))
     }
 
     /// The game's build, if its hook said hello.
@@ -353,6 +375,10 @@ impl<L: HookLink> IdleLink<L> {
     /// player took in the menu's window.
     pub(crate) fn pump(&mut self, lobby: &LobbyView) -> Result<Vec<LobbyAction>, BridgeFault> {
         self.link.heartbeat();
+        let beat = self.link.peer_heartbeat();
+        if self.hook_beat.is_none_or(|(last, _)| last != beat) {
+            self.hook_beat = Some((beat, Instant::now()));
+        }
         let mut actions = Vec::new();
         while self.link.recv(&mut self.buf)? {
             match decode::<ToAgent>(&self.buf)? {
@@ -360,9 +386,11 @@ impl<L: HookLink> IdleLink<L> {
                     if let Err(error) = check_version(version) {
                         warn!(%error, "the game's hook speaks another bridge version");
                         self.build = None;
+                        self.other_bridge = Some(version);
                         continue;
                     }
                     info!(%build, "the game's hook attached");
+                    self.other_bridge = None;
                     // A game started again says hello again: answer it anew.
                     self.link.send(&encode(&ToHook::Hello {
                         version: BRIDGE_VERSION,
@@ -402,6 +430,8 @@ pub(crate) mod tests {
     pub(crate) struct FakeLink {
         pub(crate) to_hook: Arc<Mutex<VecDeque<Vec<u8>>>>,
         pub(crate) to_agent: Arc<Mutex<VecDeque<Vec<u8>>>>,
+        /// The hook's heartbeat.
+        pub(crate) beat: Arc<Mutex<u64>>,
     }
 
     impl FakeLink {
@@ -438,7 +468,7 @@ pub(crate) mod tests {
         }
         fn heartbeat(&mut self) {}
         fn peer_heartbeat(&self) -> u64 {
-            0
+            *self.beat.lock().unwrap()
         }
         fn forget_unread(&mut self) {
             self.to_hook.lock().unwrap().clear();
@@ -560,6 +590,31 @@ pub(crate) mod tests {
         assert!(idle.pump(&lobby("Ann")).unwrap().is_empty());
         assert!(fake.hook_hears().is_empty());
         assert_eq!(idle.build(), None);
+        assert_eq!(
+            idle.other_bridge(),
+            Some(BRIDGE_VERSION + 1),
+            "said, so the player hears why"
+        );
+        fake.hook_says(&hello());
+        idle.pump(&lobby("Ann")).unwrap();
+        assert_eq!(idle.other_bridge(), None, "a game of this version came");
+    }
+
+    #[test]
+    fn a_hooks_heartbeat_that_stands_still_shows() {
+        let fake = FakeLink::default();
+        let mut idle = IdleLink::new(fake.clone());
+        let start = Instant::now();
+        assert_eq!(idle.hook_quiet(start), Duration::ZERO, "nothing seen yet");
+        idle.pump(&lobby("Ann")).unwrap();
+        let later = Instant::now() + Duration::from_secs(30);
+        assert!(idle.hook_quiet(later) >= Duration::from_secs(29));
+        *fake.beat.lock().unwrap() += 1;
+        idle.pump(&lobby("Ann")).unwrap();
+        assert!(
+            idle.hook_quiet(Instant::now()) < Duration::from_secs(1),
+            "it moved"
+        );
     }
 
     fn state() -> State {
