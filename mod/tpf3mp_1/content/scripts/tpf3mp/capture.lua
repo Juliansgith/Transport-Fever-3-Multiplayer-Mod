@@ -494,6 +494,43 @@ local function consistPart(ctx, tvp)
 	}
 end
 
+-- A depot as actions name one (action::ConstructionRef): its construction's
+-- file and place. The street connector names the construction of a depot a
+-- street reaches; a ship depot or an aircraft hangar may have none
+-- (INFERRED, not seen on build 40408), so failing that, the construction
+-- whose CONSTRUCTION component lists the depot among its `depots`, the
+-- lowest entity on a tie. Returns { file =, at = { x, y, z } }, or nil.
+function capture.depotRef(api, depot)
+	local ok, CONSTRUCTION = pcall(function() return api.type.ComponentType.CONSTRUCTION end)
+	if not ok or CONSTRUCTION == nil then return nil end
+	local c
+	pcall(function()
+		local con = api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(depot)
+		if type(con) == "number" and con >= 0 then c = api.engine.getComponent(con, CONSTRUCTION) end
+	end)
+	if c == nil then
+		pcall(function()
+			local list = api.engine.getEntitiesWithComponent(CONSTRUCTION)
+			local best
+			for i = 1, #list do
+				local e = list[i]
+				local comp = api.engine.getComponent(e, CONSTRUCTION)
+				local depots = comp and comp.depots
+				for k = 1, (depots and #depots or 0) do
+					if depots[k] == depot and (best == nil or e < best) then best, c = e, comp end
+				end
+			end
+		end)
+	end
+	if c == nil then return nil end
+	local t = get(c, "transf")
+	local file, x, y, z = get(c, "fileName"), get(t, 13), get(t, 14), get(t, 15)
+	if type(file) ~= "string" or file == "" or type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
+		return nil
+	end
+	return { file = file, at = { x = x, y = y, z = z } }
+end
+
 -- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
 function capture.vehicleBuy(ctx, _player, depot, config)
 	return { BuyVehicle = {

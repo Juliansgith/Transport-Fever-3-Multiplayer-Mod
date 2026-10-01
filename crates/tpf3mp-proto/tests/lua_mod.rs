@@ -3438,6 +3438,65 @@ fn a_bought_vehicle_goes_to_the_room_and_the_store_hears_which_it_is() {
     assert_eq!(assigned, "500|true|500|3|1|0");
 }
 
+/// A ship depot or an aircraft hangar may have no street, so the street
+/// connector does not name its construction (INFERRED for build 40408): the
+/// store's ship or aircraft is then bought at the construction that lists
+/// the depot among its own, by its file and place; a depot no construction
+/// lists is refused.
+#[test]
+fn a_ship_or_aircraft_is_bought_at_the_harbour_or_airport_that_lists_its_depot() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "api.type = { ComponentType = { GAME_SCRIPT = 7, CONSTRUCTION = 2 } } \
+         COMPONENTS = { \
+             [201] = { fileName = 'depot/bus_depot.con', depots = { 202 }, \
+                       transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } }, \
+             [301] = { fileName = 'station/water/harbour.con', depots = { 303, 302 }, \
+                       transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 1200,40,0,1 } } } \
+         api.engine = { \
+             getComponent = function(e, kind) \
+                 if kind == 7 and e == 77 then return { state = { registry = {} } } end \
+                 if kind == 2 then return COMPONENTS[e] end \
+             end, \
+             getEntitiesWithComponent = function(kind) if kind == 2 then return { 201, 301 } end return {} end, \
+             system = { \
+                 gameScriptSystem = { getEntityForGameScript = function(name) \
+                     if name == 'tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs' then return 77 end return -1 end }, \
+                 streetConnectorSystem = { getConstructionEntityForDepot = function(d) \
+                     if d == 202 then return 201 end return -1 end }, \
+             }, \
+         } \
+         api.res = { modelRep = { getName = function(id) if id == 51 then return 'vehicle/ship/ferry.mdl' end end } } \
+         M = mount(loadPlugin()) M.step() HOOK.room = true \
+         CONFIG = { vehicles = { { part = { modelId = 51, reversed = false, compartment2loadConfig = {}, \
+             color = { x = 0, y = 0, z = 1 } } } }, vehicleGroups = { 1 }, muFileNames = { '' } } \
+         api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(25, 302, CONFIG)) \
+         api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(25, 999, CONFIG)) \
+         M.step()",
+    )
+    .exec()
+    .unwrap();
+    let (handed, depot): (usize, String) = lua
+        .load(
+            "local d = HOOK.commands[1].BuyVehicle.depot \
+             return #HOOK.commands, d.file .. '|' .. d.at.x .. '|' .. d.at.y",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(handed, 1, "the depot no construction lists is not handed over");
+    assert_eq!(depot, "station/water/harbour.con|1200|40");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.contains(
+            "refused the player's makeVehicleBuyCmd in the room's game (1 so far): \
+             a depot the room cannot name"
+        )),
+        "{logged:?}"
+    );
+}
+
 /// The store's "buy and put on a line" (2026-09-30): the GUI's world has the
 /// new vehicle a moment before the game script's state, which names it, so
 /// the store hears of it only once its line assignment can name it; heard

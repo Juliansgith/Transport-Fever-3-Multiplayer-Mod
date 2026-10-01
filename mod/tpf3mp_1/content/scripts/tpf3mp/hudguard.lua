@@ -71,16 +71,7 @@ function hudguard.context(api)
 			if ok and type(player) == "number" then return player end
 			return nil
 		end,
-		depot = function(depot)
-			local c
-			pcall(function()
-				local con = api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(depot)
-				c = con and api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
-			end)
-			if c == nil then return nil end
-			local t = c.transf
-			return { file = c.fileName, at = { x = t[13], y = t[14], z = t[15] } }
-		end,
+		depot = function(depot) return module("capture").depotRef(api, depot) end,
 		model = function(id)
 			local ok, name = pcall(function() return api.res.modelRep.getName(id) end)
 			if ok and type(name) == "string" and name ~= "" then return name end
