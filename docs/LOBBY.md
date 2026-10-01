@@ -32,8 +32,14 @@ into the suspended game before any of its code runs (D11), detours that body
    of the lambda's closure (`**(closure + 0x10)`, the layout the body's own
    `lua_pcallk` call shows), and tail-jumps into the original body with the
    stack untouched. The loader runs exactly as before.
-2. The first time a Lua state is seen, the hook runs a short Lua chunk in it
-   through `lua_load` and `lua_pcallk`. The chunk wraps
+2. Only the main menu's own Lua state, on the main menu's thread, is ever
+   touched: when it loads `gui/menu/main_menu.tl` (which names that
+   thread), the hook runs a short Lua chunk in it through `lua_load` and
+   `lua_pcallk`. Every other loader call, from the game scripts' states and
+   the simulation's worker threads above all, passes straight through with
+   no Lua run: a game whose world was loading crashed when the patch went
+   into those (2026-10-01, "tl_stackTrace != nullptr" on a Sim Pool
+   thread). The detour also never lets a panic through to the game. The chunk wraps
    `resolveutil.loadfile`: a request for the game's `gui/menu/main_page.tl`
    is answered with the mod's `tpf3mp_1::/gui/menu/main_page.tl`; every
    other request passes through. The original resolved path stays the

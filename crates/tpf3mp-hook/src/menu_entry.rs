@@ -39,7 +39,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use tpf3mp_hookcore::detour::InlineDetour;
 use tpf3mp_hookcore::pe::PeHeaders;
@@ -372,23 +372,73 @@ fn patch_once(state: *mut c_void) {
         return;
     }
     note(&format!("menu patch installed in Lua state {state:p}"));
-    // A main page this state loaded before the patch was in it is the
-    // game's own: say so plainly.
-    if let Some(key) = eval_string(state, MAIN_PAGE_LOADED) {
-        note(&format!(
-            "main_page.tl MISSED: {key} was loaded in state {state:p} before the menu patch; the main menu is the game's own, without the Multiplayer entry"
-        ));
+}
+
+/// The file the main menu's own Lua state loads first of the menu's: the
+/// patch goes in at its load, before it asks for `main_page.tl`.
+const MAIN_MENU: &str = "gui/menu/main_menu.tl";
+
+/// The thread the main menu runs on, from the first load of [`MAIN_MENU`];
+/// 0 until then.
+static MENU_THREAD: AtomicU32 = AtomicU32::new(0);
+
+/// What the detour does with one call of the loader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decision {
+    /// Nothing: the loader runs as if no hook were there, and no Lua runs.
+    /// Every call but the main menu's own, on its thread.
+    Pass,
+    /// The window's request to the hook ([`STATE_FILE`], [`ACT_FILE`]).
+    Answer,
+    /// The main menu loads its first file: put the patch in its state.
+    PatchMenu,
+    /// The main menu's page loads: say whether the patch serves it.
+    MainPage,
+}
+
+/// What to do with a loader call for `path` on `thread`. Only the main
+/// menu's own Lua state, on the main menu's thread, is ever touched:
+/// the game's scripts load in other states, on the simulation's worker
+/// threads too, while a world loads, and Lua run there (or an error raised
+/// there) fails in the game's handler, which has no stack trace on those
+/// threads ("tl_stackTrace != nullptr", 2026-10-01).
+fn decide(path: Option<&str>, thread: u32, menu_thread: &AtomicU32) -> Decision {
+    let Some(path) = path else {
+        return Decision::Pass;
+    };
+    if path == MAIN_MENU {
+        // The menu's file loads on the menu's thread: the first time names
+        // that thread; afterwards (back at the menu after a world) only the
+        // same thread counts.
+        let known =
+            match menu_thread.compare_exchange(0, thread, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => thread,
+                Err(known) => known,
+            };
+        return if known == thread {
+            Decision::PatchMenu
+        } else {
+            Decision::Pass
+        };
+    }
+    let on_menu_thread = thread != 0 && menu_thread.load(Ordering::Acquire) == thread;
+    if !on_menu_thread {
+        return Decision::Pass;
+    }
+    if path == STATE_FILE || path == ACT_FILE {
+        Decision::Answer
+    } else if is_main_page(path) {
+        Decision::MainPage
+    } else {
+        Decision::Pass
     }
 }
 
-/// Run in a state as the patch goes in: the key of a main page already
-/// loaded there, or nil.
-const MAIN_PAGE_LOADED: &str = r#"
-for key in pairs(_ug_loadedModules or {}) do
-	if type(key) == "string" and key:find("gui/menu/main_page%.tl$") then return key end
-end
-return nil
-"#;
+/// This thread's id, as the system numbers threads.
+fn current_thread() -> u32 {
+    // SAFETY: a plain query of the calling thread.
+    unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }
+}
 
 /// Whether `path`, as the loader body sees it, is the main page.
 fn is_main_page(path: &str) -> bool {
@@ -528,35 +578,53 @@ extern "C" fn on_entry(args: *const u64) -> *const u8 {
         std::hint::spin_loop();
         original = ORIGINAL.load(Ordering::Acquire);
     }
+    // Nothing may unwind into the game's loader: on any panic, the loader
+    // runs as if the hook were not there.
+    std::panic::catch_unwind(|| entry(args, original)).unwrap_or(original)
+}
+
+/// [`on_entry`]'s work: the original body to run, or [`reply_stub`].
+fn entry(args: *const u64, original: *const u8) -> *const u8 {
     // SAFETY: the thunk saved four argument words at `args`; the first is rcx,
     // the lambda's closure.
     let closure = unsafe { *args } as *const u8;
+    let path = request_path(closure);
+    // Decided from the path and the thread alone, before anything touches
+    // the Lua state: every other call passes straight through.
+    let decision = decide(path.as_deref(), current_thread(), &MENU_THREAD);
+    if decision == Decision::Pass {
+        return original;
+    }
     let Some(state) = lua_state_of(closure) else {
         return original;
     };
     diagnose_path(closure);
-    if let Some(reply) = request_path(closure).and_then(|path| answer(state, &path)) {
-        if push_reply(state, &reply) {
-            return reply_stub as *const () as *const u8;
+    match decision {
+        Decision::Pass => original,
+        Decision::Answer => match path.as_deref().and_then(|path| answer(state, path)) {
+            Some(reply) if push_reply(state, &reply) => reply_stub as *const () as *const u8,
+            _ => original,
+        },
+        Decision::PatchMenu => {
+            patch_once(state);
+            original
         }
-        return original;
+        Decision::MainPage => {
+            let patched = PATCHED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&(state as usize));
+            // In a patched state the patch's wrap has asked for the mod's
+            // copy (the body sees only the path, the same for both); in one
+            // the patch is not in yet, the game's own page loads.
+            note(if patched {
+                "main_page.tl SERVED: the main menu's page comes from the mod, with the Multiplayer entry"
+            } else {
+                "main_page.tl MISSED: the main menu's page loaded before the menu patch was in its Lua state; the main menu is the game's own"
+            });
+            original
+        }
     }
-    let patched = PATCHED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains(&(state as usize));
-    if request_path(closure).is_some_and(|path| is_main_page(&path)) {
-        // In a patched state the patch's wrap has asked for the mod's copy
-        // (the body sees only the path, the same for both); in one the
-        // patch is not in yet, the game's own page loads.
-        note(if patched {
-            "main_page.tl SERVED: the main menu's page comes from the mod, with the Multiplayer entry"
-        } else {
-            "main_page.tl MISSED: the main menu's page loaded before the menu patch was in its Lua state; the main menu is the game's own"
-        });
-    }
-    patch_once(state);
-    original
 }
 
 /// Where a request returns to instead of the loader body: the reply is
@@ -721,5 +789,54 @@ mod tests {
         // Without a Lua state (or before lua_tolstring is resolved) an action
         // request is refused, never applied.
         assert_eq!(answer(none, ACT_FILE).as_deref(), Some("error: no action"));
+    }
+
+    /// Only the main menu's own state, on its thread, is ever touched: every
+    /// other loader call (another thread, as the simulation's workers while
+    /// a world loads, or another path) passes straight through, with no Lua
+    /// run.
+    #[test]
+    fn only_the_main_menus_own_calls_on_its_thread_run_lua() {
+        let menu = AtomicU32::new(0);
+        // Before the menu has loaded, nothing is answered or patched.
+        assert_eq!(decide(Some(STATE_FILE), 7, &menu), Decision::Pass);
+        assert_eq!(
+            decide(Some("gui/menu/main_page.tl"), 7, &menu),
+            Decision::Pass
+        );
+        assert_eq!(decide(None, 7, &menu), Decision::Pass);
+        // The menu's first file names its thread and patches its state.
+        assert_eq!(decide(Some(MAIN_MENU), 7, &menu), Decision::PatchMenu);
+        assert_eq!(
+            decide(Some("gui/menu/main_page.tl"), 7, &menu),
+            Decision::MainPage
+        );
+        assert_eq!(decide(Some(STATE_FILE), 7, &menu), Decision::Answer);
+        assert_eq!(decide(Some(ACT_FILE), 7, &menu), Decision::Answer);
+        // Other paths on the menu's thread: nothing.
+        for path in [
+            "scripts/mathutil.lua",
+            "gui/main/react.lua",
+            "res/config/game_script.lua",
+        ] {
+            assert_eq!(decide(Some(path), 7, &menu), Decision::Pass, "{path}");
+        }
+        // Any other thread: nothing at all, whatever the path, the menu's
+        // own files and the window's requests included.
+        for path in [
+            MAIN_MENU,
+            "gui/menu/main_page.tl",
+            STATE_FILE,
+            ACT_FILE,
+            "scripts/mathutil.lua",
+        ] {
+            assert_eq!(
+                decide(Some(path), 9, &menu),
+                Decision::Pass,
+                "{path} on another thread"
+            );
+        }
+        // Back at the menu after a world, on its thread: patched again.
+        assert_eq!(decide(Some(MAIN_MENU), 7, &menu), Decision::PatchMenu);
     }
 }
