@@ -222,6 +222,11 @@ function HANDLERS.BuildConstruction(build)
 	entity.name = build.name
 	entity.playerEntity = company()
 	if build.replaces ~= nil then return replaceConstruction(build, proposal, entity) end
+	-- One headquarters a company (tpf3mp/companies.lua): the game's own
+	-- permit counts the whole world's, so every game checks the acting
+	-- company's instead. An edit of its headquarters (above) is no second.
+	local may, why = require_companies().mayBuild(acting and acting.roster, company(), build.file, api)
+	if not may then error(why, 0) end
 	proposal.constructionsToAdd = { entity }
 	-- The streets the tool built around it, in the same proposal: the
 	-- street it joins rebuilt through a junction. Not the construction's own
@@ -239,6 +244,16 @@ function HANDLERS.BuildConstruction(build)
 	context.gatherBuildings = true
 	context.gatherFields = true
 	local built = buildProposal(proposal, context)
+	if require_companies().isHeadquarters(api, build.file) then
+		-- Whether the engine took it as the company's headquarters (its
+		-- PLAYER component's `headquarters`), for hook.log: the game's
+		-- capital town and its company views read it.
+		pcall(function()
+			local p = api.engine.getComponent(company(), api.type.ComponentType.PLAYER)
+			log("headquarters for company entity " .. tostring(company()) .. ": its PLAYER names "
+				.. tostring(p and p.headquarters))
+		end)
+	end
 	if build.connection == nil then return built end
 	-- A scripted build does not snap; the game's refresh of a construction
 	-- does, as its tool does: the entrance then ends at the street node

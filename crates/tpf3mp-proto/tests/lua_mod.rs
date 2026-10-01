@@ -653,6 +653,9 @@ fn with_the_hook_the_gui_links_once() {
          the company window shows the game's own rank only: the game's company progression did \
          not load: fake_gui.lua:149: ug_require of an unknown path \
          /game_mechanics/company/company_progression_util.tl|\
+         the game's permits count the whole world's constructions: the game's company_metadata \
+         did not load: fake_gui.lua:157: ug_require of an unknown path \
+         /game_mechanics/company/company_metadata.tl|\
          the line manager offers other companies' open stations (1 entity_util table(s))"
     );
     let worlds: u32 = lua.load("return HOOK.worlds").eval().unwrap();
@@ -6800,4 +6803,180 @@ fn only_the_company_that_borrowed_pays_its_loan() {
     );
     let booked: String = lua.load("return BOOKED()").eval().unwrap();
     assert_eq!(booked, "LOAN-912@901");
+}
+
+/// A headquarters as the game's resources declare one
+/// (landmarks/hq/headquarter.con: `metadata.company.headquarters`).
+const HQ: &str = "{ BuildConstruction = { \
+    file = '::/landmarks/hq/headquarter.con', \
+    transform = { basis = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, origin = { x = 100, y = 200, z = 5 } }, \
+    params = {}, name = 'HQ' } }";
+
+/// Every company of a room builds its own headquarters, one each: the game
+/// counts its headquarters permit over the whole world (company_util.tl),
+/// so every game checks the acting company's own (2026-10-01: after one
+/// company's, the others could build none).
+#[test]
+fn each_company_builds_one_headquarters_of_its_own() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        api.type.ComponentType.PLAYER_OWNED = 55
+        api.type.ComponentType.PLAYER = 5
+        -- Constructions, their owners, and the game's resources.
+        CONS, OWNERS, NEXT_CON = {}, {}, 700
+        api.res = { constructionRep = {
+            find = function(file)
+                if file == '::/landmarks/hq/headquarter.con' then return 1 end
+                if file == 'depot/road_depot_era_a.con' then return 2 end
+                return -1
+            end,
+            get = function(id)
+                if id == 1 then return { metadata = { company = { headquarters = true, companyRank = 1 } } } end
+                return { metadata = {} }
+            end,
+        } }
+        api.engine.getComponent = function(e, kind)
+            if kind == 2 then return CONS[e] end
+            if kind == 55 then return OWNERS[e] and { player = OWNERS[e] } end
+        end
+        api.engine.forEachEntityWithComponent = function(fn, kind)
+            if kind == 2 then for e in pairs(CONS) do fn(e) end end
+        end
+        -- What a build makes: its construction, owned by the company that
+        -- pays for it.
+        local make = api.cmd.makeWorldBuildProposalCmd
+        api.cmd.makeWorldBuildProposalCmd = function(proposal, context, ...)
+            for _, e in ipairs(proposal.constructionsToAdd or {}) do
+                NEXT_CON = NEXT_CON + 1
+                CONS[NEXT_CON] = { fileName = e.fileName }
+                OWNERS[NEXT_CON] = e.playerEntity
+            end
+            return make(proposal, context, ...)
+        end
+        A, B = string.rep("a", 64), string.rep("b", 64)
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A }
+        UPDATE({}, STATE, 0.2)
+        function built(action, who)
+            HOOK.applied = {}
+            HOOK.batch = { action } HOOK.origins = { who }
+            UPDATE({}, STATE, 0.2)
+            local a = HOOK.applied[1]
+            return tostring(a.ok) .. (a.why and (' ' .. a.why) or '')
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    // Rival builds its headquarters, then the first company its own.
+    assert_eq!(eval(&format!("return built({HQ}, A)")), "true");
+    assert_eq!(eval(&format!("return built({HQ}, B)")), "true");
+    // A second one is refused, alike in every game; other buildings not.
+    assert_eq!(
+        eval(&format!("return built({HQ}, A)")),
+        "false Rival has its headquarters already"
+    );
+    assert_eq!(eval(&format!("return built({DEPOT}, A)")), "true");
+    let owners = eval(
+        "local out = {} \
+         for e, c in pairs(CONS) do \
+             if c.fileName == '::/landmarks/hq/headquarter.con' then out[#out + 1] = tostring(OWNERS[e]) end \
+         end table.sort(out) return table.concat(out, ',')",
+    );
+    assert_eq!(
+        owners, "25,901",
+        "one each, the first company's and Rival's"
+    );
+}
+
+/// In the GUI, the game's permit counts count the player's company's own
+/// constructions while the room has more than one company: the
+/// construction menu offers each company its headquarters until it has
+/// one. With one company the game's own counts, whole world.
+#[test]
+fn the_guis_permits_count_the_players_company_own_constructions() {
+    let lua = gui();
+    lua.load(
+        r#"
+        ME = 901
+        -- 701 is the first company's headquarters, 702 Rival's depot.
+        CONS = { [701] = { owner = 25, file = 'hq.con', id = 1 }, [702] = { owner = 901, file = 'depot.con', id = 2 } }
+        api = { type = { ComponentType = { PLAYER_OWNED = 55 } },
+            engine = { util = { getPlayer = function() return ME end },
+                getComponent = function(e, kind) if kind == 55 and CONS[e] then return { player = CONS[e].owner } end end,
+                system = { streetConnectorSystem = { forEachConstructionWithMetadata = function(key, _, _, fn)
+                    assert(key == 'company')
+                    local list = {} for e in pairs(CONS) do list[#list + 1] = e end table.sort(list)
+                    -- A headquarters names its permit in its own metadata too
+                    -- (headquarter.script.tl, constructionInstance).
+                    for _, e in ipairs(list) do
+                        fn(e, { fileName = CONS[e].file,
+                                persistentMetadata = CONS[e].id == 1 and { company = { permitKey = 'hq.res' } } or {} },
+                           CONS[e].id)
+                    end
+                end } } },
+            res = { constructionRep = { get = function(id)
+                return { metadata = id == 1 and { company = { permitKey = 'hq.res' } } or {} } end } } }
+        -- The game's company_util, as far as the menu reads it: counting the
+        -- whole world.
+        UTIL = { getActualPermitKey = function(file, meta) return meta.company and meta.company.permitKey end }
+        UTIL.countUsedConstructionPermits = function()
+            local used = {}
+            for _, c in pairs(CONS) do
+                if c.id == 1 then used['hq.res'] = (used['hq.res'] or 0) + 1 end
+            end
+            return used
+        end
+        UTIL.getConstructionDisableCacheData = function()
+            return { companyRank = 1, data = { ['hq.con'] = { numBuilt = 1 }, ['hq.res'] = { numBuilt = 1 } } }
+        end
+        META = { getKey = function() return 'company' end,
+                 constructionInstance = { get = function(m) return m and m.company end } }
+        local function require_(path)
+            -- The game's two names for one module.
+            if path == '/game_mechanics/company/company_util.tl' then return UTIL end
+            if path == '::/game_mechanics/company/company_util.tl' then return UTIL end
+            if path == '/game_mechanics/company/company_metadata.tl' then return META end
+            error('no ' .. path)
+        end
+        SEVERAL = true
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        OK, WHY = C.followPermits(api, require_, function() return SEVERAL end)
+        function counts()
+            local used = UTIL.countUsedConstructionPermits({})
+            local data = UTIL.getConstructionDisableCacheData({}).data
+            local function n(t, k)
+                local v = t[k]
+                if type(v) == 'table' then return v.numBuilt end
+                return v or 0
+            end
+            return n(used, 'hq.res') .. ' ' .. n(data, 'hq.con') .. ' ' .. n(data, 'hq.res')
+                .. ' ' .. n(data, 'depot.con')
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    assert_eq!(
+        eval("return tostring(OK) .. ' ' .. tostring(WHY)"),
+        "1 nil",
+        "one table, changed once"
+    );
+    // Rival's player: the first company's headquarters is not Rival's, so
+    // Rival has used none; its depot counts.
+    assert_eq!(eval("return counts()"), "0 0 0 1");
+    // The first company's player: its own headquarters counts.
+    assert_eq!(eval("ME = 25 return counts()"), "1 1 1 0");
+    // One company in the room: the game's own counts.
+    assert_eq!(eval("ME = 901 SEVERAL = false return counts()"), "1 1 1 0");
 }

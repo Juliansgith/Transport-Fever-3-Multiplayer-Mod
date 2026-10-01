@@ -215,6 +215,148 @@ function companies.ownerOf(api, entity)
 	return owner
 end
 
+-- Headquarters, one a company (DECISIONS.md, D22, proposed; docs/HOOKS.md,
+-- "Headquarters"). Transport Fever 3 keeps one headquarters a player: its
+-- PLAYER component names it (`headquarters`), and its headquarters permit
+-- is one at rank 1 (`permitKeys/hq.res.lua`). But the game counts a
+-- permit's constructions in the whole world, whoever owns them
+-- (`company_util.countUsedConstructionPermits` and the construction menu's
+-- `getConstructionDisableCacheData`, game_mechanics/company/company_util.tl,
+-- build 40408): once one company has its headquarters, every other
+-- company's menu says "Already Built" and its tool "All 1 Permits Used Up".
+
+-- The construction file names whose company metadata says they are
+-- headquarters (`metadata.company.headquarters`, as
+-- landmarks/hq/headquarter.con declares it), as the game's construction
+-- resources say; nil where this game cannot tell.
+local hqFiles = {}
+function companies.isHeadquarters(api, file)
+	if type(file) ~= "string" then return nil end
+	if hqFiles[file] ~= nil then return hqFiles[file] end
+	local ok, hq = pcall(function()
+		local id = api.res.constructionRep.find(file)
+		if type(id) ~= "number" or id < 0 then return nil end
+		local meta = api.res.constructionRep.get(id).metadata
+		local company = meta and meta.company
+		return type(company) == "table" and company.headquarters == true
+	end)
+	if not ok or hq == nil then return nil end
+	hqFiles[file] = hq
+	return hq
+end
+
+-- The headquarters construction `company` (a player entity) owns, if any;
+-- nil and why where this game cannot tell. The same in every game: the
+-- same world, the same owners.
+function companies.headquartersOf(api, company)
+	local found, unknown = nil, nil
+	local ok, why = pcall(api.engine.forEachEntityWithComponent, function(e)
+		if found then return end
+		if companies.ownerOf(api, e) ~= company then return end
+		local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+		local hq = c and companies.isHeadquarters(api, c.fileName)
+		if hq == nil then unknown = c and c.fileName or e
+		elseif hq then found = e end
+	end, api.type.ComponentType.CONSTRUCTION)
+	if not ok then return nil, "this game cannot list the constructions: " .. tostring(why) end
+	if found == nil and unknown ~= nil then
+		return nil, "this game cannot tell whether " .. tostring(unknown) .. " is a headquarters"
+	end
+	return found
+end
+
+-- Whether `company` may build the construction `file`: anything but a
+-- headquarters, and a headquarters while it has none. Else false and why.
+-- Every game checks it when the room orders the build.
+function companies.mayBuild(roster, company, file, api)
+	local hq = companies.isHeadquarters(api, file)
+	if hq == nil then return true end
+	if not hq then return true end
+	local have, why = companies.headquartersOf(api, company)
+	if why then return false, why end
+	if have then
+		local c = roster and companies.byEntity(roster, company)
+		return false, (c and c.name or "the company") .. " has its headquarters already"
+	end
+	return true
+end
+
+-- In a GUI Lua state: the game's permit counts count what the player's
+-- company owns (PLAYER_OWNED, the company `api.engine.util.getPlayer()`
+-- answers there, tpf3mp/follow.lua), not the whole world's, while the room
+-- has more than one company (`several()`); with one, the game's own. The
+-- same counting as the game's, owner aside; what cannot be counted by
+-- owner is counted as the game counts it. The game loads company_util as
+-- "/game_mechanics/..." and as "::/game_mechanics/...": each table either
+-- gives is changed, once. Returns how many tables it changed, or nil and
+-- why.
+function companies.followPermits(api, require_, several)
+	local okM, meta = pcall(require_, "/game_mechanics/company/company_metadata.tl")
+	if not (okM and type(meta) == "table" and type(meta.getKey) == "function") then
+		return nil, "the game's company_metadata did not load: " .. tostring(meta)
+	end
+	local function mine(entity)
+		local ok, me = pcall(function() return api.engine.util.getPlayer() end)
+		return ok and companies.ownerOf(api, entity) == me
+	end
+	local function each(withInstances, fn)
+		api.engine.system.streetConnectorSystem.forEachConstructionWithMetadata(meta.getKey(), true, withInstances,
+			function(entity, construction, id)
+				if mine(entity) then fn(entity, construction, id) end
+			end)
+	end
+	local function wrap(util)
+		local count, cache = util.countUsedConstructionPermits, util.getConstructionDisableCacheData
+		util.countUsedConstructionPermits = function(keys, ...)
+			local ok, more = pcall(several)
+			if not (ok and more) then return count(keys, ...) end
+			local used = {}
+			local counted = pcall(each, false, function(_, construction, id)
+				local m = api.res.constructionRep.get(id).metadata
+				local key = m and util.getActualPermitKey(construction.fileName, m)
+				if key then used[key] = 1 + (used[key] or 0) end
+			end)
+			if not counted then return count(keys, ...) end
+			return used
+		end
+		util.getConstructionDisableCacheData = function(defs, ...)
+			local result = cache(defs, ...)
+			local ok, more = pcall(several)
+			if not (ok and more) or type(result) ~= "table" then return result end
+			local data = {}
+			local function add(key)
+				local entry = data[key]
+				if entry then entry.numBuilt = entry.numBuilt + 1 else data[key] = { numBuilt = 1 } end
+			end
+			local counted = pcall(each, true, function(_, construction)
+				if construction.fileName ~= nil then
+					add(construction.fileName)
+					local instance = meta.constructionInstance and meta.constructionInstance.get(construction.persistentMetadata)
+					if instance and instance.permitKey then add(instance.permitKey) end
+				end
+			end)
+			if counted then result.data = data end
+			return result
+		end
+		util.tpf3mpOwnPermits = true
+	end
+	local changed, why = 0, nil
+	for _, path in ipairs({ "/game_mechanics/company/company_util.tl", "::/game_mechanics/company/company_util.tl" }) do
+		local ok, util = pcall(require_, path)
+		if ok and type(util) == "table" and type(util.countUsedConstructionPermits) == "function"
+				and type(util.getConstructionDisableCacheData) == "function" then
+			if not util.tpf3mpOwnPermits then
+				wrap(util)
+				changed = changed + 1
+			end
+		else
+			why = why or ("the game's company_util did not load: " .. tostring(util))
+		end
+	end
+	if changed == 0 then return nil, why or "the game's company_util is changed already" end
+	return changed
+end
+
 -- Whether `company` (a player entity) may change `entity`: what no company
 -- owns, and what it owns itself. Else false and why, naming the owner.
 function companies.mayTouch(roster, company, entity, api, what)
