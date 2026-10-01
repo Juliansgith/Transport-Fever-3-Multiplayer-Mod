@@ -7497,3 +7497,97 @@ fn in_a_competitive_room_each_players_game_founds_them_a_company() {
         "{logged}"
     );
 }
+
+/// A player's game founds their company however the room's readings come:
+/// a launcher that says the room is competitive only later, and a roster
+/// the GUI cannot read on every reading (both seen as one of three players
+/// getting no company, 2026-10-01), delay it and no more. Each reason not
+/// to found yet is said in hook.log, once.
+#[test]
+fn a_players_game_founds_their_company_whatever_reading_lacks_something_and_says_why_once() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        JAMES, CAT = string.rep("a", 64), string.rep("c", 64)
+        ROSTER = { next = 2,
+            list = { { id = 0, entity = 25, name = "Company", color = { 0.8, 0.16, 0.12 } },
+                     { id = 1, entity = 901, name = "james's company", color = { 0.13, 0.42, 0.85 }, founder = JAMES } },
+            members = { { player = JAMES, company = 1 } } }
+        READS, HIDE = 0, false
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = function() return 25 end }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = { GAME_SCRIPT = 7 }
+        api.type.Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end }
+        -- With HIDE, every other reading of the game script's state finds
+        -- nothing.
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then
+                READS = READS + 1
+                if HIDE and READS % 2 == 0 then return nil end
+                return { state = { companies = ROSTER } }
+            end
+        end
+        HOOK.room = true
+        -- Cat's entry is not marked as hers: her id names it.
+        HOOK.status = { room = "Rivals", me_id = CAT, players = {
+            { name = "james", id = JAMES, connected = true, owner = true },
+            { name = "cat", id = CAT, connected = true } } }
+        BAR = mount(loadPlugin())
+        function frames(n) for _ = 1, n do BAR.step() end end
+        function founded()
+            local out = {}
+            for _, a in ipairs(HOOK.commands) do
+                if a.CompanyOp and a.CompanyOp.Create then out[#out + 1] = a.CompanyOp.Create.name end
+            end
+            return table.concat(out, "|")
+        end
+        function said(line)
+            local n = 0
+            for _, l in ipairs(HOOK.logged) do if l == line then n = n + 1 end end
+            return n
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}\n{}", log(&lua)))
+    };
+    // The launcher has not said: nothing, and hook.log says why, once.
+    assert_eq!(
+        eval(
+            "frames(200) return founded() .. '|' \
+             .. said(\"not founding the player's own company: the launcher has not said whether the room is competitive\")"
+        ),
+        "|1"
+    );
+    // It says competitive, while every other reading of the roster finds
+    // nothing: her company is founded all the same, once.
+    assert_eq!(
+        eval(
+            "HIDE = true HOOK.status.competitive = true frames(400) \
+             return founded() .. '|' \
+             .. said(\"not founding the player's own company: the room's companies are not read yet\")"
+        ),
+        "cat's company|1"
+    );
+    // In it, the game says so once and sends nothing more.
+    assert_eq!(
+        eval(
+            "HIDE = false ROSTER.list[3] = { id = 2, entity = 902, name = \"cat's company\", \
+                 color = { 0.18, 0.66, 0.27 }, founder = CAT } \
+             ROSTER.members[2] = { player = CAT, company = 2 } frames(200) \
+             return tostring(#HOOK.commands) .. '|' \
+             .. said(\"not founding the player's own company: the player plays for cat's company (#2)\")"
+        ),
+        "1|1"
+    );
+}

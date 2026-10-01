@@ -577,30 +577,42 @@ function data()
 	-- for every game. Only for a player who plays for the room's first
 	-- company and never founded one in this room (one who dissolved theirs,
 	-- or chose the first company again after founding, keeps that choice),
-	-- once the room and its roster have read the same for OWN_SETTLE
-	-- readings in a row, so a world still catching up has had time to
-	-- apply what the room ordered before. At most once a room and player in
-	-- this game. The name is the player's, "<name>'s company", the same
-	-- every time: a second one sent while the first is still on its way is
-	-- refused alike in every game ("a company is called ... already"). In a
-	-- co-op room, where the launcher has not said, or without the roster or
-	-- the player's name, nothing is sent; the player can still found one
-	-- with "Found a company".
+	-- and not before OWN_SETTLE readings of the room since this world's GUI
+	-- linked, so a world still catching up has had time to apply what the
+	-- room ordered before. The readings count whatever they said: a
+	-- reading without the roster or the room's play style delays nothing
+	-- that comes later. At most once a room and player in this game. The
+	-- name is the player's, "<name>'s company", the same every time: a
+	-- second one sent while the first is still on its way is refused alike
+	-- in every game ("a company is called ... already"). In a co-op room,
+	-- where the launcher has not said, or without the roster or the
+	-- player's id, nothing is sent, and hook.log says why, once a reason;
+	-- the player can still found one with "Found a company".
 	local OWN_SETTLE = 4
-	local own = { key = nil, settled = 0, sent = {} }
+	local own = { key = nil, readings = 0, sent = {}, told = {} }
 
-	-- "<name>'s company"; with another player of the same name in the
-	-- room, the first four hex digits of the player's id after it, so both
-	-- get one. At most 32 + 17 bytes, within a company name's 64.
+	-- Says once in hook.log why this game founds no company for its player
+	-- now; returns nil.
+	local function notFounding(why)
+		if own.told[why] then return end
+		own.told[why] = true
+		link:log("not founding the player's own company: " .. why)
+	end
+
+	-- "<name>'s company", the player's name as the room lists it (by id,
+	-- else the entry marked as theirs), or the first eight hex digits of
+	-- their id where it has none; with another player of the same name in
+	-- the room, the first four hex digits of the player's id after it, so
+	-- both get one. At most 32 + 17 bytes, within a company name's 64.
 	local function ownCompanyName(status)
 		local me
 		for _, p in ipairs(status.players or {}) do
-			if p.me then me = p end
+			if p.id == status.me_id or (me == nil and p.me) then me = p end
 		end
 		local name = me and type(me.name) == "string" and me.name:gsub("^%s+", ""):gsub("%s+$", "") or ""
-		if name == "" then return nil end
+		if name == "" then return status.me_id:sub(1, 8) .. "'s company" end
 		for _, p in ipairs(status.players) do
-			if not p.me and type(p.name) == "string" and p.name:lower() == me.name:lower() then
+			if p ~= me and type(p.name) == "string" and p.name:lower() == name:lower() then
 				return name .. "'s company (" .. status.me_id:sub(1, 4) .. ")"
 			end
 		end
@@ -609,20 +621,26 @@ function data()
 
 	foundOwnCompany = function(shared)
 		local status, roster = shared.status, shared.companies
-		local me = status and status.me_id
-		local playing = roster and type(me) == "string" and require("tpf3mp.companies").of(roster, me)
-		if not (link and status and playing and status.competitive == true and me ~= "")
-			or roster.founders[me] or playing.id ~= 0 then
-			own.settled = 0
-			return
+		if not (link and status) then return end
+		local me = status.me_id
+		local key = tostring(me) .. "@" .. tostring(status.invite or status.room)
+		if own.key ~= key then own.key, own.readings = key, 0 end
+		own.readings = own.readings + 1
+		if status.competitive == nil then
+			return notFounding("the launcher has not said whether the room is competitive")
 		end
-		local key = me .. "@" .. tostring(status.invite or status.room)
+		if status.competitive ~= true then return notFounding("the room is co-op") end
+		if type(me) ~= "string" or me == "" then return notFounding("the room has not said who this player is") end
+		if not roster then return notFounding("the room's companies are not read yet") end
+		local playing = require("tpf3mp.companies").of(roster, me)
+		if not playing then return notFounding("the roster has no first company") end
+		if playing.id ~= 0 then
+			return notFounding("the player plays for " .. tostring(playing.name) .. " (#" .. tostring(playing.id) .. ")")
+		end
+		if roster.founders[me] then return notFounding("the player founded a company in this room before") end
 		if own.sent[key] then return end
-		if own.key ~= key then own.key, own.settled = key, 0 end
-		own.settled = own.settled + 1
-		if own.settled < OWN_SETTLE then return end
+		if own.readings < OWN_SETTLE then return end
 		local name = ownCompanyName(status)
-		if not name then return end
 		own.sent[key] = true
 		link:log("a competitive room: founding the player's own company")
 		companyOp(shared, { Create = { name = name } }, "Founding your company, " .. name)

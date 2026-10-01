@@ -1425,10 +1425,18 @@ state, which the game saves with the world:
   action (D8: the server never writes an action). Only while
   `status().competitive` is true, the roster is read and says the player
   plays for the room's first company, and no company of the room, dissolved
-  ones included, was founded by them; and only once that has held for four
-  readings of the room in a row (`OWN_SETTLE`, about a second), so a world
-  that is still catching up has applied what the room ordered before. At
-  most once a room and player in this Lua state. The name is the same each
+  ones included, was founded by them; and not before four readings of the
+  room since the world's GUI linked (`OWN_SETTLE`, about a second), so a
+  world that is still catching up has applied what the room ordered
+  before. A reading that lacks the roster or the play style delays it no
+  further: the readings need not agree in a row. At most once a room and
+  player in this Lua state. Each reason not to found is said once in
+  `hook.log`: `not founding the player's own company: <why>` (the
+  launcher has not said whether the room is competitive, the room is
+  co-op, the room's companies are not read yet, the player plays for
+  <company>, the player founded a company in this room before, ...).
+  The player's name is their entry's by id in `status().players`, else
+  the first eight hex digits of their id. The name is the same each
   time, so a second one sent before the first arrives is refused alike in
   every game; with another player of the same name in the room, the first
   four hex digits of the player's id follow it. `hook.log`: `a competitive
