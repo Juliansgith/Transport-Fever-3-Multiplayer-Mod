@@ -1418,6 +1418,27 @@ state, which the game saves with the world:
   colour, and the HUD takes only a layout from the recipe ("Recipe child
   must be a layout"). The game's log says what became of the markers
   (`[tpf3mp] company markers: ...`).
+- *Capitals.* Build 40408 crowns one town on the map, the player's
+  capital: the town label's recipe (`town_hud_react_util.TownHudIcon`)
+  asks `town_util.isCapital(town)`, true for the town closest to
+  `getPlayer()`'s PLAYER `headquarters`, and gives that label the class
+  `capital-city` (blue, `hud_icon_master.css.lua`) and a crown; nothing
+  else in the GUI asks it. `gui/tpf3mp/capitals.res.lua`, a
+  `react-replacement-config`, in each GUI Lua state that renders recipes
+  and never in the simulation's, while the room has more than one company:
+  has `isCapital` answer true for every live company's capital as well
+  (each company's PLAYER `headquarters` and its closest town, read again
+  every 10 seconds, `tpf3mp/capitals.lua`), and replaces `TownHudIcon`
+  with a recipe that calls the game's inside a layout of its own, with a
+  line under it, "Capital of Rival" ("... and Pals" when two share a
+  town), and, for a capital not the viewer's company's, the class
+  `tpf3mp-capital-<n>` of that company's palette colour (the nearest for
+  a colour of its own); `gui/tpf3mp/tpf3mp.css.lua` colours the label's
+  tile and line in it in place of the game's blue. The viewer's own
+  capital keeps the game's blue, as it is the company `getPlayer()`
+  answers there (*The GUI's company*). The game's log says what became of
+  it (`[tpf3mp] capitals: ...`), including how many capitals each state
+  read: none where a state cannot read the companies' PLAYER.
 - *The GUI's company.* TF3's windows ask `api.engine.util.getPlayer()`
   whose money to show and what is the player's own ("Foreign" otherwise).
   In the GUI state the mod replaces it (a callable table on build 40408,

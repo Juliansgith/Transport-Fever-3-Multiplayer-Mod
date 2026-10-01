@@ -617,6 +617,12 @@ function companies.markerClass(index)
 	return "tpf3mp-company-" .. tostring(index)
 end
 
+-- The style class of the town label of a capital in palette colour
+-- `index` (tpf3mp/capitals.lua; gui/tpf3mp/tpf3mp.css.lua).
+function companies.capitalClass(index)
+	return "tpf3mp-capital-" .. tostring(index)
+end
+
 -- The mod's game script, by the names the game gives it: game scripts are
 -- entities, named by their file (the game's loan window finds the loan
 -- script so).
