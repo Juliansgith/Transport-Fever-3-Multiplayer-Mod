@@ -957,10 +957,17 @@ stands still meanwhile:
   the room's steps run on. A world not up within `LOAD_PATIENCE` (600 s)
   is held.
 - **The folder** is Steam's for the account playing,
-  `<Steam>/userdata/<account>/3493540/local/save`, from the registry
-  (Steam's `SteamPath` and `ActiveProcess\ActiveUser`), or else the one
-  account with a save folder for the game. Without one, a load holds the
-  world and a save is reported failed.
+  `<Steam>/userdata/<account>/3493540/local/save`, found when first
+  needed and then kept. First as Steam's API in the game names it
+  (`ISteamUser::GetUserDataFolder` through the game's `steam_api64.dll`),
+  which works under Proton too, where the registry names Proton's
+  stand-in for Steam, without accounts' folders. Else under Steam's
+  folders: the registry's (`SteamPath`, `ActiveProcess\ActiveUser`),
+  Program Files', and under Proton the Steam client's that Proton names
+  (`STEAM_COMPAT_CLIENT_INSTALL_PATH`, through drive `Z:`), for the account
+  playing or else the one account with a save folder for the game. The
+  hook's log says which. Without one, a load holds the world and a save
+  is reported failed, with why for both ways.
 
 #### Loading from the main menu
 
