@@ -3909,6 +3909,67 @@ fn a_stops_loading_flags_reach_the_game_in_order_however_it_copied_them() {
     );
 }
 
+/// The line manager gives a new line the palette colour fewest of the
+/// player's lines wear, telling which one a line wears by floor(channel *
+/// 255) (line_vehicle_mgmt/line_util.tl). Its first pick, 255/127/0, came
+/// back from the room's millionths one step short on green, so it never
+/// counted as taken: every line of a room was orange.
+#[test]
+fn a_new_lines_colour_comes_back_on_the_games_palette_step() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        "api.type.Line = { new = function() return { vehicleInfo = {} } end, \
+             Stop = { new = function() return {} end }, StopConfig = { new = function() return {} end } } \
+         api.type.StationTerminal = { new = function(s, t) return { station = s, terminal = t } end } \
+         api.cmd.makeLineCreateCmd = function(name, color, player, line) \
+             return { createLine = { color = color } } end \
+         HOOK.room = true UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    // The colour as the game hands it over: 127/255 in a float.
+    let green = f64::from(127.0_f32 / 255.0);
+    lua.globals().set("GREEN", green).unwrap();
+    let action: mlua::Value = lua
+        .load(
+            "local stop = { group = 0, terminal = { station = 0, terminal = 1 }, alternatives = {}, \
+                 load_mode = 'LoadIfAvailable', min_wait = 0, max_wait = 180, max_extra_wait = 30, \
+                 rules = { load = { true }, max_load = { 1 }, force_unload = false, \
+                           destroy_for_config_change = false, destroy_for_refresh = false } } \
+             return { CreateLine = { name = 'Line 1', color = { r = 1, g = GREEN, b = 0 }, \
+                 line = { stops = { stop }, modes = { 3 }, custom_filters = false, \
+                          reservation_priority = 0 } } }",
+        )
+        .eval()
+        .unwrap();
+    // As the room carries it: in millionths.
+    let carried = match tpf3mp_proto::lua::action_from_lua(&common::tree(&action)).unwrap() {
+        tpf3mp_proto::action::Action::CreateLine(create) => create.color,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((carried.r, carried.g, carried.b), (1_000_000, 498_039, 0));
+    lua.globals()
+        .set("CARRIED", f64::from(carried.g) / 1_000_000.0)
+        .unwrap();
+    let made: String = lua
+        .load(
+            "HOOK.batch = { { CreateLine = { name = 'Line 1', color = { r = 1, g = CARRIED, b = 0 }, \
+                 line = { stops = { { group = 0, terminal = { station = 0, terminal = 1 }, alternatives = {}, \
+                     load_mode = 'LoadIfAvailable', min_wait = 0, max_wait = 180, max_extra_wait = 30, \
+                     rules = { load = { true }, max_load = { 1 }, force_unload = false, \
+                               destroy_for_config_change = false, destroy_for_refresh = false } } }, \
+                     modes = { 3 }, custom_filters = false, reservation_priority = 0 } } } } \
+             UPDATE({}, STATE, 0.2) \
+             local c = SENT[1].createLine.color \
+             return table.concat({ math.floor(c.x * 255), math.floor(c.y * 255), math.floor(c.z * 255), \
+                 tostring(c.y == 127 / 255) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(made, "255|127|0|true", "the palette's own orange");
+}
+
 #[test]
 fn without_callbacks_the_registry_alone_finds_what_an_action_made() {
     let (lua, _script) = engine();

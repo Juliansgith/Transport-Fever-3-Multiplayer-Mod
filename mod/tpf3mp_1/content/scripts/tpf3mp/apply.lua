@@ -976,7 +976,24 @@ function constructionAt(ref)
 	return best, api.engine.getComponent(best, CONSTRUCTION)
 end
 
-local function tint(c) return api.type.Vec3f.new(c.r, c.g, c.b) end
+-- One channel of a colour as the room carries it, in millionths, put back
+-- on the game's 1/255 steps when it was on one. The game's colours are
+-- steps (gui/main/color_internal.lua: channel / 255), and its line manager
+-- tells which palette colour a line wears by floor(channel * 255)
+-- (line_vehicle_mgmt/line_util.tl, calcColorKey): 127/255 carried as
+-- 0.498039 is step 126 there, so a new line never counted against the
+-- colour it took, and every next line took that colour again. The
+-- millionths are at most 0.00013 of a step off; a channel further from a
+-- step is not one, and stays as carried. Plain arithmetic, the same in
+-- every game.
+local function channel(v)
+	local steps = v * 255
+	local step = math.floor(steps + 0.5)
+	if math.abs(steps - step) < 0.001 then return step / 255 end
+	return v
+end
+
+local function tint(c) return api.type.Vec3f.new(channel(c.r), channel(c.g), channel(c.b)) end
 
 -- The game's time here, the same in every game: when a part is bought.
 local function now()
