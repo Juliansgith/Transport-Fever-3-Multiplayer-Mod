@@ -36,13 +36,14 @@ LOBBY_WINDOW = '''-- TPF3-MP: the Multiplayer window, opened from the main menu 
 -- own window container (as DeluxeContentWindow is). Its content is the mod's
 -- gui/menu/lobby.lua: the lobby, talking to the hook.
 local record LobbyModule
-	content : function(onClose : function(), focus : string) : TreeNodeId
+	content : function(onClose : function(), focus : string, onNewGame : function()) : TreeNodeId
 	CardLine : function(params : any) : TreeNodeId
 	joinLine : function(state : any) : string
 end
 local lobby = ug_require "tpf3mp_1::/gui/menu/lobby.lua" as LobbyModule
 
 local record Tpf3mpLobbyWindowParam
+	onNewGame : function()
 	onClose : function()
 	pos : Vec2f
 	focus : string
@@ -50,8 +51,8 @@ end
 
 -- TPF3-MP: the lobby's content, or, should its Lua fail, the error and a way
 -- out - never a window that cannot be closed.
-local function safeContent(onClose : function(), focus : string) : TreeNodeId
-	local ok, result = pcall(lobby.content, onClose, focus)
+local function safeContent(onClose : function(), focus : string, onNewGame : function()) : TreeNodeId
+	local ok, result = pcall(lobby.content, onClose, focus, onNewGame)
 	if ok then
 		return result as TreeNodeId
 	end
@@ -87,7 +88,7 @@ local Tpf3mpLobbyWindow = react.RegisterWrapperRecipe("Tpf3mpLobbyWindow", built
 		movable = false,
 		closable = true,
 		onClose = param.onClose,
-		content = safeContent(param.onClose, param.focus),
+		content = safeContent(param.onClose, param.focus, param.onNewGame),
 	}
 end)
 
@@ -100,6 +101,10 @@ SHOW = '''	-- TPF3-MP: open the Multiplayer window, as showDeluxeContent opens i
 		titleIconOnlyState:set(true)
 		local wc = mainPageParams.commonParams.windowContainer:get():getApi()
 		wc.addSingletonWindow(Tpf3mpLobbyWindow, {
+			onNewGame = function()
+				wc.removeAllWindows(Tpf3mpLobbyWindow)
+				mainPageParams.commonParams.setPage("NewGame", { map = false })
+			end,
 			onClose = function()
 				titleIconOnlyState:set(false)
 				fastFadeInState:set(true)
@@ -214,7 +219,7 @@ CARD = '''	-- TPF3-MP: the Multiplayer cards, a column right of the game's own c
 		bottomComponent = tpf3mpCardLabel(_("Join a friend"), lobby.joinLine),
 		onClick = function()
 			if clickAllowed("Cards") then
-				showMultiplayer("join")
+				showMultiplayer("friend")
 			end
 		end,
 		onAttention = function(x : number, y : number)

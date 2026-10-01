@@ -710,6 +710,12 @@ async fn act(
                 .await
                 .map_err(|error| error.to_string())?;
             shared.status().room = Some(room);
+            let generate_world = start_save
+                .as_deref()
+                .is_some_and(|save| save.trim().is_empty());
+            if generate_world {
+                shared.view().start_save = None;
+            }
             if let Some(picked) = start_save.filter(|picked| !picked.trim().is_empty()) {
                 // Offered first next time.
                 shared.view().start_save = Some(picked.trim().to_owned());
@@ -723,6 +729,7 @@ async fn act(
                 invite,
                 create.password,
                 start_world,
+                generate_world,
             )
         }
         Action::Join { invite, password } => {
@@ -972,6 +979,7 @@ fn begin_session(
     invite: Invite,
     password: Option<Text<64>>,
     start_world: Option<PathBuf>,
+    generate_world: bool,
 ) -> Result<(), String> {
     let Connected {
         client,
@@ -1004,6 +1012,7 @@ fn begin_session(
         lobby: Some(shared.lobby.clone()),
         // A room this player created starts from the save named for it.
         start_world: start_world.filter(|_| owned),
+        start_generated_world: owned && generate_world,
         mods: config.mods.clone(),
         picker: shared.picker_link(),
         ..BridgeOptions::default()
@@ -1392,6 +1401,7 @@ async fn join(
         invite,
         password,
         config.start_save.clone(),
+        false,
     )
 }
 

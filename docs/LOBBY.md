@@ -207,3 +207,24 @@ game's file again rather than editing the copy.
 hook but without a launcher: the entry and window appear, and the window
 says the game has no link to the launcher. They are for checking the entry
 alone.
+
+## v1.1 menu journeys
+
+The main-menu friend card uses `focus = "friend"`: it shows name, invite
+and optional password even before connecting. One queued intention waits
+for the named connection, then joins once; connection errors and a timeout
+cancel it. Hosting and discovery are accessible before connecting too.
+Polling compares the serialized lobby before setting GUI state, so idle
+polls do not rebuild dropdowns while a player uses them.
+
+Creating with an explicitly empty start-save opens the stock `NewGame`
+page through the main page's navigation callback only after room creation
+succeeds. The launcher's bridge starts that generated world once the owner
+reports a loaded world and all members are ready. Existing-save rooms
+retain their explicit Start button. No game-install files are changed.
+
+The launcher retains its hook link between rooms. The hook therefore resets
+its menu-arrival notification when the lobby invite changes, even if the
+link generation is unchanged. After a running room ends, returning to the
+main menu resets its completed gate; an early Begin for the next room is
+preserved until that menu transition. A running world cannot reset its gate.

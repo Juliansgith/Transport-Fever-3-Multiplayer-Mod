@@ -61,6 +61,7 @@ try {
             if ((Test-Path -LiteralPath $link) -and $shell.CreateShortcut($link).TargetPath -ne $exe) { throw "A different shortcut already exists at $link." }
             $shortcut = $shell.CreateShortcut($link)
             $shortcut.TargetPath = $exe
+            $shortcut.IconLocation = ($exe + ',0')
             $shortcut.WorkingDirectory = $Root
             $shortcut.Description = 'Transport Fever 3 Multiplayer'
             $shortcut.Save()

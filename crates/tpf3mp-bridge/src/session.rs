@@ -180,6 +180,7 @@ pub struct Session {
     menu_told: Option<(u32, u64)>,
     /// The launcher's lobby as last heard, until the menu's window takes it.
     lobby_view: Option<LobbyView>,
+    lobby_room: Option<String>,
 }
 
 /// Where the session is before its room's game begins, and after.
@@ -245,6 +246,7 @@ impl Session {
             world_between_rooms: None,
             menu_told: None,
             lobby_view: None,
+            lobby_room: None,
         };
         session.send(&ToAgent::Hello {
             version: BRIDGE_VERSION,
@@ -349,7 +351,7 @@ impl Session {
                     self.lobby = Lobby::left();
                     return Ok(None);
                 }
-                ToHook::Lobby(view) => self.lobby_view = Some(*view),
+                ToHook::Lobby(view) => self.remember_lobby(*view),
                 _ => return Err(SessionError::Unexpected("something before the game began")),
             }
         }
@@ -618,6 +620,37 @@ impl Session {
         self.lobby_view.take()
     }
 
+    fn remember_lobby(&mut self, view: LobbyView) {
+        let room = view
+            .room
+            .as_ref()
+            .and_then(|room| room.invite.as_ref())
+            .map(|invite| invite.as_str().to_owned());
+        if self.lobby_room != room {
+            // The launcher keeps one link across rooms. A menu arrival
+            // heard by the idle link must be told again to the next room.
+            self.menu_told = None;
+            self.lobby_room = room;
+        }
+        self.lobby_view = Some(view);
+    }
+
+    /// A completed room can be followed by another only after the old
+    /// world has closed. The game calls this from its main menu.
+    pub fn return_to_lobby(&mut self) -> bool {
+        if !self.gate.ended() {
+            return false;
+        }
+        self.gate = Gate::new(1);
+        self.lobby = Lobby::Waiting;
+        self.pending_load = None;
+        self.pending_save = None;
+        self.commands = 0;
+        self.menu_told = None;
+        self.world_between_rooms = None;
+        true
+    }
+
     /// Without blocking, for a game at its main menu, where no step reads
     /// the link: reads what the agent sent before the room's game, keeping
     /// the lobby. It stops at the first message the game must see at its
@@ -639,8 +672,12 @@ impl Session {
         }
         while let Some(message) = self.try_recv()? {
             match message {
-                ToHook::Lobby(view) => self.lobby_view = Some(*view),
+                ToHook::Lobby(view) => self.remember_lobby(*view),
                 ToHook::Chat { .. } | ToHook::Room(_) => {}
+                begin @ ToHook::Begin { .. } if ended => {
+                    self.peeked = Some(begin);
+                    break;
+                }
                 _ if ended => {}
                 other => {
                     self.peeked = Some(other);
@@ -691,7 +728,7 @@ impl Session {
             Gated::Ended(reason) => game.notice(Notice::Ended(reason)),
             Gated::Chat { from, text } => game.notice(Notice::Chat { from, text }),
             Gated::Room(room) => game.notice(Notice::Room(room)),
-            Gated::Lobby(view) => self.lobby_view = Some(*view),
+            Gated::Lobby(view) => self.remember_lobby(*view),
             Gated::Nothing => {}
         }
         Ok(())
@@ -1106,10 +1143,56 @@ mod tests {
             },
         );
         assert_eq!(session.poll_step(&mut world).unwrap(), StepGate::Ended);
-        say(&agent, &begin(50));
         say(&agent, &ToHook::Lobby(Box::new(lobby_view("next room"))));
         session.poll_lobby().unwrap();
         assert_eq!(session.take_lobby(), Some(lobby_view("next room")));
+        say(&agent, &begin(50));
+        session.poll_lobby().unwrap();
+        assert!(
+            session.try_begin().is_err(),
+            "the old world cannot begin another room"
+        );
+        assert!(
+            session.return_to_lobby(),
+            "the menu releases the finished room"
+        );
+        assert!(
+            session.try_begin().unwrap().is_some(),
+            "the next Begin was preserved"
+        );
+        assert!(!session.return_to_lobby(), "a live room cannot be reset");
+    }
+
+    #[test]
+    fn a_new_room_on_the_same_link_gets_the_existing_menu_arrival() {
+        let (mut session, agent) = at_the_menu("same-link-room");
+        assert!(session.menu_up(1).unwrap());
+        assert_eq!(heard(&agent), ToAgent::MenuUp { menu: 1 });
+        let mut view = lobby_view("connected");
+        view.room = Some(crate::LobbyRoom {
+            name: Text::new("New room").unwrap(),
+            rules: Text::new("native").unwrap(),
+            invite: Some(Text::new("K7QM2X").unwrap()),
+            running: false,
+            you_own: false,
+            max_players: 4,
+            has_password: false,
+            members: Default::default(),
+            competitive: false,
+        });
+        say(&agent, &ToHook::Lobby(Box::new(view.clone())));
+        session.poll_lobby().unwrap();
+        assert!(
+            session.menu_up(1).unwrap(),
+            "the idle link's MenuUp is sent to the room too"
+        );
+        assert_eq!(heard(&agent), ToAgent::MenuUp { menu: 1 });
+        say(&agent, &ToHook::Lobby(Box::new(view)));
+        session.poll_lobby().unwrap();
+        assert!(
+            !session.menu_up(1).unwrap(),
+            "ordinary room updates do not repeat readiness"
+        );
     }
 
     #[test]

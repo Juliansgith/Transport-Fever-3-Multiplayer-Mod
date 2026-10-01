@@ -1,7 +1,7 @@
 name: release
 
-# Builds the player's package for every platform: the launcher window, the
-# agent, the in-game hook library and the server. Runs by hand, which
+# Builds separate player and server packages for every platform. The player
+# package contains the launcher window, agent, mod and in-game hook. Runs by hand, which
 # leaves the packages as workflow artifacts, or on a push to `main`, the
 # release branch (see AGENTS.md), which also attaches them to a draft
 # release of the workspace's version, to review before publishing.
@@ -107,8 +107,6 @@ jobs:
       - name: Build
         run: |
           cargo build --release --locked -p tpf3mp-launcher -p tpf3mp-agent -p tpf3mp-server -p tpf3mp-hook
-          # Stands in for the game in playtests until it is out.
-          cargo build --release --locked -p tpf3mp-testkit --bin tpf3mp-fakegame
       - name: Package
         shell: bash
         env:
@@ -116,6 +114,9 @@ jobs:
         run: |
           set -euo pipefail
           dir="tpf3mp-${VERSION}-${{ matrix.name }}"
+          server="tpf3mp-server-${VERSION}-${{ matrix.name }}"
+          mkdir -p "$server"
+          cp LICENSE docs/OPERATIONS.md "$server/"
           mkdir -p "$dir"
           cp README.md LICENSE docs/PLAYING.md "$dir/"
           # The Lua mod, once the repository has it; the install scripts
@@ -133,8 +134,10 @@ jobs:
           case "${{ matrix.name }}" in
             windows-*)
               cp target/release/tpf3mp-launcher.exe "$dir/TPF3-MP.exe"
-              cp target/release/tpf3mp-agent.exe target/release/tpf3mp-server.exe \
-                 target/release/tpf3mp-fakegame.exe target/release/tpf3mp_hook.dll "$dir/"
+              cp target/release/tpf3mp-agent.exe target/release/tpf3mp_hook.dll "$dir/"
+              cp target/release/tpf3mp-server.exe "$server/"
+              7z a "$server.zip" "$server" > /dev/null
+              echo "server_archive=$server.zip" >> "$GITHUB_ENV"
               # The installer: readable scripts, not a program, so players
               # can see what it changes (docs/DECISIONS.md, D9).
               cp packaging/windows/INSTALL_TPF3MP.cmd packaging/windows/UNINSTALL_TPF3MP.cmd "$dir/"
@@ -147,12 +150,14 @@ jobs:
               ;;
             linux-*)
               cp target/release/tpf3mp-launcher target/release/tpf3mp-agent \
-                 target/release/tpf3mp-server target/release/tpf3mp-fakegame \
                  target/release/libtpf3mp_hook.so \
                  packaging/unix/install.sh packaging/unix/uninstall.sh "$dir/"
               chmod +x "$dir/install.sh" "$dir/uninstall.sh"
               tar czf "$dir.tar.gz" "$dir"
               echo "archive=$dir.tar.gz" >> "$GITHUB_ENV"
+              cp target/release/tpf3mp-server "$server/"
+              tar czf "$server.tar.gz" "$server"
+              echo "server_archive=$server.tar.gz" >> "$GITHUB_ENV"
               ;;
             macos-*)
               app="$dir/TPF3-MP.app/Contents"
@@ -163,18 +168,22 @@ jobs:
               # a downloaded app "damaged" instead of offering to open it.
               codesign --force --deep --sign - "$dir/TPF3-MP.app"
               codesign --verify --deep --strict --verbose=2 "$dir/TPF3-MP.app"
-              cp target/release/tpf3mp-agent target/release/tpf3mp-server \
-                 target/release/tpf3mp-fakegame target/release/libtpf3mp_hook.dylib \
+              cp target/release/tpf3mp-agent target/release/libtpf3mp_hook.dylib \
                  packaging/unix/install.sh packaging/unix/uninstall.sh "$dir/"
               chmod +x "$dir/install.sh" "$dir/uninstall.sh"
               tar czf "$dir.tar.gz" "$dir"
               echo "archive=$dir.tar.gz" >> "$GITHUB_ENV"
+              cp target/release/tpf3mp-server "$server/"
+              tar czf "$server.tar.gz" "$server"
+              echo "server_archive=$server.tar.gz" >> "$GITHUB_ENV"
               ;;
           esac
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ env.archive }}
+          path: |
+            ${{ env.archive }}
+            ${{ env.server_archive }}
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: matrix.name == 'windows-x64'

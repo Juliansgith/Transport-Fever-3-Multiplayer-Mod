@@ -86,6 +86,9 @@ pub enum Updates {
 
 /// The room's side of the gate: what the detour needs of a [`Session`].
 pub trait RoomGate {
+    fn return_to_lobby(&mut self) -> bool {
+        false
+    }
     fn try_begin(&mut self) -> Result<Option<Begin>, SessionError>;
     fn poll_step(&mut self, game: &mut HookGame) -> Result<StepGate, SessionError>;
     /// The step the game runs next.
@@ -186,6 +189,9 @@ struct Loading {
 }
 
 impl RoomGate for Session {
+    fn return_to_lobby(&mut self) -> bool {
+        Session::return_to_lobby(self)
+    }
     fn try_begin(&mut self) -> Result<Option<Begin>, SessionError> {
         Session::try_begin(self)
     }
@@ -1095,6 +1101,15 @@ impl<G: RoomGate> StepDriver<G> {
     /// - a load without a file (the owner's own world) and a save need a
     ///   world up: the menu leaves them to the step, and logs so once.
     pub fn on_menu(&mut self) {
+        if self.phase == Phase::Ended && self.gate.return_to_lobby() {
+            self.phase = Phase::BeforeBegin;
+            self.saving = None;
+            self.loading = None;
+            self.tickets.clear();
+            self.menu_said = None;
+            self.log
+                .push("back at the menu: ready for another multiplayer room".into());
+        }
         if !self.at_menu {
             self.at_menu = true;
             self.menus += 1;
@@ -1196,6 +1211,7 @@ pub(crate) mod tests {
     /// A room that answers from a script.
     #[derive(Default)]
     pub(crate) struct Script {
+        pub(crate) reset_ended: bool,
         pub(crate) begin: VecDeque<Option<Begin>>,
         pub(crate) gates: VecDeque<StepGate>,
         pub(crate) ran: u64,
@@ -1233,6 +1249,9 @@ pub(crate) mod tests {
     }
 
     impl RoomGate for Script {
+        fn return_to_lobby(&mut self) -> bool {
+            std::mem::take(&mut self.reset_ended)
+        }
         fn try_begin(&mut self) -> Result<Option<Begin>, SessionError> {
             let begin = self.begin.pop_front().flatten();
             if let Some(begin) = &begin {
@@ -2192,6 +2211,33 @@ pub(crate) mod tests {
         assert_eq!(call(&mut d, &mut calls), Updates::Own);
         assert_eq!(d.phase(), &Phase::Ended);
         assert_eq!(call(&mut d, &mut calls), Updates::Own);
+    }
+
+    #[test]
+    fn another_room_can_begin_only_after_returning_to_the_menu() {
+        let mut script = Script {
+            reset_ended: true,
+            ..Script::default()
+        };
+        script.begin.extend([Some(begin()), Some(begin())]);
+        script.gates.extend([StepGate::Ended, StepGate::Wait]);
+        let (mut d, mut calls) = driver(script);
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert_eq!(call(&mut d, &mut calls), Updates::Own);
+        assert_eq!(d.phase(), &Phase::Ended);
+        assert_eq!(
+            d.gate.begin.len(),
+            1,
+            "the previous world cannot enter the next room"
+        );
+        d.on_menu();
+        assert_eq!(d.phase(), &Phase::Running);
+        assert!(d.gate.begin.is_empty());
+        assert!(
+            d.take_log()
+                .iter()
+                .any(|line| line.contains("ready for another multiplayer room"))
+        );
     }
 
     fn order(event: u64, file: &Path) -> SaveOrder {

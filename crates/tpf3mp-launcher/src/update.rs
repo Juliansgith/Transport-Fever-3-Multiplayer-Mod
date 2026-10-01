@@ -1933,7 +1933,15 @@ mod tests {
     #[test]
     fn a_standalone_download_installs_repairs_and_refuses_tampering() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("local/Programs/TPF3-MP");
+        // macOS's /var is itself a symlink. Exercise an actual installation
+        // directory; linked installation paths must still be refused.
+        // macOS's /var is a symlink; Windows canonicalization adds the
+        // extended-length prefix, which Windows PowerShell 5 cannot parse.
+        #[cfg(not(windows))]
+        let canonical = dir.path().canonicalize().unwrap();
+        #[cfg(windows)]
+        let canonical = dir.path().to_path_buf();
+        let root = canonical.join("local/Programs/TPF3-MP");
         let pair = key_pair();
         let name = format!("tpf3mp-{VERSION}-windows-x64.zip");
         let archive = dir.path().join(&name);
@@ -2007,14 +2015,14 @@ mod tests {
             Err(UpdateError::BadSignature)
         ));
         assert_eq!(fs::read(root.join("TPF3-MP.exe")).unwrap(), b"launcher");
-        let foreign = dir.path().join("foreign");
+        let foreign = canonical.join("foreign");
         fs::create_dir(&foreign).unwrap();
         fs::write(foreign.join("save.sav"), b"keep").unwrap();
         assert!(bootstrap_from(&foreign, &keys(&pair), &source, |_, _, _| {}).is_err());
         assert_eq!(fs::read(foreign.join("save.sav")).unwrap(), b"keep");
 
         #[cfg(windows)]
-        check_windows_setup_scripts(&root, dir.path());
+        check_windows_setup_scripts(&root, &canonical);
 
         stop.store(true, Ordering::SeqCst);
         // A valid signature cannot make a damaged download acceptable.
@@ -2032,7 +2040,7 @@ mod tests {
                 b"truncated".to_vec(),
             ),
         ]);
-        let untouched = dir.path().join("bad-download");
+        let untouched = canonical.join("bad-download");
         assert!(
             bootstrap_from(
                 &untouched,

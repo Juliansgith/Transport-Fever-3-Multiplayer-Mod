@@ -432,11 +432,13 @@ themselves once the new release is published and signed.
 
 ## Releases
 
-`.github/workflows/release.yml` builds the player's package for Windows x64,
-Linux x64 and macOS arm64: the launcher (`TPF3-MP.exe`,
-`TPF3-MP.app`, `tpf3mp-launcher`), the command-line agent, the in-game hook
-library and the server. The Linux package is built on Ubuntu 22.04, so it
-runs on distributions with an older C library too.
+`.github/workflows/release.yml` builds separate player and server archives
+for Windows x64, Linux x64 and macOS arm64. The player archive has the
+launcher (`TPF3-MP.exe`, `TPF3-MP.app`, `tpf3mp-launcher`), command-line
+agent, in-game hook and mod. The server archive has `tpf3mp-server` and
+this operations guide. Windows also gets a single `TPF3-MP.exe` setup
+download. The Linux packages are built on Ubuntu 22.04, so they run on
+distributions with an older C library too.
 
 - **Cutting one.** Every push to `main`, which only receives what passed
   `acceptance` (see [AGENTS.md](../AGENTS.md)), builds the packages and
