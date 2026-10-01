@@ -187,6 +187,7 @@ function data()
 			later = function(fn) pending[#pending + 1] = fn end,
 			context = context,
 			personal = function(mod) return link:personal()[mod] == true end,
+			shared = function() return link:shared() end,
 		})
 		if wrapped then
 			link:log("the guard is on " .. wrapped .. " command factories")
