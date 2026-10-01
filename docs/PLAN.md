@@ -273,7 +273,10 @@ Dev B:
 - [ ] Headquarters upgrades; prospecting (the industry at the same place,
   with the same ID, on every game); boosting industry.
 - [ ] Greening and other new brushes, terraforming, terrain paint, the
-  asset brush.
+  asset brush. *Done, not yet seen in the game:* terraforming (raise,
+  lower, smooth, flatten, the heightmap brush), read natively at the click
+  and applied in every game through the hook (HOOKS.md, "Terraforming").
+  Terrain paint, the asset brush and greening stay refused.
 - [x] Companies: create, switch, dissolve; owners move with the company,
   and no money is created in the switch. *Added (D21):* any split of the
   room's players, loans for every company, colours, and the GUI showing
@@ -319,7 +322,10 @@ Dev B:
 Dev C:
 
 - [ ] Roads with lane connections, tram lanes and ramps; track types and
-  underground segments.
+  underground segments. *Done:* the road and track modifiers (tram tracks,
+  bus lanes, noise barriers, trees, the lock; seen in the game), and track
+  type, catenary and track decorations through the same capture (not yet
+  seen). Lane connections (the lane arrow tool) stay refused.
 - [ ] Landmarks, built once: the second on the same turn is refused and
   pays nothing.
 - [ ] Warehouses, specialised terminals, maintenance facilities, noise

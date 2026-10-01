@@ -8,11 +8,12 @@ use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
         Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConsistPart,
-        ConstructionBuild, ConstructionRef, CreateLine, EdgeEnds, EdgeRef, EditLine, LineChange,
-        LineData, LineId, LineStop, Link, LoadMode, Network, Param, ParamValue, PlaceStop,
-        Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
-        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
-        Tram, Transform, UnitDir, VehicleId, Vertex,
+        ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds, EdgeKind,
+        EdgeObjectKind, EdgeRef, EditLine, Lane, LineChange, LineData, LineId, LineStop, Link,
+        LoadMode, Network, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect,
+        ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
+        Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir,
+        VehicleId, Vertex,
     },
 };
 
@@ -96,6 +97,10 @@ pub fn polyline(vertices: Vec<Vertex>, structure: &Structure) -> Polyline {
                 tangent1: tangent,
                 structure: structure.clone(),
                 kind: None,
+                decorations: BoundedVec::default(),
+                locked: false,
+                owned: false,
+                lanes: BoundedVec::default(),
             }
         })
         .collect();
@@ -303,6 +308,8 @@ pub fn place_stop(a: Pos, b: Pos, pos: Pos) -> Action {
         },
         model: text(STREET_STOP),
         two_sided: false,
+        object: EdgeObjectKind::Stop,
+        one_way: false,
     })
 }
 
@@ -312,6 +319,58 @@ pub fn bulldoze_stop(a: Pos, b: Pos, pos: Pos) -> Action {
         at: pos,
         model: text(STREET_STOP),
     })
+}
+
+/// A road or track modifier's upgrade of the straight edge `a`-`b` of
+/// `network`: rebuilt in place in `template`, with one lane carrying
+/// `modes` (a bit per transport mode: a tram track, catenary), a noise
+/// barrier, locked and owned, the old edge removed.
+pub fn upgrade(network: Network, a: Pos, b: Pos, template: &str, modes: u32) -> Action {
+    let mut polyline = polyline(vec![node(a, network), node(b, network)], &Structure::Ground);
+    let mut links = polyline.links.to_vec();
+    links[0].kind = Some(EdgeKind {
+        network,
+        template: text(template),
+        style: None,
+    });
+    links[0].decorations = list(vec![Decoration {
+        name: text("::/infrastructure/edge_addons/barrier_b.edge"),
+        flag: false,
+    }]);
+    links[0].locked = true;
+    links[0].owned = true;
+    links[0].lanes = list(vec![Lane {
+        speed: 22_222,
+        width: 3_000,
+        height: 0,
+        offset: 0,
+        forward: true,
+        modes,
+    }]);
+    polyline = Polyline::new(
+        polyline.vertices.clone(),
+        list(links),
+        list(vec![EdgeRef {
+            network,
+            ends: EdgeEnds { a, b },
+        }]),
+    )
+    .expect("two vertices");
+    match network {
+        Network::Street => Action::BuildRoad(RoadBuild {
+            street: text(STREET),
+            style: None,
+            bus_lane: false,
+            tram: Tram::None,
+            polyline,
+        }),
+        Network::Track => Action::BuildTrack(TrackBuild {
+            track: text(TRACK),
+            style: None,
+            catenary: false,
+            polyline,
+        }),
+    }
 }
 
 /// Raises a `columns` by `rows` grid of `cell`-metre cells to `height` mm.
@@ -920,6 +979,58 @@ fn crowd_scenario() -> Scenario {
         )
 }
 
+/// The upgrade tools and terraforming: a street with a stop upgraded in
+/// place (a tram track, a noise barrier, locked and owned), the stop kept;
+/// a track electrified in another template; a road that would move the
+/// stop refused; a stroke cut into two bands of rows (the mod's
+/// `capture.terraform`).
+fn upgrades_scenario() -> Scenario {
+    const TRAM_STREET: &str = "street/standard/town_medium_tram.lua";
+    const CATENARY_TRACK: &str = "track/high_speed.lua";
+    // PERSON and TRAM_TRACK; TRAIN and ELECTRIC_TRAIN.
+    const TRAM_LANE: u32 = 1 | 1 << 14;
+    const ELECTRIC: u32 = 1 << 7 | 1 << 8;
+    let (a, b, stop) = (at(0, 0), at(1000, 0), at(500, 0));
+    let (t1, t2) = (at(0, 400), at(1000, 400));
+    Script::default()
+        .act(0, road(vec![new(a), new(b)]))
+        .act(0, place_stop(a, b, stop))
+        .expect_all([Check::StreetEdges(1), Check::EdgeObjects(1)])
+        .act(0, upgrade(Network::Street, a, b, TRAM_STREET, TRAM_LANE))
+        .expect_all([Check::StreetEdges(1), Check::EdgeObjects(1), Check::Ignored(0)])
+        .act(1, track(vec![new(t1), new(t2)], &Structure::Ground))
+        .act(1, upgrade(Network::Track, t1, t2, CATENARY_TRACK, ELECTRIC))
+        .expect_all([Check::TrackEdges(1), Check::Ignored(0)])
+        // A road from the stop's street elsewhere, its edge removed and not
+        // rebuilt: the stop would stand on nothing.
+        .act(
+            0,
+            Action::BuildRoad(RoadBuild {
+                street: text(STREET),
+                style: None,
+                bus_lane: false,
+                tram: Tram::None,
+                polyline: Polyline::new(
+                    list(vec![node(a, Network::Street), new(at(0, 300))]),
+                    polyline(vec![new(a), new(at(0, 300))], &Structure::Ground).links,
+                    list(vec![street_edge(a, b)]),
+                )
+                .expect("two vertices"),
+            }),
+        )
+        .expect_all([Check::Ignored(1), Check::StreetEdges(1), Check::EdgeObjects(1)])
+        .act(1, terraform(2000, 2000, 4, 16, 10, 3_500))
+        .act(1, terraform(2000, 2040, 4, 16, 3, 3_500))
+        .expect(Check::TerrainCells(16 * 13))
+        .scenario(
+            "upgrades",
+            "upgrade a street with a stop and electrify a track in place, refuse moving the stop, terraform in bands",
+            true,
+            2,
+        )
+        .exact()
+}
+
 /// Every scenario, the quick ones first.
 pub fn scenarios() -> Vec<Arc<Scenario>> {
     let mut all = vec![
@@ -931,6 +1042,7 @@ pub fn scenarios() -> Vec<Arc<Scenario>> {
         line_editing_scenario(),
         demolition_scenario(),
         companies_scenario(),
+        upgrades_scenario(),
         crowd_scenario(),
         town_scenario(12),
     ];

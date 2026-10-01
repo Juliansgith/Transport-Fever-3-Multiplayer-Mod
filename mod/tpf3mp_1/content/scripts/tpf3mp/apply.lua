@@ -367,6 +367,35 @@ end
 
 local STRUCTURE = { Ground = "NORMAL", Bridge = "BRIDGE", Tunnel = "TUNNEL" }
 
+-- A link's lanes: its template's, or the ones the tool made (a tram track, a
+-- bus lane: a lane's transport modes on TF3). The game has no constructor
+-- for a lane, so each is a copy of one of the template's (read afresh, so
+-- no two are one), set to what the link says.
+-- The transport modes a lane names (api.type.enum.TransportMode, 0 to 15).
+local MODES = 16
+local function lanesFor(link, t)
+	if link.lanes == nil or #link.lanes == 0 then return t.laneConfigs end
+	local out = {}
+	for i, l in ipairs(link.lanes) do
+		local fresh = t.laneConfigs
+		local lane = fresh[math.min(i, #fresh)]
+		if lane == nil then error("a lane its template has none to make it from", 0) end
+		lane.speed, lane.width, lane.height, lane.offset = l.speed, l.width, l.height, l.offset
+		lane.forward = l.forward == true
+		-- Every mode, true or false. Build 40408 reads a lane's modes keyed
+		-- from 0 (the TransportMode value) but takes them as a Lua array,
+		-- from 1: mode m at m + 1. Keyed from 0 they land one mode off, and
+		-- a sidewalk that carries vehicles failed every game's build, then
+		-- crashed its simulation (TransportNetworkSystem, `person0 ==
+		-- person1`; 2026-10-01).
+		local modes = {}
+		for m = 0, MODES - 1 do modes[m + 1] = math.floor(l.modes / 2 ^ m) % 2 == 1 end
+		lane.transportModes = modes
+		out[i] = lane
+	end
+	return out
+end
+
 -- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
 -- street proposal. `network`, `templateName` and `style` are the build's
 -- own kind, for the links that name none; nil for a construction's
@@ -514,19 +543,56 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 		-- The build's own kind, or the kind the link names.
 		local kind = link.kind or { network = network, template = templateName, style = style }
 		local t = template(kind.template)
-		s.comp.laneConfigs = t.laneConfigs
+		s.comp.laneConfigs = lanesFor(link, t)
 		s.comp.roadTemplate = kind.template
 		s.comp.roadStyle = kind.style or t.streetStyle
 		s.comp.roadType = kind.network == "Track" and enum("RoadType").TRACK or enum("RoadType").STREET
+		-- What the tool left on it: its decorations (by name, as every game
+		-- numbers them), the towns' lock, and the acting company's ownership.
+		local decorations = {}
+		for _, d in ipairs(link.decorations or {}) do
+			decorations[#decorations + 1] = { find("edgeDecorationRep", d.name), d.flag == true }
+		end
+		s.comp.edgeDecorations = decorations
+		s.comp.roadDevelopmentLocked = link.locked == true
+		if link.owned == true then
+			local ok = pcall(function() s.playerOwned.player = company() end)
+			if not ok then
+				local owned = api.type.PlayerOwned.new()
+				owned.player = company()
+				s.playerOwned = owned
+			end
+		end
 	end
 
+	-- An edge removed with its stops or signals leaves them pointing
+	-- nowhere: on TPF2 that crashed every game at the same step
+	-- (docs/BUILDING.md). So one with any is removed only where a link
+	-- rebuilds it in place, between the same places in the same direction,
+	-- which takes its objects under their own entities (as the capture
+	-- demands, tpf3mp/engine.lua keptInPlace).
+	local taken = {}
+	local function sameAt(a, b)
+		return math.abs(a[1] - b[1]) < 0.05 and math.abs(a[2] - b[2]) < 0.05 and math.abs(a[3] - b[3]) < 0.05
+	end
 	for k, r in ipairs(polyline.removals or {}) do
 		local e = edgeBetween(nodes(r.network), r.network, arr(r.ends.a), arr(r.ends.b))
 		if e == nil then error("no " .. r.network .. " edge to remove (" .. k .. ")") end
-		-- An edge removed with its stops or signals leaves them pointing
-		-- nowhere: on TPF2 that crashed every game at the same step
-		-- (docs/BUILDING.md). The room does not carry them yet.
-		if #(e.comp.objects or {}) > 0 then error("removal " .. k .. " has a stop or signal on it") end
+		local objects = e.comp.objects or {}
+		if #objects > 0 then
+			local into
+			for j, link in ipairs(polyline.links) do
+				if not taken[j] and sameAt(at[link.from + 1], e.a) and sameAt(at[link.to + 1], e.b) then
+					into = j
+					break
+				end
+			end
+			if into == nil then error("removal " .. k .. " has a stop or signal on it and no link rebuilds it") end
+			taken[into] = true
+			local kept = {}
+			for i, o in ipairs(objects) do kept[i] = { o[1], o[2] } end
+			links[into].comp.objects = kept
+		end
 		removeEdge(e)
 	end
 
@@ -631,6 +697,63 @@ function HANDLERS.BuildTrack(track)
 	return buildNetwork("Track", track.track, track.style, track.polyline)
 end
 
+-- An upgrade tool's build, said in the log once every game built it
+-- (tpf3mp/roads.lua upgradeSummary): the same line in every game.
+for _, name in ipairs({ "BuildRoad", "BuildTrack" }) do
+	local build = HANDLERS[name]
+	HANDLERS[name] = function(body)
+		local ok, why = build(body)
+		if ok == true then
+			local summarised, text = pcall(module("roads").upgradeSummary, { [name] = body })
+			if summarised and text then log("upgrade applied: " .. text) end
+		end
+		return ok, why
+	end
+end
+
+-- ------------------------------------------------------------ terraform
+--
+-- A terrain tool's stroke, as its height grid (tpf3mp/capture.lua,
+-- capture.terraform). A script cannot fill a proposal's height grid (Lua's
+-- GridVec2f has no setter, build 40408), so the hook does: the grid goes to
+-- the hook (apply.terrain, which the game script sets to the link's
+-- tpf3mp_native.terrain), then an empty proposal, the carrier, is sent as
+-- the player's build, paid by the player as the tool's is; the hook fills
+-- the carrier's height grid at its apply (crates/tpf3mp-hook/src/terrain.rs).
+-- Then the hook is disarmed, and the action fails unless the carrier was
+-- filled. No verdict first: the game's verdict reads the proposal as sent,
+-- empty.
+function HANDLERS.Terraform(t)
+	if type(apply.terrain) ~= "function" then error("this hook cannot apply a terraform", 0) end
+	local ok, resolution = pcall(function() return api.engine.terrain.getBaseResolution() end)
+	local cell = ok and resolution and (resolution.x or resolution[1])
+	if type(cell) ~= "number" or math.abs(cell - t.cell) > 1e-6 then
+		error("a grid of " .. tostring(t.cell) .. " m cells; this map's are " .. tostring(cell), 0)
+	end
+	local x0, y0 = t.origin.x / t.cell, t.origin.y / t.cell
+	if x0 ~= math.floor(x0) or y0 ~= math.floor(y0) then error("a grid that starts between cells", 0) end
+	local width = t.columns
+	local height = #t.cells / width
+	local values, low, high = {}, nil, nil
+	for i, c in ipairs(t.cells) do
+		values[2 * i - 1], values[2 * i] = c.target, c.before
+		low, high = math.min(low or c.target, c.target), math.max(high or c.target, c.target)
+	end
+	local armed, why = apply.terrain({ x0 = x0, y0 = y0, width = width, height = height, cells = values })
+	if armed ~= true then error("the hook would not take the grid: " .. tostring(why), 0) end
+	local context = api.type.Context.new()
+	context.player = company()
+	local sent, err = pcall(function()
+		return run(api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), context, true, true))
+	end)
+	local filled = apply.terrain(nil)
+	if not sent then error(err, 0) end
+	if filled ~= true then error("the hook filled no build with the grid", 0) end
+	log(string.format("terraform applied: %d by %d cells from cell (%d, %d), heights %.2f to %.2f m",
+		width, height, x0, y0, low or 0, high or 0))
+	return true
+end
+
 -- ---------------------------------------------------------------- stops
 --
 -- A stop is placed, or removed, as the stop tool and the bulldozer propose
@@ -674,6 +797,9 @@ end
 -- point of that centreline, rounded to the millimetre.
 local STOP_TOLERANCE = 0.5
 
+-- The entity a proposal gives its first new edge object (build 40408).
+local NEW_EDGE_OBJECT = -400000000
+
 function HANDLERS.PlaceStop(stop)
 	local network = stop.edge.network
 	local e = stopEdge(stop.edge)
@@ -684,29 +810,38 @@ function HANDLERS.PlaceStop(stop)
 	local t, d = geom.hermiteTangent(e.a, e.ta, e.b, e.tb, u), stop.direction
 	if t[1] * d.x + t[2] * d.y + t[3] * d.z < 0 then left = not left end
 	local types = enum("EdgeObjectType")
+	local isStop = stop.object == nil or stop.object == "Stop"
+	local function typeOf(l)
+		if not isStop then return types.SIGNAL end
+		return l and types.STOP_LEFT or types.STOP_RIGHT
+	end
 	-- The sides it takes: one, or both for a two-sided stop, the
 	-- originator's first side first, as its tool added them.
 	local sides = { left }
-	if stop.two_sided == true then sides[2] = not left end
+	if isStop and stop.two_sided == true then sides[2] = not left end
 	-- One stop a side: a second is a fatal assert in the game's lane
-	-- creation (TPF2, docs/BUILDING.md).
+	-- creation (TPF2, docs/BUILDING.md). Signals are not by side.
 	local objects = {}
 	for i, o in ipairs(e.comp.objects or {}) do
-		for _, l in ipairs(sides) do
-			if o[2] == (l and types.STOP_LEFT or types.STOP_RIGHT) then
-				error("the edge has a stop on that side already", 0)
+		if isStop then
+			for _, l in ipairs(sides) do
+				if o[2] == typeOf(l) then error("the edge has a stop on that side already", 0) end
 			end
 		end
 		objects[i] = { o[1], o[2] }
 	end
 	local added = {}
 	for k, l in ipairs(sides) do
-		objects[#objects + 1] = { -k, l and types.STOP_LEFT or types.STOP_RIGHT }
+		-- A new edge object is named by its place in edgeObjectsToAdd,
+		-- from -400000000 down (build 40408: con_util_entity_index.h
+		-- asserts the range, a fatal error; game_mechanics/towns/
+		-- town_util.tl; the stop tool's own proposals).
+		objects[#objects + 1] = { NEW_EDGE_OBJECT - (k - 1), typeOf(l) }
 		local eo = api.type.SimpleStreetProposal.EdgeObject.new()
 		eo.edgeEntity = -1
 		eo.param = u
 		eo.left = l
-		eo.oneWay = false
+		eo.oneWay = stop.one_way == true
 		eo.model = stop.model
 		eo.playerEntity = company()
 		eo.name = ""

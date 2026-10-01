@@ -869,17 +869,28 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         // thread runs yet; detour_forever installs each for good.
         (Ok(add), Ok(apply)) => {
             let module = at(crate::modules::MODULE_ADD_CALL).ok();
+            let terrain = at(crate::terrain::DO_APPLY_ADD_CALL).ok();
             // SAFETY: as above.
-            unsafe { crate::builds::install(add, apply, module, detour_forever) }
-                .map(|()| match module {
-                    Some(call) => format!(
-                        "the build tools build through the room; the module editor's builds \
-                         are read where Add returns to {:#x}",
-                        call + 5
-                    ),
-                    None => "the build tools build through the room; the profile has no \
-                             module editor call, so its builds stay refused"
-                        .to_owned(),
+            unsafe { crate::builds::install(add, apply, module, terrain, detour_forever) }
+                .map(|()| {
+                    let module = match module {
+                        Some(call) => format!(
+                            "the module editor's builds are read where Add returns to {:#x}",
+                            call + 5
+                        ),
+                        None => "the profile has no module editor call, so its builds stay \
+                                 refused"
+                            .to_owned(),
+                    };
+                    let terrain = match terrain {
+                        Some(call) => {
+                            format!("the terrain tools' where it returns to {:#x}", call + 5)
+                        }
+                        None => "the profile has no terrain tools' call, so terraforming \
+                                 stays refused"
+                            .to_owned(),
+                    };
+                    format!("the build tools build through the room; {module}; {terrain}")
                 })
                 .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))
         }

@@ -308,8 +308,23 @@ protected folder such as Program Files.
   together, a moment after your click, and your company pays as usual. A
   station or depot placed by a road is joined to it, as in single player.
   Street stops, on one side or both, go on with the stop tool; the stop
-  goes where your cursor is on the road. Remove them, and roads and
+  goes where your cursor is on the road. The road tools tab works too:
+  tram tracks, bus lanes, noise barriers, trees along the road and the
+  lock against the town's changes, and a road built through a stretch
+  with stops keeps them. So do the track menu's tools: electrification,
+  a track's type and its decorations (seen with the road tools; the track
+  tools are not yet tried in a real game). Remove them, and roads and
   tracks, with the bulldozer.
+- **Terraforming.** Raise, lower, smooth and flatten the ground, and the
+  heightmap brush, as usual: every player's game reshapes the same cells
+  to the same heights, a moment after each stroke, and your company pays.
+  Your own game changes the ground only when the room's copy of a stroke
+  arrives, so while you hold the mouse down the brush works on the
+  ground as it was before your last strokes came back. A stroke of more
+  than 65,536 cells (a square about 1 km across) is refused. Not yet
+  tried in a real game.
+  Painting the ground and the asset brush (trees, rocks) are not in
+  multiplayer yet.
 - **Vehicles and lines.** Buy vehicles in a depot's store, make and change
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window
@@ -358,10 +373,10 @@ protected folder such as Program Files.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
   does not happen in your game either. The game bar says "Not in
   multiplayer yet: …" for what the game's windows do that the room does
-  not carry yet. The upgrade, bus lane and tram track tools show
-  "Not in multiplayer yet: building with this tool" and build nothing, and
-  so does a road or track that would move a stop or signal, or a bulldozer
-  click on a stop or signal: the tool says why.
+  not carry yet. The lane arrow and traffic light tools, and a tool that
+  would move a stop or signal onto another stretch of road, show "Not in
+  multiplayer yet" and build nothing: the tool says why. Terrain paint
+  and the asset brush build nothing either; the hook's log says why.
 
 ## Playtesting before the game is out
 
