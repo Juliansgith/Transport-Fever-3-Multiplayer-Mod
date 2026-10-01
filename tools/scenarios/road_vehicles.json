@@ -149,7 +149,7 @@
    "actor": 0,
    "origin": "spot:#0:0",
    "expect": "applied",
-   "note": "Actor 0: a second stop on the same street",
+   "note": "Actor 0: a second stop, on the street's other side (one stop a side an edge)",
    "action": {
     "PlaceStop": {
      "edge": {
@@ -178,7 +178,7 @@
        0
       ]
      },
-     "left": true,
+     "left": false,
      "direction": {
       "x": 1000000,
       "y": 0,
@@ -889,7 +889,7 @@
    "actor": 1,
    "origin": "spot:#1:0",
    "expect": "applied",
-   "note": "Actor 1: a second stop on the same street",
+   "note": "Actor 1: a second stop, on the street's other side (one stop a side an edge)",
    "action": {
     "PlaceStop": {
      "edge": {
@@ -918,7 +918,7 @@
        0
       ]
      },
-     "left": true,
+     "left": false,
      "direction": {
       "x": 1000000,
       "y": 0,
@@ -1645,7 +1645,7 @@
    "actor": 2,
    "origin": "spot:#2:0",
    "expect": "applied",
-   "note": "Actor 2: a second stop on the same street",
+   "note": "Actor 2: a second stop, on the street's other side (one stop a side an edge)",
    "action": {
     "PlaceStop": {
      "edge": {
@@ -1674,7 +1674,7 @@
        0
       ]
      },
-     "left": true,
+     "left": false,
      "direction": {
       "x": 1000000,
       "y": 0,

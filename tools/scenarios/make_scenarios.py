@@ -122,11 +122,11 @@ def construction(file, at, name, params=None):
         "name": name, "replaces": None, "connection": None}}
 
 
-def place_stop(network, a, b, at, model=STOP, kind="Stop"):
+def place_stop(network, a, b, at, model=STOP, kind="Stop", left=True):
     d = (b[0] - a[0], b[1] - a[1])
     length = (d[0] ** 2 + d[1] ** 2) ** 0.5
     return {"PlaceStop": {
-        "edge": edge(network, a, b), "at": pos(*at), "left": True,
+        "edge": edge(network, a, b), "at": pos(*at), "left": left,
         "direction": {"x": int(round(d[0] / length * 1e6)), "y": int(round(d[1] / length * 1e6)), "z": 0},
         "model": model, "two_sided": False, "object": kind, "one_way": False}}
 
@@ -345,7 +345,12 @@ def roads():
         # through the T or the crossroads would have no route.
         s.act(t + 180, k, road([(20, -50), (170, -50)]), f"{c}: the bus street, south of the junctions")
         s.act(t + 200, k, place_stop(S, (20, -50), (170, -50), (70, -50)), f"{c}: a bus stop on the bus street")
-        s.act(t + 230, k, place_stop(S, (20, -50), (170, -50), (140, -50)), f"{c}: a second stop on it")
+        # The other side: an edge takes one stop a side (round C, 2026-10-01:
+        # "the edge has a stop on that side already"). A bus calls at the
+        # first eastbound and at this one westbound, after turning at the
+        # street's dead end.
+        s.act(t + 230, k, place_stop(S, (20, -50), (170, -50), (140, -50), left=False),
+              f"{c}: a second stop on the bus street's other side")
         action, depot = road_depot((20, -50), f"Scenario depot {k}", "west")
         s.act(t + 260, k, action, f"{c}: a road depot west of the bus street, its entrance snapped onto the end")
         g, v = 2 * k, 3 * k
@@ -451,7 +456,8 @@ def road_vehicles():
         fund(s, k, t)
         s.act(t + 50, k, road([(0, 0), (150, 0)]), f"{c}: a street")
         s.act(t + 100, k, place_stop(S, (0, 0), (150, 0), (40, 0)), f"{c}: a truck stop (a street stop)")
-        s.act(t + 130, k, place_stop(S, (0, 0), (150, 0), (110, 0)), f"{c}: a second stop on the same street")
+        s.act(t + 130, k, place_stop(S, (0, 0), (150, 0), (110, 0), left=False),
+              f"{c}: a second stop, on the street's other side (one stop a side an edge)")
         # On the street's own end, so no scripted junction (which has no
         # turns) lies between the depot and the stops.
         action, depot = road_depot((0, 0), f"Scenario truck depot {k}", "west")
