@@ -202,6 +202,16 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args, diagnostics: Recorder) -> Result<()> {
+    // The owner of an automatic room takes the last room's invite away
+    // first thing, before the seconds the configuration takes (the mods are
+    // scanned): joiners started beside it read the file meanwhile, and took
+    // the last room's invite, a room the server may still hold running
+    // (2026-10-01).
+    if args.auto.auto_create.is_some()
+        && let Some(file) = &args.auto.invite_file
+    {
+        let _ = std::fs::remove_file(file);
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("tpf3mp")
@@ -438,11 +448,13 @@ fn auto_room(
                 }
             }
         }
-        // Join: wait for the owner's invite.
+        // Join: wait for the owner's invite. One that is refused may be the
+        // last room's, read before the owner took it away: wait for another.
+        let mut refused: Option<String> = None;
         for _ in 0..600 {
             if let Ok(invite) = std::fs::read_to_string(&file) {
                 let invite = invite.trim().to_owned();
-                if !invite.is_empty() {
+                if !invite.is_empty() && !stale_invite(refused.as_deref(), &invite) {
                     match handle
                         .act(Action::Join {
                             invite: invite.clone(),
@@ -455,16 +467,25 @@ fn auto_room(
                             if auto.auto_play {
                                 play(&handle).await;
                             }
+                            return;
                         }
-                        Err(error) => warn!(%error, "auto room: could not join"),
+                        Err(error) => {
+                            warn!(%error, %invite, "auto room: could not join; waiting for another invite");
+                            refused = Some(invite);
+                        }
                     }
-                    return;
                 }
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        warn!("auto room: no invite appeared in {}", file.display());
+        warn!("auto room: no invite to join appeared in {}", file.display());
     });
+}
+
+/// Whether `invite`, read from the invite file, is the one a join was just
+/// refused with: the last room's, until the owner writes its own.
+fn stale_invite(refused: Option<&str>, invite: &str) -> bool {
+    refused == Some(invite)
 }
 
 /// `--auto-play`: starts the game as the launcher's button does.
@@ -563,8 +584,24 @@ mod tests {
 
     use tpf3mp_agent::launcher::{Member, MemberContent, Phase, Room};
 
-    use super::{Args, package_server, ready_to_start};
+    use super::{Args, package_server, ready_to_start, stale_invite};
     use tpf3mp_agent::launcher::setup::{RELAY, RELAY_NAME};
+
+    /// A joiner started beside the owner may read the last room's invite
+    /// before the owner takes it away; refused there, it waits for another
+    /// (2026-10-01: both guests were refused by the last, running room).
+    #[test]
+    fn a_refused_invite_is_not_tried_again() {
+        assert!(!stale_invite(None, "QHK8QR"), "the first is tried");
+        assert!(
+            stale_invite(Some("CP8HKQ"), "CP8HKQ"),
+            "the refused one waits"
+        );
+        assert!(
+            !stale_invite(Some("CP8HKQ"), "QHK8QR"),
+            "the owner's new one is tried"
+        );
+    }
 
     #[test]
     fn the_default_server_is_the_packages_else_the_relay() {
