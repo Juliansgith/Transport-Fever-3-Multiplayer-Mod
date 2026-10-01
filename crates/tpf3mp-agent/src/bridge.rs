@@ -130,6 +130,9 @@ pub struct BridgeOptions {
     /// What the room shows every member of [`Self::start_world`]: its name,
     /// map and year. Without, its file's name, the map and year unknown.
     pub start_save: Option<StartSave>,
+    /// A newly generated world starts once its owner has loaded it and
+    /// every member is ready. Existing-save rooms keep their Start button.
+    pub start_generated_world: bool,
     /// This player's mods for the room's worlds: the shared ones it
     /// declared and its personal ones (`crate::content::split`), handed to
     /// the hook when the game begins. Without them a world loads with the
@@ -182,6 +185,7 @@ impl Default for BridgeOptions {
             lobby: None,
             start_world: None,
             start_save: None,
+            start_generated_world: false,
             mods: None,
             picker: None,
         }
@@ -682,6 +686,7 @@ impl<L: HookLink> Bridge<L> {
             self.check_hook(now)?;
             self.read_hook(client).await?;
             self.hand_over_start_world(client);
+            self.start_generated_world(client);
             self.report_progress(client, now).await?;
             self.report_loading(client, now).await?;
             self.lobby_news();
@@ -889,6 +894,21 @@ impl<L: HookLink> Bridge<L> {
             status.notice("your game has its world up: you are marked ready");
         });
         self.request(client, Request::SetReady(true));
+    }
+
+    fn start_generated_world(&mut self, client: &Client) {
+        if self.options.start_generated_world
+            && generated_world_can_start(
+                self.room.as_ref(),
+                client.player(),
+                self.world_up,
+                self.begun,
+            )
+        {
+            self.options.start_generated_world = false;
+            self.status(|status| status.notice("your new world is ready: starting multiplayer"));
+            self.request(client, Request::StartGame);
+        }
     }
 
     /// The game is at its main menu, arrived there for the `menu`th time,
@@ -1868,6 +1888,28 @@ fn speed_news(told: &mut Option<Speed>, now: Speed) -> Option<Speed> {
     Some(now)
 }
 
+/// Whether the owner's newly generated world may start the room: this game
+/// has its world up, the room has not begun, and every member is connected
+/// and ready.
+fn generated_world_can_start(
+    room: Option<&RoomView>,
+    player: PlayerId,
+    world_up: u64,
+    begun: bool,
+) -> bool {
+    !begun
+        && world_up > 0
+        && room.is_some_and(|room| {
+            room.owner == player
+                && room.phase == RoomPhase::Lobby
+                && !room.members.is_empty()
+                && room
+                    .members
+                    .iter()
+                    .all(|member| member.connected && member.ready)
+        })
+}
+
 /// The room as the game's Multiplayer window shows it: its name, owner and
 /// members, at most as many as a room holds. A member's portrait this game
 /// lacks is left out, for their default banner.
@@ -2343,6 +2385,49 @@ mod tests {
             Some("dry")
         );
         assert_eq!(info.members[1].banner, None);
+    }
+
+    #[test]
+    fn generated_world_waits_for_the_owner_world_and_every_player() {
+        use tpf3mp_proto::{MemberView, Platform, RoomSettings};
+        let owner = PlayerId(FixedBytes([1; 32]));
+        let guest = PlayerId(FixedBytes([2; 32]));
+        let mut room = RoomView {
+            id: RoomId(FixedBytes([7; 16])),
+            name: Text::new("New world").unwrap(),
+            rules: Text::new("native").unwrap(),
+            owner,
+            max_players: 2,
+            has_password: false,
+            phase: RoomPhase::Lobby,
+            settings: RoomSettings::DEFAULT,
+            competitive: false,
+            members: [owner, guest]
+                .map(|player| MemberView {
+                    player,
+                    name: Text::new("Player").unwrap(),
+                    platform: Platform::current(),
+                    ready: true,
+                    content: None,
+                    connected: true,
+                    banner: None,
+                    loading: None,
+                })
+                .to_vec(),
+            start: None,
+        };
+        assert!(!generated_world_can_start(Some(&room), owner, 0, false));
+        assert!(!generated_world_can_start(Some(&room), guest, 1, false));
+        room.members[1].ready = false;
+        assert!(!generated_world_can_start(Some(&room), owner, 1, false));
+        room.members[1].ready = true;
+        room.members[1].connected = false;
+        assert!(!generated_world_can_start(Some(&room), owner, 1, false));
+        room.members[1].connected = true;
+        assert!(generated_world_can_start(Some(&room), owner, 1, false));
+        assert!(!generated_world_can_start(Some(&room), owner, 1, true));
+        room.phase = RoomPhase::Running;
+        assert!(!generated_world_can_start(Some(&room), owner, 1, false));
     }
 
     #[test]

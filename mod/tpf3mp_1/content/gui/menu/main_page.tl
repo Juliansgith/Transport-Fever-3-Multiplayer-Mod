@@ -76,7 +76,8 @@ end)
 -- own window container (as DeluxeContentWindow is). Its content is the mod's
 -- gui/menu/lobby.lua: the lobby, talking to the hook.
 local record LobbyModule
-	content : function(onClose : function(), focus : string) : TreeNodeId
+	prepareNewWorld : function()
+	content : function(onClose : function(), focus : string, onNewGame : function()) : TreeNodeId
 	CardLine : function(params : any) : TreeNodeId
 	joinLine : function(state : any) : string
 	closed : function()
@@ -84,6 +85,7 @@ end
 local lobby = ug_require "tpf3mp_1::/gui/menu/lobby.lua" as LobbyModule
 
 local record Tpf3mpLobbyWindowParam
+	onNewGame : function()
 	onClose : function()
 	pos : Vec2f
 	focus : string
@@ -91,8 +93,8 @@ end
 
 -- TPF3-MP: the lobby's content, or, should its Lua fail, the error and a way
 -- out - never a window that cannot be closed.
-local function safeContent(onClose : function(), focus : string) : TreeNodeId
-	local ok, result = pcall(lobby.content, onClose, focus)
+local function safeContent(onClose : function(), focus : string, onNewGame : function()) : TreeNodeId
+	local ok, result = pcall(lobby.content, onClose, focus, onNewGame)
 	if ok then
 		return result as TreeNodeId
 	end
@@ -128,7 +130,7 @@ local Tpf3mpLobbyWindow = react.RegisterWrapperRecipe("Tpf3mpLobbyWindow", built
 		movable = false,
 		closable = true,
 		onClose = param.onClose,
-		content = safeContent(param.onClose, param.focus),
+		content = safeContent(param.onClose, param.focus, param.onNewGame),
 	}
 end)
 
@@ -250,6 +252,11 @@ return react.RegisterRecipe("MainPage", function(mainPageParams : MenuPageParam<
 		titleIconOnlyState:set(true)
 		local wc = mainPageParams.commonParams.windowContainer:get():getApi()
 		wc.addSingletonWindow(Tpf3mpLobbyWindow, {
+			onNewGame = function()
+				lobby.prepareNewWorld()
+				wc.removeAllWindows(Tpf3mpLobbyWindow)
+				mainPageParams.commonParams.setPage("NewGame", { map = false })
+			end,
 			-- Closing works while this page is gone too (the room's world
 			-- loading replaces it): the window goes first, through the
 			-- container it was added to, then the page's look comes back;
@@ -842,7 +849,7 @@ return react.RegisterRecipe("MainPage", function(mainPageParams : MenuPageParam<
 		bottomComponent = tpf3mpCardLabel(_("Join a friend"), lobby.joinLine),
 		onClick = function()
 			if clickAllowed("Cards") then
-				showMultiplayer("join")
+				showMultiplayer("friend")
 			end
 		end,
 		onAttention = function(x : number, y : number)

@@ -5,11 +5,9 @@ with your friends in one world, each with your own company or sharing one.
 
 ![The TPF3-MP launcher during a game](docs/images/launcher.png)
 
-> **Coming with the game.** Transport Fever 3 comes out on 29 September
-> 2026. TPF3-MP needs the finished game to hook into, so the first
-> playable release follows shortly after. Watch the
-> [releases](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/releases)
-> page.
+> **Early Windows release.** See the
+> [release notes](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/releases)
+> for supported actions and remaining playtest checks.
 
 ## What you get
 
@@ -25,9 +23,9 @@ with your friends in one world, each with your own company or sharing one.
   money into their company.
 - **Chat, and a clear view of the room**: who is in, who is ready, and
   exactly which mods to add or remove when yours differ from the room's.
-- **A launcher that looks after itself.** It updates itself, installing
-  only releases the project signed, and you can pick the Stable or
-  Experimental track, or an earlier version, in its Settings.
+- **A launcher that looks after itself.** On Windows one EXE installs the
+  launcher and multiplayer mod. It downloads only releases the project
+  signed and keeps the installed mod updated with the launcher.
 
 ## What you need
 
@@ -39,27 +37,31 @@ with your friends in one world, each with your own company or sharing one.
 
 ## Getting started
 
-1. **Download** the latest TPF3-MP for your system from the
-   [releases](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/releases)
-   page, and unpack it somewhere you can write to, such as your Documents
-   folder.
-2. **Install the mod:** double-click `INSTALL_TPF3MP.cmd`. It is a script
-   you can open and read, and it only puts the TPF3-MP mod in your mods
-   folder. Then start the game once, open **Mod Hub**, and **Activate**
-   TPF3-MP.
-3. **Start the launcher**, `TPF3-MP.exe`. The first time, Windows may warn
-   about an unknown app: choose **More info**, then **Run anyway**.
-4. **Start Transport Fever 3 from the launcher.**
-5. **Click Multiplayer** on the game's main menu: connect with the name
-   others will see, then **create a room** from one of your saves and send
-   the invite, or **join** with the invite a friend sent you. You are
-   ready by yourself; play once the room's owner starts the game.
+1. **Download [TPF3-MP.exe](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/releases/latest/download/TPF3-MP.exe)**
+   and open it. No ZIP extraction or administrator rights are needed.
+   Windows may warn about an unknown app: choose **More info**, then **Run anyway**.
+2. **Click Install TPF3-MP.** Setup finds Steam's mods folder (choose your
+   account if there are several), downloads the signed package, and adds
+   Start menu and desktop shortcuts. Start the game through Steam once first if its
+   user folder does not exist yet.
+3. **Open the launcher and start Transport Fever 3.**
+4. **Click Join a friend** to enter your name and invite code, or
+   **Multiplayer** to browse public rooms or host your own.
+5. **Host a new world or use a save.** New worlds use the game's normal
+   setup screens, with TPF3-MP selected automatically, and start multiplayer
+   when setup finishes. Keep TPF3-MP active in the world's **Mods** tab.
+   Send friends the room's invite code; they join and load the shared world.
 
 Only a game the launcher starts joins the room; started from Steam,
 Transport Fever 3 is the plain game, with nothing of TPF3-MP in it.
 
 The full player's guide, with what to do when something does not work,
 is in [docs/PLAYING.md](docs/PLAYING.md).
+
+The ZIP remains available for portable/manual installation. Windows
+Settings → Apps, or the launcher's Settings, can uninstall a managed
+installation; saves and settings are kept. **Repair installation** restores
+the package and mod if files are missing or damaged.
 
 ## Getting help
 
@@ -77,7 +79,7 @@ is in [docs/PLAYING.md](docs/PLAYING.md).
 - The launcher is **tearded's TPF2 Multiplayer Launcher**, brought to
   Transport Fever 3.
 - TPF3-MP builds on two Transport Fever 2 multiplayer mods by its team:
-  **TPF2MP** by Julian Cooper and **TpF2 Multiplayer** by silver2127.
+  **TPF2MP** by _Sep and **TpF2 Multiplayer** by silver2127.
 - The city in the launcher is a Transport Fever 2 screenshot, and the
   logo is Transport Fever 3's, both © Urban Games, used under their
   fan-content terms.

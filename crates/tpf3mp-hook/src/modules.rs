@@ -188,7 +188,7 @@ pub(crate) fn vector(
 }
 
 /// The `int32` at `field` of each of a vector's `count` elements.
-fn ids(
+pub(crate) fn ids(
     memory: &dyn Memory,
     begin: usize,
     count: usize,

@@ -233,8 +233,6 @@ fn the_multiplayer_window_shows_a_players_portrait_beside_their_name() {
     assert_eq!(
         pictures,
         [
-            // The header's Multiplayer glyph.
-            "tpf3mp_1::/gui/tpf3mp/icons/menu_multiplayer_50.tga",
             // Julian's key banner, the first, then his portrait.
             "::/gui/menu/images/m01_ingame.tga",
             "tpf3mp_1::/gui/tpf3mp/portraits/dr_karl_brandt.tga",
@@ -285,8 +283,8 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     assert!(!open, "closed until a button is pressed");
     // The game bar's button opens the window in the game's window
     // container: the room page, with the room's speed and whether the
-    // worlds match on tapes, its players with their banners, what marks
-    // them and how far each is, the chat, and Leave room.
+    // worlds match, its players with their banners, what marks them and
+    // how far each is, the companies, the chat, and Leave room.
     let (title, texts, pictures): (String, Vec<String>, Vec<String>) = lua
         .load(
             "views(BAR.layout)[1].params.onClick() \
@@ -304,16 +302,20 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
         texts,
         [
             "Sunday line",
-            " Speed 2x ",
-            " Worlds match ",
+            "Speed: 2x",
+            "Host controls speed",
+            "Worlds match",
             "Players",
-            "2 players · 2 connected",
+            "2 of 2 online",
             "Julian",
-            "Owner",
-            " Playing ",
+            "host",
+            "Playing",
             "Sam",
-            "You",
-            " Downloading 42% ",
+            "you",
+            "Downloading 42%",
+            "Companies",
+            "Choose who you build with",
+            "Waiting for the companies...",
             "Chat",
             "Julian: the bus is late",
             "Send",
@@ -323,7 +325,6 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     assert_eq!(
         pictures,
         [
-            "tpf3mp_1::/gui/tpf3mp/icons/menu_multiplayer_50.tga",
             "::/gui/menu/images/dry_ingame.tga",
             // Sam's default, from the key 0x0000002a: 42 modulo 22 is 20, the 21st.
             "::/gui/menu/images/loading_background_3.tga"
@@ -400,21 +401,17 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     assert!(closed && reopened && closed_by_itself);
 }
 
-/// The game's window draws its page on the theme's window colour, nearly
-/// opaque, so the map does not show through; and a tab is as tall as what
-/// it holds, in a scroll area only once it would run long.
+/// The game's window draws its page nearly opaque, so the map does not
+/// show through (2026-10-01), in the fixed panels whose lists scroll
+/// however many players there are.
 #[test]
-fn the_games_window_is_opaque_and_as_tall_as_its_tab() {
+fn the_games_window_is_nearly_opaque_and_its_lists_scroll() {
     let lua = gui();
     lua.load(FAKE_HOOK).exec().unwrap();
     lua.load(FAKE_CMD).exec().unwrap();
-    let (background, short, long): (String, bool, bool) = lua
+    let (background, short, long): (String, usize, usize) = lua
         .load(
             "styleSheets() \
-             api.gui.genericRep = { find = function(name) return name end, \
-                 get = function(name) return { data = { BaseDarkMedium = { 0.1, 0.2, 0.3 } } } end } \
-             GAME_MODULES = { ['::/gui/main/color_util.tl'] = { withTransparency = function(c, a) \
-                 return api.type.Vec4f.new(c[1], c[2], c[3], a) end } } \
              local function players(n) \
                  local list = {} \
                  for i = 1, n do list[i] = { name = 'p' .. i, connected = true, id = string.format('%08x', i) } end \
@@ -424,21 +421,21 @@ fn the_games_window_is_opaque_and_as_tall_as_its_tab() {
              BAR = mount(loadPlugin()) BAR.step() BAR.render() \
              views(BAR.layout)[1].params.onClick() \
              local function scrolls() \
+                 local n = 0 \
                  for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
-                     if v.view == 'ScrollArea' then return true end \
+                     if v.view == 'ScrollArea' then n = n + 1 end \
                  end \
-                 return false \
+                 return n \
              end \
              local page = WINDOWS.Tpf3mpWindow.render().params.content.params.meta.styleSheet \
              local short = scrolls() \
              players(12) for _ = 1, 20 do BAR.step() end \
-             return table.concat(page.backgroundColor1, ','), short, scrolls()",
+             return table.concat(page.backgroundColor, ','), short, scrolls()",
         )
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
-    assert_eq!(background, "0.1,0.2,0.3,0.97");
-    assert!(!short, "two players: the tab's own height");
-    assert!(long, "twelve players: a scroll area");
+    assert_eq!(background, "0.07,0.1,0.12,0.97");
+    assert_eq!((short, long), (3, 3), "players, companies and chat scroll");
 }
 
 /// Each player's row follows their game as it comes in, Downloading to
@@ -487,18 +484,18 @@ fn the_multiplayer_windows_rows_follow_each_players_loading() {
     };
     assert_eq!(
         stages(&lua, ""),
-        "false: Downloading 0% | Downloading 0% ",
+        "false:Downloading 0%|Downloading 0%",
         "nothing changed: nothing to draw again"
     );
     assert_eq!(
         stages(&lua, "room('fetching', 60)"),
-        "true: Downloading 60% | Downloading 60% "
+        "true:Downloading 60%|Downloading 60%"
     );
     assert_eq!(
         stages(&lua, "room('loading', 0)"),
-        "true: Loading... | Loading... "
+        "true:Loading...|Loading..."
     );
-    assert_eq!(stages(&lua, "room('', 0)"), "true: Playing | Playing ");
+    assert_eq!(stages(&lua, "room('', 0)"), "true:Playing|Playing");
     // A banner picked meanwhile shows too.
     assert!(
         stages(&lua, "room('', 0) HOOK.status.players[2].banner = 'selfie'").starts_with("true:")
@@ -584,6 +581,87 @@ fn chat_a_new_world_is_given_again_is_not_new() {
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(label, "Multiplayer: r · 0/0 playing · 1 new");
+}
+
+#[test]
+fn the_room_panel_keeps_large_rosters_and_unicode_chat_inside_scroll_areas() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        HOOK.room = true
+        HOOK.status = { room = 'A busy room', me_id = 'me', players = {} }
+        for i = 1, 8 do
+            HOOK.status.players[i] = { name = string.rep('W', 64), id = 'p' .. i,
+                connected = i ~= 8, me = i == 1 }
+        end
+        BAR = mount(loadPlugin()) BAR.step() BAR.render()
+        local shared = package.loaded['tpf3mp.ui']
+        shared.companies = { list = {}, members = {}, loans = {} }
+        api.type.Vec3f = { new = function(x,y,z) return { x=x, y=y, z=z } end }
+        for i = 0, 7 do
+            shared.companies.list[i+1] = { id=i, entity=i+1, name=string.rep('界', 64),
+                color={0.8,0.2,0.1}, balance=44149292, owed=50050007 }
+        end
+        shared.lines = { string.rep('界', 280) }
+        views(BAR.layout)[1].params.onClick()
+        LAYOUT = WINDOWS.Tpf3mpWindow.render()
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let (areas, cards, company_text, chat_text, composer_outside): (
+        usize,
+        usize,
+        String,
+        String,
+        bool,
+    ) = lua
+        .load(
+            r#"
+            local areas, cards, companyText, chatText = {}, 0, '', ''
+            for _, v in ipairs(views(LAYOUT)) do
+                if v.view == 'ScrollArea' then
+                    assert(v.params.horizontalPolicy == 'AlwaysOff')
+                    assert(v.params.verticalPolicy == 'AsNeeded')
+                    assert(v.params.meta.styleSheet.size.y > 0 and v.params.meta.styleSheet.size.y <= 310)
+                    areas[#areas+1] = v
+                end
+            end
+            for _, v in ipairs(views(areas[2])) do
+                if v.view == 'TextInputField' and v.params.placeholderText:find('A new name', 1, true) then
+                    assert(cards == 1, 'manage your own company before scrolling past the other companies')
+                end
+                if v.view == 'TextView' and v.params.meta.tooltip == string.rep('界',64) then
+                    cards = cards + 1
+                    companyText = v.params.text:gsub('\n','')
+                end
+            end
+            for _, v in ipairs(views(areas[3])) do
+                if v.view == 'TextView' then chatText = v.params.text:gsub('\n','') end
+            end
+            local composer, inside = false, false
+            for _, v in ipairs(views(LAYOUT)) do
+                if v.view == 'TextInputField' and v.params.placeholderText == 'Say something to the room' then
+                    composer = true
+                    for _, area in ipairs(areas) do
+                        for _, child in ipairs(views(area)) do if child == v then inside = true end end
+                    end
+                end
+            end
+            return #areas, cards, companyText, chatText, composer and not inside
+            "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!((areas, cards), (3, 8));
+    assert_eq!(company_text, "界".repeat(64));
+    assert_eq!(chat_text, "界".repeat(280));
+    assert!(
+        composer_outside,
+        "chat can be sent without scrolling past a roster"
+    );
 }
 
 #[test]
@@ -784,6 +862,20 @@ api.cmd = {
 }
 "#;
 
+#[test]
+fn the_speed_row_shows_the_room_and_only_the_host_can_use_it() {
+    for with_hook in [false, true] {
+        let lua = gui();
+        if with_hook {
+            lua.load(FAKE_HOOK).exec().unwrap();
+        }
+        lua.load(include_str!("lua/speed_ui.lua"))
+            .set_name("@speed_ui.lua")
+            .exec()
+            .unwrap_or_else(|error| panic!("hook={with_hook}: {error}"));
+    }
+}
+
 /// The game's save and load, as the GUI state has them.
 const FAKE_APP: &str = r#"
 APP = { saves = {}, loads = {} }
@@ -819,10 +911,10 @@ fn with_the_hook_the_gui_links_once() {
         "the GUI is linked|the guard is on 4 command factories|\
          the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)|\
          the company window shows the game's own rank only: the game's company progression did \
-         not load: fake_gui.lua:174: ug_require of an unknown path \
+         not load: fake_gui.lua:179: ug_require of an unknown path \
          /game_mechanics/company/company_progression_util.tl|\
          the game's permits count the whole world's constructions: the game's company_metadata \
-         did not load: fake_gui.lua:174: ug_require of an unknown path \
+         did not load: fake_gui.lua:179: ug_require of an unknown path \
          /game_mechanics/company/company_metadata.tl|\
          the line manager offers other companies' open stations (1 entity_util table(s))"
     );
@@ -1423,6 +1515,229 @@ fn engine() -> (Lua, Table) {
     (lua, script)
 }
 
+fn junction_game(offset: u32) -> Lua {
+    let (lua, _) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.globals().set("OFFSET", offset).unwrap();
+    lua.load(include_str!("lua/junction_world.lua"))
+        .exec()
+        .unwrap();
+    lua
+}
+
+fn lua_value(lua: &Lua, value: &tpf3mp_proto::lua::LuaValue) -> mlua::Value {
+    use tpf3mp_proto::lua::LuaValue as V;
+    match value {
+        V::Nil => mlua::Value::Nil,
+        V::Boolean(v) => mlua::Value::Boolean(*v),
+        V::Integer(v) => mlua::Value::Integer(*v),
+        V::Number(v) => mlua::Value::Number(*v),
+        V::String(v) => mlua::Value::String(lua.create_string(v).unwrap()),
+        V::Table(entries) => {
+            let table = lua.create_table().unwrap();
+            for (k, v) in entries {
+                table.set(lua_value(lua, k), lua_value(lua, v)).unwrap();
+            }
+            mlua::Value::Table(table)
+        }
+    }
+}
+
+#[test]
+fn junction_tools_round_trip_through_the_wire_and_apply_with_each_games_ids() {
+    use tpf3mp_proto::{
+        action::Action,
+        lua::{action_from_lua, action_to_lua},
+    };
+    let source = junction_game(0);
+    let captured: mlua::Value = source
+        .load("return C.windowBuild(nil,PROPOSAL)")
+        .eval()
+        .unwrap();
+    let action = action_from_lua(&common::tree(&captured)).unwrap();
+    let Action::EditJunctions(edit) = &action else {
+        panic!("{action:?}");
+    };
+    let config = edit.changes[0].config.as_ref().unwrap();
+    assert_eq!(
+        (config.phases[0].duration, config.phases[0].minimum),
+        (12_375, 4_125)
+    );
+    assert_eq!(config.crosswalks.len(), 2);
+    let portable = Action::from_payload(&action.to_payload().unwrap()).unwrap();
+    assert_eq!(portable, action);
+    for offset in [0, 5000] {
+        let replica = junction_game(offset);
+        replica
+            .globals()
+            .set(
+                "ACTION",
+                lua_value(&replica, &action_to_lua(&portable).unwrap()),
+            )
+            .unwrap();
+        let ids: Vec<u32> = replica
+            .load(
+                r#"
+            HOOK.batch = {ACTION} UPDATE({},STATE,0.2)
+            assert(#SENT==1, table.concat(HOOK.logged,'\n'))
+            local s = SENT[1].proposal.streetProposal
+            local c = s.nodeConfigsToAdd[1].comp
+            assert(c.trafficLightPreference==1 and c.userModifiedTrafficLightStates)
+            assert(c.laneConnections[2].withTram)
+            assert(c.trafficLightConfig.states[1].duration==12.375)
+            assert(c.trafficLightConfig.states[1].minDuration==4.125)
+            assert(c.trafficLightConfig.states[1].lockedLanes[2]==2)
+            return {s.nodeConfigsToAdd[1].entity,s.nodeConfigsToRemove[1],
+                c.laneConnections[1].segment0,c.laneConnections[1].segment1,
+                c.crosswalks[2],c.trafficLightConfig.trafficLightType}
+        "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(ids, [1, 1, 101, 102, 103, 40].map(|n| n + offset));
+    }
+}
+
+#[test]
+fn a_native_junction_click_overrides_an_older_tools_preview() {
+    let lua = junction_game(0);
+    lua.load(format!(r#"
+        HOOK.room=true HOOK.clicks=0 SCRIPT.guiUpdate({{}},nil,nil)
+        SCRIPT.guiHandleEvent({{}},nil,nil,'','constructionBuilder','builder.proposalCreate',{{{CONSTRUCTION_PROPOSAL}}})
+        PROPOSAL.junctionEdit=true HOOK.built[0]={{proposal=PROPOSAL}}
+        HOOK.clicks=1 SCRIPT.guiUpdate({{}},nil,nil)
+        assert(#HOOK.commands==1,table.concat(HOOK.logged,'\n'))
+    "#)).exec().unwrap();
+    let sent: mlua::Value = lua.load("return HOOK.commands[1]").eval().unwrap();
+    // The fake hook stores action tables unchanged; never replay the old building.
+    assert!(
+        common::tree(&sent).get("EditJunctions").is_some(),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn junction_checkpoint_rows_ignore_entity_and_connection_order_but_detect_settings() {
+    let a = junction_game(0);
+    let b = junction_game(5000);
+    let before = read_lanes(&a)[0].clone();
+    assert_ne!(before.1, "err");
+    assert_eq!(before, read_lanes(&b)[0]);
+    b.load(
+        r#"
+        local c=CONFIGS[5001]
+        c.laneConnections[1],c.laneConnections[2]=c.laneConnections[2],c.laneConnections[1]
+        c.crosswalks[1],c.crosswalks[2]=c.crosswalks[2],c.crosswalks[1]
+        c.trafficLightConfig.states[1].lockedLanes={1,3}
+        c.trafficLightConfig.states[2].lockedLanes={0,2}
+    "#,
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(before, read_lanes(&b)[0]);
+    for mutation in [
+        "CONFIGS[1].trafficLightPreference=2",
+        "CONFIGS[1].laneConnections[1].withTram=true",
+        "CONFIGS[1].crosswalks[1]=104",
+        "CONFIGS[1].trafficLightConfig.states[1].duration=13",
+        "EDGES[101].laneConfigs[1].transportModes[2]=false",
+    ] {
+        let changed = junction_game(0);
+        changed.load(mutation).exec().unwrap();
+        let after = read_lanes(&changed)[0].clone();
+        assert_ne!(after.1, "err", "{mutation}");
+        assert_ne!(before, after, "{mutation}");
+    }
+}
+
+#[test]
+fn junction_replay_refuses_ambiguous_stale_private_and_mixed_edits() {
+    for (mutation, expected) in [
+        (
+            "EDGES[999]=EDGES[101] STREETS[1][5]=999",
+            "ambiguous junction edge",
+        ),
+        ("EDGES[101].laneConfigs={}", "junction's lanes changed"),
+        ("NODES[2].z=1", "road or track changed"),
+        (
+            "ACTION.EditJunctions.changes[1].config.light='missing'",
+            "missing traffic light resource",
+        ),
+        (
+            "ACTION.EditJunctions.changes[1].config.phases[1].locked={99}",
+            "invalid locked lane",
+        ),
+    ] {
+        let lua = junction_game(0);
+        lua.load("ACTION=C.junction(PROPOSAL)").exec().unwrap();
+        lua.load(mutation).exec().unwrap();
+        let (ok, why): (bool, String) = lua.load("return A.run(ACTION)").eval().unwrap();
+        assert!(!ok && why.contains(expected), "{mutation}: {why}");
+        assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+    }
+    let lua = junction_game(0);
+    lua.load(r#"
+        local changes=C.junction(PROPOSAL).EditJunctions.changes
+        local ok,why=pcall(J.into,api.type.SimpleProposal.new(),changes,{},function() error('private edge') end)
+        assert(not ok and tostring(why):find('private edge',1,true))
+        PROPOSAL.proposal.addedSegments={{entity=-1}}
+        ok,why=pcall(C.junction,PROPOSAL)
+        assert(not ok and tostring(why):find('geometry',1,true))
+        PROPOSAL.proposal.addedSegments=nil PROPOSAL.proposal.nodeConfigsToAdd={}
+        local reset=C.junction(PROPOSAL)
+        assert(reset.EditJunctions.changes[1].config==nil)
+        assert(A.run(reset))
+        local s=SENT[1].proposal.streetProposal
+        assert(#s.nodeConfigsToRemove==1 and not s.nodeConfigsToAdd)
+    "#).exec().unwrap();
+}
+
+#[test]
+fn unverified_junction_tools_are_refused_on_capture_and_replay() {
+    let lua = junction_game(0);
+    lua.load(
+        r#"
+        local action=C.junction(PROPOSAL)
+        J.strict_junctions=false
+        local ok,why=pcall(C.junction,PROPOSAL)
+        assert(not ok and tostring(why):find('strict_junctions',1,true))
+        ok,why=A.run(action)
+        assert(not ok and tostring(why):find('strict_junctions',1,true))
+        assert(#SENT==0)
+    "#,
+    )
+    .exec()
+    .unwrap();
+}
+
+#[test]
+fn rebuilding_a_curved_road_preserves_turns_crosswalks_and_light_phases() {
+    let lua = junction_game(0);
+    lua.load(
+        r#"
+        -- Split a curve whose chord changes but its tangent at the junction doesn't.
+        EDGES[101].tangent0={x=80,y=40,z=0}
+        local e={entity=-2,type=0,comp={node0=1,node1=-1,tangent0={x=40,y=20,z=0},
+            tangent1={x=40,y=0,z=0},laneConfigs=EDGES[101].laneConfigs}}
+        local p=api.type.SimpleProposal.new()
+        p.streetProposal={nodesToAdd={{entity=-1,comp={position={x=45,y=20,z=0}}}},
+            edgesToAdd={e},edgesToRemove={101}}
+        J.into(p,{}, {1})
+        local c=p.streetProposal.nodeConfigsToAdd[1].comp
+        assert(c.laneConnections[1].segment0==-2)
+        assert(c.crosswalks[1]==-2 and c.crosswalks[2]==103)
+        assert(c.trafficLightConfig.states[1].lockedLanes[2]==2)
+        assert(c.trafficLightConfig.states[1].duration==12.375)
+        -- Adding a second possible replacement must refuse the whole proposal.
+        p.streetProposal.edgesToAdd[2]={entity=-3,type=0,comp=e.comp}
+        local ok,why=pcall(J.into,p,{}, {1})
+        assert(not ok and tostring(why):find('ambiguous replacement',1,true))
+    "#,
+    )
+    .exec()
+    .unwrap();
+}
+
 /// A small world for the lanes, over the stand-in engine state: two edges,
 /// two constructions, a line, two vehicles, a player, a town and people.
 const FAKE_WORLD: &str = r#"
@@ -1431,9 +1746,9 @@ local CT = { BASE_EDGE = 1, CONSTRUCTION = 2, LINE = 3, TRANSPORT_VEHICLE = 4, P
 WORLD = {
     [CT.BASE_EDGE] = {
         [101] = { position0 = { x = 0, y = 0, z = 0 }, position1 = { x = 100.04, y = 0, z = 1 },
-                  roadTemplate = 'street/country.lua' },
+                  roadTemplate = 'street/country.lua', laneConfigs = {} },
         [102] = { position0 = { x = 100, y = 0, z = 1 }, position1 = { x = 100, y = 80, z = 2 },
-                  roadTemplate = 'street/country.lua' },
+                  roadTemplate = 'street/country.lua', laneConfigs = {} },
     },
     [CT.CONSTRUCTION] = {
         [201] = { fileName = 'depot/road_depot.con', transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,0,0.45,1 } },
@@ -1481,7 +1796,8 @@ api.engine.system = {
         return { [7] = { 901, 902, 903 } }
     end },
     -- Each edge under both its nodes, as the street system lists them.
-    streetSystem = { getNode2SegmentMap = function()
+    streetSystem = { getNode2StreetEdgeMap = function() return {} end,
+        getNode2TrackEdgeMap = function() return {} end, getNode2SegmentMap = function()
         local edges = sorted(CT.BASE_EDGE)
         return { [11] = { edges[1] }, [12] = edges, [13] = { edges[#edges] } }
     end },
@@ -1571,6 +1887,32 @@ fn the_game_script_hands_the_lanes_over_at_a_checkpoint_only() {
     assert_eq!(handed, read_lanes(&lua));
 }
 
+/// A simulation state without debug.getinfo cannot tell a personal mod's
+/// command from the game's own: it notes so for the hook, which loads the
+/// room's worlds without this player's personal mods from then on, and
+/// says why in the log.
+#[test]
+fn a_simulation_state_that_cannot_guard_personal_mods_has_them_left_out() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    lua.load(
+        "tpf3mp_native.personal = function() return 'celmi_timetables' end          debug = nil UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let (noted, logged): (Option<String>, String) = lua
+        .load(
+            "return HOOK.notes and HOOK.notes['personal-mods-unguarded'],              table.concat(HOOK.logged, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(noted.as_deref(), Some("1"));
+    assert!(
+        logged.contains("personal mods are left out of the room's worlds"),
+        "{logged}"
+    );
+}
+
 /// A game of the room with the stand-in world: its registry begun at the
 /// room's first update, the engine listing entities in its own order.
 fn dumping_game(reversed: bool) -> Lua {
@@ -1633,7 +1975,7 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
     );
     assert!(
         dump_a.iter().any(|l| l.starts_with(
-            "lane 0 step 300 row:0,0,0>100,0,1:street/country.lua p0=0,0,0 \
+            "lane 0 step 300 row:0,0,0>100,0,1:street/country.lua|lanes: p0=0,0,0 \
                                    p1=100.04000000000001,0,1"
         )),
         "an edge by its row, with its raw ends: {dump_a:#?}"
@@ -1996,6 +2338,53 @@ fn an_edit_of_a_station_travels_with_the_station_it_replaces() {
             "a construction edit that changes the streets around it",
             "a bulldozer proposal that builds"
         ]
+    );
+}
+
+#[test]
+fn station_edits_include_unfrozen_track_ends_but_not_external_connections() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    // Steam 40408, 2026-10-01: the two-track station's edit removes 50
+    // nodes and 48 edges, but only 46 nodes are frozen. Each of its four
+    // unfrozen track ends has one incident edge, frozen in the station.
+    // Keep only that boundary here; native module capture supplies IDs,
+    // without the removed nodes' or edges' components.
+    lua.load(
+        "CONSTRUCTIONS[77].frozenNodes = { 7522, 7846, 7848, 7871 } \
+         CONSTRUCTIONS[77].frozenEdges = { 7873, 7896, 7897, 7920 } \
+         INCIDENT = { [7824] = {7873}, [7847] = {7896}, [7849] = {7897}, [7872] = {7920} } \
+         api.engine.system.streetSystem = api.engine.system.streetSystem or {} \
+         api.engine.system.streetSystem.getNodeSegments = function(n) return INCIDENT[n] end",
+    )
+    .exec()
+    .unwrap();
+    let outcomes: Vec<bool> = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local p = {EDIT_PROPOSAL} \
+             p.proposal.removedSegments = {{ {{entity=7873}}, {{entity=7896}}, {{entity=7897}}, {{entity=7920}} }} \
+             p.proposal.removedNodes = {{ {{entity=7824}}, {{entity=7847}}, {{entity=7849}}, {{entity=7872}} }} \
+             local out = {{}} \
+             local function check() local a = capture.construction(p) out[#out+1] = a ~= nil end \
+             check() \
+             INCIDENT[7847] = {{7896, 100}} check() \
+             INCIDENT[7847] = {{100}} check() \
+             INCIDENT[7847] = {{}} check() \
+             INCIDENT[7847] = nil check() \
+             INCIDENT[7847] = {{7896}} \
+             table.remove(p.proposal.removedSegments, 2) check() \
+             table.insert(p.proposal.removedSegments, 2, {{entity=7896}}) \
+             api.engine.system.streetSystem.getNodeSegments = function() error('unavailable') end check() \
+             api.engine.system.streetSystem.getNodeSegments = nil check() \
+             return out"
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(
+        outcomes,
+        [true, false, false, false, false, false, false, false],
+        "only endpoints attached exclusively to this construction's removed edges travel"
     );
 }
 
@@ -2410,10 +2799,40 @@ fn junction_through_the_room(lua: &Lua, proposal: &str) -> String {
     junction_through_the_room_with(lua, proposal, "")
 }
 
+/// Two lanes on every street of the fake network, as its junctions name
+/// lanes 0 and 1 (tpf3mp/junctions.lua checks every lane a turn names is
+/// there), and the junction tools on, as in the acceptance test's copies.
+const JUNCTION_LANES: &str = r#"
+local get = api.res.streetTemplateRep.get
+api.res.streetTemplateRep.get = function(id)
+    local t = get(id)
+    if t then t.laneConfigs = { 'lane 0', 'lane 1' } end
+    return t
+end
+for _, e in pairs(EDGES) do e.laneConfigs = { 'lane 0', 'lane 1' } end
+ug_require('tpf3mp_1::/scripts/tpf3mp/junctions.lua').strict_junctions = true
+"#;
+
+/// The configurations words `a` names, each among those `b` names: the
+/// replay also adds back the configurations of the junctions whose streets
+/// it rebuilds (tpf3mp/junctions.lua into), and orders them by place.
+fn configs_within(a: &str, b: &str) -> bool {
+    let theirs: Vec<&str> = b.split(" || ").collect();
+    a.split(" || ").all(|part| theirs.contains(&part))
+}
+
+/// The hook's log of the stand-in engine, one line each.
+fn hook_log(lua: &Lua) -> String {
+    lua.load("return table.concat(HOOK.logged or {}, '\\n')")
+        .eval()
+        .unwrap_or_default()
+}
+
 /// As `junction_through_the_room`, with `setup` run on the fake game first.
 fn junction_through_the_room_with(lua: &Lua, proposal: &str, setup: &str) -> String {
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(CONFIG_WORDS).exec().unwrap();
+    lua.load(JUNCTION_LANES).exec().unwrap();
     lua.load(setup).exec().unwrap();
     lua.load(format!(
         "CONFIGS[7] = true \
@@ -2454,10 +2873,13 @@ fn a_t_junction_built_through_the_room_is_configured_as_the_tool_proposed() {
              local p = {} \
              for _, e in ipairs(s.edgesToAdd) do \
                  p[#p + 1] = e.streetEdge and (e.streetEdge.precedenceNode0 .. '/' .. e.streetEdge.precedenceNode1) or '-' end \
-             return SENT_WORDS(SENT[1]), table.concat(s.nodeConfigsToRemove, ','), table.concat(p, ' ')",
+             local removed = {} \
+             for i, n in ipairs(s.nodeConfigsToRemove) do removed[i] = n end \
+             table.sort(removed) \
+             return SENT_WORDS(SENT[1]), table.concat(removed, ','), table.concat(p, ' ')",
         )
         .eval()
-        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
     assert_eq!(
         tool,
         "(50,0) tl1 type1 [0,1 20/5][2 15.5/4.25 skip] dss=false um=false/true \
@@ -2466,24 +2888,17 @@ fn a_t_junction_built_through_the_room_is_configured_as_the_tool_proposed() {
          || (0,0) tl2 type0  dss=false um=false/false turns (-60,0)-(0,0)#0->(0,0)-(50,0)#0r walks ",
         "the tool's, placed"
     );
-    assert_eq!(
-        sent, tool,
-        "every game configures the junctions as the tool did"
+    assert!(
+        configs_within(&tool, &sent),
+        "every game configures the junctions as the tool did: {sent}"
     );
     assert_eq!(
-        removed, "8,9,7",
-        "the configurations they replace go first, in the same proposal"
+        removed, "7,8,9",
+        "the configurations they replace go, in the same proposal"
     );
     assert_eq!(
         precedence, "- 1/2 2/1",
         "the rebuilt street keeps its precedence"
-    );
-    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
-    assert!(
-        logged.iter().any(|l| l
-            == "junctions: +cfg-4{tl=1 lc=3 cw=2 phases=2 dss=false um=false/true} \
-                +cfg7{tl=2 lc=1 cw=0 phases=0 dss=false um=false/false}"),
-        "what every game applied, for the log: {logged:?}"
     );
 }
 
@@ -2508,22 +2923,29 @@ api.type.LaneConnection = { new = function()
     return STRICT(set({ 'segment0', 'lane0', 'segment1', 'lane1', 'withRoad', 'withTram' })) end }
 api.type.TrafficLightState = { new = function()
     return STRICT(set({ 'lockedLanes', 'duration', 'minDuration', 'canSkip' })) end }
+api.type.BaseNodeConfig = { new = function()
+    local light = STRICT(set({ 'trafficLightType', 'states' }), { states = {}, trafficLightType = -1 })
+    return STRICT(set({CONFIG}), { trafficLightConfig = light, laneConnections = {}, crosswalks = {},
+        trafficLightPreference = 0, doubleSlipSwitch = false, userModifiedTrafficLightStates = false })
+end }
 api.type.BaseNodeLaneConnectionAndEntity = { new = function()
-    local light = STRICT(set({ 'trafficLightType', 'states' }))
-    local comp = STRICT(set({CONFIG}), { trafficLightConfig = light })
-    return STRICT(set({ 'entity' }), { comp = comp })
+    return STRICT(set({ 'entity', 'comp' }))
 end }
 "#;
 
+/// Build 40408's BaseNodeConfig binds no userModifiedLaneConnections: a
+/// junction built through the room writes only the members the game takes,
+/// so the road and its junctions are built (tpf3mp/junctions.lua writes the
+/// turns, crosswalks, lights and the light phases' flag, never the lanes'
+/// flag). A game that takes even less fails the whole build, the same in
+/// every game: never a junction half configured.
 #[test]
 fn a_junction_takes_only_what_the_games_objects_take() {
-    // As build 40408: the user-modified flags are not writable. The T
-    // junction's lights were set by hand (um=false/true): its turns, lights
-    // and crosswalks go in, the flag the game will not take is said.
     let (lua, _script) = engine();
     let strict = STRICT_NODE_CONFIG.replace(
         "{CONFIG}",
-        "{ 'laneConnections', 'crosswalks', 'trafficLightPreference', 'trafficLightConfig',          'doubleSlipSwitch' }",
+        "{ 'laneConnections', 'crosswalks', 'trafficLightPreference', 'trafficLightConfig', \
+           'doubleSlipSwitch', 'userModifiedTrafficLightStates' }",
     );
     let tool = junction_through_the_room_with(
         &lua,
@@ -2536,28 +2958,14 @@ fn a_junction_takes_only_what_the_games_objects_take() {
     let (ok, sent): (bool, String) = lua
         .load("return HOOK.applied[1].ok, SENT_WORDS(SENT[1])")
         .eval()
-        .unwrap_or_else(|error| {
-            panic!(
-                "{error}
-{}",
-                log(&lua)
-            )
-        });
-    assert!(ok, "the road is built: {}", log(&lua));
-    assert_eq!(
-        sent,
-        tool.replace("um=false/true", "um=false/false"),
-        "everything but the flag the game will not take, as the tool proposed"
-    );
-    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(ok, "the road is built: {}", hook_log(&lua));
     assert!(
-        logged.iter().any(|l| l
-            == "junctions: +cfg-4{tl=1 lc=3 cw=2 phases=2 dss=false um=false/true}(the game takes no userModifiedTrafficLightStates) +cfg7{tl=2 lc=1 cw=0 phases=0 dss=false um=false/false}"),
-        "{logged:?}"
+        configs_within(&tool, &sent),
+        "the junctions as the tool proposed them: {sent}"
     );
 
-    // A game whose BaseNodeConfig takes none of it: the road is still built,
-    // every junction as the game makes it, none half configured, and why.
+    // A game whose BaseNodeConfig takes none of it: nothing is built here.
     let (lua, _script) = engine();
     let strict = STRICT_NODE_CONFIG.replace("{CONFIG}", "{}");
     junction_through_the_room_with(
@@ -2568,23 +2976,12 @@ fn a_junction_takes_only_what_the_games_objects_take() {
             .replace("{TURNS}", ""),
         &strict,
     );
-    let (ok, edges, configs): (bool, usize, Option<usize>) = lua
-        .load(
-            "local s = SENT[1].proposal.streetProposal              return HOOK.applied[1].ok, #s.edgesToAdd, s.nodeConfigsToAdd and #s.nodeConfigsToAdd",
-        )
+    let (ok, sent): (bool, usize) = lua
+        .load("return HOOK.applied[1].ok, #SENT")
         .eval()
-        .unwrap_or_else(|error| panic!("{error}
-{}", log(&lua)));
-    assert!(ok, "{}", log(&lua));
-    assert_eq!(edges, 3, "the road is built");
-    assert_eq!(configs, None, "no junction half configured");
-    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
-    assert!(
-        logged.iter().any(|l| l.starts_with(
-            "junctions: none: the junctions are left as the game makes them, as the game takes no laneConnections"
-        )),
-        "{logged:?}"
-    );
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(!ok, "{}", hook_log(&lua));
+    assert_eq!(sent, 0, "no junction half configured");
 }
 
 #[test]
@@ -2612,14 +3009,14 @@ fn a_cross_junction_built_through_the_room_is_configured_as_the_tool_proposed() 
     let sent: String = lua
         .load("return SENT_WORDS(SENT[1])")
         .eval()
-        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
     assert!(
         tool.contains("(0,0)-(50,0)#1->(50,0)-(90,0)#0r (50,0)-(90,0)#1->(50,-40)-(50,0)#0r"),
         "{tool}"
     );
-    assert_eq!(
-        sent, tool,
-        "every game configures the cross as the tool did"
+    assert!(
+        configs_within(&tool, &sent),
+        "every game configures the cross as the tool did: {sent}"
     );
 }
 
@@ -2653,9 +3050,9 @@ fn a_junction_whose_settings_name_what_the_room_cannot_is_built_nowhere() {
     assert_eq!(
         refusals,
         [
-            "nil: a junction's setting names edge 100, which the build does not keep",
-            "nil: a junction's setting names edge 555, which the room cannot name",
-            "nil: a junction's traffic light preference it cannot read: AUTO",
+            "nil: a junction's setting names an edge the build removes",
+            "nil: a junction edge no longer exists",
+            "nil: unknown traffic light preference",
         ]
     );
     // Carried, but this game has no street 101 any more: nothing is built
@@ -2674,7 +3071,7 @@ fn a_junction_whose_settings_name_what_the_room_cannot_is_built_nowhere() {
         .unwrap();
     assert_eq!(sent, 0, "nothing sent");
     assert!(!ok);
-    assert_eq!(why, "junction 2 names an edge this game cannot name");
+    assert_eq!(why, "a junction edge no longer exists");
 }
 
 #[test]
@@ -2895,6 +3292,79 @@ fn a_refused_action_is_named_in_the_log_with_the_games_reasons() {
 }
 
 #[test]
+fn a_depot_placed_on_existing_track_leaves_all_its_internal_branches_to_the_construction() {
+    for refuse_snap in [false, true] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.load(include_str!("lua/depot_snap.lua")).exec().unwrap();
+        lua.load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+             ACTION = assert(capture.construction(depot_on_track()))
+             assert(schema_check(ACTION))
+             assert(#ACTION.BuildConstruction.connection.links == 6)
+             REFUSE_SNAP = {refuse_snap}
+             HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        let (nodes, edges, sends, connected, applied): (usize, usize, usize, bool, bool) = lua
+            .load(
+                "local p = SENT[1].proposal.streetProposal
+                 return #(p.nodesToAdd or {}), #(p.edgesToAdd or {}), #SENT, CONNECTED, HOOK.applied[1].ok",
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(
+            (nodes, edges),
+            (0, 0),
+            "do not duplicate the depot's own track"
+        );
+        assert_eq!(sends, 2, "place, then snap to the existing track");
+        assert_eq!(connected, !refuse_snap);
+        assert_eq!(
+            applied, !refuse_snap,
+            "never report a refused refresh as applied"
+        );
+    }
+}
+
+#[test]
+fn a_station_with_a_long_entrance_keeps_the_external_junction_only() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(include_str!("lua/depot_snap.lua")).exec().unwrap();
+    lua.load(format!(
+        "local p = {STATION_BY_ROAD}
+         local s = p.proposal
+         s.addedNodes[#s.addedNodes+1] = {{ entity=-20, comp={{ position={{ x=90,y=0,z=0 }} }} }}
+         s.addedSegments[#s.addedSegments+1] = {{ entity=-21, type=0, comp={{
+             node0=-20, node1=-1, type=0, typeIndex=-1,
+             tangent0={{ x=-20,y=0,z=0 }}, tangent1={{ x=-20,y=0,z=0 }},
+             roadTemplate='::/street/town_small.street_template', roadStyle='' }} }}
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+         ACTION = assert(capture.construction(p))
+         assert(schema_check(ACTION))
+         HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let (nodes, edges, removed, first, second): (usize, usize, i64, i64, i64) = lua
+        .load(
+            "local s = SENT[1].proposal.streetProposal
+             return #s.nodesToAdd, #s.edgesToAdd, s.edgesToRemove[1],
+                 s.edgesToAdd[1].comp.node0, s.edgesToAdd[2].comp.node1",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!((nodes, edges, removed, first, second), (1, 2, 100, 8, 9));
+    assert!(
+        lua.load("return CONNECTED and HOOK.applied[1].ok")
+            .eval::<bool>()
+            .unwrap()
+    );
+}
+
+#[test]
 fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     let (lua, _script) = engine();
     let asked: Vec<String> = lua
@@ -2911,7 +3381,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
              elsewhere.toAdd[1].transf[13] = 99 \
              out[#out + 1] = ask('constructionBuilder', elsewhere) \
              out[#out + 1] = ask('constructionBuilder', {CONSTRUCTION_PROPOSAL}) \
-             out[#out + 1] = ask('laneModifier', {CONSTRUCTION_PROPOSAL}) \
+             out[#out + 1] = ask('unsupportedTool', {CONSTRUCTION_PROPOSAL}) \
              local unnamed = {CONSTRUCTION_PROPOSAL} unnamed.toAdd[1].name = '' \
              HOOK.clicks = 1 \
              out[#out + 1] = ask('constructionBuilder', unnamed) \
@@ -2965,7 +3435,7 @@ fn the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused() {
     );
     assert!(
         logged.contains(
-            &"the room does not carry the laneModifier tool yet (?) \
+            &"the room does not carry the unsupportedTool tool yet (?) \
               [+c::/depots/road/road_maint_station.con{frozen 0n 0e}]"
                 .to_owned()
         ),
@@ -3107,11 +3577,17 @@ const FAKE_NETWORK: &str = r#"
 local CT = { BASE_NODE = 11, BASE_EDGE = 12, BASE_NODE_CONFIG = 13 }
 api.type.ComponentType = CT
 api.type.enum = { BaseEdgeType = { NORMAL = 0, BRIDGE = 1, TUNNEL = 2 },
-                  RoadType = { STREET = 0, TRACK = 1 } }
+                  RoadType = { STREET = 0, TRACK = 1 }, TrafficLightPreference = { AUTO=0, YES=1, NO=2 } }
 api.type.Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end }
 api.type.NodeAndEntity = { new = function() return { comp = {} } end }
 api.type.SegmentAndEntity = { new = function() return { comp = {} } end }
 api.type.SimpleProposal.new = function() return { constructionsToAdd = {}, streetProposal = {} } end
+api.type.BaseNodeConfig = { new = function() return { laneConnections={}, crosswalks={},
+    trafficLightPreference=0, trafficLightConfig={ states={}, trafficLightType=-1 },
+    doubleSlipSwitch=false, userModifiedTrafficLightStates=false } end }
+api.type.BaseNodeLaneConnectionAndEntity = { new = function() return {} end }
+api.type.LaneConnection = { new = function() return {} end }
+api.type.TrafficLightState = { new = function() return {} end }
 local TEMPLATES = { ['::/street/town_small.street_template'] = 4, ['::/street/country.street_template'] = 5 }
 api.res = {
     streetTemplateRep = {
@@ -3126,6 +3602,15 @@ api.res = {
         getName = function(id) if id == 3 then return '::/bridge/stone.lua' end end,
     },
     tunnelTypeRep = { find = function() return -1 end, getName = function() end },
+    -- The traffic lights' types by number, as the game's repository names
+    -- them (tpf3mp/junctions.lua carries the name).
+    trafficLightTypeRep = {
+        getName = function(n) return '::/traffic_light/type' .. tostring(n) .. '.lua' end,
+        find = function(name)
+            local n = tostring(name):match('^::/traffic_light/type(%d+)%.lua$')
+            return n and tonumber(n) or -1
+        end,
+    },
 }
 NODES = { [7] = { x = 0, y = 0, z = 0 }, [8] = { x = 50, y = -40, z = 0 }, [9] = { x = 50, y = 40, z = 0 },
           [10] = { x = -60, y = 0, z = 0 } }
@@ -3140,7 +3625,7 @@ STREETS = { [7] = { 101 }, [8] = { 100 }, [9] = { 100 }, [10] = { 101 } }
 CONFIGS = { [8] = true, [9] = true, [11] = true }
 api.engine.getComponent = function(id, kind)
     if kind == CT.BASE_NODE and NODES[id] then return { position = NODES[id] } end
-    if kind == CT.BASE_NODE_CONFIG and CONFIGS[id] then return { laneConnections = {} } end
+    if kind == CT.BASE_NODE_CONFIG and CONFIGS[id] then return type(CONFIGS[id]) == "table" and CONFIGS[id] or api.type.BaseNodeConfig.new() end
     if kind == CT.BASE_EDGE and EDGES[id] then
         -- A copy, as the game hands out.
         local c = {}
@@ -5542,6 +6027,7 @@ fn the_guard_names_the_mod_and_lets_a_personal_mods_events_reach_its_script() {
                 later = function() end,
                 context = {},
                 personal = function(mod) return mod == 'celmi_timetables' end,
+                shared = function() return { 'tpf3mp_1' } end,
                 caller = function() return FROM end,
             })
             api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
@@ -5599,6 +6085,7 @@ fn a_personal_mods_events_to_the_games_scripts_take_the_rooms_way() {
                 later = function() end,
                 context = { town = function() return nil end, player = function() return 1 end },
                 personal = function(mod) return mod == 'celmi_timetables' end,
+                shared = function() return { 'tpf3mp_1', 'other_mod_1' } end,
                 caller = function() return 'celmi_timetables' end,
             })
             local ev = api.cmd.makeScriptingSendEventCmd
@@ -5613,12 +6100,17 @@ fn a_personal_mods_events_to_the_games_scripts_take_the_rooms_way() {
             api.cmd.sendCommand(ev('', 'TimetablesEdit', 'setArrDep', {}))
             local sent = {}
             for _, s in ipairs(SENT) do sent[#sent + 1] = tostring(s.command.id) .. ':' .. tostring(s.command.name) end
+            local shared = { 'tpf3mp_1' }
             local own = {
-                guard.ownEvent('celmi_timetables', 'TimetablesEdit', 'setArrDep'),
-                guard.ownEvent('celmi_timetables', 'celmi_timetables', 'x'),
-                guard.ownEvent('celmi_timetables', 'Notifications', 'add'),
-                guard.ownEvent('celmi_timetables', 'OtherModChannel', 'x'),
-                guard.ownEvent('gw_big_city_1', 'big', 'x'),
+                guard.ownEvent('celmi_timetables', 'TimetablesEdit', 'setArrDep', shared),
+                guard.ownEvent('celmi_timetables', 'celmi_timetables', 'x', shared),
+                guard.ownEvent('celmi_timetables', 'Notifications', 'add', shared),
+                guard.ownEvent('celmi_timetables', 'OtherModChannel', 'x', shared),
+                guard.ownEvent('gw_big_city_1', 'big', 'x', shared),
+                -- A shared mod hears the same id: not the personal mod's alone.
+                guard.ownEvent('timetables_ui_tweak', 'TimetablesEdit', 'x', { 'celmi_timetables' }),
+                -- Without the room's shared list, nothing is its own.
+                guard.ownEvent('celmi_timetables', 'TimetablesEdit', 'setArrDep', nil),
             }
             return table.concat(sent, ','), HANDED, REFUSED, own
             "#,
@@ -5631,7 +6123,7 @@ fn a_personal_mods_events_to_the_games_scripts_take_the_rooms_way() {
     );
     assert_eq!(handed, ["ApplyRank", "Loan"], "carried as a click's are");
     assert_eq!(refused.len(), 3, "{refused:?}");
-    assert_eq!(own, [true, true, false, false, false]);
+    assert_eq!(own, [true, true, false, false, false, false, false]);
 }
 
 #[test]
@@ -6932,7 +7424,6 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
             return table.concat(out, "\n")
         end
         function last() return HOOK.commands[#HOOK.commands], HOOK.passwords[#HOOK.commands] end
-        function tab(name) button(name).onClick() end
         "#,
     )
     .exec()
@@ -6942,15 +7433,15 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
             .eval::<String>()
             .unwrap_or_else(|error| panic!("{code}: {error}\n{}", log(&lua)))
     };
-    // The Companies tab: yours first, marked, with its head and players,
-    // and Leave, back to the room's first company.
-    let shown = eval("tab('Companies') return texts()");
+    // Yours first, marked, with its head and players; the room's first
+    // company among the others, to join.
+    let shown = eval("return texts()");
     assert!(
-        shown.contains("Rival\n Yours \nHead: james\nPlayers: james (you), bob\nLeave\n"),
+        shown.contains("Rival\nYour company · head: james\nPlayers  james (you), bob"),
         "{shown}"
     );
     assert!(
-        shown.contains("First\nEveryone's company, no head\nPlayers: nobody\nSwitch\n"),
+        shown.contains("First\nPlayers  Nobody yet\nJoin"),
         "{shown}"
     );
     // Each card shows the money the game's own windows show
@@ -6973,12 +7464,11 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
     assert!(shown.contains("$1,234,567"), "{shown}");
     assert!(shown.contains("$5,000"), "{shown}");
     assert!(!shown.contains("$0"), "{shown}");
-    // On the Your company tab, the head types a password: it goes beside
-    // the action, and the field hides it.
+    // The head types a password: it goes beside the action, and the field
+    // hides it.
     assert_eq!(
         eval(
-            "tab('Your company') \
-             local f = find('TextInputField', function(p) return p.passwordMode end) \
+            "local f = find('TextInputField', function(p) return p.passwordMode end) \
              f.onValueChange('s3cret') \
              local action, password = last() \
              return f.placeholderText .. '|' .. action.CompanyOp.Lock .. '|' .. password"
@@ -6986,8 +7476,7 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         "A password to join|1|s3cret"
     );
     assert!(!eval("return texts()").contains("s3cret"));
-    // Its loans: one to repay, and each the game offers to borrow, one row
-    // each with its rate.
+    // Its loans: one to repay, and each the game offers to borrow.
     let (shown, borrowed) = (
         eval(
             "ROSTER.loans = { { id = 3, company = 1, amount = 1200, remaining = 1105, payment = 107, \
@@ -7001,10 +7490,10 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
                      { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 } } } } end \
                  return get(e, kind) end \
              for _ = 1, 20 do BAR.step() end \
-             return texts()",
+             return (texts():gsub('\\n', ' '))",
         ),
         eval(
-            "button('Borrow').onClick() \
+            "button('Borrow $1,200').onClick() \
              local take = last().Loan.Take.offer \
              button('Repay').onClick() \
              local repay = last().Loan.Repay.loan \
@@ -7012,25 +7501,21 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         ),
     );
     assert!(
-        shown.contains("$1,105 owed of $1,200\n$107 a month · 11 months left\nRepay\n"),
+        shown.contains("Loan: $1,105 owed of $1,200, $107 a month, 11 months left Repay"),
         "{shown}"
     );
-    assert!(shown.contains("$1,200\n12% a year\nBorrow\n"), "{shown}");
     assert_eq!(borrowed, "Small1200|3");
     // The head chooses who stops at Rival's stations: by default, and for
     // the first company on its own; and sends Bob out.
-    let shown = eval("return texts()");
+    let shown = eval("return (texts():gsub('\\n', ' '))");
     assert!(
-        shown.contains("Default\nAllowed\nDeny by default\n"),
+        shown.contains("Stations: open to other companies by default Close"),
         "{shown}"
     );
-    assert!(
-        shown.contains("First\nAllowed (default)\nDeny\n"),
-        "{shown}"
-    );
+    assert!(shown.contains("First: allowed (default) Deny"), "{shown}");
     assert_eq!(
         eval(
-            "button('Deny by default').onClick() \
+            "button('Close').onClick() \
              local close = last().CompanyOp.ShareStations \
              button('Deny').onClick() \
              local deny = last().CompanyOp.StationAccess \
@@ -7046,7 +7531,7 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         eval(
             "ROSTER.list[2].access = { { company = 0, open = false } } \
              for _ = 1, 20 do BAR.step() end \
-             local shown = texts():find('First\\nDenied\\nAllow\\nDefault', 1, true) ~= nil \
+             local shown = texts():gsub('\\n', ' '):find('First: denied Allow Default', 1, true) ~= nil \
              button('Default').onClick() \
              local back = last().CompanyOp.StationAccess \
              ROSTER.list[2].access = nil \
@@ -7090,14 +7575,12 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
             "ROSTER.list[2].lock = { scope = 1, tag = string.rep('e', 64) } \
              ROSTER.members = { { player = JAMES, company = 1 } } \
              as(BOB) for _ = 1, 20 do BAR.step() end \
-             tab('Companies') \
              local n = #HOOK.commands \
-             local asked = find('TextInputField', function(p) return p.passwordMode end) == nil \
-             button('Switch').onClick() \
-             local refused = #HOOK.commands == n and asked \
+             button('Join').onClick() \
+             local refused = #HOOK.commands == n \
              local f = find('TextInputField', function(p) return p.passwordMode end) \
              f.onTyping('s3cret') \
-             button('Switch').onClick() \
+             button('Join').onClick() \
              local action, password = last() \
              return tostring(refused) .. '|' .. action.CompanyOp.Join .. '|' .. password"
         ),
@@ -7105,12 +7588,10 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
     );
     let shown = eval("return texts()");
     assert!(
-        shown.contains(
-            "Rival\n Password \n Stations closed \nHead: james\nPlayers: james\nSwitch\n"
-        ),
+        shown.contains("Rival\nhead: james · password · stations\nclosed\nPlayers  james"),
         "{shown}"
     );
-    assert!(shown.contains("Switching to Rival..."), "{shown}");
+    assert!(shown.contains("Joining Rival..."), "{shown}");
     assert!(!shown.contains("s3cret"), "{shown}");
     let logged = eval("return table.concat(HOOK.logged, '|')");
     assert!(!logged.contains("s3cret"), "{logged}");
@@ -7118,20 +7599,17 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         logged.contains("the line manager offers other companies' open stations"),
         "{logged}"
     );
-    // Bob in Rival, not its head: he renames it, leaves to the first
-    // company in one click (Leave on its card), or founds his own; the
+    // Bob in Rival, not its head: he renames it, goes back to the first
+    // company in one click (Join on its card), or founds his own; the
     // head's controls are not his.
     assert_eq!(
         eval(
             "ROSTER.members = { { player = JAMES, company = 1 }, { player = BOB, company = 1 } } \
              for _ = 1, 20 do BAR.step() end \
-             tab('Your company') \
-             local headless = button('Send out') == nil and button('Clear') == nil and button('Set') == nil \
-                 and button('Rename') ~= nil \
-             tab('Companies') \
-             button('Leave').onClick() \
+             local headless = button('Send out') == nil and button('Remove') == nil and button('Set') == nil \
+                 and button('Change') == nil and button('Rename') ~= nil \
+             button('Join').onClick() \
              local left = last().CompanyOp.Join \
-             tab('Your company') \
              find('TextInputField', function(p) return p.placeholderText == 'A company of your own' end) \
                  .onTyping('Bob Bus') \
              button('Found').onClick() \
@@ -9226,6 +9704,11 @@ EDGES[200] = { node0 = 12, node1 = 7, tangent0 = { x = 0, y = 40, z = 0 }, tange
 STREETS[7] = { 101, 102 } STREETS[11] = { 102 }
 TRACKS = { [7] = { 200 }, [12] = { 200 } }
 CONFIGS[7] = true
+-- Each lane a turn names is there: street 101 has a tram lane, its third.
+EDGES[101].laneConfigs = { 'lane 0', 'lane 1', 'tram lane' }
+EDGES[102].laneConfigs = { 'lane 0', 'lane 1' }
+EDGES[200].laneConfigs = { 'track' }
+ug_require('tpf3mp_1::/scripts/tpf3mp/junctions.lua').strict_junctions = true
 local streets = api.engine.system.streetSystem
 streets.getNode2TrackEdgeMap = function()
     local m = {}
@@ -9264,9 +9747,9 @@ end
 "#;
 
 /// A junction change at node 7, in the shape game scripts see a proposal in
-/// and the hook hands the GUI a street detail tool's click
+/// and the hook hands the GUI a junction tool's click
 /// (crates/tpf3mp-hook/src/junctions.rs): node 7's configuration taken out,
-/// and `{COMP}` put in. `{TOOL}` is the hook's `junctions` entry, or none.
+/// and `{COMP}` put in. `{TOOL}` is the hook's `junctionEdit` mark, or none.
 const JUNCTION_CHANGE: &str = "{ {TOOL} toAdd = {}, toRemove = {}, proposal = { \
     addedNodes = {}, addedSegments = {}, removedNodes = {}, removedSegments = {}, \
     edgeObjectsToAdd = {}, edgeObjectsToRemove = {}, nodeConfigsToRemove = { 7 }, \
@@ -9297,7 +9780,7 @@ const LIGHTS: &str = "{ trafficLightPreference = 2, doubleSlipSwitch = false, \
         { segment0 = 101, lane0 = 0, segment1 = 102, lane1 = 1, withRoad = true, withTram = false } }, \
     trafficLightConfig = { trafficLightType = 1, states = { \
         { lockedLanes = { 0, 1 }, duration = 20, minDuration = 5, canSkip = false }, \
-        { lockedLanes = { 2 }, duration = 15.5, minDuration = 4.25, canSkip = true } } } }";
+        { lockedLanes = { 1 }, duration = 15.5, minDuration = 4.25, canSkip = true } } } }";
 
 fn junction_change(tool: &str, comp: &str) -> String {
     JUNCTION_CHANGE
@@ -9363,10 +9846,8 @@ fn click_through_the_room(lua: &Lua, change: &str) -> (String, String) {
 #[test]
 fn a_crosswalk_tools_click_goes_to_the_room_and_every_game_sets_it_alike() {
     let lua = crossing();
-    let (tool, sent) = click_through_the_room(
-        &lua,
-        &junction_change("junctions = 'crosswalk tool',", CROSSWALKS),
-    );
+    let (tool, sent) =
+        click_through_the_room(&lua, &junction_change("junctionEdit = true,", CROSSWALKS));
     assert_eq!(
         tool,
         "(0,0) tl0 type-1  dss=false um=false/false \
@@ -9392,11 +9873,11 @@ fn a_crosswalk_tools_click_goes_to_the_room_and_every_game_sets_it_alike() {
     assert!(initiated, "as the player's own build");
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
     for line in [
-        "handed the player's build to the room [crosswalk tool]",
-        "junctions handed to the room: 1 junction(s): -cfgStreet(0.0,0.0) \
-         +cfgStreet(0.0,0.0){tl=0 lc=2 cw=2 phases=0 dss=false um=false/false}",
-        "junctions applied: 1 junction(s): -cfgStreet(0.0,0.0) \
-         +cfgStreet(0.0,0.0){tl=0 lc=2 cw=2 phases=0 dss=false um=false/false}",
+        "handed the player's build to the room [junction tool]",
+        "junctions handed to the room: 1 junction(s): Street(0.0,0.0){tl=Auto light=default lc=2 cw=2 \
+         phases=0 dss=false custom=false}",
+        "junctions applied: 1 junction(s): Street(0.0,0.0){tl=Auto light=default lc=2 cw=2 \
+         phases=0 dss=false custom=false}",
     ] {
         assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
     }
@@ -9405,10 +9886,8 @@ fn a_crosswalk_tools_click_goes_to_the_room_and_every_game_sets_it_alike() {
 #[test]
 fn a_crossing_tools_tram_lanes_join_a_railway_in_every_game_alike() {
     let lua = crossing();
-    let (tool, sent) = click_through_the_room(
-        &lua,
-        &junction_change("junctions = 'crossing tool',", TRAM_TO_RAIL),
-    );
+    let (tool, sent) =
+        click_through_the_room(&lua, &junction_change("junctionEdit = true,", TRAM_TO_RAIL));
     assert!(
         tool.contains("(-60,0)-(0,0)#2->(0,-40)-(0,0)#0t"),
         "the tram lane to the track: {tool}"
@@ -9416,8 +9895,8 @@ fn a_crossing_tools_tram_lanes_join_a_railway_in_every_game_alike() {
     assert_eq!(sent, tool, "every game joins them alike");
     let edit: String = lua
         .load(
-            "local c = ACTION.EditJunctions.configs[1].lane_connections[2] \
-             return c.edge1.Existing.network .. '|' .. tostring(c.with_tram)",
+            "local c = ACTION.EditJunctions.changes[1].config.connections[2] \
+             return c.outgoing.network .. '|' .. tostring(c.tram)",
         )
         .eval()
         .unwrap();
@@ -9462,7 +9941,7 @@ fn the_traffic_light_tools_proposal_goes_to_the_room_and_every_game_lights_it_al
         answers,
         ["nil", "0 1", "nil", "1"],
         "nothing for an empty hover, the click handed on: {}",
-        log(&lua)
+        hook_log(&lua)
     );
     through_the_schema(&lua);
     let (tool, sent): (String, String) = lua
@@ -9474,7 +9953,7 @@ fn the_traffic_light_tools_proposal_goes_to_the_room_and_every_game_lights_it_al
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(
         tool,
-        "(0,0) tl2 type1 [0,1 20/5][2 15.5/4.25 skip] dss=false um=false/true \
+        "(0,0) tl2 type1 [0,1 20/5][1 15.5/4.25 skip] dss=false um=false/true \
          turns (-60,0)-(0,0)#0->(0,0)-(0,40)#1r walks (0,0)-(0,40)"
     );
     assert_eq!(
@@ -9517,8 +9996,8 @@ fn a_junctions_window_sends_its_phases_and_double_slip_to_the_room() {
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     let (sent, handed, phases, slip): (usize, usize, usize, bool) = lua
         .load(
-            "return #SENT, #HOOK.commands, #HOOK.commands[1].EditJunctions.configs[1].phases, \
-                 HOOK.commands[2].EditJunctions.configs[1].double_slip_switch",
+            "return #SENT, #HOOK.commands, #HOOK.commands[1].EditJunctions.changes[1].config.phases, \
+                 HOOK.commands[2].EditJunctions.changes[1].config.double_slip",
         )
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
@@ -9551,9 +10030,9 @@ fn a_junction_change_the_room_cannot_name_or_read_is_refused_with_why() {
          HOOK.built[2] = {{ proposal = odd }} \
          HOOK.built[3] = {{ why = \"junction tool: the crossing tool's change: a build that changes more than junctions: 1 edge(s) added\" }} \
          HOOK.clicks = 4 SCRIPT.guiUpdate({{}}, nil, nil)",
-        edge = junction_change("junctions = 'crosswalk tool',", CROSSWALKS),
-        node = junction_change("junctions = 'crosswalk tool',", CROSSWALKS),
-        odd = junction_change("junctions = 'crossing tool',", TRAM_TO_RAIL),
+        edge = junction_change("junctionEdit = true,", CROSSWALKS),
+        node = junction_change("junctionEdit = true,", CROSSWALKS),
+        odd = junction_change("junctionEdit = true,", TRAM_TO_RAIL),
     ))
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
@@ -9565,25 +10044,25 @@ fn a_junction_change_the_room_cannot_name_or_read_is_refused_with_why() {
     );
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
     for line in [
-        "stopped a build the room cannot carry: the crosswalk tool's change: a junction's setting \
-         names edge 555, which the room cannot name [crosswalk tool]",
-        "stopped a build the room cannot carry: the crosswalk tool's change: a junction at node 99, \
-         which the room cannot name [crosswalk tool]",
-        "stopped a build the room cannot carry: the crossing tool's change: a junction's lane it \
-         cannot read: 0.5 [crossing tool]",
+        "stopped a build the room cannot carry: the junction tool's change: a junction edge no \
+         longer exists [junction tool]",
+        "stopped a build the room cannot carry: the junction tool's change: a junction outside \
+         either network [junction tool]",
+        "the player's build was not handed to the room: the hook refused the action: \
+         EditJunctions.changes[1].config.connections[1].lane_in: not a whole number: 0.5",
         "stopped a build the room cannot carry: the crossing tool's change: a build that changes \
          more than junctions: 1 edge(s) added [junction tool]",
     ] {
         assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
     }
 
-    // Carried, then a game without the junction there, without the
-    // configuration it takes out, or without the street it names: nothing
-    // is sent there, the same refusal in every game.
+    // Carried, then a game without the junction there, or where the street
+    // it names cannot be told from another: nothing is sent there, the same
+    // refusal in every game.
     let refusals: Vec<String> = lua
         .load(format!(
             "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
-             local action = assert(capture.junctions({change})) \
+             local action = assert(capture.junction({change})) \
              local out = {{}} \
              local function try(setup, undo) \
                  setup() SENT = {{}} HOOK.batch = {{ action }} UPDATE({{}}, STATE, 0.2) undo() \
@@ -9602,36 +10081,31 @@ fn a_junction_change_the_room_cannot_name_or_read_is_refused_with_why() {
     assert_eq!(
         refusals,
         [
-            "0 false no Street node at junction 1 (0.0, 0.0) here",
-            "0 false junction 1 has no configuration here to take out",
-            "0 false junction 1 names an edge this game cannot name",
+            "0 false the junction no longer exists",
+            // The change carries the whole configuration: a game without
+            // the one it replaces sets it alike.
+            "1 true nil",
+            "0 false ambiguous junction edge",
         ]
     );
 }
 
 #[test]
 fn a_junction_change_the_games_objects_will_not_take_is_made_nowhere() {
-    // As build 40408: the user-modified flag is not writable, so it is said
-    // and the rest goes in; a game whose configuration takes no crosswalks
-    // leaves the junction as it is, whole, and says why.
+    // As build 40408: BaseNodeConfig binds no userModifiedLaneConnections,
+    // which tpf3mp/junctions.lua never writes: the rest goes in, as the
+    // tool set it. A game whose configuration takes no crosswalks leaves
+    // the junction as it is, whole, and says why.
     let lua = crossing();
     let strict = STRICT_NODE_CONFIG.replace(
         "{CONFIG}",
-        "{ 'laneConnections', 'crosswalks', 'trafficLightPreference', 'trafficLightConfig', 'doubleSlipSwitch' }",
+        "{ 'laneConnections', 'crosswalks', 'trafficLightPreference', 'trafficLightConfig', \
+           'doubleSlipSwitch', 'userModifiedTrafficLightStates' }",
     );
     lua.load(strict.as_str()).exec().unwrap();
-    let (tool, sent) = click_through_the_room(
-        &lua,
-        &junction_change("junctions = 'crossing tool',", LIGHTS),
-    );
-    assert_eq!(sent, tool.replace("um=false/true", "um=false/false"));
-    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
-    assert!(
-        logged.iter().any(|l| l
-            == "junctions: -c17 +cfg17{tl=2 lc=1 cw=1 phases=2 dss=false um=false/true}\
-                (the game takes no userModifiedTrafficLightStates)"),
-        "{logged:?}"
-    );
+    let (tool, sent) =
+        click_through_the_room(&lua, &junction_change("junctionEdit = true,", LIGHTS));
+    assert_eq!(sent, tool, "{}", hook_log(&lua));
 
     let lua = crossing();
     let strict = STRICT_NODE_CONFIG.replace(
@@ -9639,23 +10113,15 @@ fn a_junction_change_the_games_objects_will_not_take_is_made_nowhere() {
         "{ 'laneConnections', 'trafficLightPreference', 'trafficLightConfig' }",
     );
     lua.load(strict.as_str()).exec().unwrap();
-    let (_, sent) = click_through_the_room(
-        &lua,
-        &junction_change("junctions = 'crosswalk tool',", CROSSWALKS),
-    );
+    let (_, sent) =
+        click_through_the_room(&lua, &junction_change("junctionEdit = true,", CROSSWALKS));
     assert_eq!(sent, "nothing sent");
     let (ok, why): (bool, String) = lua
         .load("return HOOK.applied[1].ok, HOOK.applied[1].why")
         .eval()
         .unwrap();
     assert!(!ok);
-    assert!(
-        why.starts_with(
-            "no junction is changed: none: the junctions are left as the game makes \
-             them, as the game takes no crosswalks"
-        ),
-        "{why}"
-    );
+    assert!(why.contains("no writable member 'crosswalks'"), "{why}");
 }
 
 #[test]

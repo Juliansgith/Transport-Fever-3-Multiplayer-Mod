@@ -9,15 +9,15 @@ use proptest::{collection::vec, prelude::*, sample::Index};
 use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
-        ACTION_SCHEMA_VERSION, Action, AssetRef, AssetRemoval, AssignLine, Bulldoze, BuyVehicle,
-        CompanyId, CompanyOp, ConfigEdge, ConsistPart, ConstructionBuild, ConstructionRef,
-        CreateLine, Decoration, EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction,
-        JunctionEdit, LaneConnection, LightPhase, LineChange, LineData, LineId, LineStop, Link,
-        Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeConfig, NodeRef,
-        Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Precedence, Prospect, ReplaceVehicle,
-        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef,
-        Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
-        UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
+        ACTION_SCHEMA_VERSION, Action, AssetRef, AssetRemoval, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
+        ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds,
+        EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, JunctionChange, JunctionConfig,
+        LaneConnection, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp,
+        LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeRef, Param, ParamValue, PlaceStop,
+        Polyline, Pos, Pos2, Precedence, Prospect, ReplaceVehicle, ReplacedPart, Resolve,
+        RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef, Tangent, Terminal,
+        Terraform, TerrainCell, Tint, TownId, TrackBuild, TrafficPhase, TrafficPreference, Tram,
+        Transform, UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -121,43 +121,52 @@ fn polyline() -> Polyline {
         network: Network::Street,
         at: pos(-2_500, 6_000, 150),
     }]))
-    .with_node_configs(list(vec![NodeConfig {
-        node: 1,
-        lane_connections: list(vec![
-            LaneConnection {
-                edge0: ConfigEdge::Link(0),
-                lane0: 0,
-                edge1: ConfigEdge::Link(1),
-                lane1: 2,
-                with_road: true,
-                with_tram: false,
-            },
-            LaneConnection {
-                edge0: ConfigEdge::Existing(EdgeRef {
+    // A junction the build makes, at its second vertex, as the tool set it.
+    .with_junctions(list(vec![JunctionChange {
+        node: NodeRef {
+            network: Network::Street,
+            at: pos(1_264_500, -88_250, 33_100),
+        },
+        config: Some(JunctionConfig {
+            connections: list(vec![LaneConnection {
+                incoming: EdgeRef {
                     network: Network::Street,
-                    ends: ends(pos(0, 0, 0), pos(1_204_500, -88_250, 31_400)),
-                }),
-                lane0: 1,
-                edge1: ConfigEdge::Link(0),
-                lane1: 0,
-                with_road: true,
-                with_tram: true,
-            },
-        ]),
-        crosswalks: list(vec![ConfigEdge::Link(1)]),
-        light_preference: 1,
-        light_type: 0,
-        phases: list(vec![LightPhase {
-            locked: list(vec![0, 1]),
-            duration: 15_500,
-            min_duration: 4_250,
-            can_skip: true,
-        }]),
-        double_slip_switch: false,
-        user_modified_lanes: false,
-        user_modified_lights: true,
+                    ends: ends(
+                        pos(1_204_500, -88_250, 31_400),
+                        pos(1_264_500, -88_250, 33_100),
+                    ),
+                },
+                lane_in: 0,
+                outgoing: EdgeRef {
+                    network: Network::Street,
+                    ends: ends(
+                        pos(1_264_500, -88_250, 33_100),
+                        pos(1_324_500, -60_000, 40_000),
+                    ),
+                },
+                lane_out: 2,
+                road: true,
+                tram: false,
+            }]),
+            crosswalks: list(vec![EdgeRef {
+                network: Network::Street,
+                ends: ends(
+                    pos(1_264_500, -88_250, 33_100),
+                    pos(1_324_500, -60_000, 40_000),
+                ),
+            }]),
+            preference: TrafficPreference::Yes,
+            light: None,
+            phases: list(vec![TrafficPhase {
+                locked: list(vec![0, 1]),
+                duration: 15_500,
+                minimum: 4_250,
+                skip: true,
+            }]),
+            double_slip: false,
+            custom_phases: true,
+        }),
     }]))
-    .unwrap()
 }
 
 fn depot() -> ConstructionRef {
@@ -541,6 +550,7 @@ fn samples() -> Vec<Action> {
         }),
         Action::NotificationSeen { notification: 12 },
         Action::ApplyRank { level: 6 },
+        junction_action(),
         Action::Subsidy(SubsidyOp::Accept(SubsidyRef {
             uid: 1_234_560_000,
             kind: text("::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"),
@@ -549,7 +559,6 @@ fn samples() -> Vec<Action> {
             uid: 7,
             kind: text("::/game_mechanics/subventions/deliver_passengers/deliver_passengers.res"),
         })),
-        Action::EditJunctions(junction_edit()),
         Action::Rename {
             what: tpf3mp_proto::action::Renamed::Vehicle(VehicleId(2)),
             name: text("Blue Arrow"),
@@ -580,50 +589,85 @@ fn samples() -> Vec<Action> {
     ]
 }
 
-/// A crosswalk and a tram lane onto a railway at one junction, as the
-/// street detail tools set them.
-fn junction_edit() -> JunctionEdit {
-    let street = |a, b| {
-        ConfigEdge::Existing(EdgeRef {
-            network: Network::Street,
-            ends: ends(a, b),
-        })
+fn junction_action() -> Action {
+    use tpf3mp_proto::action::JunctionEdit;
+    let edge = EdgeRef {
+        network: Network::Street,
+        ends: ends(pos(0, 0, 0), pos(100_000, 0, 0)),
     };
-    let node = pos(0, 0, 0);
-    JunctionEdit::new(
-        list(vec![NodeRef {
-            network: Network::Street,
-            at: node,
+    Action::EditJunctions(JunctionEdit {
+        changes: list(vec![JunctionChange {
+            node: NodeRef {
+                network: Network::Street,
+                at: pos(0, 0, 0),
+            },
+            config: Some(JunctionConfig {
+                connections: list(vec![LaneConnection {
+                    incoming: edge,
+                    lane_in: 0,
+                    outgoing: edge,
+                    lane_out: 1,
+                    road: true,
+                    tram: false,
+                }]),
+                crosswalks: list(vec![edge]),
+                preference: TrafficPreference::Yes,
+                light: Some(text("::/light/standard.lua")),
+                phases: list(vec![TrafficPhase {
+                    locked: list(vec![0, 1]),
+                    duration: 12_375,
+                    minimum: 4_125,
+                    skip: true,
+                }]),
+                double_slip: false,
+                custom_phases: true,
+            }),
         }]),
-        list(vec![0]),
-        list(vec![NodeConfig {
-            node: 0,
-            lane_connections: list(vec![LaneConnection {
-                edge0: street(pos(-60_000, 0, 0), node),
-                lane0: 2,
-                edge1: ConfigEdge::Existing(EdgeRef {
-                    network: Network::Track,
-                    ends: ends(pos(0, -40_000, 0), node),
-                }),
-                lane1: 0,
-                with_road: false,
-                with_tram: true,
+    })
+}
+
+#[test]
+fn invalid_junction_relationships_are_refused_on_the_wire_and_in_lua() {
+    use tpf3mp_proto::action::{JunctionChange, JunctionEdit, MAX_LANES};
+    let Action::EditJunctions(base) = junction_action() else {
+        unreachable!()
+    };
+    let mut cases = vec![
+        Action::EditJunctions(JunctionEdit {
+            changes: list(vec![]),
+        }),
+        Action::EditJunctions(JunctionEdit {
+            changes: list(vec![base.changes[0].clone(), base.changes[0].clone()]),
+        }),
+    ];
+    for variant in 0..4 {
+        let mut config = base.changes[0].config.clone().unwrap();
+        if variant == 0 {
+            let mut turn = config.connections[0].clone();
+            turn.lane_in = MAX_LANES as u16;
+            config.connections = list(vec![turn]);
+        } else {
+            let mut phase = config.phases[0].clone();
+            match variant {
+                1 => phase.minimum = phase.duration + 1,
+                2 => phase.locked = list(vec![2]),
+                _ => phase.locked = list(vec![0, 0]),
+            }
+            config.phases = list(vec![phase]);
+        }
+        cases.push(Action::EditJunctions(JunctionEdit {
+            changes: list(vec![JunctionChange {
+                node: base.changes[0].node,
+                config: Some(config),
             }]),
-            crosswalks: list(vec![street(node, pos(0, 40_000, 0))]),
-            light_preference: 2,
-            light_type: 1,
-            phases: list(vec![LightPhase {
-                locked: list(vec![0, 1]),
-                duration: 20_000,
-                min_duration: 5_000,
-                can_skip: false,
-            }]),
-            double_slip_switch: false,
-            user_modified_lanes: false,
-            user_modified_lights: true,
-        }]),
-    )
-    .unwrap()
+        }));
+    }
+    for bad in cases {
+        assert!(bad.to_payload().is_err());
+        let wire = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, &bad)).unwrap();
+        assert!(Action::from_payload(&Payload::new(wire).unwrap()).is_err());
+        assert!(lua::action_from_lua(&lua::action_to_lua(&bad).unwrap()).is_err());
+    }
 }
 
 /// A train's replacement: its locomotive kept, turned, and a new coach
@@ -794,7 +838,7 @@ fn a_link_to_a_missing_vertex_is_refused() {
         links: Vec<Link>,
         removals: Vec<EdgeRef>,
         removed_nodes: Vec<NodeRef>,
-        node_configs: Vec<NodeConfig>,
+        junctions: Vec<tpf3mp_proto::action::JunctionChange>,
     }
     let good = polyline();
     let mut vertices = good.vertices.to_vec();
@@ -815,7 +859,7 @@ fn a_link_to_a_missing_vertex_is_refused() {
         links: good.links.to_vec(),
         removals: Vec::new(),
         removed_nodes: Vec::new(),
-        node_configs: Vec::new(),
+        junctions: Vec::new(),
     };
     // The schema version, then Action::BuildTrack.
     let bytes = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, 1u32, &track)).unwrap();

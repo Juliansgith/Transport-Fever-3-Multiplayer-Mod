@@ -47,6 +47,14 @@ struct Args {
     #[arg(long)]
     browser: bool,
 
+    /// Repair the Windows installation and its multiplayer mod.
+    #[arg(long, conflicts_with = "uninstall")]
+    repair: bool,
+
+    /// Remove the Windows installation, keeping saves and settings.
+    #[arg(long)]
+    uninstall: bool,
+
     #[command(flatten)]
     auto: AutoRoom,
 }
@@ -202,6 +210,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args, diagnostics: Recorder) -> Result<()> {
+    if tpf3mp_launcher::installation::before_launch(args.repair, args.uninstall)? {
+        return Ok(());
+    }
     // The owner of an automatic room takes the last room's invite away
     // first thing, before the seconds the configuration takes (the mods are
     // scanned): joiners started beside it read the file meanwhile, and took

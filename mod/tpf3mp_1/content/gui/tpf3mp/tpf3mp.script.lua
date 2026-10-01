@@ -213,6 +213,7 @@ function data()
 			later = function(fn) pending[#pending + 1] = fn end,
 			context = context,
 			personal = function(mod) return link:personal()[mod] == true end,
+			shared = function() return link:shared() end,
 		})
 		if wrapped then
 			link:log("the guard is on " .. wrapped .. " command factories")
@@ -692,578 +693,376 @@ function data()
 	end
 
 	-- The menu's Multiplayer glyph (tools/art/icons/menu_icon.py), for the
-	-- button that opens the window and the window's header.
+	-- button that opens the window.
 	local GLYPH = MOD .. "::/gui/tpf3mp/icons/menu_multiplayer_50.tga"
-	-- A banner strip's size.
-	local BANNER_W, BANNER_H = 160, 40
 	-- Frames Copy says "Copied" for: about two seconds.
 	local COPIED_FRAMES = 120
 
-	-- The window's look ------------------------------------------------------
-	--
-	-- The main menu's Multiplayer window's (gui/menu/lobby.lua): the same
-	-- helpers, classes (the font-scale-* sizes, primary and secondary
-	-- buttons, the default style sheet's colours and tapes: success,
-	-- warning, error, info), padding and spacing, so the two read as one.
-	-- The content has a fixed width and the height of what it holds: the
-	-- header, the tabs (Players, Companies, Your company) on the left, the
-	-- chat on the right, and a footer with Leave room. A tab taller than
-	-- BODY_MAX scrolls; one shorter than BODY_MIN keeps that height.
-	local WIDTH = 900
-	local PADDING = { 14, 20, 14, 20 }
-	local MAIN_W, CHAT_W, COLUMN_GAP = 540, 300, 20
-	local BODY_MIN, BODY_MAX = 200, 420
-	-- The tab's width inside its scroll area, which leaves room for the
-	-- scroll bar.
-	local INNER_W = MAIN_W - 24
-	local FIELD_W = 300
-	-- A company card's text, and its buttons' column.
-	local CARD_TEXT_W, CARD_ACTIONS_W = 340, 110
-	-- A station access row's company and its state.
-	local ACCESS_NAME_W, ACCESS_STATE_W = 190, 140
-	-- A player row's name column, which its status tape follows.
-	local PLAYER_NAME_W = 200
-	-- How tall a tab is (below).
-	local tabHeight
-	-- A size left to the content, as the game's style sheets write it; a
-	-- size of 0 hides everything inside.
-	local AUTO = -1
-
-	-- The game's spacer, as the menu's window uses it; a small gap where
-	-- this state has none.
-	local gui_util = (function()
-		local ok, util = pcall(ug_require, "::/gui/main/gui_react_util.tl")
-		if ok and type(util) == "table" and type(util.makeHorizontalSpacer) == "function" then return util end
-		return nil
-	end)()
-
-	-- An inline style sheet: size as {w, h}, padding as {top, right, bottom,
-	-- left}, and a background colour (a Vec4f); nil where the state has none
-	-- to make. The game's own windows set the same fields
-	-- (gui/main/styleutil.tl, makeStyle; api/tealdef/api/gui.d.tl).
-	local function style(t)
-		local ok, sheet = pcall(function()
-			local s = api.gui.StyleSheet.new()
-			if t.size then s.size = api.type.Vec2f.new(t.size[1], t.size[2]) end
-			if t.padding then
-				s.padding = api.type.Vec4f.new(t.padding[1], t.padding[2], t.padding[3], t.padding[4])
-			end
-			if t.background then s.backgroundColor1 = t.background end
-			return s
-		end)
-		return ok and sheet or nil
-	end
-
-	-- The window's own colour (gui/main/builtin.css.lua: a Window's
-	-- background is the theme's BaseDarkMedium), nearly opaque: the game's
-	-- window surface lets the map show through, which made the page hard to
-	-- read (build 40408, 2026-10-01). Nil where the state cannot say.
+	-- Native fixed-width panels keep a long name, eight companies or a busy
+	-- chat from stretching the window beyond the screen. -1 means automatic
+	-- height in TF3's StyleSheet; zero would hide the content.
+	local WINDOW_WIDTH, PLAYERS_WIDTH, COMPANIES_WIDTH = 800, 192, 548
+	local BODY_HEIGHT = 310
+	-- A player's key banner, in their card (tpf3mp/banners.lua: the same the
+	-- main menu's window shows), at the card's width; a portrait they picked
+	-- beside their name.
+	local BANNER_W, BANNER_H, PORTRAIT = PLAYERS_WIDTH - 44, 37, 32
+	-- The panels' colour, nearly opaque: a window surface that lets the map
+	-- show through made the page hard to read (build 40408, 2026-10-01).
 	local BACKDROP_ALPHA = 0.97
-	local function backdrop()
-		local ok, color = pcall(function()
-			local rep = api.gui.genericRep
-			local colors = rep.get(rep.find("::/gui/main/default_colors.gres")).data
-			return ug_require("::/gui/main/color_util.tl").withTransparency(colors.BaseDarkMedium, BACKDROP_ALPHA)
-		end)
-		return ok and color or nil
+	local function sheet(width, height, padding, background)
+		local s = api.gui.StyleSheet.new()
+		s.size = api.type.Vec2f.new(width or -1, height or -1)
+		if padding then s.padding = api.type.Vec4f.new(padding, padding, padding, padding) end
+		if background then s.backgroundColor = api.type.Vec4f.new(0.07, 0.10, 0.12, BACKDROP_ALPHA) end
+		return s
 	end
-	local function sized(w, h) return style{ size = { w, h } } end
-	local function meta(sheet, more)
-		local m = more or {}
-		m.styleSheet = sheet
-		return m
+	-- A size alone, or nil where this state makes no style sheets.
+	local function sized(width, height)
+		local ok, s = pcall(sheet, width, height)
+		return ok and s or nil
+	end
+	local function gap(size)
+		return builtin.Component{ meta = { styleSheet = sheet(size, size) },
+			mouseTransparent = true, layout = builtin.BoxLayout{ children = {} } }
+	end
+	local function box(children, horizontal, width, padding, background)
+		return builtin.Component{
+			meta = { styleSheet = sheet(width, nil, padding, background) },
+			mouseTransparent = true,
+			layout = builtin.BoxLayout{
+				orientation = horizontal and builtin.type.Orientation.Horizontal or builtin.type.Orientation.Vertical,
+				children = children,
+			},
+		}
+	end
+	-- Break on spaces when possible and on UTF-8 character boundaries for
+	-- unbroken names. The complete text stays visible, including chat.
+	local function wrapped(text, limit)
+		local lines, chars, space = {}, {}, nil
+		local function flush(count)
+			lines[#lines + 1] = table.concat(chars, "", 1, count)
+			local left = {}
+			for i = count + 1, #chars do left[#left + 1] = chars[i] end
+			if left[1] == " " then table.remove(left, 1) end
+			chars, space = left, nil
+			for i, c in ipairs(chars) do if c == " " then space = i end end
+		end
+		for c in tostring(text):gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+			if c == "\n" then
+				flush(#chars)
+			else
+				chars[#chars + 1] = c
+				if c == " " then space = #chars end
+				if #chars > limit then flush(space and space > 1 and space - 1 or limit) end
+			end
+		end
+		if #chars > 0 then lines[#lines + 1] = table.concat(chars) end
+		return table.concat(lines, "\n")
+	end
+	local function label(text, class, width, limit)
+		return builtin.TextView{
+			meta = { class = class or "font-scale-body", styleSheet = sheet(width), tooltip = tostring(text) },
+			text = limit and wrapped(text, limit) or tostring(text),
+		}
+	end
+	local function scroll(children, width, height)
+		return builtin.ScrollArea{
+			meta = { styleSheet = sheet(width, height) },
+			horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+			verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+			content = box(children, false, width - 20),
+		}
+	end
+	local function picture(path, width, height)
+		return builtin.ImageView{ meta = { styleSheet = sheet(width, height) }, path = path }
+	end
+	local function windowButton(text, tooltip, onClick, class)
+		return builtin.Button{ meta = { class = class or "secondary", tooltip = tooltip },
+			content = builtin.TextView{ meta = { class = "font-scale-body" }, text = text }, onClick = onClick }
 	end
 
-	local function gap(px)
-		px = math.max(1, px or 8)
-		return builtin.Component{
-			meta = meta(sized(px, px)),
-			mouseTransparent = true,
-			layout = builtin.BoxLayout{ children = {} },
-		}
-	end
-	local function spacer()
-		if gui_util then return gui_util.makeHorizontalSpacer() end
-		return gap(8)
-	end
-	local function box(orientation, children, sheet)
-		return builtin.Component{
-			meta = meta(sheet),
-			mouseTransparent = true,
-			layout = builtin.BoxLayout{ orientation = orientation, children = children },
-		}
-	end
-	local function row(children, sheet) return box(builtin.type.Orientation.Horizontal, children, sheet) end
-	local function column(children, sheet) return box(builtin.type.Orientation.Vertical, children, sheet) end
-	local function label(t, class, sheet)
-		return builtin.TextView{ meta = meta(sheet, { class = class or "font-scale-body" }), text = t or "" }
-	end
-	-- A smaller, quieter line.
-	local function note(t, class)
-		return label(t, "font-scale-annotation" .. (class and (", " .. class) or ""))
-	end
-	-- A word on a coloured tape: success, warning, error or info.
-	local function badge(t, tone)
-		return label(" " .. t .. " ", "font-scale-annotation, " .. (tone or "info") .. "-tape")
-	end
-	local function picture(path, w, h)
-		return builtin.ImageView{ meta = meta(sized(w, h)), path = path }
-	end
-	local function button(t, onClick, tooltip, class)
-		return builtin.Button{
-			meta = { class = class or "secondary", tooltip = tooltip },
-			content = label(t),
-			onClick = onClick,
-		}
-	end
-	-- A section's title, and a line under it that says what it is for.
-	local function heading(t, sub)
-		local children = { label(t, "font-scale-title-4") }
-		if sub then
-			children[#children + 1] = gap(2)
-			children[#children + 1] = note(sub)
-		end
-		children[#children + 1] = gap(8)
-		return column(children)
-	end
-	-- A text field kept in `ref`, sent with `onEnter` on Enter. Clicking
-	-- away keeps what was typed, and a redraw shows it: a button sends what
-	-- the field shows, never a line the field dropped (it emptied itself on
-	-- a cancel, build 40408, while the button still had the text).
-	local function input(ref, placeholder, width, onEnter, params)
-		params = params or {}
-		local function redraw() local shared = ui() shared.version = shared.version + 1 end
-		return builtin.TextInputField{
-			meta = meta(sized(width, 36), { class = "font-scale-body" }),
-			placeholderText = placeholder,
-			value = ref:get(),
-			maxLength = params.maxLength or 64,
-			passwordMode = params.secret or nil,
-			acceptOnFocusLoss = false,
-			resetValueOnCancel = false,
-			onTyping = function(t) ref:set(t) end,
-			onCancel = redraw,
-			onValueChange = function(t) onEnter(t) end,
-		}
-	end
-	-- `children` with a gap between each two.
-	local function spaced(children, px)
-		local out = {}
-		for i, child in ipairs(children) do
-			if i > 1 then out[#out + 1] = gap(px or 8) end
-			out[#out + 1] = child
-		end
-		return out
-	end
-	local function blank(t) return type(t) ~= "string" or t:match("^%s*$") end
-
-	-- What the company tabs read off the roster: each player's company, who
-	-- is in each, the player's own and the room's first, the companies in
-	-- the order the cards show them (yours first), and whether the player
-	-- is their company's head. Nil before the roster is read.
-	local function rosterView(status, shared)
+	-- The companies: each with its money and players, the one you play for
+	-- first, with its colour and name to change; the others to join, with
+	-- their password where they have one; a company of your own to found.
+	-- Its head (tpf3mp/companies.lua, DECISIONS.md D22, proposed) also sets
+	-- or takes away its password, sends players out, and chooses whose lines
+	-- stop at its stations: a default, which also holds for companies
+	-- founded later, and a choice for each other company, which wins over it.
+	local function companyRows(rows, status, shared, drafts)
 		local roster = shared.companies
-		if not roster then return nil end
+		if not roster then return end
 		local companies = require("tpf3mp.companies")
-		local v = { roster = roster, byId = {}, companyOf = {}, names = {} }
-		for _, p in ipairs(status.players or {}) do v.byId[p.id] = p end
-		for _, m in ipairs(roster.members) do v.companyOf[m.player] = m.company end
-		for _, p in ipairs(status.players or {}) do
-			local id = v.companyOf[p.id] or 0
-			v.names[id] = v.names[id] or {}
-			v.names[id][#v.names[id] + 1] = tostring(p.name) .. (p.me and " (you)" or "")
-			if p.me then v.mine = id end
-		end
-		if v.mine == nil then v.mine = v.companyOf[status.me_id] or 0 end
-		for _, c in ipairs(roster.list) do
-			if c.id == 0 then v.first = c end
-			if c.id == v.mine then v.myCompany = c end
-		end
-		v.ordered = { v.myCompany }
-		for _, c in ipairs(roster.list) do if c.id ~= v.mine then v.ordered[#v.ordered + 1] = c end end
-		v.iHead = status.me_id ~= nil and companies.head(roster, v.mine) == status.me_id
-		return v
-	end
-
-	-- A company's colour: the player's own to change, the others' only to
-	-- see. The others' swatch lets the mouse through instead of being
-	-- disabled, which drew it on a grey plate (build 40408, 2026-10-01).
-	local function swatch(shared, c, yours)
-		return builtin.ColorChooserButton{
-			meta = yours and { tooltip = "Your company's colour: its vehicles wear it" }
-				or { mouseTransparent = true },
-			colors = companyPalette(),
-			color = vec3(c.color),
-			onValueChange = function(v)
-				if not yours then return end
-				local r, g, b = v.x or v[1], v.y or v[2], v.z or v[3]
-				companyOp(shared, { Recolor = { company = c.id, color = { r = r, g = g, b = b } } },
-					"Recolouring " .. c.name)
-			end,
-			resetButton = false,
-		}
-	end
-
-	-- The Players tab: one row each, their banner (tpf3mp/banners.lua, the
-	-- same the main menu's window shows), their portrait if they picked
-	-- one, their name, the room's owner and you under it, and on the right
-	-- how far their game is with the room's world, or Away.
-	local function playersTab(status)
-		local banners = require("tpf3mp.banners")
-		local players = status.players or {}
-		local here = 0
-		for _, p in ipairs(players) do if p.connected then here = here + 1 end end
-		local rows = {
-			note(#players .. (#players == 1 and " player" or " players") .. " · " .. here .. " connected"),
-			gap(10),
-		}
-		for _, p in ipairs(players) do
-			local roles = {}
-			if p.owner then roles[#roles + 1] = "Owner" end
-			if p.me then roles[#roles + 1] = "You" end
-			local stage = banners.stage(p, true)
-			local tone = "success"
-			if p.loading == "fetching" or p.loading == "loading" then
-				tone = "info"
-			elseif not p.connected or stage == nil then
-				stage, tone = "Away", "warning"
-			elseif stage ~= "Playing" and stage ~= "Ready" then
-				tone = "warning"
+		local function line(text) rows[#rows + 1] = label(text, "font-scale-annotation", COMPANIES_WIDTH - 40, 38) end
+		local function row(children)
+			local spaced = {}
+			for i, child in ipairs(children) do
+				if i > 1 then spaced[#spaced + 1] = gap(8) end
+				spaced[#spaced + 1] = child
 			end
-			local cells = { picture(banners.picture(banners.of(p)), BANNER_W, BANNER_H), gap(10) }
-			-- A campaign character's portrait the player picked, beside their
-			-- name: the hook passes it only where this game has the picture.
-			local portrait = banners.portraitOf(p)
-			if portrait then
-				cells[#cells + 1] = picture(portrait, BANNER_H, BANNER_H)
-				cells[#cells + 1] = gap(10)
-			end
-			local who = { label(tostring(p.name), "font-scale-title-5") }
-			if #roles > 0 then who[#who + 1] = note(table.concat(roles, " · ")) end
-			cells[#cells + 1] = column(who, sized(PLAYER_NAME_W, AUTO))
-			cells[#cells + 1] = badge(stage, tone)
-			rows[#rows + 1] = row(cells, style{ size = { INNER_W, AUTO } })
+			rows[#rows + 1] = box(spaced, true)
 			rows[#rows + 1] = gap(8)
 		end
-		return rows
-	end
-
-	-- The Companies tab (tpf3mp/companies.lua; DECISIONS.md D22, proposed):
-	-- a card each, with its colour, name, marks, money, head and players;
-	-- yours first and marked. Switching is one click: Switch on any other
-	-- company (its password asked for first where it has one), Leave on
-	-- yours back to the room's first company, Dissolve on yours by its last
-	-- player.
-	local function companiesTab(v, shared, drafts)
-		local companies = require("tpf3mp.companies")
-		local function redraw() shared.version = shared.version + 1 end
-		-- Switch to `c`: at once, or, where it has a password, once typed.
-		local function switchTo(c, password)
-			if c.locked and blank(password) then
-				drafts.prompt:set(c.id)
-				shared.companyNote = c.name .. " has a password: type it, then Switch"
-				redraw()
-				return
-			end
-			drafts.prompt:set(nil)
-			companyOp(shared, { Join = c.id }, "Switching to " .. c.name, nil, c.locked and password or nil)
-			drafts.joinPassword:set("")
+		local function button(text, tooltip, onClick) return windowButton(text, tooltip, onClick) end
+		-- A field for a draft, sent with `act` on Enter or its button.
+		local function field(draft, placeholder, secret, act)
+			return builtin.TextInputField{
+				meta = { class = "font-scale-body", styleSheet = sheet(300, 36) },
+				placeholderText = placeholder,
+				value = draft:get(),
+				maxLength = 64,
+				passwordMode = secret or nil,
+				acceptOnFocusLoss = false,
+				resetValueOnCancel = false,
+				onTyping = function(text) draft:set(text) end,
+				onCancel = function() shared.version = shared.version + 1 end,
+				onValueChange = function(text) act(text) end,
+			}
 		end
-
-		local live = 0
-		for _, c in ipairs(v.ordered) do if c then live = live + 1 end end
-		local rows = {
-			note(live .. (live == 1 and " company" or " companies")
-				.. " · each has its own money, vehicles and stations"),
-			gap(10),
-		}
-		for _, c in ipairs(v.ordered) do
-			local yours = c.id == v.mine
-			local head = companies.head(v.roster, c.id)
-			local title = { label(tostring(c.name), "font-scale-title-5") }
-			if yours then title[#title + 1] = badge("Yours", "info") end
-			if c.locked then title[#title + 1] = badge("Password", "warning") end
-			if c.closed then title[#title + 1] = badge("Stations closed", "warning") end
-			title = spaced(title, 6)
-			title[#title + 1] = spacer()
-			if c.balance ~= nil then title[#title + 1] = label(money(c.balance), "font-scale-body") end
-			local about = {}
-			if c.id == 0 then
-				about[#about + 1] = "Everyone's company, no head"
-			elseif head and v.byId[head] then
-				about[#about + 1] = "Head: " .. tostring(v.byId[head].name)
+		local function blank(text) return type(text) ~= "string" or text:match("^%s*$") end
+		local names, byId, companyOf, mine = {}, {}, {}, nil
+		for _, p in ipairs(status.players or {}) do byId[p.id] = p end
+		for _, m in ipairs(roster.members) do companyOf[m.player] = m.company end
+		for _, p in ipairs(status.players or {}) do
+			local id = companyOf[p.id] or 0
+			names[id] = names[id] or {}
+			names[id][#names[id] + 1] = tostring(p.name) .. (p.me and " (you)" or "")
+			if p.me then mine = id end
+		end
+		if mine == nil then mine = companyOf[status.me_id] or 0 end
+		local ordered = {}
+		for _, c in ipairs(roster.list) do if c.id == mine then ordered[#ordered + 1] = c end end
+		for _, c in ipairs(roster.list) do if c.id ~= mine then ordered[#ordered + 1] = c end end
+		local myName
+		for _, c in ipairs(roster.list) do if c.id == mine then myName = c.name end end
+		local iHead = status.me_id ~= nil and companies.head(roster, mine) == status.me_id
+		local otherCards = {}
+		for _, c in ipairs(ordered) do
+			local head = companies.head(roster, c.id)
+			local tags = {}
+			if c.id == mine then tags[#tags + 1] = "Your company" end
+			if head and byId[head] then tags[#tags + 1] = "head: " .. tostring(byId[head].name) end
+			if c.locked then tags[#tags + 1] = "password" end
+			if c.closed then tags[#tags + 1] = "stations closed" end
+			local children = {}
+			if c.id == mine then
+				children[#children + 1] = builtin.ColorChooserButton{
+					meta = { tooltip = "Your company's colour: its vehicles wear it" },
+					colors = companyPalette(),
+					color = vec3(c.color),
+					onValueChange = function(v)
+						local r, g, b = v.x or v[1], v.y or v[2], v.z or v[3]
+						companyOp(shared, { Recolor = { company = c.id, color = { r = r, g = g, b = b } } },
+							"Recolouring " .. c.name)
+					end,
+					resetButton = false,
+				}
 			end
-			if type(c.owed) == "number" and c.owed > 0 then about[#about + 1] = "Owes " .. money(c.owed) end
-			local text = { row(title, style{ size = { CARD_TEXT_W, AUTO } }) }
-			if #about > 0 then text[#text + 1] = note(table.concat(about, " · ")) end
-			text[#text + 1] = note("Players: " .. (v.names[c.id] and table.concat(v.names[c.id], ", ") or "nobody"))
-
-			local actions = {}
-			if yours then
-				if c.id ~= 0 and v.first then
-					actions[#actions + 1] = button("Leave", function() switchTo(v.first) end,
-						"Leave " .. tostring(c.name) .. " and play for " .. tostring(v.first.name)
-							.. ", the room's first company, again")
+			children[#children + 1] = gap(8)
+			children[#children + 1] = label(c.name, "font-scale-title-4", COMPANIES_WIDTH - 100, 28)
+			local card = { box(children, true), gap(6) }
+			if #tags > 0 then card[#card + 1] = label(table.concat(tags, " · "), "font-scale-annotation, info", nil, 38) end
+			if c.balance ~= nil then
+				card[#card + 1] = label("Balance  " .. money(c.balance), "font-scale-body", nil, 38)
+				if type(c.owed) == "number" and c.owed > 0 then
+					card[#card + 1] = label("Debt  " .. money(c.owed), "font-scale-annotation", nil, 38)
 				end
-				if c.id ~= 0 and #(v.names[c.id] or {}) <= 1 then
-					-- Its last player dissolves it, once it owns nothing.
-					actions[#actions + 1] = button("Dissolve",
-						function() companyOp(shared, { Delete = c.id }, "Dissolving " .. c.name) end,
-						"Dissolve " .. tostring(c.name) .. " once it owns nothing, and play for the room's first company again")
-				end
-			else
-				actions[#actions + 1] = button("Switch", function() switchTo(c, drafts.joinPassword:get()) end,
-					"Play for " .. tostring(c.name) .. " from now on" .. (c.locked and "; it needs its password" or ""),
-					"primary")
 			end
-			if #actions == 0 then actions[1] = gap(1) end
-
-			rows[#rows + 1] = row({
-				swatch(shared, c, yours),
-				gap(10),
-				column(text, style{ size = { CARD_TEXT_W, AUTO } }),
-				spacer(),
-				column(spaced(actions, 4), style{ size = { CARD_ACTIONS_W, AUTO } }),
-			}, style{ size = { INNER_W, AUTO }, padding = { 6, 4, 6, 4 } })
-			if not yours and c.locked and drafts.prompt:get() == c.id then
-				-- Its password, typed here; the room seals it, and only the
-				-- seal reaches the games.
-				rows[#rows + 1] = row({
-					gap(42),
-					input(drafts.joinPassword, "Password of " .. tostring(c.name), FIELD_W - 60,
-						function(t) if not blank(t) then switchTo(c, t) end end, { secret = true }),
-					gap(8),
-					note("then Switch"),
+			card[#card + 1] = gap(6)
+			card[#card + 1] = label("Players  " .. (names[c.id] and table.concat(names[c.id], ", ") or "Nobody yet"),
+				"font-scale-annotation", nil, 38)
+			children = {}
+			if c.id ~= mine then
+				if c.locked then
+					-- Its password, typed here; the room seals it, and only
+					-- the seal reaches the games.
+					children[#children + 1] = field(drafts.joinPassword, "Password", true, function(text)
+						if blank(text) then return end
+						companyOp(shared, { Join = c.id }, "Joining " .. c.name, nil, text)
+						drafts.joinPassword:set("")
+					end)
+				end
+				children[#children + 1] = button("Join", "Play for " .. tostring(c.name) .. " from now on"
+					.. (c.locked and "; it needs its password" or ""), function()
+					local password = c.locked and drafts.joinPassword:get() or nil
+					if c.locked and blank(password) then
+						shared.companyNote = c.name .. " needs its password"
+						shared.version = shared.version + 1
+						return
+					end
+					companyOp(shared, { Join = c.id }, "Joining " .. c.name, nil, password)
+					drafts.joinPassword:set("")
+				end)
+			elseif c.id ~= 0 and #(names[c.id] or {}) <= 1 then
+				-- Its last player dissolves it, once it owns nothing.
+				children[#children + 1] = button("Dissolve", "Dissolve " .. tostring(c.name)
+					.. " once it owns nothing, and play for the room's first company again",
+					function() companyOp(shared, { Delete = c.id }, "Dissolving " .. c.name) end)
+			end
+			if #children > 0 then card[#card + 1] = gap(8); card[#card + 1] = box(children, true) end
+			local destination = c.id == mine and rows or otherCards
+			destination[#destination + 1] = box(card, false, COMPANIES_WIDTH - 24, 12, true)
+			destination[#destination + 1] = gap(10)
+		end
+		line("MANAGE YOUR COMPANY")
+		rows[#rows + 1] = gap(6)
+		-- What the head of the player's company does with it.
+		if iHead then
+			local c
+			for _, x in ipairs(roster.list) do if x.id == mine then c = x end end
+			local lockChildren = {
+				field(drafts.lockPassword, c.locked and "A new password" or "A password to join", true, function(text)
+					if blank(text) then return end
+					companyOp(shared, { Lock = c.id }, "Setting the password of " .. c.name, nil, text)
+					drafts.lockPassword:set("")
+				end),
+				button(c.locked and "Change" or "Set", "Only players who know it can join " .. tostring(c.name),
+					function()
+						local text = drafts.lockPassword:get()
+						if blank(text) then return end
+						companyOp(shared, { Lock = c.id }, "Setting the password of " .. c.name, nil, text)
+						drafts.lockPassword:set("")
+					end),
+			}
+			if c.locked then
+				lockChildren[#lockChildren + 1] = button("Remove", "Let anyone join " .. tostring(c.name),
+					function() companyOp(shared, { Unlock = c.id }, "Removing the password of " .. c.name) end)
+			end
+			row(lockChildren)
+			-- Whose lines may stop at its stations: the default, then each
+			-- other company's own choice (CompanyOp StationAccess). Per
+			-- company, not per player: a company's players share everything
+			-- it owns.
+			row({
+				label(c.closed and "Stations: yours alone by default" or "Stations: open to other companies by default",
+					"font-scale-annotation", 300, 28),
+				button(c.closed and "Open" or "Close", c.closed
+					and "Let every company without a choice of its own stop at " .. tostring(c.name) .. "'s stations"
+					or "Keep " .. tostring(c.name) .. "'s stations from every company without a choice of its own",
+					function()
+						companyOp(shared, { ShareStations = { company = c.id, open = c.closed == true } },
+							(c.closed and "Opening " or "Closing ") .. "the stations of " .. c.name)
+					end),
+			})
+			for _, other in ipairs(roster.list or {}) do
+				if other.id ~= c.id then
+					local choice = companies.choice(c, other.id)
+					local allowed = companies.lets(c, other.id)
+					local cells = {
+						label(tostring(other.name) .. ": " .. (allowed and "allowed" or "denied")
+							.. (choice == nil and " (default)" or ""),
+							"font-scale-annotation, " .. (allowed and "success" or "warning"), 300, 28),
+						button(allowed and "Deny" or "Allow", (allowed and "Keep " or "Let ") .. tostring(other.name)
+							.. (allowed and "'s lines from " or "'s lines stop at ") .. tostring(c.name) .. "'s stations",
+							function()
+								companyOp(shared, { StationAccess = { company = c.id, other = other.id, open = not allowed } },
+									(allowed and "Denying " or "Allowing ") .. other.name)
+							end),
+					}
+					if choice ~= nil then
+						cells[#cells + 1] = button("Default", tostring(other.name) .. " follows the default again",
+							function()
+								companyOp(shared, { StationAccess = { company = c.id, other = other.id } },
+									"Putting " .. other.name .. " back to the default")
+							end)
+					end
+					row(cells)
+				end
+			end
+			for _, player in ipairs(companies.members(roster, mine)) do
+				local p = byId[player]
+				if player ~= status.me_id and p then
+					row({
+						label(p.name, nil, 300, 28),
+						button("Send out", "Send " .. tostring(p.name) .. " back to the room's first company",
+							function()
+								companyOp(shared, { Dismiss = { company = c.id, player = player } },
+									"Sending " .. tostring(p.name) .. " out of " .. c.name)
+							end),
+					})
+				end
+			end
+		end
+		row({
+			field(drafts.rename, "A new name for " .. tostring(myName), false, function(text)
+				if blank(text) then return end
+				companyOp(shared, { Rename = { company = mine, name = text } }, "Renaming " .. tostring(myName))
+				drafts.rename:set("")
+			end),
+			button("Rename", "Rename the company you play for", function()
+				local text = drafts.rename:get()
+				if blank(text) then return end
+				companyOp(shared, { Rename = { company = mine, name = text } }, "Renaming " .. tostring(myName))
+				drafts.rename:set("")
+			end),
+		})
+		rows[#rows + 1] = gap(8)
+		if #otherCards > 0 then
+			line("OTHER COMPANIES")
+			rows[#rows + 1] = gap(6)
+			for _, card in ipairs(otherCards) do rows[#rows + 1] = card end
+		end
+		line("START ANOTHER COMPANY")
+		rows[#rows + 1] = gap(6)
+		row({
+			field(drafts.found, "A company of your own", false, function(text)
+				if blank(text) then return end
+				companyOp(shared, { Create = { name = text } }, "Founding " .. text)
+				drafts.found:set("")
+			end),
+			button("Found", "Found a company and play for it", function()
+				local text = drafts.found:get()
+				if blank(text) then return end
+				companyOp(shared, { Create = { name = text } }, "Founding " .. text)
+				drafts.found:set("")
+			end),
+		})
+		-- Another company's loans are the room's (tpf3mp/companies.lua), on
+		-- the terms the game offers; the first company's are in the game's
+		-- own finance window.
+		if mine ~= 0 then
+			local loans = {}
+			for _, loan in ipairs(roster.loans or {}) do if loan.company == mine then loans[#loans + 1] = loan end end
+			for _, loan in ipairs(loans) do
+				row({
+					label("Loan: " .. money(loan.remaining) .. " owed of " .. money(loan.amount)
+						.. ", " .. money(loan.payment) .. " a month, " .. (loan.months - loan.paid) .. " months left", nil, 300, 28),
+					button("Repay", "Pay back what is still owed now", function()
+						companyOp(shared, nil, "Repaying " .. money(loan.remaining), { Loan = { Repay = { loan = {
+							type = "Custom", amount = loan.amount, duration = 1, percentage = 0, id = loan.id } } } })
+					end),
 				})
 			end
-			rows[#rows + 1] = gap(10)
-		end
-		return rows
-	end
-
-	-- Who may have their lines stop at company `c`'s stations, for its
-	-- head to choose (D22, proposed): a default, which also holds for
-	-- companies founded later, and a choice for each other company, which
-	-- wins over it. Per company, not per player: a company's players share
-	-- everything it owns.
-	local function stationRows(rows, roster, c, shared)
-		local companies = require("tpf3mp.companies")
-		local function access(name, state, allowed, buttons)
-			local cells = {
-				label(name, "font-scale-body", sized(ACCESS_NAME_W, AUTO)),
-				label(state, "font-scale-body, " .. (allowed and "success" or "warning"), sized(ACCESS_STATE_W, AUTO)),
-				spacer(),
-			}
-			for _, b in ipairs(spaced(buttons, 6)) do cells[#cells + 1] = b end
-			rows[#rows + 1] = row(cells, style{ size = { INNER_W, AUTO } })
-			rows[#rows + 1] = gap(4)
-		end
-		local open = not c.closed
-		rows[#rows + 1] = heading("Station access", "Whose lines may stop at " .. tostring(c.name) .. "'s stations.")
-		rows[#rows + 1] = note("The default also holds for companies founded later.")
-		rows[#rows + 1] = gap(6)
-		access("Default", open and "Allowed" or "Denied", open, {
-			button(open and "Deny by default" or "Allow by default", function()
-				companyOp(shared, { ShareStations = { company = c.id, open = not open } },
-					(open and "Closing " or "Opening ") .. "the stations of " .. c.name .. " by default")
-			end, open and "Keep " .. tostring(c.name) .. "'s stations from every company without a choice of its own"
-				or "Let every company without a choice of its own stop at " .. tostring(c.name) .. "'s stations"),
-		})
-		for _, other in ipairs(roster.list or {}) do
-			if other.id ~= c.id then
-				local choice = companies.choice(c, other.id)
-				local allowed = companies.lets(c, other.id)
-				local buttons = {
-					button(allowed and "Deny" or "Allow", function()
-						companyOp(shared, { StationAccess = { company = c.id, other = other.id, open = not allowed } },
-							(allowed and "Denying " or "Allowing ") .. other.name)
-					end, (allowed and "Keep " or "Let ") .. tostring(other.name)
-						.. (allowed and "'s lines from " or "'s lines stop at ") .. tostring(c.name) .. "'s stations"),
-				}
-				if choice ~= nil then
-					buttons[#buttons + 1] = button("Default", function()
-						companyOp(shared, { StationAccess = { company = c.id, other = other.id } },
-							"Putting " .. other.name .. " back to the default")
-					end, tostring(other.name) .. " follows the default again")
-				end
-				access(tostring(other.name), (allowed and "Allowed" or "Denied") .. (choice == nil and " (default)" or ""),
-					allowed, buttons)
-			end
-		end
-		rows[#rows + 1] = gap(14)
-	end
-
-	-- The Your company tab: what you may do with yours. Its name (any of
-	-- its players), and for its head its password, its stations and
-	-- sending a player out; its own loans, for companies past the first,
-	-- which are the room's (the first company's are in the game's finance
-	-- window); and founding a company of your own. Its colour is the
-	-- swatch on its card. The room's first company is everyone's: renamed
-	-- in the game's own company window.
-	local function yourCompanyTab(v, status, shared, drafts)
-		local companies = require("tpf3mp.companies")
-		local rows = {}
-		local function fieldRow(children) rows[#rows + 1] = row(spaced(children, 8)) end
-		if v.myCompany and v.mine ~= 0 then
-			local c = v.myCompany
-			local mine = v.mine
-			local function rename(t)
-				if blank(t) then return end
-				companyOp(shared, { Rename = { company = mine, name = t } }, "Renaming " .. tostring(c.name))
-				drafts.rename:set("")
-			end
-			rows[#rows + 1] = heading(tostring(c.name), v.iHead and "Your company: you are its head"
-				or "Your company")
-			fieldRow({
-				input(drafts.rename, "A new name for " .. tostring(c.name), FIELD_W, rename),
-				button("Rename", function() rename(drafts.rename:get()) end, "Rename the company you play for"),
-			})
-			rows[#rows + 1] = gap(14)
-			if v.iHead then
-				local function lock(t)
-					if blank(t) then return end
-					companyOp(shared, { Lock = c.id }, "Setting the password of " .. c.name, nil, t)
-					drafts.lockPassword:set("")
-				end
-				rows[#rows + 1] = heading("Password", c.locked and "Only players who know it can join."
-					or "Anyone can join; with one, only players who know it can.")
-				local lockRow = {
-					input(drafts.lockPassword, c.locked and "A new password" or "A password to join", FIELD_W, lock,
-						{ secret = true }),
-					button(c.locked and "Change" or "Set", function() lock(drafts.lockPassword:get()) end,
-						"Only players who know it can join " .. tostring(c.name)),
-				}
-				if c.locked then
-					lockRow[#lockRow + 1] = button("Clear",
-						function() companyOp(shared, { Unlock = c.id }, "Clearing the password of " .. c.name) end,
-						"Let anyone join " .. tostring(c.name))
-				end
-				fieldRow(lockRow)
-				rows[#rows + 1] = gap(14)
-				stationRows(rows, v.roster, c, shared)
-				local others = {}
-				for _, player in ipairs(companies.members(v.roster, mine)) do
-					local p = v.byId[player]
-					if player ~= status.me_id and p then others[#others + 1] = { id = player, p = p } end
-				end
-				rows[#rows + 1] = heading("Players", "Send a player back to the room's first company.")
-				if #others == 0 then
-					rows[#rows + 1] = note("Nobody else plays for " .. tostring(c.name) .. " yet.")
-				end
-				for _, o in ipairs(others) do
-					rows[#rows + 1] = row({
-						label(tostring(o.p.name)),
-						spacer(),
-						button("Send out", function()
-							companyOp(shared, { Dismiss = { company = c.id, player = o.id } },
-								"Sending " .. tostring(o.p.name) .. " out of " .. c.name)
-						end, "Send " .. tostring(o.p.name) .. " back to the room's first company"),
-					}, style{ size = { INNER_W, AUTO } })
-					rows[#rows + 1] = gap(4)
-				end
-				rows[#rows + 1] = gap(14)
-			end
-			-- Its loans, and the loans the game offers now.
-			rows[#rows + 1] = heading("Loans", "Borrowed by " .. tostring(c.name) .. " on the terms the game offers.")
-			local any = false
-			for _, loan in ipairs(v.roster.loans or {}) do
-				if loan.company == mine then
-					any = true
-					rows[#rows + 1] = row({
-						column({
-							label(money(loan.remaining) .. " owed of " .. money(loan.amount)),
-							note(money(loan.payment) .. " a month · " .. (loan.months - loan.paid) .. " months left"),
-						}),
-						spacer(),
-						button("Repay", function()
-							companyOp(shared, nil, "Repaying " .. money(loan.remaining), { Loan = { Repay = { loan = {
-								type = "Custom", amount = loan.amount, duration = 1, percentage = 0, id = loan.id } } } })
-						end, "Pay back what is still owed now"),
-					}, style{ size = { INNER_W, AUTO } })
-					rows[#rows + 1] = gap(6)
-				end
-			end
-			for _, offer in ipairs(v.roster.offers or {}) do
+			local offers = {}
+			for _, offer in ipairs(roster.offers or {}) do
 				if type(offer) == "table" and type(offer.amount) == "number" then
-					any = true
-					local rate = string.format("%g%% a year", (offer.percentage or 0) * 100)
-					rows[#rows + 1] = row({
-						label(money(offer.amount), "font-scale-body", sized(ACCESS_NAME_W, AUTO)),
-						note(rate),
-						spacer(),
-						button("Borrow", function()
+					offers[#offers + 1] = button("Borrow " .. money(offer.amount),
+						string.format("Borrow %s at %g%% a year", money(offer.amount), (offer.percentage or 0) * 100),
+						function()
 							local terms = { type = offer.type, amount = offer.amount, duration = offer.duration,
 								percentage = offer.percentage }
 							companyOp(shared, nil, "Borrowing " .. money(offer.amount),
 								{ Loan = { Take = { next = terms, offer = terms } } })
-						end, "Borrow " .. money(offer.amount) .. " at " .. rate),
-					}, style{ size = { INNER_W, AUTO } })
-					rows[#rows + 1] = gap(4)
+						end)
 				end
 			end
-			if not any then rows[#rows + 1] = note("No loans, and the game offers none now.") end
-			rows[#rows + 1] = gap(14)
-		else
-			rows[#rows + 1] = heading(v.first and tostring(v.first.name) or "Your company",
-				"You play for the room's first company, which everyone shares.")
-			rows[#rows + 1] = note("Rename it in the game's company window.")
-			rows[#rows + 1] = gap(14)
+			for _, offer in ipairs(offers) do row({ offer }) end
 		end
-		-- A company of your own.
-		local function found(t)
-			if blank(t) then return end
-			companyOp(shared, { Create = { name = t } }, "Founding " .. t)
-			drafts.found:set("")
-		end
-		rows[#rows + 1] = heading("A company of your own", "Found one and play for it.")
-		fieldRow({
-			input(drafts.found, "A company of your own", FIELD_W, found),
-			button("Found", function() found(drafts.found:get()) end, "Found a company and play for it", "primary"),
-		})
-		return rows
+		if shared.companyNote then line(shared.companyNote) end
 	end
 
-	-- About how tall a tab is, in the style sheet's pixels, from what it
-	-- shows: no layout can be measured from Lua, so each row counts as its
-	-- usual height (a heading with its line 52, a field or button row 40, a
-	-- player 56, a company card 76, a note 18). Only for choosing between
-	-- a scroll area and the tab's own height, so near enough is enough.
-	local HEADING_H, ROW_H, NOTE_H, SECTION_GAP = 52, 40, 18, 14
-	tabHeight = function(shown, v, status, drafts)
-		if shown == "players" or v == nil then return 26 + #(status.players or {}) * 56 end
-		if shown == "companies" then
-			return 26 + #v.ordered * 76 + (drafts.prompt:get() ~= nil and ROW_H or 0)
-		end
-		local h = HEADING_H + ROW_H
-		if v.myCompany and v.mine ~= 0 then
-			h = h + HEADING_H + ROW_H + SECTION_GAP
-			if v.iHead then
-				local members = #require("tpf3mp.companies").members(v.roster, v.mine)
-				h = h + HEADING_H + ROW_H + SECTION_GAP
-					+ HEADING_H + NOTE_H + 6 + ROW_H * #v.roster.list + SECTION_GAP
-					+ HEADING_H + ROW_H * math.max(1, members - 1) + SECTION_GAP
-			end
-			local loans = 0
-			for _, loan in ipairs(v.roster.loans or {}) do if loan.company == v.mine then loans = loans + 1 end end
-			h = h + HEADING_H + ROW_H * math.max(1, loans + #(v.roster.offers or {})) + SECTION_GAP
-		else
-			h = h + HEADING_H + NOTE_H + SECTION_GAP
-		end
-		return h
-	end
-
-	-- The room page in the game: a header with the room, its invite code
-	-- with Copy, its speed and whether this world matches the room's; the
-	-- tabs Players, Companies and Your company on the left; the chat on the
-	-- right; and what just happened and Leave room, which asks first, at
-	-- the bottom.
-	local function windowContent(status, draft, drafts, confirm, tab)
+	-- The room page in the game: the room, its speed, whether this world
+	-- matches the room's, its invite code with Copy; the players, each with
+	-- their key's banner, a portrait they picked, what marks them and how
+	-- far their game is; the companies; the chat; and Leave room, which asks
+	-- first.
+	local function windowRows(status, draft, drafts, confirm)
 		local shared = ui()
 		local function redraw() shared.version = shared.version + 1 end
-		local function send(t)
+		local function send(text)
 			local l = shared.link
-			if not l or type(t) ~= "string" or t:match("^%s*$") then return end
-			local ok, why = l:say(t)
+			if not l or type(text) ~= "string" or text:match("^%s*$") then return end
+			local ok, why = l:say(text)
 			if ok then
 				draft:set("")
 			else
@@ -1271,166 +1070,167 @@ function data()
 			end
 			redraw()
 		end
-
-		-- The header.
-		local top = { picture(GLYPH, 28, 28), gap(10), label(tostring(status.room), "font-scale-title-3") }
+		local rows = { label(status.room, "font-scale-title-3", 740, 36), gap(6) }
+		local statusRow = {}
 		if status.competitive ~= nil then
-			top[#top + 1] = gap(10)
-			top[#top + 1] = badge(status.competitive and "Competitive" or "Co-op",
-				status.competitive and "warning" or "success")
+			statusRow[#statusRow + 1] = label(status.competitive and "Competitive" or "Co-op",
+				"font-scale-annotation, " .. (status.competitive and "warning" or "success"))
+			statusRow[#statusRow + 1] = gap(16)
 		end
-		top[#top + 1] = spacer()
-		if status.speed then
-			top[#top + 1] = badge("Speed " .. speedText(status.speed), "info")
-			top[#top + 1] = gap(6)
+		if status.speed then statusRow[#statusRow + 1] = label("Speed: " .. speedText(status.speed), "font-scale-annotation") end
+		statusRow[#statusRow + 1] = gap(16)
+		statusRow[#statusRow + 1] = label("Host controls speed", "font-scale-annotation")
+		statusRow[#statusRow + 1] = gap(16)
+		if status.diverged then
+			statusRow[#statusRow + 1] = label("Resyncing your world", "font-scale-annotation, warning")
+		else
+			statusRow[#statusRow + 1] = label("Worlds match", "font-scale-annotation, success")
 		end
-		top[#top + 1] = status.diverged and badge("Resyncing", "warning") or badge("Worlds match", "success")
-		local header = { row(top, style{ size = { WIDTH - 40, AUTO } }) }
+		rows[#rows + 1] = box(statusRow, true)
+		if status.diverged then
+			rows[#rows + 1] = label("Your world differed at step " .. tostring(status.diverged)
+				.. ". The room's world is on its way.", "font-scale-annotation, warning", 740, 64)
+		end
 		-- The room's invite code alone (without the server the launcher may
 		-- put before it), and Copy: the hook puts it on the clipboard, and
 		-- the button says "Copied" for a moment.
 		local code = type(status.invite) == "string" and status.invite:match("(%S+)%s*$")
 		if code then
-			header[#header + 1] = gap(6)
-			header[#header + 1] = row({
-				note("Invite code"),
+			rows[#rows + 1] = gap(6)
+			rows[#rows + 1] = box({
+				label("Invite code", "font-scale-annotation"),
 				gap(8),
 				label(code, "font-scale-title-4, info"),
 				gap(10),
-				button((shared.copied or 0) > 0 and "Copied" or "Copy", function()
-					local l = shared.link
-					local ok, why = false, "not linked"
-					if l then ok, why = l:copy(code) end
-					if ok then
-						shared.copied = COPIED_FRAMES
-					else
-						shared.leaveNote = "Not copied: " .. tostring(why)
-					end
-					redraw()
-				end, "Copy the invite code, to paste it to your friends"),
+				windowButton((shared.copied or 0) > 0 and "Copied" or "Copy",
+					"Copy the invite code, to paste it to your friends", function()
+						local l = shared.link
+						local ok, why = false, "not linked"
+						if l then ok, why = l:copy(code) end
+						if ok then
+							shared.copied = COPIED_FRAMES
+						else
+							shared.leaveNote = "Not copied: " .. tostring(why)
+						end
+						redraw()
+					end),
 				gap(10),
-				note("Friends join with it from their game's Multiplayer window."),
-			})
+				label("Friends join with it from their game's Multiplayer window.", "font-scale-annotation"),
+			}, true)
 		end
-		if status.diverged then
-			header[#header + 1] = gap(6)
-			header[#header + 1] = label("Your world differed from the room's at step " .. tostring(status.diverged)
-				.. "; the room's is on its way", "font-scale-body, warning")
-		end
-
-		-- The tabs, and the one shown.
-		local v = rosterView(status, shared)
-		local tabs = { { "players", "Players" } }
-		if v then
-			tabs[#tabs + 1] = { "companies", "Companies" }
-			tabs[#tabs + 1] = { "yours", "Your company" }
-		end
-		local shown = tabs[1][1]
-		for _, t in ipairs(tabs) do if t[1] == tab:get() then shown = t[1] end end
-		local bar
-		if #tabs == 1 then
-			bar = label(tabs[1][2], "font-scale-title-4")
-		else
-			local buttons = {}
-			for _, t in ipairs(tabs) do
-				buttons[#buttons + 1] = button(t[2], function()
-					tab:set(t[1])
-					redraw()
-				end, nil, t[1] == shown and "primary" or "secondary")
-			end
-			bar = row(spaced(buttons, 6))
-		end
-		local body
-		if shown == "companies" then
-			body = companiesTab(v, shared, drafts)
-		elseif shown == "yours" then
-			body = yourCompanyTab(v, status, shared, drafts)
-		else
-			body = playersTab(status)
-		end
-		-- The tab at the height of what it holds: in a scroll area past
-		-- BODY_MAX, and no shorter than BODY_MIN, so the window neither
-		-- runs off the screen nor jumps much between tabs.
-		local tall = tabHeight(shown, v, status, drafts)
-		local content
-		if tall > BODY_MAX then
-			content = builtin.ScrollArea{
-				meta = meta(sized(MAIN_W, BODY_MAX)),
-				horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
-				verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
-				content = column(body, style{ size = { INNER_W, AUTO } }),
+		rows[#rows + 1] = gap(18)
+		local banners = require("tpf3mp.banners")
+		local players, online = {}, 0
+		for _, p in ipairs(status.players or {}) do
+			local tags = {}
+			if p.owner then tags[#tags + 1] = "host" end
+			if p.me then tags[#tags + 1] = "you" end
+			if not p.connected then tags[#tags + 1] = "away" end
+			if p.connected then online = online + 1 end
+			-- How far their game is with the room's world: Downloading,
+			-- Loading, Playing (tpf3mp/banners.lua, as the main menu's
+			-- window says it).
+			local stage = p.connected and banners.stage(p, true) or nil
+			local name = { label(p.name, "font-scale-body", PLAYERS_WIDTH - 40 - (banners.portraitOf(p) and PORTRAIT + 8 or 0), 16) }
+			-- A campaign character's portrait the player picked, beside their
+			-- name: the hook passes it only where this game has the picture.
+			local portrait = banners.portraitOf(p)
+			if portrait then name = { picture(portrait, PORTRAIT, PORTRAIT), gap(8), name[1] } end
+			local card = {
+				picture(banners.picture(banners.of(p)), BANNER_W, BANNER_H),
+				gap(6),
+				box(name, true),
 			}
-		else
-			if tall < BODY_MIN then
-				body[#body + 1] = builtin.Component{
-					meta = meta(sized(1, BODY_MIN - tall)),
-					mouseTransparent = true,
-					layout = builtin.BoxLayout{ children = {} },
-				}
+			if #tags > 0 or not stage then
+				card[#card + 1] = label(#tags > 0 and table.concat(tags, " · ") or "playing",
+					"font-scale-annotation" .. (p.me and ", info" or ""), nil, 16)
 			end
-			content = column(body, style{ size = { INNER_W, AUTO } })
+			if stage then
+				card[#card + 1] = label(stage, "font-scale-annotation, "
+					.. ((stage == "Playing" or stage == "Ready") and "success" or "warning"), nil, 16)
+			end
+			players[#players + 1] = box(card, false, PLAYERS_WIDTH - 24, 10, true)
+			players[#players + 1] = gap(8)
 		end
-		local main = column({ bar, gap(10), content }, style{ size = { MAIN_W, AUTO } })
-
-		-- The chat: the newest lines, and a field to write to the room.
-		local lines = {}
+		local companies = {}
+		companyRows(companies, status, shared, drafts)
+		if #companies == 0 then companies[1] = label("Waiting for the companies...", "font-scale-annotation") end
+		rows[#rows + 1] = box({
+			box({ label("Players", "font-scale-title-4"),
+				label(online .. " of " .. #(status.players or {}) .. " online", "font-scale-annotation"), gap(10),
+				scroll(players, PLAYERS_WIDTH, BODY_HEIGHT) }, false, PLAYERS_WIDTH),
+			gap(20),
+			box({ label("Companies", "font-scale-title-4"),
+				label("Choose who you build with", "font-scale-annotation"), gap(10),
+				scroll(companies, COMPANIES_WIDTH, BODY_HEIGHT) }, false, COMPANIES_WIDTH),
+		}, true)
+		rows[#rows + 1] = gap(18)
+		rows[#rows + 1] = label("Chat", "font-scale-title-4")
+		rows[#rows + 1] = gap(6)
+		local chat = {}
+		-- The newest lines, in a bounded panel. The composer stays visible.
 		for i = math.max(1, #shared.lines - CHAT_SHOWN + 1), #shared.lines do
-			lines[#lines + 1] = label(shared.lines[i])
-			lines[#lines + 1] = gap(3)
+			chat[#chat + 1] = label(shared.lines[i], "font-scale-body", 720, 64)
+			chat[#chat + 1] = gap(4)
 		end
-		if #shared.lines == 0 then lines[1] = note("Nobody said anything yet.") end
-		local chat = column({
-			label("Chat", "font-scale-title-4"),
-			gap(10),
-			column(lines, style{ size = { CHAT_W, AUTO } }),
-			gap(10),
-			row({
-				input(draft, "Say something to the room", CHAT_W - 80, send, { maxLength = 280 }),
+		if #chat == 0 then chat[1] = label("Nobody said anything yet.", "font-scale-annotation") end
+		rows[#rows + 1] = scroll(chat, 760, 92)
+		rows[#rows + 1] = gap(8)
+		rows[#rows + 1] = box({
+				builtin.TextInputField{
+					meta = { class = "font-scale-body", styleSheet = sheet(652, 36) },
+					placeholderText = "Say something to the room",
+					value = draft:get(),
+					maxLength = 280,
+					acceptOnFocusLoss = false,
+					-- Clicking away keeps what was typed, and a redraw shows
+					-- it: Send sends what the field shows, never a line the
+					-- field dropped (it emptied itself on a cancel, build
+					-- 40408, while Send still had the text).
+					resetValueOnCancel = false,
+					onTyping = function(text) draft:set(text) end,
+					onCancel = function() shared.version = shared.version + 1 end,
+					onValueChange = function(text) send(text) end,
+				},
 				gap(8),
-				button("Send", function() send(draft:get()) end),
-			}),
-		}, style{ size = { CHAT_W, AUTO } })
-
-		-- The footer: what just happened, and Leave room, which asks first.
-		local footer = {}
-		if shared.companyNote then footer[#footer + 1] = label(shared.companyNote, "font-scale-body, info") end
-		if shared.leaveNote then footer[#footer + 1] = label(shared.leaveNote, "font-scale-body, info") end
+				builtin.Button{
+					meta = { class = "primary", styleSheet = sheet(100, 36) },
+					content = label("Send"),
+					onClick = function() send(draft:get()) end,
+				},
+			}, true)
+		-- What just happened, and Leave room, which asks first.
+		rows[#rows + 1] = gap(12)
+		if shared.leaveNote then rows[#rows + 1] = label(shared.leaveNote, "font-scale-body, info", 740, 64) end
 		local leave
 		if confirm:get() then
-			footer[#footer + 1] = label("Leave the room? Your game stops following it; start the game again from the "
-				.. "launcher for the next room.", "font-scale-body, warning")
+			rows[#rows + 1] = label("Leave the room? Your game stops following it; start the game again from the "
+				.. "launcher for the next room.", "font-scale-body, warning", 740, 64)
 			leave = {
-				button("Leave", function()
+				windowButton("Leave", nil, function()
 					confirm:set(false)
 					local l = shared.link
 					local ok, why = false, "not linked"
 					if l then ok, why = l:leave() end
 					shared.leaveNote = ok and "Leaving the room..." or ("Not left: " .. tostring(why))
 					redraw()
-				end, nil, "primary"),
-				button("Stay", function()
+				end, "primary"),
+				gap(8),
+				windowButton("Stay", nil, function()
 					confirm:set(false)
 					redraw()
 				end),
 			}
 		else
 			leave = {
-				button("Leave room", function()
+				windowButton("Leave room", "Give up your seat in the room", function()
 					confirm:set(true)
 					redraw()
-				end, "Give up your seat in the room"),
+				end),
 			}
 		end
-		footer[#footer + 1] = gap(6)
-		footer[#footer + 1] = row(spaced(leave, 8))
-
-		return column({
-			column(header),
-			gap(14),
-			row({ main, gap(COLUMN_GAP), chat }),
-			gap(10),
-			column(footer),
-		}, style{ size = { WIDTH, AUTO }, padding = PADDING, background = backdrop() })
+		rows[#rows + 1] = box(leave, true)
+		return rows
 	end
 
 	-- The Multiplayer window, which the game's window container shows, as
@@ -1446,33 +1246,27 @@ function data()
 				local draft = react.useRef("")
 				local confirmLeave = react.useRef(false)
 				local drafts = { rename = react.useRef(""), found = react.useRef(""),
-					joinPassword = react.useRef(""), lockPassword = react.useRef(""),
-					-- The company whose password Switch asks for, or nil.
-					prompt = react.useRef(nil) }
-				-- The tab shown: players, companies or yours.
-				local tab = react.useRef("players")
+					joinPassword = react.useRef(""), lockPassword = react.useRef("") }
 				react.onStep(function()
 					local version = ui().version
 					if version ~= drawn:old() then drawn:set(version) end
 				end)
 				local _ = drawn:old()
 				local status = ui().status
-				local content
+				local rows
 				if status then
 					-- Should the page's Lua fail, the error, never a window
 					-- that cannot show: the game's close button still works.
-					local ok, page = pcall(windowContent, status, draft, drafts, confirmLeave, tab)
+					local ok, page = pcall(windowRows, status, draft, drafts, confirmLeave)
 					if ok then
-						content = page
+						rows = page
 					else
 						say("the Multiplayer window failed: " .. tostring(page))
-						content = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical,
-							children = { builtin.TextView{ meta = { class = "font-scale-body, error" },
-								text = "The Multiplayer window failed: " .. tostring(page) } } }
+						rows = { builtin.TextView{ meta = { class = "font-scale-body, error" },
+							text = "The Multiplayer window failed: " .. tostring(page) } }
 					end
 				else
-					content = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical,
-						children = { builtin.TextView{ text = "Not in a room." } } }
+					rows = { builtin.TextView{ text = "Not in a room." } }
 				end
 				return builtin.Window{
 					id = "tpf3mp.multiplayer.window",
@@ -1484,7 +1278,7 @@ function data()
 					-- the mods' buttons, which it would cover at 0, 0.
 					initialX = 0,
 					initialY = 0.15,
-					content = content,
+					content = box(rows, false, WINDOW_WIDTH, 20, true),
 				}
 			end)
 		end

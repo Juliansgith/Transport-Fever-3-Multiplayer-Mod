@@ -25,8 +25,8 @@ use tpf3mp_proto::{
     Event, EventBody, FixedBytes, LaneDigest, PlayerId, Seal,
     action::{
         Action, Bulldoze, CompanyId, CompanyOp, ConstructionBuild, ConstructionRef, EdgeEnds,
-        LineChange, LineId, LoanOp, Network, Polyline, Pos, Prospect, ReplaceVehicle, Resolve,
-        Structure, Terraform, VehicleChange,
+        JunctionChange, JunctionConfig, LineChange, LineId, LoanOp, Network, Polyline, Pos,
+        Prospect, ReplaceVehicle, Resolve, Structure, Terraform, VehicleChange,
     },
 };
 
@@ -52,8 +52,11 @@ pub const CAR_CAPACITY: u32 = 40;
 pub const MAX_WAITING: u32 = 1_000;
 
 /// Steps a prospection takes before its outcome, the model's stand-in for
-/// TF3's six months.
-pub const PROSPECTION_STEPS: u64 = 300;
+/// TF3's six months. Far more than a scenario's acts take to be ordered
+/// (some 100 steps each at the regression runs' pace, more on a loaded
+/// machine), so the prospecting scenario's prospections are all still under
+/// way when its last one is.
+pub const PROSPECTION_STEPS: u64 = 2_000;
 /// In hundredths: how often a prospection finds an industry.
 pub const PROSPECTION_CHANCE: u64 = 60;
 
@@ -288,6 +291,7 @@ struct State {
     member_of: BTreeMap<PlayerId, u32>,
     companies: BTreeMap<u32, Company>,
     edges: BTreeMap<EdgeKey, Edge>,
+    junctions: BTreeMap<(u8, P), JunctionConfig>,
     objects: BTreeMap<(EdgeKey, P), EdgeObject>,
     constructions: BTreeMap<(String, P), Construction>,
     stations: BTreeMap<u32, Station>,
@@ -613,12 +617,10 @@ impl State {
             // A notification's sound played: nothing the model keeps.
             Action::NotificationSeen { .. } => Ok(()),
             Action::ApplyRank { level } => self.apply_rank(company, *level),
+            Action::EditJunctions(edit) => self.edit_junctions(&edit.changes, company),
             // The game's subsidy script decides offers and their money; the
             // model has no subsidies.
             Action::Subsidy(_) => Ok(()),
-            // A junction's turns, lights and crosswalks: the model keeps no
-            // junction configurations.
-            Action::EditJunctions(_) => Ok(()),
             // A name: the model keeps no names.
             Action::Rename { .. } => Ok(()),
             // The notification log and a warehouse's stocks: the model keeps
@@ -875,6 +877,48 @@ impl State {
         Ok(())
     }
 
+    fn edit_junctions(&mut self, changes: &[JunctionChange], company: u32) -> Result<(), Refusal> {
+        for change in changes {
+            let network = net(change.node.network);
+            let at = p(&change.node.at);
+            let incident: Vec<_> = self
+                .edges
+                .iter()
+                .filter(|((n, a, b), _)| *n == network && (*a == at || *b == at))
+                .collect();
+            if incident.is_empty() {
+                refuse!("the junction no longer exists");
+            }
+            if incident
+                .iter()
+                .any(|(_, e)| e.owner.is_some_and(|owner| owner != company))
+            {
+                refuse!("the junction touches another company's edge");
+            }
+            if let Some(config) = &change.config {
+                for reference in config
+                    .connections
+                    .iter()
+                    .flat_map(|c| [&c.incoming, &c.outgoing])
+                    .chain(config.crosswalks.iter())
+                {
+                    let key = edge_key(
+                        net(reference.network),
+                        p(&reference.ends.a),
+                        p(&reference.ends.b),
+                    );
+                    if !self.edges.contains_key(&key) || (key.1 != at && key.2 != at) {
+                        refuse!("a lane or crosswalk outside its junction");
+                    }
+                }
+                self.junctions.insert((network, at), config.clone());
+            } else {
+                self.junctions.remove(&(network, at));
+            }
+        }
+        Ok(())
+    }
+
     fn build(
         &mut self,
         network: Network,
@@ -992,6 +1036,7 @@ impl State {
                 refuse!("something stands on the edge");
             }
         }
+        self.edit_junctions(&polyline.junctions, company)?;
         self.charge(company, cost)
     }
 
@@ -1444,6 +1489,7 @@ pub struct LineView {
 /// game's hook answers the same questions from the game's own state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observation {
+    pub junctions: usize,
     /// The money of each player's company, in the order they joined, so
     /// actors first.
     pub money: Vec<Option<i64>>,
@@ -1569,7 +1615,7 @@ impl ModelWorld {
             .collect();
         let stations: Vec<(u32, P)> = s.stations.iter().map(|(id, st)| (*id, st.at)).collect();
         vec![
-            lane_digest(lane::NETWORK, &(&s.edges, &s.terrain)),
+            lane_digest(lane::NETWORK, &(&s.edges, &s.terrain, &s.junctions)),
             lane_digest(
                 lane::CONSTRUCTIONS,
                 &(
@@ -1619,6 +1665,7 @@ impl ModelWorld {
             .collect();
         let edges = |n: u8| s.edges.keys().filter(|(of, _, _)| *of == n).count();
         Observation {
+            junctions: self.state.junctions.len(),
             money: s
                 .players
                 .iter()
@@ -1737,6 +1784,37 @@ mod tests {
             ));
         }
         world
+    }
+
+    #[test]
+    fn junction_settings_change_the_network_digest_and_survive_save_load() {
+        use crate::regress::{library, script::Item};
+        let player = PlayerId(FixedBytes([7; 32]));
+        let mut world = joined(&[player]);
+        let scenario = library::scenarios()
+            .into_iter()
+            .find(|s| s.name == "junctions")
+            .unwrap();
+        let mut actions = scenario.items.iter().filter_map(|item| match item {
+            Item::Act { action, .. } => Some(action),
+            _ => None,
+        });
+        act(&mut world, 2, player, actions.next().unwrap());
+        let before = world.lanes()[0];
+        let edit = actions.next().unwrap();
+        let Action::EditJunctions(edit_data) = edit else {
+            panic!("junction action");
+        };
+        act(&mut world, 3, player, edit);
+        assert!(world.ignored().is_empty());
+        assert_ne!(world.lanes()[0], before);
+        assert_eq!(
+            world.state.junctions.values().next(),
+            edit_data.changes[0].config.as_ref()
+        );
+        let restored = ModelWorld::load(&world.save()).unwrap();
+        assert_eq!(restored.state.junctions, world.state.junctions);
+        assert_eq!(restored.lanes(), world.lanes());
     }
 
     fn stations(world: &mut ModelWorld, count: u32) {

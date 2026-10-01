@@ -451,38 +451,52 @@ impl PasswordGuard {
     }
 }
 
-/// Passwords one member may send with intents in [`SECRET_WINDOW`]. The room
+/// Passwords one player may send with intents in [`SECRET_WINDOW`]. The room
 /// cannot tell a right company password from a wrong one (every game
 /// compares the seals), so it counts them all: enough to set a password
 /// and join a few companies, and at most about 2,900 guesses a day, as
 /// D13 holds a room's own password to.
 const SECRETS_PER_WINDOW: u32 = 20;
+/// Passwords the whole room takes in [`SECRET_WINDOW`]: a new player key
+/// costs nothing, so a player's own count alone does not bound guesses.
+const ROOM_SECRETS_PER_WINDOW: u32 = 60;
 const SECRET_WINDOW: Duration = Duration::from_secs(10 * 60);
 
-/// Counts one member's passwords in the current window.
-struct SecretGuard {
+/// Counts the room's passwords in the current window, by player and in all.
+/// It is the room's, not a membership's: leaving and joining again gives no
+/// password back. It holds at most one entry for each password taken.
+struct SecretBudget {
     window_start: Instant,
-    used: u32,
+    room_used: u32,
+    used: BTreeMap<PlayerId, u32>,
 }
 
-impl SecretGuard {
+impl SecretBudget {
     fn new() -> Self {
         Self {
             window_start: Instant::now(),
-            used: 0,
+            room_used: 0,
+            used: BTreeMap::new(),
         }
     }
 
-    /// Takes one, if the window has one left.
-    fn take(&mut self, now: Instant) -> bool {
+    /// Takes one for `player`, if the window has one left for them and for
+    /// the room.
+    fn take(&mut self, player: &PlayerId, now: Instant) -> bool {
         if now.saturating_duration_since(self.window_start) >= SECRET_WINDOW {
             self.window_start = now;
-            self.used = 0;
+            self.room_used = 0;
+            self.used.clear();
         }
-        if self.used >= SECRETS_PER_WINDOW {
+        if self.room_used >= ROOM_SECRETS_PER_WINDOW {
             return false;
         }
-        self.used += 1;
+        let used = self.used.entry(*player).or_insert(0);
+        if *used >= SECRETS_PER_WINDOW {
+            return false;
+        }
+        *used += 1;
+        self.room_used += 1;
         true
     }
 }
@@ -515,7 +529,6 @@ struct Member {
     payload_bytes: TokenBucket,
     chats: TokenBucket,
     /// Passwords sent with intents.
-    secrets: SecretGuard,
     /// What this member must receive before it can follow the game.
     needs: Needs,
     /// The snapshot this member's connection may fetch.
@@ -715,6 +728,8 @@ pub(crate) struct Room {
     /// Since when no member has been connected, while the game runs.
     unattended_since: Option<Instant>,
     password_guard: PasswordGuard,
+    /// Company passwords sent with intents ([`SecretBudget`]).
+    secret_budget: SecretBudget,
     /// Players the owner removed, who cannot join again.
     banned: BTreeSet<PlayerId>,
     /// Counts this room against the address that created it until it
@@ -847,6 +862,7 @@ impl Room {
             compact_log_at: spec.env.compact_log_at,
             unattended_since: None,
             password_guard: PasswordGuard::new(),
+            secret_budget: SecretBudget::new(),
             banned: BTreeSet::new(),
             _share: Some(spec.share),
             content: None,
@@ -1043,7 +1059,6 @@ impl Room {
                 intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
                 payload_bytes: TokenBucket::new(PAYLOAD_BYTES_PER_SECOND, PAYLOAD_BURST),
                 chats: TokenBucket::new(CHATS_PER_SECOND, CHAT_BURST),
-                secrets: SecretGuard::new(),
                 needs: Needs::Nothing,
                 offered: None,
                 loaded: None,
@@ -1118,6 +1133,7 @@ impl Room {
             // from here.
             unattended_since: None,
             password_guard: PasswordGuard::new(),
+            secret_budget: SecretBudget::new(),
             banned,
             _share: None,
             content,
@@ -2132,7 +2148,7 @@ impl Room {
                 let member = &mut self.members[index];
                 if !member.intents.take(now, 1)
                     || !member.payload_bytes.take(now, payload.len() as u64)
-                    || (secret.is_some() && !member.secrets.take(now))
+                    || (secret.is_some() && !self.secret_budget.take(&player, now))
                 {
                     Some(IntentRejection::RateLimited)
                 } else if let Err(code) = self.ruleset.validate(&player, &payload) {
@@ -3168,7 +3184,6 @@ impl Member {
             intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
             payload_bytes: TokenBucket::new(PAYLOAD_BYTES_PER_SECOND, PAYLOAD_BURST),
             chats: TokenBucket::new(CHATS_PER_SECOND, CHAT_BURST),
-            secrets: SecretGuard::new(),
             needs: Needs::Nothing,
             offered: None,
             loaded: None,
@@ -4355,6 +4370,34 @@ mod tests {
         );
     }
 
+    /// A player's company passwords are counted by the room, not by their
+    /// membership: leaving and joining again gives none back; and the room
+    /// takes only so many in all, however many player keys send them.
+    #[test]
+    fn passwords_are_counted_by_player_and_by_room() {
+        let mut budget = SecretBudget::new();
+        let now = Instant::now();
+        for _ in 0..SECRETS_PER_WINDOW {
+            assert!(budget.take(&player(1), now));
+        }
+        assert!(
+            !budget.take(&player(1), now),
+            "the player's share is spent, left and joined again or not"
+        );
+        // Fresh keys, each with a share of its own, until the room's is spent.
+        let mut taken = SECRETS_PER_WINDOW;
+        let mut key = 2;
+        while budget.take(&player(key), now) {
+            taken += 1;
+            if taken.is_multiple_of(SECRETS_PER_WINDOW) {
+                key += 1;
+            }
+        }
+        assert_eq!(taken, ROOM_SECRETS_PER_WINDOW);
+        // A new window gives them back.
+        assert!(budget.take(&player(1), now + SECRET_WINDOW));
+    }
+
     fn test_member() -> Member {
         // A link needs a live QUIC connection. Pacing only reads `streaming`,
         // which the room keeps false whenever the link is gone.
@@ -4376,7 +4419,6 @@ mod tests {
             intents: TokenBucket::new(1, 1),
             payload_bytes: TokenBucket::new(1, 1),
             chats: TokenBucket::new(1, 1),
-            secrets: SecretGuard::new(),
             needs: Needs::Nothing,
             offered: None,
             loaded: None,

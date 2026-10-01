@@ -71,6 +71,8 @@
 --                                   -- | nil: whether the room gave them
 --     personal = function(),        -- optional; this player's personal
 --                                   -- mods (names, one a line) | nil
+--     shared  = function(),         -- optional; the room's shared mods
+--                                   -- (names, one a line) | nil
 --     note    = function(key, value), -- a short string one of the game's
 --                                   -- Lua states notes for the others ("" to
 --                                   -- forget); note(key) reads it -> string
@@ -405,6 +407,15 @@ function Link:personal()
 	if not ok then return set end
 	for _, name in ipairs(lines(text)) do set[name] = true end
 	return set
+end
+
+-- The room's shared mods, as a list of names; nil from a hook without
+-- `shared` or without the room's lists.
+function Link:shared()
+	if type(self.native.shared) ~= "function" then return nil end
+	local ok, text = pcall(self.native.shared)
+	if not ok or type(text) ~= "string" then return nil end
+	return lines(text)
 end
 
 -- The game script begins (true) or ends applying the room's actions.

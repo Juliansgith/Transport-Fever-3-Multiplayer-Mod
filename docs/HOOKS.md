@@ -659,7 +659,18 @@ call of the speed getter, as TPF2MP's speed hook
   nothing in the room's game but the display, until the room follows them.
   Nothing may send the debug step command during a room: its pending count
   would add updates to a call.
-- **The speed row asks the room.** The getter's detour only reads: the
+- **The speed row follows the room.** The Lua replacement
+  `gui/tpf3mp/speed_control.script.lua` highlights the accepted speed for guests from
+  the hook's room status, including pause. Guests see disabled buttons
+  with "Host controls speed" help; their keyboard speed shortcuts are
+  disabled through both `game.tl`'s internal `game_react_globals` table
+  and the public module that copies its functions. It copies feature
+  flags instead of changing the game's table, preserving mission/mod
+  restrictions. Becoming host or leaving the room restores the stock
+  recipe and shortcuts, including the host's keyboard hints. Updating the display
+  never sends `makeGameSetSpeedCmd`: feeding the room's speed back into
+  the game's local value would be mistaken for a player's request.
+- **The host's speed row asks the room.** The getter's detour only reads: the
   game's own speed, the speed row's value, every time the game asks
   (`CGame::Sync` and the game UI ask every frame, paused or not). When it
   changes in the room's game, the hook sends `ToAgent::Speed` and the agent
@@ -1040,7 +1051,10 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   menu's Lua (no load, no window close): the host's game hung on
   2026-09-30 when the frame asked the progress monitor (`getTask`) during
   a load, whose lock the loader holds while it runs frames. The chunk no
-  longer asks the progress monitor at all. A menu frame the game runs
+  longer asks the progress monitor at all (dev's `busy()` check of it,
+  from #36, is left out of the merged chunk for this reason); before a
+  load it closes the lobby through the close the lobby leaves it
+  (`__tpf3mp_before_load`) and lets the menu draw one frame. A menu frame the game runs
   inside its own `DoStep` (a nested frame, as a load's screen may run) is
   left alone entirely; only the outermost frame does the menu's work.
 - **Follows the room from the menu's frame.** `UI::CMenuUI::DoStep`
@@ -1187,8 +1201,9 @@ game scripts is dropped; anything else is refused, each once in hook.log
 (`handed makeVehicleSetManualDepartureCmd from the personal mod
 celmi_timetables to the room (1 so far)`). Commands from the game's own
 scripts, TPF3-MP's and shared mods run as before. A state without
-`debug.getinfo` cannot tell them apart, and says so in hook.log when the
-player has personal mods.
+`debug.getinfo` cannot tell them apart: it notes `personal-mods-unguarded`,
+after which the hook loads the room's worlds without the player's personal
+mods (docs/MODS.md).
 
 The mod guards the build tools in its game script, whose `guiHandleEvent`
 runs in the GUI's state. The street, track, station and depot, stop and
@@ -2064,7 +2079,7 @@ terrain tools through the hook, and a construction's window its edits:
 - **The road and track modifiers** (`streetTrackModifier`): below.
 - **The terrain tools**, read natively at the click: "Terraforming" below.
 - **The street detail tools** (traffic lights, crosswalks, a junction's
-  lanes) and a junction's window: "The street detail tools" below.
+  lanes) and a junction's window: "Junction tools" below.
 
 A refusal shows its reason in the tool, and the log has each new reason
 with the proposal's shape (`the room cannot carry this ... build`); every
@@ -2115,8 +2130,10 @@ link names its template (`kind`), its decorations by name
 (`edgeDecorationRep.getName`; every game finds its own id with `find`), and
 whether it is locked and owned by the acting company. The town buildings it
 clears every game's build clears again (the build is the player's own,
-`ignoreErrors`), and the node configurations every game makes anew, as for
-a road. Stops and signals on the stretch stay: a new edge between the same
+`ignoreErrors`). Junction changes in the tool's proposal now travel with
+the polyline; otherwise the replay preserves the endpoint configurations
+and remaps their edge references (BUILDING.md, "Junction edits").
+Stops and signals on the stretch stay: a new edge between the same
 places in the same direction as a removed one, listing exactly its objects,
 is the edge rebuilt in place, and every game's build gives it the objects
 of the edge it replaces under their own entities (`engine.keptInPlace`,
@@ -2152,93 +2169,102 @@ lane(s) carrying TRAIN ELECTRIC_TRAIN; ...`. A game whose build fails says
 applied`, and the room's check of the lanes (the network lane reads every
 edge's template) finds it.
 
-### The street detail tools
+### Junction tools
 
-The road tools tab's traffic light tool, crosswalk tool ("Crosswalk Tool",
-`UI::CrosswalkModifier`) and crossing tool ("Crossing Tool",
-`UI::LaneModifier`: a junction's road lanes, and in its tram lanes' mode
-its tram lanes, which may join a tram track to a railway's), and a
-junction's window (its traffic light phases and type,
-`api.engine.util.proposal.createTrafficLightProposal`; a double slip
-switch, `createDoubleSlipSwitchProposal`), change a junction's own
-configuration and nothing else: each proposal takes the node's
-configuration out (`nodeConfigsToRemove`) and puts the one it changed in
-(`nodeConfigsToAdd`). Every one is carried as an `EditJunctions`
-(docs/BUILDING.md, "Junctions alone"), each node by its network and
-position and each edge by its ends, every value as the tool set it, and
-applied in every game in one proposal, all or nothing.
+Build 40408's native lane/crosswalk tools do not emit a Lua proposal preview.
+At the existing `CommandList::Add` hook, `junctions.rs` reads junction-only
+WorldBuildProposals and stores them against the click number through the
+same `tpf3mp_native.built(n)` queue as the module editor. That snapshot
+overrides an older road/construction preview. The Lua command guard also
+captures a window's `createTrafficLightProposal` via `capture.windowBuild`.
+The original player command remains cancelled; each replica uses the
+ordinary ordered replay path. Mixed native geometry proposals keep their
+existing capture path, never a partial junction replacement.
+The reader classifies mixed geometry/construction proposals before imposing
+the standalone junction limit. A live eight-track station attempt generated
+392 node configs (another attempt generated 200); checking the 64-junction
+limit first incorrectly rejected the station before construction capture.
+The regression test covers both sizes and every mixed-proposal vector,
+while oversized standalone junction edits remain refused.
+The corrected reader was tested in two real games on the local server on
+2026-10-01: an eight-track, 320 m station placed and applied on both replicas.
+The same run exercised two module edits after correcting the ownership
+check for unfrozen station track ends (BUILDING.md, "Module edits and upgrades").
 
-Where each comes from on build 40408 (read from the binary and the game's
-Lua, not yet seen in the game):
+Read-only binary evidence (Steam Windows 40408): StreetProposal config
+vectors at +0x60/+0x78; BaseNodeLaneConnectionAndEntity has the component
+at +0 and node at +0x78, stride 0x80. BaseNodeConfig connections/crosswalks
+are at +0/+0x18, double-slip at +0x48, preference at +0x4c, light states at
++0x50, light type at +0x68 and custom phases at +0x70. Connections have
+stride 0x14; phases have stride 0x28. Binding-registration signatures
+at RVAs 0x1768337 and 0x22c395f gate this reader in the profile; the
+static proof resolves both against the installed executable. Crosswalks
+are a `phmap::flat_hash_set<int>` occupying +0x18 through +0x47: control
+bytes and slot pointers, size, capacity and internal bookkeeping. The
+constructor at RVA 0xa4990d is a third profile anchor; the move/copy at
+0x1eda20/0x1fe1e0 and iteration at 0xa49f1a establish this layout. The
+reader checks the sentinel, occupied-slot count, bounds and unique edge
+IDs, skipping empty/deleted slots. The first real crosswalk click on
+2026-10-01 exposed and now regression-covers the earlier incorrect vector
+assumption. Every read, vector count and boolean is checked.
+The API declaration's `userModifiedLaneConnections` is absent from this
+build's binding registration; the adapter does not invent an offset.
 
-- the traffic light tool is a road modifier (`StreetEdgeNodeModifier` with
-  `trafficLights`, `construction_react_util.tl`) and tells game scripts its
-  proposals as `streetTrackModifier`. A modifier proposal that adds and
-  removes no edge or node, which `capture.modify` took for "nothing
-  proposed yet" (so its click was "no proposal seen"), is now read as a
-  change to junctions (`engine.captureJunctions`), as is a street or track
-  tool's of that shape;
-- a junction's window sends its proposal from Lua, which the guard carries
-  (`capture.windowBuild`: a proposal that changes junctions alone);
-- the crosswalk tool and the crossing tool tell game scripts nothing: a
-  click of the crossing tool was stopped with "no proposal seen"
-  (hook.log, 2026-10-01), and so, twice, was joining a tram track to a
-  railway, the crossing tool's tram lanes' mode (INFERRED: the log did not
-  name the tool; it is the tool the game offers for tram lanes, whose tram
-  mode flips the lane connections' `withTram`, 0x539206). Each queues its
-  `WorldBuildProposal` itself with its own calls of `CommandList::Add`,
-  after the factory 0x9ee860 made the command with `playerInitiated` 1: the
-  crosswalk tool's at 0x5290af (in 0x528d30, which its vf2 tail-calls; its
-  lambda's RTTI names `UI::CrosswalkModifier::Apply(bool)`), the crossing
-  tool's at 0x538a80, 0x5391e4 and 0x539368 (in 0x5381a0, its vf2's). So
-  the click is counted and its apply stopped as every player's build is,
-  and the add's detour reads the proposal where `Add` returns 5 bytes past
-  one of them (profile targets `CrosswalkModifier::Apply/Add call` and
-  `LaneModifier::Apply/Add call 1` to `3`;
-  `crates/tpf3mp-hook/src/junctions.rs`). Opening either tool queues
-  nothing: its apply builds the proposal and calls `Add` only on a click
-  (0x528d30 returns before it when not applying).
+Two-game test on 2026-10-01 (Steam Windows 40408, local server, disposable
+copy of `tpf3mp_fixture2.sav`): the host removed a crosswalk, the guest
+restored it, then the guest changed a lane connection and enabled traffic
+lights at the same crossing. Both replicas logged each ordered replay;
+network checkpoint hashes agreed at steps 500, 750, 1000 and 1350. The
+crosswalk and traffic lights also changed visibly in the other game.
+Evidence is in the local `runtime/junction-live-20261001-01/` logs. This
+does not yet cover custom phases/reset, adjacent geometry changes,
+proposal field comparison or rejoining after an edit. The initial load
+also hit a native crash/Lua UI error; a later host-then-guest restart
+worked. That startup failure has not been diagnosed. A rejoined game's
+speed row showed 1x while the room was paused; pause then play resumed it.
 
-What is read (`RegisterUsertypesTransport`, 0x22c1ab0, binds
-`StreetProposal` with `nodeConfigsToAdd` at 0x60 and `nodeConfigsToRemove`
-at 0x78 of the payload, `BaseNodeLaneConnectionAndEntity` with `comp` at 0
-and `entity` at 0x78, 0x80 bytes each as 0xa4ad20 steps them, and
-`LaneConnection` 20 bytes with `segment0`, `lane0`, `segment1`, `lane1`,
-`withRoad`, `withTram` at 0, 4, 8, 0xc, 0x10, 0x11; 0x1767d20 binds
-`BaseNodeConfig` with `laneConnections` at 0, `crosswalks` at 0x18,
-`doubleSlipSwitch` at 0x48, `trafficLightPreference` at 0x4c,
-`trafficLightConfig` at 0x50, its `states` at 0 and `trafficLightType` at
-0x18, `userModifiedTrafficLightStates` at 0x70, and `TrafficLightState`
-with `lockedLanes` at 0, `duration` and `minDuration` at 0x18 and 0x1c,
-`canSkip` at 0x20): the configurations removed, a `vector<int32>`; and
-each one added, its crosswalks a flat hash set of entities (control bytes,
-slots, size and capacity at 0x18, 0x20, 0x28 and 0x30 of the
-configuration, as the crosswalk tool's own lookup and clear in 0x529af0
-read it), walked whole and sorted. The configuration binds no
-`userModifiedLaneConnections`, and the crossing tool writes none: it is
-read as false, as game scripts read it. Every read is checked readable,
-every vector for order and whole elements, every flag for 0 or 1, every
-duration for a finite number; a proposal that adds or removes a node, an
-edge, a stop or a construction besides is refused with what it changes.
-What reads is kept for the click as the table game scripts see a proposal
-in, with `junctions` naming the tool; a reason as `junction tool: the
-<tool>'s change: …`. The GUI takes it with `built(n)` and makes the same
-`EditJunctions` of it as of the traffic light tool's
-(`capture.junctions`); without the profile targets the hook logs so at
-install and those two tools stay refused.
+Full acceptance is still pending. Keep `junctions.strict_junctions` off in
+the normal mod. In matching disposable test mod copies, turn it on and:
 
-Said in `hook.log`: `junction tool: click N queued <tool>: removes the
-configuration of [...]; adds +cfg<node>{tl= lc= cw= phases= dss= um=}` at
-the click; `junctions handed to the room: …` in the player's game; and in
-every game `junctions: -c<nodes> +cfg<node>{...}`, what it sent (with any
-member the game would not take), and `junctions applied: N junction(s):
--cfgStreet(x,y) +cfgStreet(x,y){...}`, the same words in every game.
+1. Start two games through the launcher into one room and the same save.
+   Use the actual tools to toggle crosswalks, lane turns and traffic lights;
+   edit phase timings and reset settings. Repeat from the other player.
+2. Confirm the native capture log names the clicked junction edit, and
+   the emitted action has positions/resource names, with no engine IDs.
+   Compare the engine's proposal against the replay's proposal field by
+   field before treating matching synthetic tests as gameplay evidence.
+3. Check both games' visible crossings, arrows and light settings, then
+   upgrade/split an adjacent road and check that the settings survive.
+   A change that removes a referenced lane must refuse without changing
+   either game, rather than silently replace the configuration.
+4. Compare network checkpoint dumps through subsequent updates and after
+   save/load or rejoin. One-sided edits to a crosswalk, turn or phase in a
+   disposable diagnostic test must cause a network-lane mismatch.
 
-INFERRED, not yet seen in the game: every layout above (static only), that
-the crossing tool's three calls are all junction changes, that the traffic
-light tool's and the window's proposals change junctions alone, and that
-a script proposal that only takes configurations out and puts them in is
-built as the tool's.
+`lua_mod.rs` runs portable capture → wire → replay against two different
+ID spaces and checks the native-click precedence, refusal cases and
+curved-road preservation. `hook/tests/junctions.rs` checks native layouts
+and malformed memory. These tests do not launch the game and do not
+complete the playtest above. AGENTS.md currently prohibits automated game
+launches/modifications; a human must run this check or explicitly override
+that restriction before an agent runs it.
+
+The crosswalk tool ("Crosswalk Tool", `UI::CrosswalkModifier`) and the
+crossing tool ("Crossing Tool", `UI::LaneModifier`: a junction's road
+lanes, and in its tram lanes' mode its tram lanes, which may join a tram
+track to a railway's) queue their `WorldBuildProposal`s with their own
+calls of `CommandList::Add`: the crosswalk tool's at 0x5290af (in
+0x528d30, whose lambda's RTTI names `UI::CrosswalkModifier::Apply(bool)`),
+the crossing tool's at 0x538a80, 0x5391e4 and 0x539368 (in 0x5381a0). The
+profile names them (`CrosswalkModifier::Apply/Add call`,
+`LaneModifier::Apply/Add call 1` to `3`) so that `hook.log` names the tool
+of a click: `junction tool (crossing tool): captured click N`, or `...
+did not read: <why>`, which the GUI logs as `stopped a build the room
+cannot carry: ... [junction tool]`. Every junction-only proposal is read
+alike, wherever it is queued. In the player's game the GUI says
+`junctions handed to the room: N junction(s): Street(x,y){tl= light= lc=
+cw= phases= dss= custom=}`, and every game `junctions applied: ...`, the
+same words (`junctions.summary`).
 
 ### Terraforming
 
@@ -2345,7 +2371,7 @@ matter:
 
 | lane | reads |
 |---|---|
-| 0 network | every street and track edge by its ends (0.1 m) and road template, from the street system's node map |
+| 0 network | street/track endpoints (0.1 m), template and per-lane modes/dimensions/direction; junction positions (1 mm), portable turn/crosswalk references, light preference/resource/phases and flags |
 | 1 constructions | every construction by its file and position (0.1 m) |
 | 2 lines | every line's number of stops |
 | 3 vehicles | each vehicle's state, stop and place on its path: the path edge, the distance along it (1 cm) and the speed (1 cm/s), the simulation's own (`MOVE_PATH.dyn`) |

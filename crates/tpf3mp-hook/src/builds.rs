@@ -32,8 +32,10 @@
 //! natively and kept for that click ([`crate::modules`]). A click whose call
 //! returns into `ProposalAction::DoApply`, the terrain tools', the painter's
 //! and the asset brush's, has its terraform read there ([`crate::terrain`]).
-//! One whose call returns into the crosswalk tool or the crossing tool has
-//! its junction edit read there ([`crate::junctions`]).
+//! Any other click's proposal that changes junctions alone (the crosswalk,
+//! crossing and traffic light tools') has its junction edit read there
+//! ([`crate::junctions`]), the tool named in the log where the profile
+//! names its call.
 //! While the room's actions are applied, a build is filled with the
 //! terraform the game script armed, if it armed one.
 //!
@@ -192,8 +194,13 @@ unsafe extern "C" fn add_detour(
                 crate::modules::record(&crate::modules::Process, click, payload);
             } else if crate::terrain::is_terrain_tool(return_address) {
                 crate::terrain::record(&crate::modules::Process, click, payload);
-            } else if let Some(tool) = crate::junctions::tool_at(return_address) {
-                crate::junctions::record(&crate::modules::Process, click, payload, tool);
+            } else {
+                crate::junctions::record(
+                    &crate::modules::Process,
+                    click,
+                    payload,
+                    crate::junctions::tool_at(return_address),
+                );
             }
         }
     }

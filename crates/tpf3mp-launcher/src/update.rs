@@ -246,6 +246,137 @@ fn public_keys() -> Vec<Vec<u8>> {
     parse_keys(PUBLIC_KEYS.unwrap_or_default())
 }
 
+/// Install a signed Windows package, including the current version on a
+/// first install or repair. Ordinary updates still require a newer version.
+pub fn bootstrap(root: &Path, progress: impl FnMut(&str, u64, u64)) -> Result<String, UpdateError> {
+    bootstrap_from(root, &public_keys(), &Source::github(), progress)
+}
+
+fn bootstrap_from(
+    root: &Path,
+    keys: &[Vec<u8>],
+    source: &Source,
+    mut progress: impl FnMut(&str, u64, u64),
+) -> Result<String, UpdateError> {
+    reject_linked_install(root)?;
+    let agent = source.agent(Duration::from_secs(60));
+    let json = get(&agent, &source.latest(MANIFEST), MAX_MANIFEST)?;
+    let signature = get(&agent, &source.latest(SIGNATURE), 256)?;
+    let manifest = Manifest::verified(&json, &signature, keys)?;
+    if newer(VERSION, &manifest.version) {
+        return Err(UpdateError::Malformed("this launcher is newer than the signed release; please try again once publication finishes".into()));
+    }
+    let package = manifest.package("windows-x64")?;
+    let install = Install {
+        root: root.to_owned(),
+        exe: root.join("TPF3-MP.exe"),
+        platform: "windows-x64",
+    };
+    if root.exists()
+        && !root.join(PACKAGE_MARKER).is_file()
+        && !root.join("tpf3mp-managed.json").is_file()
+    {
+        for entry in fs::read_dir(root)? {
+            if entry?.file_name() != STAGING {
+                return Err(UpdateError::Malformed(
+                    "the installation folder contains unrelated files".into(),
+                ));
+            }
+        }
+    }
+    let _lock = install.lock(Duration::ZERO)?;
+    if Journal::path(&install).exists() && Journal::read(&install).is_none() {
+        return Err(UpdateError::Malformed(
+            "the interrupted installation's journal is unreadable; its files have been kept".into(),
+        ));
+    }
+    if let Some(journal) = Journal::read(&install) {
+        if !journal.roll_back(root) {
+            return Err(UpdateError::Malformed(
+                "the interrupted installation could not be restored".into(),
+            ));
+        }
+        Journal::remove(&install)?;
+    }
+    clear_unpacked(&install);
+    let archive = install.staging().join(&package.name);
+    if !matches(&archive, package)? {
+        download(
+            &source.agent(Duration::from_secs(60 * 60)),
+            &source.of(&manifest.version, &package.name),
+            &archive,
+            package,
+            |bytes| progress(&manifest.version, bytes, package.size),
+        )?;
+    }
+    let unpacked = install.staging().join("setup.unpacked");
+    let folder = unpack(&archive, &unpacked, "windows-x64")?;
+    validate_setup_package(&folder, &manifest.version)?;
+    swap_in(&install, &folder, &manifest.version)?;
+    let _ = fs::remove_dir_all(unpacked);
+    Ok(manifest.version)
+}
+
+fn reject_linked_install(root: &Path) -> Result<(), UpdateError> {
+    for path in root.ancestors() {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let linked = metadata.file_type().is_symlink();
+        #[cfg(windows)]
+        let linked = {
+            use std::os::windows::fs::MetadataExt;
+            linked || metadata.file_attributes() & 0x400 != 0
+        };
+        if linked {
+            return Err(UpdateError::UnsafeEntry(format!(
+                "{} is a filesystem link",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_setup_package(folder: &Path, version: &str) -> Result<(), UpdateError> {
+    let marker: serde_json::Value = serde_json::from_slice(&fs::read(folder.join(PACKAGE_MARKER))?)
+        .map_err(|error| UpdateError::Malformed(error.to_string()))?;
+    if marker["version"] != version || marker["platform"] != "windows-x64" {
+        return Err(UpdateError::Malformed(
+            "the package marker does not match the signed release".into(),
+        ));
+    }
+    for file in [
+        "TPF3-MP.exe",
+        "tpf3mp-agent.exe",
+        "tpf3mp_hook.dll",
+        "tools/install.ps1",
+        "tools/manage.ps1",
+        "mod/tpf3mp_1/mod.json",
+    ] {
+        if !folder.join(file).is_file() {
+            return Err(UpdateError::Malformed(format!(
+                "the package is missing {file}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A first installation has installed its mod and is ready to open.
+pub fn setup_complete(root: &Path, version: &str) {
+    confirm(
+        &Install {
+            root: root.to_owned(),
+            exe: root.join("TPF3-MP.exe"),
+            platform: "windows-x64",
+        },
+        version,
+    );
+}
+
 fn parse_keys(text: &str) -> Vec<Vec<u8>> {
     text.split(|c: char| c == ',' || c.is_whitespace())
         .filter(|entry| !entry.is_empty())
@@ -737,8 +868,16 @@ fn start(install: &Install, keys: &[Vec<u8>], running: &str) -> Result<Started, 
         match journal.state {
             // Cut short while moving files: put everything back.
             Stage::Swapping => {
+                #[cfg(windows)]
+                if install.root.join("tools/install.ps1").is_file() {
+                    crate::installation::check_game_closed(&install.root)
+                        .map_err(|error| UpdateError::Malformed(error.to_string()))?;
+                }
                 info!(to = %journal.to, "undoing an update that did not finish");
                 if journal.roll_back(&install.root) {
+                    #[cfg(windows)]
+                    crate::installation::restore_mod(&install.root)
+                        .map_err(|error| UpdateError::Malformed(error.to_string()))?;
                     Journal::remove(install)?;
                 }
                 return Ok(if running == journal.from {
@@ -752,8 +891,16 @@ fn start(install: &Install, keys: &[Vec<u8>], running: &str) -> Result<Started, 
             Stage::Swapped if running == journal.to => {
                 journal.starts += 1;
                 if journal.starts > MAX_UNCONFIRMED_STARTS {
+                    #[cfg(windows)]
+                    if install.root.join("tools/install.ps1").is_file() {
+                        crate::installation::check_game_closed(&install.root)
+                            .map_err(|error| UpdateError::Malformed(error.to_string()))?;
+                    }
                     warn!(version = %journal.to, "the new version never started; going back");
                     if journal.roll_back(&install.root) {
+                        #[cfg(windows)]
+                        crate::installation::restore_mod(&install.root)
+                            .map_err(|error| UpdateError::Malformed(error.to_string()))?;
                         install.skip(&journal.to)?;
                         Journal::remove(install)?;
                         return Ok(Started::Restart);
@@ -952,6 +1099,13 @@ fn install_staged(install: &Install, keys: &[Vec<u8>]) -> Result<Option<String>,
     let Some((manifest, archive)) = newest_staged(install, keys)? else {
         return Ok(None);
     };
+    // A game's loaded hook and Lua mod must stay on one version. The new
+    // launcher's setup gate synchronizes the installed mod before playing.
+    #[cfg(windows)]
+    if install.root.join("tools/install.ps1").is_file() {
+        crate::installation::check_game_closed(&install.root)
+            .map_err(|error| UpdateError::Malformed(error.to_string()))?;
+    }
     let unpacked = install.staging().join(format!(
         "{}.unpacked.{}",
         manifest.version,
@@ -1774,5 +1928,224 @@ mod tests {
                 .of("9.1.0", "x.zip")
                 .ends_with("/releases/download/v9.1.0/x.zip")
         );
+    }
+
+    #[test]
+    fn a_standalone_download_installs_repairs_and_refuses_tampering() {
+        let dir = tempfile::tempdir().unwrap();
+        // macOS's /var is itself a symlink. Exercise an actual installation
+        // directory; linked installation paths must still be refused.
+        // macOS's /var is a symlink; Windows canonicalization adds the
+        // extended-length prefix, which Windows PowerShell 5 cannot parse.
+        #[cfg(not(windows))]
+        let canonical = dir.path().canonicalize().unwrap();
+        #[cfg(windows)]
+        let canonical = dir.path().to_path_buf();
+        let root = canonical.join("local/Programs/TPF3-MP");
+        let pair = key_pair();
+        let name = format!("tpf3mp-{VERSION}-windows-x64.zip");
+        let archive = dir.path().join(&name);
+        let marker = format!(r#"{{"version":"{VERSION}","platform":"windows-x64"}}"#);
+        zip_of(
+            &archive,
+            &[
+                ("package/TPF3-MP.exe", b"launcher"),
+                ("package/tpf3mp-agent.exe", b"agent"),
+                ("package/tpf3mp_hook.dll", b"hook"),
+                ("package/tpf3mp-package.json", marker.as_bytes()),
+                ("package/mod/tpf3mp_1/mod.json", b"{}"),
+                (
+                    "package/mod/tpf3mp_1/content/example.lua",
+                    b"-- current mod",
+                ),
+                (
+                    "package/tools/install.ps1",
+                    include_bytes!("../../../packaging/windows/tools/install.ps1"),
+                ),
+                (
+                    "package/tools/manage.ps1",
+                    include_bytes!("../../../packaging/windows/tools/manage.ps1"),
+                ),
+            ],
+        );
+        let bytes = fs::read(&archive).unwrap();
+        let json = manifest_for(VERSION, &name, &bytes);
+        let (base, stop) = serve(vec![
+            (
+                "/releases/latest/download/release.json".into(),
+                json.as_bytes().to_vec(),
+            ),
+            (
+                "/releases/latest/download/release.json.sig".into(),
+                pair.sign(json.as_bytes()).as_ref().to_vec(),
+            ),
+            (
+                format!("/releases/download/v{VERSION}/{name}"),
+                bytes.clone(),
+            ),
+        ]);
+        let source = Source {
+            base,
+            https_only: false,
+        };
+        let mut progress = 0;
+        assert_eq!(
+            bootstrap_from(&root, &keys(&pair), &source, |_, bytes, _| progress = bytes).unwrap(),
+            VERSION
+        );
+        assert!(progress > 0);
+        assert_eq!(fs::read(root.join("tpf3mp_hook.dll")).unwrap(), b"hook");
+        assert_eq!(
+            Install::at(root.clone(), root.join("TPF3-MP.exe"), "windows-x64")
+                .unwrap()
+                .root,
+            root
+        );
+        setup_complete(&root, VERSION);
+        fs::write(root.join("tpf3mp_hook.dll"), b"damaged").unwrap();
+        bootstrap_from(&root, &keys(&pair), &source, |_, _, _| {}).unwrap();
+        assert_eq!(
+            fs::read(root.join("tpf3mp_hook.dll")).unwrap(),
+            b"hook",
+            "repair restores the same version"
+        );
+        setup_complete(&root, VERSION);
+        assert!(matches!(
+            bootstrap_from(&root, &keys(&key_pair()), &source, |_, _, _| {}),
+            Err(UpdateError::BadSignature)
+        ));
+        assert_eq!(fs::read(root.join("TPF3-MP.exe")).unwrap(), b"launcher");
+        let foreign = canonical.join("foreign");
+        fs::create_dir(&foreign).unwrap();
+        fs::write(foreign.join("save.sav"), b"keep").unwrap();
+        assert!(bootstrap_from(&foreign, &keys(&pair), &source, |_, _, _| {}).is_err());
+        assert_eq!(fs::read(foreign.join("save.sav")).unwrap(), b"keep");
+
+        #[cfg(windows)]
+        check_windows_setup_scripts(&root, &canonical);
+
+        stop.store(true, Ordering::SeqCst);
+        // A valid signature cannot make a damaged download acceptable.
+        let (base, stopped) = serve(vec![
+            (
+                "/releases/latest/download/release.json".into(),
+                json.as_bytes().to_vec(),
+            ),
+            (
+                "/releases/latest/download/release.json.sig".into(),
+                pair.sign(json.as_bytes()).as_ref().to_vec(),
+            ),
+            (
+                format!("/releases/download/v{VERSION}/{name}"),
+                b"truncated".to_vec(),
+            ),
+        ]);
+        let untouched = canonical.join("bad-download");
+        assert!(
+            bootstrap_from(
+                &untouched,
+                &keys(&pair),
+                &Source {
+                    base,
+                    https_only: false
+                },
+                |_, _, _| {}
+            )
+            .is_err()
+        );
+        assert!(!untouched.join("TPF3-MP.exe").exists());
+        stopped.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(windows)]
+    fn check_windows_setup_scripts(root: &Path, temp: &Path) {
+        let local = temp.join("local");
+        let mods = temp.join("Steam/userdata/123/3493540/local/staging_area");
+        let saves = mods.parent().unwrap().join("save/keep.sav");
+        fs::create_dir_all(saves.parent().unwrap()).unwrap();
+        fs::write(&saves, b"player's world").unwrap();
+        let registry = format!(r"HKCU:\Software\TPF3MP-Setup-Test-{}", std::process::id());
+        let run = |script: &Path, args: &[&std::ffi::OsStr]| {
+            let output = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(script)
+                .args(args)
+                .env("LOCALAPPDATA", &local)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let installer = root.join("tools/install.ps1");
+        run(
+            &installer,
+            &[
+                "-ModsDir".as_ref(),
+                mods.as_os_str(),
+                "-SteamRoot".as_ref(),
+                temp.join("Steam").as_os_str(),
+            ],
+        );
+        assert_eq!(
+            crate::installed::installed_mod(&local.join("TPF3-MP")).as_deref(),
+            Some(VERSION)
+        );
+        // Repair replaces damaged files and remembers a custom mods folder.
+        fs::write(mods.join("tpf3mp_1/content/example.lua"), b"broken").unwrap();
+        run(
+            &installer,
+            &["-SteamRoot".as_ref(), temp.join("Steam").as_os_str()],
+        );
+        assert_eq!(
+            fs::read(mods.join("tpf3mp_1/content/example.lua")).unwrap(),
+            b"-- current mod"
+        );
+        let manager = root.join("tools/manage.ps1");
+        let programs = temp.join("shortcuts/programs");
+        let desktop = temp.join("shortcuts/desktop");
+        let mut arguments: Vec<&std::ffi::OsStr> = vec![
+            "-Root".as_ref(),
+            root.as_os_str(),
+            "-ProgramsDir".as_ref(),
+            programs.as_os_str(),
+            "-DesktopDir".as_ref(),
+            desktop.as_os_str(),
+            "-RegistryKey".as_ref(),
+            registry.as_ref(),
+        ];
+        arguments.push("-DesktopShortcut".as_ref());
+        run(&manager, &arguments);
+        assert!(programs.join("TPF3-MP.lnk").is_file());
+        assert!(desktop.join("TPF3-MP.lnk").is_file());
+        assert!(root.join("tpf3mp-managed.json").is_file());
+        // Removal runs from outside the installed directory, just as the
+        // helper used by the real setup window after it closes.
+        let helper = temp.join("manage.ps1");
+        fs::copy(&manager, &helper).unwrap();
+        run(
+            &installer,
+            &[
+                "-Uninstall".as_ref(),
+                "-SteamRoot".as_ref(),
+                temp.join("Steam").as_os_str(),
+            ],
+        );
+        arguments.push("-Uninstall".as_ref());
+        run(&helper, &arguments);
+        assert!(!mods.join("tpf3mp_1").exists());
+        assert!(!root.exists());
+        assert!(!programs.join("TPF3-MP.lnk").exists());
+        assert!(!desktop.join("TPF3-MP.lnk").exists());
+        assert_eq!(fs::read(&saves).unwrap(), b"player's world");
     }
 }

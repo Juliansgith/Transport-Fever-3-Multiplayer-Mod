@@ -34,6 +34,23 @@ local banners = ug_require "tpf3mp_1::/scripts/tpf3mp/banners.lua"
 
 local lobby = {}
 
+-- Stock world setup reads this selection. Entering it from a room must
+-- include the multiplayer script, while preserving the player's mods.
+function lobby.prepareNewWorld()
+	local config = api.type.AppConfig.new(api.util.getAppConfig())
+	local menu = {}
+	for key, value in pairs(config.mainMenuState or {}) do menu[key] = value end
+	local mods, found = {}, false
+	for _, name in ipairs(menu.activeModsState or {}) do
+		mods[#mods + 1] = name
+		if name == "tpf3mp_1" then found = true end
+	end
+	if not found then mods[#mods + 1] = "tpf3mp_1" end
+	menu.activeModsState = mods
+	config.mainMenuState = menu
+	api.util.setAppConfig(config, false)
+end
+
 local ICON = {
 	ready = "::/gui/menu/icons/symbol_check.tga",
 	host = "::/gui/menu/icons/symbol_crown_laurels.tga",
@@ -49,8 +66,8 @@ local ICON = {
 
 -- The window's content size and the two columns of each view. The window
 -- itself is centred on the menu (main_page.tl's Tpf3mpLobbyWindow).
-local WIDTH, HEIGHT = 920, 600
-local LEFT, RIGHT = 470, 400
+local WIDTH, HEIGHT = 960, 620
+local LEFT, RIGHT = 440, 440
 local FIELD = 400
 -- Player counts a room can be created for, as the launcher offers them.
 local MIN_PLAYERS, MAX_PLAYERS, DEFAULT_PLAYERS = 2, 16, 4
@@ -114,7 +131,7 @@ local function fetchState()
 	if type(state) ~= "table" then
 		return nil, "bad state: " .. tostring(err or state)
 	end
-	return state
+	return state, nil, reply
 end
 lobby.fetchState = fetchState
 
@@ -236,6 +253,7 @@ end
 -- The room's world in this game, in words, and how far it is (0 to 1), or
 -- nil when there is none of the room's.
 local function worldText(state)
+	if not state.room then return nil end
 	if state.world == "fetching" then
 		local total = tonumber(state.total) or 0
 		local bytes = tonumber(state.bytes) or 0
@@ -411,7 +429,7 @@ local function field(caption, ref, placeholder, params)
 		gap(4),
 		input(ref, placeholder, FIELD, params),
 		gap(12),
-	})
+	}, style{ size = { FIELD, 76 } })
 end
 
 -- A choice from a list: `items` as { value, text }.
@@ -440,7 +458,7 @@ local function choice(caption, value, items, onChange, explain)
 		children[#children + 1] = note(explain)
 	end
 	children[#children + 1] = gap(12)
-	return column(children)
+	return column(children, style{ size = { FIELD, explain and 94 or 76 } })
 end
 
 local function heading(text, sub)
@@ -638,6 +656,7 @@ end
 -- A room member as a card: their banner, name, and what marks them.
 function lobby.memberCard(member, playing)
 	local marks = {}
+	if member.you then marks[#marks + 1] = _("You") end
 	if member.owner then marks[#marks + 1] = _("Owner") end
 	if not member.connected then marks[#marks + 1] = _("Away") end
 	marks[#marks + 1] = lobby.memberStage(member, playing)
@@ -654,7 +673,7 @@ function lobby.memberCard(member, playing)
 	-- their key's banner (tpf3mp/banners.lua).
 	local portrait = lobby.portraitOf(member)
 	local card = pictureCard(lobby.bannerPicture(lobby.bannerOf(member)), member.name,
-		table.concat(marks, " · "), member.you and _("You") or nil, nil, true,
+		table.concat(marks, " · "), nil, nil, true,
 		portrait and MEMBER_WIDTH - MEMBER_HEIGHT - 8 or MEMBER_WIDTH, MEMBER_HEIGHT, ready and { ready } or {})
 	if not portrait then return card end
 	return row({ icon(portrait, MEMBER_HEIGHT), gap(8), card })
@@ -734,9 +753,11 @@ function lobby.roomCard(listed, onClick, enabled)
 	local card
 	if cards then
 		card = cards.CardButton{
-			bottomComponent = cards.makeCardLabelBottomComponent(title, line, right, nil, false),
+			bottomComponent = cards.makeCardLabelBottomComponent(title, string.format(_("%d/%d players · %s"),
+				listed.players, listed.max_players, listed.competitive and _("Competitive") or _("Co-op")), nil, nil, false),
 			onClick = onClick,
-			tooltip = listed.has_password and _("Has a password") or _("Join this room"),
+			tooltip = title .. "\n" .. line .. "\n" .. right .. "\n"
+				.. (listed.has_password and _("Has a password") or _("Join this room")),
 			images = { lobby.climatePicture(listed.map) },
 			initialImageIndex = 1,
 			class = "small-rectangle-card",
@@ -765,7 +786,10 @@ end
 
 -- `focus` is what the card that opened the window is about: "join" puts
 -- the invite first.
-function lobby.content(onClose, focus)
+function lobby.content(onClose, focus, onNewGame)
+	-- The hook calls this before loading, then lets the menu render one frame.
+	-- Polling room state alone races the loader, which suspends menu callbacks.
+	resolveutil.__tpf3mp_before_load = onClose
 	local stateS = react.useState(nil)
 	local problemS = react.useState(nil)
 	-- An action on its way: { text, polls left, the state it was sent in }.
@@ -823,6 +847,11 @@ function lobby.content(onClose, focus)
 	if type(resolveutil) == "table" then
 		pcall(function() resolveutil.__tpf3mp_close = onClose end)
 	end
+	-- An explicit click may need a connection first. Keep that intention
+	-- separate from the busy indicator; intermediate notices are not success.
+	local queued = react.useRef(nil)
+	local generate = react.useRef(false)
+	local lastSnapshot = react.useRef(nil)
 
 	-- What the view shows, in one string: when it changes, an action sent
 	-- has been answered.
@@ -843,8 +872,7 @@ function lobby.content(onClose, focus)
 	-- the window is about.
 	local function pageOf(s)
 		if s.room then return "room" end
-		if s.connection ~= "connected" then return "choose" end
-		local picked = pageS:old() or (focus == "join" and "join" or "choose")
+		local picked = pageS:old() or (focus == "friend" and "friend" or (focus == "join" and "join" or "choose"))
 		if picked == "room" then return "choose" end
 		return picked
 	end
@@ -853,7 +881,7 @@ function lobby.content(onClose, focus)
 	-- change without anything happening in this window.
 	react.onStepTimer(function()
 		if copiedS:old() > 0 then copiedS:set(copiedS:old() - 1) end
-		local state, why = fetchState()
+		local state, why, snapshot = fetchState()
 		if state then
 			if problemS:old() ~= nil then problemS:set(nil) end
 			local pending = pendingS:old()
@@ -864,7 +892,10 @@ function lobby.content(onClose, focus)
 					pendingS:set({ pending[1], pending[2] - 1, pending[3] })
 				end
 			end
-			stateS:set(state)
+			if snapshot ~= lastSnapshot:get() then
+				lastSnapshot:set(snapshot)
+				stateS:set(state)
+			end
 			local room = state.room
 			local owning = room and room.you_own and room.phase == "lobby"
 			-- A start save picked on the room page goes once the game read its
@@ -898,16 +929,41 @@ function lobby.content(onClose, focus)
 			end
 			-- Opened while not connected: connect to the launcher's server
 			-- under the player's name at once, as a click on Connect would.
-			if not autoConnectedRef:get() and state.linked and state.heard
+			-- Not on the Join a friend page, which connects under the name
+			-- typed there when Join room is clicked.
+			if not autoConnectedRef:get() and state.linked and state.heard and pageOf(state) ~= "friend"
 				and state.connection ~= "connected" and state.connection ~= "connecting"
 				and type(state.name) == "string" and not state.name:match("^%s*$") then
 				autoConnectedRef:set(true)
 				local refused = act({ action = "connect", name = state.name })
 				if refused then refusedS:set(refused) end
 			end
+			local nextAction = queued:get()
+			if nextAction then
+				nextAction.left = nextAction.left - 1
+				if state.error and state.error ~= nextAction.error or not state.linked or not state.heard or nextAction.left <= 0 then
+					queued:set(nil)
+					pendingS:set(nil)
+					refusedS:set(state.error or _("Connection timed out. Please try again."))
+				elseif state.connection == "connected" and state.name == nextAction.name then
+					queued:set(nil)
+					local refused = act(nextAction.fields)
+					refusedS:set(refused)
+					if nextAction.fields.action == "create" then
+						generate:set(not refused and nextAction.fields.start_save == "" and onNewGame and { error = state.error } or nil)
+					end
+					if not refused then pendingS:set({ nextAction.doing, PENDING_POLLS, signature(state) }) end
+				end
+			end
+			if generate:get() and state.room and state.room.you_own then
+				generate:set(false)
+				if onNewGame then onNewGame() end
+			elseif generate:get() and state.error and state.error ~= generate:get().error then
+				generate:set(false)
+			end
 			-- The room list, while it is shown: asked for at once, then
 			-- every LIST_POLLS polls (the server allows one a second).
-			local browsing = state.linked and pageOf(state) == "join" and not modsS:old()
+			local browsing = state.linked and state.connection == "connected" and pageOf(state) == "join" and not modsS:old()
 			if browsing then
 				listAtRef:set(listAtRef:get() + 1)
 				if state.rooms == nil and listAtRef:get() >= 3 or listAtRef:get() >= LIST_POLLS then
@@ -927,12 +983,29 @@ function lobby.content(onClose, focus)
 		confirmS:set(nil)
 		local refused = act(fields)
 		refusedS:set(refused)
+		if fields.action == "create" then
+			generate:set(not refused and fields.start_save == "" and onNewGame and { error = stateS:old().error } or nil)
+		end
 		if not refused and doing then
 			pendingS:set({ doing, PENDING_POLLS, signature(stateS:old()) })
 		end
 	end
 
-	local busy = pendingS:old() ~= nil
+	local busy = pendingS:old() ~= nil or queued:get() ~= nil
+	local function connectedAction(fields, doing)
+		if busy then return end
+		local current = stateS:old()
+		local typed = (name:get() or ""):match("^%s*(.-)%s*$")
+		if typed == "" then typed = current.name or "" end
+		if typed == "" then refusedS:set(_("Enter your name first.")); return end
+		if current.connection == "connected" and current.name == typed then
+			send(fields, doing)
+		else
+			queued:set({ fields = fields, doing = doing, name = typed, error = current.error, left = 75 })
+			send({ action = "connect", name = typed }, _("Connecting..."))
+			if refusedS:old() then queued:set(nil) end
+		end
+	end
 
 	-- The frame every view shares: the title and the connection, the steps,
 	-- a line for what went wrong, what is under way or what just happened,
@@ -946,7 +1019,7 @@ function lobby.content(onClose, focus)
 				label(title, "font-scale-title-3"),
 				gui_react_util.makeHorizontalSpacer(),
 				status,
-			}),
+			}, style{ size = { WIDTH - 40, 36 } }),
 			gap(10),
 		}
 		local problem = hideAddress(refusedS:old() or (state and state.error))
@@ -986,7 +1059,7 @@ function lobby.content(onClose, focus)
 		children[#children + 1] = gap(14)
 		children[#children + 1] = body
 		children[#children + 1] = gui_react_util.makeVerticalSpacer()
-		children[#children + 1] = row(spaced(footer))
+		children[#children + 1] = row(spaced(footer), style{ size = { WIDTH - 40, 40 } })
 		return column(children, style{ size = { WIDTH, HEIGHT }, padding = { 16, 20, 16, 20 } })
 	end
 
@@ -1027,6 +1100,8 @@ function lobby.content(onClose, focus)
 
 	local function back(to)
 		return button(_("Back"), function()
+			queued:set(nil)
+			generate:set(false)
 			joiningS:set(nil)
 			pageS:set(to)
 		end)
@@ -1207,7 +1282,31 @@ function lobby.content(onClose, focus)
 			{ gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) })
 	end
 
-	-- The first page: connect, then Join or Host.
+	-- A friend's invite is a complete journey, including first connection.
+	if page == "friend" then
+		local function joinFriend()
+			local code = (invite:get() or ""):gsub("%s", ""):upper()
+			if not code:match("^[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]$") then
+				refusedS:set(_("Enter the six-character invite code your friend sent you.")); return
+			end
+			connectedAction({ action = "join", invite = code, password = joinPassword:get() or "" }, _("Joining the room..."))
+		end
+		return frame(_("Join a friend"), status, row({
+			column({
+				heading(_("Your next journey, together"), _("Three details. One shared world.")), gap(16),
+				field(_("Your name"), name, state.name ~= "" and state.name or _("Your name"), { maxLength = 32 }),
+				field(_("Invite code"), invite, "K7QM2X", { maxLength = 16 }),
+				field(_("Password (optional)"), joinPassword, "", { password = true, maxLength = 64 }),
+				gap(12), primary(_("Join room"), joinFriend, canAct and not busy),
+			}, style{ size = { LEFT, 390 } }), gap(30),
+			column({ icon(ICON.multiplayer, 64), gap(20), heading(_("Meet in your friend's world")),
+				note(_("Ask your friend for the code shown in their lobby.")), gap(10),
+				note(_("We connect you and load the room's world together.")),
+			}, style{ size = { RIGHT, AUTO } }),
+		}), { back("choose"), gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) })
+	end
+
+	-- The first page: identity, then a clear choice of hosting or discovery.
 	if page == "choose" then
 		local connecting = state.connection == "connecting"
 		local function connect()
@@ -1227,10 +1326,10 @@ function lobby.content(onClose, focus)
 				gap(10),
 				primary(connecting and _("Connecting...") or string.format(_("Connect to %s"), serverName(state)),
 					connect, canAct and not connecting and not busy),
-			})
+			}, style{ size = { WIDTH - 40, 42 } })
 		end
 		return frame(
-			_("Play Transport Fever 3 together"),
+			_("Build something together"),
 			status,
 			column({
 				top,
@@ -1238,13 +1337,13 @@ function lobby.content(onClose, focus)
 				row({
 					lobby.choiceCard(_("Join a room"),
 						_("Browse the public rooms, or join a friend's with its invite"),
-						"::/gui/menu/images/m05_ingame.tga", function() pageS:set("join") end, connected and canAct),
+						"::/gui/menu/images/m05_ingame.tga", function() pageS:set("join") end, canAct and not busy),
 					gap(24),
 					lobby.choiceCard(_("Host a room"),
-						_("Your room, from one of your saves: you start its game"),
-						"::/gui/menu/images/m02_ingame.tga", function() pageS:set("host") end, connected and canAct),
-				}),
-			}),
+						_("Create a new world or continue a saved journey"),
+						"::/gui/menu/images/m02_ingame.tga", function() pageS:set("host") end, canAct and not busy),
+				}, style{ size = { WIDTH - 40, CHOICE_HEIGHT } }),
+			}, style{ size = { WIDTH - 40, CHOICE_HEIGHT + 70 } }),
 			{
 				connected and button(_("Disconnect"), disconnect, nil, canAct) or gap(1),
 				gap(8),
@@ -1269,6 +1368,13 @@ function lobby.content(onClose, focus)
 
 	-- Join: the public rooms, as cards, and an invite.
 	if page == "join" then
+		if not connected then
+			return frame(_("Discover public rooms"), status, column({
+				heading(_("Find your next shared journey"), _("Connect to see rooms you can join.")), gap(16),
+				field(_("Your name"), name, state.name ~= "" and state.name or _("Your name"), { maxLength = 32 }),
+				primary(_("Browse rooms"), function() connectedAction({ action = "list_rooms", page = 0 }, _("Finding rooms...")) end, canAct and not busy),
+			}, style{ size = { LEFT, 220 } }), { back("choose"), gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) })
+		end
 		local list = state.rooms
 		local found = list and list.list or {}
 		local at = list and list.page or 0
@@ -1381,16 +1487,16 @@ function lobby.content(onClose, focus)
 			if offered.name == (pickedRules or (rules[1] and rules[1].name)) then explainRules = offered.description end
 		end
 		local saves = state.saves or {}
-		local saveItems = {}
-		for _i, save in ipairs(saves) do saveItems[#saveItems + 1] = { save, save } end
-		saveItems[#saveItems + 1] = { "", _("None: I load a world myself") }
+		local saveItems = { { "", _("Create a new world...") } }
+		for _i, save in ipairs(saves) do
+			if not save:match("^tpf3mp_room_%d+$") then saveItems[#saveItems + 1] = { save, save } end
+		end
 		local pickedSave = saveS:old()
 		if pickedSave == nil then
 			pickedSave = ""
 			for _i, save in ipairs(saves) do
 				if save == state.start_save then pickedSave = save end
 			end
-			if pickedSave == "" and saves[1] then pickedSave = saves[1] end
 		end
 		local playersItems = {}
 		for n = MIN_PLAYERS, MAX_PLAYERS do
@@ -1401,7 +1507,8 @@ function lobby.content(onClose, focus)
 		local function create()
 			local named = roomName:get()
 			if named == nil or named:match("^%s*$") then
-				named = string.format(_("%s's room"), state.name)
+				local hostName = (name:get() or ""):match("^%s*(.-)%s*$")
+				named = string.format(_("%s's room"), hostName ~= "" and hostName or state.name)
 			end
 			local fields = {
 				action = "create",
@@ -1417,7 +1524,7 @@ function lobby.content(onClose, focus)
 				fields.map = details and details.map or ""
 				fields.year = details and details.year or 0
 			end
-			send(fields, _("Creating the room..."))
+			connectedAction(fields, _("Creating the room..."))
 		end
 		local where = public
 			and (details and details.map ~= ""
@@ -1427,13 +1534,14 @@ function lobby.content(onClose, focus)
 			or _("Only players you send the invite to can find it.")
 		return frame(_("Host a room"), status, column({
 			row({ back("choose"), gap(16),
-				heading(_("Host a room"), _("You own it: you start its game, and can remove players.")) }),
+					heading(_("Make it your own"), _("Choose your world, play style and who can join.")) }),
 			row({
 				column({
+					not connected and field(_("Your name"), name, state.name ~= "" and state.name or _("Your name"), { maxLength = 32 }) or gap(1),
 					field(_("Room name"), roomName, string.format(_("%s's room"), state.name), { maxLength = 48 }),
 					choice(_("Start from this save"), pickedSave, saveItems, function(value) saveS:set(value) end,
 						pickedSave ~= "" and _("Every player's game loads it from the menu when you start. You can change it in the room.")
-							or _("Load a world in the game once in the room: it is saved for everyone.")),
+							or _("Choose your map and settings on the next screen.")),
 					choice(_("Players"), playersS:old(), playersItems, function(value) playersS:set(value) end),
 				}, style{ size = { LEFT, AUTO } }),
 				gap(30),
@@ -1635,13 +1743,16 @@ function lobby.content(onClose, focus)
 				{ maxLength = 280, acceptOnFocusLoss = false, onEnter = function() sendChat() end }),
 			gap(8),
 			button(_("Send"), sendChat, nil, canAct),
-		}),
+		}, style{ size = { RIGHT, 40 } }),
 	}, style{ size = { RIGHT, AUTO } })
 
 	local footer = { modsButton() }
 	if confirm and confirm.kind == "leave" then
 		footer[#footer + 1] = label(_("Leave the room?"), "font-scale-body, warning")
-		footer[#footer + 1] = button(_("Leave"), function() send({ action = "leave" }, _("Leaving the room...")) end,
+		footer[#footer + 1] = button(_("Leave"), function()
+			pageS:set("choose")
+			send({ action = "leave" }, _("Leaving the room..."))
+		end,
 			"primary", canAct)
 		footer[#footer + 1] = button(_("Stay"), function() confirmS:set(nil) end)
 	else
@@ -1656,6 +1767,9 @@ function lobby.content(onClose, focus)
 			footer[#footer + 1] = button(_("Not ready"), function()
 				send({ action = "ready", ready = false }, nil)
 			end, nil, canAct and not busy)
+		elseif room.you_own and not state.start_save and onNewGame then
+			footer[#footer + 1] = primary(_("Set up world"), onNewGame, canAct and not busy,
+				_("Choose the map and settings, then start multiplayer"))
 		else
 			footer[#footer + 1] = primary(_("Ready"), function()
 				send({ action = "ready", ready = true }, _("Getting ready..."))

@@ -899,6 +899,10 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                 .iter()
                 .map(|(name, _)| at(name).ok())
                 .collect();
+            let junction_layout = at(crate::junctions::CONFIG_LAYOUT).is_ok()
+                && at(crate::junctions::PROPOSAL_LAYOUT).is_ok()
+                && at(crate::junctions::CROSSWALK_LAYOUT).is_ok();
+            crate::junctions::enable(junction_layout);
             // SAFETY: as above.
             unsafe {
                 crate::builds::install(add, apply, module, terrain, &junctions, detour_forever)
@@ -922,12 +926,13 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                         .to_owned(),
                 };
                 let read = junctions.iter().filter(|call| call.is_some()).count();
-                let detail = if read == junctions.len() {
-                    "the crosswalk and crossing tools' at their calls".to_owned()
+                let detail = if !junction_layout {
+                    "the profile has no junction layout, so the junction tools stay refused"
+                        .to_owned()
                 } else {
                     format!(
-                        "{read} of the street detail tools' {} calls, so the tools of the \
-                             others stay refused",
+                        "the junction tools' edits, {read} of the street detail tools' {} \
+                             calls named in the log",
                         junctions.len()
                     )
                 };

@@ -772,6 +772,30 @@ offset = 0
 prologue = "48 8B C4 48 89 58 18 55 56 57 41 54 41 55"
 required = false
 
+# Junction layout anchors from the Lua binding registration code. Read-only:
+# these instructions establish the field offsets used by junctions.rs.
+[[target]]
+name = "BaseNodeConfig/field offsets"
+signature = "C7 45 80 70 00 00 00 C7 45 84 50 00 00 00 C7 45 88 48 00 00 00 C7 45 98 4C 00 00 00 C7 45 94 18 00 00 00"
+offset = 0
+prologue = "C7 45 80 70 00 00 00"
+required = false
+
+[[target]]
+name = "StreetProposal/node configuration offsets"
+signature = "C7 45 A4 78 00 00 00 C7 45 BC 60 00 00 00 C7 45 CC 48 00 00 00 C7 45 D0 30 00 00 00"
+offset = 0
+prologue = "C7 45 A4 78 00 00 00"
+required = false
+
+# BaseNodeConfig constructs its 0x30-byte crosswalk hash set at +0x18.
+[[target]]
+name = "BaseNodeConfig/crosswalk set layout"
+signature = "49 8D 4F 18 48 89 4D 98 48 8D 35 ?? ?? ?? ?? 48 89 75 90 48 89 31 4C 89 61 08 4C 89 61 10 4C 89 61 18 4C 89 61 28 45 88 67 48"
+offset = 0
+prologue = "49 8D 4F 18 48 89 4D 98"
+required = false
+
 # Lua 5.2 C API, address only (never detoured). (rva 0x2fbdb90)
 [[target]]
 name = "lua_getfield"

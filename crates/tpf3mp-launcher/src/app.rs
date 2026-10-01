@@ -1003,10 +1003,11 @@ impl<B: Backend> LauncherApp<B> {
             theme::pill(ui, &pill_text, pill_state)
         });
         if installed_mod.is_none() {
-            pill.on_hover_text(
-                "Run INSTALL_TPF3MP.cmd (Windows) or ./install.sh from the TPF3-MP folder once, \
-                 then activate TPF3-MP in the game's Mod Hub.",
-            );
+            pill.on_hover_text(if cfg!(windows) {
+                "Use Settings → Repair installation, then activate TPF3-MP in the game's Mod Hub."
+            } else {
+                "Run ./install.sh from the TPF3-MP folder, then activate TPF3-MP in the game's Mod Hub."
+            });
         }
         let folder = state
             .installed
@@ -1112,6 +1113,31 @@ impl<B: Backend> LauncherApp<B> {
     }
 
     fn settings_body(&mut self, ui: &mut Ui, state: &State, view: &View) {
+        if cfg!(windows) && crate::update::Install::of_running().is_ok() {
+            group(ui, |ui| {
+                ui.label(theme::text(
+                    "Installation",
+                    theme::semibold(14.0),
+                    theme::TEXT,
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    for (label, uninstall) in [("Repair installation", false), ("Uninstall…", true)]
+                    {
+                        if theme::quiet_button(ui, state.room.is_none(), None, label, Quiet::new())
+                            .clicked()
+                        {
+                            match crate::installation::open_maintenance(uninstall) {
+                                Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                                Err(error) => tracing::error!(%error, "cannot open setup"),
+                            }
+                        }
+                    }
+                });
+                ui.label(theme::text("Close the game before changing the installation. Your saves and settings are kept.", theme::body(12.0), theme::MUTED));
+            });
+            ui.add_space(14.0);
+        }
         if state.server_fixed || state.server_default.is_some() {
             self.server_settings(ui, state);
             ui.add_space(14.0);
@@ -1121,7 +1147,7 @@ impl<B: Backend> LauncherApp<B> {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 icon(ui, "download", 19.0, theme::TEXT);
                 ui.label(theme::text(
-                    "Launcher updates",
+                    "Launcher and mod updates",
                     theme::semibold(14.0),
                     theme::TEXT,
                 ));

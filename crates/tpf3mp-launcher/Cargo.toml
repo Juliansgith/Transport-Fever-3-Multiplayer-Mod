@@ -40,6 +40,8 @@ egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 tempfile.workspace = true
 
 [build-dependencies]
+# The window's logo as the program's icon (build.rs).
+image = { workspace = true, features = ["ico"] }
 tpf3mp-buildinfo.workspace = true
 
 [lints]

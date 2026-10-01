@@ -53,7 +53,7 @@
 -- hook (tpf3mp/apply.lua). The crosswalk tool and the crossing tool (a
 -- junction's road and tram lanes) tell them nothing as well: the hook reads
 -- a click's junction edit the same way, and `guiUpdate` hands the room an
--- EditJunctions of it (tpf3mp/capture.lua junctions), as of the traffic light
+-- EditJunctions of it (tpf3mp/capture.lua junction), as of the traffic light
 -- tool's proposal, which reaches it. A click with none of these is stopped
 -- with "no proposal seen".
 --
@@ -117,7 +117,8 @@ function data()
 	-- that a later build would send its proposals under them.
 	local CAPTURE = { constructionBuilder = "construction", streetBuilder = "street", trackBuilder = "track",
 		bulldozer = "bulldoze", streetTerminalBuilder = "stop", moduleBuilder = "construction",
-		moduleBulldozer = "bulldoze", streetTrackModifier = "modify" }
+		moduleBulldozer = "bulldoze", streetTrackModifier = "modify", laneModifier = "junction",
+		crosswalkModifier = "junction", streetEdgeNodeModifier = "junction" }
 	-- In the GUI: the last proposal seen at each count of the player's builds
 	-- ({ action = t } or { why = text }), and the builds handed on so far.
 	local snapshots, handled = {}, nil
@@ -169,14 +170,14 @@ function data()
 		return { actions = actions, said = said, shape = "terrain tool" }
 	end
 
-	-- The snapshot of a street detail tool's click (the crosswalk tool's, the
-	-- crossing tool's), from its junction edit as the hook read it
-	-- (tpf3mp_native.built, the shape game scripts see a proposal in, its
-	-- `junctions` naming the tool): an EditJunctions (tpf3mp/capture.lua
-	-- junctions), or why not.
+	-- The snapshot of a junction tool's click (the crosswalk tool's, the
+	-- crossing tool's, the traffic light tool's), from its junction edit as
+	-- the hook read it (tpf3mp_native.built: the shape game scripts see a
+	-- proposal in, `junctionEdit` set): an EditJunctions (tpf3mp/capture.lua
+	-- junction), or why not.
 	local function junctionEdit(proposal)
-		local shape = tostring(proposal.junctions)
-		local ok, action, why = pcall(capture.junctions, proposal)
+		local shape = "junction tool"
+		local ok, action, why = pcall(capture.junction, proposal)
 		if not ok then action, why = nil, tostring(action) end
 		if not action then
 			return { why = "the " .. shape .. "'s change: " .. tostring(why or "a change of nothing"), shape = shape }
@@ -186,6 +187,7 @@ function data()
 
 	-- The guard on what this player's personal mods' game scripts send, in
 	-- this state (tpf3mp/modguard.lua): put on once the link is.
+	local PERSONAL_UNGUARDED = "personal-mods-unguarded"
 	local function guardPersonalMods(companiesModule, registryModule)
 		local okModule, modguard = pcall(ug_require, MOD .. "::/scripts/tpf3mp/modguard.lua")
 		local okCmd, cmd = pcall(function() return api.cmd end)
@@ -195,11 +197,15 @@ function data()
 		end
 		if type(debug) ~= "table" or type(debug.getinfo) ~= "function" then
 			-- Without the stack no command can be told to be a personal
-			-- mod's: fail closed is not possible here, so say it loudly
-			-- when this player has any.
+			-- mod's. Fail closed: the hook loads the room's worlds without
+			-- this player's personal mods from now on (tpf3mp_native.note,
+			-- PERSONAL_UNGUARDED), and whatever one does before is this
+			-- game's alone, which the room's check finds and its resync
+			-- loads anew without them.
+			link:note(PERSONAL_UNGUARDED, "1")
 			if next(link:personal()) ~= nil then
 				link:log("the personal mods' guard is not on: this state has no debug.getinfo, "
-					.. "so a personal mod's game script would act in this game alone")
+					.. "so this player's personal mods are left out of the room's worlds from the next load")
 			end
 			return
 		end
@@ -433,7 +439,6 @@ function data()
 						roster = roster,
 						player = player,
 						company = company and company.entity,
-						company = company and company.entity,
 						progression = prog,
 						seal = type(seal) == "table" and seal or nil,
 					})
@@ -627,8 +632,9 @@ function data()
 				local native, whyNot = l:built(handled)
 				if type(native) == "table" and native.terrain ~= nil then
 					seen = terraformEdit(native)
-				elseif type(native) == "table" and native.junctions ~= nil then
-					-- The crosswalk tool's or the crossing tool's junction edit.
+				elseif type(native) == "table" and native.junctionEdit then
+					-- A junction tool's edit (the crosswalk, crossing or traffic
+					-- light tool's).
 					seen = junctionEdit(native)
 				elseif native == nil and type(whyNot) == "string" and whyNot:find("terrain tool: ", 1, true) == 1 then
 					-- The painter's, the asset brush's, or a stroke that did not read.

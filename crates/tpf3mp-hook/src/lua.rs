@@ -153,6 +153,11 @@ const MAX_LOG_LINE: usize = 1000;
 /// Keys `note()` keeps, the longest key and the longest value.
 const MAX_NOTES: usize = 16;
 const MAX_NOTE_KEY: usize = 64;
+/// The note a simulation state makes when it cannot read which mod sent a
+/// command (no `debug.getinfo`), so cannot guard this player's personal
+/// mods' game scripts (tpf3mp/modguard.lua): from then on [`plan_mods`]
+/// loads the room's worlds without them. Kept whatever else is noted.
+pub const PERSONAL_UNGUARDED: &str = "personal-mods-unguarded";
 const MAX_NOTE_VALUE: usize = 512;
 /// Most entries one checkpoint's lane dump writes, all its lanes together,
 /// and the longest entry kept.
@@ -694,6 +699,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"dumped", native_dumped),
                 (b"mods", native_mods),
                 (b"personal", native_personal),
+                (b"shared", native_shared),
                 (b"note", native_note),
                 (b"observe", native_observe),
                 (b"observed", native_observed),
@@ -1190,7 +1196,18 @@ const NEWLINE: &str = "\n";
 /// What to load a save listing `save` (one mod name a line) with, or `None`
 /// without the room's lists; said in the hook's log.
 pub fn plan_mods(save: &str) -> Option<Plan> {
-    let lists = shared().mods.clone()?;
+    let (mut lists, unguarded) = {
+        let shared = shared();
+        let unguarded = shared.notes.iter().any(|(k, _)| k == PERSONAL_UNGUARDED);
+        (shared.mods.clone()?, unguarded)
+    };
+    if unguarded && !lists.personal.is_empty() {
+        // Fail closed: a personal mod's game script would act in this game
+        // alone, unguarded; the room's resync loads this game's world anew
+        // without them.
+        log("this player's personal mods are left out: this game's game scripts cannot be told apart, so their guard cannot be on".to_owned());
+        lists.personal = tpf3mp_proto::BoundedVec::default();
+    }
     let save: Vec<String> = save
         .lines()
         .map(str::trim)
@@ -1218,11 +1235,32 @@ pub fn plan_mods(save: &str) -> Option<Plan> {
 /// `personal()`: this player's personal mods, one name a line, or nil
 /// without the room's lists: the guards keep their commands to the room.
 unsafe extern "C-unwind" fn native_personal(l: State) -> c_int {
+    // SAFETY: as `native_mod_names`'.
+    unsafe { native_mod_names(l, |mods| &mods.personal[..]) }
+}
+
+/// `shared()`: the room's shared mods, one name a line, or nil without the
+/// room's lists: a personal mod's event that one of them might hear too is
+/// not its own (tpf3mp/guard.lua).
+unsafe extern "C-unwind" fn native_shared(l: State) -> c_int {
+    // SAFETY: as `native_mod_names`'.
+    unsafe { native_mod_names(l, |mods| &mods.shared[..]) }
+}
+
+/// Pushes the names `pick` takes from the room's lists, one a line, or nil.
+///
+/// # Safety
+///
+/// Called by Lua as a C function, with `l` its state.
+unsafe fn native_mod_names(
+    l: State,
+    pick: impl Fn(&ModLists) -> &[tpf3mp_bridge::ModName],
+) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
     let names = shared().mods.as_ref().map(|mods| {
-        mods.personal
+        pick(mods)
             .iter()
             .map(|m| m.as_str())
             .collect::<Vec<_>>()
@@ -2098,6 +2136,9 @@ unsafe extern "C-unwind" fn native_note(l: State) -> c_int {
     if let Some(value) = unsafe { string_arg(api, l, 2, MAX_NOTE_VALUE) } {
         let mut shared = shared();
         shared.notes.retain(|(k, _)| *k != key);
+        if !value.is_empty() && key == PERSONAL_UNGUARDED && shared.notes.len() >= MAX_NOTES {
+            shared.notes.remove(0);
+        }
         if !value.is_empty() && shared.notes.len() < MAX_NOTES {
             shared.notes.push((key, value));
         }
@@ -2451,6 +2492,40 @@ pub(crate) mod tests {
         }
         assert_eq!(shared().notes.len(), MAX_NOTES);
         shared().notes.clear();
+    }
+
+    /// A simulation state that cannot guard the personal mods says so, and
+    /// every load after leaves them out, however many other notes there are.
+    #[test]
+    fn personal_mods_are_left_out_once_their_guard_cannot_be_on() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let name = |n: &str| tpf3mp_proto::Text::new(n).unwrap();
+        set_mods(Some(ModLists {
+            shared: tpf3mp_proto::BoundedVec::new(vec![name("vehicles_pack")]).unwrap(),
+            personal: tpf3mp_proto::BoundedVec::new(vec![name("my_timetables")]).unwrap(),
+        }));
+        let save = "vehicles_pack
+tpf3mp_1
+my_timetables";
+        assert_eq!(
+            plan_mods(save).unwrap().mods,
+            ["vehicles_pack", "tpf3mp_1", "my_timetables"]
+        );
+        let sim = Lua::new();
+        sim.register();
+        for i in 0..MAX_NOTES {
+            sim.run(&format!("tpf3mp_native.note('k{i}', 'v')"))
+                .unwrap();
+        }
+        sim.run(&format!("tpf3mp_native.note('{PERSONAL_UNGUARDED}', '1')"))
+            .unwrap();
+        let plan = plan_mods(save).unwrap();
+        assert_eq!(plan.mods, ["vehicles_pack", "tpf3mp_1"]);
+        assert_eq!(plan.dropped, ["my_timetables"]);
+        assert!(plan.added.is_empty());
+        shared().notes.clear();
+        set_mods(None);
     }
 
     #[test]
