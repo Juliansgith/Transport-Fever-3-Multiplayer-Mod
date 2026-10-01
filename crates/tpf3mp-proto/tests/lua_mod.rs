@@ -5351,6 +5351,26 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         "{shown}"
     );
     assert!(shown.contains("Leave to First"), "{shown}");
+    // Each card shows the money the game's own windows show
+    // (getPlayersBalance), not an ACCOUNT that reads 0 for the room's first
+    // company; Rival's, where the game gives none, its ACCOUNT's.
+    let shown = eval(
+        "api.type.ComponentType.ACCOUNT = 6 \
+         local get = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 6 then return { balance = e == 901 and 5000 or 0, loan = 0 } end \
+             return get(e, kind) end \
+         api.engine.util.finance = { getPlayersBalance = function(e) \
+             if e == 25 then return 1234567 end end } \
+         for _ = 1, 20 do BAR.step() end \
+         local shown = texts() \
+         api.engine.getComponent, api.engine.util.finance = get, nil \
+         for _ = 1, 20 do BAR.step() end \
+         return shown",
+    );
+    assert!(shown.contains("$1,234,567"), "{shown}");
+    assert!(shown.contains("$5,000"), "{shown}");
+    assert!(!shown.contains("$0"), "{shown}");
     // The head types a password: it goes beside the action, and the field
     // hides it.
     assert_eq!(
