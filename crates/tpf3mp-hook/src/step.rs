@@ -1259,6 +1259,7 @@ impl<G: RoomGate> StepDriver<G> {
         self.next_step = Some(next_step);
         // A loaded world: both buffers start from it.
         self.last_buffer = None;
+        crate::order::decision_sync::reset();
         crate::order::measure::room_step(next_step);
     }
 

@@ -3286,6 +3286,44 @@ on that engine; the second every update for a watched entity: its
 with its path's length and hash. Two games' lines for one step must be
 equal; the first that differs is where the vehicle's own state split.
 
+**The platform-decision flag** (`decision-sync`, on unless
+`TPF3MP_HOOK_DECISION_SYNC` is `0` or `off`). The `decision flag` lines of
+the two-game round of 2026-10-01 (`c381f1c`, james and cat; cat split)
+named the cause. Every vehicle's flag is set, and cleared, in only the one
+engine that ran the step where it changed; the other engine keeps reading
+its old value, for hundreds of steps: in james's game 217708's flag was 1
+on engine 1 from step 3092 and 0 on engine 0 throughout. The game's copy
+of the simulated `GameState` into the other does not carry that byte. All
+133 vehicles show it, and the step at which one game's engine reads a
+clear differs between games (vehicle 192508: 867 in james's game, 854 in
+cat's), since which engine runs a step follows each game's frames. For
+217708 the flag was cleared at step 3199 or 3200 in the engine that ran it.
+Where that engine also ran step 3201 (cat's game), the vehicle no longer
+asked for a platform and drove a loop, as one engine would. Where the
+other engine ran 3201 (james's), it still read the stale 1, asked, and
+took 0/0.
+
+The fix gives the flag one engine's semantics. At the start of every
+room's update, the seeds' `ecs::Engine::Update` detour hands over the
+engine. When the update before ran on the other engine, each transport
+vehicle's `MovePath +0x70` is copied from that engine into this one's. By
+induction, the engine about to simulate then holds what every write so
+far left, whichever engine made it. The vehicles come from the transport
+vehicle system's node list, read at its loop's first record. The
+`MovePath`s come from the game's own getter (`0x52bbc0`), taken from the
+call the decision read follows (`0xb8bda5`) and refused unless its code is
+the shape expected and its `lea` names the type descriptor
+`.?AUMovePath@component@ecs@@`. A load forgets the engine before. Each
+`1 << 14` updates, and at the first copy:
+
+```
+order fix decision-sync: alive, updates=<n> engine changes=<n> flags copied=<n>
+```
+
+Other `MovePath` fields written alongside the flag may be engine-local in
+the same way; the `movepath` watch lines (`TPF3MP_HOOK_WATCH_ENTITIES`)
+would show one that differs between games.
+
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
 inherits it; a number above 1 is the interval, default 100 updates), three
