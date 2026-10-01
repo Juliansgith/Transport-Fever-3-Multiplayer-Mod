@@ -364,6 +364,33 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     assert!(closed && reopened && closed_by_itself);
 }
 
+/// The main menu's Multiplayer window was open as the world came up: the
+/// game's opens in its place by itself, once; otherwise it waits for a
+/// button.
+#[test]
+fn the_games_window_opens_in_place_of_the_menus_once() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (before, opened, closed): (bool, bool, bool) = lua
+        .load(
+            "HOOK.room = true HOOK.status = { room = 'r', players = {} } \
+             BAR = mount(loadPlugin()) for _ = 1, 3 do BAR.step() end \
+             local before = WINDOWS.Tpf3mpWindow ~= nil \
+             HOOK.handover = true \
+             for _ = 1, 20 do BAR.step() end \
+             local opened = WINDOWS.Tpf3mpWindow ~= nil \
+             WINDOWS.Tpf3mpWindow.layout.params.onClose() \
+             for _ = 1, 20 do BAR.step() end \
+             return before, opened, WINDOWS.Tpf3mpWindow == nil",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(!before, "no handover, no window");
+    assert!(opened, "opened in place of the menu's");
+    assert!(closed, "its own close closes it, and it stays closed");
+}
+
 #[test]
 fn chat_a_new_world_is_given_again_is_not_new() {
     let lua = gui();
@@ -526,6 +553,11 @@ tpf3mp_native = {
     leave = function()
         HOOK.left = (HOOK.left or 0) + 1
         return true
+    end,
+    handover = function()
+        local handed = HOOK.handover == true
+        HOOK.handover = nil
+        return handed
     end,
     -- A lane dump the hook asks for ({ step =, lanes = }), once; the
     -- entries go to HOOK.dumped as the hook writes them to its log.

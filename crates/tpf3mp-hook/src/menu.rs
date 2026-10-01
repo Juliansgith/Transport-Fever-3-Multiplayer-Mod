@@ -125,7 +125,9 @@ pub fn install_api(api: MenuApi) -> bool {
 /// monitor's task, `gui/menu/main_menu.tl`), or why it could not.
 ///
 /// `busy()` answers whether the progress monitor has a task, or nil when
-/// the state cannot tell.
+/// the state cannot tell. `busy(true)` instead closes the main menu's
+/// Multiplayer window if it is open ([`close_lobby`]) and answers whether
+/// it was.
 pub const CHUNK: &str = r#"
 local here, gone, plan = ...
 local number
@@ -190,21 +192,24 @@ local function load(name)
 		if made == nil and why then return why end
 		info = made
 	end
-	-- The main menu's Multiplayer window closes first (gui/menu/lobby.lua
-	-- leaves its close here): the menu that holds it goes once the world is
-	-- up, and with it any way to close the window.
-	pcall(function()
-		local close = resolveutil.__tpf3mp_close
-		if type(close) == "function" then close() end
-	end)
 	local ok, err = pcall(function()
 		theApp.loadGame(savegameId(theApp, name), false, info)
 	end)
 	if ok then return "started" end
 	return "app.loadGame failed: " .. tostring(err)
 end
-local function busy()
+local function busy(closeLobby)
 	local keep = sentinel
+	if closeLobby then
+		-- The main menu's Multiplayer window, if open (gui/menu/lobby.lua
+		-- leaves its close here while it is): closed, and whether it was.
+		local close
+		pcall(function() close = resolveutil.__tpf3mp_close end)
+		if type(close) ~= "function" then return false end
+		pcall(close)
+		pcall(function() resolveutil.__tpf3mp_close = nil end)
+		return true
+	end
 	local ok, task = pcall(function() return app.getProgressMonitor():getTask() end)
 	if not ok then return nil end
 	return task ~= nil and task ~= ""
@@ -531,6 +536,47 @@ pub unsafe fn loading() -> Option<bool> {
             }
             (api.rawgeti)(l, menu.registry, busy);
             let status = (menu.pcallk)(l, 0, 1, 0, 0, std::ptr::null());
+            let answer = (status == 0 && (api.type_of)(l, -1) == TBOOLEAN)
+                .then(|| (api.toboolean)(l, -1) != 0);
+            (api.settop)(l, top);
+            answer
+        }
+    }));
+    result.unwrap_or(None)
+}
+
+/// Closes the main menu's Multiplayer window, if it is open, in the newest
+/// state of the menu's adopted on this thread: whether it was open, or
+/// `None` when there is no such state. Called as the room's world comes up
+/// (`crate::install::menu_frame`): the window lives in the main menu's
+/// window container, which the world's GUI leaves behind, so it is closed
+/// while the menu still runs, and the game's own Multiplayer window takes
+/// over (D17; docs/LOBBY.md).
+///
+/// # Safety
+///
+/// As [`serve`].
+pub unsafe fn close_lobby() -> Option<bool> {
+    let (Some(api), Some(menu)) = (lua::api(), MENU_API.get()) else {
+        return None;
+    };
+    // The lock is let go before Lua runs (as in serve).
+    let (state, _, busy) = newest_menu_state()?;
+    if busy < 0 {
+        return None;
+    }
+    let l = state as State;
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: as in serve: the state is open and this thread's, and
+        // runs no Lua now; the final settop pops what was pushed.
+        unsafe {
+            let top = (api.gettop)(l);
+            if (api.checkstack)(l, 3) == 0 {
+                return None;
+            }
+            (api.rawgeti)(l, menu.registry, busy);
+            (api.pushboolean)(l, 1);
+            let status = (menu.pcallk)(l, 1, 1, 0, 0, std::ptr::null());
             let answer = (status == 0 && (api.type_of)(l, -1) == TBOOLEAN)
                 .then(|| (api.toboolean)(l, -1) != 0);
             (api.settop)(l, top);
@@ -981,10 +1027,11 @@ pub(crate) mod tests {
         assert_eq!(unsafe { world_loaded(menu.as_ptr() as usize) }, None);
     }
 
-    /// The main menu's Multiplayer window is closed before the room's world
-    /// loads, whatever its close does; a menu without it loads all the same.
+    /// The main menu's Multiplayer window stays open while the room's world
+    /// loads; the hook closes it as the world comes up, whatever its close
+    /// does, and says whether it was open.
     #[test]
-    fn the_multiplayer_window_closes_before_the_rooms_world_loads() {
+    fn the_multiplayer_window_stays_through_the_load_and_closes_as_the_world_comes_up() {
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         menu51();
         forget_all();
@@ -997,19 +1044,24 @@ pub(crate) mod tests {
         assert_eq!(unsafe { adopt(menu.state()) }, Ok(true));
         assert_eq!(unsafe { serve("tpf3mp_room_7") }, Some(Served::Started));
         assert_eq!(
-            menu.run("return table.concat(CLOSED, ',') .. '/' .. #LOADS"),
+            menu.run("return #CLOSED .. '/' .. #LOADS"),
             Ok("0/1".into()),
-            "closed once, before the load"
+            "open through the load"
         );
-        // A close that fails does not stop the load.
+        // The world comes up: closed once, and only once.
+        assert_eq!(unsafe { close_lobby() }, Some(true));
+        assert_eq!(menu.run("return #CLOSED"), Ok("1".into()));
+        assert_eq!(unsafe { close_lobby() }, Some(false), "nothing open now");
+        // A close that fails still counts as closed, and the menu goes on.
         menu.run("resolveutil.__tpf3mp_close = function() error('expired') end")
             .unwrap();
-        assert_eq!(unsafe { serve("tpf3mp_room_8") }, Some(Served::Started));
-        // No window, no resolveutil: the load as before.
+        assert_eq!(unsafe { close_lobby() }, Some(true));
+        assert_eq!(unsafe { loading() }, Some(false), "busy() as before");
+        // No window, no resolveutil: nothing to close.
         menu.run("resolveutil = nil").unwrap();
-        assert_eq!(unsafe { serve("tpf3mp_room_9") }, Some(Served::Started));
-        assert_eq!(menu.run("return #LOADS"), Ok("3".into()));
+        assert_eq!(unsafe { close_lobby() }, Some(false));
         forget_all();
+        assert_eq!(unsafe { close_lobby() }, None, "no menu state");
     }
 
     #[test]

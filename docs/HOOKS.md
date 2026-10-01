@@ -760,6 +760,10 @@ for the table (`bridge.find`). Its contract is in
   at most. A world's GUI starts with none of the chat so far, so after
   `world()` the next call first gives the last 50 lines taken before
   again, with `old` set.
+- `tpf3mp_native.handover()`: in the GUI: `true` once after the main
+  menu's Multiplayer window, open as the room's world came up, was closed
+  for it (`crate::menu::close_lobby` at the menu frame the world came up):
+  the game's own Multiplayer window opens in its place.
 - `tpf3mp_native.leave()`: in the GUI: the player leaves the room, as the
   launcher's Leave room does: queued for the launcher as
   `LobbyAction::Leave`, `true` or `false` and why.

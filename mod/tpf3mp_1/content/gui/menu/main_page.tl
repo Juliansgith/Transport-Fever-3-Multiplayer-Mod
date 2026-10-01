@@ -79,6 +79,7 @@ local record LobbyModule
 	content : function(onClose : function(), focus : string) : TreeNodeId
 	CardLine : function(params : any) : TreeNodeId
 	joinLine : function(state : any) : string
+	closed : function()
 end
 local lobby = ug_require "tpf3mp_1::/gui/menu/lobby.lua" as LobbyModule
 
@@ -255,6 +256,7 @@ return react.RegisterRecipe("MainPage", function(mainPageParams : MenuPageParam<
 			-- each step on its own, so an expired ref of the page's never
 			-- keeps the window up.
 			onClose = function()
+				pcall(lobby.closed)
 				local removed = pcall(function() wc.removeAllWindows(Tpf3mpLobbyWindow) end)
 				if not removed then
 					pcall(function()

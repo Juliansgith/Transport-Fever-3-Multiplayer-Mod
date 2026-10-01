@@ -199,6 +199,15 @@ function Link:say(text)
 	return true
 end
 
+-- Whether the game's Multiplayer window should open in place of the main
+-- menu's, which was open as the room's world came up: true once. False from
+-- a hook without it.
+function Link:handover()
+	if type(self.native.handover) ~= "function" then return false end
+	local ok, handed = pcall(self.native.handover)
+	return ok and handed == true
+end
+
 -- Leaves the room, as the launcher's Leave room does: true, or nil and why
 -- not. A hook without leave (an older one) says so.
 function Link:leave()

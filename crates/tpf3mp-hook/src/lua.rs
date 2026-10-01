@@ -651,6 +651,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"chat", native_chat),
                 (b"say", native_say),
                 (b"leave", native_leave),
+                (b"handover", native_handover),
                 (b"dump", native_dump),
                 (b"dumped", native_dumped),
                 (b"mods", native_mods),
@@ -1448,6 +1449,30 @@ unsafe extern "C-unwind" fn native_say(l: State) -> c_int {
     }
 }
 
+/// The main menu's Multiplayer window was open as the room's world came
+/// up and was closed for it: the world's GUI opens its own in its place,
+/// once ([`native_handover`]).
+static HANDED_OVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The main menu's Multiplayer window gave way to the game's
+/// (`crate::install::menu_frame`).
+pub fn hand_over() {
+    HANDED_OVER.store(true, Ordering::Release);
+}
+
+/// `handover()`: in the GUI: whether the game's Multiplayer window should
+/// open in place of the main menu's, which was open as the world came up;
+/// `true` once.
+unsafe extern "C-unwind" fn native_handover(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let handed = HANDED_OVER.swap(false, Ordering::AcqRel);
+    // SAFETY: a C function's call has room for its result.
+    unsafe { (api.pushboolean)(l, c_int::from(handed)) };
+    1
+}
+
 /// `leave()`: the player leaves the room from the game's Multiplayer
 /// window, as the launcher's Leave room does: the launcher takes it
 /// ([`crate::lobby::queue`]). `true`, or `false` and why not.
@@ -2112,6 +2137,29 @@ pub(crate) mod tests {
             replaces: None,
             connection: None,
         })
+    }
+
+    /// The game's Multiplayer window opens in place of the main menu's
+    /// once, after the menu's gave way.
+    #[test]
+    fn the_games_window_takes_over_once() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        HANDED_OVER.store(false, Ordering::Release);
+        assert_eq!(
+            lua.run("return tpf3mp_native.handover()"),
+            Ok("false".into())
+        );
+        hand_over();
+        assert_eq!(
+            lua.run("return tpf3mp_native.handover()"),
+            Ok("true".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.handover()"),
+            Ok("false".into())
+        );
     }
 
     /// Leave room in the game's Multiplayer window goes to the launcher

@@ -216,9 +216,10 @@ window too.
    ("Receiving the room's world: 42% (48.0 MB of 112 MB)"), and the chat
    and **Leave room** still work. Each player's row says how far their
    game is: **Downloading 42%**, then **Loading...**, then **Playing**.
-   The window closes by itself when your game starts loading the world.
-   In the game, the Multiplayer window on the game bar has the room (see
-   "While you play").
+   The window stays open until the world is up; then the game's own
+   Multiplayer window, with the same room, opens in its place, and you
+   close it with its X or **Close** (see "While you play"). If you closed
+   the window before, it stays closed.
 
 What the window says:
 

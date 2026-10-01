@@ -1039,6 +1039,10 @@ function data()
 			if not ok then say("serving the hook failed: " .. tostring(err)) end
 			local followed, why = pcall(follow)
 			if not followed then say("reading the room failed: " .. tostring(why)) end
+			-- The main menu's Multiplayer window was open as this world came
+			-- up: this one opens in its place, once the room is read, so the
+			-- player keeps the lobby they had (the hook closed the menu's).
+			if link and ui().status and not ui().open and link:handover() then toggleWindow() end
 			if ui().version ~= seen:get() then
 				seen:set(ui().version)
 				room:set(ui().version)

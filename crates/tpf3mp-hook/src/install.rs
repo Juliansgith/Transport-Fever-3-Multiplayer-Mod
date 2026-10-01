@@ -149,9 +149,10 @@ fn menu_now_ms() -> u64 {
     now_ms()
 }
 
-/// Where the game is at this menu frame (`crate::at_menu`), and the lines
-/// that say where it went. `menu` is the `UI::CMenuUI` whose frame this is.
-fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
+/// Where the game is at this menu frame (`crate::at_menu`), whether the
+/// world came up at it, and the lines that say where it went. `menu` is the
+/// `UI::CMenuUI` whose frame this is.
+fn menu_seen(menu: usize) -> (Seen, bool, Vec<String>) {
     // SAFETY: DoStep's `this`, live, on its thread, after its frame.
     let world_loaded = unsafe { crate::menu::world_loaded(menu) };
     let last_step_ms = LAST_STEP.load(Ordering::Acquire);
@@ -178,6 +179,7 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
     let mut sight = menu_sight();
     let seen = sight.gate.frame(&frame);
     let before = sight.seen.replace(seen);
+    let came_up = seen == Seen::WorldUp && before != Some(Seen::WorldUp);
     let mut lines = Vec::new();
     if before == Some(Seen::WorldUp) && seen != Seen::WorldUp {
         let forgotten = crate::menu::forget_world_states();
@@ -193,7 +195,24 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
             lines.push(format!("menu: {}", seen.describe()));
         }
     }
-    (seen, lines)
+    (seen, came_up, lines)
+}
+
+/// The room's world came up: the main menu's Multiplayer window, open
+/// through the download and the load, is closed while the menu still runs
+/// (its window container stays behind under the world's GUI, where nothing
+/// could close it), and the game's own Multiplayer window opens in its place
+/// ([`lua::hand_over`]). A window the player closed before stays closed.
+fn hand_over_lobby(lines: &mut Vec<String>) {
+    // SAFETY: the menu's frame, on the thread that runs its Lua, after the
+    // game's own frame: no Lua runs on it now.
+    if unsafe { crate::menu::close_lobby() } == Some(true) {
+        lua::hand_over();
+        lines.push(
+            "menu: the Multiplayer window closed as the world came up; the game's Multiplayer window opens in its place"
+                .to_owned(),
+        );
+    }
 }
 
 /// One of the main menu's frames (`crate::menu`), after the game's own,
@@ -213,7 +232,10 @@ pub(crate) fn menu_frame(menu: usize) {
     // frames there hung the owner's game (measured, 2026-09-30); a world
     // loaded before its first step neither (the owner's save for the room
     // comes then). After a world, only once it closed and nothing loads.
-    let (seen, mut lines) = menu_seen(menu);
+    let (seen, came_up, mut lines) = menu_seen(menu);
+    if came_up {
+        hand_over_lobby(&mut lines);
+    }
     if !seen.allows() || !crate::menu::available() {
         for line in lines {
             log_line(&line);
