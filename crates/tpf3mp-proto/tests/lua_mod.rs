@@ -8061,3 +8061,89 @@ fn the_guis_permits_count_the_players_company_own_constructions() {
     // One company in the room: the game's own counts.
     assert_eq!(eval("ME = 901 SEVERAL = false return counts()"), "1 1 1 0");
 }
+
+/// With three companies, a loan one founded company takes is its own: it
+/// alone gets the money and pays every month's interest and repayment,
+/// alike in every game; the other founded company and the room's first are
+/// never charged. A loan the finance window lists (the loan script's, the
+/// first company's) cannot repay another of the borrower's by its id alone.
+#[test]
+fn only_the_company_that_borrowed_pays_its_loan() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        GAME_T = 0
+        api.type.ComponentType.GAME_TIME = 99
+        api.engine.util.getWorld = function() return 1 end
+        api.engine.getComponent = function(e, kind)
+            if kind == 99 then return { gameTime = GAME_T } end
+        end
+        api.util = { getDefaultMonthDuration = function() return 1000 end }
+        api.type.JournalEntry = { new = function() return { category = {} } end,
+                                  Type = { LOAN = 'LOAN', INTEREST = 'INTEREST' } }
+        api.cmd.makeJournalBookAssetCmd = function(e, entry) return { journal = entry, entity = e } end
+        A, B, C = string.rep("a", 64), string.rep("b", 64), string.rep("c", 64)
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Ann' } } }, { CompanyOp = { Create = { name = 'Bob' } } } }
+        HOOK.origins = { A, B }
+        UPDATE({}, STATE, 0.2)
+        -- Ann (901) borrows 1200 over 12 months at 12 % a year.
+        OFFER = { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }
+        HOOK.batch = { { Loan = { Take = { next = OFFER, offer = OFFER } } } } HOOK.origins = { A }
+        UPDATE({}, STATE, 0.2)
+        function BOOKED()
+            local out = {}
+            for _, c in ipairs(SENT) do
+                if c.journal then out[#out + 1] = c.journal.category.type .. c.journal.amount .. '@' .. c.entity
+                elseif c.event then out[#out + 1] = c.event.name
+                elseif c.addPlayer then out[#out + 1] = c.addPlayer end
+            end
+            SENT = {}
+            return table.concat(out, ',')
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let booked: String = lua.load("return BOOKED()").eval().unwrap();
+    assert_eq!(booked, "Ann,Bob,LOAN1200@901", "the money to Ann alone");
+    // Three months: each one Ann's interest and repayment, nobody else's.
+    lua.load(
+        "for m = 1, 3 do GAME_T = m * 1000 UPDATE({}, STATE, 0.2) GAME_T = m * 1000 + 1 UPDATE({}, STATE, 0.2) end",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let booked: String = lua.load("return BOOKED()").eval().unwrap();
+    assert_eq!(
+        booked,
+        "INTEREST-12@901,LOAN-95@901,INTEREST-11@901,LOAN-96@901,INTEREST-10@901,LOAN-97@901"
+    );
+    // The finance window's Repay of the first company's loan 1 (another
+    // amount) is refused; Ann's own, from the Multiplayer window, goes.
+    lua.load(
+        "HOOK.batch = { { Loan = { Repay = { loan = { type = 'Small', amount = 5000000, duration = 12000, \
+                                                      percentage = 0.03, id = 1 } } } }, \
+                        { Loan = { Repay = { loan = { type = 'Custom', amount = 1200, duration = 1, \
+                                                      percentage = 0, id = 1 } } } } } \
+         HOOK.origins = { A, A } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let applied: Vec<String> = lua
+        .load(
+            "local n = #HOOK.applied \
+             return { tostring(HOOK.applied[n - 1].why), tostring(HOOK.applied[n].ok) }",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied,
+        [
+            "that loan is not this company's: its own are in the Multiplayer window",
+            "true"
+        ]
+    );
+    let booked: String = lua.load("return BOOKED()").eval().unwrap();
+    assert_eq!(booked, "LOAN-912@901");
+}

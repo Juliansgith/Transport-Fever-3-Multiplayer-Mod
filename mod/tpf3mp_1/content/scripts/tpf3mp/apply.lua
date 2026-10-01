@@ -1482,13 +1482,15 @@ end
 -- here they run at once, in every game at the same update.
 function HANDLERS.Loan(op, ctx)
 	-- Another company's loans are the room's (tpf3mp/companies.lua): on the
-	-- terms the game offers, booked to that company.
-	if company() ~= api.engine.util.getPlayer() then
-		local roster = ctx and ctx.roster
-		local mine = roster and companiesModule.byEntity(roster, company())
-		if not mine then return false, "the acting company is not in the room's roster" end
+	-- terms the game offers, booked to that company. Which company is the
+	-- roster's to say (company 0 is the save's own player), not
+	-- getPlayer()'s, which a GUI state answers with the player's company.
+	local roster = ctx and ctx.roster
+	local mine = roster and companiesModule.byEntity(roster, company())
+	if roster and not mine then return false, "the acting company is not in the room's roster" end
+	if mine and mine.id ~= 0 then
 		if op.Take then return companiesModule.borrow(roster, mine.id, op.Take.offer, send, api) end
-		if op.Repay then return companiesModule.repay(roster, mine.id, op.Repay.loan and op.Repay.loan.id, send, api) end
+		if op.Repay then return companiesModule.repay(roster, mine.id, op.Repay.loan, send, api) end
 		return false, "a loan is taken or paid back"
 	end
 	if op.Take then

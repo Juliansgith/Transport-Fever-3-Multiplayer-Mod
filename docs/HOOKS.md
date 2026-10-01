@@ -1355,7 +1355,11 @@ state, which the game saves with the world:
   entry, `makeJournalBookAssetCmd`, which raises the account's balance and
   loan alike, seen on build 40408), and paid back each month of the game's
   calendar as an annuity, the interest as `INTEREST` and the rest as
-  `LOAN`, or all at once. The game script books the months since the last
+  `LOAN`, or all at once. Each company pays its own loans only. Paying
+  one back names it by its id and amount: the game's finance window lists
+  the loan script's loans, the room's first company's, whose ids count
+  from 0 as the room's count from 1, so another company's Repay there is
+  refused unless the amount is its own loan's too. The game script books the months since the last
   on the first update of a new month, in every game alike.
 - *Subsidies.* The game's subsidy script
   (`::/game_mechanics/subventions/subventions.gs`) draws its offers in

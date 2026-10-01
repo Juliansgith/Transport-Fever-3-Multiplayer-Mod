@@ -652,10 +652,19 @@ function companies.borrow(roster, id, terms, send, api)
 	return true
 end
 
--- Company `id` pays loan `loanId` back, all that is still owed.
-function companies.repay(roster, id, loanId, send, api)
+-- Company `id` pays its loan back, all that is still owed.
+-- `terms` names the loan by its id and amount: the game's finance window
+-- lists the loan script's loans, the room's first company's, whose ids
+-- count from 0 as the room's own count from 1, so an id alone could name
+-- another loan of this company's; one whose amount differs is refused.
+function companies.repay(roster, id, terms, send, api)
+	local loanId = type(terms) == "table" and terms.id or nil
+	local amount = type(terms) == "table" and tonumber(terms.amount) or nil
 	for i, loan in ipairs(roster.loans or {}) do
 		if loan.id == loanId and loan.company == id then
+			if amount ~= loan.amount then
+				return false, "that loan is not this company's: its own are in the Multiplayer window"
+			end
 			local c = companies.find(roster, id)
 			book(api, send, c.entity, -loan.remaining, "LOAN")
 			table.remove(roster.loans, i)
