@@ -449,6 +449,22 @@ function data()
 		return table.concat(parts, " · ")
 	end
 
+	-- What the window shows of the room, in a text that changes when any of
+	-- it does: the game bar's line and each player's row, how far their game
+	-- is with the room's world included. The window draws itself again only
+	-- when this changes; without the rows, every row stayed at "Downloading
+	-- 0%" once the games played (2026-10-01).
+	local function roomSign(status)
+		if not status then return nil end
+		local sign = { summary(status), tostring(status.invite), tostring(status.competitive) }
+		for _, p in ipairs(status.players or {}) do
+			sign[#sign + 1] = table.concat({ tostring(p.id), tostring(p.name), tostring(p.connected),
+				tostring(p.owner), tostring(p.me), tostring(p.banner), tostring(p.loading),
+				tostring(p.percent) }, ":")
+		end
+		return table.concat(sign, "|")
+	end
+
 	-- The room's companies as the game script keeps them (tpf3mp/companies.lua),
 	-- each with its money now, and a text that changes when anything shown
 	-- does. Nil before the room's first company exists.
@@ -528,8 +544,7 @@ function data()
 		if statusFrames <= 0 then
 			statusFrames = STATUS_FRAMES
 			local status = link:status()
-			local before = shared.status and summary(shared.status) .. tostring(#(shared.status.players or {}))
-			local after = status and summary(status) .. tostring(#(status.players or {}))
+			local before, after = roomSign(shared.status), roomSign(status)
 			shared.status = status
 			if before ~= after then changed = true end
 			local companies, sign = readCompanies()

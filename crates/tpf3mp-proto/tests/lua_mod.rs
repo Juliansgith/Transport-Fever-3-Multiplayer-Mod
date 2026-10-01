@@ -440,6 +440,70 @@ fn the_games_window_is_opaque_and_as_tall_as_its_tab() {
     assert!(long, "twelve players: a scroll area");
 }
 
+/// Each player's row follows their game as it comes in, Downloading to
+/// Loading to Playing, while nothing else of the room changes. The window
+/// draws itself again only when what it shows changed (`ui().version`),
+/// and a player's loading stage did not count: the rows stayed at
+/// "Downloading 0%" with every game playing (2026-10-01).
+#[test]
+fn the_multiplayer_windows_rows_follow_each_players_loading() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "HOOK.room = true \
+         function room(stage, percent) \
+             HOOK.status = { room = 'Sunday line', speed = 200, players = { \
+                 { name = 'Julian', connected = true, owner = true, me = true, banner = 'dry', \
+                   loading = stage, percent = percent }, \
+                 { name = 'Sam', connected = true, owner = false, me = false, banner = 'dry', \
+                   loading = stage, percent = percent } } } \
+         end \
+         room('fetching', 0) \
+         BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+         views(BAR.layout)[1].params.onClick() \
+         function stages() \
+             local before = package.loaded['tpf3mp.ui'].version \
+             for _ = 1, 20 do BAR.step() BAR.render() end \
+             local redrawn = package.loaded['tpf3mp.ui'].version ~= before \
+             WINDOWS.Tpf3mpWindow.step() \
+             local out = {} \
+             for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                 if v.view == 'TextView' and (v.params.text:find('Downloading') \
+                     or v.params.text:find('Loading') or v.params.text:find('Playing')) then \
+                     out[#out + 1] = v.params.text \
+                 end \
+             end \
+             return tostring(redrawn) .. ':' .. table.concat(out, '|') \
+         end",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let stages = |lua: &Lua, change: &str| -> String {
+        lua.load(format!("{change} return stages()"))
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}\n{}", log(lua)))
+    };
+    assert_eq!(
+        stages(&lua, ""),
+        "false: Downloading 0% | Downloading 0% ",
+        "nothing changed: nothing to draw again"
+    );
+    assert_eq!(
+        stages(&lua, "room('fetching', 60)"),
+        "true: Downloading 60% | Downloading 60% "
+    );
+    assert_eq!(
+        stages(&lua, "room('loading', 0)"),
+        "true: Loading... | Loading... "
+    );
+    assert_eq!(stages(&lua, "room('', 0)"), "true: Playing | Playing ");
+    // A banner picked meanwhile shows too.
+    assert!(
+        stages(&lua, "room('', 0) HOOK.status.players[2].banner = 'selfie'").starts_with("true:")
+    );
+}
+
 /// The game's window shows the room's invite code with Copy: the hook puts
 /// it on the clipboard, and the button says "Copied" for a while.
 #[test]
