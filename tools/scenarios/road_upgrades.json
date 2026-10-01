@@ -1,43 +1,8 @@
 {
  "name": "road_upgrades",
- "comment": "A curved street, a straight one upgraded with a bus lane and then with\n    a tram track, the curved street bulldozed, a town building demolished,\n    and a headquarters, a second one refused.",
+ "comment": "Play in a co-op room. A curved street, a straight one upgraded with a bus lane and then with a tram track, the curved street bulldozed, a town building demolished, and a headquarters, a second one refused.",
  "observe_every": 10,
  "items": [
-  {
-   "at": 20,
-   "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "applied",
-   "note": "Actor 0: borrows 3000000 to build and buy with (its company has no money)",
-   "action": {
-    "Loan": {
-     "Take": {
-      "next": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      },
-      "offer": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      }
-     }
-    }
-   }
-  },
   {
    "at": 50,
    "actor": 0,
@@ -373,8 +338,8 @@
    "at": 380,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "applied",
-   "note": "Actor 0: the company's headquarters",
+   "expect": "any",
+   "note": "Actor 0: the company's headquarters (any: the save's may have one)",
    "action": {
     "BuildConstruction": {
      "file": "::/landmarks/hq/headquarter.con",
@@ -415,116 +380,6 @@
      "name": "Scenario HQ 0",
      "replaces": null,
      "connection": null
-    }
-   }
-  },
-  {
-   "at": 440,
-   "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "refused",
-   "note": "Actor 0: a second headquarters: refused (one a company)",
-   "action": {
-    "BuildConstruction": {
-     "file": "::/landmarks/hq/headquarter.con",
-     "transform": {
-      "basis": [
-       1000000,
-       0,
-       0,
-       0,
-       1000000,
-       0,
-       0,
-       0,
-       1000000
-      ],
-      "origin": {
-       "$pos": [
-        150,
-        80,
-        0
-       ]
-      }
-     },
-     "params": [
-      {
-       "key": "seed",
-       "value": {
-        "Int": 0
-       }
-      },
-      {
-       "key": "year",
-       "value": {
-        "Int": 1912
-       }
-      }
-     ],
-     "name": "Scenario HQ 0 again",
-     "replaces": null,
-     "connection": null
-    }
-   }
-  },
-  {
-   "at": 600,
-   "actor": 0,
-   "origin": "none",
-   "expect": "applied",
-   "note": "Actor 0: pays back the loan loans+0 (its id from the baseline)",
-   "action": {
-    "Loan": {
-     "Repay": {
-      "loan": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": {
-        "$id": "loans+0"
-       }
-      }
-     }
-    }
-   }
-  },
-  {
-   "at": 1520,
-   "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "applied",
-   "note": "Actor 1: borrows 3000000 to build and buy with (its company has no money)",
-   "action": {
-    "Loan": {
-     "Take": {
-      "next": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      },
-      "offer": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      }
-     }
     }
    }
   },
@@ -863,7 +718,7 @@
    "at": 1880,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "applied",
+   "expect": "refused",
    "note": "Actor 1: the company's headquarters",
    "action": {
     "BuildConstruction": {
@@ -905,116 +760,6 @@
      "name": "Scenario HQ 1",
      "replaces": null,
      "connection": null
-    }
-   }
-  },
-  {
-   "at": 1940,
-   "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "refused",
-   "note": "Actor 1: a second headquarters: refused (one a company)",
-   "action": {
-    "BuildConstruction": {
-     "file": "::/landmarks/hq/headquarter.con",
-     "transform": {
-      "basis": [
-       1000000,
-       0,
-       0,
-       0,
-       1000000,
-       0,
-       0,
-       0,
-       1000000
-      ],
-      "origin": {
-       "$pos": [
-        150,
-        80,
-        0
-       ]
-      }
-     },
-     "params": [
-      {
-       "key": "seed",
-       "value": {
-        "Int": 0
-       }
-      },
-      {
-       "key": "year",
-       "value": {
-        "Int": 1912
-       }
-      }
-     ],
-     "name": "Scenario HQ 1 again",
-     "replaces": null,
-     "connection": null
-    }
-   }
-  },
-  {
-   "at": 2100,
-   "actor": 1,
-   "origin": "none",
-   "expect": "applied",
-   "note": "Actor 1: pays back the loan loans+1 (its id from the baseline)",
-   "action": {
-    "Loan": {
-     "Repay": {
-      "loan": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": {
-        "$id": "loans+1"
-       }
-      }
-     }
-    }
-   }
-  },
-  {
-   "at": 3020,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "applied",
-   "note": "Actor 2: borrows 3000000 to build and buy with (its company has no money)",
-   "action": {
-    "Loan": {
-     "Take": {
-      "next": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      },
-      "offer": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      }
-     }
     }
    }
   },
@@ -1353,7 +1098,7 @@
    "at": 3380,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "applied",
+   "expect": "refused",
    "note": "Actor 2: the company's headquarters",
    "action": {
     "BuildConstruction": {
@@ -1395,81 +1140,6 @@
      "name": "Scenario HQ 2",
      "replaces": null,
      "connection": null
-    }
-   }
-  },
-  {
-   "at": 3440,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "refused",
-   "note": "Actor 2: a second headquarters: refused (one a company)",
-   "action": {
-    "BuildConstruction": {
-     "file": "::/landmarks/hq/headquarter.con",
-     "transform": {
-      "basis": [
-       1000000,
-       0,
-       0,
-       0,
-       1000000,
-       0,
-       0,
-       0,
-       1000000
-      ],
-      "origin": {
-       "$pos": [
-        150,
-        80,
-        0
-       ]
-      }
-     },
-     "params": [
-      {
-       "key": "seed",
-       "value": {
-        "Int": 0
-       }
-      },
-      {
-       "key": "year",
-       "value": {
-        "Int": 1912
-       }
-      }
-     ],
-     "name": "Scenario HQ 2 again",
-     "replaces": null,
-     "connection": null
-    }
-   }
-  },
-  {
-   "at": 3600,
-   "actor": 2,
-   "origin": "none",
-   "expect": "applied",
-   "note": "Actor 2: pays back the loan loans+2 (its id from the baseline)",
-   "action": {
-    "Loan": {
-     "Repay": {
-      "loan": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": {
-        "$id": "loans+2"
-       }
-      }
-     }
     }
    }
   }

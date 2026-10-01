@@ -175,9 +175,18 @@ def loan_terms(kind, amount, loan_id=None):
             "id": loan_id}
 
 
+# Which room a scenario plays in. Co-op: every actor plays for the room's
+# first company (the save's player), which has the save's money, so a
+# scenario about building and running things needs no loans. Competitive:
+# each actor plays for the company it founded, which starts with nothing,
+# so it borrows first (fund) and pays back last (repay).
+COOP, COMPETITIVE = "co-op", "competitive"
+
+
 class Scenario:
-    def __init__(self, name, comment, observe_every=10):
-        self.name, self.comment, self.observe_every = name, comment, observe_every
+    def __init__(self, name, comment, observe_every=10, room=COMPETITIVE):
+        self.name, self.observe_every, self.room = name, observe_every, room
+        self.comment = f"Play in a {room} room. " + " ".join(comment.split())
         self.items = []
 
     def act(self, at, actor, action, note, expect="applied", origin=None):
@@ -286,12 +295,16 @@ def rail_depot(node, name, facing="east", template=None):
 
 
 def fund(s, k, t, amount=FUND):
+    if s.room == COOP:
+        return
     s.act(t + 20, k, {"Loan": {"Take": {"next": loan_terms("Small", amount),
                                         "offer": loan_terms("Small", amount)}}},
           f"Actor {k}: borrows {amount} to build and buy with (its company has no money)")
 
 
 def repay(s, k, at, loan, amount=FUND):
+    if s.room == COOP:
+        return
     s.act(at, k, {"Loan": {"Repay": {"loan": loan_terms("Small", amount, {"$id": loan})}}},
           f"Actor {k}: pays back the loan {loan} (its id from the baseline)", origin="none")
 
@@ -373,6 +386,9 @@ def roads():
                                                   "buildings": []}}},
               f"{c}: a street of town #{k} no building stands by, bulldozed", origin="none")
         s.act(t + 900, k, buy(ROAD_DEPOT, (-500, -500), BUS), f"{c}: a bus at no depot: refused", "refused")
+        if k > 0:
+            s.act(t + 940, k, {"SellVehicle": {"vehicles": [{"$id": "vehicles+0"}]}},
+                  f"{c}: actor 0's first bus sold: refused (another company's)", "refused", origin="none")
         repay(s, k, t + 1000, f"loans+{k}")
     s.write()
 
@@ -381,7 +397,7 @@ def road_upgrades():
     """A curved street, a straight one upgraded with a bus lane and then with
     a tram track, the curved street bulldozed, a town building demolished,
     and a headquarters, a second one refused."""
-    s = Scenario("road_upgrades", road_upgrades.__doc__)
+    s = Scenario("road_upgrades", road_upgrades.__doc__, room=COOP)
     S = "Street"
     for k in range(ACTORS):
         t, c = ACTOR_GAP * k, f"Actor {k}"
@@ -399,9 +415,12 @@ def road_upgrades():
         s.act(t + 260, k, bulldoze_edges(S, [((0, 0), (100, 40))]), f"{c}: the curved street bulldozed")
         s.act(t + 320, k, {"Bulldoze": {"Construction": {"$building": f"#{k}:0"}}},
               f"{c}: the town building nearest town #{k}'s centre demolished", origin="none")
-        s.act(t + 380, k, construction(HQ, (150, 0), f"Scenario HQ {k}"), f"{c}: the company's headquarters")
-        s.act(t + 440, k, construction(HQ, (150, 80), f"Scenario HQ {k} again"),
-              f"{c}: a second headquarters: refused (one a company)", "refused")
+        # One headquarters a company, and in a co-op room the actors share
+        # one: actor 0 builds it (any: the save's company may have one
+        # already), and every later one is refused.
+        s.act(t + 380, k, construction(HQ, (150, 0), f"Scenario HQ {k}"),
+              f"{c}: the company's headquarters" + ("" if k else " (any: the save's may have one)"),
+              "any" if k == 0 else "refused")
         repay(s, k, t + 600, f"loans+{k}")
     s.write()
 
@@ -411,7 +430,7 @@ def rail():
     electrified, a train bought, stopped and started, sent to the depot,
     the signalled edge bulldozed; then, after every actor, a modular rail
     station placed without its modules, and a train line through it."""
-    s = Scenario("rail", rail.__doc__)
+    s = Scenario("rail", rail.__doc__, room=COOP)
     T = "Track"
     for k in range(ACTORS):
         t, c = ACTOR_GAP * k, f"Actor {k}"
@@ -421,10 +440,10 @@ def rail():
               f"{c}: a signal on the track's west edge")
         action, depot = rail_depot((200, 0), f"Scenario rail depot {k}")
         s.act(t + 200, k, action, f"{c}: a rail depot on the track's east end, as the construction tool proposes it")
-        s.act(t + 260, k, rebuilt(track([(100, 0), (200, 0)], kind=TRACK_CATENARY, catenary=True),
+        s.act(t + 330, k, rebuilt(track([(100, 0), (200, 0)], kind=TRACK_CATENARY, catenary=True),
                                   "BuildTrack", T, (100, 0), (200, 0)),
-              f"{c}: the east edge electrified (an upgrade)")
-        s.act(t + 320, k, {"BuyVehicle": {
+              f"{c}: the east edge electrified (an upgrade), the train bought already")
+        s.act(t + 260, k, {"BuyVehicle": {
             "depot": depot_ref(RAIL_DEPOT, depot),
             "consist": [{"model": m, "reversed": False, "loads": [], "color": {"r": 0, "g": 0, "b": 0}}
                         for m in (LOCOMOTIVE, WAGGON)],
@@ -434,8 +453,12 @@ def rail():
         s.act(t + 400, k, vehicle_op(f"vehicles+{k}", {"Stop": False}), f"{c}: and started again", origin="none")
         s.act(t + 440, k, vehicle_op(f"vehicles+{k}", {"ToDepot": {"sell": False}}),
               f"{c}: sent to its depot", origin="none")
-        s.act(t + 560, k, bulldoze_edges(T, [((0, 0), (100, 0))]),
-              f"{c}: the track's west edge bulldozed, its signal with it")
+        s.act(t + 520, k, bulldoze_edges(T, [((0, 0), (100, 0))]),
+              f"{c}: the signalled edge bulldozed: refused (a signal stands on it)", "refused")
+        s.act(t + 540, k, {"Bulldoze": {"EdgeObject": {"edge": edge(T, (0, 0), (100, 0)), "at": pos(50, 0),
+                                                       "model": SIGNAL}}},
+              f"{c}: the signal bulldozed")
+        s.act(t + 560, k, bulldoze_edges(T, [((0, 0), (100, 0))]), f"{c}: then the track's west edge")
         repay(s, k, t + 700, f"loans+{k}")
     # After every actor's part, so no actor's ids depend on it.
     end = ACTOR_GAP * ACTORS
@@ -455,7 +478,7 @@ def road_vehicles():
     window's orders, one truck replaced, one sent to be sold, one sold, the
     line deleted, and another company's truck sold, refused; then a modular
     truck station without its modules."""
-    s = Scenario("road_vehicles", road_vehicles.__doc__)
+    s = Scenario("road_vehicles", road_vehicles.__doc__, room=COOP)
     S = "Street"
     for k in range(ACTORS):
         t, c = ACTOR_GAP * k, f"Actor {k}"
@@ -499,9 +522,6 @@ def road_vehicles():
         s.act(t + 640, k, {"SellVehicle": {"vehicles": [{"$id": f"vehicles+{v}"}]}}, f"{c}: truck 1 sold",
               origin="none")
         s.act(t + 700, k, {"EditLine": {"line": line, "change": "Delete"}}, f"{c}: the line deleted", origin="none")
-        if k > 0:
-            s.act(t + 740, k, {"SellVehicle": {"vehicles": [{"$id": "vehicles+1"}]}},
-                  f"{c}: actor 0's truck 2 sold: refused (another company's)", "refused", origin="none")
         repay(s, k, t + 800, f"loans+{k}")
     end = ACTOR_GAP * ACTORS
     for k in range(ACTORS):
@@ -514,7 +534,7 @@ def water():
     """A ship depot and a harbour on the water near each town, a ship bought
     and run on a line. Every item is `any`: a depot is placed by its
     origin, not fitted to a shore, and the harbour has no modules."""
-    s = Scenario("water", water.__doc__)
+    s = Scenario("water", water.__doc__, room=COOP)
     for k in range(ACTORS):
         t, c, w = ACTOR_GAP * k, f"Actor {k}", f"water:#{k}:0"
         fund(s, k, t)
@@ -534,7 +554,7 @@ def air():
     """An airfield on a flat spot near each town, a plane bought at its
     hangar and run on a line. The airfield's params are the scenario's, so
     what follows it is `any`."""
-    s = Scenario("air", air.__doc__)
+    s = Scenario("air", air.__doc__, room=COOP)
     for k in range(ACTORS):
         t, c = ACTOR_GAP * k, f"Actor {k}"
         fund(s, k, t)
@@ -604,7 +624,7 @@ def money():
 def terraform():
     """A 16 m square of each actor's spot raised 2 m and lowered again,
     heights from the spot's own."""
-    s = Scenario("terraform", terraform.__doc__)
+    s = Scenario("terraform", terraform.__doc__, room=COOP)
     for k in range(ACTORS):
         t, c = ACTOR_GAP * k, f"Actor {k}"
         fund(s, k, t)

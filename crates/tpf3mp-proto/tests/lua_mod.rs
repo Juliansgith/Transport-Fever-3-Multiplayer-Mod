@@ -9660,3 +9660,37 @@ fn the_finance_window_shows_a_founded_companys_own_loans() {
         .unwrap();
     assert_eq!(board, "0 0");
 }
+
+/// A buy the game refuses says what the store would have charged and what
+/// the company has: "not enough money" reads plainly in the log.
+#[test]
+fn a_refused_buy_says_the_price_and_the_money() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        "api.res.modelRep.get = function(id) \
+             return { metadata = { transportVehicle = { compartments = { {} } }, cost = { price = 2500000 } } } end \
+         local send = api.cmd.sendCommand \
+         api.cmd.sendCommand = function(command, callback) \
+             if command.buy then callback({}, false, nil) return end \
+             return send(command, callback) \
+         end",
+    )
+    .exec()
+    .unwrap();
+    lua.load(format!(
+        "HOOK.room = true UPDATE({{}}, STATE, 0.2) HOOK.batch = {{ {BUY_BUS} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let why: String = lua
+        .load("return tostring(HOOK.applied[1].why)")
+        .eval()
+        .unwrap();
+    assert!(
+        why.starts_with("the game refused it")
+            && why.contains("price 2500000")
+            && why.contains("the consist costs 2500000"),
+        "{why}"
+    );
+}

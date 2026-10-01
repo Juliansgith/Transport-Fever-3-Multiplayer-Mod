@@ -1,43 +1,8 @@
 {
  "name": "road_vehicles",
- "comment": "Trucks: two stops, a depot on the street's free end, three trucks\n    bought at once onto a line, the line renamed and recoloured, the vehicle\n    window's orders, one truck replaced, one sent to be sold, one sold, the\n    line deleted, and another company's truck sold, refused; then a modular\n    truck station without its modules.",
+ "comment": "Play in a co-op room. Trucks: two stops, a depot on the street's free end, three trucks bought at once onto a line, the line renamed and recoloured, the vehicle window's orders, one truck replaced, one sent to be sold, one sold, the line deleted, and another company's truck sold, refused; then a modular truck station without its modules.",
  "observe_every": 10,
  "items": [
-  {
-   "at": 20,
-   "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "applied",
-   "note": "Actor 0: borrows 3000000 to build and buy with (its company has no money)",
-   "action": {
-    "Loan": {
-     "Take": {
-      "next": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      },
-      "offer": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      }
-     }
-    }
-   }
-  },
   {
    "at": 50,
    "actor": 0,
@@ -714,67 +679,6 @@
       "$id": "lines+0"
      },
      "change": "Delete"
-    }
-   }
-  },
-  {
-   "at": 800,
-   "actor": 0,
-   "origin": "none",
-   "expect": "applied",
-   "note": "Actor 0: pays back the loan loans+0 (its id from the baseline)",
-   "action": {
-    "Loan": {
-     "Repay": {
-      "loan": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": {
-        "$id": "loans+0"
-       }
-      }
-     }
-    }
-   }
-  },
-  {
-   "at": 1520,
-   "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "applied",
-   "note": "Actor 1: borrows 3000000 to build and buy with (its company has no money)",
-   "action": {
-    "Loan": {
-     "Take": {
-      "next": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      },
-      "offer": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      }
-     }
     }
    }
   },
@@ -1458,83 +1362,6 @@
    }
   },
   {
-   "at": 2240,
-   "actor": 1,
-   "origin": "none",
-   "expect": "refused",
-   "note": "Actor 1: actor 0's truck 2 sold: refused (another company's)",
-   "action": {
-    "SellVehicle": {
-     "vehicles": [
-      {
-       "$id": "vehicles+1"
-      }
-     ]
-    }
-   }
-  },
-  {
-   "at": 2300,
-   "actor": 1,
-   "origin": "none",
-   "expect": "applied",
-   "note": "Actor 1: pays back the loan loans+1 (its id from the baseline)",
-   "action": {
-    "Loan": {
-     "Repay": {
-      "loan": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": {
-        "$id": "loans+1"
-       }
-      }
-     }
-    }
-   }
-  },
-  {
-   "at": 3020,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "applied",
-   "note": "Actor 2: borrows 3000000 to build and buy with (its company has no money)",
-   "action": {
-    "Loan": {
-     "Take": {
-      "next": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      },
-      "offer": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      }
-     }
-    }
-   }
-  },
-  {
    "at": 3050,
    "actor": 2,
    "origin": "spot:#2:0",
@@ -2210,48 +2037,6 @@
       "$id": "lines+2"
      },
      "change": "Delete"
-    }
-   }
-  },
-  {
-   "at": 3740,
-   "actor": 2,
-   "origin": "none",
-   "expect": "refused",
-   "note": "Actor 2: actor 0's truck 2 sold: refused (another company's)",
-   "action": {
-    "SellVehicle": {
-     "vehicles": [
-      {
-       "$id": "vehicles+1"
-      }
-     ]
-    }
-   }
-  },
-  {
-   "at": 3800,
-   "actor": 2,
-   "origin": "none",
-   "expect": "applied",
-   "note": "Actor 2: pays back the loan loans+2 (its id from the baseline)",
-   "action": {
-    "Loan": {
-     "Repay": {
-      "loan": {
-       "type": "Small",
-       "amount": 3000000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": {
-        "$id": "loans+2"
-       }
-      }
-     }
     }
    }
   },

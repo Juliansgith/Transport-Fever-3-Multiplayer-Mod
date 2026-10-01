@@ -1375,6 +1375,14 @@ function apply.compartments(model)
 	return nil
 end
 
+-- A vehicle model's price (its cost metadata), or nil where the game does
+-- not say.
+function apply.price(model)
+	local ok, price = pcall(function() return api.res.modelRep.get(model).metadata.cost.price end)
+	if ok and type(price) == "number" then return price end
+	return nil
+end
+
 local function vehiclePart(p, time)
 	local model = api.res.modelRep.find(p.model)
 	if type(model) ~= "number" or model < 0 then error("no vehicle model " .. tostring(p.model), 0) end
@@ -1440,13 +1448,20 @@ function HANDLERS.BuyVehicle(buy)
 			local account = api.engine.getComponent(company(), api.type.ComponentType.ACCOUNT)
 			facts[#facts + 1] = "the company has " .. string.format("%d", account.balance)
 		end)
+		-- What the store would charge: each model's price, as its
+		-- canBuyVehicle reads it (vehicle_store_window.tl).
+		local total = 0
 		for i, p in ipairs(buy.consist) do
 			pcall(function()
 				local model = api.res.modelRep.find(p.model)
-				facts[#facts + 1] = string.format("part %d %s: %s compartments, %d loads", i, tostring(p.model),
-					tostring(apply.compartments(model)), #p.loads)
+				local price = apply.price(model)
+				if price then total = total + price end
+				facts[#facts + 1] = string.format("part %d %s: %s compartments, %d loads, price %s", i,
+					tostring(p.model), tostring(apply.compartments(model)), #p.loads,
+					price and string.format("%d", price) or "unknown")
 			end)
 		end
+		facts[#facts + 1] = "the consist costs " .. string.format("%d", total)
 		facts[#facts + 1] = "depot entity " .. tostring(depot)
 		pcall(function()
 			local d = api.engine.getComponent(depot, api.type.ComponentType.VEHICLE_DEPOT)

@@ -1,6 +1,6 @@
 {
  "name": "money",
- "comment": "Companies, loans, subsidies, ranks, prospecting and notifications:\n    each actor founds a company, renames and recolours it, closes and opens\n    its stations, borrows twice and repays one; a subsidy no game offers\n    and a rank not reached are refused; actor 1 joins actor 0's company and\n    founds its own again.",
+ "comment": "Play in a competitive room. Companies, loans, subsidies, ranks, prospecting and notifications: each actor founds a company, renames and recolours it, closes and opens its stations, borrows twice and repays one; a subsidy no game offers and a rank not reached are refused; actor 1 joins actor 0's company and founds its own again.",
  "observe_every": 10,
  "items": [
   {

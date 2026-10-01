@@ -216,9 +216,11 @@ expect, note, action }`, the action written as serde writes
   which a bulldozer takes alone), `$building` a town building, `$cell2` a
   terrain cell's corner and `$z` a height above the origin.
 
-A competitive room's companies start with no money, so each actor of the
-shipped scenarios borrows first and pays back last, the loan named by the
-baseline's next loan id. Depots stand with their entrance on the free end
+Each scenario's `comment` says which room it plays in. `roads` and `money`
+play in a competitive room, where each actor's founded company starts with
+no money, so each actor borrows first and pays back last, the loan named by
+the baseline's next loan id. The others play co-op, every actor for the
+save's own company and its money, with no loans. Depots stand with their entrance on the free end
 of the scenario's own street or track, so vehicles can leave.
 
 The actor's game hands its items to the room through `Session::command`,

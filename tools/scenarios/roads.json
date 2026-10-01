@@ -1,6 +1,6 @@
 {
  "name": "roads",
- "comment": "Streets, a T junction, a crossroads, a bus street with two stops and a\n    road depot snapped onto its end, a bus line with three buses bought at once, a track\n    with a rail depot snapped to its end, a loan taken first and repaid, a\n    town street no building stands by bulldozed, and a bus at no depot,\n    which every game must refuse. Each actor plays for its own company (a\n    competitive room).",
+ "comment": "Play in a competitive room. Streets, a T junction, a crossroads, a bus street with two stops and a road depot snapped onto its end, a bus line with three buses bought at once, a track with a rail depot snapped to its end, a loan taken first and repaid, a town street no building stands by bulldozed, and a bus at no depot, which every game must refuse. Each actor plays for its own company (a competitive room).",
  "observe_every": 10,
  "items": [
   {
@@ -2400,6 +2400,22 @@
    }
   },
   {
+   "at": 2440,
+   "actor": 1,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 1: actor 0's first bus sold: refused (another company's)",
+   "action": {
+    "SellVehicle": {
+     "vehicles": [
+      {
+       "$id": "vehicles+0"
+      }
+     ]
+    }
+   }
+  },
+  {
    "at": 2500,
    "actor": 1,
    "origin": "none",
@@ -3606,6 +3622,22 @@
      ],
      "multiple_units": [
       ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3940,
+   "actor": 2,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 2: actor 0's first bus sold: refused (another company's)",
+   "action": {
+    "SellVehicle": {
+     "vehicles": [
+      {
+       "$id": "vehicles+0"
+      }
      ]
     }
    }
