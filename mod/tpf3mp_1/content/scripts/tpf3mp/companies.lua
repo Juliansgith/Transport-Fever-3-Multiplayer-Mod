@@ -340,21 +340,50 @@ function companies.followPermits(api, require_, several)
 		end
 		util.tpf3mpOwnPermits = true
 	end
-	local changed, why = 0, nil
+	local changed, already, why, seen = 0, 0, nil, {}
 	for _, path in ipairs({ "/game_mechanics/company/company_util.tl", "::/game_mechanics/company/company_util.tl" }) do
 		local ok, util = pcall(require_, path)
-		if ok and type(util) == "table" and type(util.countUsedConstructionPermits) == "function"
+		if ok and type(util) == "table" and seen[util] then
+			-- The same table under its other name.
+		elseif ok and type(util) == "table" and type(util.countUsedConstructionPermits) == "function"
 				and type(util.getConstructionDisableCacheData) == "function" then
+			seen[util] = true
 			if not util.tpf3mpOwnPermits then
 				wrap(util)
 				changed = changed + 1
+			else
+				already = already + 1
 			end
 		else
 			why = why or ("the game's company_util did not load: " .. tostring(util))
 		end
 	end
-	if changed == 0 then return nil, why or "the game's company_util is changed already" end
-	return changed
+	-- Another GUI state of the same Lua state changed it first: it counts
+	-- each company's own already.
+	if changed == 0 and already > 0 then return already end
+	if changed == 0 then return nil, why or "the game's company_util did not load" end
+	return changed + already
+end
+
+-- What each live company owns, as the engine records it (PLAYER_OWNED), in
+-- one line for hook.log: its constructions and its headquarters. Read
+-- only. Written once a world is up, so a world loaded from a save says
+-- whether its owners came back with it (a company owning nothing it
+-- built is an owner lost); nil where this game cannot list them.
+function companies.ownership(roster, api)
+	local counts = {}
+	local ok = pcall(api.engine.forEachEntityWithComponent, function(e)
+		local owner = companies.ownerOf(api, e)
+		if owner then counts[owner] = (counts[owner] or 0) + 1 end
+	end, api.type.ComponentType.CONSTRUCTION)
+	if not ok then return nil end
+	local out = {}
+	for _, c in ipairs(companies.live(roster)) do
+		local hq = companies.headquartersOf(api, c.entity)
+		out[#out + 1] = tostring(c.name) .. " #" .. c.id .. " (entity " .. tostring(c.entity) .. "): "
+			.. (counts[c.entity] or 0) .. " construction(s)" .. (hq and (", headquarters " .. hq) or "")
+	end
+	return table.concat(out, "; ")
 end
 
 -- Whether `company` (a player entity) may change `entity`: what no company

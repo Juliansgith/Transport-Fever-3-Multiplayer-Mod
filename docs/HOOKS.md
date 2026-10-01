@@ -1536,6 +1536,23 @@ What the mod does, with more than one company in the room:
   (INFERRED that the engine sets `headquarters` for the paying company's
   player entity; this line says, in a real game).
 
+Once a world is up, with more than one company, each game logs what each
+company owns as the engine records it, read only: `ownership: <company>
+#<id> (entity <e>): N construction(s), headquarters <entity>; ...`. A world
+loaded from a save that shows a company owning nothing it built has lost
+its owners in the save.
+
+The game's own tools act as the save's player, not the player's company:
+its street, track and construction tools put the engine's player
+(`playerEntity`, the room's first company) in their proposals whatever
+company the player plays for, so a company's own stops and stations are
+another player's to them (no snapping), and the HQ's Configure opens the
+native module builder under the same player (its button shows for every
+headquarters: `perk.tl` gates it on `isHeadquarters` alone, and its click
+on `entity_util.isOwnedByPlayer`, which the mod answers). Not solved yet:
+see the investigation of the engine's player in
+[investigation/TF3_LOCAL_PLAYER_2026-10-01.md](../investigation/TF3_LOCAL_PLAYER_2026-10-01.md).
+
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and
 `getCompaniesValue()` take no company and answer for the engine's local
