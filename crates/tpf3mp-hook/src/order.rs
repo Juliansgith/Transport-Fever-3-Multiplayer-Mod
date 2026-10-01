@@ -89,6 +89,10 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
     ];
     outcomes.extend(platform::install(resolved, wanted(platform::TOGGLE_ENV)));
     outcomes.extend(road::install(resolved, wanted(road::TOGGLE_ENV), measuring));
+    // The claim loop's watcher rides on the vehicle watcher's switch.
+    if wanted(platform::WATCH_ENV) {
+        outcomes.extend(claims::install(resolved));
+    }
     outcomes.extend(measure::install(resolved, measuring));
     outcomes
 }
@@ -1438,6 +1442,239 @@ pub mod platform {
     }
 }
 
+/// The claim loop's watcher (logging only; it changes nothing): what
+/// `ecs::LandVehicleMoveSystem::Update2`'s reservation loop sees and decides
+/// for each land vehicle, to find where two games' vehicles first differ.
+///
+/// - **head** (`0xac1d9d`, right after `rbx` is the vehicle's `MovePath`
+///   component, 0xa0 bytes, and `r12` its node record, the entity first):
+///   for the entities `TPF3MP_HOOK_WATCH_ENTITIES` lists, one line every
+///   update with the component's bytes from `+0x18` (past its path vector)
+///   in full, the path's length and a hash of its edges, and the priority
+///   the claim order gave it.
+/// - **decision** (`0xac2235`, `mov [rbx+0x70], cl`): the `MovePath` flag
+///   `TransportVehicleSystem::Update2` reads before it asks
+///   `FindNextFreeTerminal` for a platform (`0xb8bdb3`); set when the claim
+///   reaches `[rsp+0x68]` at least the path index `edi` where the platform
+///   is decided. One line for every vehicle whose flag changes.
+pub mod claims {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+
+    use super::*;
+
+    pub const FIX: &str = "claim-watch";
+    /// A comma-separated list of entity ids whose claim-loop state is
+    /// logged every update.
+    pub const ENTITIES_ENV: &str = "TPF3MP_HOOK_WATCH_ENTITIES";
+    pub const HEAD_SITE: &str = "ecs::LandVehicleMoveSystem::Update2/claim head";
+    pub const HEAD_EXPECTED: [u8; 7] = [
+        0x8B, 0x73, 0x44, // mov esi, [rbx+0x44]
+        0x4C, 0x63, 0x73, 0x48, // movsxd r14, [rbx+0x48]
+    ];
+    pub const HEAD_STEAL: usize = 7;
+    pub const DECISION_SITE: &str = "ecs::LandVehicleMoveSystem::Update2/terminal decision";
+    pub const DECISION_EXPECTED: [u8; 7] = [
+        0x88, 0x4B, 0x70, // mov [rbx+0x70], cl
+        0x4B, 0x8D, 0x14, 0x76, // lea rdx, [r14+r14*2]
+    ];
+    pub const DECISION_STEAL: usize = 7;
+    /// The `MovePath` component's length, its path vector's (`{begin, end,
+    /// capacity}`, 12-byte edges) and the decision flag's offset.
+    pub const MOVE_PATH_LEN: u64 = 0xa0;
+    const PATH_VECTOR_LEN: u64 = 0x18;
+    const PATH_EDGE_LEN: u64 = 12;
+    const MAX_PATH_EDGES: u64 = 1 << 16;
+    const FLAG: u64 = 0x70;
+    /// The claim reached, at `[rsp+0x68]` at the decision site.
+    const CLAIMED: u64 = 0x68;
+
+    static WATCHED: OnceLock<HashSet<i32>> = OnceLock::new();
+    static BROKEN: AtomicBool = AtomicBool::new(false);
+
+    /// The entity ids `value` lists (commas or spaces between them); what
+    /// does not read as one is left out.
+    pub fn parse_entities(value: Option<&str>) -> HashSet<i32> {
+        value
+            .unwrap_or("")
+            .split([',', ' ', ';'])
+            .filter_map(|word| word.trim().parse().ok())
+            .collect()
+    }
+
+    /// The head line: the component's bytes from `+0x18` as little-endian
+    /// words in hex, the path's edge count and FNV-1a hash.
+    pub fn head_line(
+        step: u64,
+        entity: i32,
+        priority: f32,
+        words: &[u32],
+        path_len: u64,
+        path_hash: u64,
+    ) -> String {
+        let mut text = format!(
+            "claim: step {step} vehicle {entity} priority {priority:?} path {path_len}/{path_hash:016x} movepath"
+        );
+        for word in words {
+            text.push_str(&format!(" {word:08x}"));
+        }
+        text
+    }
+
+    /// The decision line.
+    pub fn decision_line(
+        step: u64,
+        entity: i32,
+        flag: bool,
+        claimed: i32,
+        decision: i32,
+    ) -> String {
+        format!(
+            "claim: step {step} vehicle {entity} terminal decision {} (claimed to {claimed}, decided at {decision})",
+            u8::from(flag)
+        )
+    }
+
+    pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
+        let watched = parse_entities(std::env::var(ENTITIES_ENV).ok().as_deref());
+        let listed = watched.len();
+        let _ = WATCHED.set(watched);
+        let mut outcomes = vec![splice_one(
+            resolved,
+            DECISION_SITE,
+            &DECISION_EXPECTED,
+            DECISION_STEAL,
+            decision_hook,
+            "every land vehicle's platform-decision flag change is logged (logging only)",
+        )];
+        if listed > 0 {
+            outcomes.push(splice_one(
+                resolved,
+                HEAD_SITE,
+                &HEAD_EXPECTED,
+                HEAD_STEAL,
+                head_hook,
+                &format!("the claim loop's view of {listed} entities from {ENTITIES_ENV} is logged every update (logging only)"),
+            ));
+        }
+        outcomes
+    }
+
+    fn splice_one(
+        resolved: &ResolvedProfile,
+        name: &str,
+        expected: &[u8],
+        steal: usize,
+        hook: tpf3mp_hookcore::detour::SpliceHook,
+        what: &str,
+    ) -> Outcome {
+        let off = |reason: String| Outcome {
+            fix: FIX,
+            installed: false,
+            reason,
+        };
+        let Some(site) = resolved.get(name) else {
+            return off(format!("the profile has no {name:?}"));
+        };
+        // SAFETY: a site inside a function the profile resolved and
+        // prologue-checked, installed before any world exists; nothing
+        // branches into the stolen bytes past the first (tpfre, noted in
+        // the profile); the hook only reads and never unwinds (`guarded`).
+        match unsafe { Splice::install(site.address as usize as *mut u8, expected, steal, hook) } {
+            Ok(splice) => {
+                let _kept = std::mem::ManuallyDrop::new(splice);
+                Outcome {
+                    fix: FIX,
+                    installed: true,
+                    reason: format!("{name} at {:#x}: {what}", site.address),
+                }
+            }
+            Err(error) => off(format!("{name} at {:#x}: {error}", site.address)),
+        }
+    }
+
+    /// The room's step, inside the game's step only.
+    fn step() -> Option<u64> {
+        if !in_step() {
+            return None;
+        }
+        crate::seeds::current_step()
+    }
+
+    pub(super) unsafe extern "system" fn decision_hook(regs: *mut SavedRegs) {
+        guarded(FIX, &BROKEN, || {
+            let rsp = SavedRegs::rsp(regs);
+            // SAFETY: the stub's block, held until the hook returns.
+            let regs = unsafe { &*regs };
+            let Some(step) = step() else {
+                return;
+            };
+            let mut probe = Probe::new();
+            let (Some(before), Some(entity), Some(claimed)) = (
+                probe.read::<u8>(regs.rbx + FLAG),
+                probe.read::<i32>(regs.r12),
+                probe.read::<i32>(rsp + CLAIMED),
+            ) else {
+                return;
+            };
+            let flag = regs.rcx as u8 != 0;
+            if (before != 0) != flag {
+                log::line(&decision_line(
+                    step,
+                    entity,
+                    flag,
+                    claimed,
+                    regs.rdi as u32 as i32,
+                ));
+            }
+        });
+    }
+
+    pub(super) unsafe extern "system" fn head_hook(regs: *mut SavedRegs) {
+        guarded(FIX, &BROKEN, || {
+            // SAFETY: the stub's block, held until the hook returns.
+            let regs = unsafe { &*regs };
+            let Some(step) = step() else {
+                return;
+            };
+            let mut probe = Probe::new();
+            let Some(entity) = probe.read::<i32>(regs.r12) else {
+                return;
+            };
+            if !WATCHED.get().is_some_and(|w| w.contains(&entity)) {
+                return;
+            }
+            let priority = probe.read::<f32>(regs.r13 + 4).unwrap_or(f32::NAN);
+            let mut words = Vec::with_capacity(((MOVE_PATH_LEN - PATH_VECTOR_LEN) / 4) as usize);
+            let mut at = PATH_VECTOR_LEN;
+            while at < MOVE_PATH_LEN {
+                let Some(word) = probe.read::<u32>(regs.rbx + at) else {
+                    return;
+                };
+                words.push(word);
+                at += 4;
+            }
+            let (Some(begin), Some(end)) =
+                (probe.read::<u64>(regs.rbx), probe.read::<u64>(regs.rbx + 8))
+            else {
+                return;
+            };
+            let mut hash = Fnv1a::new();
+            let mut len = 0;
+            if end >= begin && (end - begin).is_multiple_of(PATH_EDGE_LEN) {
+                len = (end - begin) / PATH_EDGE_LEN;
+                for i in 0..len.min(MAX_PATH_EDGES) {
+                    match probe.read::<[u8; 12]>(begin + i * PATH_EDGE_LEN) {
+                        Some(edge) => hash.write(&edge),
+                        None => break,
+                    }
+                }
+            }
+            log::line(&head_line(step, entity, priority, &words, len, hash.0));
+        });
+    }
+}
+
 /// The vehicles on a road or track edge (the survey's item 3; TPF2's
 /// `roadentries`). `transport::EdgeUseManager` keeps, per edge, a vector
 /// of 20-byte entries `{int32 entity, int32 component, float back, float
@@ -2541,6 +2778,21 @@ mod tests {
     }
 
     #[test]
+    fn the_claim_watch_lines_carry_the_vehicles_state_in_full() {
+        let watched = claims::parse_entities(Some("217708, 4711;x 12"));
+        assert_eq!(watched, [217708, 4711, 12].into_iter().collect());
+        assert!(claims::parse_entities(None).is_empty());
+        assert_eq!(
+            claims::head_line(3200, 217708, 0.5, &[0x3f80_0000, 7], 12, 0xabc),
+            "claim: step 3200 vehicle 217708 priority 0.5 path 12/0000000000000abc movepath 3f800000 00000007"
+        );
+        assert_eq!(
+            claims::decision_line(3201, 217708, true, 9, 8),
+            "claim: step 3201 vehicle 217708 terminal decision 1 (claimed to 9, decided at 8)"
+        );
+    }
+
+    #[test]
     fn a_free_check_is_said_when_its_answer_changes_and_a_free_edge_only_after_a_held_one() {
         let mut checks = platform::Checks::default();
         let edge = (900, 2, 1);
@@ -2640,6 +2892,11 @@ mod tests {
         assert_eq!(
             prologue(platform::OCCUPANT_SITE),
             platform::OCCUPANT_EXPECTED.to_vec()
+        );
+        assert_eq!(prologue(claims::HEAD_SITE), claims::HEAD_EXPECTED.to_vec());
+        assert_eq!(
+            prologue(claims::DECISION_SITE),
+            claims::DECISION_EXPECTED.to_vec()
         );
         for name in [
             land_vehicle::RECORDS,

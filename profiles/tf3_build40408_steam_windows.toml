@@ -626,6 +626,27 @@ offset = 0
 prologue = "8B 44 24 78 3B C7 74 09"
 required = false
 
+# The claim loop's watcher (crates/tpf3mp-hook/src/order.rs, `claims`), logging only,
+# inside ecs::LandVehicleMoveSystem::Update2 (vf12, 0xac0f90). The head (0xac1d9d):
+# `mov esi,[rbx+0x44]; movsxd r14,[rbx+0x48]` (7 bytes, stolen), right after rbx is
+# the vehicle's MovePath (records + index*0xa0) and r12 its node record; the
+# decision (0xac2235): `mov [rbx+0x70],cl; lea rdx,[r14+r14*2]` (7 bytes, stolen),
+# the platform-decision flag TransportVehicleSystem::Update2 reads (0xb8bdb3).
+# Nothing in the function branches into either's stolen bytes past the first.
+[[target]]
+name = "ecs::LandVehicleMoveSystem::Update2/claim head"
+signature = "8B 73 44 4C 63 73 48 C4 C1 7A 10 75 04 8B 43 3C"
+offset = 0
+prologue = "8B 73 44 4C 63 73 48"
+required = false
+
+[[target]]
+name = "ecs::LandVehicleMoveSystem::Update2/terminal decision"
+signature = "88 4B 70 4B 8D 14 76 48 8B 0B 4C 8D 04 91"
+offset = 0
+prologue = "88 4B 70 4B 8D 14 76"
+required = false
+
 # transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
 [[target]]
 name = "transport::EdgeReservationManager::Reserve"

@@ -3042,6 +3042,37 @@ step gate: <n> call(s) held for the other buffer before the checkpoint after ste
 The cost is pace: one step a frame at most, so a game below the room's
 steps a second in frames falls behind and the room waits for it.
 
+Tried in the playtest of 2026-10-01 (round B, `0e04aa3`, the switch in all
+three games): every game ran every step on the same buffer as the others
+(the `watch:` lines' engines alternate step by step, in one parity
+everywhere), and the step-3300 split came all the same, in bob's game.
+The buffers' histories are not the cause of that split.
+
+**The claim loop's watcher** (on with the vehicle watcher; logging only).
+In that round only bob's game asked `FindNextFreeTerminal` for vehicle
+217708 at step 3201 (`watch: ... candidates`); the others never asked, so
+no free check differed. `TransportVehicleSystem::Update2` asks only for a
+vehicle whose `MovePath` flag `+0x70` is set (`0xb8bdb3`), and
+`LandVehicleMoveSystem::Update2`'s reservation loop sets it
+(`0xac2235`): when its claim reaches the path index where the platform is
+decided. Two splices there, logging only:
+
+```
+claim: step <s> vehicle <entity> terminal decision <0|1> (claimed to <index>, decided at <index>)
+claim: step <s> vehicle <entity> priority <p> path <edges>/<fnv64> movepath <word> ...
+```
+
+The first, for every land vehicle whose flag changes
+(`ecs::LandVehicleMoveSystem::Update2/terminal decision`). The second,
+every update, only for the entities `TPF3MP_HOOK_WATCH_ENTITIES` lists
+(comma-separated ids; `ecs::LandVehicleMoveSystem::Update2/claim head`,
+`0xac1d9d`): the vehicle's `MovePath` from `+0x18` as hex words, its
+position and speed among them, bit for bit, with its path's length and
+hash and its claim priority. Two games' lines for one vehicle and step
+must be equal; the first that differs says when the vehicle's own state
+split, or, when it never does before the decision, that what it ran into
+(another vehicle's claim or place) did.
+
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
 inherits it; a number above 1 is the interval, default 100 updates), three
