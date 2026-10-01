@@ -311,15 +311,19 @@ fn a_player_whose_mods_differ_sees_what_to_change() {
 
 #[test]
 fn a_launcher_older_than_the_server_says_so() {
+    // As the launcher words it, naming the file that runs.
+    let exe = std::path::Path::new("TPF3-MP.exe");
+    let message = tpf3mp_agent::about::protocol_mismatch(5, 6, Some(exe));
     let window = window(State {
         name: "Ann".into(),
         outdated: true,
-        error: Some("this client speaks protocol 5 but the server speaks 6: update TPF3-MP".into()),
+        error: Some(message.clone()),
         ..State::default()
     });
     window.get_by_label("Update needed");
     window.get_by_label("Update TPF3-MP to play here");
-    window.get_by_label("this client speaks protocol 5 but the server speaks 6: update TPF3-MP");
+    window.get_by_label(&message);
+    assert!(message.contains("too old for the server") && message.contains("TPF3-MP.exe"));
 }
 
 #[test]

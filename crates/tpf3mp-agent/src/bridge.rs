@@ -1707,7 +1707,7 @@ async fn rejoin_room<L: HookLink>(
         let attempt = async {
             let (client, events) = connect(options.clone()).await.map_err(|error| {
                 if error.client_is_older() {
-                    Failed::Outdated(error.to_string())
+                    Failed::Outdated(error.for_player())
                 } else {
                     Failed::Retry(error.to_string())
                 }

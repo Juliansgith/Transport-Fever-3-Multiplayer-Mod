@@ -4,14 +4,23 @@
 // keep the console, for running from a terminal.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use std::{process::ExitCode, time::Duration};
+use std::{
+    process::ExitCode,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use eframe::egui;
 use tpf3mp_agent::{
+    about,
     diagnostics::Recorder,
-    launcher::{Launcher, LauncherConfig, Remembered, setup},
+    launcher::{
+        Launcher, LauncherConfig, Remembered,
+        instance::{self, Arrived},
+        setup,
+    },
 };
 use tpf3mp_launcher::{
     app::{Extras, LauncherApp, Shown},
@@ -144,11 +153,12 @@ fn main() -> ExitCode {
     let _logging = logs
         .as_deref()
         .and_then(|dir| logs::start(dir, Some(diagnostics.clone())).ok());
+    // First, which file runs and which build it is, so every log says.
     info!(
-        version = update::VERSION,
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
-        "the launcher starts"
+        "{}",
+        about::startup_line(about::exe().as_deref(), &about::Build::this(), about::BUILT)
     );
     // An update downloaded last time installs before anything connects.
     if update::at_start() {
@@ -183,7 +193,20 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         .thread_name("tpf3mp")
         .build()
         .context("starting the launcher")?;
-    let mut config = args.launcher.config()?;
+    // Never quietly next to a launcher of another build: it would keep the
+    // game, and play with its own protocol. Before the configuration, which
+    // takes the link's worlds for this launcher.
+    let arrived = instance::arrive(&args.launcher.game_link).map_err(anyhow::Error::msg)?;
+    // Its record stays beside the link while `arrived` lives: to the end.
+    let serving = matches!(arrived, Arrived::Serving(_));
+    let mut config = match (&arrived, args.launcher.config()) {
+        (_, Ok(config)) => config,
+        // One of this build has the game's link, and so its worlds.
+        (Arrived::Beside(other), Err(error)) => {
+            return Err(error.context(instance::already_running(other)));
+        }
+        (Arrived::Serving(_), Err(error)) => return Err(error),
+    };
     if let Some(save) = &args.auto.auto_load {
         config
             .game_env
@@ -209,12 +232,29 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
     }
     config.diagnostics = Some(diagnostics);
     if args.browser {
-        return in_browser(&runtime, config);
+        return in_browser(&runtime, config, serving);
     }
     let launcher = {
         let _entered = runtime.enter();
         Launcher::start_local(config.clone())
     };
+    // A launcher of another build asks this one to close: the window
+    // closes, or the process ends before the window is open.
+    let window: Arc<OnceLock<egui::Context>> = Arc::default();
+    if serving {
+        let window = Arc::clone(&window);
+        instance::watch(
+            config.link.clone(),
+            launcher.handle(),
+            move || match window.get() {
+                Some(ctx) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.request_repaint();
+                }
+                None => std::process::exit(0),
+            },
+        );
+    }
     auto_room(&runtime, &launcher, &config, args.auto.clone());
     // Whether the package's own server is up, shown before connecting.
     let probe = config
@@ -242,6 +282,7 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
             // The window and its renderer exist: this version works, so an
             // update just installed is complete.
             update::started();
+            let _ = window.set(creation.egui_ctx.clone());
             backend.repaint_with(creation.egui_ctx.clone());
             updater.repaint_with(creation.egui_ctx.clone());
             Ok(Box::new(LauncherApp::new(
@@ -265,7 +306,7 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         }
         Err(error) => {
             warn!(%error, "cannot open the launcher's window; opening it in the browser instead");
-            in_browser(&runtime, config)
+            in_browser(&runtime, config, serving)
         }
     }
 }
@@ -427,13 +468,23 @@ fn ready_to_start(room: &tpf3mp_agent::launcher::Room, players: usize) -> bool {
         && room.members.iter().all(|member| member.ready)
 }
 
-/// Runs the launcher as a page in the browser until Ctrl-C.
-fn in_browser(runtime: &tokio::runtime::Runtime, config: LauncherConfig) -> Result<()> {
+/// Runs the launcher as a page in the browser until Ctrl-C, or until a
+/// launcher of another build takes over (`serving`: this one holds the
+/// game's link).
+fn in_browser(
+    runtime: &tokio::runtime::Runtime,
+    config: LauncherConfig,
+    serving: bool,
+) -> Result<()> {
     runtime.block_on(async {
         let listen = config.listen;
+        let link = config.link.clone();
         let launcher = Launcher::start(config)
             .await
             .with_context(|| format!("serving the launcher on {listen}"))?;
+        if serving {
+            instance::watch(link, launcher.handle(), || std::process::exit(0));
+        }
         let url = launcher
             .url()
             .context("the launcher serves no page")?

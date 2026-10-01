@@ -397,6 +397,33 @@ fn environment_block(env: &[(String, String)]) -> Vec<u16> {
     block
 }
 
+/// The full path of the program process `pid` runs.
+pub(crate) fn process_path(pid: u32) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    // SAFETY: a handle opened for querying only, closed once; the buffer's
+    // length is passed in and the length written read back.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut buffer = vec![0u16; 32_768];
+        let mut len = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
+        let got =
+            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+        if got == 0 {
+            return None;
+        }
+        buffer.truncate(len as usize);
+        Some(std::ffi::OsString::from_wide(&buffer).into())
+    }
+}
+
 fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
     text.encode_wide().chain(std::iter::once(0)).collect()
 }

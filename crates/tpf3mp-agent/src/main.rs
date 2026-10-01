@@ -343,9 +343,31 @@ fn collect_logs(args: CollectLogsArgs) -> Result<()> {
 /// Serves the launcher until Ctrl-C.
 async fn launch(args: WebLauncherArgs) -> Result<()> {
     let listen = args.launcher.listen;
-    let launcher = Launcher::start(args.launcher.config()?)
+    let link = args.launcher.game_link.clone();
+    // Never quietly next to a launcher of another build (as the window),
+    // and before the configuration takes the link's worlds.
+    let arrived = {
+        let link = link.clone();
+        tokio::task::spawn_blocking(move || launcher::instance::arrive(&link))
+            .await?
+            .map_err(anyhow::Error::msg)?
+    };
+    let config = match (&arrived, args.launcher.config()) {
+        (_, Ok(config)) => config,
+        (launcher::instance::Arrived::Beside(other), Err(error)) => {
+            return Err(error.context(launcher::instance::already_running(other)));
+        }
+        (_, Err(error)) => return Err(error),
+    };
+    let launcher = Launcher::start(config)
         .await
         .with_context(|| format!("serving the launcher on {listen}"))?;
+    if matches!(
+        arrived,
+        tpf3mp_agent::launcher::instance::Arrived::Serving(_)
+    ) {
+        tpf3mp_agent::launcher::instance::watch(link, launcher.handle(), || std::process::exit(0));
+    }
     let url = launcher.url().context("the launcher serves no page")?;
     println!("TPF3-MP launcher: {url}");
     println!("Keep this window open while you play. Ctrl-C stops the launcher.");

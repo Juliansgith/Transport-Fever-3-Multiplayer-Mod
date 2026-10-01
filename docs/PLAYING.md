@@ -143,6 +143,34 @@ game's own **Multiplayer** button (next section).
   Transport Fever 3 closed", and you are back on the server, out of the
   room. Join it again with its invite and start the game again.
 
+**Which launcher is this?** The bottom left of the window says its
+version, the protocol it speaks to servers and the commit it was built
+from, as `v0.1.0 · protocol 13 · 1316710abc`; **Settings**, **About this
+launcher** lists them too. The first line of its log names the file that
+runs. On Windows, the file's **Properties**, **Details** show the same
+version and commit.
+
+**One launcher at a time.** Starting the launcher while another one runs
+does not leave you with two:
+
+- another one of the very same build is already running: it says so,
+  names its file, and does not start; use the window that runs (it may be
+  minimised or behind the game);
+- an older one of another build is running, for example one left open
+  before you installed a new version: the new one asks it to close, waits
+  a moment and takes its place. A game that the old one started and that
+  is still at its main menu follows the new one, unless it runs an older
+  TPF3-MP hook; then the launcher says to close the game and start it again
+  from here. The old one stays open while it is in a room, and the new one
+  then says so instead of starting: leave the room, close the old one,
+  and start the new one again;
+- a newer one is running and you started an older one, for example from a
+  shortcut to an old install: the older one does not start, and names
+  both files;
+- a launcher from before this check (it does not say its version) is
+  running: the new one does not start, names that one's file and asks you
+  to close it.
+
 **Lobby in this window instead**, under the big button, brings the whole
 lobby into the launcher, as it was before the game had its Multiplayer
 button: connect with your name (and an invite, to join in one step),
@@ -441,6 +469,17 @@ send: while you are connected, the launcher sends its log to the server
 by itself (see "Diagnostics"), so the operator finds what happened to you
 from your support code alone. The launcher also keeps its log on your machine
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
+
+**"This launcher is too old for the server"?** The server speaks a newer
+protocol than the launcher you started. The message names the file that
+runs, such as `C:\Users\you\AppData\Local\Programs\TPF3-MP\TPF3-MP.exe`. If
+that is not the newest TPF3-MP you installed, an old copy is still open
+or a shortcut points at an old install: close every TPF3-MP window, then
+start the newest one (check the version at the bottom left of its
+window). Otherwise update it (**Settings**, **Restart and update**), or
+download and install the newest package. **"This launcher is newer than
+the server"** means the server has not been updated yet: tell its
+operator.
 
 **No Multiplayer button on the game's main menu?** Only a game started
 from the launcher has it, and only when the TPF3-MP mod is installed and
