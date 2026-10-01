@@ -543,6 +543,8 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             unsafe { run_step(original, Updates::Own, false, this, a, b, c) };
             return;
         };
+        // Which of the game's two buffers this call simulates.
+        driver.set_buffer(this as u64);
         // SAFETY: as above, once per call, with the updates the driver chose;
         // the batch's first update hands the mod the room's actions for it.
         driver.on_step(lua::take_commands(), &mut |batch| {
@@ -831,6 +833,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         ));
     }
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
+    driver.set_alternate(crate::step::alternate_wanted(
+        std::env::var(crate::step::ALTERNATE_ENV).ok().as_deref(),
+    ));
     // The test mode, only where the game's environment names a scenario; one
     // that does not read is refused whole (crate::scenario).
     match crate::scenario::from_env(|key| std::env::var(key).ok(), crate::scenario::read_file) {

@@ -75,6 +75,17 @@ use crate::lanedump::{self, DumpOrder, LaneDumps};
 /// itself runs up to 64 in a call (its debug steps).
 pub const MAX_STEPS_PER_CALL: u32 = 16;
 
+/// Set to `1` (or `on`) in the game's environment, the room's steps run one
+/// a call of the game's step, each on the other of the game's two engine
+/// buffers than the step before ([`StepDriver::set_alternate`]). Off unless
+/// set.
+pub const ALTERNATE_ENV: &str = "TPF3MP_HOOK_ALTERNATE_BUFFERS";
+
+/// Whether [`ALTERNATE_ENV`]'s value turns the alternation on.
+pub fn alternate_wanted(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("1" | "on"))
+}
+
 /// How many updates one call of the game's step runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Updates {
@@ -347,6 +358,8 @@ pub trait StepHandler: Send {
     fn on_menu_loading(&mut self) {}
     /// See [`StepDriver::lobby`].
     fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView>;
+    /// See [`StepDriver::set_buffer`].
+    fn set_buffer(&mut self, _buffer: u64) {}
 }
 
 impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
@@ -376,6 +389,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
         StepDriver::lobby(self, actions)
+    }
+    fn set_buffer(&mut self, buffer: u64) {
+        StepDriver::set_buffer(self, buffer);
     }
 }
 
@@ -493,6 +509,15 @@ pub struct StepDriver<G> {
     /// The test mode's scenario, when the game's environment names one
     /// ([`crate::scenario`]).
     scenario: Option<crate::scenario::Runner>,
+    /// One step a call, each on the other engine buffer than the last
+    /// ([`StepDriver::set_alternate`]).
+    alternate: bool,
+    /// The game's simulation object this call of its step runs (one of its
+    /// two buffers' `GameSim`s), and the one the last room's step ran on.
+    buffer: u64,
+    last_buffer: Option<u64>,
+    /// Calls held for the other buffer since the last checkpoint.
+    held_for_buffer: u64,
 }
 
 impl<G: RoomGate> StepDriver<G> {
@@ -519,7 +544,33 @@ impl<G: RoomGate> StepDriver<G> {
             log: Vec::new(),
             lobby_fault: None,
             scenario: None,
+            alternate: false,
+            buffer: 0,
+            last_buffer: None,
+            held_for_buffer: 0,
         }
+    }
+
+    /// Runs the room's steps one a call of the game's step, each on the
+    /// other of the game's two engine buffers than the step before
+    /// ([`ALTERNATE_ENV`]; docs/HOOKS.md, "One step a frame, buffers in
+    /// turn"). The game simulates on one buffer a call and copies it into
+    /// the other between calls, and each buffer's systems keep state of
+    /// their own; how many steps a call runs, and so which buffer runs
+    /// which step, otherwise follows each game's frames.
+    pub fn set_alternate(&mut self, on: bool) {
+        self.alternate = on;
+        if on {
+            self.log.push(format!(
+                "step gate: one room's step a call, each on the other engine buffer than the step before ({ALTERNATE_ENV})"
+            ));
+        }
+    }
+
+    /// The game's simulation object the coming call of its step runs (its
+    /// `this`): which of the two buffers it is.
+    pub fn set_buffer(&mut self, buffer: u64) {
+        self.buffer = buffer;
     }
 
     /// Plays `runner`'s scenario in the room's game: the test mode
@@ -801,6 +852,16 @@ impl<G: RoomGate> StepDriver<G> {
                     ));
                 }
                 if let Updates::Exactly(steps) = updates {
+                    if steps > 0 && self.phase == Phase::Running {
+                        self.last_buffer = Some(self.buffer);
+                        if self.alternate && batch.lanes {
+                            self.log.push(format!(
+                                "step gate: {} call(s) held for the other buffer before the checkpoint after step {}",
+                                std::mem::take(&mut self.held_for_buffer),
+                                self.checkpoint_step
+                            ));
+                        }
+                    }
                     for _ in 0..steps {
                         match self.gate.after_step(&mut self.game) {
                             Ok(step) => self.next_step = Some(step + 1),
@@ -958,8 +1019,19 @@ impl<G: RoomGate> StepDriver<G> {
         loop {
             match self.gate.poll_step(&mut self.game) {
                 Ok(StepGate::Run) => {
+                    if self.alternate && self.last_buffer == Some(self.buffer) {
+                        // The step before ran on this buffer: the next call
+                        // is the other's.
+                        self.held_for_buffer += 1;
+                        return Updates::Exactly(0);
+                    }
+                    let max = if self.alternate {
+                        1
+                    } else {
+                        MAX_STEPS_PER_CALL
+                    };
                     let first = self.gate.next_step();
-                    return match self.gate.batch(&mut self.game, MAX_STEPS_PER_CALL) {
+                    return match self.gate.batch(&mut self.game, max) {
                         Ok(steps) => {
                             let steps = steps.max(1);
                             let last = first.saturating_add(u64::from(steps) - 1);
@@ -1166,6 +1238,8 @@ impl<G: RoomGate> StepDriver<G> {
     /// the order measurement number updates by the room's steps from here.
     fn world_loaded(&mut self, next_step: u64) {
         self.next_step = Some(next_step);
+        // A loaded world: both buffers start from it.
+        self.last_buffer = None;
         crate::order::measure::room_step(next_step);
     }
 
@@ -2084,6 +2158,44 @@ pub(crate) mod tests {
         );
         assert_eq!(call(&mut d, &mut calls), PAUSED);
         assert_eq!(d.gate.ran, 40);
+    }
+
+    #[test]
+    fn alternating_buffers_runs_each_step_on_the_other_buffer_one_a_call() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend((0..4).map(|_| StepGate::Run));
+        let (mut d, mut calls) = driver(script);
+        d.set_alternate(true);
+        let one = Updates::Exactly(1);
+        // The game's two buffers take turns, call by call.
+        let (a, b) = (0x1000, 0x2000);
+        d.set_buffer(a);
+        assert_eq!(call(&mut d, &mut calls), one, "one step, not all four");
+        d.set_buffer(b);
+        assert_eq!(call(&mut d, &mut calls), one);
+        // The frames' turns skip a beat (b again): the step waits for the
+        // other buffer than the one the step before ran on.
+        d.set_buffer(b);
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        d.set_buffer(a);
+        assert_eq!(call(&mut d, &mut calls), one);
+        d.set_buffer(b);
+        assert_eq!(call(&mut d, &mut calls), one);
+        assert_eq!(d.gate.ran, 4);
+        assert!(
+            d.take_log().iter().any(|line| line.contains(ALTERNATE_ENV)),
+            "the alternation is said"
+        );
+        // Off (the default), the room's steps run as the frames come.
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend((0..4).map(|_| StepGate::Run));
+        let (mut d, mut calls) = driver(script);
+        d.set_buffer(a);
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(4));
+        assert!(alternate_wanted(Some("1")) && alternate_wanted(Some("on")));
+        assert!(!alternate_wanted(None) && !alternate_wanted(Some("0")));
     }
 
     #[test]

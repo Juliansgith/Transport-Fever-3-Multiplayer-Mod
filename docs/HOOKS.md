@@ -3006,6 +3006,36 @@ says each change once. In two games' logs, the first `checks` line one has
 and the other lacks names the vehicle or reservation that kept a platform
 in one game only.
 
+**One step a frame, buffers in turn** (`TPF3MP_HOOK_ALTERNATE_BUFFERS=1`,
+off unless set; an experiment). The game keeps two `GameState`s
+(`CGame+0x1f0`: `gameStates[2]` at `+0x78`, `gameSims[2]` at `+0x88`,
+`simIdx` at `+0x98`). `CGame::RunGameSimLoop` (`0x11e210`) calls
+`GameSim::Step` on `gameSims[simIdx]` once a frame, waits for the main
+thread to flip `simIdx` (it asserts the flip, `0x11e49e`), and replicates
+the buffer just simulated into the other (`GameState::Replicate`
+`0x255de0`) for the next frame (SEEN). So each frame's batch of updates
+runs on the other buffer than the last frame's, and which buffer runs a
+given room step follows each game's frames: the `watch:` lines show it,
+every step on exactly one `engine`, mostly in turn, two or more in a row
+where a batch ran several steps. Each engine has its own system objects
+(the reservation and edge-use managers among them), which only the
+replication's callbacks bring up to date (SEEN that they exist; INFERRED
+that what they keep may differ by history). With the switch set in every
+game of the room, the step gate runs at most one room's step a call, and
+only on the other buffer than the step before (a call on the same buffer
+is held, the paused path), so every game runs every step on a buffer with
+the same history: step n's buffer simulated step n-2 and received step
+n-1's changes in one replication. A load starts the turns afresh. At
+each checkpoint the log says how many calls were held for the other
+buffer:
+
+```
+step gate: <n> call(s) held for the other buffer before the checkpoint after step <s>
+```
+
+The cost is pace: one step a frame at most, so a game below the room's
+steps a second in frames falls behind and the room waits for it.
+
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
 inherits it; a number above 1 is the interval, default 100 updates), three
