@@ -37,9 +37,11 @@ use crate::{Launch, LaunchError, Started, folder_of};
 
 /// How long loading the hook may take.
 const LOAD_TIMEOUT_MS: u32 = 30_000;
-/// How long the game waits, suspended, for the hook to be ready. The tests
-/// load a system library that never says so.
-const READY_TIMEOUT_MS: u32 = if cfg!(test) { 300 } else { 30_000 };
+/// How long the game waits, suspended, for the hook to be ready: it arms the
+/// main menu's Multiplayer entry and load first, which took about 30 s in a
+/// debug build (2026-10-01), so with room to spare. The tests load a system
+/// library that never says so.
+const READY_TIMEOUT_MS: u32 = if cfg!(test) { 300 } else { 90_000 };
 
 /// The event the hook sets once it is ready (`tpf3mp_ipc::hook_ready_event`).
 struct ReadyEvent(HANDLE);

@@ -670,11 +670,30 @@ pub fn install(profile: &Profile, link_name: &str, log: crate::Logger) -> Instal
     }
 }
 
-/// The profile as [`prepare`] resolved it in this process: the image's base
-/// and the targets, and whether the main menu's load was installed then.
-#[cfg(all(windows, target_arch = "x86_64"))]
-static PREPARED: Mutex<Option<(usize, tpf3mp_hookcore::profile::ResolvedProfile, bool)>> =
-    Mutex::new(None);
+/// Whether [`prepare`] installed the main menu's load.
+static MENU_PREPARED: AtomicBool = AtomicBool::new(false);
+
+/// The part of `profile` [`prepare`] needs: Lua's C API and the main menu's
+/// targets. Resolving the whole profile while the game is suspended took
+/// about 30 s in a debug build, and the launcher stopped waiting for the
+/// hook first (2026-10-01).
+pub fn menu_part(profile: &Profile) -> Profile {
+    let menu_targets = [
+        crate::menu::MENU_STEP_TARGET,
+        crate::menu::MENU_GAME_TARGET,
+        crate::menu::MENU_LOAD_TARGET,
+        crate::menu::REGISTER_APP_TARGET,
+        crate::menu::LOAD_TARGET,
+        crate::menu::PCALL_TARGET,
+        crate::menu::REF_TARGET,
+    ];
+    let mut part = profile.clone();
+    part.targets.retain(|target| {
+        menu_targets.contains(&target.name.as_str())
+            || (target.name.starts_with("lua") && target.name != PRINT_TARGET)
+    });
+    part
+}
 
 /// The executable's base and the profile resolved in its code.
 #[cfg(all(windows, target_arch = "x86_64"))]
@@ -717,7 +736,7 @@ fn resolve_here(
 #[cfg(all(windows, target_arch = "x86_64"))]
 pub fn prepare(profile: &Profile, log: crate::Logger) -> String {
     *LOG.lock().unwrap_or_else(|p| p.into_inner()) = Some(log);
-    let (base, resolved) = match resolve_here(profile) {
+    let (base, resolved) = match resolve_here(&menu_part(profile)) {
         Ok(found) => found,
         Err(reason) => return format!("the main menu's load waits for the step gate: {reason}"),
     };
@@ -744,8 +763,7 @@ pub fn prepare(profile: &Profile, log: crate::Logger) -> String {
             format!("the main menu cannot load the room's world (fail closed): {reason}")
         }
     };
-    let menu = crate::menu::installed();
-    *PREPARED.lock().unwrap_or_else(PoisonError::into_inner) = Some((base, resolved, menu));
+    MENU_PREPARED.store(crate::menu::installed(), Ordering::Release);
     line
 }
 
@@ -758,17 +776,10 @@ pub fn prepare(_profile: &Profile, _log: crate::Logger) -> String {
 fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     use std::time::Duration;
 
-    let prepared = PREPARED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
-    let (base, resolved, menu_installed) = match prepared {
-        Some(prepared) => prepared,
-        None => {
-            let (base, resolved) = resolve_here(profile)?;
-            (base, resolved, false)
-        }
-    };
+    // The whole profile, once the game runs; the menu's part was installed
+    // before ([`prepare`]), as a rule.
+    let (base, resolved) = resolve_here(profile)?;
+    let menu_installed = MENU_PREPARED.load(Ordering::Acquire);
     let step_rva = resolved
         .get(STEP_TARGET)
         .ok_or_else(|| format!("the profile has no {STEP_TARGET}"))?
@@ -1743,6 +1754,59 @@ mod tests {
         lua::forget_worlds();
         forget_menu_sight();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the hook resolves while the game is suspended is the main
+    /// menu's part of the profile only: Lua's API and the menu's targets,
+    /// all of them, and not the rest (the step gate, the order fixes, the
+    /// seeds), which waits until the game runs.
+    #[test]
+    fn prepare_resolves_only_the_menus_part_of_the_profile() {
+        let profile = crate::built_in_profiles()
+            .into_iter()
+            .find_map(|loaded| loaded.profile.ok())
+            .unwrap();
+        let part = menu_part(&profile);
+        let names: Vec<&str> = part.targets.iter().map(|t| t.name.as_str()).collect();
+        for needed in [
+            crate::menu::MENU_STEP_TARGET,
+            crate::menu::MENU_GAME_TARGET,
+            crate::menu::MENU_LOAD_TARGET,
+            crate::menu::REGISTER_APP_TARGET,
+            crate::menu::LOAD_TARGET,
+            crate::menu::PCALL_TARGET,
+            crate::menu::REF_TARGET,
+            "lua_gettop",
+            "lua_settop",
+            "lua_checkstack",
+            "lua_pushvalue",
+            "lua_type",
+            "lua_toboolean",
+            "lua_tonumberx",
+            "lua_tolstring",
+            "lua_next",
+            "lua_pushnil",
+            "lua_pushnumber",
+            "lua_pushboolean",
+            "lua_pushlstring",
+            "lua_pushcclosure",
+            "lua_createtable",
+            "lua_rawget",
+            "lua_rawset",
+            "lua_rawgeti",
+        ] {
+            assert!(names.contains(&needed), "{needed} missing from {names:?}");
+        }
+        for left in [
+            STEP_TARGET,
+            SPEED_TARGET,
+            SPEED_CALL_TARGET,
+            PRINT_TARGET,
+            ADD_TARGET,
+        ] {
+            assert!(!names.contains(&left), "{left} is not the menu's");
+        }
+        assert!(part.targets.len() * 2 < profile.targets.len(), "{names:?}");
     }
 
     static NEST: AtomicBool = AtomicBool::new(false);

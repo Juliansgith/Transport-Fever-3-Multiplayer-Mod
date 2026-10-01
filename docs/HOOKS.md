@@ -986,8 +986,11 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
 - **Before the game runs.** The main menu's load (the Lua API, the two
   detours below, the two field offsets) is installed while the launcher
   still holds the game suspended, with the menu's Multiplayer entry
-  (`install::prepare`); the rest of the install waits for the agent's
-  link. On 2026-10-01 that wait took 27 s, the game built its main menu
+  (`install::prepare`), which resolves only that part of the profile, Lua's
+  API and the menu's targets (`install::menu_part`): the whole profile
+  took about 30 s in a debug build, and the launcher, which then waited
+  30 s, gave up first. It now waits up to 90 s. The rest of the install,
+  the whole profile included, waits for the agent's link. On 2026-10-01 that wait took 27 s, the game built its main menu
   meanwhile, no state of the menu's was adopted, and the room's world
   loaded in no game.
 - **Gets a Lua state that can load.** The game gives a Lua state its `app`
