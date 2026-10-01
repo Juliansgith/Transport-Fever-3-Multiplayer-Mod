@@ -1728,8 +1728,10 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
         vehicles,
         [
             "lane 3 step 300 vehicle-0 state=1 stop=0 line=nil edge=3 pos=10.199999999999999 speed=5 \
+             arrival=nil/nil arrival_locked=nil \
              entity=401 row=1:0:3@10.20 v5.00",
-            "lane 3 step 300 vehicle-1 state=2 stop=1 line=nil edge=0 pos=0 speed=0 entity=402 \
+            "lane 3 step 300 vehicle-1 state=2 stop=1 line=nil edge=0 pos=0 speed=0 \
+             arrival=nil/nil arrival_locked=nil entity=402 \
              row=2:1:0@0.00 v0.00",
             &format!("lane 3 step 300 summary {}", read_lanes(&a)[3].1),
         ],
@@ -1774,6 +1776,81 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
         .unwrap();
     let none: Vec<String> = a.load("return HOOK.dumped").eval().unwrap();
     assert!(none.is_empty());
+}
+
+#[test]
+fn terminal_choices_and_locks_are_dumped_without_changing_the_vehicle_digest() {
+    let a = dumping_game(false);
+    let b = dumping_game(false);
+    a.load(
+        "WORLD[4][401].arrivalStationTerminal = { station = 0, terminal = 1 } \
+            WORLD[4][401].arrivalStationTerminalLocked = false",
+    )
+    .exec()
+    .unwrap();
+    b.load(
+        "WORLD[4][401].arrivalStationTerminal = { station = 0, terminal = 2 } \
+            WORLD[4][401].arrivalStationTerminalLocked = true",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(read_lanes(&a), read_lanes(&b));
+    let da = dump_at_checkpoint(&a, 50, "3");
+    let db = dump_at_checkpoint(&b, 50, "3");
+    let differences: Vec<_> = da.iter().zip(&db).filter(|(x, y)| x != y).collect();
+    assert_eq!(differences.len(), 1);
+    assert!(
+        differences[0]
+            .0
+            .contains(" arrival=0/1 arrival_locked=false ")
+    );
+    assert!(
+        differences[0]
+            .1
+            .contains(" arrival=0/2 arrival_locked=true ")
+    );
+}
+
+#[test]
+fn physical_paths_are_dumped_without_changing_the_vehicle_digest() {
+    let a = dumping_game(false);
+    let b = dumping_game(false);
+    for lua in [&a, &b] {
+        lua.load(
+            "WORLD[9][401].path = { edges = { \
+                { edgeId = { entity = 81, index = 2 }, dir = false }, \
+                { edgeId = { entity = 82, index = 0 }, dir = true } \
+              }, endOffset = 1.5, terminalDecisionOffset = 20 }",
+        )
+        .exec()
+        .unwrap();
+    }
+    b.load("WORLD[9][401].path.edges[2].edgeId.entity = 83")
+        .exec()
+        .unwrap();
+    assert_eq!(read_lanes(&a), read_lanes(&b));
+    let da = dump_at_checkpoint(&a, 50, "3");
+    let db = dump_at_checkpoint(&b, 50, "3");
+    let va = da.iter().find(|l| l.contains(" vehicle-0 ")).unwrap();
+    let vb = db.iter().find(|l| l.contains(" vehicle-0 ")).unwrap();
+    let field = |s: &str, key: &str| {
+        s.split_whitespace()
+            .find(|f| f.starts_with(key))
+            .unwrap()
+            .to_owned()
+    };
+    assert_ne!(field(va, "path_hash="), field(vb, "path_hash="));
+    assert!(va.contains(" path_count=2 "));
+    assert!(va.contains(" path_end=1.5 decision_offset=20 "));
+    // The real API uses named fields; the documented tuple form remains supported.
+    b.load(
+        "WORLD[9][401].path.edges = { \
+            { { entity = 81, index = 2 }, false }, \
+            { { entity = 82, index = 0 }, true } }",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(da, dump_at_checkpoint(&b, 50, "3"));
 }
 
 #[test]

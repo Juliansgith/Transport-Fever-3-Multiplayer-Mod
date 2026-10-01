@@ -80,6 +80,26 @@ end
 pcall(debugPrint, "[tpf3mp] main menu: resolveutil.loadfile is wrapped")
 "#;
 
+// Construction workers can load industryutil as their very first file.
+// Intercept at the native boundary: a Lua wrapper installed during that
+// first call cannot wrap the call already in progress.
+const INDUSTRY_LOADER: &str = concat!(
+    include_str!("industry_order.lua"),
+    r#"
+return function(...)
+    local ru = resolveutil
+    ru.__tpf3mp_industry_raw = true
+    local ok, chunk, err = pcall(ru.loadfile, "::/industries/industryutil.lua")
+    ru.__tpf3mp_industry_raw = nil
+    if not ok then error(chunk) end
+    if not chunk then error(err or "TPF3-MP: industry utility unavailable") end
+    return industry_order(chunk(...))
+end, nil
+"#
+);
+const INDUSTRY_RAW: &str =
+    "return resolveutil and resolveutil.__tpf3mp_industry_raw and 'raw' or nil";
+
 /// The two files of the mod whose loading is really a request to the hook.
 /// The loader's glue parses the path as a mod URI and checks the file exists
 /// before the body runs, so they are real files (`mod/tpf3mp_1/content/tpf3mp/`);
@@ -100,6 +120,7 @@ const ACTION_CHUNK: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Targets {
     pub loadfile: usize,
+    pub cached_loadfile: usize,
     pub lua_load: usize,
     pub lua_pcallk: usize,
     pub lua_settop: usize,
@@ -118,6 +139,8 @@ static LUA_TOLSTRING: AtomicUsize = AtomicUsize::new(0);
 static PATCHED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// Keeps the detour armed for the life of the process.
 static DETOUR: Mutex<Option<InlineDetour>> = Mutex::new(None);
+static CACHE_DETOUR: Mutex<Option<InlineDetour>> = Mutex::new(None);
+static CACHE_ORIGINAL: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
 /// The hook's log, for what happens at run time.
 static LOG: Mutex<Option<File>> = Mutex::new(None);
 
@@ -137,8 +160,9 @@ type LuaTolstring = unsafe extern "C" fn(*mut c_void, c_int, *mut usize) -> *con
 
 /// The profile targets the entry uses, none of which another part of the
 /// hook detours.
-pub const TARGETS: [&str; 6] = [
+pub const TARGETS: [&str; 7] = [
     "lua_loadfile",
+    "lua_cached_loadfile",
     "lua_load",
     "lua_pcallk",
     "lua_settop",
@@ -173,6 +197,7 @@ pub fn resolve_targets(profile: &Profile) -> Result<Targets, String> {
     };
     Ok(Targets {
         loadfile: address("lua_loadfile")?,
+        cached_loadfile: address("lua_cached_loadfile")?,
         lua_load: address("lua_load")?,
         lua_pcallk: address("lua_pcallk")?,
         lua_settop: address("lua_settop")?,
@@ -210,7 +235,48 @@ pub unsafe fn install(targets: &Targets, log_path: Option<&Path>) -> Result<(), 
     *DETOUR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(detour);
+    // SAFETY: the matching profile verifies the cache entry prologue and ABI.
+    let cache = unsafe {
+        InlineDetour::install(
+            targets.cached_loadfile as *mut u8,
+            cached_loadfile as *const () as *const u8,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    CACHE_ORIGINAL.store(cache.trampoline() as *mut u8, Ordering::Release);
+    *CACHE_DETOUR.lock().unwrap_or_else(|e| e.into_inner()) = Some(cache);
     Ok(())
+}
+
+/// Cache lookup precedes the loader body, including in brand-new Lua states.
+/// Intercept before lookup so a cached original chunk cannot bypass the fix.
+unsafe extern "system" fn cached_loadfile(
+    cache: *mut c_void,
+    holder: *mut *mut c_void,
+    uri: *const u8,
+) -> u8 {
+    if uri_part(uri, 0x20).as_deref() == Some("industries/industryutil.lua")
+        && uri_part(uri, 0).as_deref() == Some("")
+        && !holder.is_null()
+    {
+        // SAFETY: the native caller supplies a live lua::State holder.
+        let state = unsafe { *holder };
+        if !state.is_null()
+            && eval_string(state, INDUSTRY_RAW).as_deref() != Some("raw")
+            && push_industry_loader(state)
+        {
+            return 1;
+        }
+    }
+    let original = CACHE_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: installed before the suspended game resumes; exact native ABI.
+    let original = unsafe {
+        std::mem::transmute::<
+            *mut u8,
+            unsafe extern "system" fn(*mut c_void, *mut *mut c_void, *const u8) -> u8,
+        >(original)
+    };
+    unsafe { original(cache, holder, uri) }
 }
 
 fn note(message: &str) {
@@ -260,16 +326,30 @@ fn lua_state_of(closure: *const u8) -> Option<*mut c_void> {
 /// when the capacity at +0x18 is 16 or more, else the bytes inline; the size
 /// at +0x10). `None` for anything that does not look like one.
 fn request_path(closure: *const u8) -> Option<String> {
+    request_part(closure, 0x20)
+}
+
+/// Loader.cpp's translation preamble (0x2fa4fc0) reads the URI's owning
+/// mod ID from its first std::string. Empty is the base namespace.
+fn request_namespace(closure: *const u8) -> Option<String> {
+    request_part(closure, 0)
+}
+
+fn request_part(closure: *const u8, offset: usize) -> Option<String> {
     if closure.is_null() {
         return None;
     }
     // SAFETY: as in `lua_state_of`; the field at +8 points at the object that
     // holds the requested path, `tpfre` showed the body adding 0x20 to it.
     let holder = unsafe { *(closure.add(8) as *const *const u8) };
+    uri_part(holder, offset)
+}
+
+fn uri_part(holder: *const u8, offset: usize) -> Option<String> {
     if holder.is_null() {
         return None;
     }
-    let string = unsafe { holder.add(0x20) };
+    let string = unsafe { holder.add(offset) };
     let size = unsafe { *(string.add(0x10) as *const usize) };
     let capacity = unsafe { *(string.add(0x18) as *const usize) };
     if size > capacity || size > 64 * 1024 {
@@ -514,6 +594,53 @@ fn push_reply(state: *mut c_void, reply: &str) -> bool {
     true
 }
 
+/// Supply the loader's two results (chunk, nil) without executing the module.
+fn push_industry_loader(state: *mut c_void) -> bool {
+    let load = LUA_LOAD.load(Ordering::Acquire);
+    let pcallk = LUA_PCALLK.load(Ordering::Acquire);
+    let settop = LUA_SETTOP.load(Ordering::Acquire);
+    if load == 0 || pcallk == 0 || settop == 0 {
+        return false;
+    }
+    // SAFETY: profile-verified Lua API; this callback owns the live state.
+    let (load, pcallk, settop) = unsafe {
+        (
+            std::mem::transmute::<usize, LuaLoad>(load),
+            std::mem::transmute::<usize, LuaPcallk>(pcallk),
+            std::mem::transmute::<usize, LuaSettop>(settop),
+        )
+    };
+    let mut chunk = Chunk {
+        ptr: INDUSTRY_LOADER.as_ptr(),
+        len: INDUSTRY_LOADER.len(),
+        done: false,
+    };
+    // SAFETY: static source, valid reader context, terminated name/mode.
+    let status = unsafe {
+        load(
+            state,
+            read_chunk,
+            (&mut chunk as *mut Chunk).cast(),
+            c"=tpf3mp-industry".as_ptr(),
+            c"t".as_ptr(),
+        )
+    };
+    let status = if status == 0 {
+        // SAFETY: the compiled outer chunk is atop the stack; two results.
+        unsafe { pcallk(state, 0, 2, 0, 0, std::ptr::null()) }
+    } else {
+        status
+    };
+    if status != 0 {
+        // SAFETY: discard the single load/call error, preserving caller args.
+        unsafe { settop(state, -2) };
+        note(&format!("industry loader failed with Lua status {status}"));
+        return false;
+    }
+    note(&format!("industry loader supplied in Lua state {state:p}"));
+    true
+}
+
 /// Records the first few paths read from the closure, and every one that
 /// mentions the mod, so a wrong offset shows up in the hook's log.
 fn diagnose_path(closure: *const u8) {
@@ -554,6 +681,12 @@ extern "C" fn on_entry(args: *const u64) -> *const u8 {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .contains(&(state as usize));
+    if request_path(closure).is_some_and(|path| path.ends_with("industries/industryutil.lua")) {
+        note(&format!(
+            "industry loader state={state:p} patched={patched} namespace={:?}",
+            request_namespace(closure)
+        ));
+    }
     if request_path(closure).is_some_and(|path| is_main_page(&path)) {
         // In a patched state the patch's wrap has asked for the mod's copy
         // (the body sees only the path, the same for both); in one the
@@ -678,6 +811,51 @@ mod tests {
     }
 
     #[test]
+    fn industry_loader_covers_first_load_and_clears_recursion_guard_on_errors() {
+        let lua = mlua::Lua::new();
+        lua.load(
+            r#"
+            debugPrint = function() end
+            resolveutil = {loadfile = function(path)
+                assert(resolveutil.__tpf3mp_industry_raw)
+                assert(path == '::/industries/industryutil.lua')
+                if fail == 'missing' then return nil, 'missing' end
+                if fail == 'throw' then error('load failed') end
+                return function(arg)
+                    return {makeIndustryUpdateFn = function(data) return function() return data end end,
+                        path = path, arg = arg}
+                end, 'loader status'
+            end}
+        "#,
+        )
+        .exec()
+        .unwrap();
+        let (chunk, error): (mlua::Function, mlua::Value) =
+            lua.load(INDUSTRY_LOADER).eval().unwrap();
+        assert!(error.is_nil());
+        lua.globals().set("load_industry", chunk).unwrap();
+        lua.load(
+            r#"
+            do
+                local module = load_industry(42)
+                assert(module.arg == 42 and module.__tpf3mp_ordered)
+                assert(not resolveutil.__tpf3mp_industry_raw)
+                local data = module.makeIndustryUpdateFn({z=1, a=2})()
+                local iter = getmetatable(data).__pairs(data)
+                assert(iter() == 'a' and iter() == 'z')
+            end
+            for _, mode in ipairs({'missing', 'throw'}) do
+                fail = mode
+                assert(not pcall(load_industry))
+                assert(not resolveutil.__tpf3mp_industry_raw)
+            end
+        "#,
+        )
+        .exec()
+        .unwrap();
+    }
+
+    #[test]
     fn nothing_is_read_from_a_null_closure() {
         assert!(lua_state_of(std::ptr::null()).is_none());
         assert!(request_path(std::ptr::null()).is_none());
@@ -709,6 +887,19 @@ mod tests {
         );
         let (closure, _object, _heap) = closure_with(STATE_FILE.as_bytes());
         assert_eq!(request_path(closure.as_ptr()).as_deref(), Some(STATE_FILE));
+        assert_eq!(request_namespace(closure.as_ptr()).as_deref(), Some(""));
+        let (closure, mut object, _heap) = closure_with(b"industries/industryutil.lua");
+        object[..9].copy_from_slice(b"other_mod");
+        object[0x10..0x18].copy_from_slice(&9usize.to_ne_bytes());
+        object[0x18..0x20].copy_from_slice(&15usize.to_ne_bytes());
+        assert_eq!(
+            request_namespace(closure.as_ptr()).as_deref(),
+            Some("other_mod")
+        );
+        assert_eq!(
+            request_path(closure.as_ptr()).as_deref(),
+            Some("industries/industryutil.lua")
+        );
     }
 
     #[test]
