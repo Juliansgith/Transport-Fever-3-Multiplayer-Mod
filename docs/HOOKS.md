@@ -1234,6 +1234,22 @@ reference of its own to either. Once linked, the GUI wraps every
   `hook.log` gets a line for the first refusal of each kind and every
   hundredth after.
 
+The GUI runs in more than one Lua state, each with an `api.cmd` of its
+own ("Companies" below). The one the game renders its React recipes in
+gets the same guard (`tpf3mp/hudguard.lua`, installed from
+`gui/tpf3mp/gui_state.script.lua`), so no window sends a command past the
+room from either state ([COVERAGE.md](COVERAGE.md), U1). The room's
+answers (`results()`) have one reader, the plugin's state, so there a
+command handed to the room is answered as sent, and a command whose window
+waits on what it made (`guard.RESULT`: a purchase, a new line, a
+replacement) sent with a callback is refused, `a window that waits on what
+it made, in a Lua state the room's answers do not reach`. That state has
+no frame the mod runs in: the callbacks the guard defers run from the
+HUD's next reads of the player's company, two clock ticks on. hook.log:
+`the guard is on N command factories in the HUD's state`, and each
+refusal there `... in the HUD's state: <why>`. Which windows render in that
+state is not known on build 40408; the log says if any sends a command.
+
 Before the room begins, and after it ends, every command is sent as it
 would be, and every tool builds. A kind the room comes to carry is
 captured into an action instead of refused, and applied by every game

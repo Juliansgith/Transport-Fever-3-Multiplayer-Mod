@@ -131,6 +131,9 @@ guard.RESULT = {
 	end,
 }
 
+-- Why a RESULT kind with a callback is refused where answers do not reach.
+guard.UNTOLD = "a window that waits on what it made, in a Lua state the room's answers do not reach"
+
 -- What a command makes that the window may name in its next command, by
 -- the registry's kind (tpf3mp/registry.lua): the store's "buy and put on a
 -- line" puts the new vehicle on its line in the buy's callback, and that
@@ -321,6 +324,11 @@ guard.HOLD_SECONDS = 20
 --   shared()      -> optional: the room's shared mods, a list of names, or
 --                    nil (then no personal mod's event is its own);
 --   caller()      -> optional: the mod a command came from (guard.caller).
+--   caller()      -> optional: the mod a command came from (guard.caller);
+--   untold        -> optional: true in a Lua state the room's answers do not
+--                    reach (tpf3mp/hudguard.lua): a command whose window
+--                    waits on what it made (RESULT) is refused there, why
+--                    guard.UNTOLD.
 -- refused() is also given the mod the command came from, if one did.
 -- Returns the number of factories wrapped, or nil and why the guard could
 -- not be put there.
@@ -389,6 +397,11 @@ function guard.install(cmd, env)
 		local made, action = false, nil
 		if carry and args then
 			made, action = pcall(carry, env.context, unpackArgs(args, 1, args.n))
+		end
+		-- A window that waits on what its command made (RESULT) hears it
+		-- only where the room's answers reach (env.untold: not here).
+		if made and action and env.untold and callback ~= nil and guard.RESULT[kind] then
+			made, action = false, guard.UNTOLD
 		end
 		if made and action then
 			local ok, ticket = env.command(action)
