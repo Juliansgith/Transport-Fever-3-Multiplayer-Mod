@@ -2379,6 +2379,50 @@ engine's visit order before the fix each update, `candidates` counts the
 candidate sorts that changed something, and `road` hashes each checked
 edge's id and its entities in the order kept.
 
+**Telling a divergence from jitter in these counts** (the three-player
+playtest of 2026-10-01, `3817d8d`). The road fix's `alive` line counts
+every append the hook sees, in both of the game's engines: the
+simulation's, inside the game's step, and the second engine's, which
+`GameState::Replicate` (`0x255de0`) brings up to date from the game's frame
+through `ecs::Engine::Replicate` (`0x2bb78f0`, its per-type copies on the
+thread pool) and `Replicator::Apply` (`0x2bb4430`, which begins and ends a
+modification; that its end calls the systems' `EntityAdded`, `AddRange`
+among them, is INFERRED from the shape and from the counts). How
+many frames, and so how many of those appends, fall between two of the
+simulation's depends on each game's pacing, so the `reordered` count at
+one `appends` milestone differs between games that have not diverged: in
+that playtest by up to 24 between james and bob, who agreed through step
+3600, as much as between either and cat. So the line now says how many
+appends came inside the step and outside it, `(in the step a/r, outside
+it a/r)`, and every 65536 appends inside the step one more line,
+
+```
+order fix road-entry-order: in-step appends=<n> reordered=<n>
+```
+
+which is the one two games' logs must agree on. An append inside the
+step on another thread than the step's (a worker of a parallel loop)
+would count as outside it, so a count outside the step that grows while
+no frame passes would name such an append.
+
+**The vehicle watcher** (`TPF3MP_HOOK_WATCH_VEHICLES`, on unless `0` or
+`off`). At the platform visit site, inside the game's step, for every
+vehicle the chooser's loop looks at in a room's update: its
+`TransportVehicle` state (`+0xa8`), line (`+0xb8`), stop index (`+0xbc`)
+and current terminal (`+0xc0`, `+0xc4`), and one line when any of them
+changed since the system last looked:
+
+```
+watch: step <room step> engine <n> vehicle <entity> state <s> line <entity> stop <i> terminal <station>/<index>
+```
+
+Two games' `watch:` lines must be equal line for line; the first that
+differs names the vehicle, the step and whether it was its state (left or
+reached a stop), its stop or its terminal (the platform it took) that
+split. A vehicle's stop or platform changes a few times a minute, so the
+lines are few. `engine` numbers the system objects in the order the
+watcher met them, not their addresses.
+
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
 inherits it; a number above 1 is the interval, default 100 updates), three
@@ -2477,6 +2521,7 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |
 | `TPF3MP_HOOK_MEASURE_ORDER` | (unset by default) the order measurement, which adds its own detours and hashing when set |
 | `TPF3MP_HOOK_PERF` | the timing and these lines |
+| `TPF3MP_HOOK_WATCH_VEHICLES` | the vehicle watcher's `watch:` lines (a log only; nothing the game computes) |
 
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where

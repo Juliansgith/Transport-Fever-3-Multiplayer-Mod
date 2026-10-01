@@ -93,6 +93,31 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
     outcomes
 }
 
+thread_local! {
+    /// Set on this thread while it runs the game's own step
+    /// ([`set_in_step`]).
+    static IN_STEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// From the step detour, around its call of the game's `GameSim::Step`:
+/// this thread is inside the simulation's step. The road fix counts the
+/// appends it sees there apart from all others: the second engine's copy
+/// (`GameState::Replicate` `0x255de0` -> `ecs::Engine::Replicate`
+/// `0x2bb78f0` -> `Replicator::Apply` `0x2bb4430`, whose end of
+/// modification calls the systems' `EntityAdded` in that engine) runs from
+/// the game's frame, outside the step, as often as the frames come, and
+/// any append on a worker thread inside the step would show up there too.
+/// The appends inside the step are the simulation's own, in one order in
+/// every game, so their counts are what two games' logs must agree on.
+pub fn set_in_step(inside: bool) {
+    IN_STEP.with(|flag| flag.set(inside));
+}
+
+/// Whether this thread is inside the game's step.
+pub fn in_step() -> bool {
+    IN_STEP.with(|flag| flag.get())
+}
+
 /// Reads a plain value from the game's memory, only if it is readable (the
 /// check through the per-thread region cache, [`crate::image::Readable`]).
 fn read<T: Copy>(address: u64) -> Option<T> {
@@ -735,6 +760,113 @@ pub mod platform {
         static VISIT: RefCell<Visit> = RefCell::new(Visit::default());
     }
 
+    /// Set to `0` (or `off`), the vehicle watcher stays quiet.
+    pub const WATCH_ENV: &str = "TPF3MP_HOOK_WATCH_VEHICLES";
+    static WATCH: AtomicBool = AtomicBool::new(false);
+    /// One `TransportVehicle` component (`imul rbx, rax, 0x1e8` at the site).
+    const COMPONENT_LEN: u64 = 0x1e8;
+    /// Its fields the loop reads: the state (`0xb8bceb`), the line and the
+    /// stop index (`0xb8bd7a`, `0xb8bd87`), the current terminal
+    /// (`FindNextFreeTerminal`'s `[r12+0xc0]`, `[r12+0xc4]`).
+    const STATE: u64 = 0xa8;
+    const LINE: u64 = 0xb8;
+    const STOP: u64 = 0xbc;
+    const STATION: u64 = 0xc0;
+    const TERMINAL: u64 = 0xc4;
+
+    /// What the watcher keeps of one vehicle.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Seen {
+        pub state: u32,
+        pub line: i32,
+        pub stop: i32,
+        pub station: i32,
+        pub terminal: i32,
+    }
+
+    /// The watcher's line for a vehicle whose state, stop or terminal
+    /// changed in the room's step `step`; nothing in it differs between two
+    /// games that agree (the engine is numbered, not named by address).
+    pub fn watch_line(step: u64, engine: usize, entity: i32, seen: Seen) -> String {
+        format!(
+            "watch: step {step} engine {engine} vehicle {entity} state {} line {} stop {} terminal {}/{}",
+            seen.state, seen.line, seen.stop, seen.station, seen.terminal
+        )
+    }
+
+    thread_local! {
+        static WATCHED: RefCell<std::collections::HashMap<(u64, i32), Seen>> =
+            RefCell::new(std::collections::HashMap::new());
+        static ENGINES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// The watcher, at each iteration of the loop: the vehicle the engine
+    /// is about to look at (the record at `list + offset`), its state, stop
+    /// and terminal, and a line when they changed since this system last
+    /// visited it. Only in the room's updates, inside the game's step.
+    fn watch(this: u64, list: u64, offset: u64) {
+        let Some(step) = crate::seeds::current_step() else {
+            return;
+        };
+        if !in_step() {
+            return;
+        }
+        let mut probe = Probe::new();
+        let Some(record) = list
+            .checked_add(offset)
+            .and_then(|at| probe.read::<u64>(at))
+        else {
+            return;
+        };
+        let entity = record as u32 as i32;
+        let index = u64::from((record >> 32) as u32);
+        let Some(base) = this
+            .checked_add(0x10)
+            .and_then(|at| probe.read::<u64>(at))
+            .and_then(|at| probe.read::<u64>(at))
+        else {
+            return;
+        };
+        let Some(component) = index
+            .checked_mul(COMPONENT_LEN)
+            .and_then(|at| base.checked_add(at))
+        else {
+            return;
+        };
+        let field = |probe: &mut Probe, at: u64| probe.read::<u32>(component + at);
+        let (Some(state), Some(line), Some(stop), Some(station), Some(terminal)) = (
+            field(&mut probe, STATE),
+            field(&mut probe, LINE),
+            field(&mut probe, STOP),
+            field(&mut probe, STATION),
+            field(&mut probe, TERMINAL),
+        ) else {
+            return;
+        };
+        let seen = Seen {
+            state,
+            line: line as i32,
+            stop: stop as i32,
+            station: station as i32,
+            terminal: terminal as i32,
+        };
+        let engine = ENGINES.with(|engines| {
+            let mut engines = engines.borrow_mut();
+            match engines.iter().position(|e| *e == this) {
+                Some(at) => at,
+                None => {
+                    engines.push(this);
+                    engines.len() - 1
+                }
+            }
+        });
+        let changed =
+            WATCHED.with(|watched| watched.borrow_mut().insert((this, entity), seen) != Some(seen));
+        if changed {
+            log::line(&watch_line(step, engine, entity, seen));
+        }
+    }
+
     pub fn install(resolved: &ResolvedProfile, wanted: bool) -> Vec<Outcome> {
         if !wanted {
             return vec![Outcome {
@@ -743,6 +875,8 @@ pub mod platform {
                 reason: format!("{TOGGLE_ENV} says so; the engine's visit and tie order stand"),
             }];
         }
+        let watching = crate::ticks::wanted(std::env::var(WATCH_ENV).ok().as_deref());
+        WATCH.store(watching, Ordering::Release);
         vec![
             splice(
                 resolved,
@@ -903,18 +1037,21 @@ pub mod platform {
                         ));
                     }
                 }
-                if !visit.active {
-                    return;
-                }
-                if regs.rsi / RECORD_LEN >= visit.count || regs.rdi != visit.list {
+                if visit.active
+                    && (regs.rsi / RECORD_LEN >= visit.count || regs.rdi != visit.list)
+                {
                     // Not the loop the copy was made for: the engine's own
                     // list from here, said once (never seen; the list is not
                     // changed inside the loop).
                     visit.active = false;
                     VISIT_REFUSALS.note(FIX, "the node list changed inside the loop");
-                    return;
                 }
-                regs.rdi = visit.sorted.as_ptr() as u64;
+                if visit.active {
+                    regs.rdi = visit.sorted.as_ptr() as u64;
+                }
+                if WATCH.load(Ordering::Relaxed) {
+                    watch(regs.r13, regs.rdi, regs.rsi);
+                }
             });
         });
     }
@@ -1359,12 +1496,55 @@ pub mod road {
         REFUSALS.take_window()
     }
 
+    /// The appends seen inside the game's step, and outside it: those inside
+    /// are the simulation's own and come in one order in every game; the
+    /// others (the second engine's copy, made from the frame) come when the
+    /// frames do, so the counters taken together jitter from game to game
+    /// without anything having diverged.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct ThreadCounts {
+        pub step_appends: u64,
+        pub step_reorders: u64,
+        pub other_appends: u64,
+        pub other_reorders: u64,
+    }
+
+    static STEP_CALLS: AtomicU64 = AtomicU64::new(0);
+    static STEP_REORDERS: AtomicU64 = AtomicU64::new(0);
+    static OTHER_CALLS: AtomicU64 = AtomicU64::new(0);
+    static OTHER_REORDERS: AtomicU64 = AtomicU64::new(0);
+
+    /// The counts so far.
+    pub fn thread_counts() -> ThreadCounts {
+        ThreadCounts {
+            step_appends: STEP_CALLS.load(Ordering::Relaxed),
+            step_reorders: STEP_REORDERS.load(Ordering::Relaxed),
+            other_appends: OTHER_CALLS.load(Ordering::Relaxed),
+            other_reorders: OTHER_REORDERS.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The in-step milestone line: one per 65536 appends inside the game's
+    /// step, the line two games' logs must agree on (the others' counts are
+    /// not in it).
+    pub fn step_line(appends: u64, reorders: u64) -> String {
+        format!("order fix {FIX}: in-step appends={appends} reordered={reorders}")
+    }
+
     fn sorted(probe: &mut Probe, data: u64, edge_ids: impl Iterator<Item = u64>) {
         guarded(FIX, &BROKEN, || {
             let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+            let on_step = in_step();
+            let (calls, reorders_here) = if on_step {
+                (&STEP_CALLS, &STEP_REORDERS)
+            } else {
+                (&OTHER_CALLS, &OTHER_REORDERS)
+            };
+            let here = calls.fetch_add(1, Ordering::Relaxed) + 1;
             for edge_id in edge_ids {
                 match sort_edge(probe, data, edge_id) {
                     Ok(Sorted::Reordered) => {
+                        reorders_here.fetch_add(1, Ordering::Relaxed);
                         let reorders = REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
                         if reorders <= 3 {
                             log::line(&format!(
@@ -1376,11 +1556,19 @@ pub mod road {
                     Err(why) => REFUSALS.note(FIX, why),
                 }
             }
+            if on_step && here.is_multiple_of(1 << 16) {
+                log::line(&step_line(here, reorders_here.load(Ordering::Relaxed)));
+            }
             if n == 1 || n.is_multiple_of(1 << 16) {
+                let counts = thread_counts();
                 log::line(&format!(
-                    "order fix {FIX}: alive, appends={n} reordered={} refused={}",
+                    "order fix {FIX}: alive, appends={n} reordered={} refused={} (in the step {}/{}, outside it {}/{})",
                     REORDERS.load(Ordering::Relaxed),
-                    REFUSALS.count.load(Ordering::Relaxed)
+                    REFUSALS.count.load(Ordering::Relaxed),
+                    counts.step_appends,
+                    counts.step_reorders,
+                    counts.other_appends,
+                    counts.other_reorders,
                 ));
             }
         });
@@ -2009,6 +2197,37 @@ pub mod measure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn being_inside_the_step_is_per_thread() {
+        std::thread::spawn(|| {
+            assert!(!in_step());
+            set_in_step(true);
+            assert!(in_step());
+        })
+        .join()
+        .unwrap();
+        std::thread::spawn(|| assert!(!in_step())).join().unwrap();
+    }
+
+    #[test]
+    fn the_watch_and_step_lines_hold_only_what_agreeing_games_share() {
+        let seen = platform::Seen {
+            state: 2,
+            line: 4711,
+            stop: 1,
+            station: 900,
+            terminal: 3,
+        };
+        assert_eq!(
+            platform::watch_line(3290, 0, 217708, seen),
+            "watch: step 3290 engine 0 vehicle 217708 state 2 line 4711 stop 1 terminal 900/3"
+        );
+        assert_eq!(
+            road::step_line(65536, 17000),
+            "order fix road-entry-order: in-step appends=65536 reordered=17000"
+        );
+    }
 
     #[test]
     fn the_land_vehicle_sort_orders_entries_by_their_nodes_entity_id() {
@@ -3052,6 +3271,57 @@ mod splice_tests {
         assert_eq!(result, 7);
         assert_eq!(world.ids(3), vec![2, 8]);
         assert_eq!(world.ids(0), vec![40, 12]);
+        road::arm_for_test(0, 0);
+    }
+
+    /// An append inside the game's step and one outside it (the second
+    /// engine's copy is made from the frame) are counted apart, so the
+    /// in-step counts can be compared between games.
+    #[test]
+    fn appends_are_counted_apart_inside_the_step_and_outside_it() {
+        let _serial = crate::lua::tests::SERIAL
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        road::arm_for_test(
+            engine_add as *const () as usize,
+            engine_add_range as *const () as usize,
+        );
+        let append = |step: bool, lists: &'static [&'static [i32]]| {
+            std::thread::spawn(move || {
+                if step {
+                    set_in_step(true);
+                }
+                let world = RoadWorld::new(lists);
+                // SAFETY: as in the test above: the detour on a world built
+                // in memory, the "engine" appending nothing.
+                unsafe {
+                    road::add_range(
+                        world.at(RoadWorld::DATA),
+                        9,
+                        0,
+                        world.at(RoadWorld::PATH),
+                        0,
+                        0,
+                        0,
+                        0,
+                        world.at(0),
+                    )
+                };
+            })
+            .join()
+            .unwrap();
+        };
+        let before = road::thread_counts();
+        append(true, &[&[3, 1]]);
+        let after_step = road::thread_counts();
+        assert_eq!(after_step.step_appends, before.step_appends + 1);
+        assert_eq!(after_step.step_reorders, before.step_reorders + 1);
+        assert_eq!(after_step.other_appends, before.other_appends);
+        append(false, &[&[1, 3]]);
+        let after_other = road::thread_counts();
+        assert_eq!(after_other.other_appends, after_step.other_appends + 1);
+        assert_eq!(after_other.other_reorders, after_step.other_reorders);
+        assert_eq!(after_other.step_appends, after_step.step_appends);
         road::arm_for_test(0, 0);
     }
 
