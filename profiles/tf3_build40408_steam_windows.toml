@@ -668,6 +668,18 @@ offset = 0
 prologue = "48 03 FA 49 8B 46 10"
 required = false
 
+# The vehicle watcher's decision read (crates/tpf3mp-hook/src/order.rs, `platform`),
+# logging only: in ecs::TransportVehicleSystem::Update2 (0xb8bae0), after the MovePath
+# getter (0x52bbc0) answers rax for a land vehicle, `movzx eax, byte ptr [rax+0x70];
+# test al,al` (6 bytes, stolen; 0xb8bdb3, reached by fallthrough only), then `jmp`:
+# the flag that lets the loop ask FindNextFreeTerminal.
+[[target]]
+name = "ecs::TransportVehicleSystem::Update2/decision flag"
+signature = "0F B6 40 70 84 C0 EB 3C E8"
+offset = 0
+prologue = "0F B6 40 70 84 C0"
+required = false
+
 # transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
 [[target]]
 name = "transport::EdgeReservationManager::Reserve"

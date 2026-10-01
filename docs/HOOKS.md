@@ -3114,6 +3114,35 @@ for the same candidates as an earlier call on that engine was silent,
 and round D's logs cannot tell whether james's and bob's games asked at
 step 3201.
 
+Round F (`13090a8`, bob's game the odd one) settled two things. 217708 is
+a road vehicle: its `transport` words start with carrier 0. And, with
+every call said, james's and cat's games asked `FindNextFreeTerminal`
+for it at step 3201 and took platform 0/0, while bob's did not ask at
+all: its `MovePath` flag `+0x70` was not set there. The words of its
+`TransportVehicle` that differ between games are vector pointers, and
+fields an engine never writes for a road vehicle (`+0xa0`, `+0x1b0`:
+constant per engine, garbage); none differs between the games' sim
+results. No code found sets that flag to 1 for a road vehicle: the only
+store of a computed value is the rail claim loop's (`0xac2235`, whose
+`terminal decision` lines never name 217708); every other store clears
+it. So the flag reaches a road vehicle's `MovePath` whole, from a copy
+of the component.
+
+One more line, logging only, from the loop's read of the flag
+(`ecs::TransportVehicleSystem::Update2/decision flag`, `0xb8bdb3`, `rax`
+the vehicle's `MovePath`):
+
+```
+watch: step <s> engine <n> vehicle <entity> decision flag <0|1>
+watch: step <s> engine <n> vehicle <entity> movepath path <edges>/<fnv64> <word> ...
+```
+
+The first for every land vehicle whose flag differs from the last read
+on that engine; the second every update for a watched entity: its
+`MovePath` from `+0x18` bit for bit (its position and speed among it),
+with its path's length and hash. Two games' lines for one step must be
+equal; the first that differs is where the vehicle's own state split.
+
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
 inherits it; a number above 1 is the interval, default 100 updates), three

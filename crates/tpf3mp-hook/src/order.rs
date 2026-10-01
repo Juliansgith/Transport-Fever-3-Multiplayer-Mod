@@ -750,6 +750,18 @@ pub mod platform {
         0x74, 0x09, // je +9
     ];
     pub const OCCUPANT_STEAL: usize = 6;
+    /// The decision flag's read, for the vehicle watcher only (it changes
+    /// nothing): for a land vehicle (carriers other than 3 and 4) the loop
+    /// gets its `MovePath` (`0x52bbc0`, `rax`), and asks
+    /// `FindNextFreeTerminal` only when `[rax+0x70]` is set:
+    /// `movzx eax, byte ptr [rax+0x70]; test al,al` (6 bytes, stolen;
+    /// fallthrough only), then `jmp`.
+    pub const DECISION_SITE: &str = "ecs::TransportVehicleSystem::Update2/decision flag";
+    pub const DECISION_EXPECTED: [u8; 6] = [
+        0x0F, 0xB6, 0x40, 0x70, // movzx eax, byte ptr [rax+0x70]
+        0x84, 0xC0, // test al, al
+    ];
+    pub const DECISION_STEAL: usize = 6;
     /// The candidate being checked: its first two words at `[rsp+0x40]`
     /// (the station in the high one), its terminal at `[rsp+0x60]`; the
     /// answer at `[rsp+0x78]`, the reservation manager at `[rsp+0x38]`.
@@ -1066,8 +1078,17 @@ pub mod platform {
                 "the candidate terminals are in one order before the cost sort",
             ),
         ];
-        // The watcher's free-check lines: logging only, with the watcher.
+        // The watcher's free-check and decision lines: logging only, with
+        // the watcher.
         if watching {
+            outcomes.push(splice(
+                resolved,
+                DECISION_SITE,
+                &DECISION_EXPECTED,
+                DECISION_STEAL,
+                decision_hook,
+                "the vehicle watcher logs land vehicles' platform-decision flag (logging only)",
+            ));
             outcomes.push(splice(
                 resolved,
                 OCCUPANT_SITE,
@@ -1413,6 +1434,104 @@ pub mod platform {
                     entries.as_deref(),
                 ));
             }
+        });
+    }
+
+    /// The watcher's line for a land vehicle's platform-decision flag, when
+    /// the loop reads another value than it read last for that vehicle.
+    pub fn decision_line(step: u64, engine: usize, vehicle: i32, flag: u8) -> String {
+        format!("watch: step {step} engine {engine} vehicle {vehicle} decision flag {flag}")
+    }
+
+    /// A watched vehicle's `MovePath` as the decision read sees it: its
+    /// bytes from `+0x18` in hex words, its path's edge count and hash.
+    pub fn movepath_line(
+        step: u64,
+        engine: usize,
+        vehicle: i32,
+        path_len: u64,
+        path_hash: u64,
+        words: &[u32],
+    ) -> String {
+        let mut text = format!(
+            "watch: step {step} engine {engine} vehicle {vehicle} movepath path {path_len}/{path_hash:016x}"
+        );
+        for word in words {
+            text.push_str(&format!(" {word:08x}"));
+        }
+        text
+    }
+
+    thread_local! {
+        static FLAGS: RefCell<std::collections::HashMap<(usize, i32), u8>> =
+            RefCell::new(std::collections::HashMap::new());
+    }
+
+    /// The watcher at the decision read: `rax` is the vehicle's `MovePath`.
+    pub(super) unsafe extern "system" fn decision_hook(regs: *mut SavedRegs) {
+        guarded(FIX, &OCCUPANT_BROKEN, || {
+            // SAFETY: the stub's block, held until the hook returns.
+            let regs = unsafe { &*regs };
+            let Some((step, engine, vehicle)) = CURRENT.with(|current| current.get()) else {
+                return;
+            };
+            if !in_step() {
+                return;
+            }
+            let mut probe = Probe::new();
+            let Some(listed) = regs
+                .rdi
+                .checked_add(regs.rsi)
+                .and_then(|at| probe.read::<i32>(at))
+            else {
+                return;
+            };
+            if listed != vehicle {
+                return;
+            }
+            let mp = regs.rax;
+            let Some(flag) = probe.read::<u8>(mp + 0x70) else {
+                return;
+            };
+            let changed = FLAGS.with(|flags| {
+                let mut flags = flags.borrow_mut();
+                if flags.len() >= Checks::MAX {
+                    flags.clear();
+                }
+                flags.insert((engine, vehicle), flag) != Some(flag)
+            });
+            if changed {
+                log::line(&decision_line(step, engine, vehicle, flag));
+            }
+            if !super::claims::watched(vehicle) {
+                return;
+            }
+            let len_all = super::claims::MOVE_PATH_LEN;
+            let mut words = Vec::with_capacity(((len_all - 0x18) / 4) as usize);
+            let mut at = 0x18;
+            while at < len_all {
+                let Some(word) = probe.read::<u32>(mp + at) else {
+                    return;
+                };
+                words.push(word);
+                at += 4;
+            }
+            let (Some(begin), Some(end)) = (probe.read::<u64>(mp), probe.read::<u64>(mp + 8))
+            else {
+                return;
+            };
+            let mut hash = Fnv1a::new();
+            let mut len = 0;
+            if end >= begin && (end - begin).is_multiple_of(12) && (end - begin) / 12 <= 1 << 16 {
+                len = (end - begin) / 12;
+                for i in 0..len {
+                    match probe.read::<[u8; 12]>(begin + i * 12) {
+                        Some(edge) => hash.write(&edge),
+                        None => break,
+                    }
+                }
+            }
+            log::line(&movepath_line(step, engine, vehicle, len, hash.0, &words));
         });
     }
 
@@ -3020,6 +3139,18 @@ mod tests {
     }
 
     #[test]
+    fn the_decision_watch_lines_carry_the_flag_and_the_path() {
+        assert_eq!(
+            platform::decision_line(3201, 0, 217708, 1),
+            "watch: step 3201 engine 0 vehicle 217708 decision flag 1"
+        );
+        assert_eq!(
+            platform::movepath_line(3200, 1, 217708, 12, 0xabc, &[0x3f80_0000]),
+            "watch: step 3200 engine 1 vehicle 217708 movepath path 12/0000000000000abc 3f800000"
+        );
+    }
+
+    #[test]
     fn the_node_watch_lines_name_the_order_and_the_component() {
         assert_eq!(
             nodes::order_line(1, "ships", 3, 0xab, false, &[30, 10, 20]),
@@ -3156,6 +3287,10 @@ mod tests {
             platform::OCCUPANT_EXPECTED.to_vec()
         );
         assert_eq!(prologue(claims::HEAD_SITE), claims::HEAD_EXPECTED.to_vec());
+        assert_eq!(
+            prologue(platform::DECISION_SITE),
+            platform::DECISION_EXPECTED.to_vec()
+        );
         assert_eq!(prologue(nodes::SHIP_SITE), nodes::SHIP_EXPECTED.to_vec());
         assert_eq!(
             prologue(nodes::AIRCRAFT_SITE),
@@ -3290,7 +3425,7 @@ mod tests {
         // watcher is on unless its switch says otherwise), each off on its
         // own; and its switch.
         let platform = platform::install(&resolved, true);
-        assert_eq!(platform.len(), 3);
+        assert_eq!(platform.len(), 4);
         assert!(platform.iter().all(|o| !o.installed));
         let switched = platform::install(&resolved, false);
         assert!(switched[0].reason.contains(platform::TOGGLE_ENV));

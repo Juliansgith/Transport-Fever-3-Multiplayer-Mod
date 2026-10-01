@@ -74,6 +74,10 @@ const TARGETS: &[(&str, u64)] = &[
         0xac2235,
     ),
     ("ecs::ShipMoveSystem::Update2/node head", 0xaf644e),
+    (
+        "ecs::TransportVehicleSystem::Update2/decision flag",
+        0xb8bdb3,
+    ),
     ("ecs::AircraftMoveSystem::Update2/node head", 0xa83ca7),
     // The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs).
     ("GameSim::Step/paused GameTime advance", 0x159412),
