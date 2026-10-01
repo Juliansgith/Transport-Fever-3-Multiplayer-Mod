@@ -145,7 +145,7 @@ game's own **Multiplayer** button (next section).
 
 **Which launcher is this?** The bottom left of the window says its
 version, the protocol it speaks to servers and the commit it was built
-from, as `v0.1.0 · protocol 13 · 1316710abc`; **Settings**, **About this
+from, as `v1.1.0 · protocol 15 · <commit>`; **Settings**, **About this
 launcher** lists them too. The first line of its log names the file that
 runs. On Windows, the file's **Properties**, **Details** show the same
 version and commit.
@@ -376,16 +376,10 @@ protected folder such as Program Files.
   which you notice as a short pause, like an autosave.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
-- **Subsidies.** Accept or decline a subsidy in its window as usual:
-  every player's game answers it together, a moment after your click.
-  Every company is offered the same subsidies. The first company to
-  accept one gets it; if another company took it a moment before you, the
-  game bar says so ("Taking the subsidy: not done, the subsidy was taken
-  already, by ..."). The money up front, the reward when it is completed
-  and the penalty when it fails all go to the company that took it.
-  Declining an offer takes it away for every company, as in single
-  player. Any company's deliveries count towards a subsidy, whoever took
-  it, as the game counts them.
+- **Subsidies, entity renaming, vehicle recolouring and line waypoints.**
+  These new channels are refused pending a two-player game acceptance run.
+  Their mechanics are implemented but are not enabled for play yet; see
+  [COVERAGE.md](COVERAGE.md).
 - **Prospecting.** Prospect for resources near a town from the
   construction menu as usual: every player's game starts the prospection
   together, a moment after your click, and uses your company's permit.

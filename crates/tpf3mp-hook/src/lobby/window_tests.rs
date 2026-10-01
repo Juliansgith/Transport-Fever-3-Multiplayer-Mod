@@ -53,6 +53,12 @@ fn new_world_setup_selects_multiplayer_once_and_preserves_other_settings() {
 fn menu() -> Lua {
     let lua = Lua::new();
     lua.globals().set("LOBBY_SOURCE", WINDOW).unwrap();
+    lua.globals()
+        .set(
+            "BANNERS_SOURCE",
+            include_str!("../../../../mod/tpf3mp_1/content/scripts/tpf3mp/banners.lua"),
+        )
+        .unwrap();
     lua.load(FAKE_MENU)
         .set_name("@fake_menu.lua")
         .exec()
@@ -1502,7 +1508,7 @@ fn a_players_portrait_shows_beside_their_name_in_the_room() {
         "{pictures:?}"
     );
     let most: u32 = lua.load("return most_cards_in_a_row()").eval().unwrap();
-    assert_eq!(most, 1, "still one player to a row");
+    assert_eq!(most, 2, "portraits preserve our two-column player cards");
 }
 
 #[test]
@@ -1686,6 +1692,37 @@ fn unchanged_lobby_polls_leave_native_controls_open() {
     show(&lua, Some(&changed));
     call(&lua, "tick", ());
     assert!(texts(&lua).contains("A new notice"));
+}
+
+#[test]
+fn switching_from_a_saved_world_restores_stock_world_setup() {
+    let lua = menu();
+    let mut view = starting_from(true, Some(start("mptest", "temperate", 1850, true)), None);
+    show(&lua, Some(&view));
+    open(&lua, None);
+    call(&lua, "choose", ("Start from this save", ""));
+    assert!(
+        matches!(sent(&lua).as_slice(), [LobbyAction::ChooseStart { save, .. }] if save.as_str().is_empty())
+    );
+    view.start_save = None;
+    let room = view.room.as_mut().unwrap();
+    room.start = None;
+    room.members = BoundedVec::new(
+        room.members
+            .iter()
+            .cloned()
+            .map(|mut member| {
+                member.ready = false;
+                member
+            })
+            .collect(),
+    )
+    .unwrap();
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(!enabled(&lua, "Start the game"));
+    click(&lua, "Set up world");
+    assert_eq!(lua.globals().get::<u32>("GENERATED").unwrap(), 1);
 }
 
 #[test]

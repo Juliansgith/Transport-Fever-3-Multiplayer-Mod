@@ -1,5 +1,10 @@
 # The native hook
 
+Acceptance status: subsidy, entity rename/recolour and waypoint mechanics
+described below are implemented but disabled by `tpf3mp/acceptance.lua`.
+They are refused on submission and replay until ordinary two-player game
+acceptance. See [COVERAGE.md](COVERAGE.md) for the selected integration.
+
 The native hook is the small library that runs *inside* the game process. It
 captures and cancels player commands, gates the simulation step, controls speed
 and save/load, and talks to the [agent](ARCHITECTURE.md#components) over

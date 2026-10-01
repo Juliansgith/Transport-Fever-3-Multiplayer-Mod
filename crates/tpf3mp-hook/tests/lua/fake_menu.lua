@@ -242,6 +242,7 @@ local modules = {
 	["::/gui/menu/menu_icon_react_util.tl"] = menu_icon_react_util,
 }
 function ug_require(path)
+    if path == "tpf3mp_1::/scripts/tpf3mp/banners.lua" then return assert(loadstring(BANNERS_SOURCE))() end
 	return assert(modules[path], "no module " .. path)
 end
 
@@ -406,4 +407,22 @@ function click_card(title)
 		end
 	end
 	error("no card " .. title)
+end
+-- Count member cards across a row, including cards beside portraits.
+function most_cards_in_a_row()
+    local most = 0
+    walk(tree, function(node)
+        if node.view == "BoxLayout" and node.params.orientation == "Horizontal" then
+            local count = 0
+            for _, child in ipairs(node.params.children or {}) do
+                local has = false
+                walk(child, function(inner)
+                    if inner.view == "Button" and inner.params.card then has = true end
+                end)
+                if has then count = count + 1 end
+            end
+            if count > most then most = count end
+        end
+    end)
+    return most
 end

@@ -61,6 +61,8 @@ fn polyline() -> Polyline {
         ]),
         list(vec![
             Link {
+                precedence: None,
+
                 from: 0,
                 to: 1,
                 tangent0: Tangent {
@@ -81,6 +83,8 @@ fn polyline() -> Polyline {
                 lanes: BoundedVec::default(),
             },
             Link {
+                precedence: None,
+
                 from: 1,
                 to: 2,
                 tangent0: Tangent {

@@ -18,6 +18,9 @@
 --
 -- Pure Lua against the game's `api`; the tests give it a fake one.
 
+local acceptance = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/acceptance.lua")
+    or require("tpf3mp.acceptance")
+
 local apply = {}
 
 -- A matrix from a Transform: its basis is elements 1-3, 5-7 and 9-11 of the
@@ -453,7 +456,7 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 		for i, v in ipairs(polyline.vertices) do skipped[i] = v.resolve == "New" and degree[i - 1] == 0 end
 	end
 	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
-		removed_nodes = polyline.removed_nodes }
+		removed_nodes = polyline.removed_nodes, junctions = polyline.junctions }
 	local nodesOf = {}
 	local function nodes(n)
 		if nodesOf[n] == nil then nodesOf[n] = readNodes(n) end
@@ -590,6 +593,15 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 		end
 		s.comp.edgeDecorations = decorations
 		s.comp.roadDevelopmentLocked = link.locked == true
+		-- A street's precedence at its ends, as the tool set it.
+		if link.precedence ~= nil then
+			if s.streetEdge == nil then
+				local ok, street = pcall(function() return api.type.BaseEdgeStreet.new() end)
+				s.streetEdge = ok and street or {}
+			end
+			s.streetEdge.precedenceNode0 = link.precedence.node0
+			s.streetEdge.precedenceNode1 = link.precedence.node1
+		end
 		if link.owned == true then
 			local ok = pcall(function() s.playerOwned.player = company() end)
 			if not ok then
@@ -1446,6 +1458,8 @@ end
 -- where the game said), or false and why not; never raises.
 function apply.run(action, ctx)
 	if type(action) ~= "table" then return false, "an action is a table" end
+	local allowed, why = acceptance.check(action)
+	if not allowed then return false, why end
 	local kind, body = next(action)
 	if kind == nil or next(action, kind) ~= nil then
 		return false, "an action is a table of one entry"

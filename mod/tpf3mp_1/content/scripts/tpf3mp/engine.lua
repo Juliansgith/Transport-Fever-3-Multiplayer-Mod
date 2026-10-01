@@ -178,6 +178,18 @@ local function lanesOf(c)
 	return out
 end
 
+-- Street precedence is part of the player's proposal, including an explicit zero.
+local function precedenceOf(seg)
+    local se = get(seg, "streetEdge")
+    if se == nil then return nil end
+    local a, b = get(se, "precedenceNode0"), get(se, "precedenceNode1")
+    if a == nil and b == nil then return nil end
+    if type(a) ~= "number" or type(b) ~= "number" or a % 1 ~= 0 or b % 1 ~= 0 then
+        error("a street's precedence cannot be read", 0)
+    end
+    return { node0 = a, node1 = b }
+end
+
 local function segment(seg)
 	local c = get(seg, "comp")
 	if c == nil then error("an edge with no component", 0) end
@@ -196,6 +208,7 @@ local function segment(seg)
 		owned = type(player) == "number" and player >= 0,
 		lanes = lanesOf(c),
 	}
+	if e.network == "Street" then e.precedence = precedenceOf(seg) end
 	local types = enum("BaseEdgeType")
 	if c.type == types.BRIDGE then
 		e.structure = { Bridge = typeName("bridgeTypeRep", c.typeIndex) }

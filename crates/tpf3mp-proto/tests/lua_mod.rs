@@ -197,6 +197,8 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
     assert_eq!(
         added,
         [
+            "tpf3mp.acceptance",
+            "tpf3mp.banners",
             "tpf3mp.bridge",
             "tpf3mp.capture",
             "tpf3mp.companies",
@@ -297,9 +299,9 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
             "Players",
             "2 of 2 online",
             "Julian",
-            "host",
+            "host · Playing",
             "Sam",
-            "you",
+            "you · Playing",
             "Companies",
             "Choose who you build with",
             "Waiting for the companies...",
@@ -682,7 +684,7 @@ fn with_the_hook_the_gui_links_once() {
          not load: fake_gui.lua:149: ug_require of an unknown path \
          /game_mechanics/company/company_progression_util.tl|\
          the game's permits count the whole world's constructions: the game's company_metadata \
-         did not load: fake_gui.lua:157: ug_require of an unknown path \
+         did not load: fake_gui.lua:149: ug_require of an unknown path \
          /game_mechanics/company/company_metadata.tl|\
          the line manager offers other companies' open stations (1 entity_util table(s))"
     );
@@ -3076,6 +3078,25 @@ fn a_road_the_street_tool_proposed_goes_to_the_room() {
     assert_eq!((edges, removed.as_str()), (4, "100"));
 }
 
+#[test]
+fn street_precedence_survives_capture_and_room_replay() {
+    let (lua, _) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(format!(r#"
+        HOOK.room = true HOOK.clicks = 0
+        local proposal = {STREET_PROPOSAL}
+        proposal.proposal.addedSegments[1].streetEdge = {{ precedenceNode0 = 0, precedenceNode1 = 2 }}
+        SCRIPT.guiUpdate({{}}, nil, nil)
+        SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetBuilder', 'builder.proposalCreate', {{ proposal }})
+        HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil)
+        local p = assert(HOOK.commands[1]).BuildRoad.polyline.links[1].precedence
+        assert(p.node0 == 0 and p.node1 == 2)
+        HOOK.batch = {{ HOOK.commands[1] }} UPDATE({{}}, STATE, 0.2)
+        local e = SENT[1].proposal.streetProposal.edgesToAdd[1].streetEdge
+        assert(e.precedenceNode0 == 0 and e.precedenceNode1 == 2)
+    "#)).exec().unwrap();
+}
+
 /// The street tool's build as the room orders it (metres): from node 7 onto
 /// the country street 8-11-9, whose node 11 the new junction replaces, the
 /// street rebuilt through it in its own kind.
@@ -3541,6 +3562,10 @@ fn every_game_buys_at_the_constructions_depot_the_store_bought_at() {
 #[test]
 fn a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_room() {
     let lua = gui();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').rename = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_HOOK).exec().unwrap();
     lua.load(FAKE_CMD).exec().unwrap();
     lua.load(
@@ -3606,6 +3631,10 @@ fn a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_ro
 #[test]
 fn every_game_renames_and_recolours_what_the_room_names() {
     let (lua, _script) = engine();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').rename = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_FLEET).exec().unwrap();
     lua.load(
         "api.cmd.makeEntitySetColorCmd = function(e, color) return { setColor = color, entity = e } end \
@@ -3909,6 +3938,10 @@ fn a_line_travels_by_its_stations_ids_and_is_made_again_the_same() {
 #[test]
 fn a_lines_waypoints_on_track_and_in_the_open_are_made_again_the_same() {
     let (lua, _script) = engine();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').waypoints = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_FLEET).exec().unwrap();
     lua.load(
         r#"
@@ -7694,7 +7727,6 @@ fn the_games_window_copies_the_invite_code() {
     assert_eq!(back, "Copy");
 }
 
-
 /// The game's subsidy script, as the game keeps it in a game script's
 /// state (`game_mechanics/subventions/subventions.script.tl`): its offers,
 /// those taken, completed and failed, each by its number and kind, with the
@@ -7772,6 +7804,10 @@ end
 #[test]
 fn in_the_rooms_game_a_subsidys_answer_goes_to_the_room() {
     let lua = gui();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').subsidies = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_HOOK).exec().unwrap();
     lua.load(FAKE_CMD).exec().unwrap();
     lua.load(
@@ -7832,6 +7868,10 @@ fn in_the_rooms_game_a_subsidys_answer_goes_to_the_room() {
 #[test]
 fn every_game_gives_a_subsidy_to_the_first_company_to_accept_it() {
     let (lua, _script) = engine();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').subsidies = true")
+        .exec()
+        .unwrap();
     lua.load(FAKE_SUBSIDIES).exec().unwrap();
     lua.load(
         r#"
@@ -7937,3 +7977,28 @@ fn every_game_gives_a_subsidy_to_the_first_company_to_accept_it() {
     assert_eq!(founded, "Rival");
 }
 
+/// Both the sender and replay refuse new channels with production defaults.
+#[test]
+fn unaccepted_ports_cannot_be_sent_or_replayed() {
+    let (lua, _) = engine();
+    lua.load(r#"
+        HOOK.room = true
+        local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
+        local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')
+        local link = assert(bridge.attach(bridge.find()))
+        local actions = {
+            { Subsidy = { Decline = { uid = 1, kind = 'x' } } },
+            { Rename = { what = { Vehicle = 1 }, name = 'x' } },
+            { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
+            { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
+            { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
+        }
+        for _, action in ipairs(actions) do
+            local sent, reason = link:command(action)
+            assert(not sent and reason:find('awaits two%-player game acceptance'), tostring(reason))
+            local applied, why = apply.run(action, {})
+            assert(not applied and why:find('awaits two%-player game acceptance'), tostring(why))
+        end
+        assert(#HOOK.commands == 0)
+    "#).exec().unwrap();
+}

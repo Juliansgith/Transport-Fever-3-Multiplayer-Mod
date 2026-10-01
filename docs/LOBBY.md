@@ -205,9 +205,9 @@ change it until the game starts:
   room knows them, and "on its way to the room" until it arrived.
 - The owner sees **Start from this save** instead: the Host page's saves,
   newest first, the room's own first if it has dropped off the list, and
-  **None: I load a world myself**. A pick sends
+  **New world: choose map and settings**. A pick sends
   `{"action":"choose_start","save":"<name>","map":"<climate>","year":<year>}`
-  (`"save":""` for none), with the climate and year the game reads of the
+  (`"save":""` for a new world), with the climate and year the game reads of the
   save (`lobby.saveDetails`, as the Host page lists a public room); the
   window waits up to eight polls for them. The launcher takes only a
   listed name, as Create does, works out the room's shared mods from the

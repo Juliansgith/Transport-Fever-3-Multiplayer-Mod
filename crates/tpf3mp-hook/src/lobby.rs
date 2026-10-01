@@ -349,6 +349,10 @@ pub fn invite() -> Option<String> {
 }
 
 /// Parses one action from the window's JSON into what the launcher takes.
+pub fn competitive() -> Option<bool> {
+    Some(menu().view.as_ref()?.room.as_ref()?.competitive)
+}
+
 pub fn parse_action(json: &str) -> Result<LobbyAction, String> {
     let action: WindowAction =
         serde_json::from_str(json).map_err(|error| format!("not an action: {error}"))?;

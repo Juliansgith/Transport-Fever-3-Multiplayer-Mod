@@ -13,7 +13,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=images/logo.png");
     println!("cargo:rerun-if-changed=build.rs");
     if env::var("CARGO_CFG_TARGET_OS")? != "windows" {
-        tpf3mp_buildinfo::emit(tpf3mp_buildinfo::Artifact::Program, "Transport Fever 3 Multiplayer", "TPF3-MP.exe");
+        tpf3mp_buildinfo::emit(
+            tpf3mp_buildinfo::Artifact::Program,
+            "Transport Fever 3 Multiplayer",
+            "TPF3-MP.exe",
+        );
         return Ok(());
     }
     let logo = image::open("images/logo.png")?;

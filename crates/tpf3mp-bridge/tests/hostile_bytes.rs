@@ -92,11 +92,17 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             owner: PlayerId(FixedBytes([1; 32])),
             members: BoundedVec::new(vec![
                 RoomMember {
+                    banner: None,
+                    loading: None,
+
                     player: PlayerId(FixedBytes([1; 32])),
                     name: Text::new("Ann").unwrap(),
                     connected: true,
                 },
                 RoomMember {
+                    banner: None,
+                    loading: None,
+
                     player: PlayerId(FixedBytes([2; 32])),
                     name: Text::new("Bo").unwrap(),
                     connected: false,

@@ -103,6 +103,8 @@ fn tangent(x: i32, y: i32, z: i32) -> Tangent {
 
 fn link(from: u16, to: u16, t0: Tangent, t1: Tangent, structure: Structure) -> Link {
     Link {
+        precedence: None,
+
         from,
         to,
         tangent0: t0,

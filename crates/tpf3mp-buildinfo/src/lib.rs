@@ -96,7 +96,11 @@ pub fn emit_with_icon(artifact: Artifact, description: &str, file: &str, icon: O
             file,
         });
         if let Some(icon) = icon {
-            let icon = icon.to_str().expect("icon path is UTF-8").replace('\\', "/").replace('"', "\"\"");
+            let icon = icon
+                .to_str()
+                .expect("icon path is UTF-8")
+                .replace('\\', "/")
+                .replace('"', "\"\"");
             rc.push_str(&format!("\n1 ICON \"{icon}\"\n"));
         }
         let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());

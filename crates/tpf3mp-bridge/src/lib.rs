@@ -65,7 +65,7 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// a room starts from on its page ([`LobbyRoom::start`]), the owner's
 /// upload of it ([`LobbyRoom::upload`]) and the owner's choice of another
 /// in the lobby ([`LobbyAction::ChooseStart`]; protocol 14).
-pub const BRIDGE_VERSION: u32 = 20;
+pub const BRIDGE_VERSION: u32 = 21;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";

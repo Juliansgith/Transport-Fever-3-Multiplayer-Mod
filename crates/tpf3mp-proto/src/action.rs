@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 20;
+pub const ACTION_SCHEMA_VERSION: u32 = 22;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -342,6 +342,19 @@ pub struct Link {
     /// for its template's own.
     #[serde(default)]
     pub lanes: BoundedVec<Lane, MAX_LANES>,
+    /// A street's precedence at each end, as the tool set it
+    /// (`BaseEdgeStreet.precedenceNode0`, `precedenceNode1`, the game's
+    /// `PrecedencePreference` values); none for a track, or where the tool
+    /// set none.
+    #[serde(default)]
+    pub precedence: Option<Precedence>,
+}
+
+/// A street's precedence at its two ends, the game's own values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Precedence {
+    pub node0: i32,
+    pub node1: i32,
 }
 
 /// The geometry of one road or track build, as the tool proposed it: new
@@ -1168,6 +1181,8 @@ mod tests {
 
     fn link(from: u16, to: u16) -> Link {
         Link {
+            precedence: None,
+
             from,
             to,
             tangent0: Tangent { x: 1, y: 0, z: 0 },
@@ -1265,7 +1280,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                20, // schema version
+                22, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1308,7 +1323,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                22, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1317,7 +1332,7 @@ mod tests {
                 1, // one link
                 0, 1, 2, 0, 0, 2, 0, 0, 0, // 0 -> 1, tangents, Structure::Ground
                 0, // the build's own kind
-                0, 0, 0, 0, // no decorations, not locked, not owned, no lanes of its own
+                0, 0, 0, 0, 0, // no decorations, lock, ownership, lanes or precedence
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
                 0, // no junction changes
@@ -1343,7 +1358,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                22, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1361,7 +1376,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                22, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1376,7 +1391,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                22, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1387,7 +1402,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                22, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1399,8 +1414,8 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
-                18, // Action::Subsidy, appended under schema version 13
+                22, // schema version
+                19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
                 1, b's', // the kind
@@ -1427,7 +1442,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [11, 11]);
+            assert_eq!(payload.as_bytes()[..2], [22, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         let hold = Action::VehicleOp(VehicleOp {
@@ -1437,7 +1452,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                20, // schema version
+                22, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

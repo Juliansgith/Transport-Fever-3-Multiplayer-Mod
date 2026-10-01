@@ -90,6 +90,8 @@ pub fn polyline(vertices: Vec<Vertex>, structure: &Structure) -> Polyline {
                 z: b.z - a.z,
             };
             Link {
+                precedence: None,
+
                 from: u16::try_from(i).expect("few vertices"),
                 to: u16::try_from(i + 1).expect("few vertices"),
                 tangent0: tangent,

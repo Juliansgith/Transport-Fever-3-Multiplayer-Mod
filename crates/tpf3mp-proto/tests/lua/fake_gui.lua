@@ -75,7 +75,7 @@ end
 -- A view is a recipe the game has: called, it gives the node; its name
 -- says which recipe a wrapper wraps.
 for _, view in ipairs({ "TextView", "Button", "ScrollArea", "Component", "TextInputField", "Window",
-		"ColorChooserButton" }) do
+		"ColorChooserButton", "ImageView" }) do
 	builtin[view] = setmetatable({ viewName = view }, {
 		__call = function(_, params) return { view = view, params = params } end,
 	})

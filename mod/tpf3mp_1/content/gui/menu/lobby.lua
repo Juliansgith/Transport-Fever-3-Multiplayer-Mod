@@ -1665,7 +1665,7 @@ function lobby.content(onClose, focus, onNewGame)
 		elseif start then
 			line = lobby.startLine(start)
 		elseif room.you_own then
-			line = _("None: load a world in your game; it is saved for everyone when you start.")
+			line = _("Choose Set up world to create the map and settings for everyone.")
 		else
 			line = _("The world the owner's game has.")
 		end
@@ -1679,7 +1679,7 @@ function lobby.content(onClose, focus, onNewGame)
 			end
 			-- The room's own, even once it left the newest saves listed.
 			if current ~= "" and not listed then table.insert(items, 1, { current, current }) end
-			items[#items + 1] = { "", _("None: I load a world myself") }
+			items[#items + 1] = { "", _("New world: choose map and settings") }
 			children[#children + 1] = choice(_("Start from this save"), current, items, function(value)
 				if value == current or not canAct then return end
 				confirmS:set(nil)

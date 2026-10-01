@@ -39,7 +39,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
+	local MODULES = { "acceptance", "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
 		"bridge", "guard", "worldload" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
@@ -143,6 +143,12 @@ function data()
 			if ok and type(name) == "string" and name ~= "" then return name end
 			return nil
 		end,
+		subsidy = function(uid)
+			local companies = require("tpf3mp.companies")
+			local where, s = companies.findSubsidy(companies.subsidyState(api), uid)
+			if where == "offered" and type(s.id) == "string" then return s.id end
+			return nil
+		end,
 		-- A vehicle's parts as its TRANSPORT_VEHICLE component has them.
 		parts = function(vehicle)
 			local ok, parts = pcall(function()
@@ -161,6 +167,7 @@ function data()
 
 	-- The GUI state's api.cmd, which the guard is on.
 	local guardedCmd = nil
+	local answers = {}
 
 	-- Whether the GUI's world has `entity` yet: what the room's action made
 	-- in the simulation reaches it a moment later. With `kind`, also whether
@@ -188,7 +195,14 @@ function data()
 		guardedCmd = ok and cmd or nil
 		local wrapped, why = require("tpf3mp.guard").install(guardedCmd, {
 			inRoom = function() return link:room() end,
-			command = function(action) return link:command(action) end,
+			command = function(action)
+				local ok, ticket = link:command(action)
+				local subsidy = ok and type(action) == "table" and action.Subsidy
+				if subsidy and ticket ~= nil then
+					answers[ticket] = subsidy.Accept and "Taking the subsidy" or "Declining the subsidy"
+				end
+				return ok, ticket
+			end,
 			refused = refused,
 			later = function(fn) pending[#pending + 1] = fn end,
 			context = context,
@@ -934,6 +948,9 @@ function data()
             local banners = require("tpf3mp.banners")
             local stage = banners.stage(p, true)
             if stage then tags[#tags + 1] = stage end
+            players[#players + 1] = builtin.ImageView{
+                meta = { styleSheet = sheet(PLAYERS_WIDTH - 32, 40) }, path = banners.picture(banners.of(p)),
+            }
             local portrait = banners.portraitOf(p)
             if portrait then
                 players[#players + 1] = builtin.ImageView{
@@ -1111,6 +1128,11 @@ function data()
 							shared.companyNote = r.ok and (doing .. ": done")
 								or (doing .. ": not done, " .. tostring(r.why))
 							shared.version = shared.version + 1
+						end
+						local asked = r.ticket and answers[r.ticket]
+						if asked then
+							answers[r.ticket] = nil
+							if r.ok ~= true then notice = asked .. ": not done, " .. tostring(r.why) end
 						end
 					end
 				end)

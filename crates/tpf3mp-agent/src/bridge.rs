@@ -1093,6 +1093,7 @@ impl<L: HookLink> Bridge<L> {
             );
             return;
         }
+        self.options.start_generated_world = start.is_none();
         self.start_attempt += 1;
         self.start_told = None;
         // Readiness is decided afresh once the room has the new world.
@@ -2379,6 +2380,8 @@ mod tests {
         let owner = PlayerId(FixedBytes([1; 32]));
         let guest = PlayerId(FixedBytes([2; 32]));
         let mut room = RoomView {
+            start: None,
+
             id: RoomId(FixedBytes([7; 16])),
             name: Text::new("New world").unwrap(),
             rules: Text::new("native").unwrap(),
@@ -2390,6 +2393,8 @@ mod tests {
             competitive: false,
             members: [owner, guest]
                 .map(|player| MemberView {
+                    loading: None,
+
                     player,
                     name: Text::new("Player").unwrap(),
                     platform: Platform::current(),

@@ -81,6 +81,8 @@
 
 #![allow(unsafe_code)]
 
+use tpf3mp_proto::LoadingStage;
+
 use std::{
     collections::VecDeque,
     ffi::{CStr, c_char, c_int, c_void},
@@ -1280,6 +1282,7 @@ pub fn take_said() -> Vec<ChatText> {
 fn room_status() -> Option<LuaValue> {
     // Before this module's lock: the lobby's is never taken under it.
     let invite = crate::lobby::invite();
+    let competitive = crate::lobby::competitive();
     let shared = shared();
     let room = &shared.room;
     let info = room.info.as_ref()?;
@@ -1312,6 +1315,27 @@ fn room_status() -> Option<LuaValue> {
                             LuaValue::string("id"),
                             LuaValue::string(&crate::lobby::hex(&member.player)),
                         ),
+                        (
+                            LuaValue::string("banner"),
+                            LuaValue::string(
+                                member.banner.as_ref().map_or("", |banner| banner.as_str()),
+                            ),
+                        ),
+                        (
+                            LuaValue::string("loading"),
+                            LuaValue::string(match member.loading {
+                                Some(LoadingStage::Fetching { .. }) => "fetching",
+                                Some(LoadingStage::Loading) => "loading",
+                                None => "",
+                            }),
+                        ),
+                        (
+                            LuaValue::string("percent"),
+                            LuaValue::Number(f64::from(match member.loading {
+                                Some(LoadingStage::Fetching { percent }) => percent.min(100),
+                                _ => 0,
+                            })),
+                        ),
                     ]),
                 )
             })
@@ -1326,6 +1350,14 @@ fn room_status() -> Option<LuaValue> {
     ];
     if let Some(invite) = invite {
         fields.push((LuaValue::string("invite"), LuaValue::string(&invite)));
+    }
+    // Left out where the launcher has not said: the GUI then founds no
+    // company for the player (fail closed).
+    if let Some(competitive) = competitive {
+        fields.push((
+            LuaValue::string("competitive"),
+            LuaValue::Boolean(competitive),
+        ));
     }
     if let Some(me) = &room.me {
         fields.push((
@@ -2645,11 +2677,17 @@ my_timetables";
             owner: player(1),
             members: BoundedVec::new(vec![
                 RoomMember {
+                    banner: None,
+                    loading: None,
+
                     player: player(1),
                     name: Text::new("Julian").unwrap(),
                     connected: true,
                 },
                 RoomMember {
+                    banner: None,
+                    loading: None,
+
                     player: player(2),
                     name: Text::new("Sam").unwrap(),
                     connected: false,
