@@ -38,6 +38,14 @@ struct Args {
     #[arg(long)]
     browser: bool,
 
+    /// Repair the Windows installation and its multiplayer mod.
+    #[arg(long, conflicts_with = "uninstall")]
+    repair: bool,
+
+    /// Remove the Windows installation, keeping saves and settings.
+    #[arg(long)]
+    uninstall: bool,
+
     #[command(flatten)]
     auto: AutoRoom,
 }
@@ -157,6 +165,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args, diagnostics: Recorder) -> Result<()> {
+    if tpf3mp_launcher::installation::before_launch(args.repair, args.uninstall)? {
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("tpf3mp")

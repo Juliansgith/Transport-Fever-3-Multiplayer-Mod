@@ -79,6 +79,7 @@ jobs:
       TPF3MP_SERVER_NAME: ${{ vars.TPF3MP_SERVER_NAME }}
       TPF3MP_UPDATE_PUBLIC_KEY: ${{ vars.TPF3MP_UPDATE_PUBLIC_KEY }}
       TPF3MP_REPOSITORY: ${{ github.repository }}
+      TPF3MP_DISTRIBUTABLE: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -138,7 +139,9 @@ jobs:
               # can see what it changes (docs/DECISIONS.md, D9).
               cp packaging/windows/INSTALL_TPF3MP.cmd packaging/windows/UNINSTALL_TPF3MP.cmd "$dir/"
               mkdir -p "$dir/tools"
-              cp packaging/windows/tools/install.ps1 "$dir/tools/"
+              cp packaging/windows/tools/install.ps1 packaging/windows/tools/manage.ps1 "$dir/tools/"
+              # The same launcher can bootstrap itself from a single download.
+              cp target/release/tpf3mp-launcher.exe TPF3-MP.exe
               7z a "$dir.zip" "$dir" > /dev/null
               echo "archive=$dir.zip" >> "$GITHUB_ENV"
               ;;
@@ -172,6 +175,12 @@ jobs:
         with:
           name: ${{ matrix.name }}
           path: ${{ env.archive }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: matrix.name == 'windows-x64'
+        with:
+          name: windows-setup
+          path: TPF3-MP.exe
           if-no-files-found: error
 
   draft:
@@ -209,6 +218,7 @@ jobs:
           TAG: v${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
+          (cd packages && sha256sum TPF3-MP.exe *.zip *.tar.gz > SHA256SUMS.txt)
           # A published version is final: releasing again needs a version
           # bump in Cargo.toml. A draft is refreshed with this commit.
           if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then

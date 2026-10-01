@@ -521,6 +521,17 @@ runs on distributions with an older C library too.
   the readable scripts in the package: `INSTALL_TPF3MP.cmd` (which runs
   `tools\install.ps1`) on Windows, `install.sh` on Linux and macOS (see
   "Installing" in [PLAYING.md](PLAYING.md), and D9).
+- **Windows first install (1.1).** The release also carries `TPF3-MP.exe`,
+  the same launcher as the ZIP. Without a package beside it, it opens setup
+  and fetches the signed Windows package using the existing updater trust
+  keys. First install and repair permit the same release version; ordinary
+  updates still require a newer version. Setup installs per user, invokes
+  `tools/install.ps1` for the mod and `tools/manage.ps1` for shortcuts and
+  the Apps uninstall entry. A managed marker distinguishes it from the ZIP.
+  Subsequent Windows starts synchronize an absent or outdated mod before
+  opening the backend. Package replacement refuses while the game runs.
+  The public EXE has no Windows publisher signature; Ed25519 authenticates
+  downloaded packages, not the initial executable's Windows publisher.
 - **Until the game is out** the hook finds no build profile and installs
   nothing, so the package is for trying the launcher and the netcode with
   the fake game.

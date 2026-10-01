@@ -1,8 +1,7 @@
 # Playing
 
-How to play Transport Fever 3 together with TPF3-MP. The network side is
-ready. The part that runs inside the game waits for the game's release:
-this page says so where it applies.
+How to play Transport Fever 3 together with TPF3-MP. Windows is the first
+supported game platform; Linux and macOS packages remain for development.
 
 ## What you need
 
@@ -19,14 +18,43 @@ this page says so where it applies.
   personal ones in the lobby, and it remembers them; a room you create
   takes its shared mods from its start save, and the lobby shows each
   player which of them they have.
-- The TPF3-MP package for your system, from the project's releases:
-  Windows x64, Linux x64 or macOS on Apple silicon. Players on different
-  systems can share one room.
+- The Windows x64 launcher from the project's releases. Linux x64 and
+  macOS on Apple silicon packages are available for development; their
+  real-game acceptance is still pending.
 
 You do not need to forward any port or open anything on your router: your
 launcher connects out to the server, and everything goes through it.
 
 ## Installing
+
+### Windows: one EXE (recommended)
+
+Download `TPF3-MP.exe` from the latest GitHub release and run it. Click
+**Install TPF3-MP**: the launcher downloads and checks the signed package,
+installs itself under `%LOCALAPPDATA%\Programs\TPF3-MP`, installs the mod
+through its readable `tools\install.ps1`, and creates a Start menu shortcut.
+The desktop shortcut is optional. No administrator rights are needed.
+
+Setup shows the detected Steam mods folder. If several accounts have played
+the game, choose yours; if detection fails, paste its `staging_area` path.
+Start the game through Steam once if its user folder does not exist yet,
+then close it before installing. Open the launcher when setup finishes.
+In the game's **Mod Hub**, find TPF3-MP under your mods and **Activate** it
+once. Future updates install the matching mod before opening the launcher.
+
+Reopening the downloaded EXE opens the installed launcher, including when
+offline. An initial install needs an internet connection and a signed
+published release. A failed download can be retried; a failed mod install
+shows its error and keeps Play unavailable until setup succeeds.
+
+**Settings → Repair installation** restores a managed installation from
+the latest signed package and reinstalls its mod. In a portable package it
+reinstalls the bundled mod. **Uninstall** removes the mod, and for managed
+installs also removes the launcher and shortcuts after the setup window
+closes. Windows Settings → Apps has the same uninstall entry. Saves,
+identities and settings remain; removed files go to TPF3-MP's backups.
+
+### Portable packages and other platforms
 
 1. Unpack the package anywhere you can write to, such as your Documents
    folder: the launcher updates the files in it (see "Updates").
@@ -52,8 +80,8 @@ launcher connects out to the server, and everything goes through it.
    TPF3-MP's data folder. `UNINSTALL_TPF3MP.cmd` or `./uninstall.sh` takes
    the mod out again.
 
-   Run the installer again after an update of TPF3-MP. Until the game is
-   out, packages carry no mod yet, and the installer says so.
+   On Windows the launcher installs the matching mod after an update.
+   On Linux and macOS, run the installer again after an update of TPF3-MP.
 
 The part of TPF3-MP that runs inside the game is not installed at all: the
 launcher loads it into the game it starts, into that game alone, for as

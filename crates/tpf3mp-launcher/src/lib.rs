@@ -10,6 +10,7 @@
 pub mod app;
 pub mod backend;
 pub mod icon;
+pub mod installation;
 pub mod installed;
 pub mod logs;
 pub mod notes;
