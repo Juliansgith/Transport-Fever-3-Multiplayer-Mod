@@ -343,6 +343,8 @@ pub trait StepHandler: Send {
     fn say(&mut self, text: ChatText);
     /// See [`StepDriver::on_menu`].
     fn on_menu(&mut self);
+    /// See [`StepDriver::on_menu_loading`].
+    fn on_menu_loading(&mut self) {}
     /// See [`StepDriver::lobby`].
     fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView>;
 }
@@ -365,6 +367,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn on_menu(&mut self) {
         StepDriver::on_menu(self);
+    }
+    fn on_menu_loading(&mut self) {
+        StepDriver::on_menu_loading(self);
     }
     fn say(&mut self, text: ChatText) {
         StepDriver::say(self, text);
@@ -1153,6 +1158,34 @@ impl<G: RoomGate> StepDriver<G> {
         }
         // The Multiplayer window of the world the menu loads shows what the
         // room said meanwhile.
+        for notice in std::mem::take(&mut self.game.window) {
+            self.control.room_notice(&notice);
+        }
+    }
+
+    /// On a menu frame that holds the room back while the room's world
+    /// loads (`crate::at_menu`): reads the room's link, and nothing more,
+    /// so the lobby the agent sends meanwhile (each player's loading
+    /// progress) reaches the Multiplayer window. While the room's world
+    /// loads, the session takes only the lobby and the room's end
+    /// (`tpf3mp_bridge::Gate::on_message`); the load itself is left to the
+    /// step, or to [`StepDriver::on_menu`] once the menu is back.
+    pub fn on_menu_loading(&mut self) {
+        if self.phase != Phase::Running || self.loading.is_none() {
+            return;
+        }
+        match self.gate.poll_step(&mut self.game) {
+            Ok(StepGate::Ended) => {
+                self.log
+                    .push("the room's game ended; the game runs on its own".into());
+                self.phase = Phase::Ended;
+            }
+            Ok(_) => {}
+            Err(error) => self.hold(error.to_string()),
+        }
+        for notice in self.game.notices.drain(..) {
+            self.log.push(format!("the room says: {notice}"));
+        }
         for notice in std::mem::take(&mut self.game.window) {
             self.control.room_notice(&notice);
         }
@@ -2376,6 +2409,52 @@ pub(crate) mod tests {
                 .iter()
                 .any(|l| l.contains("from the game's main menu to run step 41 next"))
         );
+    }
+
+    /// While the menu holds back and the room's world loads, its frame reads
+    /// the room's link (what the room says reaches the window) and takes
+    /// neither a second load nor the world.
+    #[test]
+    fn a_held_back_menu_frame_reads_the_room_while_its_world_loads_and_takes_nothing() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        let file = PathBuf::from("worlds/room.sav");
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: Some(file.clone()),
+                next_step: 41,
+            }),
+            StepGate::Run,
+        ]);
+        let (mut d, state) = driver_with(script);
+        // Before the room began: nothing read.
+        d.on_menu_loading();
+        assert_eq!(d.phase(), &Phase::BeforeBegin);
+        d.on_menu();
+        assert_eq!(state.lock().unwrap().load_requests.len(), 1);
+        d.take_log();
+        d.gate.notices.push_back(vec![Notice::Speed(Speed(200))]);
+        state.lock().unwrap().load_done = true;
+        d.on_menu_loading();
+        assert_eq!(
+            state.lock().unwrap().load_requests.len(),
+            1,
+            "no second load"
+        );
+        assert!(d.gate.loaded.is_empty(), "the world is the step's to take");
+        assert_eq!(
+            state.lock().unwrap().room_notices.len(),
+            1,
+            "what the room said reached the window"
+        );
+        // The step takes the world as before.
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(d.gate.loaded, vec![41]);
+        // No load left: nothing more to read from here.
+        d.gate.notices.push_back(vec![Notice::Speed(Speed(300))]);
+        d.on_menu_loading();
+        assert_eq!(d.gate.notices.len(), 1);
     }
 
     #[test]

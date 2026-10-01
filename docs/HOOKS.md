@@ -1047,6 +1047,11 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
 
   In a fresh game `on_menu` runs through a load too (it only reads the
   room's link), but the menu's Lua waits for a frame where no load runs.
+  A frame that holds the room back while the room's world loads still
+  reads the room's link (`StepDriver::on_menu_loading`; the session then
+  takes only the lobby and the room's end), so each player's loading
+  progress reaches the Multiplayer window; the load itself stays the
+  step's.
 
   hook.log says where the menu sees the game on each change:
   `menu: a world is loaded (CMenuUI::m_game set)`, `menu: the world closed

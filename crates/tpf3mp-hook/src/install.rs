@@ -357,6 +357,16 @@ pub(crate) fn menu_frame(menu: usize) {
         hand_over_lobby(&mut lines, "the main menu's frame");
     }
     if !seen.allows() || !crate::menu::available() {
+        // Held back while the room's world loads: the room's link is still
+        // read for its lobby (each player's loading progress), which takes
+        // no Lua and nothing of the game's.
+        if matches!(seen, Seen::Loading | Seen::Closing | Seen::WorldUp)
+            && let Ok(mut guard) = DRIVER.try_lock()
+            && let Some(driver) = guard.as_mut()
+        {
+            driver.on_menu_loading();
+            lines.extend(driver.take_log());
+        }
         for line in lines {
             log_line(&line);
         }
