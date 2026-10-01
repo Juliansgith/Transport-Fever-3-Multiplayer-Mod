@@ -36,6 +36,7 @@ LOBBY_WINDOW = '''-- TPF3-MP: the Multiplayer window, opened from the main menu 
 -- own window container (as DeluxeContentWindow is). Its content is the mod's
 -- gui/menu/lobby.lua: the lobby, talking to the hook.
 local record LobbyModule
+	prepareNewWorld : function()
 	content : function(onClose : function(), focus : string, onNewGame : function()) : TreeNodeId
 	CardLine : function(params : any) : TreeNodeId
 	joinLine : function(state : any) : string
@@ -102,6 +103,7 @@ SHOW = '''	-- TPF3-MP: open the Multiplayer window, as showDeluxeContent opens i
 		local wc = mainPageParams.commonParams.windowContainer:get():getApi()
 		wc.addSingletonWindow(Tpf3mpLobbyWindow, {
 			onNewGame = function()
+				lobby.prepareNewWorld()
 				wc.removeAllWindows(Tpf3mpLobbyWindow)
 				mainPageParams.commonParams.setPage("NewGame", { map = false })
 			end,

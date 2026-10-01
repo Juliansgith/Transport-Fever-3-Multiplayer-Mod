@@ -32,6 +32,23 @@ local button_react_util = ug_require "::/gui/main/button_react_util.tl"
 
 local lobby = {}
 
+-- Stock world setup reads this selection. Entering it from a room must
+-- include the multiplayer script, while preserving the player's mods.
+function lobby.prepareNewWorld()
+	local config = api.type.AppConfig.new(api.util.getAppConfig())
+	local menu = {}
+	for key, value in pairs(config.mainMenuState or {}) do menu[key] = value end
+	local mods, found = {}, false
+	for _, name in ipairs(menu.activeModsState or {}) do
+		mods[#mods + 1] = name
+		if name == "tpf3mp_1" then found = true end
+	end
+	if not found then mods[#mods + 1] = "tpf3mp_1" end
+	menu.activeModsState = mods
+	config.mainMenuState = menu
+	api.util.setAppConfig(config, false)
+end
+
 local ICON = {
 	ready = "::/gui/menu/icons/symbol_check.tga",
 	host = "::/gui/menu/icons/symbol_crown_laurels.tga",

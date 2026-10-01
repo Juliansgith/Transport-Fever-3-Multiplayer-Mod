@@ -40,8 +40,10 @@ Setup shows the detected Steam mods folder. If several accounts have played
 the game, choose yours; if detection fails, paste its `staging_area` path.
 Start the game through Steam once if its user folder does not exist yet,
 then close it before installing. Open the launcher when setup finishes.
-In the game's **Mod Hub**, find TPF3-MP under your mods and **Activate** it
-once. Future updates install the matching mod before opening the launcher.
+Creating a world from **Multiplayer** selects TPF3-MP automatically in the
+world's **Mods** tab. Keep it active. When preparing a world separately,
+find **TPF3-MP** in that tab and click **Activate**. Future updates install
+the matching mod before opening the launcher.
 
 Reopening the downloaded EXE opens the installed launcher, including when
 offline. An initial install needs an internet connection and a signed
@@ -69,9 +71,9 @@ identities and settings remain; removed files go to TPF3-MP's backups.
    changes. It puts the TPF3-MP mod, `tpf3mp_1`, in Steam's folder for
    your Transport Fever 3 mods, `<Steam>/userdata/<account>/3493540/local/staging_area`,
    and notes its version in TPF3-MP's data folder, which the launcher
-   shows. Then start the game once, open **Mod Hub**, find TPF3-MP under
-   your mods and click **Activate**: a mod that is not activated does
-   nothing. To put it in another mods folder, drop that folder onto
+   shows. Creating a world from **Multiplayer** activates it automatically.
+   For a world prepared separately, select **TPF3-MP** in its **Mods** tab
+   and click **Activate**. To put it in another mods folder, drop that folder onto
    `INSTALL_TPF3MP.cmd`, or run `./install.sh "<the mods folder>"`.
 
    Nothing goes into the game's own folder, and no launch option is set.

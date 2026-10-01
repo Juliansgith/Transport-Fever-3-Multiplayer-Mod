@@ -351,6 +351,17 @@ pub unsafe fn adopt(l: State) -> Result<bool, String> {
     unsafe { adopt_as(l, false) }
 }
 
+/// A new app state created during a load belongs to the incoming world,
+/// even before CMenuUI publishes m_game. Ask the existing menu state before
+/// adopting the new one; otherwise loading() can enter the world's Lua
+/// while the loader is using it.
+///
+/// # Safety
+/// As adopt, on the menu thread with the existing menu Lua idle.
+unsafe fn incoming_world(world_loaded: Option<bool>) -> bool {
+    world_loaded == Some(true) || unsafe { loading() } == Some(true)
+}
+
 /// [`adopt`], for a state given `app` while a world is loaded (`world`):
 /// the world's GUI's, which the menu never calls.
 ///
@@ -614,7 +625,7 @@ unsafe extern "C-unwind" fn register_detour(
         // A state given `app` while a world is loaded is that world's GUI's.
         // SAFETY: `menu` is the CMenuUI& the game passed, live on this
         // thread for the call.
-        let world = unsafe { world_loaded(menu) } == Some(true);
+        let world = unsafe { incoming_world(world_loaded(menu)) };
         // SAFETY: the game just registered into this state on this thread
         // and is not inside any of its API calls now.
         match unsafe { adopt_as(l as State, world) } {
@@ -939,6 +950,31 @@ pub(crate) mod tests {
         menu.run("app = nil").unwrap();
         assert_eq!(unsafe { loading() }, None);
         assert_eq!(unsafe { ffi::lua_gettop(l) }, top, "the stack is as it was");
+        forget_all();
+    }
+
+    #[test]
+    fn incoming_world_state_is_not_used_by_menu_before_m_game_is_published() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        menu51();
+        forget_all();
+        let menu = Lua::new();
+        menu.run(FAKE_MENU).unwrap();
+        assert_eq!(unsafe { adopt(menu.state()) }, Ok(true));
+        assert!(!unsafe { incoming_world(Some(false)) });
+        menu.run("TASK = 'Generating world'").unwrap();
+        let world = Lua::new();
+        world.run(FAKE_MENU).unwrap();
+        let is_world = unsafe { incoming_world(Some(false)) };
+        assert!(is_world, "m_game is still null while the world is loading");
+        assert_eq!(unsafe { adopt_as(world.state(), is_world) }, Ok(true));
+        // The new state's monitor says idle. Only the original menu's
+        // monitor is authoritative, and only that state may load saves.
+        assert_eq!(unsafe { loading() }, Some(true));
+        menu.run("TASK = nil").unwrap();
+        assert_eq!(unsafe { serve("next_world") }, Some(Served::Started));
+        assert_eq!(world.run("return #LOADS"), Ok("0".into()));
+        assert_eq!(menu.run("return #LOADS"), Ok("1".into()));
         forget_all();
     }
 

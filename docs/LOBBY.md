@@ -222,6 +222,9 @@ page through the main page's navigation callback only after room creation
 succeeds. The launcher's bridge starts that generated world once the owner
 reports a loaded world and all members are ready. Existing-save rooms
 retain their explicit Start button. No game-install files are changed.
+Before opening stock setup, the menu adds `tpf3mp_1` to its active mod
+selection without removing other mods. Otherwise a freshly generated world
+could silently run without the multiplayer script while guests wait.
 
 The launcher retains its hook link between rooms. The hook therefore resets
 its menu-arrival notification when the lobby invite changes, even if the

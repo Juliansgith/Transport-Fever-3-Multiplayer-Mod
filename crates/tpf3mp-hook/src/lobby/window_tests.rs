@@ -15,6 +15,41 @@ use super::{LobbyState, parse_action};
 const FAKE_MENU: &str = include_str!("../../tests/lua/fake_menu.lua");
 const WINDOW: &str = include_str!("../../../../mod/tpf3mp_1/content/gui/menu/lobby.lua");
 
+#[test]
+fn new_world_setup_selects_multiplayer_once_and_preserves_other_settings() {
+    let lua = menu();
+    lua.load(
+        r#"
+        CONFIG = { mainMenuState = { activeModsState = { "other_mod" }, seed = "kept" } }
+        api.type.AppConfig = { new = function(value) return value end }
+        api.util = {
+            getAppConfig = function() return CONFIG end,
+            setAppConfig = function(value, restart) assert(not restart); CONFIG = value end,
+        }
+    "#,
+    )
+    .exec()
+    .unwrap();
+    let lobby: Table = lua.load(WINDOW).eval().unwrap();
+    let prepare: Function = lobby.get("prepareNewWorld").unwrap();
+    prepare.call::<()>(()).unwrap();
+    prepare.call::<()>(()).unwrap();
+    lua.load(
+        r#"
+        assert(CONFIG.mainMenuState.seed == "kept")
+        local mods = CONFIG.mainMenuState.activeModsState
+        assert(#mods == 2 and mods[1] == "other_mod" and mods[2] == "tpf3mp_1")
+        CONFIG.mainMenuState.activeModsState = nil
+    "#,
+    )
+    .exec()
+    .unwrap();
+    prepare.call::<()>(()).unwrap();
+    lua.load("assert(CONFIG.mainMenuState.activeModsState[1] == 'tpf3mp_1')")
+        .exec()
+        .unwrap();
+}
+
 fn menu() -> Lua {
     let lua = Lua::new();
     lua.globals().set("LOBBY_SOURCE", WINDOW).unwrap();

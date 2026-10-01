@@ -441,7 +441,7 @@ impl SetupApp {
                 } else {
                     ui.label("TPF3-MP is installed. Future updates also update your multiplayer mod.");
                     ui.add_space(12.0);
-                    ui.label("First time? In the game's Mod Hub, find TPF3-MP under your mods and click Activate once.");
+                    ui.label("Create a world from Multiplayer to select TPF3-MP automatically. For an existing world, keep TPF3-MP active in its Mods tab.");
                     ui.add_space(24.0);
                     if theme::primary_small(ui, true, Some("arrow-right"), "Open launcher", false).clicked() {
                         match open_launcher(&self.plan.root) {
