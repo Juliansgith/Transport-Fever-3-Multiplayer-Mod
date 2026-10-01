@@ -37,6 +37,8 @@ zip.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+# Writes saves for the start-save checks' tests.
+zstd.workspace = true
 
 [build-dependencies]
 tpf3mp-buildinfo.workspace = true
