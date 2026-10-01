@@ -264,8 +264,15 @@ function data()
 			if group == nil and not (con and con.stations and #con.stations > 0) then return false end
 			local owned = api.engine.getComponent(entity, CT.PLAYER_OWNED)
 			local owner = owned and owned.player
+			-- The player's company, by the room's roster: whether the
+			-- owner lets it stop there (its head's choice, else its default).
+			local companies = require("tpf3mp.companies")
+			local mine = 0
+			for _, m in ipairs(roster.members or {}) do
+				if m.player == shared.status.me_id then mine = m.company end
+			end
 			for _, c in ipairs(roster.list or {}) do
-				if c.entity == owner then return not c.closed end
+				if c.entity == owner then return companies.lets(c, mine) end
 			end
 			return false
 		end)
@@ -431,7 +438,9 @@ function data()
 				-- window has no use for it.
 				local locked = type(c.lock) == "table"
 				out.list[#out.list + 1] = { id = c.id, entity = c.entity, name = name or c.name, color = c.color,
-					balance = balance, owed = owed, founder = c.founder, locked = locked, closed = c.closed == true }
+					balance = balance, owed = owed, founder = c.founder, locked = locked, closed = c.closed == true,
+					access = c.access }
+				for _, a in ipairs(c.access or {}) do sign[#sign + 1] = c.id .. ">" .. tostring(a.company) .. "=" .. tostring(a.open) end
 				local color = type(c.color) == "table" and c.color or {}
 				sign[#sign + 1] = table.concat({ c.id, name or c.name, tostring(balance), tostring(owed),
 					tostring(color[1]), tostring(color[2]), tostring(color[3]), tostring(locked),
@@ -562,22 +571,51 @@ function data()
 		return builtin.TextView{ meta = class and { class = class } or nil, text = t }
 	end
 
-	-- Whether other companies' lines may stop at company `c`'s stations,
-	-- for its head to change.
+	-- Who may have their lines stop at company `c`'s stations, for its
+	-- head to choose (D22, proposed): a default, which also holds for
+	-- companies founded later, and a toggle for each other company, which
+	-- wins over it. Per company, not per player: a company's players share
+	-- everything it owns.
 	local function stationRows(rows, roster, c, shared)
+		local companies = require("tpf3mp.companies")
+		local function button(label, tooltip, onClick)
+			return builtin.Button{ meta = { tooltip = tooltip }, content = text(label), onClick = onClick }
+		end
+		local open = not c.closed
+		rows[#rows + 1] = text("Who may stop at " .. tostring(c.name) .. "'s stations", "font-scale-body")
 		rows[#rows + 1] = hbox({
-			text(c.closed and "Stations: yours alone" or "Stations: open to every company's lines"),
-			builtin.Button{
-				meta = { tooltip = c.closed
-					and "Let other companies' lines stop at " .. tostring(c.name) .. "'s stations"
-					or "Keep " .. tostring(c.name) .. "'s stations to its own lines" },
-				content = text(c.closed and "Open" or "Close"),
-				onClick = function()
-					companyOp(shared, { ShareStations = { company = c.id, open = c.closed == true } },
-						(c.closed and "Opening " or "Closing ") .. "the stations of " .. c.name)
-				end,
-			},
+			text("Default, and companies founded later: " .. (open and "allowed" or "denied")),
+			button(open and "Deny by default" or "Allow by default", open
+				and "Keep " .. tostring(c.name) .. "'s stations from every company without a choice of its own"
+				or "Let every company without a choice of its own stop at " .. tostring(c.name) .. "'s stations",
+				function()
+					companyOp(shared, { ShareStations = { company = c.id, open = not open } },
+						(open and "Closing " or "Opening ") .. "the stations of " .. c.name .. " by default")
+				end),
 		})
+		for _, other in ipairs(roster.list or {}) do
+			if other.id ~= c.id then
+				local choice = companies.choice(c, other.id)
+				local allowed = companies.lets(c, other.id)
+				local row = {
+					text(tostring(other.name) .. ": " .. (allowed and "allowed" or "denied")
+						.. (choice == nil and " (default)" or "")),
+					button(allowed and "Deny" or "Allow", (allowed and "Keep " or "Let ") .. tostring(other.name)
+						.. (allowed and "'s lines from " or "'s lines stop at ") .. tostring(c.name) .. "'s stations",
+						function()
+							companyOp(shared, { StationAccess = { company = c.id, other = other.id, open = not allowed } },
+								(allowed and "Denying " or "Allowing ") .. other.name)
+						end),
+				}
+				if choice ~= nil then
+					row[#row + 1] = button("Default", tostring(other.name) .. " follows the default again", function()
+						companyOp(shared, { StationAccess = { company = c.id, other = other.id } },
+							"Putting " .. other.name .. " back to the default")
+					end)
+				end
+				rows[#rows + 1] = hbox(row)
+			end
+		end
 	end
 
 	-- The companies (tpf3mp/companies.lua; DECISIONS.md D22, proposed), as

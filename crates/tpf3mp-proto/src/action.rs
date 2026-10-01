@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 10;
+pub const ACTION_SCHEMA_VERSION: u32 = 11;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -738,10 +738,23 @@ pub enum CompanyOp {
         player: PlayerHex,
     },
     /// The company's head opens its stations to other companies' lines, or
-    /// closes them. A company's stations start open.
+    /// closes them. A company's stations start open. This is the default:
+    /// it holds for every company without a choice of its own
+    /// ([`CompanyOp::StationAccess`]), those founded later included.
     ShareStations {
         company: CompanyId,
         open: bool,
+    },
+    /// The company's head lets the lines of one other company stop at its
+    /// stations (`Some(true)`), or not (`Some(false)`), whatever the default
+    /// says; `None` leaves that company to the default again. Per company,
+    /// not per player: a company's players share everything it owns.
+    /// Appended under schema version 11: the variants before it keep their
+    /// bytes.
+    StationAccess {
+        company: CompanyId,
+        other: CompanyId,
+        open: Option<bool>,
     },
 }
 
@@ -981,7 +994,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1024,7 +1037,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1057,7 +1070,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1075,7 +1088,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1090,7 +1103,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1101,13 +1114,13 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
         );
         // Appended under schema version 9: the company's head's own.
-        let cases: [(CompanyOp, &[u8]); 4] = [
+        let cases: [(CompanyOp, &[u8]); 5] = [
             (CompanyOp::Lock(CompanyId(2)), &[5, 2]),
             (CompanyOp::Unlock(CompanyId(2)), &[6, 2]),
             (
@@ -1124,10 +1137,19 @@ mod tests {
                 },
                 &[8, 2, 0],
             ),
+            // Appended under schema version 11.
+            (
+                CompanyOp::StationAccess {
+                    company: CompanyId(2),
+                    other: CompanyId(3),
+                    open: Some(false),
+                },
+                &[9, 2, 3, 1, 0],
+            ),
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [10, 11]);
+            assert_eq!(payload.as_bytes()[..2], [11, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         let hold = Action::VehicleOp(VehicleOp {
@@ -1137,7 +1159,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                10, // schema version
+                11, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

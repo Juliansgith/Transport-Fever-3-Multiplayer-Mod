@@ -162,8 +162,20 @@ struct Company {
     members: Vec<PlayerId>,
     /// The seal of its password (scope and tag), if it has one.
     lock: Option<(u64, [u8; 32])>,
-    /// Whether other companies' lines may stop at its stations.
+    /// Whether other companies' lines may stop at its stations: the
+    /// default, for every company without a choice of its own.
     open: bool,
+    /// Its head's choice for single companies: whether their lines may
+    /// stop at its stations, whatever the default says.
+    access: BTreeMap<u32, bool>,
+}
+
+impl Company {
+    /// Whether company `other`'s lines may stop at this company's stations
+    /// (D22, proposed).
+    fn lets(&self, other: u32) -> bool {
+        self.access.get(&other).copied().unwrap_or(self.open)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,6 +345,7 @@ impl State {
                 members: Vec::new(),
                 lock: None,
                 open: true,
+                access: BTreeMap::new(),
             },
         );
         id
@@ -829,6 +842,24 @@ impl State {
                 head_of(self, *company)?;
                 self.companies.get_mut(company).expect("checked").open = *open;
             }
+            CompanyOp::StationAccess {
+                company: CompanyId(company),
+                other: CompanyId(other),
+                open,
+            } => {
+                head_of(self, *company)?;
+                if other == company {
+                    refuse!("company-{company}'s stations are always its own");
+                }
+                if !self.companies.contains_key(other) {
+                    refuse!("no company-{other}");
+                }
+                let access = &mut self.companies.get_mut(company).expect("checked").access;
+                match open {
+                    Some(open) => access.insert(*other, *open),
+                    None => access.remove(other),
+                };
+            }
         }
         Ok(())
     }
@@ -1163,7 +1194,8 @@ impl State {
     }
 
     /// A line's stops, for `company`: at stations no company owns, its own,
-    /// or another company's that keeps its stations open (D22, proposed).
+    /// or another company's that lets `company` stop there (its choice for
+    /// `company`, else its default; D22, proposed).
     fn stops<'a>(
         &self,
         stops: impl Iterator<Item = &'a tpf3mp_proto::action::LineStop>,
@@ -1181,7 +1213,7 @@ impl State {
             }
             if let Some(owner) = self.station_owner(*station)
                 && owner != company
-                && self.companies.get(&owner).is_some_and(|c| !c.open)
+                && self.companies.get(&owner).is_some_and(|c| !c.lets(company))
             {
                 refuse!(
                     "station-{station} is company-{owner}'s, which keeps its stations to itself"
@@ -1836,6 +1868,59 @@ mod tests {
         act(&mut world, 24, bob, &dismiss_cat);
         assert_ne!(world.state.member_of[&cat], 0);
         assert_eq!(world.ignored().len(), 8);
+    }
+
+    /// D22 (proposed): a company's head lets single companies stop at its
+    /// stations, or not, whatever the default; a company without a choice
+    /// of its own, one founded later included, follows the default.
+    #[test]
+    fn a_head_chooses_station_access_per_company_over_the_default() {
+        let players: Vec<PlayerId> = (1..=3).map(|n| PlayerId(FixedBytes([n; 32]))).collect();
+        let (ann, bob) = (players[0], players[1]);
+        let mut world = ModelWorld::new(1);
+        for (seq, player) in players.iter().enumerate() {
+            world.apply(&event(
+                seq as u64 + 1,
+                EventBody::PlayerJoined {
+                    player: *player,
+                    name: Text::new(format!("p{seq}")).unwrap(),
+                    platform: Platform::current(),
+                },
+            ));
+        }
+        let access = |other: u32, open: Option<bool>| {
+            Action::CompanyOp(CompanyOp::StationAccess {
+                company: CompanyId(0),
+                other: CompanyId(other),
+                open,
+            })
+        };
+        let lets = |world: &ModelWorld, other: u32| world.state.companies[&0].lets(other);
+        // Ann heads company 0: she shuts company 1 out; 2 keeps the default.
+        act(&mut world, 10, ann, &access(1, Some(false)));
+        assert!(!lets(&world, 1) && lets(&world, 2));
+        // Closed by default: 2 too, and a company founded later; then 2 let
+        // in again on its own.
+        act(
+            &mut world,
+            11,
+            ann,
+            &Action::CompanyOp(CompanyOp::ShareStations {
+                company: CompanyId(0),
+                open: false,
+            }),
+        );
+        assert!(!lets(&world, 2) && !lets(&world, 9));
+        act(&mut world, 12, ann, &access(2, Some(true)));
+        act(&mut world, 13, ann, &access(1, None));
+        assert!(lets(&world, 2) && !lets(&world, 1), "1 follows the default");
+        assert_eq!(world.ignored().len(), 0, "{:?}", world.ignored());
+        // Not Bob's to choose, nor for itself or a company there is not.
+        act(&mut world, 14, bob, &access(1, Some(true)));
+        act(&mut world, 15, ann, &access(0, Some(false)));
+        act(&mut world, 16, ann, &access(42, Some(true)));
+        assert_eq!(world.ignored().len(), 3, "{:?}", world.ignored());
+        assert!(!lets(&world, 1));
     }
 
     #[test]

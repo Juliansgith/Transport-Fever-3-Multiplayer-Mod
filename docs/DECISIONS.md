@@ -746,7 +746,15 @@ companies stations".
   another company's stations: stopping changes nothing the station's
   company owns (D21 forbids changing or removing it). Stations start
   open; a company's head may close them to other companies' lines, and
-  every game then refuses a new or changed line that stops there. The
+  every game then refuses a new or changed line that stops there. That
+  is the default; the head may also allow or deny single companies
+  (`CompanyOp::StationAccess`), which wins over the default for that
+  company, and put one back to the default. The default holds for every
+  company without a choice of its own, those founded later included.
+  Access is per company, not per player: a company's players share
+  everything it owns, so a rule for one of them would only hold until
+  they used a company-mate's line. Asked for on 2026-10-01: "managing
+  station access between players". The
   station's upkeep stays its owner's, and a line's fares and costs its
   company's, as TPF2MP's shared stations kept them. A company's vehicles
   still use its own depots.
@@ -764,9 +772,12 @@ Rejected:
   rounds a room does not have; a founder who left would lock the company
   forever.
 - **Sharing always on, or chosen station by station** (TPF2MP had always
-  on, with a list of companies per company): one switch per company is
-  what a player can see and understand; a list per company or station can
-  follow if players ask.
+  on, with a list of companies per company): one default and a toggle per
+  company is what a player can see and understand; station by station
+  can follow if players ask.
+- **Access per player**: a company's players share its lines and
+  stations, so a player denied could still stop there through a
+  company-mate's line.
 
 ## D23 (proposed, 2026-09-30): a company's progression is its share of each town, by deliveries and rating
 

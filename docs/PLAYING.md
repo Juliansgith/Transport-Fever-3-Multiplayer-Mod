@@ -339,10 +339,13 @@ protected folder such as Program Files.
   The password goes to the server, which keeps it from every game and
   every log; nobody, the head included, can read it back, so share it
   the way you share a room's. The head can also remove or change the
-  password, send a player back to the room's first company, and close
-  the company's stations to other companies' lines. Stations start open:
-  your lines may stop at another company's station, and the line manager
-  offers it, until its head closes them. You still cannot change or
+  password, send a player back to the room's first company, and choose
+  who may stop at the company's stations: **Deny by default** or **Allow
+  by default** for every company (those founded later included), and
+  **Allow** or **Deny** for each other company on its own, which wins over
+  the default (**Default** puts it back). Stations start open: your lines
+  may stop at another company's station, and the line manager offers it,
+  unless its head denies your company. You still cannot change or
   remove another company's station, and your vehicles use your own
   depots. The room's first company is everyone's: it has no head and no
   password. The game's company window renames your company too.
