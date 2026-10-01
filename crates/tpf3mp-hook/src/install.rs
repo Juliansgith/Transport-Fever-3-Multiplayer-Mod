@@ -156,18 +156,9 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
     let world_loaded = unsafe { crate::menu::world_loaded(menu) };
     let last_step_ms = LAST_STEP.load(Ordering::Acquire);
     let world_gui_started = lua::any_world_started();
-    let after_world = menu_sight().gate.after_world()
-        || last_step_ms != 0
-        || world_gui_started
-        || world_loaded == Some(true);
-    // Lua runs only when its answer counts, and never under the lock.
-    let loading = if after_world && world_loaded == Some(false) {
-        // SAFETY: the menu's frame, on the thread that runs its Lua, after
-        // the game's own frame: no Lua runs on it now.
-        unsafe { crate::menu::loading() }
-    } else {
-        None
-    };
+    // Read the loader's future on its own thread, without Lua or its locks.
+    // SAFETY: DoStep's live receiver, on its thread.
+    let loading = unsafe { crate::menu::load_in_progress(menu) };
     let frame = crate::at_menu::Frame {
         now_ms: menu_now_ms(),
         last_step_ms,
@@ -214,6 +205,17 @@ pub(crate) fn menu_frame(menu: usize) {
     // loaded before its first step neither (the owner's save for the room
     // comes then). After a world, only once it closed and nothing loads.
     let (seen, mut lines) = menu_seen(menu);
+    // Fresh menus also run during loads. Unknown fields fail closed; a
+    // hook-started load remains busy until its GUI arrives or it fails.
+    if !crate::menu::outermost_frame() || lua::load_started()
+        // SAFETY: the game's live menu, on its thread.
+        || unsafe { crate::menu::load_in_progress(menu) } != Some(false)
+    {
+        for line in lines {
+            log_line(&line);
+        }
+        return;
+    }
     if !seen.allows() || !crate::menu::available() {
         for line in lines {
             log_line(&line);
@@ -1087,21 +1089,41 @@ mod tests {
         )));
         LAST_STEP.store(0, Ordering::Release);
 
+        let mut cmenu = [0usize; 3];
+        crate::menu::set_load_field(16);
+        let at = cmenu.as_mut_ptr() as usize;
         // No menu state yet: the menu does nothing (fail closed).
-        menu_frame(0);
+        menu_frame(at);
         assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
         assert!(!DRIVER.lock().unwrap().as_ref().unwrap().in_room());
 
         assert_eq!(unsafe { crate::menu::adopt(menu.state()) }, Ok(true));
         // The lobby: nothing to load.
-        menu_frame(0);
+        let before = crate::menu::tests::PCALLS.load(Ordering::SeqCst);
+        crate::menu::set_load_field(0);
+        menu_frame(at);
+        crate::menu::set_load_field(16);
+        unsafe {
+            std::ptr::write_volatile((at + 16) as *mut usize, 1);
+        }
+        menu_frame(at);
+        assert_eq!(
+            crate::menu::tests::PCALLS.load(Ordering::SeqCst),
+            before,
+            "unknown or active loads must never enter menu Lua"
+        );
+        assert!(!DRIVER.lock().unwrap().as_ref().unwrap().in_room());
+        unsafe {
+            std::ptr::write_volatile((at + 16) as *mut usize, 0);
+        }
+        menu_frame(at);
         assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
         // The room begins and orders its save: the menu loads it.
-        menu_frame(0);
+        menu_frame(at);
         let name = format!("tpf3mp_room_{}", std::process::id());
         assert_eq!(menu.run("return #LOADS, LOADS[1]"), Ok(format!("1|{name}")));
         assert!(dir.join(format!("{name}.sav")).is_file());
-        menu_frame(0);
+        menu_frame(at);
         assert_eq!(menu.run("return #LOADS"), Ok("1".into()), "loaded once");
         // A world's GUI has started: the menu keeps out, even before its
         // first step (the owner's save for the room comes then).
@@ -1113,7 +1135,7 @@ mod tests {
             world.register();
             world.run("tpf3mp_native.world()").unwrap();
         }
-        menu_frame(0);
+        menu_frame(at);
         assert_eq!(
             menu.run("return #LOADS"),
             Ok("1".into()),
@@ -1124,7 +1146,7 @@ mod tests {
         // player), and even with an order waiting.
         lua::forget_worlds();
         LAST_STEP.store(now_ms().max(1), Ordering::Release);
-        menu_frame(0);
+        menu_frame(at);
         assert_eq!(
             menu.run("return #LOADS"),
             Ok("1".into()),
@@ -1152,6 +1174,7 @@ mod tests {
         drop(sight);
         MENU_CLOCK_SKEW.store(0, Ordering::Release);
         crate::menu::set_game_field(0);
+        crate::menu::set_load_field(0);
     }
 
     /// A game that had a world up and closed it: the menu keeps out while
@@ -1193,6 +1216,7 @@ mod tests {
         // The menu: m_game is its second word here.
         let mut cmenu = [0usize; 4];
         crate::menu::set_game_field(8);
+        crate::menu::set_load_field(16);
         let at = cmenu.as_mut_ptr() as usize;
         let set_world = |loaded: bool| unsafe {
             std::ptr::write_volatile((at + 8) as *mut usize, usize::from(loaded));
@@ -1209,7 +1233,9 @@ mod tests {
         assert!(hook_log().contains("menu: a world is loaded (CMenuUI::m_game set)"));
         // The world closes, and the next one loads: still out.
         set_world(false);
-        menu.run("TASK = 'Loading'").unwrap();
+        unsafe {
+            std::ptr::write_volatile((at + 16) as *mut usize, 1);
+        }
         menu_frame(at);
         MENU_CLOCK_SKEW.store(20 * crate::at_menu::QUIET_MS, Ordering::Release);
         menu_frame(at);
@@ -1217,7 +1243,9 @@ mod tests {
         assert!(hook_log().contains("menu: no world loaded, but the game is loading one"));
         // Nothing loads: quiet for the stretch, then the menu follows the
         // room, which begins, and loads the room's save.
-        menu.run("TASK = ''").unwrap();
+        unsafe {
+            std::ptr::write_volatile((at + 16) as *mut usize, 0);
+        }
         menu_frame(at);
         assert_eq!(menu.run("return #LOADS"), Ok("0".into()), "not quiet yet");
         MENU_CLOCK_SKEW.store(21 * crate::at_menu::QUIET_MS, Ordering::Release);

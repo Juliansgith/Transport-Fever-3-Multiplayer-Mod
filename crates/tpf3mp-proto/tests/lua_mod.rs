@@ -206,6 +206,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.follow",
             "tpf3mp.geom",
             "tpf3mp.guard",
+            "tpf3mp.hudguard",
             "tpf3mp.progression",
             "tpf3mp.registry",
             "tpf3mp.roads",
@@ -7211,12 +7212,14 @@ fn the_huds_state_follows_the_players_company() {
     );
 }
 
-/// The GUI's other Lua state, where the game renders its React recipes, has
-/// an api.cmd of its own (docs/COVERAGE.md, U1): in the room's game the
-/// guard is on it too. What the room carries goes to the room, answered as
-/// sent a moment later; what it does not is refused, the callback told so;
-/// and a window there that waits on what its command made is refused, as
-/// the room's answers reach the plugin's state alone.
+/// The GUI's other Lua state, where the game renders its React recipes (the
+/// vehicle store among them), has an api.cmd of its own (docs/COVERAGE.md,
+/// U1): in the room's game the guard is on it too. What the room carries
+/// goes to the room; what it does not is refused, the callback told so. The
+/// room's answers reach the plugin's state, which passes on those to this
+/// state's commands through a note (hudguard.forward): a sale is answered,
+/// a new line opens, and a vehicle the store bought is told it and put on
+/// its line (2026-10-01: refusing the buy here blocked buying).
 #[test]
 fn in_the_huds_state_the_guard_carries_or_refuses_every_command() {
     let lua = gui();
@@ -7226,15 +7229,23 @@ fn in_the_huds_state_the_guard_carries_or_refuses_every_command() {
         r#"
         api.cmd.makeVehicleSellCmd = function(vehicles) return { kind = 'sell' } end
         api.cmd.makeTownCreateCmd = function() return { kind = 'town' } end
+        api.cmd.makeVehicleSetLineCmd = function(vehicle, line, stop) return { kind = 'setLine' } end
         STATE = { companies = { next = 1, list = { { id = 0, entity = 25, name = "First" } }, members = {} },
-                  registry = { vehicles = { bound = { { 3, 5 } } } } }
+                  registry = { vehicles = { bound = { { 3, 5 } } }, lines = { bound = {} } } }
         api.engine = { util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) },
-                       system = { gameScriptSystem = { getEntityForGameScript = function(name)
-                           return name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" and 77 or -1 end } },
+                       system = {
+                           gameScriptSystem = { getEntityForGameScript = function(name)
+                               return name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" and 77 or -1 end },
+                           streetConnectorSystem = { getConstructionEntityForDepot = function(d)
+                               if d == 202 then return 201 end return -1 end },
+                       },
                        getComponent = function(e, kind)
                            if e == 77 and kind == 7 then return { state = STATE } end
+                           if e == 201 and kind == 2 then return { fileName = 'depot/bus_depot.con',
+                               depots = { 202 }, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end
                        end }
-        api.type = { ComponentType = { GAME_SCRIPT = 7 } }
+        api.type = { ComponentType = { GAME_SCRIPT = 7, CONSTRUCTION = 2 } }
+        api.res = { modelRep = { getName = function(id) if id == 41 then return 'vehicle/bus/city.mdl' end end } }
         HOOK.status = { room = "r", players = {}, me_id = string.rep("b", 64) }
         CLOCK = 0
         os.clock = function() return CLOCK end
@@ -7250,6 +7261,10 @@ fn in_the_huds_state_the_guard_carries_or_refuses_every_command() {
         ug_require = real
         -- A frame of the HUD's: the clock moves, the HUD asks whose it is.
         function FRAME() CLOCK = CLOCK + 1; api.engine.util.getPlayer() end
+        -- The plugin's state reading the room's answers, as its frame does.
+        LINK = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua').attach(tpf3mp_native)
+        HUD = ug_require('tpf3mp_1::/scripts/tpf3mp/hudguard.lua')
+        function ANSWER(results) return HUD.forward(LINK, results) end
         "#,
     )
     .exec()
@@ -7259,7 +7274,7 @@ fn in_the_huds_state_the_guard_carries_or_refuses_every_command() {
         .eval()
         .unwrap();
     assert!(
-        logged.contains("the guard is on 6 command factories in the HUD's state"),
+        logged.contains("the guard is on 7 command factories in the HUD's state|"),
         "{logged}"
     );
 
@@ -7287,44 +7302,96 @@ fn in_the_huds_state_the_guard_carries_or_refuses_every_command() {
         Some(false)
     );
 
-    // A vehicle sold goes to the room by its id, and is answered as sent.
+    // A vehicle sold goes to the room by its id; its ticket is noted, and
+    // its callback hears once the plugin's state passed the answer on.
     lua.load(
-        "api.cmd.sendCommand(api.cmd.makeVehicleSellCmd({ 5 }), function(_, ok) SOLD = ok end)",
+        "api.cmd.sendCommand(api.cmd.makeVehicleSellCmd({ 5 }), function(_, ok) SOLD = ok end) \
+         FRAME() FRAME() FRAME()",
     )
     .exec()
     .unwrap();
-    let (commands, sold): (usize, i64) = lua
-        .load("return #HOOK.commands, HOOK.commands[1].SellVehicle.vehicles[1]")
+    let (commands, sold, noted): (usize, i64, String) = lua
+        .load(
+            "return #HOOK.commands, HOOK.commands[1].SellVehicle.vehicles[1], \
+             HOOK.notes['tpf3mp.hud.tickets']",
+        )
         .eval()
         .unwrap();
-    assert_eq!((commands, sold), (1, 3));
+    assert_eq!((commands, sold, noted.as_str()), (1, 3, "1"));
     assert_eq!(
         lua.load("return SOLD").eval::<Option<bool>>().unwrap(),
-        None
+        None,
+        "not before the room's answer"
     );
+    let passed: usize = lua
+        .load("return ANSWER({ { ticket = 9, ok = true }, { ticket = 1, ok = true } })")
+        .eval()
+        .unwrap();
+    assert_eq!(passed, 1, "only this state's own");
     lua.load("FRAME() FRAME() FRAME()").exec().unwrap();
-    assert_eq!(
-        lua.load("return SOLD").eval::<Option<bool>>().unwrap(),
-        Some(true)
-    );
+    let (sold, noted): (Option<bool>, Option<String>) = lua
+        .load("return SOLD, HOOK.notes['tpf3mp.hud.tickets']")
+        .eval()
+        .unwrap();
+    assert_eq!(sold, Some(true));
+    assert_eq!(noted.as_deref(), Some("0"), "idle slot stays reserved");
 
-    // A line made with a callback waits on the line it makes: refused here;
-    // without one it goes to the room.
+    // The store's "buy onto a line": the buy goes to the room; told which
+    // vehicle it bought once the registry names it, the store puts it on
+    // its line, which goes to the room by canonical ids.
+    lua.load(
+        "STATE.registry.lines.bound = { { 1, 600 } } \
+         CONFIG = { vehicles = { { part = { modelId = 41, reversed = false, \
+             compartment2loadConfig = {}, color = { x = 1, y = 0, z = 0 } } } }, \
+             vehicleGroups = { 1 }, muFileNames = { '' } } \
+         api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(25, 202, CONFIG), function(data, ok, entities) \
+             HEARD = { vehicle = data.resultVehicleEntity, ok = ok, entity = entities[1] and entities[1][1] } \
+             api.cmd.sendCommand(api.cmd.makeVehicleSetLineCmd(data.resultVehicleEntity, 600, 0)) \
+         end) \
+         FRAME() \
+         ANSWER({ { ticket = 2, ok = true, entity = 500 } }) \
+         FRAME() FRAME()",
+    )
+    .exec()
+    .unwrap();
+    let (handed, kind, heard): (usize, String, bool) = lua
+        .load("return #HOOK.commands, next(HOOK.commands[2]), HEARD ~= nil")
+        .eval()
+        .unwrap();
+    assert_eq!((handed, kind.as_str()), (2, "BuyVehicle"));
+    assert!(
+        !heard,
+        "not before the registry names the vehicle: its line could not be named"
+    );
+    lua.load("STATE.registry.vehicles.bound = { { 3, 5 }, { 4, 500 } } FRAME() FRAME()")
+        .exec()
+        .unwrap();
+    let assigned: String = lua
+        .load(
+            "local a = HOOK.commands[3].AssignLine \
+             return table.concat({ HEARD.vehicle, tostring(HEARD.ok), HEARD.entity, \
+                 a.vehicles[1], a.line, a.first_stop }, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(assigned, "500|true|500|4|1|0");
+
+    // A new line's window hears the line it made.
     lua.load(
         "LINE = { stops = {}, vehicleInfo = { transportModes = {} } } \
          api.cmd.sendCommand(api.cmd.makeLineCreateCmd('L', { x = 1, y = 0, z = 0 }, 25, LINE), \
-             function(_, ok) MADE = ok end) \
-         FRAME() FRAME() FRAME() \
-         api.cmd.sendCommand(api.cmd.makeLineCreateCmd('L', { x = 1, y = 0, z = 0 }, 25, LINE))",
+             function(data, ok) MADE = { ok = ok, line = data.resultEntity } end) \
+         STATE.registry.lines.bound = { { 1, 600 }, { 2, 601 } } \
+         ANSWER({ { ticket = 4, ok = true, entity = 601 } }) \
+         FRAME() FRAME()",
     )
     .exec()
     .unwrap();
-    let (made, commands, kind): (Option<bool>, usize, String) = lua
-        .load("return MADE, #HOOK.commands, next(HOOK.commands[2])")
+    let (kind, made, line): (String, bool, i64) = lua
+        .load("return next(HOOK.commands[4]), MADE.ok, MADE.line")
         .eval()
         .unwrap();
-    assert_eq!(made, Some(false));
-    assert_eq!((commands, kind.as_str()), (2, "CreateLine"));
+    assert_eq!((kind.as_str(), made, line), ("CreateLine", true, 601));
     assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 1);
     let logged: String = lua
         .load("return table.concat(HOOK.logged, '|')")
@@ -7333,12 +7400,35 @@ fn in_the_huds_state_the_guard_carries_or_refuses_every_command() {
     assert!(
         logged.contains(
             "refused the player's makeTownCreateCmd in the room's game (1 so far) in the HUD's state"
-        ) && logged.contains(
-            "refused the player's makeLineCreateCmd in the room's game (1 so far) in the HUD's \
-             state: a window that waits on what it made"
-        ),
+        ) && !logged.contains("a window that waits on what it made"),
         "{logged}"
     );
+    // A full queue refuses before sending another action. Every accepted
+    // command still receives its answer; none is evicted to make room.
+    lua.load(
+        r#"
+        local old = {}
+        for t = 1, #HOOK.commands do old[#old + 1] = { ticket = t, ok = false } end
+        ANSWER(old) FRAME() FRAME()
+        local before = #HOOK.commands
+        DONE = 0
+        for i = 1, HUD.MAX_PENDING + 1 do
+            api.cmd.sendCommand(api.cmd.makeVehicleSellCmd({ 5 }), function(_, ok)
+                assert(not ok); DONE = DONE + 1
+            end)
+        end
+        assert(#HOOK.commands == before + HUD.MAX_PENDING)
+        FRAME() FRAME()
+        assert(DONE == 1, 'only the refused extra command has answered')
+        local answers = {}
+        for t = before + 1, #HOOK.commands do answers[#answers + 1] = { ticket = t, ok = false } end
+        ANSWER(answers)
+        for i = 1, 10 do FRAME() ANSWER({}) end
+        assert(DONE == HUD.MAX_PENDING + 1, 'every accepted ticket must finish')
+    "#,
+    )
+    .exec()
+    .unwrap();
 }
 
 /// A road modifier's build, as the room orders it: the street 8-9 rebuilt in
@@ -8001,4 +8091,84 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
         end
         assert(#HOOK.commands == 0)
     "#).exec().unwrap();
+}
+
+/// A part whose loads the action leaves out gets the store's own, one for
+/// each of the model's compartments: the game throws for a part with fewer.
+/// One that names some but not all is refused in every game.
+#[test]
+fn a_bought_vehicle_loads_every_compartment_of_its_model() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        "api.res.modelRep.get = function(id) \
+             return { metadata = { transportVehicle = { compartments = { {}, {} } } } } end",
+    )
+    .exec()
+    .unwrap();
+    let no_loads = BUY_BUS.replace("loads = { { config = 0, cargo = 3 } }", "loads = { }");
+    lua.load(format!(
+        "HOOK.room = true UPDATE({{}}, STATE, 0.2) \
+         HOOK.batch = {{ {no_loads}, {BUY_BUS} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let outcome: String = lua
+        .load(
+            "local p = SENT[1].buy.config.vehicles[1].part \
+             local out = { #SENT, #p.compartment2loadConfig, p.compartment2loadConfig[2].loadConfigIndex, \
+                 tostring(HOOK.applied[1].ok), tostring(HOOK.applied[2].ok), tostring(HOOK.applied[2].why) } \
+             return table.concat(out, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        outcome,
+        "1|2|0|true|false|vehicle/bus/city.mdl has 2 compartments, and the part loads 1"
+    );
+}
+
+#[test]
+fn hud_answers_are_chunked_without_overwriting_unread_results() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(
+        r#"
+        local hud = ug_require('tpf3mp_1::/scripts/tpf3mp/hudguard.lua')
+        local link = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua').attach(tpf3mp_native)
+        local tickets, results = {}, {}
+        for i = 1, hud.MAX_PENDING do
+            local t = 8000000000000000 + i
+            tickets[i] = string.format('%.0f', t)
+            results[i] = { ticket = t, ok = true, entity = 8000000000000000 + i }
+        end
+        link:note(hud.TICKETS, table.concat(tickets, ','))
+        local first = hud.forward(link, results)
+        assert(first > 0 and first < #results, 'force multiple batches at the real note limit: ' .. first .. '/' .. #results .. ' tickets=' .. tostring(link:note(hud.TICKETS)))
+        local unread = link:note(hud.ANSWERS)
+        assert(#unread <= hud.NOTE_MAX)
+        assert(hud.forward(link, {}) == 0)
+        assert(link:note(hud.ANSWERS) == unread, 'unread answers must not be replaced')
+        local seen, count = {}, 0
+        while #tickets > 0 do
+            local batch = link:note(hud.ANSWERS)
+            assert(#batch <= hud.NOTE_MAX)
+            local n = 0
+            for t in batch:gmatch('(%d+) %d [%-%d]+;') do
+                assert(not seen[t], 'delivered twice')
+                seen[t] = true; count = count + 1; n = n + 1
+            end
+            assert(n > 0, 'queued results must continue without new incoming results')
+            local remaining = {}
+            for _, t in ipairs(tickets) do if not seen[t] then remaining[#remaining + 1] = t end end
+            tickets = remaining
+            link:note(hud.TICKETS, #tickets > 0 and table.concat(tickets, ',') or '0')
+            hud.forward(link, {})
+        end
+        assert(count == hud.MAX_PENDING)
+        assert(link:note(hud.ANSWERS) == '0')
+    "#,
+    )
+    .exec()
+    .unwrap();
 }

@@ -277,6 +277,11 @@ struct Shared {
     /// A load asked for: `None` until the GUI took it, then the worlds
     /// started by then.
     load: Option<Option<u64>>,
+    /// A load the hook started (the GUI or the main menu took it), with the
+    /// worlds started by then, until a world's GUI starts after it or it
+    /// fails: the game may be loading for the hook ([`load_started`]). Kept
+    /// apart from `load`, which a new request resets.
+    started: Option<u64>,
     /// The last world [`take_world_up`] handed out.
     told: u64,
     /// A load for the main menu to start, not taken yet
@@ -337,6 +342,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     save_answer: None,
     worlds: 0,
     load: None,
+    started: None,
     room: RoomStatus {
         info: None,
         me: None,
@@ -550,6 +556,7 @@ pub fn menu_load_started() {
     let mut shared = shared();
     if matches!(shared.load, Some(None)) {
         shared.load = Some(Some(shared.worlds));
+        shared.started = Some(shared.worlds);
     }
 }
 
@@ -557,6 +564,7 @@ pub fn menu_load_started() {
 pub fn menu_load_failed(why: String) {
     let mut shared = shared();
     shared.load = None;
+    shared.started = None;
     shared.load_failure = Some(why);
 }
 
@@ -577,6 +585,14 @@ pub fn load_done() -> bool {
     done
 }
 
+/// Whether a load the hook asked for has started (the GUI or the main menu
+/// took it) and its world's GUI has not started yet, nor has it failed: the
+/// game may be loading for the hook.
+pub fn load_started() -> bool {
+    let shared = shared();
+    shared.started.is_some_and(|taken| shared.worlds <= taken)
+}
+
 /// Whether any world's GUI has started in this process.
 pub fn any_world_started() -> bool {
     shared().worlds > 0
@@ -589,6 +605,7 @@ pub(crate) fn forget_worlds() {
     let mut shared = shared();
     shared.worlds = 0;
     shared.told = 0;
+    shared.started = None;
 }
 
 /// The number of the latest world whose GUI started, if it is newer than
@@ -1049,6 +1066,7 @@ unsafe extern "C-unwind" fn native_poll(l: State) -> c_int {
         let request = shared.request.take();
         if matches!(request, Some(Request::Load(_))) {
             shared.load = Some(Some(shared.worlds));
+            shared.started = Some(shared.worlds);
         }
         request
     };
@@ -1922,7 +1940,13 @@ unsafe extern "C-unwind" fn native_note(l: State) -> c_int {
         let mut shared = shared();
         shared.notes.retain(|(k, _)| *k != key);
         if !value.is_empty() && key == PERSONAL_UNGUARDED && shared.notes.len() >= MAX_NOTES {
-            shared.notes.remove(0);
+            // These slots carry callbacks for already accepted commands.
+            // Keep them while admitting the personal-mod safety notice.
+            if let Some(index) = shared.notes.iter().position(|(key, _)| {
+                !matches!(key.as_str(), "tpf3mp.hud.tickets" | "tpf3mp.hud.answers")
+            }) {
+                shared.notes.remove(index);
+            }
         }
         if !value.is_empty() && shared.notes.len() < MAX_NOTES {
             shared.notes.push((key, value));
@@ -2262,12 +2286,14 @@ my_timetables";
         );
         let sim = Lua::new();
         sim.register();
+        sim.run("tpf3mp_native.note('tpf3mp.hud.tickets', '42') tpf3mp_native.note('tpf3mp.hud.answers', '42 1 123;')").unwrap();
         for i in 0..MAX_NOTES {
             sim.run(&format!("tpf3mp_native.note('k{i}', 'v')"))
                 .unwrap();
         }
         sim.run(&format!("tpf3mp_native.note('{PERSONAL_UNGUARDED}', '1')"))
             .unwrap();
+        assert_eq!(sim.run("return tpf3mp_native.note('tpf3mp.hud.tickets'), tpf3mp_native.note('tpf3mp.hud.answers')"), Ok("42|42 1 123;".into()));
         let plan = plan_mods(save).unwrap();
         assert_eq!(plan.mods, ["vehicles_pack", "tpf3mp_1"]);
         assert_eq!(plan.dropped, ["my_timetables"]);

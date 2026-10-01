@@ -989,8 +989,10 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   frame reads in the `CMenuUI` it is handed. A state given `app` while
   `m_game` is set, or while the existing menu reports a load in progress,
   is the world's GUI's: the menu never loads from it, and
-  forgets it when the world closes. Loading is the menu's own sign, the
-  progress monitor's task, asked through the chunk's `busy()`.
+  forgets it when the world closes. Loading is read from the verified
+  `CMenuUI::m_loadGameResult` field (`0x6a0c84`, displacement `0x1bd0` on
+  build 40408). The menu never queries the progress monitor: its lock
+  can be held by the loader while it runs a nested menu frame.
 - **Follows the room from the menu's frame.** `UI::CMenuUI::DoStep`
   (`0x6a0160`, the menu's per-frame update on the main thread) is
   detoured. After the game's own frame, the driver runs
@@ -998,7 +1000,8 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   world, and a state of the menu's adopted on that thread is open
   (`crates/tpf3mp-hook/src/at_menu.rs`):
   - a game that has had no world up yet (never stepped, no world's GUI
-    started, `m_game` never set) is at its menu, loading or not;
+    started, `m_game` never set) is at its menu, but menu work still waits
+    until the native load field is known and clear;
   - a world loaded blocks, before its first step and while it stops
     stepping (saving the room's world, held for another player): an
     earlier rule of "no step for 2 s" took the room's session inside the
@@ -1006,9 +1009,9 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
     while saving the room's world before that world's first step (both
     measured 2026-09-30);
   - after a world, the menu is back once `m_game` is clear and the
-    progress monitor has no task for 2 s with no step between. A load
+    native load field stays clear for 2 s with no step between. A load
     blocks: the GUI's load stops the world first and loads after, and a
-    moment without a task restarts the 2 s;
+    moment with a load restarts the 2 s;
   - after a world, a game whose `m_game` the hook cannot read (the target
     missing) or whose menu cannot say whether it loads is never taken for
     the menu (fail closed): as before this rule, only a fresh game follows
@@ -1028,9 +1031,11 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   loading it from the menu, as the menu's own Load Game page does:
   `api.type.SavegameId.new()` with the name and the `savegame` namespace
   (`app.SaveGameNamespace.getSavegame()`), then `app.loadGame(id, false,
-  nil)`. A load the game is busy with already (the progress monitor has a
-  task, the menu's own sign of it) is tried again on the next frame. Any
-  other failure holds the world.
+  nil)`. A load the game is busy with already (its
+  native load future is set) is tried again on the next frame. Any
+  other failure holds the world. A hook-started load also blocks menu work
+  until its world GUI arrives or it fails. Nested menu frames do no hook
+  work; a missing load-field target refuses menu loading.
 - **Starts the world without Start Game.** The menu's pages call
   `app.setWaitForStartReadyGame()` before they load, which is what makes
   the loading screen wait for the player's Start Game
@@ -1263,17 +1268,33 @@ The GUI runs in more than one Lua state, each with an `api.cmd` of its
 own ("Companies" below). The one the game renders its React recipes in
 gets the same guard (`tpf3mp/hudguard.lua`, installed from
 `gui/tpf3mp/gui_state.script.lua`), so no window sends a command past the
-room from either state ([COVERAGE.md](COVERAGE.md), U1). The room's
-answers (`results()`) have one reader, the plugin's state, so there a
-command handed to the room is answered as sent, and a command whose window
-waits on what it made (`guard.RESULT`: a purchase, a new line, a
-replacement) sent with a callback is refused, `a window that waits on what
-it made, in a Lua state the room's answers do not reach`. That state has
-no frame the mod runs in: the callbacks the guard defers run from the
-HUD's next reads of the player's company, two clock ticks on. hook.log:
-`the guard is on N command factories in the HUD's state`, and each
-refusal there `... in the HUD's state: <why>`. Which windows render in that
-state is not known on build 40408; the log says if any sends a command.
+room from either state ([COVERAGE.md](COVERAGE.md)). The room's
+answers (`results()`) have one reader, the plugin's state, so the HUD's
+state notes the tickets of its commands it waits on
+(`tpf3mp_native.note("tpf3mp.hud.tickets", …)`), the plugin's state passes
+on the answers to those (`hudguard.forward`, a note
+`tpf3mp.hud.answers` of `ticket ok entity;`), and the HUD's state hears
+them through the same `guard.deliver` as the plugin's: the vehicle store,
+which renders there (2026-10-01), is told the vehicle it bought once the
+registry names it, and puts it on its line; a new line's window opens the
+line. Only a hook without `note` leaves the answers unrouted: a command is
+then answered as sent, and one whose window waits on what it made
+(`guard.RESULT`) is refused. That state has no frame the mod runs in: the
+deferred callbacks and the answers run from the HUD's next reads of the
+player's company, two clock ticks on. hook.log: `the guard is on N command
+factories in the HUD's state`, and each refusal there `... in the HUD's
+state: <why>`. Which windows render in that state is not known on build
+40408 beyond the store; the log says if any sends a command.
+
+The forwarding notes reserve their slots while idle. At most 24 commands
+wait for routing at once; another is refused before submission and can be
+retried. Answers are sent in batches of at most 512 bytes. Only the plugin
+writes the answer note; the HUD acknowledges a batch by removing its tickets.
+The plugin retains remaining answers and retries each frame, even without
+new results, instead of overwriting unread answers or dropping overflow.
+Vehicle parts with no load configuration use the store's first configuration
+for every model compartment. A partially specified set is refused before
+the engine buy command, with the expected and supplied compartment counts.
 
 Before the room begins, and after it ends, every command is sent as it
 would be, and every tool builds. A kind the room comes to carry is

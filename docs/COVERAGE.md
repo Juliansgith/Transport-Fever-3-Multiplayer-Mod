@@ -20,6 +20,18 @@ package remain. Our Join a friend form, stock new-world setup, leave/rejoin
 cleanup and native loading implementation remain. Depot connection replay
 retains our queue-based pruning of internal construction branches.
 
+## Follow-up ports from the updated PR
+
+The follow-up includes HUD command-result routing (147d590), default vehicle
+compartment loads (4f30083), and the native load-state fix (24cb7c8, adapted
+with 1878b573's incoming-world handling). Callback forwarding adds bounded
+admission, acknowledged batches and retry without discarding accepted actions.
+Our close-before-load frame and all existing acceptance gates remain.
+
+The new native field is checked against the installed executable, read-only.
+Lua and hook fixtures exercise callback overflow, default/partial loads,
+load gating and save setup. This is not a fresh two-player game playthrough.
+
 ## Implemented, refused pending game acceptance
 
 Subsidies, entity renaming/vehicle recolouring and line waypoints have capture,
