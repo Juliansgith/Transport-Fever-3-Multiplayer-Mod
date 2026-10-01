@@ -209,9 +209,10 @@ expect, note, action }`, the action written as serde writes
   `hook.log` as `scenario: observe step <n> {json}`, and the scenario's
   steps count from it;
 - `$pos` places a position in metres from the item's `origin`
-  (`spot:#0:0`, `town:#1`, `town:<name>`, or absolute), `$id` counts the
-  registry's ids from the baseline (`lines+0` is the first line made after
-  it), `$edge` names a street the baseline listed.
+  (`spot:#0:0`, `water:#0:0`, `town:#1`, `town:<name>`, or absolute),
+  `$id` counts the registry's ids from the baseline (`lines+0` is the first
+  line made after it), `$edge` names a street the baseline listed,
+  `$building` a town building, and `$cell2` a terrain cell's corner.
 
 The actor's game hands its items to the room through `Session::command`,
 as a player's captured actions go, and every game names every scripted
@@ -231,4 +232,20 @@ room's games diff their logs (`grep '^.*scenario: ' hook.log`), and the
 same world reads the same lines. In the test mode the player's own actions
 are also logged in full (`scenario: captured <kind> {json}`), the way to
 write new items from a real build. `tools/scenarios/make_scenarios.py`
-writes the shipped scenarios.
+writes the shipped scenarios, three actors each, every actor near a town of
+its own and one after the other, so the ids they make come in a known order:
+
+| scenario | covers |
+|---|---|
+| `roads` | streets, a T junction, a crossroads, bus stops, a road depot, a bus line with three buses bought at once, a track and rail depot, a loan, a town street bulldozed, one refusal |
+| `road_upgrades` | a curved street, bus lane and tram upgrades, bulldozing, a town building demolished, a headquarters and a second one refused |
+| `rail` | track, a signal, a station, a depot, electrification, a train on a line, stop and start |
+| `road_vehicles` | truck stops and station, three trucks at once, line rename, recolour and delete, the vehicle window's orders, replace, sell, another company's truck refused |
+| `water`, `air` | a ship depot and harbour (on the baseline's `waters`), an airfield; a ship and a plane on lines |
+| `money` | company found, rename, recolour, station access, join; loans; subsidies and a rank refused; prospecting |
+| `terraform` | a 16 m square raised and lowered |
+
+Resource names, construction parameters and vehicle models are inferred
+from the game's content, not captured from a player's build: an item
+marked `any` is one whose outcome a real game decides, and the first runs
+correct them from the logs (`captured` lines, the baseline's `models`).

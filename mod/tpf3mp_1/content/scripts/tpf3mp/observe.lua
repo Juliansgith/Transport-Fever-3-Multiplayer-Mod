@@ -13,6 +13,8 @@
 --   { "step": n,
 --     "towns": [ { "id":, "name":, "x":, "y":, "z":, "buildings":,
 --                  "spots": [ { "x":, "y":, "z": } ],   -- the baseline's only
+--                  "waters": [ { "x":, "y":, "z": } ],  -- the baseline's only
+--                  "town_buildings": [ { "file":, "x":, "y":, "z": } ],
 --                  "streets": [ { "a": [x, y, z], "b": [x, y, z],
 --                                 "template": } ] } ],
 --     "counts": { "street_edges":, "track_edges":, "constructions":,
@@ -38,9 +40,13 @@
 
 local observe = {}
 
+local waters
+
 observe.MAX_SPOTS = 4
 observe.MAX_STREETS = 6
 observe.MAX_MODELS = 600
+observe.MAX_BUILDINGS = 3
+observe.MAX_WATERS = 2
 
 -- JSON ---------------------------------------------------------------------
 
@@ -198,6 +204,30 @@ local function spots(api, x, y, buildings, nodes)
 	return out
 end
 
+-- Places on water near (x, y): a square of 60 m all on water, on rings 300
+-- to 1200 m out, sixteen directions each, east first.
+waters = function(api, x, y)
+	local out = {}
+	for _, r in ipairs({ 300, 600, 900, 1200 }) do
+		for k = 0, 15 do
+			if #out >= observe.MAX_WATERS then return out end
+			local a = k * math.pi / 8
+			local wx, wy = x + r * math.cos(a), y + r * math.sin(a)
+			local wet = true
+			for _, dx in ipairs({ -30, 0, 30 }) do
+				for _, dy in ipairs({ -30, 0, 30 }) do
+					if not onWater(api, wx + dx, wy + dy) then wet = false end
+				end
+			end
+			if wet then
+				local okH, h = pcall(height, api, wx, wy)
+				out[#out + 1] = { x = round2(wx), y = round2(wy), z = okH and round2(h) or 0 }
+			end
+		end
+	end
+	return out
+end
+
 -- The summary of the world after `step`, as JSON text. `state` is the game
 -- script's saved state (its registry and roster), `withSpots` whether to
 -- look for free places (the baseline only: it is the slow part).
@@ -315,7 +345,7 @@ function observe.read(api, state, step, withSpots)
 				local tb = component(api, b, "TOWN_BUILDING")
 				local c = tb and component(api, tb.construction, "CONSTRUCTION")
 				if c and c.transf then
-					points[#points + 1] = { c.transf[13], c.transf[14] }
+					points[#points + 1] = { c.transf[13], c.transf[14], c.transf[15], tostring(c.fileName), tb.construction }
 					sx, sy = sx + c.transf[13], sy + c.transf[14]
 				end
 			end
@@ -342,7 +372,24 @@ function observe.read(api, state, step, withSpots)
 					local e = near[i].e
 					entry.streets[i] = { a = e.a, b = e.b, template = e.template }
 				end
-				if withSpots then entry.spots = array(spots(api, x, y, points, nodes)) end
+				-- The town buildings nearest the centre.
+				local byDistance = {}
+				for _, b in ipairs(points) do
+					byDistance[#byDistance + 1] = { d = (b[1] - x) ^ 2 + (b[2] - y) ^ 2, b = b }
+				end
+				table.sort(byDistance, function(p, q)
+					if p.d ~= q.d then return p.d < q.d end
+					return p.b[5] < q.b[5]
+				end)
+				entry.town_buildings = array()
+				for i = 1, math.min(observe.MAX_BUILDINGS, #byDistance) do
+					local b = byDistance[i].b
+					entry.town_buildings[i] = { file = b[4], x = round2(b[1]), y = round2(b[2]), z = round2(b[3]) }
+				end
+				if withSpots then
+					entry.spots = array(spots(api, x, y, points, nodes))
+					entry.waters = array(waters(api, x, y))
+				end
 			end
 			entry.entity = nil
 			out.towns[#out.towns + 1] = entry

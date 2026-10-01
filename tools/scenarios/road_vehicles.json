@@ -1,0 +1,2094 @@
+{
+ "name": "road_vehicles",
+ "comment": "Trucks: two stops and a truck station, a depot, three trucks bought at\n    once onto a line, the line renamed and recoloured, the vehicle window's\n    orders, one truck replaced, one sent to be sold, one sold, the line\n    deleted, and another company's truck sold: refused.",
+ "observe_every": 10,
+ "items": [
+  {
+   "at": 10,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: a company of its own (any: a competitive room may have founded one)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 0"
+     }
+    }
+   }
+  },
+  {
+   "at": 50,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          150,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 100,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a truck stop (a street stop)",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         0,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         150,
+         0,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       40,
+       0,
+       0
+      ]
+     },
+     "left": true,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 130,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: a second stop (any: the first may have split the street)",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         0,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         150,
+         0,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       110,
+       0,
+       0
+      ]
+     },
+     "left": true,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 160,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: a truck station (any: a modular station needs its modules)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/stations/street/modular_street_station/modular_terminal.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        110,
+        40,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario truck station 0",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 200,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a road depot",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/depots/road/road_depot/road_depot.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario truck depot 0",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 260,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: a truck line between the stops (any)",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario truck line 0",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+0"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+1"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       4
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 300,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: truck 1 of 3, in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 301,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: truck 2 of 3, in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 302,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: truck 3 of 3, in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 360,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the trucks onto the line",
+   "action": {
+    "AssignLine": {
+     "vehicles": [
+      {
+       "$id": "vehicles+0"
+      },
+      {
+       "$id": "vehicles+1"
+      },
+      {
+       "$id": "vehicles+2"
+      }
+     ],
+     "line": {
+      "$id": "lines+0"
+     },
+     "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 400,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the line renamed",
+   "action": {
+    "EditLine": {
+     "line": {
+      "$id": "lines+0"
+     },
+     "change": {
+      "Rename": "Renamed line 0"
+     }
+    }
+   }
+  },
+  {
+   "at": 420,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the line recoloured",
+   "action": {
+    "EditLine": {
+     "line": {
+      "$id": "lines+0"
+     },
+     "change": {
+      "Recolor": {
+       "r": 950000,
+       "g": 720000,
+       "b": 80000
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 460,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the vehicle window's {\"Stop\": true}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+0"
+     },
+     "change": {
+      "Stop": true
+     }
+    }
+   }
+  },
+  {
+   "at": 470,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the vehicle window's {\"Stop\": false}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+0"
+     },
+     "change": {
+      "Stop": false
+     }
+    }
+   }
+  },
+  {
+   "at": 480,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the vehicle window's \"Reverse\"",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+0"
+     },
+     "change": "Reverse"
+    }
+   }
+  },
+  {
+   "at": 490,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the vehicle window's \"Depart\"",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+0"
+     },
+     "change": "Depart"
+    }
+   }
+  },
+  {
+   "at": 500,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the vehicle window's {\"ManualDeparture\": true}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+0"
+     },
+     "change": {
+      "ManualDeparture": true
+     }
+    }
+   }
+  },
+  {
+   "at": 510,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the vehicle window's {\"ManualDeparture\": false}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+0"
+     },
+     "change": {
+      "ManualDeparture": false
+     }
+    }
+   }
+  },
+  {
+   "at": 560,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: truck 2 replaced by its own model, kept (any)",
+   "action": {
+    "ReplaceVehicle": {
+     "vehicle": {
+      "$id": "vehicles+1"
+     },
+     "consist": [
+      {
+       "part": {
+        "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+        "reversed": false,
+        "loads": [],
+        "color": {
+         "r": 0,
+         "g": 0,
+         "b": 0
+        }
+       },
+       "kept": 0
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 600,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: truck 3 sent to the depot to be sold",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+2"
+     },
+     "change": {
+      "ToDepot": {
+       "sell": true
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 640,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: truck 1 sold",
+   "action": {
+    "SellVehicle": {
+     "vehicles": [
+      {
+       "$id": "vehicles+0"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 700,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the line deleted",
+   "action": {
+    "EditLine": {
+     "line": {
+      "$id": "lines+0"
+     },
+     "change": "Delete"
+    }
+   }
+  },
+  {
+   "at": 1510,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: a company of its own (any: a competitive room may have founded one)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 1"
+     }
+    }
+   }
+  },
+  {
+   "at": 1550,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          150,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1600,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a truck stop (a street stop)",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         0,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         150,
+         0,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       40,
+       0,
+       0
+      ]
+     },
+     "left": true,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 1630,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: a second stop (any: the first may have split the street)",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         0,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         150,
+         0,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       110,
+       0,
+       0
+      ]
+     },
+     "left": true,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 1660,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: a truck station (any: a modular station needs its modules)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/stations/street/modular_street_station/modular_terminal.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        110,
+        40,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario truck station 1",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 1700,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a road depot",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/depots/road/road_depot/road_depot.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario truck depot 1",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 1760,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: a truck line between the stops (any)",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario truck line 1",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+2"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+3"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       4
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 1800,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: truck 1 of 3, in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 1801,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: truck 2 of 3, in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 1802,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: truck 3 of 3, in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 1860,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the trucks onto the line",
+   "action": {
+    "AssignLine": {
+     "vehicles": [
+      {
+       "$id": "vehicles+3"
+      },
+      {
+       "$id": "vehicles+4"
+      },
+      {
+       "$id": "vehicles+5"
+      }
+     ],
+     "line": {
+      "$id": "lines+1"
+     },
+     "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 1900,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the line renamed",
+   "action": {
+    "EditLine": {
+     "line": {
+      "$id": "lines+1"
+     },
+     "change": {
+      "Rename": "Renamed line 1"
+     }
+    }
+   }
+  },
+  {
+   "at": 1920,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the line recoloured",
+   "action": {
+    "EditLine": {
+     "line": {
+      "$id": "lines+1"
+     },
+     "change": {
+      "Recolor": {
+       "r": 950000,
+       "g": 720000,
+       "b": 80000
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1960,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the vehicle window's {\"Stop\": true}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+3"
+     },
+     "change": {
+      "Stop": true
+     }
+    }
+   }
+  },
+  {
+   "at": 1970,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the vehicle window's {\"Stop\": false}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+3"
+     },
+     "change": {
+      "Stop": false
+     }
+    }
+   }
+  },
+  {
+   "at": 1980,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the vehicle window's \"Reverse\"",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+3"
+     },
+     "change": "Reverse"
+    }
+   }
+  },
+  {
+   "at": 1990,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the vehicle window's \"Depart\"",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+3"
+     },
+     "change": "Depart"
+    }
+   }
+  },
+  {
+   "at": 2000,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the vehicle window's {\"ManualDeparture\": true}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+3"
+     },
+     "change": {
+      "ManualDeparture": true
+     }
+    }
+   }
+  },
+  {
+   "at": 2010,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the vehicle window's {\"ManualDeparture\": false}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+3"
+     },
+     "change": {
+      "ManualDeparture": false
+     }
+    }
+   }
+  },
+  {
+   "at": 2060,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: truck 2 replaced by its own model, kept (any)",
+   "action": {
+    "ReplaceVehicle": {
+     "vehicle": {
+      "$id": "vehicles+4"
+     },
+     "consist": [
+      {
+       "part": {
+        "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+        "reversed": false,
+        "loads": [],
+        "color": {
+         "r": 0,
+         "g": 0,
+         "b": 0
+        }
+       },
+       "kept": 0
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 2100,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: truck 3 sent to the depot to be sold",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+5"
+     },
+     "change": {
+      "ToDepot": {
+       "sell": true
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 2140,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: truck 1 sold",
+   "action": {
+    "SellVehicle": {
+     "vehicles": [
+      {
+       "$id": "vehicles+3"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 2200,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the line deleted",
+   "action": {
+    "EditLine": {
+     "line": {
+      "$id": "lines+1"
+     },
+     "change": "Delete"
+    }
+   }
+  },
+  {
+   "at": 2240,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "refused",
+   "note": "Actor 1: actor 0's truck 2 sold: refused (another company's)",
+   "action": {
+    "SellVehicle": {
+     "vehicles": [
+      {
+       "$id": "vehicles+1"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 3010,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: a company of its own (any: a competitive room may have founded one)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 2"
+     }
+    }
+   }
+  },
+  {
+   "at": 3050,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          150,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3100,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a truck stop (a street stop)",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         0,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         150,
+         0,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       40,
+       0,
+       0
+      ]
+     },
+     "left": true,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 3130,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: a second stop (any: the first may have split the street)",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         0,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         150,
+         0,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       110,
+       0,
+       0
+      ]
+     },
+     "left": true,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 3160,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: a truck station (any: a modular station needs its modules)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/stations/street/modular_street_station/modular_terminal.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        110,
+        40,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario truck station 2",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 3200,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a road depot",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/depots/road/road_depot/road_depot.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario truck depot 2",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 3260,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: a truck line between the stops (any)",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario truck line 2",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+4"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+5"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       4
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 3300,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: truck 1 of 3, in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3301,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: truck 2 of 3, in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3302,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: truck 3 of 3, in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        70,
+        -40,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3360,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the trucks onto the line",
+   "action": {
+    "AssignLine": {
+     "vehicles": [
+      {
+       "$id": "vehicles+6"
+      },
+      {
+       "$id": "vehicles+7"
+      },
+      {
+       "$id": "vehicles+8"
+      }
+     ],
+     "line": {
+      "$id": "lines+2"
+     },
+     "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 3400,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the line renamed",
+   "action": {
+    "EditLine": {
+     "line": {
+      "$id": "lines+2"
+     },
+     "change": {
+      "Rename": "Renamed line 2"
+     }
+    }
+   }
+  },
+  {
+   "at": 3420,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the line recoloured",
+   "action": {
+    "EditLine": {
+     "line": {
+      "$id": "lines+2"
+     },
+     "change": {
+      "Recolor": {
+       "r": 950000,
+       "g": 720000,
+       "b": 80000
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3460,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the vehicle window's {\"Stop\": true}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+6"
+     },
+     "change": {
+      "Stop": true
+     }
+    }
+   }
+  },
+  {
+   "at": 3470,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the vehicle window's {\"Stop\": false}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+6"
+     },
+     "change": {
+      "Stop": false
+     }
+    }
+   }
+  },
+  {
+   "at": 3480,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the vehicle window's \"Reverse\"",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+6"
+     },
+     "change": "Reverse"
+    }
+   }
+  },
+  {
+   "at": 3490,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the vehicle window's \"Depart\"",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+6"
+     },
+     "change": "Depart"
+    }
+   }
+  },
+  {
+   "at": 3500,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the vehicle window's {\"ManualDeparture\": true}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+6"
+     },
+     "change": {
+      "ManualDeparture": true
+     }
+    }
+   }
+  },
+  {
+   "at": 3510,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the vehicle window's {\"ManualDeparture\": false}",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+6"
+     },
+     "change": {
+      "ManualDeparture": false
+     }
+    }
+   }
+  },
+  {
+   "at": 3560,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: truck 2 replaced by its own model, kept (any)",
+   "action": {
+    "ReplaceVehicle": {
+     "vehicle": {
+      "$id": "vehicles+7"
+     },
+     "consist": [
+      {
+       "part": {
+        "model": "::/vehicle/truck/benz1912/benz1912_box.mdl",
+        "reversed": false,
+        "loads": [],
+        "color": {
+         "r": 0,
+         "g": 0,
+         "b": 0
+        }
+       },
+       "kept": 0
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3600,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: truck 3 sent to the depot to be sold",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+8"
+     },
+     "change": {
+      "ToDepot": {
+       "sell": true
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3640,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: truck 1 sold",
+   "action": {
+    "SellVehicle": {
+     "vehicles": [
+      {
+       "$id": "vehicles+6"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 3700,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the line deleted",
+   "action": {
+    "EditLine": {
+     "line": {
+      "$id": "lines+2"
+     },
+     "change": "Delete"
+    }
+   }
+  },
+  {
+   "at": 3740,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "refused",
+   "note": "Actor 2: actor 0's truck 2 sold: refused (another company's)",
+   "action": {
+    "SellVehicle": {
+     "vehicles": [
+      {
+       "$id": "vehicles+1"
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

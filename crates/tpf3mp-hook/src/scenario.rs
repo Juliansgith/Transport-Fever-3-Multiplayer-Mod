@@ -42,10 +42,15 @@
 //!   `lines` (also `vehicles`, `groups`, `towns`, `industries`, and
 //!   `companies`, the room's roster), plus 0: the first the scenario makes;
 //! - `{"$edge": "<town>:<k>"}`: the ends of the `k`th street the baseline
-//!   lists in that town (`EdgeEnds`).
+//!   lists in that town (`EdgeEnds`);
+//! - `{"$building": "<town>:<k>"}`: the `k`th town building the baseline
+//!   lists nearest that town's centre (`ConstructionRef`);
+//! - `{"$cell2": [dx, dy]}`: as `$pos2`, put on the corner of the terrain's
+//!   4 m height cell there (a `Terraform`'s origin).
 //!
 //! An `origin` is `town:<town>` (the town's centre), `spot:<town>:<k>` (the
-//! `k`th free flat place the baseline found near it) or `none` (absolute
+//! `k`th free flat place the baseline found near it), `water:<town>:<k>`
+//! (the `k`th place on water it found near it) or `none` (absolute
 //! metres, the default); `<town>` is `#<i>`, the baseline's `i`th town, or
 //! the town's name.
 
@@ -259,21 +264,22 @@ impl Baseline {
             .ok_or_else(|| format!("an origin {origin:?}: none, town:<town> or spot:<town>:<k>"))?;
         let (town, place) = match kind {
             "town" => (rest, None),
-            "spot" => {
+            "spot" | "water" => {
                 let (town, k) = rest
                     .rsplit_once(':')
-                    .ok_or_else(|| format!("an origin {origin:?}: spot:<town>:<k>"))?;
+                    .ok_or_else(|| format!("an origin {origin:?}: {kind}:<town>:<k>"))?;
                 let k: usize = k
                     .parse()
-                    .map_err(|_| format!("an origin {origin:?}: spot:<town>:<k>"))?;
+                    .map_err(|_| format!("an origin {origin:?}: {kind}:<town>:<k>"))?;
                 (town, Some(k))
             }
             _ => {
                 return Err(format!(
-                    "an origin {origin:?}: none, town:<town> or spot:<town>:<k>"
+                    "an origin {origin:?}: none, town:<town>, spot:<town>:<k> or water:<town>:<k>"
                 ));
             }
         };
+        let list = if kind == "water" { "waters" } else { "spots" };
         if self.probe {
             return Ok([0.0; 3]);
         }
@@ -281,10 +287,10 @@ impl Baseline {
         let at = match place {
             None => town,
             Some(k) => town
-                .get("spots")
+                .get(list)
                 .and_then(Value::as_array)
                 .and_then(|spots| spots.get(k))
-                .ok_or_else(|| format!("the baseline found no spot {k} near {origin:?}"))?,
+                .ok_or_else(|| format!("the baseline found no {list} {k} for {origin:?}"))?,
         };
         point(at).ok_or_else(|| format!("the baseline's {origin:?} has no x, y and z"))
     }
@@ -339,7 +345,38 @@ impl Baseline {
         };
         Ok(json!({ "a": pos(ends[0]), "b": pos(ends[1]) }))
     }
+
+    /// A town building the baseline listed near a town's centre, as a
+    /// `ConstructionRef`.
+    fn building(&self, name: &str) -> Result<Value, String> {
+        let (town, k) = name
+            .rsplit_once(':')
+            .ok_or_else(|| format!("a building {name:?}: <town>:<k>"))?;
+        let k: usize = k
+            .parse()
+            .map_err(|_| format!("a building {name:?}: <town>:<k>"))?;
+        if self.probe {
+            return Ok(json!({ "file": "probe.con", "at": pos([0.0; 3]) }));
+        }
+        let building = self
+            .town(town)?
+            .get("town_buildings")
+            .and_then(Value::as_array)
+            .and_then(|list| list.get(k))
+            .ok_or_else(|| format!("the baseline lists no town building {k} in {town:?}"))?;
+        let file = building
+            .get("file")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("the baseline's town building {name:?} has no file"))?;
+        let at = point(building)
+            .ok_or_else(|| format!("the baseline's town building {name:?} has no place"))?;
+        Ok(json!({ "file": file, "at": pos(at) }))
+    }
 }
+
+/// The side of the terrain's height cells, in metres
+/// (`api.engine.terrain.getBaseResolution` on build 40408).
+pub const CELL: f64 = 4.0;
 
 /// A point `{x, y, z}` or `[x, y, z]` in metres.
 fn point(value: &Value) -> Option<[f64; 3]> {
@@ -406,6 +443,19 @@ fn expand(value: &Value, origin: [f64; 3], baseline: &Baseline) -> Result<Value,
                 "$edge" => {
                     let name = inner.as_str().ok_or("an $edge is a string, such as #0:0")?;
                     baseline.edge(name)
+                }
+                "$building" => {
+                    let name = inner
+                        .as_str()
+                        .ok_or("a $building is a string, such as #0:0")?;
+                    baseline.building(name)
+                }
+                "$cell2" => {
+                    let d = offsets(inner)?;
+                    let corner = |v: f64| (v / CELL).floor() * CELL;
+                    Ok(
+                        json!({ "x": mm(corner(origin[0] + d[0]))?, "y": mm(corner(origin[1] + d[1]))? }),
+                    )
                 }
                 _ => Ok(Value::Object(
                     [(key.clone(), expand(inner, origin, baseline)?)]
@@ -858,6 +908,8 @@ mod tests {
     const OBSERVATION: &str = r#"{ "towns": [
         { "name": "Aston", "x": 1000, "y": 2000, "z": 50,
           "spots": [ { "x": 1400, "y": 2000, "z": 52 } ],
+          "waters": [ { "x": 600, "y": 2000, "z": 0 } ],
+          "town_buildings": [ { "file": "::/buildings/a.con", "x": 1001, "y": 2002, "z": 50 } ],
           "streets": [ { "a": [1000, 2000, 50], "b": [1010, 2000, 50] } ] } ],
         "next": { "lines": 7, "vehicles": 30, "groups": 12, "companies": 3 } }"#;
 
@@ -937,6 +989,21 @@ mod tests {
                     "b": { "x": 1_010_000, "y": 2_000_000, "z": 50_000 } })
         );
         assert!(baseline.edge("#0:5").is_err());
+        assert_eq!(
+            baseline.building("Aston:0").unwrap(),
+            json!({ "file": "::/buildings/a.con",
+                    "at": { "x": 1_001_000, "y": 2_002_000, "z": 50_000 } })
+        );
+        assert_eq!(
+            baseline.origin(Some("water:#0:0")).unwrap(),
+            [600.0, 2000.0, 0.0]
+        );
+        let cell = expand(
+            &json!({ "$cell2": [5.5, -1] }),
+            [1000.0, 2001.0, 0.0],
+            &baseline,
+        );
+        assert_eq!(cell.unwrap(), json!({ "x": 1_004_000, "y": 2_000_000 }));
         assert!(baseline.origin(Some("town:Nowhere")).is_err());
     }
 

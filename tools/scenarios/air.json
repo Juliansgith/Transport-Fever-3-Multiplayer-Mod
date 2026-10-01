@@ -1,0 +1,559 @@
+{
+ "name": "air",
+ "comment": "An airfield on a flat spot near each town, a plane bought at its\n    hangar and run on a line.",
+ "observe_every": 10,
+ "items": [
+  {
+   "at": 10,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: a company of its own (any: a competitive room may have founded one)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 0"
+     }
+    }
+   }
+  },
+  {
+   "at": 50,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: an airfield (any: its params are the scenario's)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/stations/air/airfield.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        0,
+        0,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario airfield 0",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 120,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: a plane at the airfield's hangar",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/stations/air/airfield.con",
+      "at": {
+       "$pos": [
+        0,
+        0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/plane/junkers_f_13/junkers_f_13.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 180,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: an air line (any)",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario air line 0",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+0"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+0"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       9
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 220,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the plane onto it",
+   "action": {
+    "AssignLine": {
+     "vehicles": [
+      {
+       "$id": "vehicles+0"
+      }
+     ],
+     "line": {
+      "$id": "lines+0"
+     },
+     "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 1510,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: a company of its own (any: a competitive room may have founded one)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 1"
+     }
+    }
+   }
+  },
+  {
+   "at": 1550,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: an airfield (any: its params are the scenario's)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/stations/air/airfield.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        0,
+        0,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario airfield 1",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 1620,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: a plane at the airfield's hangar",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/stations/air/airfield.con",
+      "at": {
+       "$pos": [
+        0,
+        0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/plane/junkers_f_13/junkers_f_13.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 1680,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: an air line (any)",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario air line 1",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+1"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+1"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       9
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 1720,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the plane onto it",
+   "action": {
+    "AssignLine": {
+     "vehicles": [
+      {
+       "$id": "vehicles+1"
+      }
+     ],
+     "line": {
+      "$id": "lines+1"
+     },
+     "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 3010,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: a company of its own (any: a competitive room may have founded one)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 2"
+     }
+    }
+   }
+  },
+  {
+   "at": 3050,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: an airfield (any: its params are the scenario's)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/stations/air/airfield.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        0,
+        0,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario airfield 2",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 3120,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: a plane at the airfield's hangar",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/stations/air/airfield.con",
+      "at": {
+       "$pos": [
+        0,
+        0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/plane/junkers_f_13/junkers_f_13.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3180,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: an air line (any)",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario air line 2",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+2"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+2"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       9
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 3220,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the plane onto it",
+   "action": {
+    "AssignLine": {
+     "vehicles": [
+      {
+       "$id": "vehicles+2"
+      }
+     ],
+     "line": {
+      "$id": "lines+2"
+     },
+     "first_stop": null
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,559 @@
+{
+ "name": "terraform",
+ "comment": "A 16 m square of each actor's spot raised to 2 m and lowered again.",
+ "observe_every": 10,
+ "items": [
+  {
+   "at": 10,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: a company of its own (any: a competitive room may have founded one)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 0"
+     }
+    }
+   }
+  },
+  {
+   "at": 100,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the square's cells set to 2000 mm (any: absolute heights, not the spot's)",
+   "action": {
+    "Terraform": {
+     "origin": {
+      "$cell2": [
+       0,
+       0
+      ]
+     },
+     "cell": 4000,
+     "columns": 4,
+     "cells": [
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 200,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the square's cells set to 0 mm (any: absolute heights, not the spot's)",
+   "action": {
+    "Terraform": {
+     "origin": {
+      "$cell2": [
+       0,
+       0
+      ]
+     },
+     "cell": 4000,
+     "columns": 4,
+     "cells": [
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 1510,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: a company of its own (any: a competitive room may have founded one)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 1"
+     }
+    }
+   }
+  },
+  {
+   "at": 1600,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the square's cells set to 2000 mm (any: absolute heights, not the spot's)",
+   "action": {
+    "Terraform": {
+     "origin": {
+      "$cell2": [
+       0,
+       0
+      ]
+     },
+     "cell": 4000,
+     "columns": 4,
+     "cells": [
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 1700,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: the square's cells set to 0 mm (any: absolute heights, not the spot's)",
+   "action": {
+    "Terraform": {
+     "origin": {
+      "$cell2": [
+       0,
+       0
+      ]
+     },
+     "cell": 4000,
+     "columns": 4,
+     "cells": [
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 3010,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: a company of its own (any: a competitive room may have founded one)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 2"
+     }
+    }
+   }
+  },
+  {
+   "at": 3100,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the square's cells set to 2000 mm (any: absolute heights, not the spot's)",
+   "action": {
+    "Terraform": {
+     "origin": {
+      "$cell2": [
+       0,
+       0
+      ]
+     },
+     "cell": 4000,
+     "columns": 4,
+     "cells": [
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      },
+      {
+       "target": 2000,
+       "before": 0
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 3200,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: the square's cells set to 0 mm (any: absolute heights, not the spot's)",
+   "action": {
+    "Terraform": {
+     "origin": {
+      "$cell2": [
+       0,
+       0
+      ]
+     },
+     "cell": 4000,
+     "columns": 4,
+     "cells": [
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      },
+      {
+       "target": 0,
+       "before": 2000
+      }
+     ]
+    }
+   }
+  }
+ ]
+}
