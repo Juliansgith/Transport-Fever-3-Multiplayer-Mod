@@ -42,15 +42,15 @@ with your friends in one world, each with your own company or sharing one.
    Windows may warn about an unknown app: choose **More info**, then **Run anyway**.
 2. **Click Install TPF3-MP.** Setup finds Steam's mods folder (choose your
    account if there are several), downloads the signed package, and adds
-   a Start menu shortcut. Start the game through Steam once first if its
+   Start menu and desktop shortcuts. Start the game through Steam once first if its
    user folder does not exist yet.
-3. **Open the launcher.** The first time you play, open the game's
-   **Mod Hub** and **Activate** TPF3-MP once.
-4. **Start Transport Fever 3 from the launcher.**
-5. **Click Multiplayer** on the game's main menu: connect with the name
-   others will see, then **create a room** from one of your saves and send
-   the invite, or **join** with the invite a friend sent you. You are
-   ready by yourself; play once the room's owner starts the game.
+3. **Open the launcher and start Transport Fever 3.**
+4. **Click Join a friend** to enter your name and invite code, or
+   **Multiplayer** to browse public rooms or host your own.
+5. **Host a new world or use a save.** New worlds use the game's normal
+   setup screens, with TPF3-MP selected automatically, and start multiplayer
+   when setup finishes. Keep TPF3-MP active in the world's **Mods** tab.
+   Send friends the room's invite code; they join and load the shared world.
 
 Only a game the launcher starts joins the room; started from Steam,
 Transport Fever 3 is the plain game, with nothing of TPF3-MP in it.
