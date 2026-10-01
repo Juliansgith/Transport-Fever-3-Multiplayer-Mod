@@ -465,9 +465,15 @@ protected folder such as Program Files.
   the construction menu as usual, once its rank allows: another
   company's headquarters does not use up yours. A second one for the
   same company is refused. Each headquarters gives its own town the
-  game's growth bonus, as in a single-player game, and the town labels
-  crown your company's headquarters town as your capital. The game bar's
-  transported figures and the finance window's company value still show
+  game's growth bonus, as in a single-player game. With more than one
+  company, the town labels on the map crown every company's headquarters
+  town as its capital, and every player sees them all: yours in the
+  game's blue, another company's in that company's colour, each with a
+  line under it naming whose it is ("Capital of Rival", or "Capital of
+  Rival and Pals" when two companies have theirs by the same town). The
+  line is hidden when you zoom far out; the crown and colour stay. With
+  one company it is the game's own capital, as in single player. The
+  game bar's transported figures and the finance window's company value still show
   the room's first company's.
 - **Competitive rooms.** In a room created **Competitive**, every player
   gets a company of their own without clicking anything: about a second
