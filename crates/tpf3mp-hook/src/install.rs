@@ -378,8 +378,10 @@ unsafe fn run_step(
     // answers for it.
     crate::image::invalidate();
     let started = crate::perf::start();
+    crate::order::set_in_step(true);
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
+    crate::order::set_in_step(false);
     if let Some(started) = started {
         let nanos = crate::perf::nanos_since(started);
         crate::perf::game_step(nanos);

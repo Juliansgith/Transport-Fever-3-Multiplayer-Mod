@@ -88,9 +88,34 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
         terminal::install(resolved, wanted(terminal::TOGGLE_ENV)),
     ];
     outcomes.extend(platform::install(resolved, wanted(platform::TOGGLE_ENV)));
+    outcomes.push(decision_sync::install(
+        resolved,
+        wanted(decision_sync::TOGGLE_ENV),
+    ));
     outcomes.extend(road::install(resolved, wanted(road::TOGGLE_ENV), measuring));
     outcomes.extend(measure::install(resolved, measuring));
     outcomes
+}
+
+thread_local! {
+    /// Set on this thread while it runs the game's own step
+    /// ([`set_in_step`]).
+    static IN_STEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// From the step detour, around its call of the game's `GameSim::Step`:
+/// this thread is inside the simulation's step. The second engine's copy
+/// (`GameState::Replicate` `0x255de0` -> `ecs::Engine::Replicate`
+/// `0x2bb78f0`) runs from the game's frame, outside the step; the
+/// decision-flag sync ([`decision_sync`]) acts only on the simulation's own
+/// updates, inside it.
+pub fn set_in_step(inside: bool) {
+    IN_STEP.with(|flag| flag.set(inside));
+}
+
+/// Whether this thread is inside the game's step.
+pub fn in_step() -> bool {
+    IN_STEP.with(|flag| flag.get())
 }
 
 /// Reads a plain value from the game's memory, only if it is readable (the
@@ -880,6 +905,7 @@ pub mod platform {
                     visit.list = 0;
                     visit.count = 0;
                     let n = VISIT_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+                    super::decision_sync::note_list(regs.rbp, regs.rdi);
                     match begin_loop(regs.rbp, regs.rax, regs.rdi, &mut visit.sorted) {
                         Ok((records, Sorted::Reordered)) => {
                             let reorders = VISIT_REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1013,6 +1039,249 @@ pub mod platform {
             std::slice::from_raw_parts_mut(begin as usize as *mut Candidate, count as usize)
         };
         Ok(sort_candidates_in_place(candidates))
+    }
+}
+
+/// The platform-decision flag, the same in both of the game's engines (the
+/// 2026-10-01 step-3300 split on `twomptest`, docs/HOOKS.md, "The
+/// platform-decision flag").
+///
+/// `TransportVehicleSystem::Update2` asks `FindNextFreeTerminal` for a land
+/// vehicle only while its `MovePath` byte `+0x70` is set (`0xb8bdb3`). The
+/// game simulates its two `GameState`s in turn, a frame each, and copies
+/// the one just simulated into the other, but that byte is not carried
+/// over: in every room's log, each vehicle's flag is set and cleared in the
+/// one engine that ran the step where it changed, and the other engine
+/// reads its old value for hundreds of steps (the `decision flag` lines).
+/// Which engine runs a room's step follows each game's frames, so a game
+/// asks for a platform on other steps than another, and vehicle 217708
+/// either took platform 0/0 at step 3201 or drove a loop.
+///
+/// The fix gives the flag one engine's semantics: at the start of every
+/// simulation update (`ecs::Engine::Update`, from the seeds' detour), when
+/// the update before ran on the other engine, each transport vehicle's flag
+/// is copied from that engine's `MovePath` into this one's. By induction
+/// the engine about to simulate then holds the flag every write so far
+/// left, whichever engine made it. The vehicles are the transport vehicle
+/// system's node list (read at its loop's first record); the `MovePath`s are
+/// found with the game's own getter (`0x52bbc0`, the call the decision read
+/// follows, checked to name the `MovePath` type). A load forgets the engine
+/// before.
+pub mod decision_sync {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    pub const FIX: &str = "decision-sync";
+    /// Set to `0` (or `off`), the flag stays each engine's own.
+    pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_DECISION_SYNC";
+    /// The transport vehicle loop's read of the flag (`movzx eax, byte ptr
+    /// [rax+0x70]`, `0xb8bdb3`): the getter's call is just before it.
+    pub const DECISION_SITE: &str = "ecs::TransportVehicleSystem::Update2/decision flag";
+    /// The flag's offset in `MovePath`.
+    pub const FLAG: u64 = 0x70;
+    /// The getter's call, this many bytes before the decision read.
+    const CALL_BEFORE_READ: u64 = 0x0e;
+    /// The getter's first bytes, up to its `lea rax, [MovePath's type
+    /// descriptor]` (whose rel32 follows).
+    pub const GETTER_EXPECTED: [u8; 21] = [
+        0x48, 0x89, 0x5C, 0x24, 0x10, // mov [rsp+0x10], rbx
+        0x48, 0x89, 0x74, 0x24, 0x18, // mov [rsp+0x18], rsi
+        0x57, // push rdi
+        0x48, 0x83, 0xEC, 0x30, // sub rsp, 0x30
+        0x48, 0x63, 0xDA, // movsxd rbx, edx
+        0x48, 0x8D, 0x05, // lea rax, [rip+rel32]
+    ];
+    /// The type descriptor's decorated name, at its `+0x10`.
+    pub const TYPE_NAME: &[u8] = b".?AUMovePath@component@ecs@@\0";
+    const MAX_VEHICLES: u64 = 1 << 20;
+
+    type GetterFn = unsafe extern "system" fn(usize, i32) -> usize;
+
+    static GETTER: AtomicUsize = AtomicUsize::new(0);
+    static BROKEN: AtomicBool = AtomicBool::new(false);
+    static UPDATES: AtomicU64 = AtomicU64::new(0);
+    static SYNCS: AtomicU64 = AtomicU64::new(0);
+    static COPIED: AtomicU64 = AtomicU64::new(0);
+
+    struct State {
+        /// The engine the last room's update ran on.
+        last: usize,
+        /// The transport vehicles, as the node list last gave them.
+        vehicles: Vec<i32>,
+    }
+
+    static STATE: Mutex<State> = Mutex::new(State {
+        last: 0,
+        vehicles: Vec::new(),
+    });
+
+    fn state() -> std::sync::MutexGuard<'static, State> {
+        STATE.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// The getter a verified call names, or why not.
+    pub fn getter_from_call(
+        call_site: u64,
+        read: &mut dyn FnMut(u64, usize) -> Option<Vec<u8>>,
+    ) -> Result<u64, &'static str> {
+        let call = read(call_site, 5).ok_or("the getter's call is unreadable")?;
+        if call[0] != 0xE8 {
+            return Err("no call before the decision read");
+        }
+        let rel = i32::from_le_bytes([call[1], call[2], call[3], call[4]]);
+        let target = call_site
+            .wrapping_add(5)
+            .wrapping_add_signed(i64::from(rel));
+        let head = read(target, GETTER_EXPECTED.len() + 4).ok_or("the getter is unreadable")?;
+        if head[..GETTER_EXPECTED.len()] != GETTER_EXPECTED {
+            return Err("the getter is not the shape expected");
+        }
+        let at = GETTER_EXPECTED.len();
+        let rel = i32::from_le_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]]);
+        let descriptor = target
+            .wrapping_add((at + 4) as u64)
+            .wrapping_add_signed(i64::from(rel));
+        let name =
+            read(descriptor + 0x10, TYPE_NAME.len()).ok_or("the type's name is unreadable")?;
+        if name != TYPE_NAME {
+            return Err("the getter is not MovePath's");
+        }
+        Ok(target)
+    }
+
+    pub fn install(resolved: &ResolvedProfile, wanted: bool) -> Outcome {
+        let off = |reason: String| Outcome {
+            fix: FIX,
+            installed: false,
+            reason,
+        };
+        if !wanted {
+            return off(format!(
+                "{TOGGLE_ENV} says so; each engine keeps its own flag"
+            ));
+        }
+        let Some(site) = resolved.get(DECISION_SITE) else {
+            return off(format!("the profile has no {DECISION_SITE:?}"));
+        };
+        let mut read = |at: u64, len: usize| -> Option<Vec<u8>> {
+            let at = usize::try_from(at).ok()?;
+            if !crate::image::readable(at, len) {
+                return None;
+            }
+            // SAFETY: `len` readable bytes at `at`, in the game's image.
+            Some(unsafe { std::slice::from_raw_parts(at as *const u8, len) }.to_vec())
+        };
+        match getter_from_call(site.address - CALL_BEFORE_READ, &mut read) {
+            Ok(getter) => {
+                GETTER.store(getter as usize, Ordering::Release);
+                Outcome {
+                    fix: FIX,
+                    installed: true,
+                    reason: format!(
+                        "the MovePath getter at {getter:#x}: each update copies the land vehicles' platform-decision flag from the engine that ran the update before"
+                    ),
+                }
+            }
+            Err(why) => off(format!("{why}; each engine keeps its own flag")),
+        }
+    }
+
+    /// A world was loaded: the engines start from it.
+    pub fn reset() {
+        state().last = 0;
+    }
+
+    /// At the transport vehicle loop's first record (`rbp` its frame,
+    /// `begin` its 8-byte records): the vehicles, by entity.
+    pub fn note_list(rbp: u64, begin: u64) {
+        if GETTER.load(Ordering::Acquire) == 0 || BROKEN.load(Ordering::Relaxed) || !in_step() {
+            return;
+        }
+        let mut probe = Probe::new();
+        let Some(count) = rbp
+            .checked_add_signed(0x5b0)
+            .and_then(|at| probe.read::<i32>(at))
+        else {
+            return;
+        };
+        let Ok(count) = u64::try_from(count) else {
+            return;
+        };
+        if count > MAX_VEHICLES {
+            return;
+        }
+        let mut vehicles = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let Some(record) = probe.read::<u64>(begin + i * 8) else {
+                return;
+            };
+            vehicles.push(record as u32 as i32);
+        }
+        state().vehicles = vehicles;
+    }
+
+    /// Copies each vehicle's flag from the engine `before` into `engine`'s
+    /// `MovePath` (`get` finds a vehicle's in an engine, 0 when it has
+    /// none), and answers how many differed.
+    pub fn copy_flags(
+        before: usize,
+        engine: usize,
+        vehicles: &[i32],
+        get: impl Fn(usize, i32) -> usize,
+    ) -> u64 {
+        let mut probe = Probe::new();
+        let mut copied = 0u64;
+        for &vehicle in vehicles {
+            let (from, to) = (get(before, vehicle), get(engine, vehicle));
+            if from == 0 || to == 0 {
+                continue;
+            }
+            let (from, to) = (from as u64 + FLAG, to as u64 + FLAG);
+            let (Some(value), Some(own)) = (probe.read::<u8>(from), probe.read::<u8>(to)) else {
+                continue;
+            };
+            if value != own {
+                // SAFETY: a readable byte of this engine's MovePath, which
+                // nothing else touches before its update begins.
+                unsafe { std::ptr::write_volatile(to as usize as *mut u8, value) };
+                copied += 1;
+            }
+        }
+        copied
+    }
+
+    /// Before an update of `engine`, inside the room's step: the flags
+    /// from the engine before, if it was the other.
+    pub fn before_update(engine: usize) {
+        let getter = GETTER.load(Ordering::Acquire);
+        if getter == 0 || engine == 0 || !in_step() || crate::seeds::current_step().is_none() {
+            return;
+        }
+        guarded(FIX, &BROKEN, || {
+            let n = UPDATES.fetch_add(1, Ordering::Relaxed) + 1;
+            let mut state = state();
+            let before = std::mem::replace(&mut state.last, engine);
+            if before == 0 || before == engine {
+                return;
+            }
+            // SAFETY: the game's MovePath getter (checked at install): it
+            // reads the engine's component tables and answers a pointer or
+            // null; both engines live while the room's world does (a load
+            // resets `last`).
+            let get: GetterFn = unsafe { std::mem::transmute::<usize, GetterFn>(getter) };
+            // SAFETY: as above.
+            let copied = copy_flags(before, engine, &state.vehicles, |engine, vehicle| unsafe {
+                get(engine, vehicle)
+            });
+            let syncs = SYNCS.fetch_add(1, Ordering::Relaxed) + 1;
+            let total = COPIED.fetch_add(copied, Ordering::Relaxed) + copied;
+            if (copied > 0 && total == copied) || n.is_multiple_of(1 << 14) {
+                log::line(&format!(
+                    "order fix {FIX}: alive, updates={n} engine changes={syncs} flags copied={total}"
+                ));
+            }
+        });
     }
 }
 
@@ -3110,5 +3379,66 @@ mod splice_tests {
                 before / after
             );
         }
+    }
+
+    #[test]
+    fn the_flags_are_copied_from_the_engine_before() {
+        // Two engines (1 and 2), three vehicles; vehicle 9 has no MovePath
+        // in engine 2.
+        let mut paths = vec![[0u8; 0xa0]; 5];
+        paths[0][0x70] = 1; // engine 1, vehicle 7
+        paths[1][0x70] = 0; // engine 1, vehicle 8
+        paths[2][0x70] = 0; // engine 2, vehicle 7
+        paths[3][0x70] = 1; // engine 2, vehicle 8
+        paths[4][0x70] = 1; // engine 1, vehicle 9
+        let base = paths.as_mut_ptr() as usize;
+        let at = |i: usize| base + i * 0xa0;
+        let get = |engine: usize, vehicle: i32| match (engine, vehicle) {
+            (1, 7) => at(0),
+            (1, 8) => at(1),
+            (2, 7) => at(2),
+            (2, 8) => at(3),
+            (1, 9) => at(4),
+            _ => 0,
+        };
+        assert_eq!(decision_sync::copy_flags(1, 2, &[7, 8, 9], get), 2);
+        assert_eq!((paths[2][0x70], paths[3][0x70]), (1, 0));
+        // The engine before is left as it was; equal flags copy nothing.
+        assert_eq!((paths[0][0x70], paths[1][0x70]), (1, 0));
+        assert_eq!(decision_sync::copy_flags(1, 2, &[7, 8, 9], get), 0);
+    }
+
+    #[test]
+    fn the_movepath_getter_is_taken_only_from_a_verified_call() {
+        // A call at 0x1000 to 0x2000, whose lea names a descriptor at 0x3000.
+        let mut memory = std::collections::HashMap::new();
+        let call = 0x1000u64;
+        let getter = 0x2000u64;
+        let mut bytes = vec![0xE8];
+        bytes.extend(((getter - (call + 5)) as i32).to_le_bytes());
+        memory.insert(call, bytes);
+        let mut head = decision_sync::GETTER_EXPECTED.to_vec();
+        let after = getter + decision_sync::GETTER_EXPECTED.len() as u64 + 4;
+        head.extend(((0x3000 - after) as i32).to_le_bytes());
+        memory.insert(getter, head);
+        memory.insert(0x3010, decision_sync::TYPE_NAME.to_vec());
+        let reads = |memory: std::collections::HashMap<u64, Vec<u8>>| {
+            move |at: u64, len: usize| memory.get(&at).map(|b| b[..len.min(b.len())].to_vec())
+        };
+        let mut read = reads(memory.clone());
+        assert_eq!(decision_sync::getter_from_call(call, &mut read), Ok(getter));
+        // Another type's getter, the same code otherwise: refused.
+        let mut other = memory.clone();
+        other.insert(
+            0x3010,
+            b".?AUMovePathAircraft@component@ecs@@\0"[..29].to_vec(),
+        );
+        let mut read = reads(other);
+        assert!(decision_sync::getter_from_call(call, &mut read).is_err());
+        // No call there: refused.
+        let mut other = memory;
+        other.insert(call, vec![0x90; 5]);
+        let mut read = reads(other);
+        assert!(decision_sync::getter_from_call(call, &mut read).is_err());
     }
 }

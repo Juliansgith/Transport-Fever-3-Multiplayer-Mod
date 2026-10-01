@@ -2450,6 +2450,7 @@ on hand-written functions in the test binary.
 | 3, road edge entries | `road-entry-order` | `EdgeUseManager::Add` (`0x255e940`), `AddRange` (`0x255cc70`) | keeps each edge's entries in entity order after every append (kill switch `TPF3MP_HOOK_ROAD_ENTRY_ORDER=0`) |
 | 4, vehicles at a stop | `vehicles-at-stop-order` | `ecs::SimEntityAtTerminalSystem::Update/vehicles at stop` (`0xb0e35c`) | sorts the vehicles at a line stop by entity id before the boarding loop (kill switch `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER=0`) |
 | 5, platform choice | `platform-order` | `ecs::TransportVehicleSystem::Update2/visit` (`0xb8bccb`), `FindNextFreeTerminal/candidate sort` (`0xb85430`) | asks the vehicles for a free platform in entity order, and puts the candidate terminals in one order before their cost sort (kill switch `TPF3MP_HOOK_PLATFORM_ORDER=0`) |
+| the platform-decision flag | `decision-sync` | `ecs::TransportVehicleSystem::Update2/decision flag` (`0xb8bdb3`, read only: the `MovePath` getter is taken from the call before it), `ecs::Engine::Update` (the seeds' detour) | copies each transport vehicle's `MovePath +0x70` from the engine that ran the update before (kill switch `TPF3MP_HOOK_DECISION_SYNC=0`) |
 
 **The mid-function splice** (`tpf3mp_hookcore::detour::Splice`) is what
 the two fixes hook with. A whole-function detour cannot reach a point in
@@ -2683,6 +2684,52 @@ engine's visit order before the fix each update, `candidates` counts the
 candidate sorts that changed something, and `road` hashes each checked
 edge's id and its entities in the order kept.
 
+**The platform-decision flag** (`decision-sync`, on unless
+`TPF3MP_HOOK_DECISION_SYNC` is `0` or `off`). `TransportVehicleSystem::Update2`
+asks `FindNextFreeTerminal` for a land vehicle only while its `MovePath`
+byte `+0x70` is set (`0xb8bdb3`). The game keeps two `GameState`s, simulates
+them a frame each, and copies the one just simulated into the other
+(`GameState::Replicate`, `0x255de0`), but that byte does not come across.
+Logs of the two-game round of 2026-10-01 on `twomptest` (one line per
+vehicle whenever the flag read changed, per engine) showed every one of the
+133 vehicles' flags set, and cleared, in only the engine that ran the step
+where it changed; the other engine kept reading its old value for hundreds
+of steps (vehicle 217708: 1 on engine 1 from step 3092, 0 on engine 0
+throughout). Which engine runs a given room step follows each game's
+frames, so the step at which a game's engine first reads a clear differs
+between games (vehicle 192508: 867 in one game, 854 in the other). 217708's
+flag was cleared at step 3199 or 3200 in the engine that ran it. Where that
+engine also ran step 3201, the bus no longer asked for a platform and drove
+a loop, as one engine would; where the other engine ran 3201, it read the
+stale 1, asked, took platform 0/0 at 3202 and reached the stop a lap
+earlier. Rooms on that save split at step 3300 every time, in whichever
+game drew the other engine.
+
+The fix gives the flag one engine's semantics. At the start of every
+room's update, the seeds' `ecs::Engine::Update` detour hands over the
+engine. When the update before ran on the other engine, each transport
+vehicle's `MovePath +0x70` is copied from that engine into this one's. By
+induction, the engine about to simulate then holds what every write so
+far left, whichever engine made it. The vehicles come from the transport
+vehicle system's node list, read at the `platform-order` visit site's
+first record (so with `TPF3MP_HOOK_PLATFORM_ORDER=0` the list is never
+read and nothing is copied). The `MovePath`s come from the game's own
+getter (`0x52bbc0`), taken from the call the decision read follows
+(`0xb8bda5`) and refused unless its code is the shape expected and its
+`lea` names the type descriptor `.?AUMovePath@component@ecs@@`. Only
+updates inside the room's step count (the step detour marks its thread);
+a load forgets the engine before. Each `1 << 14` updates, and at the first
+copy:
+
+```
+order fix decision-sync: alive, updates=<n> engine changes=<n> flags copied=<n>
+```
+
+Tried in a two-game room on `twomptest` (2026-10-01): without the fix
+every run split at step 3300; with it the room passed step 3450 with no
+divergence. Other `MovePath` fields written alongside the flag may be
+engine-local in the same way; none is known to differ between games yet.
+
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
 inherits it; a number above 1 is the interval, default 100 updates), three
@@ -2774,6 +2821,7 @@ lines' `ms/update` and the piece's total:
 |---|---|
 | `TPF3MP_HOOK_ROAD_ENTRY_ORDER` | `road-entry-order` |
 | `TPF3MP_HOOK_PLATFORM_ORDER` | `platform-order`, both sites |
+| `TPF3MP_HOOK_DECISION_SYNC` | `decision-sync` |
 | `TPF3MP_HOOK_LAND_VEHICLE_ORDER` | `land-vehicle-order` |
 | `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER` | `vehicles-at-stop-order` |
 | `TPF3MP_HOOK_PAUSED_TICK` | the paused-tick redirect |

@@ -64,6 +64,11 @@ const TARGETS: &[(&str, u64)] = &[
     // The platform-order fix (crates/tpf3mp-hook/src/order.rs, `platform`).
     ("ecs::TransportVehicleSystem::Update2/visit", 0xb8bccb),
     ("FindNextFreeTerminal/candidate sort", 0xb85430),
+    // The decision-flag sync (order.rs, `decision_sync`).
+    (
+        "ecs::TransportVehicleSystem::Update2/decision flag",
+        0xb8bdb3,
+    ),
     // The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs).
     ("GameSim::Step/paused GameTime advance", 0x159412),
     ("CGameTime::Advance", 0xbace10),

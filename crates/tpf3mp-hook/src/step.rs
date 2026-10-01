@@ -1094,6 +1094,8 @@ impl<G: RoomGate> StepDriver<G> {
     /// the order measurement number updates by the room's steps from here.
     fn world_loaded(&mut self, next_step: u64) {
         self.next_step = Some(next_step);
+        // A loaded world: both engines start from it.
+        crate::order::decision_sync::reset();
         crate::order::measure::room_step(next_step);
     }
 

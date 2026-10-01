@@ -551,6 +551,19 @@ offset = 0
 prologue = "49 8B CE 49 2B CD 48 8B C7 48 F7 E9"
 required = false
 
+# The decision-flag sync (order.rs `decision_sync`; docs/HOOKS.md, "The platform-decision
+# flag"): in ecs::TransportVehicleSystem::Update2 (0xb8bae0), after the MovePath getter
+# (0x52bbc0, its call at 0xb8bda5) answers rax for a land vehicle, `movzx eax, byte ptr
+# [rax+0x70]; test al,al` (0xb8bdb3), then `jmp`: the flag that lets the loop ask
+# FindNextFreeTerminal. Nothing is spliced here; the fix takes the getter from the call
+# 0xe bytes before and checks it names MovePath's type descriptor.
+[[target]]
+name = "ecs::TransportVehicleSystem::Update2/decision flag"
+signature = "0F B6 40 70 84 C0 EB 3C E8"
+offset = 0
+prologue = "0F B6 40 70 84 C0"
+required = false
+
 # transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
 [[target]]
 name = "transport::EdgeReservationManager::Reserve"
