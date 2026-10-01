@@ -648,13 +648,45 @@ function engine.describe(proposal)
 			end
 			out[#out + 1] = "+o{" .. table.concat(fields, " ") .. "}"
 		end
+		-- An asset group's models, as far as they read (the asset
+		-- bulldozer's rebuilt group: what a replay of it would have to
+		-- build): its desc's type, models (thin ones), and the first one.
+		local function assetModels(c, con)
+			local ok, text = pcall(function()
+				local n, thin, first = 0, 0, nil
+				for _, s in ipairs(list(con and get(con, "subconstructions"))) do
+					for _, m in ipairs(list(get(s, "models"))) do
+						n = n + 1
+						if get(m, "thin") == true then thin = thin + 1 end
+						first = first or m
+					end
+				end
+				local t = first and get(first, "transf")
+				return string.format(" type %s models %d (%d thin)%s", tostring(get(get(c, "desc"), "type")), n,
+					thin, first and (" first " .. tostring(get(first, "id")) .. "/" .. tostring(get(first, "tag"))
+						.. at({ get(t, 13), get(t, 14), get(t, 15) })) or "")
+			end)
+			return ok and text or (" unreadable: " .. tostring(text))
+		end
 		for _, c in ipairs(list(get(proposal, "toAdd"))) do
 			local con = get(c, "construction")
-			out[#out + 1] = "+c" .. tostring(get(c, "fileName")) .. "{frozen "
-				.. #list(con and get(con, "frozenNodes")) .. "n " .. #list(con and get(con, "frozenEdges")) .. "e}"
+			local file = get(c, "fileName")
+			out[#out + 1] = "+c" .. tostring(file) .. "{frozen "
+				.. #list(con and get(con, "frozenNodes")) .. "n " .. #list(con and get(con, "frozenEdges")) .. "e"
+				.. ((file == nil or tostring(file) == "") and assetModels(c, con) or "") .. "}"
 		end
+		local types = get(get(api, "type"), "ComponentType")
 		for _, c in ipairs(list(get(proposal, "toRemove"))) do
-			out[#out + 1] = "-c" .. tostring(c)
+			-- An asset group's instances, full and thin, and where the first stands.
+			local okA, group = pcall(function()
+				if api.engine.getComponent(c, types.ASSET_GROUP) == nil then return "" end
+				local m = api.engine.getComponent(c, types.MODEL_INSTANCE_LIST)
+				local fat, thin = list(m and get(m, "fatInstances")), list(m and get(m, "thinInstances"))
+				local first = thin[1] and get(thin[1], "pos")
+				return string.format("{asset %d full %d thin%s}", #fat, #thin, first and (" first "
+					.. tostring(get(thin[1], "modelId")) .. at(first)) or "")
+			end)
+			out[#out + 1] = "-c" .. tostring(c) .. (okA and group or "")
 		end
 		return table.concat(out, " ")
 	end)

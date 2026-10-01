@@ -3938,7 +3938,11 @@ ASSETS = { [6600] = true }
 local get = api.engine.getComponent
 api.engine.getComponent = function(e, kind)
     if kind == 2 then return CONSTRUCTIONS[e] end
-    if (kind == 30 or kind == 31) and ASSETS[e] then return {} end
+    if kind == 30 and ASSETS[e] then return {} end
+    if kind == 31 and ASSETS[e] then
+        return { fatInstances = {}, thinInstances = { { modelId = 41, pos = { x = 5, y = 6, z = 7 } },
+            { modelId = 41, pos = { x = 9, y = 6, z = 7 } } } }
+    end
     return get(e, kind)
 end
 api.engine.getEntitiesWithComponent = function(kind)
@@ -4057,6 +4061,22 @@ fn a_bulldoze_the_room_cannot_name_is_refused() {
     assert_eq!(
         why("BULLDOZER({ 6600 }, nil, { { fileName = '' } })"),
         "removing trees or other assets (asset group 6600), which the room does not carry yet"
+    );
+    // The log line says what the asset bulldozer's rebuilt group holds, and
+    // the group it replaces: what a replay of it would have to build.
+    let described: String = lua
+        .load(
+            "return ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua').describe(BULLDOZER({ 6600 }, nil, \
+                 { { fileName = '', desc = { type = 12 }, construction = { frozenNodes = {}, frozenEdges = {}, \
+                     subconstructions = { { models = { { id = 'tree/fir.mdl', tag = 0, thin = true, \
+                         transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 9,6,7,1 } } } } } } } }))",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        described,
+        "+c{frozen 0n 0e type 12 models 1 (1 thin) first tree/fir.mdl/0(9.0,6.0,7.0)} \
+         -c6600{asset 0 full 2 thin first 41(5.0,6.0,7.0)}"
     );
     assert_eq!(
         why("BULLDOZER({ 6601 })"),

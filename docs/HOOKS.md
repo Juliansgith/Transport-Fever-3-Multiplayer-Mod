@@ -1882,7 +1882,13 @@ terrain tools through the hook, and a construction's window its edits:
   and other assets: the asset group removed and rebuilt without them as
   a construction of no file) and anything else that is no construction
   are refused, naming what was hit (an asset group, or the components
-  the entity has). A stop it
+  the entity has). The log line of such a refusal also says what the
+  rebuilt group holds (its desc's type, its models, the thin ones, and
+  the first one's model and place) and what the group removed holds
+  (full and thin instances): what a replay of it would have to build.
+  No replay is built yet: the game scripts have no call that rebuilds an
+  asset group, and filling a proposal with one natively is not yet read
+  from the binary (TPF2-MP had to, `mp/assets.lua`). A stop it
   removes is carried as the stop tool's builds are (below): its edge
   rebuilt without it, the stop named by its edge, where it stands and its
   construction (the `EDGE_OBJECT` component's `transf` and
