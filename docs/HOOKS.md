@@ -784,19 +784,17 @@ for the table (`bridge.find`). Its contract is in
   `{"action":"copy","text":...}`, which the hook does itself and never
   hands the launcher.
 - `tpf3mp_native.handover()`: in the GUI: `true` once after the main
-  menu's Multiplayer window, open as the room's world came up, was closed
-  for it: the game's own Multiplayer window opens in its place. The close
-  (`crate::menu::close_lobby`) comes once the world that came up has
-  stepped (its load is over): on a frame of the main menu's if one still
-  runs, or else from the world's GUI as it asks `handover()`, every GUI
-  frame. The menu's `DoStep` ran no frame of its own after the world's
-  GUI was up on 2026-10-01, and the window stayed open. The close is asked
-  of every state of the menu's adopted on the thread, newest first: the
-  window lives in the state that rendered it, and a newer menu state
-  adopted after it opened once answered "closed" for it. hook.log:
-  `menu: the Multiplayer window closed as the world came up (from the
-  world's GUI, in Lua state 0x...)` (or `from the main menu's frame`), or
-  which states were asked when none had it open.
+  menu's Multiplayer window was closed for the room's load: the game's own
+  Multiplayer window opens in its place once the world runs. The close
+  (`crate::menu::close_lobby`) comes in the menu frame that starts the
+  room's load, just before it: no load runs yet, and the menu's UI still
+  steps, so the close shows on screen. Once the world's GUI is up the
+  menu's UI runs no more, and a close made then (from the world's GUI, or
+  the window's own X) never showed (2026-10-01). The close is asked of
+  every state of the menu's adopted on the thread, newest first: the
+  window lives in the state that rendered it, which need not be the
+  newest. hook.log: `menu: the Multiplayer window closed as the room's
+  world starts loading (in Lua state 0x...)`.
 - `tpf3mp_native.leave()`: in the GUI: the player leaves the room, as the
   launcher's Leave room does: queued for the launcher as
   `LobbyAction::Leave`, `true` or `false` and why.

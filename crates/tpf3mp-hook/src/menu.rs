@@ -587,10 +587,11 @@ pub struct LobbyClose {
 /// window lives in the state that rendered it, which need not be the
 /// newest (a new menu state was adopted after the window opened, and the
 /// newest alone said "closed", 2026-10-01). `None` when there is no such
-/// state. Called once the room's world is up (`crate::install`): the window
-/// lives in the main menu's window container, which the world's GUI leaves
-/// behind, and the game's own Multiplayer window takes over (D17;
-/// docs/LOBBY.md).
+/// state. Called just before the room's load starts from the menu
+/// (`crate::install`), while the menu's UI still steps: the window lives in
+/// the main menu's window container, which the world's GUI leaves behind,
+/// and the game's own Multiplayer window takes over once the world runs
+/// (D17; docs/LOBBY.md).
 ///
 /// # Safety
 ///

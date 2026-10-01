@@ -771,12 +771,13 @@ function lobby.content(onClose, focus)
 	-- Whether this window already connected by itself: once per opening,
 	-- so a refused connect is not retried in a loop.
 	local autoConnectedRef = react.useRef(false)
-	-- The window stays open while the room's world downloads and loads. It
-	-- lives in the main menu's window container, which the world's GUI
-	-- leaves behind where nothing could close it (2026-10-01), so the hook
-	-- closes it as the world comes up, with the close it leaves here while
-	-- it is open (crates/tpf3mp-hook/src/menu.rs, close_lobby), and the
-	-- game's own Multiplayer window opens in its place. Closed by the
+	-- The window stays open while the room's world downloads. It lives in
+	-- the main menu's window container, which the world's GUI leaves behind
+	-- where nothing could close it (2026-10-01), so the hook closes it just
+	-- before the room's world starts loading, while the menu still runs,
+	-- with the close it leaves here while it is open
+	-- (crates/tpf3mp-hook/src/menu.rs, close_lobby), and the game's own
+	-- Multiplayer window opens once the world runs. Closed by the
 	-- player (lobby.closed), it leaves nothing to close or hand over.
 	if type(resolveutil) == "table" then
 		pcall(function() resolveutil.__tpf3mp_close = onClose end)

@@ -119,16 +119,17 @@ A game Steam started has no hook and keeps the plain menu.
     which waits until everyone is ready. Once the room's game runs, the
     chat and Leave stay and Ready and Start go.
 
-  The window stays open while the room's world downloads and loads, with
-  each player's progress, and hands over to the game's own Multiplayer
-  window when the world comes up. It lives in the main menu's window
-  container, which the world's GUI leaves behind on screen where nothing
-  could close it (2026-10-01). So while it is open it leaves the hook its
-  close (`resolveutil.__tpf3mp_close`); at the menu frame where the world
-  comes up, the hook calls it while the menu still runs
-  (`crates/tpf3mp-hook/src/menu.rs`, `close_lobby`) and marks the
-  handover, and the world's GUI opens its Multiplayer window, the room
-  page, once (`tpf3mp_native.handover()`). The player closes that one with
+  The window stays open while the room's world downloads, with each
+  player's progress, and closes as the room's world starts loading. It
+  lives in the main menu's window container, which the world's GUI leaves
+  behind on screen, and once the world's GUI is up the menu's UI runs no
+  more, so nothing could close it then (2026-10-01). So while it is open
+  it leaves the hook its close (`resolveutil.__tpf3mp_close`); in the menu
+  frame that starts the room's load, the hook calls it just before the
+  load, while the menu still runs (`crates/tpf3mp-hook/src/menu.rs`,
+  `close_lobby`, in whichever state of the menu's shows it) and marks the
+  handover, and once the world runs its GUI opens its Multiplayer window,
+  the room page, once (`tpf3mp_native.handover()`). The player closes that one with
   its own X or Close. A window the player closed before (main_page.tl's
   close calls `lobby.closed`) leaves nothing, so nothing opens. Its close
   removes the window first, through the container it was added to, and
