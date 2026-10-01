@@ -121,6 +121,21 @@ fn package_server(built: Option<&str>, named: Option<&str>) -> (String, Option<S
     }
 }
 
+/// The certificate file a package for a server with its own certificate
+/// carries beside the launcher, set when it is built
+/// (`TPF3MP_PIN_CERT_BESIDE`, such as `server.der`). Without it, a build
+/// trusts no file it was not given.
+const PIN_BESIDE: Option<&str> = option_env!("TPF3MP_PIN_CERT_BESIDE");
+
+/// The certificate `name` names beside this launcher, when the package was
+/// built with one and it is there: started any way (its shortcut, a
+/// double-click), the launcher then trusts exactly its server.
+fn bundled_cert(name: Option<&str>) -> Option<std::path::PathBuf> {
+    let name = name.map(str::trim).filter(|name| !name.is_empty())?;
+    let path = std::env::current_exe().ok()?.parent()?.join(name);
+    path.is_file().then_some(path)
+}
+
 fn main() -> ExitCode {
     let mut args = Args::parse();
     if args.launcher.default_server.is_none() {
@@ -129,6 +144,9 @@ fn main() -> ExitCode {
         if args.launcher.server_name.is_none() {
             args.launcher.server_name = name;
         }
+    }
+    if args.launcher.pin_cert.is_none() {
+        args.launcher.pin_cert = bundled_cert(PIN_BESIDE);
     }
     let logs = logs::dir().ok();
     // The log's lines also wait here to go to the server, redacted.
@@ -497,6 +515,18 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Args, clap::Error> {
         Args::try_parse_from(std::iter::once("tpf3mp-launcher").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn a_bundled_certificate_is_trusted_only_when_built_with_one_and_there() {
+        use super::bundled_cert;
+        assert_eq!(bundled_cert(None), None);
+        assert_eq!(bundled_cert(Some("  ")), None);
+        assert_eq!(bundled_cert(Some("no-such-certificate.der")), None);
+        // The test binary itself stands in for a file beside it.
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_name().unwrap().to_str().unwrap();
+        assert_eq!(bundled_cert(Some(name)), Some(exe.clone()));
     }
 
     #[test]
