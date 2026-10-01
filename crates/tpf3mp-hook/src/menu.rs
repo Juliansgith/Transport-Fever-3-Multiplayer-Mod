@@ -573,45 +573,75 @@ fn newest_menu_state() -> Option<(usize, c_int, c_int)> {
         .map(|state| (state.state, state.reference, state.busy))
 }
 
-/// Closes the main menu's Multiplayer window, if it is open, in the newest
-/// state of the menu's adopted on this thread: whether it was open, or
-/// `None` when there is no such state. Called as the room's world comes up
-/// (`crate::install::menu_frame`): the window lives in the main menu's
-/// window container, which the world's GUI leaves behind, so it is closed
-/// while the menu still runs, and the game's own Multiplayer window takes
-/// over (D17; docs/LOBBY.md).
+/// What [`close_lobby`] found in the menu's states.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LobbyClose {
+    /// The states asked, newest first.
+    pub asked: Vec<usize>,
+    /// Those whose Multiplayer window was open, and was closed.
+    pub closed: Vec<usize>,
+}
+
+/// Closes the main menu's Multiplayer window wherever it is open: in every
+/// state of the menu's adopted on this thread, newest first, since the
+/// window lives in the state that rendered it, which need not be the
+/// newest (a new menu state was adopted after the window opened, and the
+/// newest alone said "closed", 2026-10-01). `None` when there is no such
+/// state. Called once the room's world is up (`crate::install`): the window
+/// lives in the main menu's window container, which the world's GUI leaves
+/// behind, and the game's own Multiplayer window takes over (D17;
+/// docs/LOBBY.md).
 ///
 /// # Safety
 ///
 /// As [`serve`].
-pub unsafe fn close_lobby() -> Option<bool> {
+pub unsafe fn close_lobby() -> Option<LobbyClose> {
     let (Some(api), Some(menu)) = (lua::api(), MENU_API.get()) else {
         return None;
     };
+    let here = std::thread::current().id();
     // The lock is let go before Lua runs (as in serve).
-    let (state, _, busy) = newest_menu_state()?;
-    if busy < 0 {
+    let states: Vec<(usize, c_int)> = adopted()
+        .iter()
+        .rev()
+        .filter(|state| state.menus(here) && state.busy >= 0)
+        .map(|state| (state.state, state.busy))
+        .collect();
+    if states.is_empty() {
         return None;
     }
-    let l = state as State;
-    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: as in serve: the state is open and this thread's, and
-        // runs no Lua now; the final settop pops what was pushed.
-        unsafe {
-            let top = (api.gettop)(l);
-            if (api.checkstack)(l, 3) == 0 {
-                return None;
-            }
-            (api.rawgeti)(l, menu.registry, busy);
-            (api.pushboolean)(l, 1);
-            let status = (menu.pcallk)(l, 1, 1, 0, 0, std::ptr::null());
-            let answer = (status == 0 && (api.type_of)(l, -1) == TBOOLEAN)
-                .then(|| (api.toboolean)(l, -1) != 0);
-            (api.settop)(l, top);
-            answer
+    let mut result = LobbyClose::default();
+    for (state, busy) in states {
+        // Still open: a close in one state never runs another's finalizer,
+        // but the list is checked again all the same.
+        if !adopted().iter().any(|adopted| adopted.state == state) {
+            continue;
         }
-    }));
-    result.unwrap_or(None)
+        result.asked.push(state);
+        let l = state as State;
+        let closed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: as in serve: the state is open and this thread's, and
+            // runs no Lua now; the final settop pops what was pushed.
+            unsafe {
+                let top = (api.gettop)(l);
+                if (api.checkstack)(l, 3) == 0 {
+                    return false;
+                }
+                (api.rawgeti)(l, menu.registry, busy);
+                (api.pushboolean)(l, 1);
+                let status = (menu.pcallk)(l, 1, 1, 0, 0, std::ptr::null());
+                let answer =
+                    status == 0 && (api.type_of)(l, -1) == TBOOLEAN && (api.toboolean)(l, -1) != 0;
+                (api.settop)(l, top);
+                answer
+            }
+        }))
+        .unwrap_or(false);
+        if closed {
+            result.closed.push(state);
+        }
+    }
+    Some(result)
 }
 
 /// Loads the save `name` of the game's save folder from the newest state of
@@ -1168,20 +1198,66 @@ pub(crate) mod tests {
             Ok("0/1".into()),
             "open through the load"
         );
+        let l = menu.state() as usize;
+        let closed = |states: &[usize]| {
+            Some(LobbyClose {
+                asked: vec![l],
+                closed: states.to_vec(),
+            })
+        };
         // The world comes up: closed once, and only once.
-        assert_eq!(unsafe { close_lobby() }, Some(true));
+        assert_eq!(unsafe { close_lobby() }, closed(&[l]));
         assert_eq!(menu.run("return #CLOSED"), Ok("1".into()));
-        assert_eq!(unsafe { close_lobby() }, Some(false), "nothing open now");
+        assert_eq!(unsafe { close_lobby() }, closed(&[]), "nothing open now");
         // A close that fails still counts as closed, and the menu goes on.
         menu.run("resolveutil.__tpf3mp_close = function() error('expired') end")
             .unwrap();
-        assert_eq!(unsafe { close_lobby() }, Some(true));
+        assert_eq!(unsafe { close_lobby() }, closed(&[l]));
         assert_eq!(menu.run("return MONITOR"), Ok("0".into()));
         // No window, no resolveutil: nothing to close.
         menu.run("resolveutil = nil").unwrap();
-        assert_eq!(unsafe { close_lobby() }, Some(false));
+        assert_eq!(unsafe { close_lobby() }, closed(&[]));
         forget_all();
         assert_eq!(unsafe { close_lobby() }, None, "no menu state");
+    }
+
+    /// Two states of the menu's, the window open in the older one only (a
+    /// new state was adopted after it opened): the window is closed there,
+    /// and the newer one, which has none, does not hide it.
+    #[test]
+    fn the_window_is_closed_in_the_menu_state_that_holds_it_not_only_the_newest() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        menu51();
+        forget_all();
+        let older = Lua::new();
+        older.run(FAKE_MENU).unwrap();
+        older
+            .run("CLOSED = 0 resolveutil = { __tpf3mp_close = function() CLOSED = CLOSED + 1 end }")
+            .unwrap();
+        let newer = Lua::new();
+        newer.run(FAKE_MENU).unwrap();
+        newer.run("resolveutil = {}").unwrap();
+        assert_eq!(unsafe { adopt(older.state()) }, Ok(true));
+        assert_eq!(unsafe { adopt(newer.state()) }, Ok(true));
+        let (old, new) = (older.state() as usize, newer.state() as usize);
+        assert_eq!(
+            unsafe { close_lobby() },
+            Some(LobbyClose {
+                asked: vec![new, old],
+                closed: vec![old],
+            })
+        );
+        assert_eq!(older.run("return CLOSED"), Ok("1".into()));
+        // Closed once: asked again, nothing is open anywhere.
+        assert_eq!(
+            unsafe { close_lobby() },
+            Some(LobbyClose {
+                asked: vec![new, old],
+                closed: vec![],
+            })
+        );
+        assert_eq!(older.run("return CLOSED"), Ok("1".into()));
+        forget_all();
     }
 
     #[test]

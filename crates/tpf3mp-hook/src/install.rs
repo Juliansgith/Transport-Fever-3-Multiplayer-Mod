@@ -270,17 +270,25 @@ fn menu_seen(menu: usize) -> MenuFrame {
 /// could close it), and the game's own Multiplayer window opens in its place
 /// ([`lua::hand_over`]). A window the player closed before stays closed.
 fn hand_over_lobby(lines: &mut Vec<String>, from: &str) {
+    let states = |list: &[usize]| {
+        list.iter()
+            .map(|state| format!("{state:#x}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     // SAFETY: the callers' moments: on the thread that runs the menu's Lua,
     // with none of the menu's Lua running.
     match unsafe { crate::menu::close_lobby() } {
-        Some(true) => {
+        Some(close) if !close.closed.is_empty() => {
             lua::hand_over();
             lines.push(format!(
-                "menu: the Multiplayer window closed as the world came up (from {from}); the game's Multiplayer window opens in its place"
+                "menu: the Multiplayer window closed as the world came up (from {from}, in Lua state {}); the game's Multiplayer window opens in its place",
+                states(&close.closed)
             ));
         }
-        Some(false) => lines.push(format!(
-            "menu: the world came up (seen from {from}) with the Multiplayer window closed: nothing to hand over"
+        Some(close) => lines.push(format!(
+            "menu: the world came up (seen from {from}) with the Multiplayer window closed in every state of the menu's asked ({}): nothing to hand over",
+            states(&close.asked)
         )),
         None => lines.push(format!(
             "menu: the world came up (seen from {from}), but no Lua state of the main menu's on this thread can close the Multiplayer window"
@@ -1764,7 +1772,7 @@ mod tests {
         assert_eq!(menu.run("return CLOSED"), Ok("1".into()));
         assert!(
             hook_log().contains(
-                "menu: the Multiplayer window closed as the world came up (from the world's GUI)"
+                "menu: the Multiplayer window closed as the world came up (from the world's GUI, in Lua state 0x"
             ),
             "{}",
             hook_log()

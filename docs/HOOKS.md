@@ -790,9 +790,13 @@ for the table (`bridge.find`). Its contract is in
   stepped (its load is over): on a frame of the main menu's if one still
   runs, or else from the world's GUI as it asks `handover()`, every GUI
   frame. The menu's `DoStep` ran no frame of its own after the world's
-  GUI was up on 2026-10-01, and the window stayed open. hook.log: `menu:
-  the Multiplayer window closed as the world came up (from the world's
-  GUI)` (or `from the main menu's frame`).
+  GUI was up on 2026-10-01, and the window stayed open. The close is asked
+  of every state of the menu's adopted on the thread, newest first: the
+  window lives in the state that rendered it, and a newer menu state
+  adopted after it opened once answered "closed" for it. hook.log:
+  `menu: the Multiplayer window closed as the world came up (from the
+  world's GUI, in Lua state 0x...)` (or `from the main menu's frame`), or
+  which states were asked when none had it open.
 - `tpf3mp_native.leave()`: in the GUI: the player leaves the room, as the
   launcher's Leave room does: queued for the launcher as
   `LobbyAction::Leave`, `true` or `false` and why.
