@@ -17,6 +17,7 @@ ring.workspace = true
 rustls.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true

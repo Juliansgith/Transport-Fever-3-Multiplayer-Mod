@@ -18,7 +18,6 @@ mod verdict;
 
 use std::{fmt, future::Future, io, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-use quinn::Runtime;
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use tpf3mp_net::{
@@ -250,20 +249,20 @@ impl Server {
             .as_ref()
             .map(|_| Tunnels::new(Some(config.handshake_timeout)));
         let quic = tpf3mp_net::server_config(config.identity)?;
-        let endpoint = match &tunnels {
-            None => quinn::Endpoint::server(quic, config.listen)?,
-            Some(tunnels) => {
-                // One endpoint for UDP and tunnels alike.
-                let runtime = Arc::new(quinn::TokioRuntime);
-                let udp = runtime.wrap_udp_socket(std::net::UdpSocket::bind(config.listen)?)?;
-                quinn::Endpoint::new_with_abstract_socket(
-                    quinn::EndpointConfig::default(),
-                    Some(quic),
-                    Arc::new(MuxSocket::new(udp, Arc::clone(tunnels))),
-                    runtime,
-                )?
-            }
+        // A plain UDP socket where the network stack refuses quinn's socket
+        // options, as Wine's does.
+        let udp = tpf3mp_net::udp::bind(config.listen)?;
+        let socket: Arc<dyn quinn::AsyncUdpSocket> = match &tunnels {
+            None => udp,
+            // One endpoint for UDP and tunnels alike.
+            Some(tunnels) => Arc::new(MuxSocket::new(udp, Arc::clone(tunnels))),
         };
+        let endpoint = quinn::Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            Some(quic),
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )?;
         let metrics = Arc::new(Metrics::default());
         let directory = Arc::new(Directory::new(DirectoryConfig {
             secret: config.secret,
