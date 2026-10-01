@@ -1014,6 +1014,19 @@ end
 -- A ConsistPart as the game's TransportVehiclePart, bought at `time`. Every
 -- compartment loads automatically, as the store sends it
 -- (vehicle_react_util.tl).
+-- How many compartments a vehicle model has (its transportVehicle
+-- metadata), or nil where the game does not say.
+function apply.compartments(model)
+	local ok, n = pcall(function()
+		local tv = api.res.modelRep.get(model).metadata.transportVehicle
+		local count = 0
+		for _ in ipairs(tv.compartments) do count = count + 1 end
+		return count
+	end)
+	if ok and type(n) == "number" then return n end
+	return nil
+end
+
 local function vehiclePart(p, time)
 	local model = api.res.modelRep.find(p.model)
 	if type(model) ~= "number" or model < 0 then error("no vehicle model " .. tostring(p.model), 0) end
@@ -1026,6 +1039,23 @@ local function vehiclePart(p, time)
 		lc.loadConfigIndex = l.config
 		lc.cargoTypeId = l.cargo
 		loads[k], auto[k] = lc, true
+	end
+	-- The game takes a load for every compartment of the model, and throws
+	-- ("Unknown exception", build 40408) for a part with fewer. A part that
+	-- names none gets the store's own: the first load configuration of each
+	-- compartment (gui/line_vehicle_mgmt/vehicle_util.tl); one that names
+	-- some but not all is refused, the same in every game.
+	local compartments = apply.compartments(model)
+	if compartments ~= nil and #loads ~= compartments then
+		if #loads > 0 then
+			error(string.format("%s has %d compartments, and the part loads %d", tostring(p.model), compartments,
+				#loads), 0)
+		end
+		for k = 1, compartments do
+			local lc = api.type.LoadConfig.new()
+			lc.loadConfigIndex = 0
+			loads[k], auto[k] = lc, true
+		end
 	end
 	part.part.compartment2loadConfig = loads
 	part.part.color = tint(p.color)
@@ -1053,7 +1083,30 @@ function HANDLERS.BuyVehicle(buy)
 	local vehicles = {}
 	for i, p in ipairs(buy.consist) do vehicles[i] = vehiclePart(p, time) end
 	local config = vehicleConfig(vehicles, buy.groups, buy.multiple_units)
-	local data, entities = send(api.cmd.makeVehicleBuyCmd(company(), depot, config))
+	-- The game's buy says nothing of why it refused: the likeliest reasons,
+	-- the company's money and the depot's room, go with the refusal.
+	local sent, data, entities = pcall(send, api.cmd.makeVehicleBuyCmd(company(), depot, config))
+	if not sent then
+		local facts = {}
+		pcall(function()
+			local account = api.engine.getComponent(company(), api.type.ComponentType.ACCOUNT)
+			facts[#facts + 1] = "the company has " .. string.format("%d", account.balance)
+		end)
+		for i, p in ipairs(buy.consist) do
+			pcall(function()
+				local model = api.res.modelRep.find(p.model)
+				facts[#facts + 1] = string.format("part %d %s: %s compartments, %d loads", i, tostring(p.model),
+					tostring(apply.compartments(model)), #p.loads)
+			end)
+		end
+		facts[#facts + 1] = "depot entity " .. tostring(depot)
+		pcall(function()
+			local d = api.engine.getComponent(depot, api.type.ComponentType.VEHICLE_DEPOT)
+			if d and d.vehicles then facts[#facts + 1] = "the depot holds " .. #d.vehicles end
+		end)
+		error(tostring(data) .. (#facts > 0 and (" (" .. table.concat(facts, "; ") .. ")") or ""), 0)
+	end
+
 	local vehicle = madeBy("resultVehicleEntity", data, entities)
 	-- With more than one company, in its company's colour.
 	local roster = acting and acting.roster
