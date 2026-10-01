@@ -575,6 +575,7 @@ function data()
 	-- height in TF3's StyleSheet; zero would hide the content.
 	local WINDOW_WIDTH, PLAYERS_WIDTH, COMPANIES_WIDTH = 800, 192, 548
 	local BODY_HEIGHT = 310
+	local COPIED_FRAMES = 120
 	local function sheet(width, height, padding, background)
 		local s = api.gui.StyleSheet.new()
 		s.size = api.type.Vec2f.new(width or -1, height or -1)
@@ -890,6 +891,30 @@ function data()
 			shared.version = shared.version + 1
 		end
 		local rows = { label(status.room, "font-scale-title-3", 740, 36), gap(6) }
+		-- The room's invite code alone (without the server the launcher may
+		-- put before it), and Copy: the hook puts it on the clipboard, and
+		-- the button says "Copied" for a moment.
+		local code = type(status.invite) == "string" and status.invite:match("(%S+)%s*$")
+		if code then
+			rows[#rows + 1] = box({
+				label("Invite code  " .. code, "font-scale-body"),
+				builtin.Button{
+					meta = { tooltip = "Copy the invite code, to paste it to your friends" },
+					content = label((shared.copied or 0) > 0 and "Copied" or "Copy"),
+					onClick = function()
+						local l = shared.link
+						local ok, why = false, "not linked"
+						if l then ok, why = l:copy(code) end
+						if ok then
+							shared.copied = COPIED_FRAMES
+						else
+							shared.leaveNote = "Not copied: " .. tostring(why)
+						end
+						shared.version = shared.version + 1
+					end,
+				},
+			}, true)
+		end
 		local statusRow = {}
 		if status.speed then statusRow[#statusRow + 1] = label("Speed: " .. speedText(status.speed), "font-scale-annotation") end
 		statusRow[#statusRow + 1] = gap(16)
@@ -1062,6 +1087,11 @@ function data()
 			if not ok then say("serving the hook failed: " .. tostring(err)) end
 			local followed, why = pcall(follow)
 			if not followed then say("reading the room failed: " .. tostring(why)) end
+			local copied = ui().copied
+			if copied and copied > 0 then
+				ui().copied = copied - 1
+				if copied == 1 then ui().version = ui().version + 1 end
+			end
 			if ui().version ~= seen:get() then
 				seen:set(ui().version)
 				room:set(ui().version)

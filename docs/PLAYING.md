@@ -263,7 +263,8 @@ window too.
      from its start save, and whether you have each. You can change your
      choice until the room's game starts.
 5. **The room.** On the left, the room's name (a lock if it has a
-   password), its **invite code** to send your friends, and its players
+   password), its **invite code** to send your friends (**Copy** beside it
+   puts it on the clipboard), and its players
    as picture cards of their banners, each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
    and **Other mods** when their game differs from the owner's. On the
    right, the room's chat: type and press Enter or **Send**.
@@ -570,3 +571,6 @@ before sharing it publicly if you want to be sure.
 - **"too many requests; try again in a moment"** when joining: too many
   wrong codes or passwords came from your network in the last 10
   minutes. Wait, then check the code.
+
+The lobby and in-game Multiplayer window show **Copy** beside the invite code.
+It copies only the room code, with brief **Copied** feedback.

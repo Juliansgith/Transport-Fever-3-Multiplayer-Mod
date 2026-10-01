@@ -496,6 +496,7 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {},
          dump = nil, dumped = {} }
 tpf3mp_native = {
+    copy = function(text) HOOK.copied = text return true end,
     version = 12,
     note = function(key, value)
         HOOK.notes = HOOK.notes or {}
@@ -7004,3 +7005,36 @@ fn the_guis_permits_count_the_players_company_own_constructions() {
     // One company in the room: the game's own counts.
     assert_eq!(eval("ME = 901 SEVERAL = false return counts()"), "1 1 1 0");
 }
+
+/// The game's window shows the room's invite code with Copy: the hook puts
+/// it on the clipboard, and the button says "Copied" for a while.
+#[test]
+fn the_games_window_copies_the_invite_code() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    let (shown, copied, label, back): (bool, String, String, String) = lua
+        .load(
+            "HOOK.room = true HOOK.status = { room = 'r', invite = 'eu.example.org K7QM2X', players = {} } \
+             BAR = mount(loadPlugin()) BAR.step() BAR.render() \
+             views(BAR.layout)[1].params.onClick() \
+             local function find(label) \
+                 for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                     if v.view == 'Button' and v.params.content.params.text == label then return v end \
+                     if v.view == 'TextView' and v.params.text == label then return v end \
+                 end \
+             end \
+             local shown = find('Invite code  K7QM2X') ~= nil \
+             find('Copy').params.onClick() \
+             local label = find('Copied') and 'Copied' or 'none' \
+             for _ = 1, 130 do BAR.step() end \
+             return shown, HOOK.copied, label, find('Copy') and 'Copy' or 'none'",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(shown, "the code alone, without the server");
+    assert_eq!(copied, "K7QM2X");
+    assert_eq!(label, "Copied");
+    assert_eq!(back, "Copy");
+}
+

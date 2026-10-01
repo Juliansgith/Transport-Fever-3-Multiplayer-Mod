@@ -199,6 +199,16 @@ function Link:say(text)
 	return true
 end
 
+-- Puts `text`, the room's invite code, on the clipboard: true, or nil and
+-- why not.
+function Link:copy(text)
+	if type(self.native.copy) ~= "function" then return nil, "this hook cannot copy" end
+	local ok, copied, why = pcall(self.native.copy, tostring(text))
+	if not ok then return nil, tostring(copied) end
+	if copied ~= true then return nil, tostring(why or "the hook did not copy it") end
+	return true
+end
+
 -- The actions the room ordered for this update, as a list, or nil; who
 -- sent each, a list of player ids (64 hex digits) beside it; and the seal of
 -- the password each was sent with, { scope =, tag = }, or false.
