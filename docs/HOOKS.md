@@ -1145,7 +1145,12 @@ reference of its own to either. Once linked, the GUI wraps every
   line, the line manager made a second line at the next stop clicked (seen
   on build 40408). So an answer waits until the GUI's world has the entity
   it names (`api.engine.entityExists`; the game script made it in the
-  simulation), a few seconds at most, and answers keep their order; a
+  simulation) and, for a bought vehicle or a new line, until the game
+  script's state the GUI reads names it by its id (`guard.NAMED`): that
+  state reaches the GUI after the entity, and the store's "buy and put on
+  a line" sent its line assignment in between, which no game could name
+  ("a vehicle the room cannot name", 2026-09-30). A few seconds at most,
+  and answers keep their order; a
   command that should have made something and made nothing the game could
   name is answered as failed, which the windows handle. With both, a new
   line took its stops one by one as in single player (build 40408). So

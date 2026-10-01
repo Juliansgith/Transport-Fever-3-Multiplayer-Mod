@@ -170,10 +170,15 @@ function data()
 	local guardedCmd = nil
 
 	-- Whether the GUI's world has `entity` yet: what the room's action made
-	-- in the simulation reaches it a moment later.
-	local function sees(entity)
+	-- in the simulation reaches it a moment later. With `kind`, also whether
+	-- the registry names it yet (tpf3mp/guard.lua, NAMED): the game script's
+	-- state, which binds its id, reaches the GUI later still.
+	local function sees(entity, kind)
 		local ok, there = pcall(function() return api.engine.entityExists(entity) end)
-		return not ok or there == true
+		if ok and there ~= true then return false end
+		if kind == nil then return true end
+		local okId, id = pcall(function() return idOf(kind)(entity) end)
+		return okId and id ~= nil
 	end
 
 	-- Puts the guard in front of the GUI's commands.
