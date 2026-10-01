@@ -23,7 +23,7 @@ Each way is one of:
 | command factories (`api.cmd.make*Cmd`) | 61 | 16 carried (in part), 1 passed (speed), 44 refused |
 | game-script events the GUI sends | 21 | 7 carried, 14 refused |
 | native tools and windows (rows below) | 18 | 12 carried (in part), 6 refused |
-| unknown paths | 3 | see "The gates and their holes" |
+| unknown paths | 2 open, 1 closed | see "The gates and their holes" |
 
 Open gaps, by risk (each is worked through under "Gaps" below):
 
@@ -58,7 +58,11 @@ past them is "unknown".
      its React recipes in (`gui/tpf3mp/gui_state.script.lua`) had none,
      so any command a window there sends acted locally. Which windows
      render there is not known (the stop tool is watched in both because
-     the construction menu's state is not known).
+     the construction menu's state is not known). *Closed:* that state
+     has the guard too (`tpf3mp/hudguard.lua`); a window there that waits
+     on what its command made is refused, as the room's answers reach the
+     plugin's state alone. Test:
+     `in_the_huds_state_the_guard_carries_or_refuses_every_command`.
 2. **The native build tools** (street, track, construction, stop and
    signal, bulldozer, road and track modifiers, module editor, terrain
    tools, terrain painter, asset brush, town builder, the crossing, lane

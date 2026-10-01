@@ -7228,6 +7228,136 @@ fn the_huds_state_follows_the_players_company() {
     );
 }
 
+/// The GUI's other Lua state, where the game renders its React recipes, has
+/// an api.cmd of its own (docs/COVERAGE.md, U1): in the room's game the
+/// guard is on it too. What the room carries goes to the room, answered as
+/// sent a moment later; what it does not is refused, the callback told so;
+/// and a window there that waits on what its command made is refused, as
+/// the room's answers reach the plugin's state alone.
+#[test]
+fn in_the_huds_state_the_guard_carries_or_refuses_every_command() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        api.cmd.makeVehicleSellCmd = function(vehicles) return { kind = 'sell' } end
+        api.cmd.makeTownCreateCmd = function() return { kind = 'town' } end
+        STATE = { companies = { next = 1, list = { { id = 0, entity = 25, name = "First" } }, members = {} },
+                  registry = { vehicles = { bound = { { 3, 5 } } } } }
+        api.engine = { util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) },
+                       system = { gameScriptSystem = { getEntityForGameScript = function(name)
+                           return name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" and 77 or -1 end } },
+                       getComponent = function(e, kind)
+                           if e == 77 and kind == 7 then return { state = STATE } end
+                       end }
+        api.type = { ComponentType = { GAME_SCRIPT = 7 } }
+        HOOK.status = { room = "r", players = {}, me_id = string.rep("b", 64) }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        local script = "gui/tpf3mp/gui_state.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        GAME_UTIL = { getActionParams = function() return {} end }
+        local real = ug_require
+        ug_require = function(path)
+            if path == "::/gui/construction/construction_react_util.tl" then return GAME_UTIL end
+            return real(path)
+        end
+        data().prepare({})
+        ug_require = real
+        -- A frame of the HUD's: the clock moves, the HUD asks whose it is.
+        function FRAME() CLOCK = CLOCK + 1; api.engine.util.getPlayer() end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains("the guard is on 6 command factories in the HUD's state"),
+        "{logged}"
+    );
+
+    // Outside the room's game every command is sent.
+    lua.load("api.cmd.sendCommand(api.cmd.makeTownCreateCmd())")
+        .exec()
+        .unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 1);
+
+    // In it, a town is refused, its callback told on a later frame.
+    lua.load(
+        "HOOK.room = true \
+         api.cmd.sendCommand(api.cmd.makeTownCreateCmd(), function(_, ok) TOWN = ok end)",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 1);
+    assert_eq!(
+        lua.load("return TOWN").eval::<Option<bool>>().unwrap(),
+        None
+    );
+    lua.load("FRAME() FRAME() FRAME()").exec().unwrap();
+    assert_eq!(
+        lua.load("return TOWN").eval::<Option<bool>>().unwrap(),
+        Some(false)
+    );
+
+    // A vehicle sold goes to the room by its id, and is answered as sent.
+    lua.load(
+        "api.cmd.sendCommand(api.cmd.makeVehicleSellCmd({ 5 }), function(_, ok) SOLD = ok end)",
+    )
+    .exec()
+    .unwrap();
+    let (commands, sold): (usize, i64) = lua
+        .load("return #HOOK.commands, HOOK.commands[1].SellVehicle.vehicles[1]")
+        .eval()
+        .unwrap();
+    assert_eq!((commands, sold), (1, 3));
+    assert_eq!(
+        lua.load("return SOLD").eval::<Option<bool>>().unwrap(),
+        None
+    );
+    lua.load("FRAME() FRAME() FRAME()").exec().unwrap();
+    assert_eq!(
+        lua.load("return SOLD").eval::<Option<bool>>().unwrap(),
+        Some(true)
+    );
+
+    // A line made with a callback waits on the line it makes: refused here;
+    // without one it goes to the room.
+    lua.load(
+        "LINE = { stops = {}, vehicleInfo = { transportModes = {} } } \
+         api.cmd.sendCommand(api.cmd.makeLineCreateCmd('L', { x = 1, y = 0, z = 0 }, 25, LINE), \
+             function(_, ok) MADE = ok end) \
+         FRAME() FRAME() FRAME() \
+         api.cmd.sendCommand(api.cmd.makeLineCreateCmd('L', { x = 1, y = 0, z = 0 }, 25, LINE))",
+    )
+    .exec()
+    .unwrap();
+    let (made, commands, kind): (Option<bool>, usize, String) = lua
+        .load("return MADE, #HOOK.commands, next(HOOK.commands[2])")
+        .eval()
+        .unwrap();
+    assert_eq!(made, Some(false));
+    assert_eq!((commands, kind.as_str()), (2, "CreateLine"));
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 1);
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains(
+            "refused the player's makeTownCreateCmd in the room's game (1 so far) in the HUD's state"
+        ) && logged.contains(
+            "refused the player's makeLineCreateCmd in the room's game (1 so far) in the HUD's \
+             state: a window that waits on what it made"
+        ),
+        "{logged}"
+    );
+}
+
 /// A road modifier's build, as the room orders it: the street 8-9 rebuilt in
 /// place with the lanes, decoration, lock and owner the tool gave it. Every
 /// game gives the lanes their modes as the game takes them, a Lua array

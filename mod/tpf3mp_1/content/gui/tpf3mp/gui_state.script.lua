@@ -13,7 +13,10 @@
 --   (tpf3mp/companies.lua, followPermits), so each company builds its own
 --   headquarters;
 -- - notes the stop the construction menu gives the stop tool, which the
---   room's stop capture reads (tpf3mp/capture.lua, capture.watchStopTool).
+--   room's stop capture reads (tpf3mp/capture.lua, capture.watchStopTool);
+-- - puts the room's guard in front of this state's own api.cmd
+--   (tpf3mp/hudguard.lua): in the room's game a window here sends what the
+--   room carries to the room and nothing else.
 --
 -- Without a hook (a game Steam started) it does nothing.
 function data()
@@ -28,8 +31,19 @@ function data()
 			local link = bridge.attach(bridge.find())
 			if not link then return end
 
+			-- The room's guard on this state's own commands
+			-- (tpf3mp/hudguard.lua); its deferred answers run from read(),
+			-- which the HUD calls often.
+			local hudguard = ug_require "tpf3mp_1::/scripts/tpf3mp/hudguard.lua"
+			local guarded, failed = pcall(hudguard.install, api.cmd, link, api, "the HUD's state")
+			if not guarded then
+				link:log("the guard is not on in the HUD's state: " .. tostring(failed)
+					.. "; the player's commands there are not checked")
+			end
+
 			local mine, several, readAt = nil, false, nil
 			local function read()
+				pcall(hudguard.tick)
 				local ok, now = pcall(function() return os.clock() end)
 				if not ok or readAt == nil or now - readAt >= READ_EVERY then
 					readAt = ok and now or nil
