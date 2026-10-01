@@ -232,6 +232,8 @@ fn the_multiplayer_window_shows_a_players_portrait_beside_their_name() {
     assert_eq!(
         pictures,
         [
+            // The header's Multiplayer glyph.
+            "tpf3mp_1::/gui/tpf3mp/icons/menu_multiplayer_50.tga",
             // Julian's key banner, the first, then his portrait.
             "::/gui/menu/images/m01_ingame.tga",
             "tpf3mp_1::/gui/tpf3mp/portraits/dr_karl_brandt.tga",
@@ -247,7 +249,7 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     lua.load(FAKE_HOOK).exec().unwrap();
     lua.load(FAKE_CMD).exec().unwrap();
     lua.load(
-        "HOOK.room = true \
+        "HOOK.room = true styleSheets() \
          HOOK.status = { room = 'Sunday line', speed = 200, players = { \
              { name = 'Julian', connected = true, owner = true, me = false, banner = 'dry' }, \
              { name = 'Sam', connected = true, owner = false, me = true, id = '0000002a', \
@@ -281,8 +283,9 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     assert_eq!(count, "1");
     assert!(!open, "closed until a button is pressed");
     // The game bar's button opens the window in the game's window
-    // container: the room page, its players with their banners and how far
-    // each is, Leave, and the chat.
+    // container: the room page, with the room's speed and whether the
+    // worlds match on tapes, its players with their banners, what marks
+    // them and how far each is, the chat, and Leave room.
     let (title, texts, pictures): (String, Vec<String>, Vec<String>) = lua
         .load(
             "views(BAR.layout)[1].params.onClick() \
@@ -300,21 +303,26 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
         texts,
         [
             "Sunday line",
-            "Speed 2x · Worlds match",
+            " Speed 2x ",
+            " Worlds match ",
             "Players",
+            "2 players · 2 connected",
             "Julian",
-            "Owner · Playing",
+            "Owner",
+            " Playing ",
             "Sam",
-            "You · Downloading 42%",
-            "Leave room",
+            "You",
+            " Downloading 42% ",
             "Chat",
             "Julian: the bus is late",
-            "Send"
+            "Send",
+            "Leave room"
         ]
     );
     assert_eq!(
         pictures,
         [
+            "tpf3mp_1::/gui/tpf3mp/icons/menu_multiplayer_50.tga",
             "::/gui/menu/images/dry_ingame.tga",
             // Sam's default, from the key 0x0000002a: 42 modulo 22 is 20, the 21st.
             "::/gui/menu/images/loading_background_3.tga"
@@ -409,7 +417,10 @@ fn the_games_window_copies_the_invite_code() {
                      if v.view == 'TextView' and v.params.text == label then return v end \
                  end \
              end \
-             local shown = find('Invite code  K7QM2X') ~= nil \
+             local shown = find('K7QM2X') ~= nil \
+             for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                 if v.view == 'TextView' and v.params.text:find('example', 1, true) then shown = false end \
+             end \
              find('Copy').params.onClick() \
              local label = find('Copied') and 'Copied' or 'none' \
              for _ = 1, 130 do BAR.step() end \
@@ -483,7 +494,8 @@ fn only_the_newest_chat_lines_show_in_the_window() {
              views(BAR.layout)[1].params.onClick() \
              local out, after = {}, false \
              for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
-                 if v.view == 'TextView' and after and v.params.text ~= 'Send' then out[#out + 1] = v.params.text end \
+                 if v.view == 'TextView' and v.params.text == 'Send' then break end \
+                 if v.view == 'TextView' and after then out[#out + 1] = v.params.text end \
                  if v.view == 'TextView' and v.params.text == 'Chat' then after = true end \
              end \
              return out",
@@ -692,10 +704,10 @@ fn with_the_hook_the_gui_links_once() {
         "the GUI is linked|the guard is on 4 command factories|\
          the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)|\
          the company window shows the game's own rank only: the game's company progression did \
-         not load: fake_gui.lua:157: ug_require of an unknown path \
+         not load: fake_gui.lua:174: ug_require of an unknown path \
          /game_mechanics/company/company_progression_util.tl|\
          the game's permits count the whole world's constructions: the game's company_metadata \
-         did not load: fake_gui.lua:157: ug_require of an unknown path \
+         did not load: fake_gui.lua:174: ug_require of an unknown path \
          /game_mechanics/company/company_metadata.tl|\
          the line manager offers other companies' open stations (1 entity_util table(s))"
     );
@@ -6229,6 +6241,7 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
             if e == 90 and kind == 55 then return { player = 901 } end
         end
         HOOK.room = true
+        styleSheets()
         function as(me)
             HOOK.status = { room = "r", me_id = me, players = {
                 { name = "james", id = JAMES, me = me == JAMES, connected = true, owner = true },
@@ -6256,6 +6269,7 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
             return table.concat(out, "\n")
         end
         function last() return HOOK.commands[#HOOK.commands], HOOK.passwords[#HOOK.commands] end
+        function tab(name) button(name).onClick() end
         "#,
     )
     .exec()
@@ -6265,18 +6279,17 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
             .eval::<String>()
             .unwrap_or_else(|error| panic!("{code}: {error}\n{}", log(&lua)))
     };
-    // Yours first, marked, with its head and players; the room's first
-    // company to leave to.
-    let shown = eval("return texts()");
+    // The Companies tab: yours first, marked, with its head and players,
+    // and Leave, back to the room's first company.
+    let shown = eval("tab('Companies') return texts()");
     assert!(
-        shown.contains("Rival · Your company\nHead: james · Players: james (you), bob\n"),
+        shown.contains("Rival\n Yours \nHead: james\nPlayers: james (you), bob\nLeave\n"),
         "{shown}"
     );
     assert!(
-        shown.contains("First\nThe room's first company: everyone's, no head · Players: nobody"),
+        shown.contains("First\nEveryone's company, no head\nPlayers: nobody\nSwitch\n"),
         "{shown}"
     );
-    assert!(shown.contains("Leave to First"), "{shown}");
     // Each card shows the money the game's own windows show
     // (getPlayersBalance), not an ACCOUNT that reads 0 for the room's first
     // company; Rival's, where the game gives none, its ACCOUNT's.
@@ -6297,11 +6310,12 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
     assert!(shown.contains("$1,234,567"), "{shown}");
     assert!(shown.contains("$5,000"), "{shown}");
     assert!(!shown.contains("$0"), "{shown}");
-    // The head types a password: it goes beside the action, and the field
-    // hides it.
+    // On the Your company tab, the head types a password: it goes beside
+    // the action, and the field hides it.
     assert_eq!(
         eval(
-            "local f = find('TextInputField', function(p) return p.passwordMode end) \
+            "tab('Your company') \
+             local f = find('TextInputField', function(p) return p.passwordMode end) \
              f.onValueChange('s3cret') \
              local action, password = last() \
              return f.placeholderText .. '|' .. action.CompanyOp.Lock .. '|' .. password"
@@ -6309,14 +6323,48 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         "A password to join|1|s3cret"
     );
     assert!(!eval("return texts()").contains("s3cret"));
+    // Its loans: one to repay, and each the game offers to borrow, one row
+    // each with its rate.
+    let (shown, borrowed) = (
+        eval(
+            "ROSTER.loans = { { id = 3, company = 1, amount = 1200, remaining = 1105, payment = 107, \
+                               months = 12, paid = 1 } } \
+             local scripts = api.engine.system.gameScriptSystem.getEntityForGameScript \
+             api.engine.system.gameScriptSystem.getEntityForGameScript = function(name) \
+                 if name == '::/game_mechanics/finance/loan.gs' then return 78 end return scripts(name) end \
+             local get = api.engine.getComponent \
+             api.engine.getComponent = function(e, kind) \
+                 if e == 78 and kind == 7 then return { state = { availableLoans = { \
+                     { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 } } } } end \
+                 return get(e, kind) end \
+             for _ = 1, 20 do BAR.step() end \
+             return texts()",
+        ),
+        eval(
+            "button('Borrow').onClick() \
+             local take = last().Loan.Take.offer \
+             button('Repay').onClick() \
+             local repay = last().Loan.Repay.loan \
+             return take.type .. take.amount .. '|' .. repay.id",
+        ),
+    );
+    assert!(
+        shown.contains("$1,105 owed of $1,200\n$107 a month · 11 months left\nRepay\n"),
+        "{shown}"
+    );
+    assert!(shown.contains("$1,200\n12% a year\nBorrow\n"), "{shown}");
+    assert_eq!(borrowed, "Small1200|3");
     // The head chooses who stops at Rival's stations: by default, and for
     // the first company on its own; and sends Bob out.
     let shown = eval("return texts()");
     assert!(
-        shown.contains("Default, and companies founded later: allowed"),
+        shown.contains("Default\nAllowed\nDeny by default\n"),
         "{shown}"
     );
-    assert!(shown.contains("First: allowed (default)"), "{shown}");
+    assert!(
+        shown.contains("First\nAllowed (default)\nDeny\n"),
+        "{shown}"
+    );
     assert_eq!(
         eval(
             "button('Deny by default').onClick() \
@@ -6335,7 +6383,7 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         eval(
             "ROSTER.list[2].access = { { company = 0, open = false } } \
              for _ = 1, 20 do BAR.step() end \
-             local shown = texts():find('First: denied', 1, true) ~= nil \
+             local shown = texts():find('First\\nDenied\\nAllow\\nDefault', 1, true) ~= nil \
              button('Default').onClick() \
              local back = last().CompanyOp.StationAccess \
              ROSTER.list[2].access = nil \
@@ -6379,13 +6427,14 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
             "ROSTER.list[2].lock = { scope = 1, tag = string.rep('e', 64) } \
              ROSTER.members = { { player = JAMES, company = 1 } } \
              as(BOB) for _ = 1, 20 do BAR.step() end \
+             tab('Companies') \
              local n = #HOOK.commands \
              local asked = find('TextInputField', function(p) return p.passwordMode end) == nil \
-             button('Switch to Rival').onClick() \
+             button('Switch').onClick() \
              local refused = #HOOK.commands == n and asked \
              local f = find('TextInputField', function(p) return p.passwordMode end) \
              f.onTyping('s3cret') \
-             button('Switch to Rival').onClick() \
+             button('Switch').onClick() \
              local action, password = last() \
              return tostring(refused) .. '|' .. action.CompanyOp.Join .. '|' .. password"
         ),
@@ -6393,7 +6442,9 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
     );
     let shown = eval("return texts()");
     assert!(
-        shown.contains("Rival\nHead: james · Players: james\nPassword · Stations closed"),
+        shown.contains(
+            "Rival\n Password \n Stations closed \nHead: james\nPlayers: james\nSwitch\n"
+        ),
         "{shown}"
     );
     assert!(shown.contains("Switching to Rival..."), "{shown}");
@@ -6405,18 +6456,22 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         "{logged}"
     );
     // Bob in Rival, not its head: he renames it, leaves to the first
-    // company in one click, or founds his own; the head's controls are not
-    // his.
+    // company in one click (Leave on its card), or founds his own; the
+    // head's controls are not his.
     assert_eq!(
         eval(
             "ROSTER.members = { { player = JAMES, company = 1 }, { player = BOB, company = 1 } } \
              for _ = 1, 20 do BAR.step() end \
-             local headless = button('Send out') == nil and button('Close') == nil and button('Set') == nil \
-             button('Leave to First').onClick() \
+             tab('Your company') \
+             local headless = button('Send out') == nil and button('Clear') == nil and button('Set') == nil \
+                 and button('Rename') ~= nil \
+             tab('Companies') \
+             button('Leave').onClick() \
              local left = last().CompanyOp.Join \
+             tab('Your company') \
              find('TextInputField', function(p) return p.placeholderText == 'A company of your own' end) \
                  .onTyping('Bob Bus') \
-             button('Found a company').onClick() \
+             button('Found').onClick() \
              local founded = last().CompanyOp.Create.name \
              return tostring(headless) .. '|' .. left .. '|' .. founded .. '|' \
                  .. tostring(button('Rename') ~= nil)"

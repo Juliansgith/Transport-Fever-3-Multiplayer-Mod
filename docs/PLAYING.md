@@ -310,13 +310,15 @@ protected folder such as Program Files.
   room in one line: its name, how many players are in the game, its speed,
   and new chat. Click it, or the Multiplayer button among the mods'
   buttons (the main menu's Multiplayer glyph, with the number of new chat
-  lines), for the Multiplayer window: the room's invite code with
-  **Copy**, the room's players as their banners (and portraits),
-  each marked **Owner**, **You**, **Away** and how far their game is
-  (**Downloading 42%**, **Loading...**, **Playing**), its speed, whether
-  your world matches the room's, the companies, **Leave room** (asks
-  first), and on the right the room's newest chat, where you can write to
-  everyone. Rooms and invites
+  lines), for the Multiplayer window. Its header has the room's name,
+  its invite code with **Copy**, its speed and whether your world matches
+  the room's. Under it, three tabs: **Players**, the room's players as
+  their banners (and portraits), each marked **Owner**, **You**, and how
+  far their game is (**Downloading 42%**, **Loading...**, **Playing**,
+  **Away**); **Companies** and **Your company** (below). On the right is
+  the room's newest chat, where you can write to everyone, and at the
+  bottom what your last company action came to and **Leave room** (asks
+  first). Rooms and invites
   are on the main menu's Multiplayer window (see "Playing from the game's
   Multiplayer button").
 - **Speed and pause.** The room's owner sets the room's speed, pause
@@ -400,21 +402,22 @@ protected folder such as Program Files.
   them, as usual: every player's game does it together, and your window
   hears it a moment after your click.
 - **Companies.** Everyone starts in the save's own company, together. The
-  Multiplayer window lists every company as a card: its colour, name,
-  head, players, money, and whether it has a password; yours comes first,
-  marked **Your company**. **Switch to** on any other company moves you
-  there in one click (one with a password asks for it first, then
-  **Switch to** again), **Leave to** on yours takes you back to the room's
-  first company, and **Found a company** makes one of your own. Under the
-  cards you can rename yours, recolour it with its colour button, and
-  dissolve it once you are its last player and it owns nothing; any split
-  works, two players in one company and one in another included. What you build and buy is your company's
+  Multiplayer window's **Companies** tab lists every company as a card:
+  its colour, name, money, head, players, and whether it has a password;
+  yours comes first, marked **Yours**. **Switch** on any other company
+  moves you there in one click (one with a password asks for it first,
+  then **Switch** again), **Leave** on yours takes you back to the room's
+  first company, and **Dissolve** dissolves yours once you are its last
+  player and it owns nothing. Recolour yours with its colour button. The
+  **Your company** tab renames it, and **Found** under "A company of your
+  own" makes one of your own; any split works, two players in one company
+  and one in another included. What you build and buy is your company's
   and paid by it, and what another company owns (its vehicles, lines,
   depots, stations and roads) is theirs: you cannot change or remove it.
   The game's own windows show your company: its money in the corner, and
   your things as yours. A new company starts with no money: borrow on the
-  terms the game offers in the Multiplayer window, which also shows its
-  loans and pays them back (the game's finance window keeps the room's
+  terms the game offers under **Loans** on the Multiplayer window's
+  **Your company** tab, which also shows its loans and pays them back (the game's finance window keeps the room's
   first company's loans). With more than one company, vehicles and their
   markers on the map wear their company's colour, and a new colour
   repaints them. The colour button offers the companies' colours first,
@@ -427,8 +430,8 @@ protected folder such as Program Files.
 - **Competitive rooms.** In a room created **Competitive**, every player
   gets a company of their own without clicking anything: about a second
   after you arrive in the room's world, your game founds `<your name>'s
-  company` for you and you play for it, as if you had pressed **Found a
-  company** (the Multiplayer window says "Founding your company, ...").
+  company` for you and you play for it, as if you had pressed **Found**
+  (the Multiplayer window says "Founding your company, ...").
   The host gets one too, and so does a player who joins the running game
   later. You are its head; rename or recolour it as any company. The
   room's first company, the save's own, stays in the room but nobody plays
@@ -447,12 +450,13 @@ protected folder such as Program Files.
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows
   each company's head. The head can give the company a password: then
-  others join it only by typing the password **Switch to** asks for.
+  others join it only by typing the password **Switch** asks for.
   The password goes to the server, which keeps it from every game and
   every log; nobody, the head included, can read it back, so share it
   the way you share a room's. The head can also remove or change the
-  password, send a player back to the room's first company, and choose
-  who may stop at the company's stations: **Deny by default** or **Allow
+  password, send a player back to the room's first company (**Send out**),
+  and choose under **Station access** on the **Your company** tab who may
+  stop at the company's stations: **Deny by default** or **Allow
   by default** for every company (those founded later included), and
   **Allow** or **Deny** for each other company on its own, which wins over
   the default (**Default** puts it back). Stations start open: your lines

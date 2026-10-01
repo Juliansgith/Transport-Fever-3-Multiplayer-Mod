@@ -156,11 +156,11 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   server carries it, in the room view and the room list, and orders
   nothing for it: in a competitive room each player's own game founds
   their company as it arrives in the room's world, with the same company
-  action **Found a company** sends, an intent like any other (D8: the
-  server relays actions without reading or writing them; HOOKS.md, "In a
-  competitive room"). The room's log keeps the play style (log format 9),
-  so a restored room is competitive too; a log of format 8, from before,
-  restores co-op.
+  action the Multiplayer window's **Found** sends, an intent like any
+  other (D8: the server relays actions without reading or writing them;
+  HOOKS.md, "In a competitive room"). The room's log keeps the play style
+  (log format 9), so a restored room is competitive too; a log of format
+  8, from before, restores co-op.
 - **Updates.** Members receive the full room view (`RoomUpdate`) whenever it
   changes. Updates and responses are independent messages: a `RoomUpdate`
   caused by a request can arrive before that request's `Response`.

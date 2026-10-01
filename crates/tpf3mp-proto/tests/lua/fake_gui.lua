@@ -1,6 +1,6 @@
 -- A stand-in for Transport Fever 3's GUI state, as much of it as the mod's
 -- entry script (mod/tpf3mp_1/content/gui/tpf3mp/tpf3mp.script.lua) uses:
--- ug_require, react, builtin, the game bar's and the mods' buttons'
+-- ug_require, react, builtin, gui_react_util's spacer, the game bar's and the mods' buttons'
 -- extension points, the window container's API and debugPrint. Its shape
 -- follows mods made for build 40391 (investigation/TF3_MODS_2026-09-27.md)
 -- and the game's own GUI (gui/game_bar/game_bar.tl opens its windows so).
@@ -62,7 +62,7 @@ end
 
 local builtin = { type = {
 	Orientation = { Horizontal = "Horizontal", Vertical = "Vertical" },
-	ScrollBarPolicy = { Simple = "Simple", AlwaysOff = "AlwaysOff" },
+	ScrollBarPolicy = { Simple = "Simple", AlwaysOff = "AlwaysOff", AsNeeded = "AsNeeded" },
 } }
 function builtin.BoxLayout(params)
 	local children = params.children or {}
@@ -84,12 +84,28 @@ for _, view in ipairs({ "TextView", "Button", "ScrollArea", "Component", "TextIn
 			if view == "ImageView" then
 				assert(type(params.path) == "string" and params.path ~= "", "an ImageView without a path")
 			end
+			-- A size is -1 (left to the content) or more than 0: the game
+			-- drew a size of 0 as nothing, hiding what is in it.
+			local sheet = params.meta and params.meta.styleSheet
+			local size = sheet and sheet.size
+			if size then
+				for _, side in ipairs({ size.x, size.y }) do
+					assert(side == -1 or side > 0, view .. ": a size of " .. tostring(side) .. " hides what is in it")
+				end
+			end
 			return { view = view, params = params }
 		end,
 	})
 end
 
-local game_bar_widgets = { GameBarInfoDisplayExtension = "GameBarInfoDisplayExtension" }
+-- The game's spacer (gui/main/gui_react_util.tl): a component that takes
+-- what its row leaves.
+local gui_react_util = {}
+function gui_react_util.makeHorizontalSpacer()
+	return builtin.Component{ layout = builtin.BoxLayout{ children = {} } }
+end
+
+local game_bar_widgets ={ GameBarInfoDisplayExtension = "GameBarInfoDisplayExtension" }
 local main_mod_button_area = { MainModButtonAreaExtension = "MainModButtonAreaExtension" }
 
 -- The window container: a singleton window is added once and stays until
@@ -137,6 +153,7 @@ local GAME = {
 	["/scripts/entity_util.tl"] = entity_util,
 	["::/gui/main/react.lua"] = react,
 	["::/gui/main/builtin.lua"] = builtin,
+	["::/gui/main/gui_react_util.tl"] = gui_react_util,
 	["::/gui/game_bar/game_bar_widgets.tl"] = game_bar_widgets,
 	["::/gui/main/main_mod_button_area.tl"] = main_mod_button_area,
 	["::/gui/main/game_react_globals.tl"] = game_react_globals,
@@ -208,6 +225,18 @@ function views(node, out)
 	for _, key in ipairs({ "content", "layout", "child" }) do views(params[key], out) end
 	for _, child in ipairs(params.children or {}) do views(child, out) end
 	return out
+end
+
+-- Gives api the game's inline style sheets (api.gui.StyleSheet, with
+-- api.type.Vec2f and Vec4f for its size and padding), for a test that
+-- holds the window's sizes to the game's rules.
+function styleSheets()
+	api = api or {}
+	api.gui = api.gui or {}
+	api.gui.StyleSheet = { new = function() return {} end }
+	api.type = api.type or {}
+	api.type.Vec2f = { new = function(x, y) return { x = x, y = y } end }
+	api.type.Vec4f = { new = function(a, b, c, d) return { a, b, c, d } end }
 end
 
 -- The lines the mod logged, one per line.

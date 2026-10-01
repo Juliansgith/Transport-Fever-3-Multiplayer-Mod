@@ -1429,7 +1429,7 @@ state, which the game saves with the world:
   state`).
 - *In a competitive room* the GUI founds the player a company of their
   own (`tpf3mp.script.lua`, `foundOwnCompany`): the same `CompanyOp`
-  `Create` **Found a company** sends, named `<name>'s company`, sent by the
+  `Create` **Found** sends, named `<name>'s company`, sent by the
   player's own game, so the room orders it for every game like any other
   action (D8: the server never writes an action). Only while
   `status().competitive` is true, the roster is read and says the player
