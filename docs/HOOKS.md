@@ -1636,6 +1636,22 @@ What the mod does, with more than one company in the room:
   rank. With one company, the game's own counts. `hook.log`: `the game's
   permits count each company's own constructions (N company_util
   table(s))`, and the same `in the HUD's state`.
+- **In the game scripts' GUI state** too, where the game's company script
+  checks a construction's permits as the tool proposes it
+  (`company.script.tl`, `builder.proposalCreate`: an error and
+  `skipRender`, so the tool shows no preview and builds nothing): the mod's
+  game script's `guiHandleEvent` puts on, once a state, getPlayer as the
+  player's company (`follow.lua`), the company's own rank
+  (`progression.follow`) and its own permit counts (`followPermits`), each
+  a no-op where another GUI state sharing the tables did first. Without
+  them a founded company's headquarters showed no preview (2026-10-01): the
+  script read the save's player's rank and counted every company's
+  headquarters. `hook.log`: `the game scripts' GUI state: getPlayer follows
+  the player's company; ranks are each company's; permits count each
+  company's own constructions`. The executable has no headquarters check
+  of its own in the construction tool: `"headquarters"` is read only by the
+  proposal's apply (`sub_9f96e0`, which sets the paying player's
+  headquarters) and the Lua bindings' setup.
 - After a headquarters is built, every game logs what the engine made of
   it: `headquarters for company entity <e>: its PLAYER names <entity>`
   (INFERRED that the engine sets `headquarters` for the paying company's
