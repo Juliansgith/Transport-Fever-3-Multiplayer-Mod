@@ -259,6 +259,12 @@ protected folder such as Program Files.
   room's newest chat, where you can write to everyone. Rooms and invites
   are on the main menu's Multiplayer window (see "Playing from the game's
   Multiplayer button").
+- **Reading the room.** Its in-game window keeps room status at the top,
+  with Players and Companies side by side. Company cards separate the
+  name, balance, debt and members; your company comes first. Scroll the
+  company column for its management controls or more companies. Chat has
+  its own scrolling history, with the message field always below it.
+  Long names and messages wrap rather than widening the window.
 - **Speed and pause.** The room's owner sets the room's speed, pause
   included, with the game's own speed buttons, and everyone's game runs at
   it. Anyone else's speed buttons do not change the room's speed: the

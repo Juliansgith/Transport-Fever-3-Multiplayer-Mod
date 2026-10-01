@@ -77,7 +77,7 @@ is in [docs/PLAYING.md](docs/PLAYING.md).
 - The launcher is **tearded's TPF2 Multiplayer Launcher**, brought to
   Transport Fever 3.
 - TPF3-MP builds on two Transport Fever 2 multiplayer mods by its team:
-  **TPF2MP** by Julian Cooper and **TpF2 Multiplayer** by silver2127.
+  **TPF2MP** by _Sep and **TpF2 Multiplayer** by silver2127.
 - The city in the launcher is a Transport Fever 2 screenshot, and the
   logo is Transport Fever 3's, both © Urban Games, used under their
   fan-content terms.
