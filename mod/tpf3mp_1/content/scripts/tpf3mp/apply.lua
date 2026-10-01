@@ -286,6 +286,7 @@ local function module(name)
 end
 
 local geom = module("geom")
+local junctions = module("junctions")
 
 -- How near an existing node a vertex resolving to it is, horizontally.
 local NODE_TOLERANCE = 1.5
@@ -608,8 +609,9 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	-- and the game cannot read a proposal that removes an edge a
 	-- configuration still names (build 40408: "Unknown exception" from
 	-- makeProposalData). So the configurations at the ends of the removed
-	-- edges go too, and the game makes new ones; a node removed takes its
-	-- own with it, and may not be named for both.
+	-- edges go too. junctions.into below adds their settings back with the
+	-- replacement edges; a removed node takes its own configuration with it
+	-- and may not be named for both.
 	local configsToRemove = {}
 	for _, node in ipairs(ends) do
 		if not removedNode[node]
@@ -623,6 +625,7 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	proposal.streetProposal.edgesToRemove = edgesToRemove
 	if #nodesToRemove > 0 then proposal.streetProposal.nodesToRemove = nodesToRemove end
 	if #configsToRemove > 0 then proposal.streetProposal.nodeConfigsToRemove = configsToRemove end
+	junctions.into(proposal, polyline.junctions, ends, mine)
 
 	-- What is sent, in the log before it goes: an exception from the game
 	-- does not always come back through pcall.
@@ -653,6 +656,15 @@ end
 
 function HANDLERS.BuildRoad(road)
 	return buildNetwork("Street", road.street, road.style, road.polyline)
+end
+
+function HANDLERS.EditJunctions(edit)
+	junctions.requireEnabled()
+	local proposal = api.type.SimpleProposal.new()
+	junctions.into(proposal, edit.changes, {}, mine)
+	local context = api.type.Context.new()
+	context.player = company()
+	return buildProposal(proposal, context)
 end
 
 -- The bulldozer's removals, as the game makes them itself: a construction

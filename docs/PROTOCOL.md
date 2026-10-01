@@ -306,6 +306,10 @@ These travel on the control stream.
   opaque, size-capped payload. The game's actions are encoded in it by the
   action schema (`tpf3mp_proto::action`, described in "The action schema"
   in [BUILDING.md](BUILDING.md)), which has a version of its own.
+  Action schema 11 adds portable junction edits and junction changes in
+  road/track polylines. Its duration fields are milliseconds on the wire;
+  engine IDs remain local. Schema 10 payloads are refused by schema 11
+  clients. The enclosing control protocol and bridge layout are unchanged.
   - The server validates it: the room is running, the sender is a member,
     rate and size limits hold, and the ruleset accepts it.
   - Accepted: the intent enters the next turn as a `Command` event. The event

@@ -318,8 +318,25 @@ proposals on build 40408 (read from the binary: `UI::CGameUI` forwards
 `builder.proposalCreate` for six other tools only), so the hook reads its
 proposal natively at its call of `CommandList::Add` and hands the GUI the
 same table a tool's proposal would be ([HOOKS.md](HOOKS.md), "The module
-editor"). What TPF3 shows of an edit's proposal is INFERRED from TPF2's
-shape and a static reading until an edit is seen in the game.
+editor"). A real module edit was captured on Steam build 40408 on
+2026-10-01: it replaces the old construction and rebuilds its own tracks.
+The two-track station removes 50 nodes and 48 edges, but its component
+lists only 46 frozen nodes. Its four unfrozen track ends each touch one
+of its frozen edges. Capture accepts an unfrozen removed node only when
+every incident edge is frozen in that construction and also removed by
+the edit. An endpoint shared with external track, an empty incidence
+list, or an unreadable list is refused. The regression test covers those
+boundaries; capture evidence alone does not prove replay in both games.
+
+The corrected capture was then exercised in two launcher-started games on
+the local server, from a save containing that station: a platform extension
+from the guest was applied in both games and was visible in the host.
+Read-only queries of the resulting station's flattened parameters matched
+exactly. A second module edit and an eight-track, 320 m station placement
+also applied in both games; all 54 shared network checkpoints through step
+2700 agreed. This proves those edits, not every module type or an edit that
+also rebuilds external connecting track. One host startup failed before
+testing and succeeded on rejoin; that loading failure remains unresolved.
 
 ### Demolish
 
@@ -541,15 +558,45 @@ on build 40408 the game cannot read a script proposal that removes an edge
 a configuration still names (`makeProposalData` raises "Unknown exception"
 from its worker threads): the replay removes the configurations at the ends
 of the edges it removes (`nodeConfigsToRemove`), except at a node it removes,
-which takes its own along and may not be named for both, and the game makes
-new ones. A node's own settings (traffic lights, lane connections set by
-hand) go back to the game's defaults there. Before sending, the replay asks
+which takes its own along and may not be named for both. The replay now
+adds preserved configurations back with references to the replacement
+edges (`tpf3mp/junctions.lua`). A split matches the unique replacement
+with the old edge's tangent at that endpoint, including curved roads.
+Missing lanes or an ambiguous replacement refuse the build instead of
+resetting the player's settings. Before sending, the replay asks
 the game's verdict (`makeProposalData`) and refuses a build it calls
 critical, with its reasons.
 The tests `tpf3mp-proto/tests/lua_capture.rs` (a junction rebuilt around a
 new street, a level crossing, a bridge, a tunnel, an upgrade, the TF3
 proposal's shape) and `lua_mod.rs` (the replay) run it in Lua and decode
 the bytes with the Rust schema.
+
+### Junction edits (action schema 11)
+
+`EditJunctions` carries node positions and connected edge endpoints in
+millimetres, lane indices counted from the junction, crosswalk edges,
+the Auto/Yes/No traffic-light preference, a light resource name, ordered
+phases, their locked-lane indices, duration/minimum in milliseconds,
+skip flags, double-slip and custom-phase flags. No engine entity or
+resource integer crosses the wire. A missing configuration is an explicit
+reset. Road/track polylines also carry the junction updates in their
+proposal; construction entrance polylines use the same representation.
+
+The adapter resolves references in three dimensions within 2 mm, refusing
+ambiguity, missing resources, missing lanes and changes to another
+company's edges. Lists are rebuilt in index order before assigning the
+engine's vectors. It preserves the phase-to-connection relationship.
+The schema caps an edit at 64 junctions, each with 256 connections,
+256 crosswalks and 64 phases, and validates locked indices and durations.
+
+Standalone edits are behind `strict_junctions` in `junctions.lua`, **off
+by default** under PLAN.md Part 3. For the acceptance test, set it true
+in matching mod copies on both test games and use the new hook/profile.
+The capture and replay both refuse edits with it off. Tests cover native
+memory decoding, portable round trips into replicas with different IDs,
+curved-edge preservation, refusal cases and checkpoint differences. This
+is adapter evidence, not a completed real-game playtest. Follow the
+two-game checklist in HOOKS.md before changing the default.
 
 Not in version 1: companion spans (an unchanged bridge span the engine
 re-adds), construction street pieces (`ROADC`), paint and the asset brush,

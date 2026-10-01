@@ -685,6 +685,11 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         // thread runs yet; detour_forever installs each for good.
         (Ok(add), Ok(apply)) => {
             let module = at(crate::modules::MODULE_ADD_CALL).ok();
+            crate::junctions::enable(
+                at(crate::junctions::CONFIG_LAYOUT).is_ok()
+                    && at(crate::junctions::PROPOSAL_LAYOUT).is_ok()
+                    && at(crate::junctions::CROSSWALK_LAYOUT).is_ok(),
+            );
             // SAFETY: as above.
             unsafe { crate::builds::install(add, apply, module, detour_forever) }
                 .map(|()| match module {
