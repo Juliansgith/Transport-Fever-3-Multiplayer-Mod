@@ -237,19 +237,10 @@ local function squeeze(text)
 	return (tostring(text):lower():gsub("[^%w]", ""))
 end
 
--- Whether an event from the personal mod `mod` (its modId) is addressed to
--- the mod's own game script: its id is not one the game's scripts or
--- TPF3-MP listen to, its name is none they listen to under any id, and the
--- id names the mod: it contains the mod's id, or one of its words of four
--- letters or more (Timetables' "TimetablesEdit" for celmi_timetables).
-function guard.ownEvent(mod, id, name)
-	if type(mod) ~= "string" or type(id) ~= "string" or type(name) ~= "string" then return false end
-	if guard.RESERVED_IDS[id] then return false end
-	for _, prefix in ipairs(guard.RESERVED_NAMES) do
-		if name:sub(1, #prefix) == prefix then return false end
-	end
-	local squeezed = squeeze(id)
-	if squeezed == "" then return false end
+-- Whether the event id `squeezed` (squeeze()d) names the mod `mod`: it
+-- contains the mod's id, or one of its words of four letters or more
+-- (Timetables' "TimetablesEdit" for celmi_timetables).
+local function names(mod, squeezed)
 	if squeezed:find(squeeze(mod), 1, true) then return true end
 	for word in mod:gmatch("[%w]+") do
 		if #word >= 4 and not word:match("^%d+$") and squeezed:find(word:lower(), 1, true) then
@@ -257,6 +248,29 @@ function guard.ownEvent(mod, id, name)
 		end
 	end
 	return false
+end
+
+-- Whether an event from the personal mod `mod` (its modId) is addressed to
+-- the mod's own game script: its id is not one the game's scripts or
+-- TPF3-MP listen to, its name is none they listen to under any id, the id
+-- names the mod, and it names none of `shared`, the room's shared mods,
+-- whose game scripts run in every game and might hear it too (a personal
+-- "timetables_ui_tweak" sending "TimetablesEdit", which the shared
+-- celmi_timetables hears, would desync this game). Without the shared
+-- list (nil), no event is the mod's own.
+function guard.ownEvent(mod, id, name, shared)
+	if type(mod) ~= "string" or type(id) ~= "string" or type(name) ~= "string" then return false end
+	if type(shared) ~= "table" then return false end
+	if guard.RESERVED_IDS[id] then return false end
+	for _, prefix in ipairs(guard.RESERVED_NAMES) do
+		if name:sub(1, #prefix) == prefix then return false end
+	end
+	local squeezed = squeeze(id)
+	if squeezed == "" or not names(mod, squeezed) then return false end
+	for _, other in ipairs(shared) do
+		if other ~= mod and names(other, squeezed) then return false end
+	end
+	return true
 end
 
 -- What the player is told when a command of `kind` is refused.
@@ -285,6 +299,8 @@ guard.HOLD = 240
 --   context       -> names what commands name (tpf3mp/capture.lua);
 --   personal(mod) -> optional: whether `mod` is one of this player's
 --                    personal mods (docs/MODS.md);
+--   shared()      -> optional: the room's shared mods, a list of names, or
+--                    nil (then no personal mod's event is its own);
 --   caller()      -> optional: the mod a command came from (guard.caller).
 -- refused() is also given the mod the command came from, if one did.
 -- Returns the number of factories wrapped, or nil and why the guard could
@@ -345,7 +361,7 @@ function guard.install(cmd, env)
 		-- its events is carried or refused below, as a click's.
 		if kind == "makeScriptingSendEventCmd" and from and env.personal and env.personal(from) then
 			local args = calls[command]
-			if args and guard.ownEvent(from, args[2], args[3]) then
+			if args and guard.ownEvent(from, args[2], args[3], env.shared and env.shared()) then
 				return send(command, ...)
 			end
 		end

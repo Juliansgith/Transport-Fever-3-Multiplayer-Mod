@@ -1524,6 +1524,32 @@ fn the_game_script_hands_the_lanes_over_at_a_checkpoint_only() {
     assert_eq!(handed, read_lanes(&lua));
 }
 
+/// A simulation state without debug.getinfo cannot tell a personal mod's
+/// command from the game's own: it notes so for the hook, which loads the
+/// room's worlds without this player's personal mods from then on, and
+/// says why in the log.
+#[test]
+fn a_simulation_state_that_cannot_guard_personal_mods_has_them_left_out() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    lua.load(
+        "tpf3mp_native.personal = function() return 'celmi_timetables' end          debug = nil UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let (noted, logged): (Option<String>, String) = lua
+        .load(
+            "return HOOK.notes and HOOK.notes['personal-mods-unguarded'],              table.concat(HOOK.logged, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(noted.as_deref(), Some("1"));
+    assert!(
+        logged.contains("personal mods are left out of the room's worlds"),
+        "{logged}"
+    );
+}
+
 /// A game of the room with the stand-in world: its registry begun at the
 /// room's first update, the engine listing entities in its own order.
 fn dumping_game(reversed: bool) -> Lua {
@@ -4077,6 +4103,7 @@ fn the_guard_names_the_mod_and_lets_a_personal_mods_events_reach_its_script() {
                 later = function() end,
                 context = {},
                 personal = function(mod) return mod == 'celmi_timetables' end,
+                shared = function() return { 'tpf3mp_1' } end,
                 caller = function() return FROM end,
             })
             api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'TimetablesEdit', 'setArrDep', {}))
@@ -4134,6 +4161,7 @@ fn a_personal_mods_events_to_the_games_scripts_take_the_rooms_way() {
                 later = function() end,
                 context = { town = function() return nil end, player = function() return 1 end },
                 personal = function(mod) return mod == 'celmi_timetables' end,
+                shared = function() return { 'tpf3mp_1', 'other_mod_1' } end,
                 caller = function() return 'celmi_timetables' end,
             })
             local ev = api.cmd.makeScriptingSendEventCmd
@@ -4148,12 +4176,17 @@ fn a_personal_mods_events_to_the_games_scripts_take_the_rooms_way() {
             api.cmd.sendCommand(ev('', 'TimetablesEdit', 'setArrDep', {}))
             local sent = {}
             for _, s in ipairs(SENT) do sent[#sent + 1] = tostring(s.command.id) .. ':' .. tostring(s.command.name) end
+            local shared = { 'tpf3mp_1' }
             local own = {
-                guard.ownEvent('celmi_timetables', 'TimetablesEdit', 'setArrDep'),
-                guard.ownEvent('celmi_timetables', 'celmi_timetables', 'x'),
-                guard.ownEvent('celmi_timetables', 'Notifications', 'add'),
-                guard.ownEvent('celmi_timetables', 'OtherModChannel', 'x'),
-                guard.ownEvent('gw_big_city_1', 'big', 'x'),
+                guard.ownEvent('celmi_timetables', 'TimetablesEdit', 'setArrDep', shared),
+                guard.ownEvent('celmi_timetables', 'celmi_timetables', 'x', shared),
+                guard.ownEvent('celmi_timetables', 'Notifications', 'add', shared),
+                guard.ownEvent('celmi_timetables', 'OtherModChannel', 'x', shared),
+                guard.ownEvent('gw_big_city_1', 'big', 'x', shared),
+                -- A shared mod hears the same id: not the personal mod's alone.
+                guard.ownEvent('timetables_ui_tweak', 'TimetablesEdit', 'x', { 'celmi_timetables' }),
+                -- Without the room's shared list, nothing is its own.
+                guard.ownEvent('celmi_timetables', 'TimetablesEdit', 'setArrDep', nil),
             }
             return table.concat(sent, ','), HANDED, REFUSED, own
             "#,
@@ -4166,7 +4199,7 @@ fn a_personal_mods_events_to_the_games_scripts_take_the_rooms_way() {
     );
     assert_eq!(handed, ["ApplyRank", "Loan"], "carried as a click's are");
     assert_eq!(refused.len(), 3, "{refused:?}");
-    assert_eq!(own, [true, true, false, false, false]);
+    assert_eq!(own, [true, true, false, false, false, false, false]);
 }
 
 #[test]

@@ -149,6 +149,7 @@ function data()
 
 	-- The guard on what this player's personal mods' game scripts send, in
 	-- this state (tpf3mp/modguard.lua): put on once the link is.
+	local PERSONAL_UNGUARDED = "personal-mods-unguarded"
 	local function guardPersonalMods(companiesModule, registryModule)
 		local okModule, modguard = pcall(ug_require, MOD .. "::/scripts/tpf3mp/modguard.lua")
 		local okCmd, cmd = pcall(function() return api.cmd end)
@@ -158,11 +159,15 @@ function data()
 		end
 		if type(debug) ~= "table" or type(debug.getinfo) ~= "function" then
 			-- Without the stack no command can be told to be a personal
-			-- mod's: fail closed is not possible here, so say it loudly
-			-- when this player has any.
+			-- mod's. Fail closed: the hook loads the room's worlds without
+			-- this player's personal mods from now on (tpf3mp_native.note,
+			-- PERSONAL_UNGUARDED), and whatever one does before is this
+			-- game's alone, which the room's check finds and its resync
+			-- loads anew without them.
+			link:note(PERSONAL_UNGUARDED, "1")
 			if next(link:personal()) ~= nil then
 				link:log("the personal mods' guard is not on: this state has no debug.getinfo, "
-					.. "so a personal mod's game script would act in this game alone")
+					.. "so this player's personal mods are left out of the room's worlds from the next load")
 			end
 			return
 		end

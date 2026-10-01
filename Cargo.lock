@@ -4626,6 +4626,7 @@ dependencies = [
  "tpf3mp-net",
  "tpf3mp-proto",
  "tpf3mp-server",
+ "tpf3mp-snapshot",
  "tracing",
  "tracing-subscriber",
 ]

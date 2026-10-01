@@ -323,7 +323,7 @@ impl Directory {
                 .cmp(&(b.phase != RoomPhase::Lobby))
                 .then(b.players.cmp(&a.players))
                 .then_with(|| a.name.as_str().cmp(b.name.as_str()))
-                .then_with(|| a.invite.to_string().cmp(&b.invite.to_string()))
+                .then_with(|| a.invite.0.cmp(&b.invite.0))
         });
         let start = usize::from(page).saturating_mul(ROOMS_PER_PAGE);
         let more = listed.len() > start.saturating_add(ROOMS_PER_PAGE);

@@ -347,6 +347,46 @@ fn what_the_scan_cannot_read_or_the_guard_cannot_see_is_shared() {
     );
 }
 
+/// What reaches the game through another name, or a field named by a
+/// string, is what it reaches as written.
+#[test]
+fn an_alias_or_a_string_index_hides_nothing() {
+    let dir = mod_with(&[
+        ("mod.json", MANIFEST),
+        (
+            "content/gui/x.script.lua",
+            "local g = game
+             g.interface.buildConstruction()
+             local rep = api.res.modelRep
+             rep.add(\"m.mdl\", {}, true)
+             local c = g.config
+             c.millisPerDay = 1
+             local send = api[\"cmd\"]
+             game[\"interface\"].upgradeConstruction()
+             api.res.streetTypeRep.remove(\"s.lua\")
+             local name = c.name
+             local rows = params.config[\"rows\"]
+",
+        ),
+    ]);
+    let report = scan(dir.path());
+    assert_eq!(report.class, Class::Shared);
+    assert_eq!(
+        sharing(&report)
+            .into_iter()
+            .map(|(k, _, l)| (k, l))
+            .collect::<Vec<_>>(),
+        [
+            (Kind::ResourceWrite, Some(4)),
+            (Kind::ResourceWrite, Some(9)),
+            (Kind::GameInterface, Some(2)),
+            (Kind::ConfigWrite, Some(6)),
+            (Kind::Dynamic, Some(7)),
+            (Kind::Dynamic, Some(8)),
+        ]
+    );
+}
+
 #[test]
 fn no_manifest_or_a_broken_one_is_shared() {
     let dir = mod_with(&[("content/gui/x.script.lua", "return {}")]);

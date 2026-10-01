@@ -1093,8 +1093,9 @@ game scripts is dropped; anything else is refused, each once in hook.log
 (`handed makeVehicleSetManualDepartureCmd from the personal mod
 celmi_timetables to the room (1 so far)`). Commands from the game's own
 scripts, TPF3-MP's and shared mods run as before. A state without
-`debug.getinfo` cannot tell them apart, and says so in hook.log when the
-player has personal mods.
+`debug.getinfo` cannot tell them apart: it notes `personal-mods-unguarded`,
+after which the hook loads the room's worlds without the player's personal
+mods (docs/MODS.md).
 
 The mod guards the build tools in its game script, whose `guiHandleEvent`
 runs in the GUI's state. The street, track, station and depot, stop and
