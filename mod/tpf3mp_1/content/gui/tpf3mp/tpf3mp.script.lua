@@ -192,6 +192,14 @@ function data()
 		return okId and id ~= nil
 	end
 
+	-- Seconds by the wall clock, for how long an answer waits on what its
+	-- command made (tpf3mp/guard.lua, HOLD_SECONDS); nil without one.
+	local function clock()
+		local ok, t = pcall(function() return os.time() end)
+		if ok and type(t) == "number" then return t end
+		return nil
+	end
+
 	-- Puts the guard in front of the GUI's commands.
 	local function guardCommands()
 		local ok, cmd = pcall(function() return api.cmd end)
@@ -1196,7 +1204,7 @@ function data()
 			if link and guardedCmd then
 				local delivered, why = pcall(function()
 					local results = link:results()
-					require("tpf3mp.guard").deliver(guardedCmd, results, sees)
+					require("tpf3mp.guard").deliver(guardedCmd, results, sees, clock)
 					local shared = ui()
 					for _, r in ipairs(results or {}) do
 						local doing = shared.asked and r.ticket and shared.asked[r.ticket]

@@ -1225,8 +1225,11 @@ reference of its own to either. Once linked, the GUI wraps every
   script's state the GUI reads names it by its id (`guard.NAMED`): that
   state reaches the GUI after the entity, and the store's "buy and put on
   a line" sent its line assignment in between, which no game could name
-  ("a vehicle the room cannot name", 2026-09-30). A few seconds at most,
-  and answers keep their order; a
+  ("a vehicle the room cannot name", 2026-09-30). Each answer waits on its
+  own entity for up to 20 seconds by the clock, counted from when it is the
+  one waited on (`guard.HOLD_SECONDS`; a frame count ran out before the GUI
+  named a burst of five vehicles, 2026-10-01), and answers keep their
+  order; a
   command that should have made something and made nothing the game could
   name is answered as failed, which the windows handle. With both, a new
   line took its stops one by one as in single player (build 40408). So

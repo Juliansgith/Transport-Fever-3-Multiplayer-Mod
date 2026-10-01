@@ -289,8 +289,15 @@ local waiting = setmetatable({}, { __mode = "k" })
 local held = setmetatable({}, { __mode = "k" })
 
 -- Calls to deliver() an answer waits at most for the GUI to see the entity
--- it made (one a frame: a few seconds).
+-- it made, where deliver() has no clock (one a frame: a few seconds at
+-- 60 frames a second, one at 240).
 guard.HOLD = 240
+-- Seconds an answer waits at most, where deliver() has a clock: frames are
+-- no measure of time (2026-10-01: five vehicles bought onto a line in a
+-- burst, all but one answered before the GUI could name them, so their
+-- line assignments were refused). Each answer has its own, counted from
+-- when it is first the one waited on.
+guard.HOLD_SECONDS = 20
 
 -- Puts the guard in front of `cmd` (the GUI state's api.cmd). `env` is:
 --   inRoom()      -> whether the room's game runs;
@@ -408,22 +415,40 @@ end
 -- that the GUI names it by its id (`kind`, the registry's): the game script
 -- made it in the simulation, and a window that hears of it opens it, or
 -- puts it on a line, at once. Answers keep
--- their order; one held back holds those after it, for HOLD calls at most.
+-- their order; one held back holds those after it. Each answer waits on
+-- its own entity for HOLD_SECONDS by `now()` (seconds; HOLD calls where
+-- there is no clock), counted from when it is first the one waited on, so
+-- answers queued behind it keep all of theirs.
 -- A command that should have made something and made nothing the game
 -- could name is answered as failed, which the windows handle, not as made.
 -- Returns how many heard.
-function guard.deliver(cmd, results, sees)
+function guard.deliver(cmd, results, sees, now)
 	local pending = waiting[cmd]
 	if pending == nil then return 0 end
 	local queue = held[cmd] or {}
 	for _, r in ipairs(results or {}) do queue[#queue + 1] = { r = r, calls = 0 } end
+	local t = nil
+	if now ~= nil then
+		local ok, v = pcall(now)
+		if ok and type(v) == "number" then t = v end
+	end
+	local function patient(h)
+		if t ~= nil then
+			h.since = h.since or t
+			return t - h.since < guard.HOLD_SECONDS
+		end
+		return h.calls < guard.HOLD
+	end
 	local heard, later = 0, {}
 	for _, h in ipairs(queue) do
 		local r = h.r
 		local w = r.ticket and pending[r.ticket]
 		if w then
 			local unseen = r.entity ~= nil and sees ~= nil and not sees(r.entity, guard.NAMED[w.kind])
-			if #later > 0 or (unseen and h.calls < guard.HOLD) then
+			if #later > 0 then
+				-- Behind one waited on: in order, its own wait not begun.
+				later[#later + 1] = h
+			elseif unseen and patient(h) then
 				h.calls = h.calls + 1
 				later[#later + 1] = h
 			else

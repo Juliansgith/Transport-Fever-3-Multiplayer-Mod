@@ -3536,6 +3536,93 @@ fn a_vehicle_bought_onto_a_line_is_put_on_it_once_the_room_can_name_it() {
     assert_eq!(assigned, "true|3|1", "{}", log(&lua));
 }
 
+/// Five vehicles bought onto a line in a burst (2026-10-01: only the first
+/// got the line). The GUI names them only after 300 frames, more than a
+/// frame count waits, and the fourth before the third: each store callback
+/// is held, in order, until its own vehicle is named, by the clock, so all
+/// five go to the room on their line, each by its own vehicle.
+#[test]
+fn vehicles_bought_onto_a_line_in_a_burst_all_get_the_line() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "api.cmd.makeVehicleSetLineCmd = function(vehicle, line, stop) return { kind = 'setLine' } end \
+         api.type = { ComponentType = { GAME_SCRIPT = 7, CONSTRUCTION = 2 } } \
+         VEHICLES = { next = 10, bound = {} } \
+         CLOCK = 1000 \
+         os.time = function() return CLOCK end \
+         api.engine = { \
+             entityExists = function(e) return true end, \
+             getComponent = function(e, kind) \
+                 if kind == 7 and e == 77 then return { state = { registry = { vehicles = VEHICLES, \
+                     lines = { next = 2, bound = { { 1, 600 } } }, groups = { next = 0, bound = {} } } } } end \
+                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', \
+                     transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end \
+             end, \
+             system = { \
+                 gameScriptSystem = { getEntityForGameScript = function(name) \
+                     if name == 'tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs' then return 77 end return -1 end }, \
+                 streetConnectorSystem = { getConstructionEntityForDepot = function(d) \
+                     if d == 202 then return 201 end end }, \
+             }, \
+         } \
+         api.res = { modelRep = { getName = function(id) if id == 41 then return 'vehicle/bus/city.mdl' end end } } \
+         M = mount(loadPlugin()) M.step() HOOK.room = true \
+         CONFIG = { vehicles = { { part = { modelId = 41, reversed = false, \
+             compartment2loadConfig = { { loadConfigIndex = 0, cargoTypeId = 3 } }, \
+             color = { x = 1, y = 0, z = 0 } } } }, vehicleGroups = { 1 }, muFileNames = { '' } } \
+         HEARD = {} \
+         for i = 1, 5 do \
+             api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(25, 202, CONFIG), function(data, ok) \
+                 HEARD[#HEARD + 1] = data.resultVehicleEntity \
+                 api.cmd.sendCommand(api.cmd.makeVehicleSetLineCmd(data.resultVehicleEntity, 600, -1)) \
+             end) \
+         end \
+         M.step() \
+         HOOK.results = {} \
+         for i = 1, 5 do HOOK.results[i] = { ticket = i, ok = true, entity = 500 + i } end \
+         M.step() \
+         for frame = 1, 300 do M.step() end \
+         CLOCK = CLOCK + 2 \
+         VEHICLES.bound = { { 10, 501 }, { 11, 502 }, { 13, 504 } } \
+         M.step() \
+         EARLY = #HEARD \
+         CLOCK = CLOCK + 2 \
+         VEHICLES.bound = { { 10, 501 }, { 11, 502 }, { 12, 503 }, { 13, 504 }, { 14, 505 } } \
+         M.step()",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let (early, heard, assigned): (usize, String, String) = lua
+        .load(
+            "local out = {} \
+             for i = 6, #HOOK.commands do \
+                 local a = HOOK.commands[i].AssignLine \
+                 out[#out + 1] = a and (a.vehicles[1] .. '>' .. a.line) or '?' \
+             end \
+             return EARLY, table.concat(HEARD, ','), table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        early,
+        2,
+        "the first two once named; the fourth, named before the third, waits behind it: {}",
+        log(&lua)
+    );
+    assert_eq!(
+        heard, "501,502,503,504,505",
+        "in order, each its own vehicle"
+    );
+    assert_eq!(
+        assigned,
+        "10>1 11>1 12>1 13>1 14>1",
+        "every vehicle on its line, by its own id: {}",
+        log(&lua)
+    );
+}
+
 #[test]
 fn the_next_reachable_stop_travels_as_the_games_choice() {
     let (lua, _script) = engine();
