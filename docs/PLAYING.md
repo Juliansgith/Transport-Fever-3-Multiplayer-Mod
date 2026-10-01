@@ -459,8 +459,11 @@ protected folder such as Program Files.
 - **Headquarters.** Each company builds one headquarters of its own, from
   the construction menu as usual, once its rank allows: another
   company's headquarters does not use up yours. A second one for the
-  same company is refused. The game bar's transported figures and the
-  finance window's company value still show the room's first company's.
+  same company is refused. Each headquarters gives its own town the
+  game's growth bonus, as in a single-player game, and the town labels
+  crown your company's headquarters town as your capital. The game bar's
+  transported figures and the finance window's company value still show
+  the room's first company's.
 - **Your company's head, passwords and stations** (proposed, D22). The
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows

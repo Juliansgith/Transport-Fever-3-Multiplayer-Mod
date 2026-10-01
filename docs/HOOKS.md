@@ -1672,9 +1672,61 @@ What the mod does, with more than one company in the room:
   proposal's apply (`sub_9f96e0`, which sets the paying player's
   headquarters) and the Lua bindings' setup.
 - After a headquarters is built, every game logs what the engine made of
-  it: `headquarters for company entity <e>: its PLAYER names <entity>`
-  (INFERRED that the engine sets `headquarters` for the paying company's
-  player entity; this line says, in a real game).
+  it: `headquarters for company entity <e>: its PLAYER names <entity>`.
+
+What a headquarters gives, and to whom (build 40408, its scripts and its
+executable, read 2026-10-01):
+
+- **Its town's growth.** The construction carries `town_growth` metadata:
+  experience +5% (`landmarks/hq/headquarter.script.tl`), +1% more for each
+  medium wing, and reputation recovery +1% for each large wing (the
+  modules' metadata, summed by `headquarter_addon.script.tl`). The game's
+  town script (`game_mechanics/towns/towns.script.tl`,
+  `updateConstructions`, every 20 updates) sums that metadata of every
+  construction in the world, **whoever owns it**, onto the town closest to
+  it (`landmarks/landmark_util.tl`, `collectTownGrowthMetadata`, without
+  `playerOwnedOnly`); the town's experience then grows by
+  `1 + xpIncrease` (`town_util.getXpFactor`, `town_growth.script.tl`), its
+  reputation recovers faster (`applyEventDecay`), and its "Bonuses" rating
+  in the town window shows Excellent instead of Good
+  (`town_util.getRatingBonuses`). So each company's headquarters gives
+  its town what a single player's gives, in every game alike, at the same
+  step: the mod adds nothing to it. Two headquarters closest to one town
+  add up, as the game adds up any landmarks there.
+- **Workplaces**: 24 industrial places (`personCapacity`), for any owner.
+- **Nothing per company.** No rank, experience, permit or company value
+  comes from having one: the company's experience is the world's
+  population (D23), the headquarters is itself a permit (rank 1) and its
+  wings are permits by rank (`rankAndPermits`, the company window's
+  "Headquarters Upgrades"), and `getCompaniesValue()` has no headquarters
+  term (`api/tealdef/api/type.d.tl`, `CompanyValue`).
+- **Its PLAYER `headquarters`.** The engine sets it in the build's apply
+  (`apply_proposal.cpp`, `sub_9f96e0`, rva 0x9fd78a-0x9fd9b0): for each
+  construction added whose description's company metadata says
+  `headquarters`, for the construction's own `playerEntity` (its assert
+  "ce.playerEntity != ecs::Entity()"), and a removed one clears it for its
+  owner. The room's builds name the acting company as `playerEntity`
+  (`apply.lua`), so each company's PLAYER names its own (read statically;
+  the log line above shows it in a real game). Only the GUI reads it: the
+  town's capital badge (`town_util.isCapital`), the "Headquarters"
+  tooltip and selection (`game_tooltips.tl`, `view_manager_util.tl`),
+  all through `getPlayer()`, which the GUI's states answer with the
+  player's company (`tpf3mp/follow.lua`): each player sees their own
+  company's town as the capital. The native selector filter
+  (`UI::CreateSelectorFilter`) reads the local player's, but selects any
+  owned construction anyway.
+
+With more than one company, at each of the companies' samples (four times
+a game month, `tpf3mp/progression.lua`), each game logs every company's
+headquarters and its town's bonus, read only, a line again only when it
+changed:
+
+```
+headquarters: Rival #1: headquarters 701, its PLAYER names 701; closest town 31 (Ashford): on it xp +0.05, reputation recovery +0.00; the game's town script applies xp +0.05, reputation recovery +0.00 there
+```
+
+"its PLAYER names" other than the headquarters, or a town script that
+applies less than what is on it, is a fault to report.
 
 Once a world is up, with more than one company, each game logs what each
 company owns as the engine records it, read only: `ownership: <company>
