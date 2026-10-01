@@ -8605,6 +8605,9 @@ fn an_observation_is_json_the_same_on_every_game_and_names_free_places() {
     let buildings = town["town_buildings"].as_array().unwrap();
     assert_eq!(buildings.len(), 3);
     assert_eq!(buildings[0]["file"], "station/bus_stop.con", "the nearest first");
+    let free = town["free_streets"].as_array().unwrap();
+    assert_eq!(free.len(), 1, "the street by the bus stop is not free: {text}");
+    assert_eq!(free[0]["b"][1], 80);
     // Parts the stand-in cannot read are named, and the rest still comes.
     assert!(
         seen["errors"]

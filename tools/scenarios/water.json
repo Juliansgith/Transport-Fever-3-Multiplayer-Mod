@@ -1,18 +1,39 @@
 {
  "name": "water",
- "comment": "A ship depot and a harbour on the water near each town, a ship bought\n    and run on a line.",
+ "comment": "A ship depot and a harbour on the water near each town, a ship bought\n    and run on a line. Every item is `any`: a depot is placed by its\n    origin, not fitted to a shore, and the harbour has no modules.",
  "observe_every": 10,
  "items": [
   {
-   "at": 10,
+   "at": 20,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 0: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 0"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -22,7 +43,7 @@
    "actor": 0,
    "origin": "water:#0:0",
    "expect": "any",
-   "note": "Actor 0: a ship depot on the water (any: placed, not fitted to the shore)",
+   "note": "Actor 0: a ship depot on the water",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/water/water_depot.con",
@@ -65,7 +86,7 @@
    "actor": 0,
    "origin": "water:#0:0",
    "expect": "any",
-   "note": "Actor 0: a harbour (any: a modular harbour needs its modules and a shore)",
+   "note": "Actor 0: a harbour without its modules",
    "action": {
     "BuildConstruction": {
      "file": "::/stations/water/harbor_modular.con",
@@ -147,7 +168,7 @@
    "actor": 0,
    "origin": "spot:#0:0",
    "expect": "any",
-   "note": "Actor 0: a ship line (any: the harbour's group is a guess)",
+   "note": "Actor 0: a ship line at the harbour",
    "action": {
     "CreateLine": {
      "name": "Scenario ship line 0",
@@ -231,15 +252,62 @@
    }
   },
   {
-   "at": 1510,
+   "at": 400,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: pays back the loan loans+0 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+0"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1520,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 1: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 1"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -249,7 +317,7 @@
    "actor": 1,
    "origin": "water:#1:0",
    "expect": "any",
-   "note": "Actor 1: a ship depot on the water (any: placed, not fitted to the shore)",
+   "note": "Actor 1: a ship depot on the water",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/water/water_depot.con",
@@ -292,7 +360,7 @@
    "actor": 1,
    "origin": "water:#1:0",
    "expect": "any",
-   "note": "Actor 1: a harbour (any: a modular harbour needs its modules and a shore)",
+   "note": "Actor 1: a harbour without its modules",
    "action": {
     "BuildConstruction": {
      "file": "::/stations/water/harbor_modular.con",
@@ -374,7 +442,7 @@
    "actor": 1,
    "origin": "spot:#1:0",
    "expect": "any",
-   "note": "Actor 1: a ship line (any: the harbour's group is a guess)",
+   "note": "Actor 1: a ship line at the harbour",
    "action": {
     "CreateLine": {
      "name": "Scenario ship line 1",
@@ -458,15 +526,62 @@
    }
   },
   {
-   "at": 3010,
+   "at": 1900,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: pays back the loan loans+1 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+1"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3020,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 2: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 2"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -476,7 +591,7 @@
    "actor": 2,
    "origin": "water:#2:0",
    "expect": "any",
-   "note": "Actor 2: a ship depot on the water (any: placed, not fitted to the shore)",
+   "note": "Actor 2: a ship depot on the water",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/water/water_depot.con",
@@ -519,7 +634,7 @@
    "actor": 2,
    "origin": "water:#2:0",
    "expect": "any",
-   "note": "Actor 2: a harbour (any: a modular harbour needs its modules and a shore)",
+   "note": "Actor 2: a harbour without its modules",
    "action": {
     "BuildConstruction": {
      "file": "::/stations/water/harbor_modular.con",
@@ -601,7 +716,7 @@
    "actor": 2,
    "origin": "spot:#2:0",
    "expect": "any",
-   "note": "Actor 2: a ship line (any: the harbour's group is a guess)",
+   "note": "Actor 2: a ship line at the harbour",
    "action": {
     "CreateLine": {
      "name": "Scenario ship line 2",
@@ -681,6 +796,32 @@
       "$id": "lines+2"
      },
      "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 3400,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: pays back the loan loans+2 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+2"
+       }
+      }
+     }
     }
    }
   }

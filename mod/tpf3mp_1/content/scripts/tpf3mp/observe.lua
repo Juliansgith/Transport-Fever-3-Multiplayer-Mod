@@ -15,6 +15,8 @@
 --                  "spots": [ { "x":, "y":, "z": } ],   -- the baseline's only
 --                  "waters": [ { "x":, "y":, "z": } ],  -- the baseline's only
 --                  "town_buildings": [ { "file":, "x":, "y":, "z": } ],
+--                  "free_streets": [ ... ],           -- no town building near
+--     "loans": [ { "id":, "company":, "amount":, "remaining": } ],
 --                  "streets": [ { "a": [x, y, z], "b": [x, y, z],
 --                                 "template": } ] } ],
 --     "counts": { "street_edges":, "track_edges":, "constructions":,
@@ -22,7 +24,7 @@
 --     "companies": [ { "id":, "name":, "money":, "gone": } ],
 --     "lines": [ { "id":, "stops":, "vehicles": } ],
 --     "next": { "lines":, "vehicles":, "groups":, "towns":, "industries":,
---               "companies": },
+--               "companies":, "loans": },
 --     "game_time":, "models": [ name, ... ],         -- models: the baseline's only
 --     "errors": [ "<part>: <why>" ] }
 --
@@ -46,6 +48,7 @@ observe.MAX_SPOTS = 4
 observe.MAX_STREETS = 6
 observe.MAX_MODELS = 600
 observe.MAX_BUILDINGS = 3
+observe.MAX_NEAR_EDGES = 300
 observe.MAX_WATERS = 2
 
 -- JSON ---------------------------------------------------------------------
@@ -324,7 +327,16 @@ function observe.read(api, state, step, withSpots)
 	for _, kind in ipairs({ "lines", "vehicles", "groups", "towns", "industries" }) do
 		out.next[kind] = nextId(reg, kind)
 	end
-	if type(saved.companies) == "table" then out.next.companies = saved.companies.next end
+	if type(saved.companies) == "table" then
+		out.next.companies = saved.companies.next
+		-- The room's loans (tpf3mp/companies.lua): ids count from 1, room-wide.
+		out.next.loans = saved.companies.nextLoan or 1
+		out.loans = array()
+		for _, loan in ipairs(saved.companies.loans or {}) do
+			out.loans[#out.loans + 1] = { id = loan.id, company = loan.company, amount = loan.amount,
+				remaining = loan.remaining }
+		end
+	end
 
 	out.towns = array()
 	part("towns", function()
@@ -371,6 +383,24 @@ function observe.read(api, state, step, withSpots)
 				for i = 1, math.min(observe.MAX_STREETS, #near) do
 					local e = near[i].e
 					entry.streets[i] = { a = e.a, b = e.b, template = e.template }
+				end
+				-- Streets of the town no town building stands near (none within
+				-- 40 m of an end or the middle): ones a bulldozer takes alone.
+				entry.free_streets = array()
+				for i = 1, math.min(observe.MAX_NEAR_EDGES, #near) do
+					if #entry.free_streets >= observe.MAX_STREETS then break end
+					local e = near[i].e
+					local mx, my = (e.a[1] + e.b[1]) / 2, (e.a[2] + e.b[2]) / 2
+					local free = true
+					for _, b in ipairs(points) do
+						for _, p in ipairs({ e.a, e.b, { mx, my } }) do
+							if (b[1] - p[1]) ^ 2 + (b[2] - p[2]) ^ 2 < 40 ^ 2 then free = false break end
+						end
+						if not free then break end
+					end
+					if free then
+						entry.free_streets[#entry.free_streets + 1] = { a = e.a, b = e.b, template = e.template }
+					end
 				end
 				-- The town buildings nearest the centre.
 				local byDistance = {}

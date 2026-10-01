@@ -1,18 +1,39 @@
 {
  "name": "roads",
- "comment": "Streets, junctions, a bus line with three buses bought at once, a track\n    with a depot at its end, a loan taken and repaid, a town street\n    bulldozed, and one action every game must refuse; each actor's company\n    its own (a competitive room).",
+ "comment": "Streets, a T junction, a crossroads, two bus stops, a road depot on\n    the T's free end, a bus line with three buses bought at once, a track\n    with a rail depot snapped to its end, a loan taken first and repaid, a\n    town street no building stands by bulldozed, and a bus at no depot,\n    which every game must refuse. Each actor plays for its own company (a\n    competitive room).",
  "observe_every": 10,
  "items": [
   {
-   "at": 10,
+   "at": 20,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "a company of this actor's own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 0: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 0"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -359,7 +380,7 @@
    "actor": 0,
    "origin": "spot:#0:0",
    "expect": "applied",
-   "note": "Actor 0: a road depot north of the street (no entrance street: vehicles stay in it)",
+   "note": "Actor 0: a road depot whose entrance meets the T's free end at (60, 60)",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/road/road_depot/road_depot.con",
@@ -377,8 +398,8 @@
       ],
       "origin": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -477,8 +498,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -516,8 +537,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -555,8 +576,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -670,18 +691,18 @@
    "at": 520,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a rail depot at the track's east end (any: placed by its origin, not snapped)",
+   "expect": "applied",
+   "note": "Actor 0: a rail depot whose track meets the track's east end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/rail/rail_depot.con",
      "transform": {
       "basis": [
+       0,
+       -1000000,
+       0,
        1000000,
        0,
-       0,
-       0,
-       1000000,
        0,
        0,
        0,
@@ -689,8 +710,8 @@
       ],
       "origin": {
        "$pos": [
-        160,
-        -80,
+        220,
+        -82.2,
         0
        ]
       }
@@ -710,77 +731,18 @@
    }
   },
   {
-   "at": 600,
-   "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: take a small loan (any: the offer is the scenario's, not the game's draw)",
-   "action": {
-    "Loan": {
-     "Take": {
-      "next": {
-       "type": "Small",
-       "amount": 500000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      },
-      "offer": {
-       "type": "Small",
-       "amount": 500000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      }
-     }
-    }
-   }
-  },
-  {
-   "at": 700,
-   "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: pay the loan back (any: its id is a guess)",
-   "action": {
-    "Loan": {
-     "Repay": {
-      "loan": {
-       "type": "Small",
-       "amount": 500000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": 1
-      }
-     }
-    }
-   }
-  },
-  {
    "at": 800,
    "actor": 0,
    "origin": "none",
-   "expect": "any",
-   "note": "Actor 0: bulldoze the street nearest town #0's centre (any: buildings along it refuse it)",
+   "expect": "applied",
+   "note": "Actor 0: a street of town #0 no building stands by, bulldozed",
    "action": {
     "Bulldoze": {
      "Edges": {
       "network": "Street",
       "edges": [
        {
-        "$edge": "#0:0"
+        "$edge": "#0:free:0"
        }
       ],
       "buildings": []
@@ -828,15 +790,62 @@
    }
   },
   {
-   "at": 1510,
+   "at": 1000,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: pays back the loan loans+0 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+0"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1520,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "a company of this actor's own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 1: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 1"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -1183,7 +1192,7 @@
    "actor": 1,
    "origin": "spot:#1:0",
    "expect": "applied",
-   "note": "Actor 1: a road depot north of the street (no entrance street: vehicles stay in it)",
+   "note": "Actor 1: a road depot whose entrance meets the T's free end at (60, 60)",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/road/road_depot/road_depot.con",
@@ -1201,8 +1210,8 @@
       ],
       "origin": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -1301,8 +1310,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -1340,8 +1349,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -1379,8 +1388,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -1494,18 +1503,18 @@
    "at": 2020,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a rail depot at the track's east end (any: placed by its origin, not snapped)",
+   "expect": "applied",
+   "note": "Actor 1: a rail depot whose track meets the track's east end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/rail/rail_depot.con",
      "transform": {
       "basis": [
+       0,
+       -1000000,
+       0,
        1000000,
        0,
-       0,
-       0,
-       1000000,
        0,
        0,
        0,
@@ -1513,8 +1522,8 @@
       ],
       "origin": {
        "$pos": [
-        160,
-        -80,
+        220,
+        -82.2,
         0
        ]
       }
@@ -1534,77 +1543,18 @@
    }
   },
   {
-   "at": 2100,
-   "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: take a small loan (any: the offer is the scenario's, not the game's draw)",
-   "action": {
-    "Loan": {
-     "Take": {
-      "next": {
-       "type": "Small",
-       "amount": 500000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      },
-      "offer": {
-       "type": "Small",
-       "amount": 500000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      }
-     }
-    }
-   }
-  },
-  {
-   "at": 2200,
-   "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: pay the loan back (any: its id is a guess)",
-   "action": {
-    "Loan": {
-     "Repay": {
-      "loan": {
-       "type": "Small",
-       "amount": 500000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": 1
-      }
-     }
-    }
-   }
-  },
-  {
    "at": 2300,
    "actor": 1,
    "origin": "none",
-   "expect": "any",
-   "note": "Actor 1: bulldoze the street nearest town #1's centre (any: buildings along it refuse it)",
+   "expect": "applied",
+   "note": "Actor 1: a street of town #1 no building stands by, bulldozed",
    "action": {
     "Bulldoze": {
      "Edges": {
       "network": "Street",
       "edges": [
        {
-        "$edge": "#1:0"
+        "$edge": "#1:free:0"
        }
       ],
       "buildings": []
@@ -1652,15 +1602,62 @@
    }
   },
   {
-   "at": 3010,
+   "at": 2500,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: pays back the loan loans+1 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+1"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3020,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "a company of this actor's own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 2: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 2"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -2007,7 +2004,7 @@
    "actor": 2,
    "origin": "spot:#2:0",
    "expect": "applied",
-   "note": "Actor 2: a road depot north of the street (no entrance street: vehicles stay in it)",
+   "note": "Actor 2: a road depot whose entrance meets the T's free end at (60, 60)",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/road/road_depot/road_depot.con",
@@ -2025,8 +2022,8 @@
       ],
       "origin": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -2125,8 +2122,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -2164,8 +2161,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -2203,8 +2200,8 @@
       "file": "::/depots/road/road_depot/road_depot.con",
       "at": {
        "$pos": [
-        30,
-        40,
+        60,
+        95,
         0
        ]
       }
@@ -2318,18 +2315,18 @@
    "at": 3520,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: a rail depot at the track's east end (any: placed by its origin, not snapped)",
+   "expect": "applied",
+   "note": "Actor 2: a rail depot whose track meets the track's east end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/rail/rail_depot.con",
      "transform": {
       "basis": [
+       0,
+       -1000000,
+       0,
        1000000,
        0,
-       0,
-       0,
-       1000000,
        0,
        0,
        0,
@@ -2337,8 +2334,8 @@
       ],
       "origin": {
        "$pos": [
-        160,
-        -80,
+        220,
+        -82.2,
         0
        ]
       }
@@ -2358,77 +2355,18 @@
    }
   },
   {
-   "at": 3600,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: take a small loan (any: the offer is the scenario's, not the game's draw)",
-   "action": {
-    "Loan": {
-     "Take": {
-      "next": {
-       "type": "Small",
-       "amount": 500000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      },
-      "offer": {
-       "type": "Small",
-       "amount": 500000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": null
-      }
-     }
-    }
-   }
-  },
-  {
-   "at": 3700,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: pay the loan back (any: its id is a guess)",
-   "action": {
-    "Loan": {
-     "Repay": {
-      "loan": {
-       "type": "Small",
-       "amount": 500000,
-       "duration": 31536000000,
-       "percentage": 30000,
-       "birthDay": null,
-       "cooldownUntil": null,
-       "lastPayDay": null,
-       "timesPaid": null,
-       "id": 1
-      }
-     }
-    }
-   }
-  },
-  {
    "at": 3800,
    "actor": 2,
    "origin": "none",
-   "expect": "any",
-   "note": "Actor 2: bulldoze the street nearest town #2's centre (any: buildings along it refuse it)",
+   "expect": "applied",
+   "note": "Actor 2: a street of town #2 no building stands by, bulldozed",
    "action": {
     "Bulldoze": {
      "Edges": {
       "network": "Street",
       "edges": [
        {
-        "$edge": "#2:0"
+        "$edge": "#2:free:0"
        }
       ],
       "buildings": []
@@ -2472,6 +2410,32 @@
      "multiple_units": [
       ""
      ]
+    }
+   }
+  },
+  {
+   "at": 4000,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: pays back the loan loans+2 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+2"
+       }
+      }
+     }
     }
    }
   }

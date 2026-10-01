@@ -40,9 +40,13 @@
 //!   `{"$pos2": [dx, dy]}` the same on the ground plane (`Pos2`);
 //! - `{"$id": "lines+0"}`: the id the baseline's registry gives next for
 //!   `lines` (also `vehicles`, `groups`, `towns`, `industries`, and
-//!   `companies`, the room's roster), plus 0: the first the scenario makes;
+//!   `companies`, the room's roster, and `loans`, the room's loans), plus 0:
+//!   the first the scenario makes;
 //! - `{"$edge": "<town>:<k>"}`: the ends of the `k`th street the baseline
-//!   lists in that town (`EdgeEnds`);
+//!   lists in that town (`EdgeEnds`); `<town>:free:<k>` one no town
+//!   building stands near, which a bulldozer takes alone;
+//! - `{"$z": dz}`: the origin's height plus `dz` metres, in millimetres (a
+//!   terrain cell's height);
 //! - `{"$building": "<town>:<k>"}`: the `k`th town building the baseline
 //!   lists nearest that town's centre (`ConstructionRef`);
 //! - `{"$cell2": [dx, dy]}`: as `$pos2`, put on the corner of the terrain's
@@ -302,10 +306,10 @@ impl Baseline {
             .map_err(|_| format!("an id {name:?}: <kind>+<n>"))?;
         if !matches!(
             kind,
-            "lines" | "vehicles" | "groups" | "towns" | "industries" | "companies"
+            "lines" | "vehicles" | "groups" | "towns" | "industries" | "companies" | "loans"
         ) {
             return Err(format!(
-                "an id of kind {kind:?}: lines, vehicles, groups, towns, industries or companies"
+                "an id of kind {kind:?}: lines, vehicles, groups, towns, industries, companies or loans"
             ));
         }
         if self.probe {
@@ -324,18 +328,23 @@ impl Baseline {
         let (town, k) = name
             .rsplit_once(':')
             .ok_or_else(|| format!("an edge {name:?}: <town>:<k>"))?;
+        // `<town>:free:<k>`: the `k`th street no town building stands near.
+        let (town, list) = match town.strip_suffix(":free") {
+            Some(town) => (town, "free_streets"),
+            None => (town, "streets"),
+        };
         let k: usize = k
             .parse()
-            .map_err(|_| format!("an edge {name:?}: <town>:<k>"))?;
+            .map_err(|_| format!("an edge {name:?}: <town>:<k> or <town>:free:<k>"))?;
         let ends = if self.probe {
             [[0.0; 3], [0.0; 3]]
         } else {
             let street = self
                 .town(town)?
-                .get("streets")
+                .get(list)
                 .and_then(Value::as_array)
                 .and_then(|streets| streets.get(k))
-                .ok_or_else(|| format!("the baseline lists no street {k} in {town:?}"))?;
+                .ok_or_else(|| format!("the baseline lists no {list} {k} in {town:?}"))?;
             let a = street.get("a").and_then(point);
             let b = street.get("b").and_then(point);
             match (a, b) {
@@ -449,6 +458,10 @@ fn expand(value: &Value, origin: [f64; 3], baseline: &Baseline) -> Result<Value,
                         .as_str()
                         .ok_or("a $building is a string, such as #0:0")?;
                     baseline.building(name)
+                }
+                "$z" => {
+                    let dz = inner.as_f64().ok_or("a $z is metres above the origin")?;
+                    Ok(json!(mm(origin[2] + dz)?))
                 }
                 "$cell2" => {
                     let d = offsets(inner)?;
@@ -910,8 +923,9 @@ mod tests {
           "spots": [ { "x": 1400, "y": 2000, "z": 52 } ],
           "waters": [ { "x": 600, "y": 2000, "z": 0 } ],
           "town_buildings": [ { "file": "::/buildings/a.con", "x": 1001, "y": 2002, "z": 50 } ],
-          "streets": [ { "a": [1000, 2000, 50], "b": [1010, 2000, 50] } ] } ],
-        "next": { "lines": 7, "vehicles": 30, "groups": 12, "companies": 3 } }"#;
+          "streets": [ { "a": [1000, 2000, 50], "b": [1010, 2000, 50] } ],
+          "free_streets": [ { "a": [1100, 2000, 50], "b": [1110, 2000, 50] } ] } ],
+        "next": { "lines": 7, "vehicles": 30, "groups": 12, "companies": 3, "loans": 4 } }"#;
 
     fn player(n: u8) -> PlayerId {
         PlayerId(FixedBytes([n; 32]))
@@ -982,6 +996,13 @@ mod tests {
         assert_eq!(ends[1].x, 1_500_000);
 
         assert_eq!(baseline.id("lines+2").unwrap(), 9);
+        assert_eq!(baseline.id("loans+1").unwrap(), 5);
+        assert_eq!(
+            baseline.edge("#0:free:0").unwrap()["a"],
+            json!({ "x": 1_100_000, "y": 2_000_000, "z": 50_000 })
+        );
+        let z = expand(&json!({ "$z": 2 }), [0.0, 0.0, 52.0], &baseline);
+        assert_eq!(z.unwrap(), json!(54_000));
         assert!(baseline.id("moons+0").is_err());
         assert_eq!(
             baseline.edge("#0:0").unwrap(),

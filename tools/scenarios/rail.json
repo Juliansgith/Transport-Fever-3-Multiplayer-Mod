@@ -1,18 +1,39 @@
 {
  "name": "rail",
- "comment": "A track with a signal on it, a station beside it and a depot at its\n    end, the track electrified, a train bought, run on a line, stopped and\n    started, and the track's signalled edge bulldozed.",
+ "comment": "A track with a signal on it and a depot snapped to its end, the track\n    electrified, a train bought, stopped and started, sent to the depot,\n    the signalled edge bulldozed; then, after every actor, a modular rail\n    station placed without its modules, and a train line through it.",
  "observe_every": 10,
  "items": [
   {
-   "at": 10,
+   "at": 20,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 0: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 0"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -105,8 +126,8 @@
    "at": 100,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a signal on the track's west edge (any: the model is inferred)",
+   "expect": "applied",
+   "note": "Actor 0: a signal on the track's west edge",
    "action": {
     "PlaceStop": {
      "edge": {
@@ -149,64 +170,21 @@
    }
   },
   {
-   "at": 150,
-   "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a rail station beside the track (any: a modular station needs its modules)",
-   "action": {
-    "BuildConstruction": {
-     "file": "::/stations/rail/modular_station/modular_station.con",
-     "transform": {
-      "basis": [
-       1000000,
-       0,
-       0,
-       0,
-       1000000,
-       0,
-       0,
-       0,
-       1000000
-      ],
-      "origin": {
-       "$pos": [
-        100,
-        30,
-        0
-       ]
-      }
-     },
-     "params": [
-      {
-       "key": "seed",
-       "value": {
-        "Int": 0
-       }
-      }
-     ],
-     "name": "Scenario station 0",
-     "replaces": null,
-     "connection": null
-    }
-   }
-  },
-  {
    "at": 200,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a rail depot past the track's east end (any: placed, not snapped)",
+   "expect": "applied",
+   "note": "Actor 0: a rail depot whose track meets the track's east end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/rail/rail_depot.con",
      "transform": {
       "basis": [
+       0,
+       -1000000,
+       0,
        1000000,
        0,
-       0,
-       0,
-       1000000,
        0,
        0,
        0,
@@ -214,8 +192,8 @@
       ],
       "origin": {
        "$pos": [
-        215,
-        0,
+        270,
+        -2.2,
         0
        ]
       }
@@ -320,16 +298,16 @@
    "at": 320,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a locomotive and a waggon (any: the depot may not be there)",
+   "expect": "applied",
+   "note": "Actor 0: a locomotive and a waggon",
    "action": {
     "BuyVehicle": {
      "depot": {
       "file": "::/depots/rail/rail_depot.con",
       "at": {
        "$pos": [
-        215,
-        0,
+        270,
+        -2.2,
         0
        ]
       }
@@ -370,96 +348,8 @@
   {
    "at": 380,
    "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a train line (any: the station's group is a guess)",
-   "action": {
-    "CreateLine": {
-     "name": "Scenario train line 0",
-     "color": {
-      "r": 130000,
-      "g": 420000,
-      "b": 850000
-     },
-     "line": {
-      "stops": [
-       {
-        "group": {
-         "$id": "groups+0"
-        },
-        "terminal": {
-         "station": 0,
-         "terminal": 0
-        },
-        "alternatives": [],
-        "load_mode": "LoadIfAvailable",
-        "min_wait": 0,
-        "max_wait": 180000000,
-        "max_extra_wait": 0,
-        "rules": {
-         "load": [],
-         "max_load": [],
-         "force_unload": false,
-         "destroy_for_config_change": false,
-         "destroy_for_refresh": false
-        }
-       },
-       {
-        "group": {
-         "$id": "groups+0"
-        },
-        "terminal": {
-         "station": 0,
-         "terminal": 0
-        },
-        "alternatives": [],
-        "load_mode": "LoadIfAvailable",
-        "min_wait": 0,
-        "max_wait": 180000000,
-        "max_extra_wait": 0,
-        "rules": {
-         "load": [],
-         "max_load": [],
-         "force_unload": false,
-         "destroy_for_config_change": false,
-         "destroy_for_refresh": false
-        }
-       }
-      ],
-      "modes": [
-       7
-      ],
-      "custom_filters": false,
-      "reservation_priority": 0
-     }
-    }
-   }
-  },
-  {
-   "at": 420,
-   "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: the train onto it",
-   "action": {
-    "AssignLine": {
-     "vehicles": [
-      {
-       "$id": "vehicles+0"
-      }
-     ],
-     "line": {
-      "$id": "lines+0"
-     },
-     "first_stop": null
-    }
-   }
-  },
-  {
-   "at": 480,
-   "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "any",
+   "origin": "none",
+   "expect": "applied",
    "note": "Actor 0: the train stopped",
    "action": {
     "VehicleOp": {
@@ -473,10 +363,10 @@
    }
   },
   {
-   "at": 500,
+   "at": 400,
    "actor": 0,
-   "origin": "spot:#0:0",
-   "expect": "any",
+   "origin": "none",
+   "expect": "applied",
    "note": "Actor 0: and started again",
    "action": {
     "VehicleOp": {
@@ -485,6 +375,25 @@
      },
      "change": {
       "Stop": false
+     }
+    }
+   }
+  },
+  {
+   "at": 440,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: sent to its depot",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+0"
+     },
+     "change": {
+      "ToDepot": {
+       "sell": false
+      }
      }
     }
    }
@@ -523,15 +432,62 @@
    }
   },
   {
-   "at": 1510,
+   "at": 700,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: pays back the loan loans+0 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+0"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1520,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 1: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 1"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -624,8 +580,8 @@
    "at": 1600,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a signal on the track's west edge (any: the model is inferred)",
+   "expect": "applied",
+   "note": "Actor 1: a signal on the track's west edge",
    "action": {
     "PlaceStop": {
      "edge": {
@@ -668,64 +624,21 @@
    }
   },
   {
-   "at": 1650,
-   "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a rail station beside the track (any: a modular station needs its modules)",
-   "action": {
-    "BuildConstruction": {
-     "file": "::/stations/rail/modular_station/modular_station.con",
-     "transform": {
-      "basis": [
-       1000000,
-       0,
-       0,
-       0,
-       1000000,
-       0,
-       0,
-       0,
-       1000000
-      ],
-      "origin": {
-       "$pos": [
-        100,
-        30,
-        0
-       ]
-      }
-     },
-     "params": [
-      {
-       "key": "seed",
-       "value": {
-        "Int": 0
-       }
-      }
-     ],
-     "name": "Scenario station 1",
-     "replaces": null,
-     "connection": null
-    }
-   }
-  },
-  {
    "at": 1700,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a rail depot past the track's east end (any: placed, not snapped)",
+   "expect": "applied",
+   "note": "Actor 1: a rail depot whose track meets the track's east end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/rail/rail_depot.con",
      "transform": {
       "basis": [
+       0,
+       -1000000,
+       0,
        1000000,
        0,
-       0,
-       0,
-       1000000,
        0,
        0,
        0,
@@ -733,8 +646,8 @@
       ],
       "origin": {
        "$pos": [
-        215,
-        0,
+        270,
+        -2.2,
         0
        ]
       }
@@ -839,16 +752,16 @@
    "at": 1820,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a locomotive and a waggon (any: the depot may not be there)",
+   "expect": "applied",
+   "note": "Actor 1: a locomotive and a waggon",
    "action": {
     "BuyVehicle": {
      "depot": {
       "file": "::/depots/rail/rail_depot.con",
       "at": {
        "$pos": [
-        215,
-        0,
+        270,
+        -2.2,
         0
        ]
       }
@@ -889,96 +802,8 @@
   {
    "at": 1880,
    "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a train line (any: the station's group is a guess)",
-   "action": {
-    "CreateLine": {
-     "name": "Scenario train line 1",
-     "color": {
-      "r": 130000,
-      "g": 420000,
-      "b": 850000
-     },
-     "line": {
-      "stops": [
-       {
-        "group": {
-         "$id": "groups+1"
-        },
-        "terminal": {
-         "station": 0,
-         "terminal": 0
-        },
-        "alternatives": [],
-        "load_mode": "LoadIfAvailable",
-        "min_wait": 0,
-        "max_wait": 180000000,
-        "max_extra_wait": 0,
-        "rules": {
-         "load": [],
-         "max_load": [],
-         "force_unload": false,
-         "destroy_for_config_change": false,
-         "destroy_for_refresh": false
-        }
-       },
-       {
-        "group": {
-         "$id": "groups+1"
-        },
-        "terminal": {
-         "station": 0,
-         "terminal": 0
-        },
-        "alternatives": [],
-        "load_mode": "LoadIfAvailable",
-        "min_wait": 0,
-        "max_wait": 180000000,
-        "max_extra_wait": 0,
-        "rules": {
-         "load": [],
-         "max_load": [],
-         "force_unload": false,
-         "destroy_for_config_change": false,
-         "destroy_for_refresh": false
-        }
-       }
-      ],
-      "modes": [
-       7
-      ],
-      "custom_filters": false,
-      "reservation_priority": 0
-     }
-    }
-   }
-  },
-  {
-   "at": 1920,
-   "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: the train onto it",
-   "action": {
-    "AssignLine": {
-     "vehicles": [
-      {
-       "$id": "vehicles+1"
-      }
-     ],
-     "line": {
-      "$id": "lines+1"
-     },
-     "first_stop": null
-    }
-   }
-  },
-  {
-   "at": 1980,
-   "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "any",
+   "origin": "none",
+   "expect": "applied",
    "note": "Actor 1: the train stopped",
    "action": {
     "VehicleOp": {
@@ -992,10 +817,10 @@
    }
   },
   {
-   "at": 2000,
+   "at": 1900,
    "actor": 1,
-   "origin": "spot:#1:0",
-   "expect": "any",
+   "origin": "none",
+   "expect": "applied",
    "note": "Actor 1: and started again",
    "action": {
     "VehicleOp": {
@@ -1004,6 +829,25 @@
      },
      "change": {
       "Stop": false
+     }
+    }
+   }
+  },
+  {
+   "at": 1940,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: sent to its depot",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+1"
+     },
+     "change": {
+      "ToDepot": {
+       "sell": false
+      }
      }
     }
    }
@@ -1042,15 +886,62 @@
    }
   },
   {
-   "at": 3010,
+   "at": 2200,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: pays back the loan loans+1 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+1"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3020,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 2: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 2"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -1143,8 +1034,8 @@
    "at": 3100,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: a signal on the track's west edge (any: the model is inferred)",
+   "expect": "applied",
+   "note": "Actor 2: a signal on the track's west edge",
    "action": {
     "PlaceStop": {
      "edge": {
@@ -1187,64 +1078,21 @@
    }
   },
   {
-   "at": 3150,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: a rail station beside the track (any: a modular station needs its modules)",
-   "action": {
-    "BuildConstruction": {
-     "file": "::/stations/rail/modular_station/modular_station.con",
-     "transform": {
-      "basis": [
-       1000000,
-       0,
-       0,
-       0,
-       1000000,
-       0,
-       0,
-       0,
-       1000000
-      ],
-      "origin": {
-       "$pos": [
-        100,
-        30,
-        0
-       ]
-      }
-     },
-     "params": [
-      {
-       "key": "seed",
-       "value": {
-        "Int": 0
-       }
-      }
-     ],
-     "name": "Scenario station 2",
-     "replaces": null,
-     "connection": null
-    }
-   }
-  },
-  {
    "at": 3200,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: a rail depot past the track's east end (any: placed, not snapped)",
+   "expect": "applied",
+   "note": "Actor 2: a rail depot whose track meets the track's east end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/rail/rail_depot.con",
      "transform": {
       "basis": [
+       0,
+       -1000000,
+       0,
        1000000,
        0,
-       0,
-       0,
-       1000000,
        0,
        0,
        0,
@@ -1252,8 +1100,8 @@
       ],
       "origin": {
        "$pos": [
-        215,
-        0,
+        270,
+        -2.2,
         0
        ]
       }
@@ -1358,16 +1206,16 @@
    "at": 3320,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: a locomotive and a waggon (any: the depot may not be there)",
+   "expect": "applied",
+   "note": "Actor 2: a locomotive and a waggon",
    "action": {
     "BuyVehicle": {
      "depot": {
       "file": "::/depots/rail/rail_depot.con",
       "at": {
        "$pos": [
-        215,
-        0,
+        270,
+        -2.2,
         0
        ]
       }
@@ -1408,9 +1256,386 @@
   {
    "at": 3380,
    "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: the train stopped",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+2"
+     },
+     "change": {
+      "Stop": true
+     }
+    }
+   }
+  },
+  {
+   "at": 3400,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: and started again",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+2"
+     },
+     "change": {
+      "Stop": false
+     }
+    }
+   }
+  },
+  {
+   "at": 3440,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: sent to its depot",
+   "action": {
+    "VehicleOp": {
+     "vehicle": {
+      "$id": "vehicles+2"
+     },
+     "change": {
+      "ToDepot": {
+       "sell": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3560,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: the track's west edge bulldozed, its signal with it",
+   "action": {
+    "Bulldoze": {
+     "Edges": {
+      "network": "Track",
+      "edges": [
+       {
+        "a": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "b": {
+         "$pos": [
+          100,
+          0,
+          0
+         ]
+        }
+       }
+      ],
+      "buildings": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3700,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: pays back the loan loans+2 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+2"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 4550,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: a modular rail station without its modules (any: what the game makes of it)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/stations/rail/modular_station/modular_station.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        100,
+        30,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario station 0",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 4560,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: a modular rail station without its modules (any: what the game makes of it)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/stations/rail/modular_station/modular_station.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        100,
+        30,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario station 1",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 4570,
+   "actor": 2,
    "origin": "spot:#2:0",
    "expect": "any",
-   "note": "Actor 2: a train line (any: the station's group is a guess)",
+   "note": "Actor 2: a modular rail station without its modules (any: what the game makes of it)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/stations/rail/modular_station/modular_station.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        100,
+        30,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      }
+     ],
+     "name": "Scenario station 2",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 4800,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: a train line at that station (any: the station may not be)",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario train line 0",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+0"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+0"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       7
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 4810,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "any",
+   "note": "Actor 1: a train line at that station (any: the station may not be)",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario train line 1",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+1"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+1"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       7
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 4820,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "any",
+   "note": "Actor 2: a train line at that station (any: the station may not be)",
    "action": {
     "CreateLine": {
      "name": "Scenario train line 2",
@@ -1469,93 +1694,6 @@
       ],
       "custom_filters": false,
       "reservation_priority": 0
-     }
-    }
-   }
-  },
-  {
-   "at": 3420,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: the train onto it",
-   "action": {
-    "AssignLine": {
-     "vehicles": [
-      {
-       "$id": "vehicles+2"
-      }
-     ],
-     "line": {
-      "$id": "lines+2"
-     },
-     "first_stop": null
-    }
-   }
-  },
-  {
-   "at": 3480,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: the train stopped",
-   "action": {
-    "VehicleOp": {
-     "vehicle": {
-      "$id": "vehicles+2"
-     },
-     "change": {
-      "Stop": true
-     }
-    }
-   }
-  },
-  {
-   "at": 3500,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: and started again",
-   "action": {
-    "VehicleOp": {
-     "vehicle": {
-      "$id": "vehicles+2"
-     },
-     "change": {
-      "Stop": false
-     }
-    }
-   }
-  },
-  {
-   "at": 3560,
-   "actor": 2,
-   "origin": "spot:#2:0",
-   "expect": "applied",
-   "note": "Actor 2: the track's west edge bulldozed, its signal with it",
-   "action": {
-    "Bulldoze": {
-     "Edges": {
-      "network": "Track",
-      "edges": [
-       {
-        "a": {
-         "$pos": [
-          0,
-          0,
-          0
-         ]
-        },
-        "b": {
-         "$pos": [
-          100,
-          0,
-          0
-         ]
-        }
-       }
-      ],
-      "buildings": []
      }
     }
    }

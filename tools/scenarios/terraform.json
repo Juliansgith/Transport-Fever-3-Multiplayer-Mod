@@ -1,18 +1,39 @@
 {
  "name": "terraform",
- "comment": "A 16 m square of each actor's spot raised to 2 m and lowered again.",
+ "comment": "A 16 m square of each actor's spot raised 2 m and lowered again,\n    heights from the spot's own.",
  "observe_every": 10,
  "items": [
   {
-   "at": 10,
+   "at": 20,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 0: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 0"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -21,8 +42,8 @@
    "at": 100,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: the square's cells set to 2000 mm (any: absolute heights, not the spot's)",
+   "expect": "applied",
+   "note": "Actor 0: the square set to 2 m above the spot",
    "action": {
     "Terraform": {
      "origin": {
@@ -35,68 +56,132 @@
      "columns": 4,
      "cells": [
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       }
      ]
     }
@@ -106,8 +191,8 @@
    "at": 200,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: the square's cells set to 0 mm (any: absolute heights, not the spot's)",
+   "expect": "applied",
+   "note": "Actor 0: the square set to 0 m above the spot",
    "action": {
     "Terraform": {
      "origin": {
@@ -120,83 +205,194 @@
      "columns": 4,
      "cells": [
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       }
      ]
     }
    }
   },
   {
-   "at": 1510,
+   "at": 400,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: pays back the loan loans+0 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+0"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1520,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 1: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 1"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -205,8 +401,8 @@
    "at": 1600,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: the square's cells set to 2000 mm (any: absolute heights, not the spot's)",
+   "expect": "applied",
+   "note": "Actor 1: the square set to 2 m above the spot",
    "action": {
     "Terraform": {
      "origin": {
@@ -219,68 +415,132 @@
      "columns": 4,
      "cells": [
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       }
      ]
     }
@@ -290,8 +550,8 @@
    "at": 1700,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: the square's cells set to 0 mm (any: absolute heights, not the spot's)",
+   "expect": "applied",
+   "note": "Actor 1: the square set to 0 m above the spot",
    "action": {
     "Terraform": {
      "origin": {
@@ -304,83 +564,194 @@
      "columns": 4,
      "cells": [
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       }
      ]
     }
    }
   },
   {
-   "at": 3010,
+   "at": 1900,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: pays back the loan loans+1 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+1"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3020,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 2: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 2"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -389,8 +760,8 @@
    "at": 3100,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: the square's cells set to 2000 mm (any: absolute heights, not the spot's)",
+   "expect": "applied",
+   "note": "Actor 2: the square set to 2 m above the spot",
    "action": {
     "Terraform": {
      "origin": {
@@ -403,68 +774,132 @@
      "columns": 4,
      "cells": [
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       },
       {
-       "target": 2000,
-       "before": 0
+       "target": {
+        "$z": 2
+       },
+       "before": {
+        "$z": 0
+       }
       }
      ]
     }
@@ -474,8 +909,8 @@
    "at": 3200,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: the square's cells set to 0 mm (any: absolute heights, not the spot's)",
+   "expect": "applied",
+   "note": "Actor 2: the square set to 0 m above the spot",
    "action": {
     "Terraform": {
      "origin": {
@@ -488,70 +923,160 @@
      "columns": 4,
      "cells": [
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       },
       {
-       "target": 0,
-       "before": 2000
+       "target": {
+        "$z": 0
+       },
+       "before": {
+        "$z": 2
+       }
       }
      ]
+    }
+   }
+  },
+  {
+   "at": 3400,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: pays back the loan loans+2 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+2"
+       }
+      }
+     }
     }
    }
   }

@@ -211,8 +211,15 @@ expect, note, action }`, the action written as serde writes
 - `$pos` places a position in metres from the item's `origin`
   (`spot:#0:0`, `water:#0:0`, `town:#1`, `town:<name>`, or absolute),
   `$id` counts the registry's ids from the baseline (`lines+0` is the first
-  line made after it), `$edge` names a street the baseline listed,
-  `$building` a town building, and `$cell2` a terrain cell's corner.
+  line made after it; `loans+0` the room's next loan), `$edge` names a
+  street the baseline listed (`#0:free:0`: one no town building stands by,
+  which a bulldozer takes alone), `$building` a town building, `$cell2` a
+  terrain cell's corner and `$z` a height above the origin.
+
+A competitive room's companies start with no money, so each actor of the
+shipped scenarios borrows first and pays back last, the loan named by the
+baseline's next loan id. Depots stand with their entrance on the free end
+of the scenario's own street or track, so vehicles can leave.
 
 The actor's game hands its items to the room through `Session::command`,
 as a player's captured actions go, and every game names every scripted

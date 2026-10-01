@@ -1,18 +1,39 @@
 {
  "name": "air",
- "comment": "An airfield on a flat spot near each town, a plane bought at its\n    hangar and run on a line.",
+ "comment": "An airfield on a flat spot near each town, a plane bought at its\n    hangar and run on a line. The airfield's params are the scenario's, so\n    what follows it is `any`.",
  "observe_every": 10,
  "items": [
   {
-   "at": 10,
+   "at": 20,
    "actor": 0,
    "origin": "spot:#0:0",
-   "expect": "any",
-   "note": "Actor 0: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 0: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 0"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -22,7 +43,7 @@
    "actor": 0,
    "origin": "spot:#0:0",
    "expect": "any",
-   "note": "Actor 0: an airfield (any: its params are the scenario's)",
+   "note": "Actor 0: an airfield",
    "action": {
     "BuildConstruction": {
      "file": "::/stations/air/airfield.con",
@@ -104,7 +125,7 @@
    "actor": 0,
    "origin": "spot:#0:0",
    "expect": "any",
-   "note": "Actor 0: an air line (any)",
+   "note": "Actor 0: an air line",
    "action": {
     "CreateLine": {
      "name": "Scenario air line 0",
@@ -188,15 +209,62 @@
    }
   },
   {
-   "at": 1510,
+   "at": 400,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: pays back the loan loans+0 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+0"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1520,
    "actor": 1,
    "origin": "spot:#1:0",
-   "expect": "any",
-   "note": "Actor 1: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 1: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 1"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -206,7 +274,7 @@
    "actor": 1,
    "origin": "spot:#1:0",
    "expect": "any",
-   "note": "Actor 1: an airfield (any: its params are the scenario's)",
+   "note": "Actor 1: an airfield",
    "action": {
     "BuildConstruction": {
      "file": "::/stations/air/airfield.con",
@@ -288,7 +356,7 @@
    "actor": 1,
    "origin": "spot:#1:0",
    "expect": "any",
-   "note": "Actor 1: an air line (any)",
+   "note": "Actor 1: an air line",
    "action": {
     "CreateLine": {
      "name": "Scenario air line 1",
@@ -372,15 +440,62 @@
    }
   },
   {
-   "at": 3010,
+   "at": 1900,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: pays back the loan loans+1 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+1"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3020,
    "actor": 2,
    "origin": "spot:#2:0",
-   "expect": "any",
-   "note": "Actor 2: a company of its own (any: a competitive room may have founded one)",
+   "expect": "applied",
+   "note": "Actor 2: borrows 3000000 to build and buy with (its company has no money)",
    "action": {
-    "CompanyOp": {
-     "Create": {
-      "name": "Scenario company 2"
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
      }
     }
    }
@@ -390,7 +505,7 @@
    "actor": 2,
    "origin": "spot:#2:0",
    "expect": "any",
-   "note": "Actor 2: an airfield (any: its params are the scenario's)",
+   "note": "Actor 2: an airfield",
    "action": {
     "BuildConstruction": {
      "file": "::/stations/air/airfield.con",
@@ -472,7 +587,7 @@
    "actor": 2,
    "origin": "spot:#2:0",
    "expect": "any",
-   "note": "Actor 2: an air line (any)",
+   "note": "Actor 2: an air line",
    "action": {
     "CreateLine": {
      "name": "Scenario air line 2",
@@ -552,6 +667,32 @@
       "$id": "lines+2"
      },
      "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 3400,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: pays back the loan loans+2 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+2"
+       }
+      }
+     }
     }
    }
   }
