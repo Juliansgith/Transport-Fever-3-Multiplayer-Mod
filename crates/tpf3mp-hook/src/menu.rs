@@ -170,6 +170,14 @@ local function load(name)
 		busy = task ~= nil and task ~= ""
 	end)
 	if busy then return "busy" end
+	-- Dismiss the lobby while the menu still runs. Loading suspends its
+	-- callbacks, so a state-poll-based close can leave a frozen overlay.
+	if resolveutil and resolveutil.__tpf3mp_before_load then
+		local ok, err = pcall(resolveutil.__tpf3mp_before_load)
+		if not ok then return "closing the multiplayer menu failed: " .. tostring(err) end
+		resolveutil.__tpf3mp_before_load = nil
+		return "busy" -- let the menu apply the removal before starting a load
+	end
 	local info = nil
 	if plan and plan() then
 		-- The room's mods, not the save's: its details first, read by the
@@ -349,6 +357,17 @@ unsafe fn string_at_top(api: &LuaApi, l: State) -> Option<String> {
 pub unsafe fn adopt(l: State) -> Result<bool, String> {
     // SAFETY: the caller's.
     unsafe { adopt_as(l, false) }
+}
+
+/// A new app state created during a load belongs to the incoming world,
+/// even before CMenuUI publishes m_game. Ask the existing menu state before
+/// adopting the new one; otherwise loading() can enter the world's Lua
+/// while the loader is using it.
+///
+/// # Safety
+/// As adopt, on the menu thread with the existing menu Lua idle.
+unsafe fn incoming_world(world_loaded: Option<bool>) -> bool {
+    world_loaded == Some(true) || unsafe { loading() } == Some(true)
 }
 
 /// [`adopt`], for a state given `app` while a world is loaded (`world`):
@@ -614,7 +633,7 @@ unsafe extern "C-unwind" fn register_detour(
         // A state given `app` while a world is loaded is that world's GUI's.
         // SAFETY: `menu` is the CMenuUI& the game passed, live on this
         // thread for the call.
-        let world = unsafe { world_loaded(menu) } == Some(true);
+        let world = unsafe { incoming_world(world_loaded(menu)) };
         // SAFETY: the game just registered into this state on this thread
         // and is not inside any of its API calls now.
         match unsafe { adopt_as(l as State, world) } {
@@ -847,6 +866,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn loading_closes_the_lobby_and_gives_its_removal_a_frame() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        menu51();
+        forget_all();
+        let menu = Lua::new();
+        menu.run(FAKE_MENU).unwrap();
+        menu.run("CLOSED = 0; resolveutil = { __tpf3mp_before_load = function() CLOSED = CLOSED + 1 end }")
+            .unwrap();
+        assert_eq!(unsafe { adopt(menu.state()) }, Ok(true));
+        assert_eq!(unsafe { serve("room") }, Some(Served::Busy));
+        assert_eq!(menu.run("return CLOSED, #LOADS"), Ok("1|0".into()));
+        assert_eq!(unsafe { serve("room") }, Some(Served::Started));
+        assert_eq!(menu.run("return CLOSED, #LOADS"), Ok("1|1".into()));
+        menu.run("resolveutil.__tpf3mp_before_load = function() error('cannot close', 0) end")
+            .unwrap();
+        assert_eq!(
+            unsafe { serve("room") },
+            Some(Served::Failed(
+                "closing the multiplayer menu failed: cannot close".into()
+            ))
+        );
+        assert_eq!(menu.run("return #LOADS"), Ok("1".into()));
+        forget_all();
+    }
+
+    #[test]
     fn a_state_without_app_says_so_and_a_closed_state_is_never_called() {
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         menu51();
@@ -939,6 +984,31 @@ pub(crate) mod tests {
         menu.run("app = nil").unwrap();
         assert_eq!(unsafe { loading() }, None);
         assert_eq!(unsafe { ffi::lua_gettop(l) }, top, "the stack is as it was");
+        forget_all();
+    }
+
+    #[test]
+    fn incoming_world_state_is_not_used_by_menu_before_m_game_is_published() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        menu51();
+        forget_all();
+        let menu = Lua::new();
+        menu.run(FAKE_MENU).unwrap();
+        assert_eq!(unsafe { adopt(menu.state()) }, Ok(true));
+        assert!(!unsafe { incoming_world(Some(false)) });
+        menu.run("TASK = 'Generating world'").unwrap();
+        let world = Lua::new();
+        world.run(FAKE_MENU).unwrap();
+        let is_world = unsafe { incoming_world(Some(false)) };
+        assert!(is_world, "m_game is still null while the world is loading");
+        assert_eq!(unsafe { adopt_as(world.state(), is_world) }, Ok(true));
+        // The new state's monitor says idle. Only the original menu's
+        // monitor is authoritative, and only that state may load saves.
+        assert_eq!(unsafe { loading() }, Some(true));
+        menu.run("TASK = nil").unwrap();
+        assert_eq!(unsafe { serve("next_world") }, Some(Served::Started));
+        assert_eq!(world.run("return #LOADS"), Ok("0".into()));
+        assert_eq!(menu.run("return #LOADS"), Ok("1".into()));
         forget_all();
     }
 

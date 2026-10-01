@@ -432,11 +432,13 @@ themselves once the new release is published and signed.
 
 ## Releases
 
-`.github/workflows/release.yml` builds the player's package for Windows x64,
-Linux x64 and macOS arm64: the launcher (`TPF3-MP.exe`,
-`TPF3-MP.app`, `tpf3mp-launcher`), the command-line agent, the in-game hook
-library and the server. The Linux package is built on Ubuntu 22.04, so it
-runs on distributions with an older C library too.
+`.github/workflows/release.yml` builds separate player and server archives
+for Windows x64, Linux x64 and macOS arm64. The player archive has the
+launcher (`TPF3-MP.exe`, `TPF3-MP.app`, `tpf3mp-launcher`), command-line
+agent, in-game hook and mod. The server archive has `tpf3mp-server` and
+this operations guide. Windows also gets a single `TPF3-MP.exe` setup
+download. The Linux packages are built on Ubuntu 22.04, so they run on
+distributions with an older C library too.
 
 - **Cutting one.** Every push to `main`, which only receives what passed
   `acceptance` (see [AGENTS.md](../AGENTS.md)), builds the packages and
@@ -521,6 +523,17 @@ runs on distributions with an older C library too.
   the readable scripts in the package: `INSTALL_TPF3MP.cmd` (which runs
   `tools\install.ps1`) on Windows, `install.sh` on Linux and macOS (see
   "Installing" in [PLAYING.md](PLAYING.md), and D9).
+- **Windows first install (1.1).** The release also carries `TPF3-MP.exe`,
+  the same launcher as the ZIP. Without a package beside it, it opens setup
+  and fetches the signed Windows package using the existing updater trust
+  keys. First install and repair permit the same release version; ordinary
+  updates still require a newer version. Setup installs per user, invokes
+  `tools/install.ps1` for the mod and `tools/manage.ps1` for shortcuts and
+  the Apps uninstall entry. A managed marker distinguishes it from the ZIP.
+  Subsequent Windows starts synchronize an absent or outdated mod before
+  opening the backend. Package replacement refuses while the game runs.
+  The public EXE has no Windows publisher signature; Ed25519 authenticates
+  downloaded packages, not the initial executable's Windows publisher.
 - **Until the game is out** the hook finds no build profile and installs
   nothing, so the package is for trying the launcher and the netcode with
   the fake game.

@@ -969,7 +969,8 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   target `UI::CMenuUI::DoStep/m_game test` (`0x6a01c0`, `cmp [rsi+0x6b0],
   r13`), and its displacement is the field's offset, which the menu's
   frame reads in the `CMenuUI` it is handed. A state given `app` while
-  `m_game` is set is the world's GUI's: the menu never loads from it, and
+  `m_game` is set, or while the existing menu reports a load in progress,
+  is the world's GUI's: the menu never loads from it, and
   forgets it when the world closes. Loading is the menu's own sign, the
   progress monitor's task, asked through the chunk's `busy()`.
 - **Follows the room from the menu's frame.** `UI::CMenuUI::DoStep`

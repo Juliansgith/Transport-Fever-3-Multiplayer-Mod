@@ -45,6 +45,10 @@ Flag each of these when a task asks for it:
 - [x] Packaging. *Changed:* no proxy DLL and no install `.bat`. The
   packages hold the launcher, agent, hook and mod, with readable install
   scripts (D9), and the launcher injects the hook (D11).
+  *Added (owner, 2026-10-01):* Windows v1.1's standalone launcher handles
+  first install, signed package downloads, shortcuts, mod updates, repair
+  and uninstall. It invokes the readable scripts underneath the setup UI;
+  the ZIP remains the portable option. D9 and D11 still apply.
 - [x] The road and track capture ported from TPF2's Lua into
   `mod/tpf3mp_1`, producing `Action::BuildRoad`.
 - [x] `tools/probe/check_lua.py` on both probe mods, ready to install.

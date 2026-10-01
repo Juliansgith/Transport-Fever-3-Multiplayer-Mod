@@ -33,7 +33,9 @@ param(
     # Where Steam is, when it is not where the registry says.
     [string]$SteamRoot,
     # Take out what an earlier install put in.
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    # A read-only preflight for the launcher's updater.
+    [switch]$CheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -157,6 +159,9 @@ function Find-ModsDir {
 }
 
 function Assert-GameClosed {
+    if (@(Get-Process -Name TransportFever3 -ErrorAction SilentlyContinue).Count -gt 0) {
+        throw 'Close Transport Fever 3 first.'
+    }
     $game = Find-Game
     if (-not $game) { return }
     $prefix = $game.TrimEnd('\') + '\'
@@ -219,8 +224,9 @@ function Install([string]$RecordPath, [string]$Backups) {
         Say "This package has no TPF3-MP mod yet: there is nothing to install."
         return
     }
-    $null = Read-Record $RecordPath
+    $previous = Read-Record $RecordPath
     $mods = $ModsDir
+    if (-not $mods -and $null -ne $previous) { $mods = Split-Path -Parent ([string](Get-Field $previous 'mod')) }
     if (-not $mods) { $mods = Find-ModsDir }
     if (-not $mods) {
         throw "Steam has no folder for your Transport Fever 3 mods yet: start the game once, then install again. Or drop the mods folder onto INSTALL_TPF3MP.cmd."
@@ -255,6 +261,7 @@ try {
     $recordPath = Join-Path $data 'installed.json'
     $backups = Join-Path $data ('backups\' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
     Assert-GameClosed
+    if ($CheckOnly) { exit 0 }
     if ($Uninstall) { Remove-Install $recordPath $backups } else { Install $recordPath $backups }
     if (Test-Path -LiteralPath $backups) { Say "What was replaced or taken out is in $backups." }
     exit 0

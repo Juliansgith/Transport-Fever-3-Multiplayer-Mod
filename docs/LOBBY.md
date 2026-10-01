@@ -207,3 +207,63 @@ game's file again rather than editing the copy.
 hook but without a launcher: the entry and window appear, and the window
 says the game has no link to the launcher. They are for checking the entry
 alone.
+
+## v1.1 menu journeys
+
+The main-menu friend card uses `focus = "friend"`: it shows name, invite
+and optional password even before connecting. One queued intention waits
+for the named connection, then joins once; connection errors and a timeout
+cancel it. Hosting and discovery are accessible before connecting too.
+Polling compares the serialized lobby before setting GUI state, so idle
+polls do not rebuild dropdowns while a player uses them.
+
+Before the hook loads a room's snapshot, it calls the lobby's registered
+close callback and yields a menu frame for the window removal. The loader
+suspends menu callbacks, so waiting for the next room-state poll can leave
+the old lobby frozen over the loaded world. A failed close refuses the load
+and reports the error instead of hiding it.
+
+Creating with an explicitly empty start-save opens the stock `NewGame`
+page through the main page's navigation callback only after room creation
+succeeds. The launcher's bridge starts that generated world once the owner
+reports a loaded world and all members are ready. Existing-save rooms
+retain their explicit Start button. No game-install files are changed.
+Before opening stock setup, the menu adds `tpf3mp_1` to its active mod
+selection without removing other mods. Otherwise a freshly generated world
+could silently run without the multiplayer script while guests wait.
+
+The launcher retains its hook link between rooms. The hook therefore resets
+its menu-arrival notification when the lobby invite changes, even if the
+link generation is unchanged. After a running room ends, returning to the
+main menu resets its completed gate; an early Begin for the next room is
+preserved until that menu transition. A running world cannot reset its gate.
+When Leave or Disconnect is requested after returning to the menu, the hook
+drains the old session through its real End message. Queued simulation steps
+are neither executed nor reported as executed. This prevents an unrun step
+from blocking the leave response and the next room on the same game process.
+
+### Native acceptance, 2026-10-01
+
+On Windows with Steam build 40408, two games started by the launcher against
+a local server exercised the native menu. This used normal menu actions,
+not console-created rooms or a prepared save:
+
+- Offline **Join a friend** connected and joined from the name/code form;
+  public browsing and joining also worked.
+- Hosting **New world** opened the stock climate/settings/mods screens.
+  Cancelling returned to the room, where **Set up world** resumed setup.
+  TPF3-MP was selected automatically while existing mod choices were kept.
+- A small temperate European world, starting in 1900 with the tutorial off
+  and only the stock DLCs plus TPF3-MP selected, generated successfully.
+  Finishing setup began multiplayer automatically. Both games loaded the
+  shared snapshot and displayed **Worlds match**.
+- A guest joined the running room from its main menu. The lobby disappeared
+  before loading, and the in-game multiplayer panel opened and closed.
+- That same guest process used **Quit → Return to Main Menu**, left the
+  room, then joined it again by invite without restarting either the game
+  or launcher. It loaded the shared world and displayed **Worlds match**
+  again; the host stayed in the world throughout.
+
+These checks found and reproduced the generation-time Lua-state race, the
+frozen menu overlay during loading, and a leave response blocked behind an
+unrun simulation step. Each correction has focused regression coverage.

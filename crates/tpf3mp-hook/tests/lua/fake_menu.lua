@@ -98,7 +98,19 @@ function react.useRef(initial)
 	end
 	return ref
 end
-react.useState = react.useRef
+STATE_WRITES = 0
+function react.useState(initial)
+	local ref = react.useRef(initial)
+	if not ref.stateTracked then
+		ref.stateTracked = true
+		local set = ref.set
+		function ref:set(value)
+			STATE_WRITES = STATE_WRITES + 1
+			set(self, value)
+		end
+	end
+	return ref
+end
 function react.onStepTimer(fn) mount.timers[#mount.timers + 1] = fn end
 local LAYOUTS = { BoxLayout = true, FloatingLayout = true }
 -- A wrapper recipe's widget takes meta for its class only: the game
@@ -243,7 +255,7 @@ function render(f)
 	if f ~= nil then focus = f end
 	mount.index = 0
 	mount.timers = {}
-	tree = lobby.content(function() CLOSED = CLOSED + 1 end, focus)
+	tree = lobby.content(function() CLOSED = CLOSED + 1 end, focus, function() GENERATED = (GENERATED or 0) + 1 end)
 	checkInputs(tree, nil)
 	return tree
 end
@@ -366,6 +378,7 @@ function room_cards()
 			found[#found + 1] = {
 				text = table.concat(texts, "\n"),
 				picture = node.params.images[1],
+				tooltip = node.params.meta.tooltip,
 				click = node.params.onClick,
 				enabled = node.params.meta.enabled ~= false,
 			}

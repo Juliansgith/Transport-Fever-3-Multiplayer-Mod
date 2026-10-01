@@ -15,6 +15,41 @@ use super::{LobbyState, parse_action};
 const FAKE_MENU: &str = include_str!("../../tests/lua/fake_menu.lua");
 const WINDOW: &str = include_str!("../../../../mod/tpf3mp_1/content/gui/menu/lobby.lua");
 
+#[test]
+fn new_world_setup_selects_multiplayer_once_and_preserves_other_settings() {
+    let lua = menu();
+    lua.load(
+        r#"
+        CONFIG = { mainMenuState = { activeModsState = { "other_mod" }, seed = "kept" } }
+        api.type.AppConfig = { new = function(value) return value end }
+        api.util = {
+            getAppConfig = function() return CONFIG end,
+            setAppConfig = function(value, restart) assert(not restart); CONFIG = value end,
+        }
+    "#,
+    )
+    .exec()
+    .unwrap();
+    let lobby: Table = lua.load(WINDOW).eval().unwrap();
+    let prepare: Function = lobby.get("prepareNewWorld").unwrap();
+    prepare.call::<()>(()).unwrap();
+    prepare.call::<()>(()).unwrap();
+    lua.load(
+        r#"
+        assert(CONFIG.mainMenuState.seed == "kept")
+        local mods = CONFIG.mainMenuState.activeModsState
+        assert(#mods == 2 and mods[1] == "other_mod" and mods[2] == "tpf3mp_1")
+        CONFIG.mainMenuState.activeModsState = nil
+    "#,
+    )
+    .exec()
+    .unwrap();
+    prepare.call::<()>(()).unwrap();
+    lua.load("assert(CONFIG.mainMenuState.activeModsState[1] == 'tpf3mp_1')")
+        .exec()
+        .unwrap();
+}
+
 fn menu() -> Lua {
     let lua = Lua::new();
     lua.globals().set("LOBBY_SOURCE", WINDOW).unwrap();
@@ -194,7 +229,10 @@ fn not_connected_it_connects_with_the_name_typed_to_the_launchers_server() {
         shown.contains("Join a room") && shown.contains("Host a room"),
         "the first page's two choices: {shown}"
     );
-    assert!(!card_enabled(&lua, "Join a room"), "only once connected");
+    assert!(
+        card_enabled(&lua, "Join a room"),
+        "discovery explains how to connect"
+    );
     call(&lua, "type_into", ("Ann", "Ada"));
     click(&lua, "Connect to EU");
     assert_eq!(
@@ -239,7 +277,7 @@ fn a_room_is_created_with_the_rules_players_and_save_picked() {
         .unwrap()
         .call("Start from this save")
         .unwrap();
-    assert_eq!(values, ["newest", "mptest", ""]);
+    assert_eq!(values, ["", "newest", "mptest"]);
     assert_eq!(chosen, "mptest");
     call(&lua, "type_into", ("Ann's room", "Alps"));
     call(&lua, "choose", ("Players", 6));
@@ -279,9 +317,12 @@ fn a_room_can_start_without_a_save_and_is_named_for_its_owner() {
         .unwrap()
         .call("Start from this save")
         .unwrap();
-    assert_eq!(chosen, "newest", "without the launcher's own, the newest");
+    assert_eq!(
+        chosen, "",
+        "new worlds are the default without a chosen save"
+    );
     call(&lua, "choose", ("Start from this save", ""));
-    assert!(texts(&lua).contains("Load a world in the game once in the room"));
+    assert!(texts(&lua).contains("Choose your map and settings on the next screen"));
     click(&lua, "Create room");
     let actions: [LobbyAction; 1] = sent(&lua).try_into().unwrap();
     let [
@@ -500,6 +541,11 @@ fn while_the_rooms_world_comes_the_window_says_how_far_and_stays_usable() {
     show(&lua, Some(&view));
     call(&lua, "tick", ());
     assert!(texts(&lua).contains("Loading the room's world..."));
+    view.room = None;
+    view.world = LobbyWorld::Playing;
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(!texts(&lua).contains("Playing the room's game"));
 }
 
 #[test]
@@ -621,8 +667,10 @@ fn the_window_asks_for_the_room_list_and_shows_each_room_as_a_card() {
     let first = &shown[0];
     let text: String = first.get("text").unwrap();
     assert!(text.contains("Dry run"), "{text}");
-    assert!(text.contains("2/4 players · 2 companies · 1873"), "{text}");
-    assert!(text.contains("Dry"), "the climate's own name: {text}");
+    assert!(text.contains("2/4 players · Co-op"), "{text}");
+    let detail: String = first.get("tooltip").unwrap();
+    assert!(detail.contains("2 companies · 1873"), "{detail}");
+    assert!(detail.contains("Dry"), "the climate's own name: {detail}");
     assert_eq!(
         first.get::<String>("picture").unwrap(),
         "::/climates/dry/icon.tga",
@@ -1092,4 +1140,159 @@ fn a_rooms_play_style_shows_in_the_room_and_the_list() {
     call(&lua, "render", "join");
     let text: String = cards(&lua)[0].get("text").unwrap();
     assert!(text.contains("Competitive"), "{text}");
+}
+
+#[test]
+fn friend_join_connects_with_typed_name_then_joins_exactly_once() {
+    let lua = menu();
+    let mut view = LobbyView {
+        connection: LobbyConnection::Disconnected,
+        ..online()
+    };
+    show(&lua, Some(&view));
+    open(&lua, Some("friend"));
+    assert!(texts(&lua).contains("Invite code"));
+    assert!(!texts(&lua).contains("Public rooms on"));
+    click(&lua, "Join room");
+    assert!(sent_all(&lua).is_empty(), "empty code must not connect");
+    call(&lua, "type_into", ("Ann", "Ada"));
+    call(&lua, "type_into", ("K7QM2X", " k7qm2x "));
+    call(&lua, "type_into", ("", "secret"));
+    click(&lua, "Join room");
+    assert_eq!(
+        sent_all(&lua),
+        [LobbyAction::Connect {
+            name: Text::new("Ada").unwrap()
+        }]
+    );
+    assert!(!enabled(&lua, "Join room"));
+    view.connection = LobbyConnection::Connecting;
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(sent_all(&lua).is_empty());
+    view.connection = LobbyConnection::Connected;
+    view.name = Text::new("Ada").unwrap();
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert_eq!(
+        sent_all(&lua),
+        [LobbyAction::Join {
+            invite: Text::new("K7QM2X").unwrap(),
+            password: Some(Text::new("secret").unwrap())
+        }]
+    );
+    call(&lua, "tick", ());
+    assert!(
+        sent_all(&lua).is_empty(),
+        "no duplicate joins or unsolicited room listing"
+    );
+}
+
+#[test]
+fn friend_connection_failure_cancels_the_join_and_allows_retry() {
+    let lua = menu();
+    let mut view = LobbyView {
+        connection: LobbyConnection::Disconnected,
+        ..online()
+    };
+    show(&lua, Some(&view));
+    open(&lua, Some("friend"));
+    call(&lua, "type_into", ("K7QM2X", "K7QM2X"));
+    click(&lua, "Join room");
+    assert_eq!(sent(&lua).len(), 1);
+    view.error = Some(Text::new("The server is unavailable").unwrap());
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(enabled(&lua, "Join room"));
+    assert!(texts(&lua).contains("server is unavailable"));
+    view.connection = LobbyConnection::Connected;
+    view.error = None;
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(
+        sent_all(&lua).is_empty(),
+        "a failed intention must not run later"
+    );
+    click(&lua, "Join room");
+    assert!(matches!(sent(&lua).as_slice(), [LobbyAction::Join { .. }]));
+}
+
+#[test]
+fn generating_a_world_waits_for_room_creation_before_opening_stock_setup() {
+    let lua = menu();
+    show(&lua, Some(&online()));
+    open(&lua, None);
+    call(&lua, "click_card", "Host a room");
+    call(&lua, "choose", ("Start from this save", ""));
+    click(&lua, "Create room");
+    assert!(
+        lua.globals()
+            .get::<Option<u32>>("GENERATED")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        matches!(sent(&lua).as_slice(), [LobbyAction::Create { start_save: Some(save), .. }] if save.as_str().is_empty())
+    );
+    let mut created = in_room(vec![member(1, "Ann", true, true, false)], true);
+    created.start_save = None;
+    show(&lua, Some(&created));
+    call(&lua, "tick", ());
+    call(&lua, "tick", ());
+    assert_eq!(lua.globals().get::<u32>("GENERATED").unwrap(), 1);
+    click(&lua, "Set up world");
+    assert_eq!(
+        lua.globals().get::<u32>("GENERATED").unwrap(),
+        2,
+        "cancelling stock setup must allow reopening it from the room"
+    );
+}
+
+#[test]
+fn unchanged_lobby_polls_leave_native_controls_open() {
+    let lua = menu();
+    show(&lua, Some(&online()));
+    open(&lua, None);
+    call(&lua, "tick", ());
+    lua.globals().set("STATE_WRITES", 0).unwrap();
+    for _ in 0..5 {
+        call(&lua, "tick", ());
+    }
+    assert_eq!(
+        lua.globals().get::<u32>("STATE_WRITES").unwrap(),
+        0,
+        "unchanged polling must not redraw and collapse native dropdowns"
+    );
+    let mut changed = online();
+    changed.notice = Some(Text::new("A new notice").unwrap());
+    show(&lua, Some(&changed));
+    call(&lua, "tick", ());
+    assert!(texts(&lua).contains("A new notice"));
+}
+
+#[test]
+fn the_loader_can_close_the_lobby_before_menu_callbacks_are_suspended() {
+    for already_in_lobby in [false, true] {
+        let lua = menu();
+        let mut view = in_room(vec![member(1, "Ann", true, true, true)], true);
+        let connected = online();
+        show(
+            &lua,
+            Some(if already_in_lobby { &view } else { &connected }),
+        );
+        open(&lua, None);
+        view.room.as_mut().unwrap().running = true;
+        show(&lua, Some(&view));
+        lua.load("resolveutil.__tpf3mp_before_load()")
+            .exec()
+            .unwrap();
+        assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 1);
+    }
+    let lua = menu();
+    let mut view = in_room(vec![member(1, "Ann", true, true, true)], true);
+    view.room.as_mut().unwrap().running = true;
+    show(&lua, Some(&view));
+    open(&lua, None);
+    assert_eq!(lua.globals().get::<u32>("CLOSED").unwrap(), 0);
+    assert!(enabled(&lua, "Leave room"));
 }
