@@ -750,7 +750,8 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.status()`: in the GUI: the room for the Multiplayer
   window, `{ room =, speed =, diverged =, me_id =, players = { { id =,
   name =, connected =, owner =, me =, banner =, loading =, percent = } } }`,
-  or nil before the room's game. `banner` is the player's pick, empty for
+  or nil before the room's game; `invite` too, the room's invite as the
+  launcher last told it, when it did. `banner` is the player's pick, empty for
   their default; `loading` is `fetching` (with `percent`), `loading` or
   empty (bridge version 18: `RoomMember::banner` and `loading`). The
   hook keeps what the room tells it (`Room`, `Speed`, `Diverged`), and
@@ -760,6 +761,12 @@ for the table (`bridge.find`). Its contract is in
   at most. A world's GUI starts with none of the chat so far, so after
   `world()` the next call first gives the last 50 lines taken before
   again, with `old` set.
+- `tpf3mp_native.copy(text)`: in the GUI: puts `text`, the room's invite
+  code, on the clipboard (`crate::clipboard`: the system's on Windows, the
+  game's SDL elsewhere; the game's GUI has no clipboard call), `true` or
+  `false` and why. The main menu's window asks the same with the action
+  `{"action":"copy","text":...}`, which the hook does itself and never
+  hands the launcher.
 - `tpf3mp_native.handover()`: in the GUI: `true` once after the main
   menu's Multiplayer window, open as the room's world came up, was closed
   for it (`crate::menu::close_lobby` at the menu frame the world came up):

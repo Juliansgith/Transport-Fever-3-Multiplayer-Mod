@@ -111,7 +111,8 @@ A game Steam started has no hook and keeps the plain menu.
     **Your mods** opens from Join, Host and the room: the player's
     installed mods to turn on or off (`choose_mod`), and in a room the
     room's own and whether the player has each;
-  - in a room: its name, invite and counts, the players with their marks
+  - in a room: its name, invite (with **Copy**, which the hook puts on
+    the clipboard: `crate::clipboard`) and counts, the players with their marks
     (owner, you, ready, away, other mods) and, for the owner, a Remove
     button that asks first; the chat; **Leave room** (asks first),
     **Ready** or **Not ready**, and, for the owner, **Start the game**,

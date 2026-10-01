@@ -546,6 +546,8 @@ function data()
 	local GLYPH = MOD .. "::/gui/tpf3mp/icons/menu_multiplayer_50.tga"
 	-- A banner strip's size, and the window's two columns.
 	local BANNER_W, BANNER_H = 160, 40
+	-- Frames Copy says "Copied" for: about two seconds.
+	local COPIED_FRAMES = 120
 	local LEFT_W, CHAT_W = 480, 360
 
 	-- A style sheet of one size, or nil where the state has none to make.
@@ -875,6 +877,30 @@ function data()
 		local left = {}
 		local function line(t, class) left[#left + 1] = text(t, class) end
 		line(tostring(status.room), "font-scale-title-4")
+		-- The room's invite code alone (without the server the launcher may
+		-- put before it), and Copy: the hook puts it on the clipboard, and
+		-- the button says "Copied" for a moment.
+		local code = type(status.invite) == "string" and status.invite:match("(%S+)%s*$")
+		if code then
+			left[#left + 1] = hbox({
+				text("Invite code  " .. code, "font-scale-body"),
+				builtin.Button{
+					meta = { tooltip = "Copy the invite code, to paste it to your friends" },
+					content = text((shared.copied or 0) > 0 and "Copied" or "Copy"),
+					onClick = function()
+						local l = shared.link
+						local ok, why = false, "not linked"
+						if l then ok, why = l:copy(code) end
+						if ok then
+							shared.copied = COPIED_FRAMES
+						else
+							shared.leaveNote = "Not copied: " .. tostring(why)
+						end
+						shared.version = shared.version + 1
+					end,
+				},
+			})
+		end
 		local about = {}
 		if status.speed then about[#about + 1] = "Speed " .. speedText(status.speed) end
 		if status.diverged then
@@ -1043,6 +1069,11 @@ function data()
 			-- up: this one opens in its place, once the room is read, so the
 			-- player keeps the lobby they had (the hook closed the menu's).
 			if link and ui().status and not ui().open and link:handover() then toggleWindow() end
+			local copied = ui().copied
+			if copied and copied > 0 then
+				ui().copied = copied - 1
+				if copied == 1 then ui().version = ui().version + 1 end
+			end
 			if ui().version ~= seen:get() then
 				seen:set(ui().version)
 				room:set(ui().version)

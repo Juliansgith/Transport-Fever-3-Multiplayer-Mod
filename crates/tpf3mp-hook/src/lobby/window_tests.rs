@@ -535,6 +535,44 @@ fn the_window_stays_through_the_load_and_leaves_the_hook_its_close() {
     assert!(left, "the close is there while open and gone once closed");
 }
 
+/// Copy beside the room's invite code asks the hook to put the code on the
+/// clipboard, and says "Copied" for a moment.
+#[test]
+fn the_invite_code_is_copied_with_a_click() {
+    let lua = menu();
+    show(
+        &lua,
+        Some(&in_room(vec![member(1, "Ann", true, true, true)], true)),
+    );
+    open(&lua, None);
+    assert!(enabled(&lua, "Copy"));
+    click(&lua, "Copy");
+    let asked: Vec<String> = lua
+        .load(
+            "local out = {} for i, json in ipairs(SENT) do out[i] = json end SENT = {} return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(asked, [r#"{"action":"copy","text":"K7QM2X"}"#]);
+    call(&lua, "render", ());
+    assert!(has_button(&lua, "Copied") && !has_button(&lua, "Copy"));
+    for _ in 0..5 {
+        call(&lua, "tick", ());
+    }
+    assert!(has_button(&lua, "Copy"), "back after a moment");
+    // A refusal shows as any other.
+    lua.load("REPLY = 'error: the clipboard is busy'")
+        .exec()
+        .unwrap();
+    click(&lua, "Copy");
+    assert!(
+        texts(&lua).contains("the clipboard is busy"),
+        "{}",
+        texts(&lua)
+    );
+    assert!(!has_button(&lua, "Copied"));
+}
+
 #[test]
 fn the_cards_say_where_the_player_is() {
     let lua = menu();

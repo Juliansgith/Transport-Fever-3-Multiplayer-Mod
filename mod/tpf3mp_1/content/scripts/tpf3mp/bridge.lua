@@ -208,6 +208,16 @@ function Link:handover()
 	return ok and handed == true
 end
 
+-- Puts `text`, the room's invite code, on the clipboard: true, or nil and
+-- why not.
+function Link:copy(text)
+	if type(self.native.copy) ~= "function" then return nil, "this hook cannot copy" end
+	local ok, copied, why = pcall(self.native.copy, tostring(text))
+	if not ok then return nil, tostring(copied) end
+	if copied ~= true then return nil, tostring(why or "the hook did not copy it") end
+	return true
+end
+
 -- Leaves the room, as the launcher's Leave room does: true, or nil and why
 -- not. A hook without leave (an older one) says so.
 function Link:leave()

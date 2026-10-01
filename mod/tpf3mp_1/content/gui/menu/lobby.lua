@@ -58,6 +58,8 @@ local MIN_PLAYERS, MAX_PLAYERS, DEFAULT_PLAYERS = 2, 16, 4
 -- many of those asks an action is shown as under way at most.
 local POLL = 0.4
 local PENDING_POLLS = 20
+-- How many polls Copy says "Copied" for: about two seconds.
+local COPIED_POLLS = 5
 
 -- The request channel -------------------------------------------------------
 
@@ -764,6 +766,8 @@ function lobby.content(onClose, focus)
 	local competitiveS = react.useState(false)
 	local joiningS = react.useState(nil)
 	local listAtRef = react.useRef(LIST_POLLS)
+	-- Polls the room page's Copy says "Copied" for after a click.
+	local copiedS = react.useState(0)
 	-- The window stays open while the room's world downloads and loads. It
 	-- lives in the main menu's window container, which the world's GUI
 	-- leaves behind where nothing could close it (2026-10-01), so the hook
@@ -802,6 +806,7 @@ function lobby.content(onClose, focus)
 	-- Poll the hook for the lobby a few times a second: the room and chat
 	-- change without anything happening in this window.
 	react.onStepTimer(function()
+		if copiedS:old() > 0 then copiedS:set(copiedS:old() - 1) end
 		local state, why = fetchState()
 		if state then
 			if problemS:old() ~= nil then problemS:set(nil) end
@@ -1391,6 +1396,14 @@ function lobby.content(onClose, focus)
 		row({
 			note(_("Invite code  ")),
 			label(room.invite ~= "" and inviteCode(room.invite) or "-", "font-scale-title-4, info"),
+			gap(10),
+			-- The hook puts it on the clipboard (the game's GUI has no
+			-- clipboard of its own); "Copied" for a moment after.
+			button(copiedS:old() > 0 and _("Copied") or _("Copy"), function()
+				local refused = act({ action = "copy", text = inviteCode(room.invite) })
+				refusedS:set(refused)
+				if not refused then copiedS:set(COPIED_POLLS) end
+			end, nil, room.invite ~= "", _("Copy the invite code, to paste it to your friends")),
 		}),
 		note(_("Send it to friends: they join with it from their game's Multiplayer window.")),
 		gap(10),

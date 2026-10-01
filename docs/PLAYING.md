@@ -199,7 +199,8 @@ window too.
      from its start save, and whether you have each. You can change your
      choice until the room's game starts.
 5. **The room.** On the left, the room's name (a lock if it has a
-   password), its **invite code** to send your friends, and its players
+   password), its **invite code** to send your friends (**Copy** beside it
+   puts it on the clipboard), and its players
    as picture cards of their banners, each marked **Owner**, **You**, **Ready** or **Not ready**, **Away**,
    and **Other mods** when their game differs from the owner's. On the
    right, the room's chat: type and press Enter or **Send**.
@@ -258,7 +259,8 @@ protected folder such as Program Files.
   room in one line: its name, how many players are in the game, its speed,
   and new chat. Click it, or the Multiplayer button among the mods'
   buttons (the main menu's Multiplayer glyph, with the number of new chat
-  lines), for the Multiplayer window: the room's players as their banners,
+  lines), for the Multiplayer window: the room's invite code with
+  **Copy**, the room's players as their banners,
   each marked **Owner**, **You**, **Away** and how far their game is
   (**Downloading 42%**, **Loading...**, **Playing**), its speed, whether
   your world matches the room's, the companies, **Leave room** (asks
