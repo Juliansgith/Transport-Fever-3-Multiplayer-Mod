@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 16;
+pub const ACTION_SCHEMA_VERSION: u32 = 17;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -847,6 +847,10 @@ pub enum VehicleChange {
     /// Appended under schema version 10: the variants before it keep their
     /// bytes.
     ManualDeparture(bool),
+    /// Its colour, as the vehicle window's and the line manager's colour
+    /// buttons set it (`makeEntitySetColorCmd` on the vehicle). Appended
+    /// under schema version 17.
+    Recolor(Tint),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1108,6 +1112,19 @@ pub struct Prospect {
     pub permit: Option<ResName>,
 }
 
+/// What an entity window's title, or the line manager's vehicle list,
+/// renames (`makeEntitySetNameCmd`), when it is not a line or a company
+/// (those are [`LineChange::Rename`] and [`CompanyOp::Rename`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Renamed {
+    Vehicle(VehicleId),
+    /// A station group, which the station's window names.
+    Station(StationId),
+    Town(TownId),
+    /// Any other construction: a depot, an industry, a landmark.
+    Construction(ConstructionRef),
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -1152,6 +1169,13 @@ pub enum Action {
     /// detail tools' and a junction window's. Appended under schema version
     /// 16: the variants before it keep their bytes.
     EditJunctions(JunctionEdit),
+    /// Renaming what is not a line or a company (`Renamed`): a vehicle, a
+    /// station, a town, a construction. Appended under schema version 17:
+    /// the variants before it keep their bytes.
+    Rename {
+        what: Renamed,
+        name: ObjectName,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -1191,6 +1215,7 @@ impl Action {
             Action::ApplyRank { .. } => "ApplyRank",
             Action::Subsidy(_) => "Subsidy",
             Action::EditJunctions(_) => "EditJunctions",
+            Action::Rename { .. } => "Rename",
         }
     }
 
@@ -1327,7 +1352,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                16, // schema version
+                17, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1370,7 +1395,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                16, // schema version
+                17, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1406,7 +1431,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                16, // schema version
+                17, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1424,7 +1449,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                16, // schema version
+                17, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1439,7 +1464,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                16, // schema version
+                17, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1450,7 +1475,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                16, // schema version
+                17, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1462,7 +1487,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                16, // schema version
+                17, // schema version
                 18, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1509,7 +1534,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                16, // schema version
+                17, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10
@@ -1582,7 +1607,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                16, // schema version
+                17, // schema version
                 19, // Action::EditJunctions, appended under schema version 16
                 1, 0, 2, 0, 0, // a node: Street, (1, 0, 0)
                 1, 0, // its configuration removed

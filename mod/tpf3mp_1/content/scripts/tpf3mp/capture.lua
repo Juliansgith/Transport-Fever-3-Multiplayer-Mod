@@ -835,16 +835,49 @@ end
 -- company window renames the player's company by its player entity,
 -- game_mechanics/company/company.tl), which every game checks is the
 -- player's own (tpf3mp/companies.lua).
+-- Anything else an entity window's title renames (gui/entity_window/
+-- view_manager.tl renames whatever entity the window shows), and the line
+-- manager's vehicle names: a vehicle, a station group or a town by its
+-- canonical id, any other construction by its file and place (action::
+-- Renamed). Every game checks the acting company may (tpf3mp/apply.lua).
 function capture.setName(ctx, entity, name)
 	local company = ctx.company and ctx.company(entity)
 	if company ~= nil then return { CompanyOp = { Rename = { company = company, name = name } } } end
-	return { EditLine = { line = named("renaming this", ctx.line(entity)), change = { Rename = name } } }
+	local line = ctx.line(entity)
+	if line ~= nil then return { EditLine = { line = line, change = { Rename = name } } } end
+	local what
+	local vehicle = ctx.vehicle and ctx.vehicle(entity)
+	local group = vehicle == nil and ctx.group and ctx.group(entity) or nil
+	local town = vehicle == nil and group == nil and ctx.town and ctx.town(entity) or nil
+	if vehicle ~= nil then
+		what = { Vehicle = vehicle }
+	elseif group ~= nil then
+		what = { Station = group }
+	elseif town ~= nil then
+		what = { Town = town }
+	else
+		local ok, c = pcall(function()
+			return api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
+		end)
+		local ref = ok and c ~= nil and capture.replaced(c) or nil
+		if ref == nil then error("renaming this", 0) end
+		what = { Construction = ref }
+	end
+	return { Rename = { what = what, name = name } }
 end
 
+-- Recolouring: a line, the room's company, or a vehicle (the vehicle
+-- window's and the line manager's colour buttons, VehicleChange::Recolor).
 function capture.setColor(ctx, entity, color)
 	local company = ctx.company and ctx.company(entity)
 	if company ~= nil then return { CompanyOp = { Recolor = { company = company, color = tintOf(color) } } } end
-	return { EditLine = { line = named("recolouring this", ctx.line(entity)), change = { Recolor = tintOf(color) } } }
+	local line = ctx.line(entity)
+	if line ~= nil then return { EditLine = { line = line, change = { Recolor = tintOf(color) } } } end
+	local vehicle = ctx.vehicle and ctx.vehicle(entity)
+	if vehicle ~= nil then
+		return { VehicleOp = { vehicle = vehicle, change = { Recolor = tintOf(color) } } }
+	end
+	error("recolouring this", 0)
 end
 
 return capture

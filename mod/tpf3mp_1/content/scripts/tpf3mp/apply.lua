@@ -1470,8 +1470,32 @@ function HANDLERS.VehicleOp(op, ctx)
 		return run(api.cmd.makeVehicleTryToDepartCmd(vehicle))
 	elseif type(change) == "table" and change.ManualDeparture ~= nil then
 		return run(api.cmd.makeVehicleSetManualDepartureCmd(vehicle, change.ManualDeparture == true))
+	elseif type(change) == "table" and change.Recolor then
+		return run(api.cmd.makeEntitySetColorCmd(vehicle, tint(change.Recolor)))
 	end
 	return false, "a vehicle change of no kind"
+end
+
+-- Renaming a vehicle, a station, a town or a construction (action::Renamed),
+-- as its window does: the acting company's own vehicle, a station or
+-- construction no other company owns, any town.
+function HANDLERS.Rename(r, ctx)
+	local what, e = r.what, nil
+	if type(what) ~= "table" then return false, "renaming nothing" end
+	if what.Vehicle ~= nil then
+		e = ownOf(ctx, "vehicles", what.Vehicle)
+	elseif what.Station ~= nil then
+		e = entityOf(ctx, "groups", what.Station)
+		mine(e, "station")
+	elseif what.Town ~= nil then
+		e = entityOf(ctx, "towns", what.Town)
+	elseif what.Construction ~= nil then
+		e = constructionAt(what.Construction)
+		mine(e, "construction")
+	else
+		return false, "renaming nothing"
+	end
+	return run(api.cmd.makeEntitySetNameCmd(e, r.name))
 end
 
 -- The game's load modes, by the schema's names, as numbers.

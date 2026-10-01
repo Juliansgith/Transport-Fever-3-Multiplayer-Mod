@@ -1281,6 +1281,10 @@ reference of its own to either. Once linked, the GUI wraps every
   - lines: creating, changing (the line whole, as the line manager built
     it: stops, terminals, loading rules), deleting, renaming and
     recolouring;
+  - renaming a vehicle, a station, a town or another construction in its
+    window's title or the line manager, and a vehicle's colour, as `Rename`
+    (by canonical id, a construction by its file and place) and `VehicleOp`
+    `Recolor`; every game checks the acting company may;
   - a construction's edit sent from its window
     (`makeWorldBuildProposalCmd` with the game's replacement proposal), as
     a `BuildConstruction` that replaces it ("The build tools" below).

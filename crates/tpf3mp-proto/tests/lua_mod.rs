@@ -3774,6 +3774,116 @@ fn a_ship_or_aircraft_is_bought_at_the_harbour_or_airport_that_lists_its_depot()
     );
 }
 
+/// Renaming in an entity window's title, and recolouring a vehicle: a
+/// vehicle, a station and a town go to the room by their ids, a depot by its
+/// construction; what the room cannot name is refused.
+#[test]
+fn a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_room() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "api.cmd.makeEntitySetNameCmd = function(e, name) return { kind = 'name' } end \
+         api.cmd.makeEntitySetColorCmd = function(e, color) return { kind = 'color' } end \
+         api.type = { ComponentType = { GAME_SCRIPT = 7, CONSTRUCTION = 2 } } \
+         api.engine = { \
+             getComponent = function(e, kind) \
+                 if kind == 7 and e == 77 then return { state = { registry = { \
+                     vehicles = { bound = { { 3, 500 } } }, groups = { bound = { { 4, 90 } } }, \
+                     towns = { bound = { { 1, 7 } } }, lines = { bound = {} } } } } end \
+                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', \
+                     transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end \
+             end, \
+             system = { gameScriptSystem = { getEntityForGameScript = function(name) \
+                 if name == 'tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs' then return 77 end return -1 end } }, \
+         } \
+         M = mount(loadPlugin()) M.step() HOOK.room = true \
+         for _, e in ipairs({ 500, 90, 7, 201, 999 }) do \
+             api.cmd.sendCommand(api.cmd.makeEntitySetNameCmd(e, 'N' .. e)) \
+         end \
+         api.cmd.sendCommand(api.cmd.makeEntitySetColorCmd(500, { x = 1, y = 0.5, z = 0 })) \
+         api.cmd.sendCommand(api.cmd.makeEntitySetColorCmd(90, { x = 1, y = 0.5, z = 0 })) \
+         M.step()",
+    )
+    .exec()
+    .unwrap();
+    let handed: String = lua
+        .load(
+            "local out = {} \
+             for _, a in ipairs(HOOK.commands) do \
+                 if a.Rename then \
+                     local kind, v = next(a.Rename.what) \
+                     if type(v) == 'table' then v = v.file .. '@' .. v.at.x end \
+                     out[#out + 1] = kind .. ':' .. tostring(v) .. ':' .. a.Rename.name \
+                 else \
+                     local c = a.VehicleOp.change.Recolor \
+                     out[#out + 1] = 'Recolor:' .. a.VehicleOp.vehicle .. ':' .. c.r .. ',' .. c.g .. ',' .. c.b \
+                 end \
+             end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        handed,
+        "Vehicle:3:N500 Station:4:N90 Town:1:N7 Construction:depot/bus_depot.con@600:N201 \
+         Recolor:3:1,0.5,0"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.contains(
+            "refused the player's makeEntitySetNameCmd in the room's game (1 so far): renaming this"
+        )) && logged.iter().any(|l| l.contains(
+            "refused the player's makeEntitySetColorCmd in the room's game (1 so far): recolouring this"
+        )),
+        "{logged:?}"
+    );
+}
+
+/// Every game renames what the room names, and recolours the vehicle, as
+/// the window would; a town this world does not have fails alike.
+#[test]
+fn every_game_renames_and_recolours_what_the_room_names() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        "api.cmd.makeEntitySetColorCmd = function(e, color) return { setColor = color, entity = e } end \
+         HOOK.room = true UPDATE({}, STATE, 0.2) \
+         HOOK.batch = { \
+             { Rename = { what = { Vehicle = 1 }, name = 'Blue Arrow' } }, \
+             { Rename = { what = { Station = 0 }, name = 'Central' } }, \
+             { Rename = { what = { Construction = { file = 'depot/bus_depot.con', \
+                 at = { x = 600, y = 10, z = 2 } } }, name = 'North depot' } }, \
+             { VehicleOp = { vehicle = 0, change = { Recolor = { r = 1, g = 0.5, b = 0 } } } }, \
+             { Rename = { what = { Town = 9 }, name = 'Nowhere' } } } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let sent: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do \
+                 if c.setName then out[#out + 1] = c.entity .. '=' .. c.setName end \
+                 if c.setColor then out[#out + 1] = c.entity .. ':' .. c.setColor.y end end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(sent, "402=Blue Arrow 90=Central 201=North depot 401:0.5");
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = a.i .. ':' .. tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied,
+        "1:true 2:true 3:true 4:true 5:false:no towns 9 in this world"
+    );
+}
+
 /// The store's "buy and put on a line" (2026-09-30): the GUI's world has the
 /// new vehicle a moment before the game script's state, which names it, so
 /// the store hears of it only once its line assignment can name it; heard
@@ -8604,9 +8714,16 @@ fn an_observation_is_json_the_same_on_every_game_and_names_free_places() {
     assert_eq!(town["waters"].as_array().unwrap().len(), 0, "no water near");
     let buildings = town["town_buildings"].as_array().unwrap();
     assert_eq!(buildings.len(), 3);
-    assert_eq!(buildings[0]["file"], "station/bus_stop.con", "the nearest first");
+    assert_eq!(
+        buildings[0]["file"], "station/bus_stop.con",
+        "the nearest first"
+    );
     let free = town["free_streets"].as_array().unwrap();
-    assert_eq!(free.len(), 1, "the street by the bus stop is not free: {text}");
+    assert_eq!(
+        free.len(),
+        1,
+        "the street by the bus stop is not free: {text}"
+    );
     assert_eq!(free[0]["b"][1], 80);
     // Parts the stand-in cannot read are named, and the rest still comes.
     assert!(

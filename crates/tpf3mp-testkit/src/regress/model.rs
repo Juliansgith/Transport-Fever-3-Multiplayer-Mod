@@ -619,6 +619,8 @@ impl State {
             // A junction's turns, lights and crosswalks: the model keeps no
             // junction configurations.
             Action::EditJunctions(_) => Ok(()),
+            // A name: the model keeps no names.
+            Action::Rename { .. } => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }
