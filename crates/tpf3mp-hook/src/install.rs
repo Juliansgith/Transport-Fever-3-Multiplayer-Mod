@@ -890,29 +890,45 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         (Ok(add), Ok(apply)) => {
             let module = at(crate::modules::MODULE_ADD_CALL).ok();
             let terrain = at(crate::terrain::DO_APPLY_ADD_CALL).ok();
+            let junctions: Vec<Option<usize>> = crate::junctions::CALLS
+                .iter()
+                .map(|(name, _)| at(name).ok())
+                .collect();
             // SAFETY: as above.
-            unsafe { crate::builds::install(add, apply, module, terrain, detour_forever) }
-                .map(|()| {
-                    let module = match module {
-                        Some(call) => format!(
-                            "the module editor's builds are read where Add returns to {:#x}",
-                            call + 5
-                        ),
-                        None => "the profile has no module editor call, so its builds stay \
+            unsafe {
+                crate::builds::install(add, apply, module, terrain, &junctions, detour_forever)
+            }
+            .map(|()| {
+                let module = match module {
+                    Some(call) => format!(
+                        "the module editor's builds are read where Add returns to {:#x}",
+                        call + 5
+                    ),
+                    None => "the profile has no module editor call, so its builds stay \
                                  refused"
-                            .to_owned(),
-                    };
-                    let terrain = match terrain {
-                        Some(call) => {
-                            format!("the terrain tools' where it returns to {:#x}", call + 5)
-                        }
-                        None => "the profile has no terrain tools' call, so terraforming \
+                        .to_owned(),
+                };
+                let terrain = match terrain {
+                    Some(call) => {
+                        format!("the terrain tools' where it returns to {:#x}", call + 5)
+                    }
+                    None => "the profile has no terrain tools' call, so terraforming \
                                  stays refused"
-                            .to_owned(),
-                    };
-                    format!("the build tools build through the room; {module}; {terrain}")
-                })
-                .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))
+                        .to_owned(),
+                };
+                let read = junctions.iter().filter(|call| call.is_some()).count();
+                let detail = if read == junctions.len() {
+                    "the crosswalk and crossing tools' at their calls".to_owned()
+                } else {
+                    format!(
+                        "{read} of the street detail tools' {} calls, so the tools of the \
+                             others stay refused",
+                        junctions.len()
+                    )
+                };
+                format!("the build tools build through the room; {module}; {terrain}; {detail}")
+            })
+            .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))
         }
         _ => "the build tools stay refused: the profile has no build targets".to_owned(),
     };

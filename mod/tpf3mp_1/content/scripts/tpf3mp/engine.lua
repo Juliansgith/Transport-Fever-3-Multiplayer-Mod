@@ -1011,12 +1011,132 @@ function removeStop(street)
 	} } }
 end
 
+-- ------------------------------------------------------------- junctions
+--
+-- The street detail tools change existing junctions and nothing else: the
+-- traffic light tool (a StreetEdgeNodeModifier, which reaches game scripts as
+-- streetTrackModifier), the crosswalk tool and the crossing tool (a
+-- junction's road and tram lanes; both tell game scripts nothing, so the hook
+-- reads their proposals natively, crates/tpf3mp-hook/src/junctions.rs, in
+-- this shape), and a junction's window (its traffic light phases,
+-- createTrafficLightProposal; a double slip switch,
+-- createDoubleSlipSwitchProposal). Each takes a node's configuration out
+-- (nodeConfigsToRemove) and puts the one it changed in (nodeConfigsToAdd).
+
+-- Whether a proposal changes junctions and nothing else.
+function engine.junctionsOnly(proposal)
+	local ok, only = pcall(function()
+		local street = get(proposal, "proposal")
+		if street == nil then return false end
+		for _, name in ipairs({ "toAdd", "toRemove" }) do
+			if #list(get(proposal, name)) > 0 then return false end
+		end
+		for _, name in ipairs({ "addedNodes", "addedSegments", "removedNodes", "removedSegments",
+			"edgeObjectsToAdd", "edgeObjectsToRemove" }) do
+			if #list(get(street, name)) > 0 then return false end
+		end
+		return #list(get(street, "nodeConfigsToAdd")) > 0 or #list(get(street, "nodeConfigsToRemove")) > 0
+	end)
+	return ok and only == true
+end
+
+-- A change to existing junctions alone as an EditJunctions action
+-- (tpf3mp_proto action::JunctionEdit): every node it names by its network and
+-- position, every edge a configuration names by its network and ends, and
+-- each configuration exactly as the tool set it (engine.nodeConfigs). false
+-- for a proposal that changes no junction; nil and why the room cannot carry
+-- it: a node or edge it cannot name, a value it cannot read, or anything
+-- else the proposal changes.
+function engine.captureJunctions(proposal)
+	local ok, action = pcall(function()
+		local street = get(proposal, "proposal")
+		if street == nil then error("a proposal with no street proposal", 0) end
+		local configs = engine.nodeConfigs(street)
+		local removed = list(get(street, "nodeConfigsToRemove"))
+		if #configs == 0 and #removed == 0 then return false end
+		if not engine.junctionsOnly(proposal) then
+			error("a change to junctions that builds or removes something else", 0)
+		end
+		local world = engine.world()
+		local nodes, index = {}, {}
+		local function nodeOf(id)
+			id = whole(id, "node")
+			if index[id] ~= nil then return index[id] end
+			local p = id >= 0 and nodePos(id) or nil
+			local network = p and world.nodeNetwork(id)
+			if not (p and network) then
+				error("a junction at node " .. tostring(id) .. ", which the room cannot name", 0)
+			end
+			nodes[#nodes + 1] = { network = network, at = { x = p[1], y = p[2], z = p[3] } }
+			index[id] = #nodes - 1
+			return index[id]
+		end
+		local function edgeOf(id)
+			local network, a, b
+			if type(id) == "number" and id >= 0 then network, a, b = world.edgeEnds(id) end
+			if not (network and a and b) then
+				error("a junction's setting names edge " .. tostring(id) .. ", which the room cannot name", 0)
+			end
+			return { Existing = { network = network, ends = { a = { x = a[1], y = a[2], z = a[3] },
+				b = { x = b[1], y = b[2], z = b[3] } } } }
+		end
+		local out, taken = {}, {}
+		for _, id in ipairs(removed) do
+			local k = nodeOf(id)
+			if not taken[k] then
+				taken[k] = true
+				out[#out + 1] = k
+			end
+		end
+		local edited = {}
+		for _, c in ipairs(configs) do
+			local connections = {}
+			for _, lc in ipairs(c.lane_connections) do
+				connections[#connections + 1] = { edge0 = edgeOf(lc.segment0), lane0 = lc.lane0,
+					edge1 = edgeOf(lc.segment1), lane1 = lc.lane1, with_road = lc.with_road, with_tram = lc.with_tram }
+			end
+			local crosswalks = {}
+			for _, id in ipairs(c.crosswalks) do crosswalks[#crosswalks + 1] = edgeOf(id) end
+			edited[#edited + 1] = { node = nodeOf(c.node), lane_connections = connections, crosswalks = crosswalks,
+				light_preference = c.light_preference, light_type = c.light_type, phases = c.phases,
+				double_slip_switch = c.double_slip_switch, user_modified_lanes = c.user_modified_lanes,
+				user_modified_lights = c.user_modified_lights }
+		end
+		return { EditJunctions = { nodes = nodes, removed = out, configs = edited } }
+	end)
+	if not ok then return nil, tostring(action) end
+	return action
+end
+
+-- An EditJunctions action in one line for the log, the same words in the
+-- player's game and in every game that applies it (tpf3mp/apply.lua): each
+-- configuration taken out and put in, at its node's place. nil for any other
+-- action.
+function engine.junctionSummary(action)
+	local edit = type(action) == "table" and action.EditJunctions
+	if type(edit) ~= "table" then return nil end
+	local function at(i)
+		local n = edit.nodes[i + 1]
+		if n == nil then return "?" end
+		return string.format("%s(%.1f,%.1f)", n.network, n.at.x, n.at.y)
+	end
+	local parts = {}
+	for _, k in ipairs(edit.removed) do parts[#parts + 1] = "-cfg" .. at(k) end
+	for _, c in ipairs(edit.configs) do
+		parts[#parts + 1] = string.format("+cfg%s{tl=%s lc=%d cw=%d phases=%d dss=%s um=%s/%s}", at(c.node),
+			tostring(c.light_preference), #c.lane_connections, #c.crosswalks, #c.phases,
+			tostring(c.double_slip_switch), tostring(c.user_modified_lanes), tostring(c.user_modified_lights))
+	end
+	return #edit.nodes .. " junction(s): " .. table.concat(parts, " ")
+end
+
 -- The action table of a street or track tool's proposal; false for a
--- proposal of nothing; or nil and why the room cannot carry it.
+-- proposal of nothing; or nil and why the room cannot carry it. A proposal
+-- that changes junctions alone is an EditJunctions.
 function engine.captureBuild(proposal, network)
 	local ok, capture = pcall(engine.fromProposal, proposal, network)
 	if not ok then return nil, tostring(capture) end
-	if capture == nil then return false end
+	if capture == nil then return engine.captureJunctions(proposal) end
 	return roads.capture(capture, engine.world())
 end
 
@@ -1025,11 +1145,12 @@ end
 -- company's ownership): the edges it rebuilds, each with its new template,
 -- decorations, lock and owner, their stops kept in place, as a BuildRoad
 -- or BuildTrack of the network of its first edge. The town buildings it
--- clears along the road every game's build clears again.
+-- clears along the road every game's build clears again. The traffic light
+-- tool is one of these, and changes junctions alone: an EditJunctions.
 function engine.captureModify(proposal)
 	local ok, capture = pcall(engine.fromProposal, proposal, nil, "town")
 	if not ok then return nil, tostring(capture) end
-	if capture == nil then return false end
+	if capture == nil then return engine.captureJunctions(proposal) end
 	return roads.capture(capture, engine.world())
 end
 

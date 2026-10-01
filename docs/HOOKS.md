@@ -2001,13 +2001,13 @@ terrain tools through the hook, and a construction's window its edits:
 
 - **The road and track modifiers** (`streetTrackModifier`): below.
 - **The terrain tools**, read natively at the click: "Terraforming" below.
+- **The street detail tools** (traffic lights, crosswalks, a junction's
+  lanes) and a junction's window: "The street detail tools" below.
 
 A refusal shows its reason in the tool, and the log has each new reason
 with the proposal's shape (`the room cannot carry this ... build`); every
-build handed to the room is logged with its shape too. The lane arrow,
-traffic light and crosswalk tools stay refused until their builds are
-captured. Where the profile lacks the
-two targets, `clicks()` is nil and every tool stays refused.
+build handed to the room is logged with its shape too. Where the profile
+lacks the two targets, `clicks()` is nil and every tool stays refused.
 
 The gate stops builds only. To find any other command native code queues
 without Lua, which neither it nor the GUI's guard would stop
@@ -2089,6 +2089,94 @@ lane(s) carrying TRAIN ELECTRIC_TRAIN; ...`. A game whose build fails says
 `action 1 of this step was not applied: ...` instead of `upgrade
 applied`, and the room's check of the lanes (the network lane reads every
 edge's template) finds it.
+
+### The street detail tools
+
+The road tools tab's traffic light tool, crosswalk tool ("Crosswalk Tool",
+`UI::CrosswalkModifier`) and crossing tool ("Crossing Tool",
+`UI::LaneModifier`: a junction's road lanes, and in its tram lanes' mode
+its tram lanes, which may join a tram track to a railway's), and a
+junction's window (its traffic light phases and type,
+`api.engine.util.proposal.createTrafficLightProposal`; a double slip
+switch, `createDoubleSlipSwitchProposal`), change a junction's own
+configuration and nothing else: each proposal takes the node's
+configuration out (`nodeConfigsToRemove`) and puts the one it changed in
+(`nodeConfigsToAdd`). Every one is carried as an `EditJunctions`
+(docs/BUILDING.md, "Junctions alone"), each node by its network and
+position and each edge by its ends, every value as the tool set it, and
+applied in every game in one proposal, all or nothing.
+
+Where each comes from on build 40408 (read from the binary and the game's
+Lua, not yet seen in the game):
+
+- the traffic light tool is a road modifier (`StreetEdgeNodeModifier` with
+  `trafficLights`, `construction_react_util.tl`) and tells game scripts its
+  proposals as `streetTrackModifier`. A modifier proposal that adds and
+  removes no edge or node, which `capture.modify` took for "nothing
+  proposed yet" (so its click was "no proposal seen"), is now read as a
+  change to junctions (`engine.captureJunctions`), as is a street or track
+  tool's of that shape;
+- a junction's window sends its proposal from Lua, which the guard carries
+  (`capture.windowBuild`: a proposal that changes junctions alone);
+- the crosswalk tool and the crossing tool tell game scripts nothing: a
+  click of the crossing tool was stopped with "no proposal seen"
+  (hook.log, 2026-10-01), and so, twice, was joining a tram track to a
+  railway, the crossing tool's tram lanes' mode (INFERRED: the log did not
+  name the tool; it is the tool the game offers for tram lanes, whose tram
+  mode flips the lane connections' `withTram`, 0x539206). Each queues its
+  `WorldBuildProposal` itself with its own calls of `CommandList::Add`,
+  after the factory 0x9ee860 made the command with `playerInitiated` 1: the
+  crosswalk tool's at 0x5290af (in 0x528d30, which its vf2 tail-calls; its
+  lambda's RTTI names `UI::CrosswalkModifier::Apply(bool)`), the crossing
+  tool's at 0x538a80, 0x5391e4 and 0x539368 (in 0x5381a0, its vf2's). So
+  the click is counted and its apply stopped as every player's build is,
+  and the add's detour reads the proposal where `Add` returns 5 bytes past
+  one of them (profile targets `CrosswalkModifier::Apply/Add call` and
+  `LaneModifier::Apply/Add call 1` to `3`;
+  `crates/tpf3mp-hook/src/junctions.rs`). Opening either tool queues
+  nothing: its apply builds the proposal and calls `Add` only on a click
+  (0x528d30 returns before it when not applying).
+
+What is read (`RegisterUsertypesTransport`, 0x22c1ab0, binds
+`StreetProposal` with `nodeConfigsToAdd` at 0x60 and `nodeConfigsToRemove`
+at 0x78 of the payload, `BaseNodeLaneConnectionAndEntity` with `comp` at 0
+and `entity` at 0x78, 0x80 bytes each as 0xa4ad20 steps them, and
+`LaneConnection` 20 bytes with `segment0`, `lane0`, `segment1`, `lane1`,
+`withRoad`, `withTram` at 0, 4, 8, 0xc, 0x10, 0x11; 0x1767d20 binds
+`BaseNodeConfig` with `laneConnections` at 0, `crosswalks` at 0x18,
+`doubleSlipSwitch` at 0x48, `trafficLightPreference` at 0x4c,
+`trafficLightConfig` at 0x50, its `states` at 0 and `trafficLightType` at
+0x18, `userModifiedTrafficLightStates` at 0x70, and `TrafficLightState`
+with `lockedLanes` at 0, `duration` and `minDuration` at 0x18 and 0x1c,
+`canSkip` at 0x20): the configurations removed, a `vector<int32>`; and
+each one added, its crosswalks a flat hash set of entities (control bytes,
+slots, size and capacity at 0x18, 0x20, 0x28 and 0x30 of the
+configuration, as the crosswalk tool's own lookup and clear in 0x529af0
+read it), walked whole and sorted. The configuration binds no
+`userModifiedLaneConnections`, and the crossing tool writes none: it is
+read as false, as game scripts read it. Every read is checked readable,
+every vector for order and whole elements, every flag for 0 or 1, every
+duration for a finite number; a proposal that adds or removes a node, an
+edge, a stop or a construction besides is refused with what it changes.
+What reads is kept for the click as the table game scripts see a proposal
+in, with `junctions` naming the tool; a reason as `junction tool: the
+<tool>'s change: …`. The GUI takes it with `built(n)` and makes the same
+`EditJunctions` of it as of the traffic light tool's
+(`capture.junctions`); without the profile targets the hook logs so at
+install and those two tools stay refused.
+
+Said in `hook.log`: `junction tool: click N queued <tool>: removes the
+configuration of [...]; adds +cfg<node>{tl= lc= cw= phases= dss= um=}` at
+the click; `junctions handed to the room: …` in the player's game; and in
+every game `junctions: -c<nodes> +cfg<node>{...}`, what it sent (with any
+member the game would not take), and `junctions applied: N junction(s):
+-cfgStreet(x,y) +cfgStreet(x,y){...}`, the same words in every game.
+
+INFERRED, not yet seen in the game: every layout above (static only), that
+the crossing tool's three calls are all junction changes, that the traffic
+light tool's and the window's proposals change junctions alone, and that
+a script proposal that only takes configurations out and puts them in is
+built as the tool's.
 
 ### Terraforming
 

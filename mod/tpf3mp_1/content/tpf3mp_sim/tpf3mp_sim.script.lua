@@ -50,8 +50,12 @@
 -- tell them nothing either: the hook reads a stroke's height grid at the
 -- click the same way, and `guiUpdate` hands the room Terraform actions of
 -- it (tpf3mp/capture.lua terraform), which every game applies through the
--- hook (tpf3mp/apply.lua). A click with neither is stopped with "no
--- proposal seen".
+-- hook (tpf3mp/apply.lua). The crosswalk tool and the crossing tool (a
+-- junction's road and tram lanes) tell them nothing as well: the hook reads
+-- a click's junction edit the same way, and `guiUpdate` hands the room an
+-- EditJunctions of it (tpf3mp/capture.lua junctions), as of the traffic light
+-- tool's proposal, which reaches it. A click with none of these is stopped
+-- with "no proposal seen".
 --
 -- Each upgrade (a road or track modifier's build) and each terraform is
 -- said in the hook's log when handed to the room and when applied. Every event of the room's game the
@@ -163,6 +167,21 @@ function data()
 				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
 		end
 		return { actions = actions, said = said, shape = "terrain tool" }
+	end
+
+	-- The snapshot of a street detail tool's click (the crosswalk tool's, the
+	-- crossing tool's), from its junction edit as the hook read it
+	-- (tpf3mp_native.built, the shape game scripts see a proposal in, its
+	-- `junctions` naming the tool): an EditJunctions (tpf3mp/capture.lua
+	-- junctions), or why not.
+	local function junctionEdit(proposal)
+		local shape = tostring(proposal.junctions)
+		local ok, action, why = pcall(capture.junctions, proposal)
+		if not ok then action, why = nil, tostring(action) end
+		if not action then
+			return { why = "the " .. shape .. "'s change: " .. tostring(why or "a change of nothing"), shape = shape }
+		end
+		return { action = action, shape = shape, junctions = capture.junctionSummary(action) }
 	end
 
 	-- The guard on what this player's personal mods' game scripts send, in
@@ -562,7 +581,10 @@ function data()
 				end
 				-- An upgrade tool's build, for the log (tpf3mp/roads.lua).
 				local upgrade = action and kind == "modify" and capture.upgradeSummary(action) or nil
-				snapshots[clicks] = { action = action, why = why, shape = shape, upgrade = upgrade }
+				-- A change to junctions alone (the traffic light tool's), for the log.
+				local junctions = action and capture.junctionSummary(action) or nil
+				snapshots[clicks] = { action = action, why = why, shape = shape, upgrade = upgrade,
+					junctions = junctions }
 				if action then return nil end
 				return { errorMessages = { ["Not in multiplayer yet: " .. tostring(why)] = true } }
 			end
@@ -605,9 +627,15 @@ function data()
 				local native, whyNot = l:built(handled)
 				if type(native) == "table" and native.terrain ~= nil then
 					seen = terraformEdit(native)
+				elseif type(native) == "table" and native.junctions ~= nil then
+					-- The crosswalk tool's or the crossing tool's junction edit.
+					seen = junctionEdit(native)
 				elseif native == nil and type(whyNot) == "string" and whyNot:find("terrain tool: ", 1, true) == 1 then
 					-- The painter's, the asset brush's, or a stroke that did not read.
 					seen = { why = whyNot, shape = "terrain tool" }
+				elseif native == nil and type(whyNot) == "string" and whyNot:find("junction tool: ", 1, true) == 1 then
+					-- A street detail tool's change that did not read, or changes more.
+					seen = { why = whyNot:sub(#"junction tool: " + 1), shape = "junction tool" }
 				elseif native ~= nil or whyNot ~= nil then
 					seen = moduleEdit(native, whyNot)
 				end
@@ -627,6 +655,7 @@ function data()
 						l:log("handed the player's build to the room"
 							.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
 						if seen.upgrade then l:log("upgrade handed to the room: " .. seen.upgrade) end
+						if seen.junctions then l:log("junctions handed to the room: " .. seen.junctions) end
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
 					end

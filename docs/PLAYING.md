@@ -378,6 +378,17 @@ protected folder such as Program Files.
   a track's type and its decorations (seen with the road tools; the track
   tools are not yet tried in a real game). Remove them, and roads and
   tracks, with the bulldozer.
+- **Traffic lights, crosswalks and lanes at junctions.** The road tools'
+  traffic light tool, the crosswalk tool and the crossing tool (a
+  junction's road lanes, and in its tram mode its tram lanes, which can
+  join a tram track to a railway's) work as usual, and so do a junction's
+  own window (its traffic light phases and type) and a track junction's
+  double slip switch: every player's game changes the same junction the
+  same way, a moment after your click. Opening one of these tools does
+  nothing by itself; only a click changes a junction. If the room cannot
+  name the junction or the streets at it, or your game reads the tool's
+  change as more than the junction, the click changes nothing and the
+  hook's log says why. Not yet tried in a real game.
 - **Town buildings.** Bulldoze a town's building as usual: every player's
   game removes the same building, a moment after your click; your company
   pays the demolition, and the town's opinion of it changes as in single
@@ -471,9 +482,9 @@ protected folder such as Program Files.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
   does not happen in your game either. The game bar says "Not in
   multiplayer yet: …" for what the game's windows do that the room does
-  not carry yet. The lane arrow and traffic light tools, and a tool that
-  would move a stop or signal onto another stretch of road, show "Not in
-  multiplayer yet" and build nothing: the tool says why. Terrain paint
+  not carry yet. A tool that would move a stop or signal onto another
+  stretch of road shows "Not in multiplayer yet" and builds nothing: the
+  tool says why. Terrain paint
   and the asset brush build nothing either; the hook's log says why.
 
 ## Playtesting before the game is out

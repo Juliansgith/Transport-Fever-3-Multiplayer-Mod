@@ -32,6 +32,8 @@
 //! natively and kept for that click ([`crate::modules`]). A click whose call
 //! returns into `ProposalAction::DoApply`, the terrain tools', the painter's
 //! and the asset brush's, has its terraform read there ([`crate::terrain`]).
+//! One whose call returns into the crosswalk tool or the crossing tool has
+//! its junction edit read there ([`crate::junctions`]).
 //! While the room's actions are applied, a build is filled with the
 //! terraform the game script armed, if it armed one.
 //!
@@ -190,6 +192,8 @@ unsafe extern "C" fn add_detour(
                 crate::modules::record(&crate::modules::Process, click, payload);
             } else if crate::terrain::is_terrain_tool(return_address) {
                 crate::terrain::record(&crate::modules::Process, click, payload);
+            } else if let Some(tool) = crate::junctions::tool_at(return_address) {
+                crate::junctions::record(&crate::modules::Process, click, payload, tool);
             }
         }
     }
@@ -240,6 +244,7 @@ pub unsafe fn install(
     apply: usize,
     module_call: Option<usize>,
     terrain_call: Option<usize>,
+    junction_calls: &[Option<usize>],
     detour: unsafe fn(*mut u8, *const u8) -> Result<usize, String>,
 ) -> Result<(), String> {
     if let Some(call) = module_call {
@@ -247,6 +252,11 @@ pub unsafe fn install(
     }
     if let Some(call) = terrain_call {
         crate::terrain::set_call(call);
+    }
+    for (index, call) in junction_calls.iter().enumerate() {
+        if let Some(call) = call {
+            crate::junctions::set_call(index, *call);
+        }
     }
     // SAFETY: the caller's; the entry thunk has the add's ABI and jumps to
     // add_detour, which has it too.

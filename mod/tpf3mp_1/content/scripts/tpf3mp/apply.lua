@@ -887,6 +887,77 @@ function HANDLERS.BuildRoad(road)
 	return buildNetwork("Street", road.street, road.style, road.polyline)
 end
 
+-- A change to existing junctions alone (tpf3mp_proto action::JunctionEdit):
+-- the street detail tools' (traffic lights, crosswalks, a junction's road
+-- and tram lanes) and a junction window's (its light phases, a double slip
+-- switch). One proposal, as the tool's: each configuration it takes out, then
+-- each it puts in, exactly as the tool set it, through the same writes as a
+-- road's junctions (apply.nodeConfigsFor), so only members the game takes
+-- are written. Every node by its network and position, every edge by its
+-- ends, as this game names them; all of it named before anything is made.
+-- All or nothing: a node or edge this game cannot name, a configuration to
+-- take out that is not there, or a member the game will not take, fails the
+-- whole change, the same in every game. Paid by the player, as the tool's.
+function HANDLERS.EditJunctions(edit)
+	local nodesOf = {}
+	local function nodes(n)
+		if nodesOf[n] == nil then nodesOf[n] = readNodes(n) end
+		return nodesOf[n]
+	end
+	local configType = api.type.ComponentType.BASE_NODE_CONFIG
+	local ids = {}
+	for i, n in ipairs(edit.nodes) do
+		local found = nearest(nodes(n.network), arr(n.at), END_TOLERANCE)
+		if found == nil then
+			error(string.format("no %s node at junction %d (%.1f, %.1f) here", tostring(n.network), i, n.at.x, n.at.y), 0)
+		end
+		ids[i] = found.id
+	end
+	local configsToRemove, removing = {}, {}
+	for _, k in ipairs(edit.removed) do
+		local node = ids[k + 1]
+		if node == nil then error("a junction change that names no node " .. tostring(k), 0) end
+		if api.engine.getComponent(node, configType) == nil then
+			error("junction " .. (k + 1) .. " has no configuration here to take out", 0)
+		end
+		if not removing[node] then
+			removing[node] = true
+			configsToRemove[#configsToRemove + 1] = node
+		end
+	end
+	local configsToAdd, said = apply.nodeConfigsFor(edit.configs, {
+		node = function(i) return ids[i + 1] end,
+		link = function() return nil end,
+		existing = function(ref)
+			local e = edgeBetween(nodes(ref.network), ref.network, arr(ref.ends.a), arr(ref.ends.b))
+			return e and e.id or nil
+		end,
+	})
+	if #edit.configs > 0 and #configsToAdd ~= #edit.configs then
+		error("no junction is changed: " .. tostring(said[1]), 0)
+	end
+	-- An existing node's own configuration goes first, as the tool's would.
+	for _, c in ipairs(configsToAdd) do
+		local node = c.entity
+		if not removing[node] and api.engine.getComponent(node, configType) ~= nil then
+			removing[node] = true
+			configsToRemove[#configsToRemove + 1] = node
+		end
+	end
+	local proposal = api.type.SimpleProposal.new()
+	if #configsToRemove > 0 then proposal.streetProposal.nodeConfigsToRemove = configsToRemove end
+	if #configsToAdd > 0 then proposal.streetProposal.nodeConfigsToAdd = configsToAdd end
+	-- What is sent, as a road's junctions are said, to compare across games.
+	log("junctions: -c" .. table.concat(configsToRemove, ",") .. (#said > 0 and (" " .. table.concat(said, " ")) or ""))
+	local context = api.type.Context.new()
+	context.player = company()
+	local built = buildProposal(proposal, context)
+	-- The same line in every game as in the player's when handed over.
+	local summarised, text = pcall(module("engine").junctionSummary, { EditJunctions = edit })
+	if summarised and text then log("junctions applied: " .. text) end
+	return built
+end
+
 -- The town buildings the game's removal of streets takes with them
 -- (makeSegmentsRemoveProposal gathers them as the bulldozer did, through
 -- the same street_util::FinishProposal: build 40408, read statically),

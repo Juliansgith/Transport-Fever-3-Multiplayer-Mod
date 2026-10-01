@@ -11,13 +11,13 @@ use tpf3mp_proto::{
     action::{
         ACTION_SCHEMA_VERSION, Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
         ConfigEdge, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration,
-        EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LaneConnection,
-        LightPhase, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp,
-        LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeConfig, NodeRef, Param, ParamValue,
-        PlaceStop, Polyline, Pos, Pos2, Precedence, Prospect, ReplaceVehicle, ReplacedPart,
-        Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef, Tangent,
-        Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir,
-        VehicleChange, VehicleId, VehicleOp, Vertex,
+        EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, JunctionEdit,
+        LaneConnection, LightPhase, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode,
+        LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NodeConfig, NodeRef, Param,
+        ParamValue, PlaceStop, Polyline, Pos, Pos2, Precedence, Prospect, ReplaceVehicle,
+        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef,
+        Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
+        UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -502,7 +502,54 @@ fn samples() -> Vec<Action> {
             uid: 7,
             kind: text("::/game_mechanics/subventions/deliver_passengers/deliver_passengers.res"),
         })),
+        Action::EditJunctions(junction_edit()),
     ]
+}
+
+/// A crosswalk and a tram lane onto a railway at one junction, as the
+/// street detail tools set them.
+fn junction_edit() -> JunctionEdit {
+    let street = |a, b| {
+        ConfigEdge::Existing(EdgeRef {
+            network: Network::Street,
+            ends: ends(a, b),
+        })
+    };
+    let node = pos(0, 0, 0);
+    JunctionEdit::new(
+        list(vec![NodeRef {
+            network: Network::Street,
+            at: node,
+        }]),
+        list(vec![0]),
+        list(vec![NodeConfig {
+            node: 0,
+            lane_connections: list(vec![LaneConnection {
+                edge0: street(pos(-60_000, 0, 0), node),
+                lane0: 2,
+                edge1: ConfigEdge::Existing(EdgeRef {
+                    network: Network::Track,
+                    ends: ends(pos(0, -40_000, 0), node),
+                }),
+                lane1: 0,
+                with_road: false,
+                with_tram: true,
+            }]),
+            crosswalks: list(vec![street(node, pos(0, 40_000, 0))]),
+            light_preference: 2,
+            light_type: 1,
+            phases: list(vec![LightPhase {
+                locked: list(vec![0, 1]),
+                duration: 20_000,
+                min_duration: 5_000,
+                can_skip: false,
+            }]),
+            double_slip_switch: false,
+            user_modified_lanes: false,
+            user_modified_lights: true,
+        }]),
+    )
+    .unwrap()
 }
 
 /// A train's replacement: its locomotive kept, turned, and a new coach
@@ -558,13 +605,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=18.
+    // Every top-level variant is sampled: postcard tags them 0..=19.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=18).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=19).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

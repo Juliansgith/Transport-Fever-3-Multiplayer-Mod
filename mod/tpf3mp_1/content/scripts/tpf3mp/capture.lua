@@ -318,6 +318,24 @@ function capture.modify(proposal)
 	return module("engine").captureModify(proposal)
 end
 
+-- A street detail tool's change to existing junctions alone
+-- (tpf3mp_proto action::JunctionEdit, tpf3mp/engine.lua captureJunctions):
+-- the crosswalk tool's and the crossing tool's as the hook read them at the
+-- click (tpf3mp_native.built: the shape game scripts see a proposal in, its
+-- `junctions` naming the tool), and the traffic light tool's, which reaches
+-- game scripts (capture.modify). Returns the action table; false for a
+-- change of nothing; or nil and why.
+function capture.junctions(proposal)
+	return module("engine").captureJunctions(proposal)
+end
+
+-- A junction change in one line for the log, or nil for any other action.
+function capture.junctionSummary(action)
+	local ok, text = pcall(module("engine").junctionSummary, action)
+	if ok then return text end
+	return nil
+end
+
 -- An upgrade tool's build in one line for the log, or nil for any other
 -- (tpf3mp/roads.lua upgradeSummary).
 function capture.upgradeSummary(action)
@@ -493,7 +511,18 @@ end
 -- .createProposalReplaceConstruction, gui/construction/construction.tl and
 -- gui/entity_window/entity_window_util.tl, build 40408). Every other build
 -- from a window stays refused. Returns the action table, or raises why not.
+--
+-- A junction's window changes the junction alone (its traffic light phases,
+-- api.engine.util.proposal.createTrafficLightProposal; a double slip switch,
+-- createDoubleSlipSwitchProposal; gui/entity_window/double_slip_switch.tl):
+-- carried as the street detail tools' are (capture.junctions).
 function capture.windowBuild(_ctx, proposal)
+	local engine = module("engine")
+	if engine.junctionsOnly(proposal) then
+		local edit, why = engine.captureJunctions(proposal)
+		if not edit then error(why or "a change to junctions of nothing", 0) end
+		return edit
+	end
 	local action, why = capture.construction(proposal)
 	if not action then error(why, 0) end
 	if action.BuildConstruction.replaces == nil then error("building from this window", 0) end

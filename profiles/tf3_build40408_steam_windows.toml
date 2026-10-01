@@ -165,6 +165,51 @@ offset = 19
 prologue = "E8"
 required = false
 
+# The street detail tools' calls of CommandList::Add, each after the factory
+# 0x9ee860 made the command with playerInitiated 1 (its seventh argument,
+# [rsp+0x30], is 1 at each). The crosswalk tool (UI::CrosswalkModifier) and
+# the crossing tool (UI::LaneModifier, "Crossing Tool": a junction's road and
+# tram lanes) tell game scripts nothing; the hook reads their junction edits
+# where Add returns, 5 bytes past each call (crates/tpf3mp-hook/src/junctions.rs;
+# found with tpfre on this build, each signature one match in the installed
+# executable). Without them those tools stay refused.
+#
+# The crosswalk tool's (0x5290af, in 0x528d30, which UI::CrosswalkModifier's
+# vf2 tail-calls; its lambda's RTTI names UI::CrosswalkModifier::Apply(bool)):
+# `lea rcx,[rbp-0x28]; mov [rsp+0x20],rcx; lea r9,[rbp+0x28]; mov r8,rax; lea
+# rdx,[rsp+0x48]; mov rcx,rdi; call Add`.
+[[target]]
+name = "CrosswalkModifier::Apply/Add call"
+signature = "48 8D 4D D8 48 89 4C 24 20 4C 8D 4D 28 4C 8B C0 48 8D 54 24 48 48 8B CF E8 ?? ?? ?? ??"
+offset = 24
+prologue = "E8"
+required = false
+
+# The crossing tool's three (0x538a80, 0x5391e4, 0x539368, in 0x5381a0, which
+# UI::LaneModifier's vf2 tail-calls). The second and third have the same
+# bytes up to the call; the bytes after it tell them apart (a jump past the
+# third, and the third's own epilogue).
+[[target]]
+name = "LaneModifier::Apply/Add call 1"
+signature = "48 8D 8D F0 00 00 00 48 89 4C 24 20 4C 8D 8D 70 01 00 00 4C 8B C0 48 8D 55 88 48 8B CF E8 ?? ?? ?? ??"
+offset = 29
+prologue = "E8"
+required = false
+
+[[target]]
+name = "LaneModifier::Apply/Add call 2"
+signature = "48 8D 4C 24 58 48 89 4C 24 20 4C 8D 8D 00 01 00 00 4C 8B C0 48 8D 54 24 50 48 8B CF E8 ?? ?? ?? ?? 48 8D 4C 24 50 E8 ?? ?? ?? ?? 90 E9"
+offset = 28
+prologue = "E8"
+required = false
+
+[[target]]
+name = "LaneModifier::Apply/Add call 3"
+signature = "48 8D 4C 24 58 48 89 4C 24 20 4C 8D 8D 00 01 00 00 4C 8B C0 48 8D 54 24 50 48 8B CF E8 ?? ?? ?? ?? 48 8D 4C 24 50 E8 ?? ?? ?? ?? 90 48 8B 4D 20"
+offset = 28
+prologue = "E8"
+required = false
+
 # Lua 5.2's C API, which the hook calls to give each Lua state the
 # `tpf3mp_native` table (HOOKS.md, "The Lua side"). luaB_print is found by its
 # own string; its calls name gettop, getglobal, pushvalue, callk, tolstring and

@@ -616,6 +616,9 @@ impl State {
             // The game's subsidy script decides offers and their money; the
             // model has no subsidies.
             Action::Subsidy(_) => Ok(()),
+            // A junction's turns, lights and crosswalks: the model keeps no
+            // junction configurations.
+            Action::EditJunctions(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }

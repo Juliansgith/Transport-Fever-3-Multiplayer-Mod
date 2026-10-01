@@ -40,6 +40,7 @@ pub mod clipboard;
 pub mod cmdkinds;
 pub mod image;
 mod install;
+pub mod junctions;
 pub mod lanedump;
 pub mod log;
 pub mod lua;

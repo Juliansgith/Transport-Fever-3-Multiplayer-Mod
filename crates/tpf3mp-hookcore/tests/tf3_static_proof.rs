@@ -29,6 +29,11 @@ const TARGETS: &[(&str, u64)] = &[
     ("WorldBuildProposal apply", 0x9e1160),
     ("ModuleBuilder::MousePressed/Add call", 0x543b25),
     ("ProposalAction::DoApply/Add call", 0x549be5),
+    // The street detail tools (crates/tpf3mp-hook/src/junctions.rs).
+    ("CrosswalkModifier::Apply/Add call", 0x5290af),
+    ("LaneModifier::Apply/Add call 1", 0x538a80),
+    ("LaneModifier::Apply/Add call 2", 0x5391e4),
+    ("LaneModifier::Apply/Add call 3", 0x539368),
     ("luaB_print", 0x2fccd10),
     ("lua_checkstack", 0x2fbd650),
     ("lua_createtable", 0x2fbd880),
@@ -172,6 +177,10 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
         &text_bytes[at(0x255ea6d)..at(0x255ea6d) + 5],
         &[0x48, 0x83, 0x41, 0x08, 0x14]
     );
+    // The street detail tools' calls are calls of CommandList::Add.
+    for site in [0x5290af, 0x538a80, 0x5391e4, 0x539368] {
+        assert_eq!(callee(site), 0x9d29c0, "{site:#x} calls Add");
+    }
     // The land-vehicle shuffle's seed is the tickCount getter's answer.
     assert_eq!(callee(0xac1b23), 0x2a95c0);
     // The main menu's m_game test reads CMenuUI+0x6b0, the field StartGame
