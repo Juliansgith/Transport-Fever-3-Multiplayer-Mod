@@ -153,6 +153,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+To test in the real game, with several games in one room on one PC, see
+[GAME_TESTING.md](GAME_TESTING.md).
+
 Run a local server with a throwaway certificate, then connect to it:
 
 ```sh
