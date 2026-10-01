@@ -422,6 +422,16 @@ function data()
 					balance = account and account.balance
 					owed = account and account.loan
 				end)
+				-- The money the game's own windows show (the finance window,
+				-- the game bar: api.engine.util.finance.getPlayersBalance),
+				-- where the game answers. The room's first company's card
+				-- showed $0 in a real game (build 40408, 2026-09-30) while
+				-- the game bar showed its money; INFERRED that its ACCOUNT
+				-- component does not hold what the game shows.
+				pcall(function()
+					local shown = api.engine.util.finance.getPlayersBalance(c.entity)
+					if type(shown) == "number" then balance = shown end
+				end)
 				-- The name the game shows (the player entity's NAME, which a
 				-- rename sets), else the roster's.
 				pcall(function()
