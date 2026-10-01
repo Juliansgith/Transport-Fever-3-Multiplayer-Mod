@@ -38,7 +38,8 @@ The shape tells the tool apart (measured unless noted):
 | stop, signal, waypoint placement | the edge removed and re-added, plus one edge-object record |
 | stop or signal bulldoze | the edge removed and re-added without the object |
 | construction bulldoze | `toRemove` populated, nothing added |
-| road or track bulldoze | removed nodes and segments, nothing added |
+| road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408) |
+| tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file: the group rebuilt without the assets removed (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408) |
 | terraform | no nodes or segments; a `Grid<{height, base}>` of 4 m cells |
 | paint | no nodes or segments; the material index grid and its mask |
 | asset brush | `toAdd` records of an asset-group type whose per-asset data is a vector of `{model path, matrix}` (decompiled); its commit clears `old2new` first |
@@ -432,7 +433,7 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (14; 13 had no junction configurations or street precedence (`Polyline::node_configs`, `Link::precedence`), 12 had no subsidies (`Subsidy`), 11 had no signals (`PlaceStop::object`, `one_way`) and no link decorations, lanes, lock or owner (`Link::decorations`, `lanes`, `locked`, `owned`), and its `Terraform` was TPF2's, placed in the world rather than in the terrain's own grid, 10 had no station access per company (`CompanyOp::StationAccess`), 9 had no manual departure (`VehicleChange::ManualDeparture`), 8 had no two-sided stop (`PlaceStop::two_sided`), no notification sound (`NotificationSeen`), no company ranks (`ApplyRank`) and no company head's operations (`CompanyOp::Lock`, `Unlock`, `Dismiss`, `ShareStations`), 7 had no company colour (`CompanyOp::Recolor`), 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
+`ACTION_SCHEMA_VERSION` (15; 14 named no town buildings with a bulldoze of streets (`Bulldoze::Edges::buildings`), 13 had no junction configurations or street precedence (`Polyline::node_configs`, `Link::precedence`), 12 had no subsidies (`Subsidy`), 11 had no signals (`PlaceStop::object`, `one_way`) and no link decorations, lanes, lock or owner (`Link::decorations`, `lanes`, `locked`, `owned`), and its `Terraform` was TPF2's, placed in the world rather than in the terrain's own grid, 10 had no station access per company (`CompanyOp::StationAccess`), 9 had no manual departure (`VehicleChange::ManualDeparture`), 8 had no two-sided stop (`PlaceStop::two_sided`), no notification sound (`NotificationSeen`), no company ranks (`ApplyRank`) and no company head's operations (`CompanyOp::Lock`, `Unlock`, `Dismiss`, `ShareStations`), 7 had no company colour (`CompanyOp::Recolor`), 6 had no prospecting, 5 always named a first stop, 4 had no construction connections, 3 TPF2's
 vehicles and lines, 2 no edge kinds or removed nodes, 1 no road style). The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
@@ -464,7 +465,7 @@ appended.
 |---|---|
 | `BuildRoad` | street type (TF3: its road template), road style (TF3), bus lane, tram track (none, plain, electric), a polyline whose links may each name their own kind, decorations, the towns' lock and the company's ownership (the road modifiers) |
 | `BuildTrack` | track type (TF3: its road template), road style (TF3), catenary, a polyline |
-| `Bulldoze` | edges of one network by their ends; or a construction by file and position; or a stop, signal or waypoint by its edge, position and model |
+| `Bulldoze` | edges of one network by their ends, with the town buildings the game removes along them, each by file and position; or a construction (a town building among them) by file and position; or a stop, signal or waypoint by its edge, position and model |
 | `BuildConstruction` | file, transform, every parameter (`seed` included), name, the construction it replaces for a module edit, and its connection: the streets and tracks its tool built with it, as a polyline whose every link names its kind |
 | `BuyVehicle` | the depot by file and position, the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |
 | `SellVehicle` | vehicles |

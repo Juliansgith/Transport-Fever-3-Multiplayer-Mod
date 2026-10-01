@@ -989,9 +989,18 @@ impl State {
 
     fn bulldoze(&mut self, bulldoze: &Bulldoze, company: u32) -> Result<(), Refusal> {
         match bulldoze {
-            Bulldoze::Edges { network, edges } => {
+            Bulldoze::Edges {
+                network,
+                edges,
+                buildings,
+            } => {
                 if edges.is_empty() {
                     refuse!("a bulldoze of nothing");
+                }
+                // The model's world has no towns: no town building stands by
+                // its streets, so a bulldoze that names one names nothing.
+                if !buildings.is_empty() {
+                    refuse!("no town building there");
                 }
                 for ends in edges.iter() {
                     let key = self.find_edge(net(*network), ends)?;

@@ -1859,7 +1859,21 @@ terrain tools through the hook, and a construction's window its edits:
   their ends. The replay removes them as the game makes such a removal
   itself, `createProposalRemove` for the construction and
   `makeSegmentsRemoveProposal` for the edges (on build 40408 the first
-  gave exactly the bulldozer's proposal), and the player pays. A stop it
+  gave exactly the bulldozer's proposal), and the player's company pays.
+  A town building is a construction like any (one that lists its
+  `townBuildings`) and goes the same way. A town street's proposal lists
+  the town buildings along it in `toRemove` too; they travel beside the
+  edges (`Bulldoze::Edges::buildings`, by file and position), and every
+  game checks that its own `makeSegmentsRemoveProposal`, which gathers
+  them through the same `street_util::FinishProposal`, removes exactly
+  those, else refuses the bulldoze. The replay is the player's own build
+  (`playerInitiated`), so the game's towns script charges the town's
+  reputation from it in every game alike (`onPreBuildProposal`,
+  `town_util.getProposalStats`). The asset bulldozer's proposal (trees
+  and other assets: the asset group removed and rebuilt without them as
+  a construction of no file) and anything else that is no construction
+  are refused, naming what was hit (an asset group, or the components
+  the entity has). A stop it
   removes is carried as the stop tool's builds are (below): its edge
   rebuilt without it, the stop named by its edge, where it stands and its
   construction (the `EDGE_OBJECT` component's `transf` and

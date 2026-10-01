@@ -360,6 +360,15 @@ protected folder such as Program Files.
   a track's type and its decorations (seen with the road tools; the track
   tools are not yet tried in a real game). Remove them, and roads and
   tracks, with the bulldozer.
+- **Town buildings.** Bulldoze a town's building as usual: every player's
+  game removes the same building, a moment after your click; your company
+  pays the demolition, and the town's opinion of it changes as in single
+  player, the same in every game. Bulldozing a town street takes the
+  buildings along it with it, as in single player; if by the time it
+  arrives the game would take another building than the ones you saw go
+  (the town grew meanwhile), nothing is removed in any game and the
+  hook's log says why. Bulldozing trees and other assets is not in
+  multiplayer yet: the bulldozer says so and removes nothing.
 - **Terraforming.** Raise, lower, smooth and flatten the ground, and the
   heightmap brush, as usual: every player's game reshapes the same cells
   to the same heights, a moment after each stroke, and your company pays.

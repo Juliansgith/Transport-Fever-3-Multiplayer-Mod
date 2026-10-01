@@ -282,6 +282,7 @@ pub fn bulldoze_edges(network: Network, edges: &[(Pos, Pos)]) -> Action {
                 .map(|(a, b)| EdgeEnds { a: *a, b: *b })
                 .collect(),
         ),
+        buildings: list(Vec::new()),
     })
 }
 
