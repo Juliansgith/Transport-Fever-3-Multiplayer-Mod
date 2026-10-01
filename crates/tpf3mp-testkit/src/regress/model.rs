@@ -52,8 +52,11 @@ pub const CAR_CAPACITY: u32 = 40;
 pub const MAX_WAITING: u32 = 1_000;
 
 /// Steps a prospection takes before its outcome, the model's stand-in for
-/// TF3's six months.
-pub const PROSPECTION_STEPS: u64 = 300;
+/// TF3's six months. Far more than a scenario's acts take to be ordered
+/// (some 100 steps each at the regression runs' pace, more on a loaded
+/// machine), so the prospecting scenario's prospections are all still under
+/// way when its last one is.
+pub const PROSPECTION_STEPS: u64 = 2_000;
 /// In hundredths: how often a prospection finds an industry.
 pub const PROSPECTION_CHANCE: u64 = 60;
 
