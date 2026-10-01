@@ -74,6 +74,11 @@ struct AutoRoom {
     #[arg(long, requires = "auto_create", conflicts_with = "auto_join")]
     auto_start: Option<usize>,
 
+    /// With --auto-create: the room is competitive, each player founding a
+    /// company of their own, instead of co-op.
+    #[arg(long, requires = "auto_create")]
+    auto_competitive: bool,
+
     /// Start Transport Fever 3 by itself, as its button does: once in the
     /// room with --auto-create or --auto-join, otherwise right away.
     #[arg(long)]
@@ -365,7 +370,7 @@ fn auto_room(
                     rules: None,
                     start_save: None,
                     listing: None,
-                    competitive: false,
+                    competitive: auto.auto_competitive,
                 })
                 .await
             {
