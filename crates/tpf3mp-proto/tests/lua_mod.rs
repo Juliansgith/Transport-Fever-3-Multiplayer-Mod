@@ -753,6 +753,15 @@ tpf3mp_native = {
         HOOK.dumped[#HOOK.dumped + 1] = 'lane ' .. lane .. ' step ' .. order.step .. ' ' .. entry
         return true
     end,
+    -- The test mode's observation the hook asks for ({ step, full }), once;
+    -- the text the script hands over goes to HOOK.observed.
+    observe = function()
+        local ask = HOOK.observe
+        HOOK.observe = nil
+        if ask == nil then return nil end
+        return ask[1], ask[2]
+    end,
+    observed = function(step, text) HOOK.observed = { step = step, text = text } end,
 }
 "#;
 
@@ -8539,4 +8548,88 @@ fn only_the_company_that_borrowed_pays_its_loan() {
     );
     let booked: String = lua.load("return BOOKED()").eval().unwrap();
     assert_eq!(booked, "LOAN-912@901");
+}
+
+/// The stand-in world with what an observation reads besides the lanes:
+/// town buildings, names and the terrain.
+const OBSERVED_WORLD: &str = r#"
+CT.TOWN_BUILDING, CT.NAME = 20, 21
+WORLD[CT.TOWN_BUILDING] = { [901] = { construction = 201 }, [902] = { construction = 202 },
+                            [903] = { construction = 202 } }
+WORLD[CT.NAME] = { [7] = { name = 'Aston "Old" Town' } }
+api.type.Vec2f = { new = function(x, y) return { x = x, y = y } end }
+api.engine.terrain = {
+    getHeightAt = function(p) return 10 end,
+    isOnWater = function(p) return p.x < -2000 end,
+}
+"#;
+
+#[test]
+fn an_observation_is_json_the_same_on_every_game_and_names_free_places() {
+    let read = |reversed: bool| -> String {
+        let (lua, _) = engine();
+        lua.load(FAKE_WORLD).exec().unwrap();
+        lua.load(OBSERVED_WORLD.replace("CT.", "api.type.ComponentType."))
+            .exec()
+            .unwrap();
+        lua.load(format!("REVERSED = {reversed}")).exec().unwrap();
+        lua.load(
+            "return ug_require('tpf3mp_1::/scripts/tpf3mp/observe.lua').read(api, nil, 50, true)",
+        )
+        .eval()
+        .unwrap()
+    };
+    let text = read(false);
+    assert_eq!(read(true), text, "whatever order the engine lists it in");
+    let seen: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"));
+    assert_eq!(seen["step"], 50);
+    assert_eq!(seen["counts"]["street_edges"], 2);
+    assert_eq!(seen["counts"]["constructions"], 2);
+    assert_eq!(seen["counts"]["vehicles"], 2);
+    assert_eq!(seen["counts"]["lines"], 1);
+    assert_eq!(seen["companies"][0]["money"], 1_234_567);
+    let town = &seen["towns"][0];
+    assert_eq!(town["name"], "Aston \"Old\" Town");
+    assert_eq!(town["buildings"], 3);
+    // The mean of its buildings: (600 + 40 + 40) / 3, (0 + 8 + 8) / 3.
+    assert_eq!(town["x"], 226.67);
+    assert_eq!(town["streets"].as_array().unwrap().len(), 2);
+    let spots = town["spots"].as_array().unwrap();
+    assert_eq!(spots.len(), 4, "{text}");
+    assert_eq!(spots[0]["z"], 10);
+    // Parts the stand-in cannot read are named, and the rest still comes.
+    assert!(
+        seen["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e.as_str().unwrap().starts_with("stations: ")),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_game_script_observes_the_world_when_the_test_mode_asks() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    lua.load("HOOK.checkpoint = true UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let none: bool = lua.load("return HOOK.observed == nil").eval().unwrap();
+    assert!(none, "nothing unless asked");
+    lua.load("HOOK.checkpoint = true HOOK.observe = { 100, false } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let (step, text): (u64, String) = lua
+        .load("return HOOK.observed.step, HOOK.observed.text")
+        .eval()
+        .unwrap();
+    assert_eq!(step, 100);
+    let seen: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(seen["step"], 100);
+    assert!(
+        seen["towns"][0].get("spots").is_none(),
+        "spots for the baseline only"
+    );
 }

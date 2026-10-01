@@ -180,3 +180,55 @@ PLAN.md's order:
 
 A person starts real games with the rig. Automation never launches the
 game (AGENTS.md).
+
+### The hook's test mode
+
+Items 2 and 3 have a first form, for unattended playtests of real games in
+one room (`crates/tpf3mp-hook/src/scenario.rs`). It is off unless the
+game's environment names a scenario; the launcher sets it:
+
+```sh
+tpf3mp-launcher ... --scenario tools/scenarios/roads.json --scenario-actor 0   # the room's owner
+tpf3mp-launcher ... --scenario tools/scenarios/roads.json --scenario-actor 1   # the next to join
+```
+
+(or `TPF3MP_SCENARIO=<file>` and `TPF3MP_SCENARIO_ACTOR=<n>` in the
+launcher's environment, which the game inherits). A file that does not read
+is refused whole, and the game plays as any other.
+
+A scenario here is not the harness's `Script`: real games cannot answer
+its checks yet, so it is a list of actions, each `{ at, actor, origin,
+expect, note, action }`, the action written as serde writes
+`tpf3mp_proto::action::Action`. Places and ids come from the world:
+
+- at the room's first checkpoint, the mod's game script observes the world
+  (`tpf3mp/observe.lua`): towns with their centres, a few free flat spots
+  near each, the streets nearest each centre, counts of edges, stations,
+  depots, lines and vehicles, the companies and their money, lines, the
+  registry's next ids, the game's vehicle models. That *baseline* goes to
+  `hook.log` as `scenario: observe step <n> {json}`, and the scenario's
+  steps count from it;
+- `$pos` places a position in metres from the item's `origin`
+  (`spot:#0:0`, `town:#1`, `town:<name>`, or absolute), `$id` counts the
+  registry's ids from the baseline (`lines+0` is the first line made after
+  it), `$edge` names a street the baseline listed.
+
+The actor's game hands its items to the room through `Session::command`,
+as a player's captured actions go, and every game names every scripted
+action it applies, its own or another's, by the item it matches:
+
+```text
+scenario: step 50 action 3 (BuildRoad) handed to the room: Actor 0: a straight street
+scenario: step 50 action 3 (BuildRoad) applied
+scenario: step 900 action 40 (BuyVehicle) refused: no ::/depots/road/road_depot/road_depot.con there
+scenario: step 260 action 9 (BuildConstruction) refused UNEXPECTED (expected applied): the game refused it: Collision
+scenario: observe step 500 {"companies":[...],"counts":{...},...}
+scenario: progress: 41 of 120 items ordered; 38 applied, 3 refused, 1 unexpected, 0 unscripted
+```
+
+Every `observe_every` checkpoints the observation is logged again: the
+room's games diff their logs (`grep '^.*scenario: ' hook.log`), and the
+same world reads the same lines. In the test mode the player's own actions
+are also logged in full (`scenario: captured <kind> {json}`), the way to
+write new items from a real build. `tools/scenarios/make_scenarios.py`
+writes the shipped scenarios.

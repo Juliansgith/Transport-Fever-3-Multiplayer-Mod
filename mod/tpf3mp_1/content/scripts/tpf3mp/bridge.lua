@@ -75,6 +75,13 @@
 --                                   -- Lua states notes for the others ("" to
 --                                   -- forget); note(key) reads it -> string
 --                                   -- | nil
+--     observe = function(),         -- optional; the hook's test mode, in a
+--                                   -- game script's postUpdate at a
+--                                   -- checkpoint: the step to observe the
+--                                   -- world after and whether to look for
+--                                   -- free places -> step, full | nil
+--     observed = function(step, text), -- optional; that observation, JSON
+--                                   -- (tpf3mp/observe.lua)
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -344,6 +351,23 @@ function Link:dumped(lane, entry)
 	if type(self.native.dumped) ~= "function" then return false end
 	local ok, taken = pcall(self.native.dumped, lane, tostring(entry))
 	return ok and taken == true
+end
+
+-- In a game script's postUpdate at a checkpoint, in the hook's test mode
+-- only (crates/tpf3mp-hook/src/scenario.rs): the step to observe the world
+-- after and whether to look for free places too, once; or nil, and nil from
+-- a hook without the test mode (`observe` is optional).
+function Link:observe()
+	if type(self.native.observe) ~= "function" then return nil end
+	local ok, step, full = pcall(self.native.observe)
+	if not ok or type(step) ~= "number" then return nil end
+	return step, full == true
+end
+
+-- Hands the hook the observation of the world after `step`, a JSON text.
+function Link:observed(step, text)
+	if type(self.native.observed) ~= "function" then return end
+	pcall(self.native.observed, step, tostring(text))
 end
 
 -- Names in a text, one a line.

@@ -107,6 +107,18 @@ struct AutoRoom {
     /// its own hook.log.
     #[arg(long, value_name = "DIR")]
     game_data_dir: Option<std::path::PathBuf>,
+
+    /// For unattended playtests: the scenario file (JSON) the game's hook
+    /// plays in the room's game, this game's part of it being
+    /// --scenario-actor's (docs/REGRESSION.md, "With the real game"). Every
+    /// game of the room names the same file.
+    #[arg(long, value_name = "FILE", requires = "scenario_actor")]
+    scenario: Option<std::path::PathBuf>,
+
+    /// This game's actor in --scenario, from 0: usually the order the
+    /// players joined in, the room's owner 0.
+    #[arg(long, value_name = "N", requires = "scenario")]
+    scenario_actor: Option<u8>,
 }
 
 /// The server a package plays on by default, set when it is built. Without
@@ -220,6 +232,18 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
             .context("finding the save rooms start from (--start-save)")?;
         info!(file = %file.display(), "rooms this launcher creates start from this save");
         config.start_save = Some(file);
+    }
+    if let (Some(file), Some(actor)) = (&args.auto.scenario, args.auto.scenario_actor) {
+        // The hook reads it in the game, which may run elsewhere than here.
+        let file = std::path::absolute(file).context("finding the scenario (--scenario)")?;
+        info!(file = %file.display(), actor, "the game plays this scenario unattended");
+        config.game_env.extend([
+            (
+                tpf3mp_ipc::SCENARIO_ENV.to_owned(),
+                file.to_string_lossy().into_owned(),
+            ),
+            (tpf3mp_ipc::SCENARIO_ACTOR_ENV.to_owned(), actor.to_string()),
+        ]);
     }
     if let Some(dir) = &args.auto.game_data_dir {
         std::fs::create_dir_all(dir).context("making the game's data folder")?;
@@ -647,6 +671,13 @@ mod tests {
             parse(&["--start-save", "a", "--auto-load", "b"]).is_err(),
             "the game loads the save itself, or every game loads it from the room"
         );
+        let scripted = parse(&["--scenario", "roads.json", "--scenario-actor", "2"]).unwrap();
+        assert_eq!(scripted.auto.scenario_actor, Some(2));
+        assert!(
+            parse(&["--scenario", "roads.json"]).is_err(),
+            "a scenario names this game's actor"
+        );
+        assert!(parse(&["--scenario-actor", "1"]).is_err());
         let apart = parse(&["--game-data-dir", "games/cat"]).unwrap();
         assert_eq!(
             apart.auto.game_data_dir.as_deref(),
