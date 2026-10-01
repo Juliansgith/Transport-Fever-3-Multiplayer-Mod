@@ -10083,6 +10083,16 @@ fn only_the_company_that_borrowed_pays_its_loan() {
     );
     let booked: String = lua.load("return BOOKED()").eval().unwrap();
     assert_eq!(booked, "LOAN-912@901");
+    // Four loans at once, as the game's loan script allows: a fifth is
+    // refused.
+    let why: String = lua
+        .load(
+            "HOOK.batch = {} HOOK.origins = {}              for i = 1, 5 do HOOK.batch[i] = { Loan = { Take = { next = OFFER, offer = OFFER } } } HOOK.origins[i] = A end              UPDATE({}, STATE, 0.2)              return tostring(HOOK.applied[#HOOK.applied].why) .. ' ' .. tostring(HOOK.applied[#HOOK.applied - 1].ok)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}
+{}", log(&lua)));
+    assert_eq!(why, "Ann has 4 loans already true");
 }
 
 /// A headquarters as the game's resources declare one
@@ -12023,4 +12033,128 @@ fn the_simulation_notes_the_save_player_for_native_company_tools() {
         .eval()
         .unwrap();
     assert_eq!(noted, "214443");
+}
+
+/// The game's finance window reads the loan script's state, which keeps
+/// the room's first company's loans only. In the GUI it shows a player of
+/// another company that company's own loans and the offers it can take; a
+/// player of the first company sees the loan script's own, as before. The
+/// simulation's view of the loan script is never changed.
+#[test]
+fn the_finance_window_shows_a_founded_companys_own_loans() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        ME = string.rep("b", 64)
+        ROSTER = { next = 2, nextLoan = 3,
+                   list = { { id = 0, entity = 25, name = "First", color = { 1, 0, 0 } },
+                            { id = 1, entity = 901, name = "Rival", color = { 0, 0, 1 } } },
+                   members = {},
+                   loans = { { id = 2, company = 1, amount = 1200, remaining = 1105, months = 12, paid = 1,
+                               rate = 0.01, payment = 107, type = "Small" },
+                             { id = 1, company = 7, amount = 99, remaining = 99, months = 1, paid = 0,
+                               rate = 0, payment = 99 } } }
+        LOANS = { availableLoans = { { type = "Small", amount = 5000000, duration = 3000, percentage = 0.03 },
+                                     { type = "Medium", cooldownUntil = 5000 } },
+                  obtainedLoans = { { id = 0 }, { id = 1 }, { id = 2 }, { id = 3 } }, freeId = 4 }
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = function() return 25 end }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end
+            if name == "::/game_mechanics/finance/loan.gs" then return 40 end
+            return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = api.type.ComponentType or {}
+        api.type.ComponentType.GAME_SCRIPT = 7
+        api.util = api.util or {}
+        api.util.getDefaultMonthDuration = function() return 1000 end
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+            if e == 40 and kind == 7 then return { state = LOANS } end
+        end
+        local realGetComponent = api.engine.getComponent
+        function FRESH_API()
+            return { engine = { util = { getPlayer = function() return 25 end },
+                                system = api.engine.system, getComponent = realGetComponent },
+                     type = api.type, util = api.util, cmd = api.cmd }
+        end
+        HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
+        function BOARD()
+            local s = api.engine.getComponent(api.engine.system.gameScriptSystem.getEntityForGameScript(
+                "::/game_mechanics/finance/loan.gs"), api.type.ComponentType.GAME_SCRIPT).state
+            local out = {}
+            for _, l in ipairs(s.availableLoans) do out[#out + 1] = l.type .. ":" .. tostring(l.amount or l.cooldownUntil) end
+            out[#out + 1] = "|"
+            for _, l in ipairs(s.obtainedLoans) do
+                out[#out + 1] = tostring(l.id) .. ":" .. tostring(l.amount) .. ":" .. tostring(l.duration) .. ":"
+                    .. tostring(l.percentage) .. ":" .. tostring(l.timesPaid)
+            end
+            return table.concat(out, " ")
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    run_frames(&lua, 20);
+    let board: String = lua.load("return BOARD()").eval().unwrap();
+    assert_eq!(
+        board,
+        "Small:5000000 Medium:5000 | 0:nil:nil:nil:nil 1:nil:nil:nil:nil 2:nil:nil:nil:nil 3:nil:nil:nil:nil",
+        "the first company's player: the loan script's own"
+    );
+    lua.load("ROSTER.members = { { player = ME, company = 1 } }")
+        .exec()
+        .unwrap();
+    run_frames(&lua, 20);
+    let board: String = lua.load("return BOARD()").eval().unwrap();
+    assert_eq!(
+        board, "Small:5000000 Medium:5000 | 2:1200:12000:0.12:1",
+        "Rival's player: Rival's one loan, the offers it can take"
+    );
+    let refreshed: String = lua
+        .load(
+            "api = FRESH_API(); assert(package.loaded['tpf3mp.follow'].ensure(api)); return BOARD()",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        refreshed, "Small:5000000 Medium:5000 | 2:1200:12000:0.12:1",
+        "a refreshed GUI api still shows Rival's loans"
+    );
+    let unchanged: bool = lua
+        .load(
+            "return LOANS.availableLoans[2].cooldownUntil == 5000 and #LOANS.obtainedLoans == 4 and ROSTER.loans[1].id == 2 and ROSTER.loans[1].paid == 1",
+        )
+        .eval()
+        .unwrap();
+    assert!(
+        unchanged,
+        "reading the finance window does not change simulation state"
+    );
+    // The window's Repay of it goes to the room as Rival's, by its id and
+    // amount, which every game's companies.repay takes.
+    lua.load(
+        "HOOK.room = true \
+         local s = api.engine.getComponent(40, 7).state \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Loan', 'Repay', { nil, s.obtainedLoans[1] }))",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let repay: String = lua
+        .load("local l = HOOK.commands[#HOOK.commands].Loan.Repay.loan return l.id .. ':' .. l.amount")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(repay, "2:1200");
+    // Where Rival's loans cannot be read, the window shows none and offers
+    // none: never the first company's as Rival's.
+    let board: String = lua
+        .load(
+            "package.loaded['tpf3mp.follow'].LOANS_EVERY = -1              package.loaded['tpf3mp.companies'].loanTable = function() error('unreadable') end              local s = api.engine.getComponent(40, 7).state              return #s.availableLoans .. ' ' .. #s.obtainedLoans",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(board, "0 0");
 }
