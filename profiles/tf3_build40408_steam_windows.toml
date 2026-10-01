@@ -667,3 +667,30 @@ signature = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 4D 8B D0 48 8B F1 E8 ?
 offset = 0
 prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
 required = false
+
+# The probe of the engine's player (crates/tpf3mp-hook/src/probe.rs,
+# investigation/TF3_LOCAL_PLAYER_2026-10-01.md). Read only, and only with
+# TPF3MP_PROBE_PLAYER=1: the hook takes field offsets from these two getters'
+# displacements and never calls, detours or writes them.
+#
+# The GUI's GameState getter: UI::CMenuUI::SwitchToGameUI's lambda_1/lambda_2,
+# a std::function<GameState const &()> vf2 (rva 0x6aa800): `mov rax,[rcx+8];
+# mov rax,[rax+0x6b0]; mov rax,[rax+0x1e0]; ret`, m_game then its GameState.
+# The GameState displacement is fixed in the signature: its twin (lambda_3,
+# 0x6aaaa0, GameRes at +0x1d8) has the same shape.
+[[target]]
+name = "probe: GUI GameState getter"
+signature = "48 8B 41 08 48 8B 80 ?? ?? ?? ?? 48 8B 80 E0 01 00 00 C3"
+offset = 0
+prologue = "48 8B 41 08 48 8B 80"
+required = false
+
+# The game scripts' GameState getter: CGame::CGame's lambda_3/lambda_1, a
+# std::function<GameState const &()> vf2 (rva 0x11ffd0): `[[CGame+0x1f0] +
+# 0x78 + 8*i]`, i the int at +0x98, or 1 - i when the functor's flag is set.
+[[target]]
+name = "probe: engine GameState getter"
+signature = "80 79 10 00 48 8B 41 08 48 8B 80 ?? ?? ?? ?? 74 ?? B9 01 00 00 00 2B 88 ?? ?? ?? ?? 48 63 D1 48 8B 44 D0 ?? C3"
+offset = 0
+prologue = "80 79 10 00 48 8B 41 08"
+required = false

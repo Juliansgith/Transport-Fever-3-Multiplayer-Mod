@@ -230,6 +230,8 @@ fn menu_seen(menu: usize) -> MenuFrame {
             "menu: the world closed (CMenuUI::m_game cleared); the {forgotten} Lua state(s) its GUI was given are never used by the main menu"
         ));
     }
+    // The engine's player, read only, when asked (crate::probe).
+    lines.extend(crate::probe::frame(menu, now_ms));
     let lua_ok = loading == Some(false);
     // Once per change; a load coming and going is one wait.
     let waiting = |seen: Option<Seen>| matches!(seen, Some(Seen::Loading | Seen::Closing));
@@ -939,6 +941,7 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     });
     crate::seeds::install(&absolute);
     log_line(&crate::ticks::install(&absolute));
+    log_line(&crate::probe::install(&absolute));
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
     }

@@ -268,6 +268,10 @@ function data()
 				progression = progressionModule
 				if link then
 					link:log("the game script is linked")
+					-- The save's player, as this state's getPlayer answers it,
+					-- for the hook's read-only probe of where the engine keeps
+					-- it (crates/tpf3mp-hook/src/probe.rs).
+					pcall(function() link:note("tpf3mp.player", tostring(api.engine.util.getPlayer())) end)
 					guardPersonalMods(companiesModule, registryModule)
 				end
 			end

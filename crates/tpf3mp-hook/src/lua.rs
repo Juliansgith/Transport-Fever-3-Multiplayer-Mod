@@ -1985,6 +1985,18 @@ unsafe extern "C-unwind" fn native_dumped(l: State) -> c_int {
     1
 }
 
+/// What a Lua state last noted under `key` (`note`), for the hook's own
+/// readers; `None` when nothing is, or when the notes are busy (never
+/// waits).
+pub fn noted(key: &str) -> Option<String> {
+    let shared = SHARED.try_lock().ok()?;
+    shared
+        .notes
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
 /// `log(line)`.
 /// `note(key)`: what a Lua state last noted under `key`, or nil;
 /// `note(key, value)`: notes `value` (a string; "" forgets it) under `key`

@@ -47,6 +47,7 @@ pub mod modules;
 pub mod order;
 pub mod perf;
 mod platform;
+pub mod probe;
 pub mod seeds;
 pub mod step;
 pub mod terrain;

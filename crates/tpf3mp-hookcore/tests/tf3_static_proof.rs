@@ -93,6 +93,9 @@ const TARGETS: &[(&str, u64)] = &[
     ("TownDevelopAt::Apply", 0x9dedf0),
     ("lua_getfield", 0x2fbdb90),
     ("lua_loadfile", 0x2fa1d50),
+    // The probe of the engine's player (crates/tpf3mp-hook/src/probe.rs).
+    ("probe: GUI GameState getter", 0x6aa800),
+    ("probe: engine GameState getter", 0x11ffd0),
 ];
 
 #[test]
