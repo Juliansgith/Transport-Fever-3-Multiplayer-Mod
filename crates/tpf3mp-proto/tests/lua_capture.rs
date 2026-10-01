@@ -109,6 +109,10 @@ fn link(from: u16, to: u16, t0: Tangent, t1: Tangent, structure: Structure) -> L
         tangent1: t1,
         structure,
         kind: None,
+        decorations: BoundedVec::default(),
+        locked: false,
+        owned: false,
+        lanes: BoundedVec::default(),
     }
 }
 
@@ -374,6 +378,21 @@ fn a_tf3_proposal_the_mod_cannot_place_fails_the_capture() {
 /// a stand-in for TF3's api over the network below, and returns the action
 /// table, `false` for a proposal of nothing, or why not.
 fn capture_street(street: &str) -> Result<LuaValue, String> {
+    capture_with(
+        street,
+        "captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street')",
+    )
+}
+
+/// As [`capture_street`], through the road modifiers' capture.
+fn capture_modify(street: &str) -> Result<LuaValue, String> {
+    capture_with(
+        street,
+        "captureModify({ toAdd = {}, toRemove = {}, proposal = street })",
+    )
+}
+
+fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
     let lua = Lua::new();
     let preload: Table = lua
         .globals()
@@ -397,7 +416,9 @@ fn capture_street(street: &str) -> Result<LuaValue, String> {
              api = {{
                  type = {{ enum = {{ BaseEdgeType = {{ NORMAL = 0, BRIDGE = 1, TUNNEL = 2 }} }},
                           ComponentType = {{ BASE_NODE = 1 }} }},
-                 res = {{ bridgeTypeRep = {{ getName = function(i) if i == 3 then return 'bridge/stone.lua' end end }} }},
+                 res = {{ bridgeTypeRep = {{ getName = function(i) if i == 3 then return 'bridge/stone.lua' end end }},
+                          edgeDecorationRep = {{ getName = function(i)
+                              if i == 3 then return '::/infrastructure/edge_addons/barrier_b.edge' end end }} }},
                  engine = {{
                      getComponent = function(id, kind)
                          if kind == 1 and NODES[id] then return {{ position = NODES[id] }} end
@@ -409,7 +430,7 @@ fn capture_street(street: &str) -> Result<LuaValue, String> {
                  }},
              }}
              local street = {street}
-             return require('tpf3mp.engine').captureBuild({{ toAdd = {{}}, toRemove = {{}}, proposal = street }}, 'Street')"
+             return require('tpf3mp.engine').{call}"
         ))
         .eval()
         .map_err(|error| error.to_string())?;
@@ -537,14 +558,81 @@ fn a_street_proposal_of_nothing_or_of_more_is_not_carried() {
             .unwrap_err()
             .contains("a build with a stop or signal")
     );
-    // An edge the tool moves with a stop on it.
+    // An edge the tool moves with a stop on it: the stop would go onto an
+    // edge that is not the one it stood on.
     let moved = SPLIT_PROPOSAL.replace(
         "roadStyle = '', objects = {}",
         "roadStyle = '', objects = { { 555, 1 } }",
     );
-    assert!(
-        capture_street(&moved)
-            .unwrap_err()
-            .contains("a build that moves an edge with a stop or signal on it")
+    let why = capture_street(&moved).unwrap_err();
+    assert!(why.contains("a build that moves a stop or signal"), "{why}");
+}
+
+/// A road modifier's proposal as build 40408 hands it to game scripts (the
+/// tram track tool, seen in a room): the country street 8-9-10 rebuilt edge
+/// by edge between the same places, its middle node 9 removed and added
+/// again there as -1, in the tram template; the edge 8-9 keeps its stop
+/// 555, the edge 9-10 gets a noise barrier, and is locked and owned (the
+/// player-owned tool).
+const MODIFY_PROPOSAL: &str = "{
+    addedNodes = { { entity = -1, comp = { position = v(50, 1, 0) } } },
+    addedSegments = {
+        { entity = -2, type = 0, comp = { node0 = 8, node1 = -1, tangent0 = v(0, 41, 0), tangent1 = v(0, 41, 0),
+          type = 0, typeIndex = -1, roadTemplate = 'street/country_tram.street_template', roadStyle = '',
+          objects = OBJECTS_A } },
+        { entity = -3, type = 0, playerOwned = { player = 25 },
+          comp = { node0 = -1, node1 = 10, tangent0 = v(0, 39, 0), tangent1 = v(0, 39, 0),
+          type = 0, typeIndex = -1, roadTemplate = 'street/country_tram.street_template', roadStyle = '',
+          objects = OBJECTS_B, edgeDecorations = { { 3, false } }, roadDevelopmentLocked = true } },
+    },
+    removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, objects = { { 555, 0 } } } },
+                        { entity = 101, type = 0, comp = { node0 = 9, node1 = 10, objects = {} } } },
+    removedNodes = { { entity = 9, comp = { position = v(50, 1, 0) } } },
+}";
+
+/// The modifier proposal with the stop 555 on the first new edge (as the
+/// tool rebuilds it), on the second, or on neither.
+fn modify_proposal(a: &str, b: &str) -> String {
+    MODIFY_PROPOSAL
+        .replace("OBJECTS_A", a)
+        .replace("OBJECTS_B", b)
+}
+
+#[test]
+fn a_road_modifier_travels_as_the_road_it_rebuilds() {
+    let action = decode(capture_modify(&modify_proposal("{ { 555, 0 } }", "{}")).unwrap());
+    let Action::BuildRoad(road) = action else {
+        panic!("{action:?}")
+    };
+    assert_eq!(road.street.as_str(), "street/country_tram.street_template");
+    let links = &road.polyline.links;
+    assert_eq!(links.len(), 2);
+    // The edge that keeps its stop, and the one dressed and locked.
+    assert!(links[0].decorations.is_empty() && !links[0].locked && !links[0].owned);
+    assert_eq!(links[1].decorations.len(), 1);
+    assert_eq!(
+        links[1].decorations[0].name.as_str(),
+        "::/infrastructure/edge_addons/barrier_b.edge"
     );
+    assert!(links[1].locked && links[1].owned);
+    // Both old edges and the old middle node go.
+    assert_eq!(road.polyline.removals.len(), 2);
+    assert_eq!(road.polyline.removed_nodes.len(), 1);
+}
+
+#[test]
+fn a_stop_moves_with_a_road_only_on_the_edge_rebuilt_in_place() {
+    // Onto the other edge: refused.
+    let why = capture_modify(&modify_proposal("{}", "{ { 555, 0 } }")).unwrap_err();
+    assert!(why.contains("a build that moves a stop or signal"), "{why}");
+    // Dropped from the rebuilt edge: refused.
+    let why = capture_modify(&modify_proposal("{}", "{}")).unwrap_err();
+    assert!(
+        why.contains("removes an edge with a stop or signal"),
+        "{why}"
+    );
+    // A new stop with the road: refused.
+    let why =
+        capture_modify(&modify_proposal("{ { 555, 0 }, { -400000000, 0 } }", "{}")).unwrap_err();
+    assert!(why.contains("adds a stop or signal"), "{why}");
 }
