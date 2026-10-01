@@ -147,7 +147,7 @@ impl Game {
     /// This player's mods sorted for the room: the shared ones it declares,
     /// and the lists the room's worlds load with.
     fn split(&self) -> Result<content::Split> {
-        let installed = tpf3mp_agent::steam::find(tpf3mp_agent::steam::TRANSPORT_FEVER_3);
+        let installed = tpf3mp_agent::steam::find_game(None);
         let build = launcher::setup::game_build(self.game_build.as_deref(), installed.as_ref());
         launcher::setup::split_mods(
             &build,

@@ -649,6 +649,13 @@ before sharing it publicly if you want to be sure.
 - **"connected via tunnel"** next to the connection: your network blocks
   UDP, and the game plays through the tunnel. It works, but lost packets
   cost a little more delay.
+- **Under Proton or Wine** (Linux, Steam Deck) the Windows launcher plays
+  over UDP as well: Wine refuses some socket options QUIC uses, so the
+  launcher's log says it uses a plain UDP socket, which works the same.
+  Should UDP not open at all, it takes the tunnel by itself, unless you
+  started it with `--no-tunnel`. With `--game-exe`, the launcher shows that
+  program's folder as the game's, never the native Linux game Steam may
+  list beside it.
 - **A version mismatch**: your package and the server are different
   versions. The message says which side is older.
 - **"Your game differs from the room's"**: the window lists what to change:
