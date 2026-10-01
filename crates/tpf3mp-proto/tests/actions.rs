@@ -306,6 +306,7 @@ fn samples() -> Vec<Action> {
             ]),
             groups: list(vec![1, 1]),
             multiple_units: list(vec![text(""), text("")]),
+            depot_index: 1,
         }),
         Action::SellVehicle {
             vehicles: list(vec![VehicleId(1), VehicleId(70_000)]),

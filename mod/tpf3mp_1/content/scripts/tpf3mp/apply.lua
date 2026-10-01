@@ -1033,8 +1033,10 @@ end
 
 function HANDLERS.BuyVehicle(buy)
 	local _, construction = constructionAt(buy.depot)
-	local depot = construction.depots and construction.depots[1]
-	if depot == nil then error("the construction there has no depot", 0) end
+	-- The construction's depot the store bought at, by its index there.
+	local index = (buy.depot_index or 0) + 1
+	local depot = construction.depots and construction.depots[index]
+	if depot == nil then error("the construction there has no depot " .. index, 0) end
 	local time = now()
 	local vehicles = {}
 	for i, p in ipairs(buy.consist) do vehicles[i] = vehiclePart(p, time) end

@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 18;
+pub const ACTION_SCHEMA_VERSION: u32 = 20;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -589,6 +589,11 @@ pub struct BuyVehicle {
     pub groups: BoundedVec<u8, MAX_CONSIST>,
     /// For each group, the multiple unit's file, or empty.
     pub multiple_units: BoundedVec<Text<128>, MAX_CONSIST>,
+    /// Which of the construction's depots, from 0 (`CONSTRUCTION.depots`):
+    /// an airport's or harbour's second hangar or ship depot. Added under
+    /// schema version 20.
+    #[serde(default)]
+    pub depot_index: u8,
 }
 
 /// One vehicle of a replacement consist: the part as a purchase carries it,
@@ -1260,7 +1265,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                18, // schema version
+                20, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1303,7 +1308,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                20, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1338,7 +1343,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                20, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1356,7 +1361,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                20, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1371,7 +1376,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                20, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1382,7 +1387,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                20, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1394,7 +1399,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                20, // schema version
                 18, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1432,7 +1437,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                18, // schema version
+                20, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

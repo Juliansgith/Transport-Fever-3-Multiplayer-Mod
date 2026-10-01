@@ -41,9 +41,11 @@ Open gaps, by risk (each is worked through under "Gaps" below):
 8. Refused, needs an owner decision or a probe: the rest (the table at the
    end).
 9. Carry: which of a construction's depots a vehicle is bought at (an
-   airport's or harbour's second hangar or ship depot). *Done in part:*
-   a depot no street reaches is named by the construction that lists it
-   (test `a_ship_or_aircraft_is_bought_at_the_harbour_or_airport_that_lists_its_depot`).
+   airport's or harbour's second hangar or ship depot). *Done:* a depot
+   no street reaches is named by the construction that lists it, and by
+   its index there (`BuyVehicle::depot_index`, schema 20; tests
+   `a_ship_or_aircraft_is_bought_at_the_harbour_or_airport_that_lists_its_depot`,
+   `every_game_buys_at_the_constructions_depot_the_store_bought_at`).
 
 ## The gates and their holes
 
@@ -195,7 +197,7 @@ the hook reads it.
 | stops and stations | bus and truck stops (stop tool): carried; bus and truck stations (construction tool): carried | stations: carried; module edits: carried (INFERRED) | harbours (construction tool): carried, not seen | airports (construction tool): carried, not seen; upgrades and runways (module editor): carried, INFERRED |
 | depots | road depots: carried, seen | train depots: carried, seen | ship depots: carried, not seen | hangars: carried as constructions, not seen |
 | signals, waypoints | lights and crosswalks: with the junction from the street tool; the light and crosswalk tools refused | signals, waypoints (stop tool): carried; bulldozing them: carried where the object has a construction (INFERRED) | buoys: none on build 40408 | none |
-| buying | store at a depot: carried | multiple units and wagons by group: carried | ships: carried; the depot named by the construction that lists it (`capture.depotRef`) where no street reaches it | aircraft: carried, the hangar named as a ship depot is. Every game buys at its construction's first depot: a harbour or airport with several depots needs the depot's index carried (schema; gap 9) |
+| buying | store at a depot: carried | multiple units and wagons by group: carried | ships: carried; the depot named by the construction that lists it (`capture.depotRef`) where no street reaches it | aircraft: carried, the hangar named as a ship depot is; the depot by its index among its construction's depots (an airport's second hangar) |
 | lines | stops, terminals, waiting, loading: carried | the same; track waypoints: carried, on the edge's lane by its ends | the same; route waypoints (`Waypoint.pos`): carried by position | the same; route waypoints: carried by position |
 | vehicle actions | sell, replace, to depot, stop, reverse, depart, rename, colour: carried | the same | the same | the same |
 
