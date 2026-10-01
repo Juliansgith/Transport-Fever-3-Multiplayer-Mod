@@ -9739,11 +9739,13 @@ fn each_headquarters_bonus_is_logged_for_its_own_town() {
         .unwrap_or_else(|| panic!("{report}"));
     let hq = rival
         .trim_start_matches("Rival #1: headquarters ")
-        .split(',')
+        .split(' ')
         .next()
         .unwrap();
     assert!(
-        rival.contains(&format!("its PLAYER names {hq};")),
+        rival.contains(&format!(
+            "headquarters {hq} (a construction), owned by 901;"
+        )),
         "the engine names Rival's own: {rival}"
     );
     assert!(
@@ -9778,10 +9780,77 @@ fn each_headquarters_bonus_is_logged_for_its_own_town() {
              local l = headquartersLogged() return #l .. ' ' .. l[#l]"
         )),
         format!(
-            "5 headquarters: Rival #1: headquarters {hq}, its PLAYER names {hq}; closest town 31 (Ashford): \
+            "5 headquarters: Rival #1: headquarters {hq} (a construction), owned by 901; closest town 31 (Ashford): \
              on it xp +0.06, reputation recovery +0.00; the game's town script applies xp +0.06, \
              reputation recovery +0.00 there"
         )
+    );
+}
+
+/// The headquarters report can never hang or slow a game: it never walks
+/// the world's constructions, reads nothing more while no company has a
+/// headquarters (a room just after a company is founded, 2026-10-01),
+/// reads at most `REPORT_MAX` companies, and a read that fails or raises
+/// only leaves its part out.
+#[test]
+fn the_headquarters_report_is_bounded_and_never_raises() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        api.type.ComponentType.PLAYER_OWNED = 55
+        api.type.ComponentType.PLAYER = 5
+        api.type.ComponentType.GAME_SCRIPT = 77
+        C = ug_require('tpf3mp_1::/scripts/tpf3mp/companies.lua')
+        READS = 0
+        -- Walking the constructions raises here: the report must not walk.
+        api.engine.forEachEntityWithComponent = function() error('walked the constructions') end
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function()
+            READS = READS + 1 return 600 end }
+        PLAYERS = {}
+        api.engine.getComponent = function(e, kind)
+            READS = READS + 1
+            if kind == 5 then return PLAYERS[e] end
+            if kind == 2 and e == 777 then error('engine refuses') end
+            return nil
+        end
+        api.engine.system.streetConnectorSystem = {
+            getConstructionClosestTown = function() error('not a construction') end }
+        ROSTER = { list = {}, members = {} }
+        for i = 0, 11 do
+            ROSTER.list[#ROSTER.list + 1] = { id = i, entity = 100 + i, name = 'C' .. i }
+            PLAYERS[100 + i] = { headquarters = -1 }
+        end
+        function report()
+            READS = 0
+            local ok, lines, why = pcall(C.headquartersReport, ROSTER, api)
+            return tostring(ok) .. ' ' .. (lines and #lines or tostring(why)) .. ' ' .. READS
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    // No headquarters: one PLAYER read for each of the twelve companies,
+    // and nothing else.
+    assert_eq!(eval("return report()"), "true 0 12");
+    // Headquarters everywhere, the engine refusing the entity: eight lines
+    // at most, none raising.
+    assert_eq!(
+        eval(
+            "for i = 0, 11 do PLAYERS[100 + i] = { headquarters = 777 } end \
+             local lines = C.headquartersReport(ROSTER, api) return #lines .. '|' .. lines[1]"
+        ),
+        "8|C0 #0: headquarters 777 (no construction), owned by nil; closest town nil: \
+         on it xp +0.00, reputation recovery +0.00; the game's town script has no state for that town"
+    );
+    // No roster: nil and why, never an error.
+    assert_eq!(
+        eval("local l, why = C.headquartersReport(nil, api) return tostring(l) .. ' ' .. why"),
+        "nil no roster"
     );
 }
 
