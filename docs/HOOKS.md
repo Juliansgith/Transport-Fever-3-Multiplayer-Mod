@@ -785,9 +785,14 @@ for the table (`bridge.find`). Its contract is in
   hands the launcher.
 - `tpf3mp_native.handover()`: in the GUI: `true` once after the main
   menu's Multiplayer window, open as the room's world came up, was closed
-  for it (`crate::menu::close_lobby` at the first menu frame after the
-  world came up and stepped, once no load runs): the game's own
-  Multiplayer window opens in its place.
+  for it: the game's own Multiplayer window opens in its place. The close
+  (`crate::menu::close_lobby`) comes once the world that came up has
+  stepped (its load is over): on a frame of the main menu's if one still
+  runs, or else from the world's GUI as it asks `handover()`, every GUI
+  frame. The menu's `DoStep` ran no frame of its own after the world's
+  GUI was up on 2026-10-01, and the window stayed open. hook.log: `menu:
+  the Multiplayer window closed as the world came up (from the world's
+  GUI)` (or `from the main menu's frame`).
 - `tpf3mp_native.leave()`: in the GUI: the player leaves the room, as the
   launcher's Leave room does: queued for the launcher as
   `LobbyAction::Leave`, `true` or `false` and why.

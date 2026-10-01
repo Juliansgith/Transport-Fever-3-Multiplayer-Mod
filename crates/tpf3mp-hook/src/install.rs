@@ -269,15 +269,51 @@ fn menu_seen(menu: usize) -> MenuFrame {
 /// (its window container stays behind under the world's GUI, where nothing
 /// could close it), and the game's own Multiplayer window opens in its place
 /// ([`lua::hand_over`]). A window the player closed before stays closed.
-fn hand_over_lobby(lines: &mut Vec<String>) {
-    // SAFETY: the menu's frame, on the thread that runs its Lua, after the
-    // game's own frame: no Lua runs on it now.
-    if unsafe { crate::menu::close_lobby() } == Some(true) {
-        lua::hand_over();
-        lines.push(
-            "menu: the Multiplayer window closed as the world came up; the game's Multiplayer window opens in its place"
-                .to_owned(),
-        );
+fn hand_over_lobby(lines: &mut Vec<String>, from: &str) {
+    // SAFETY: the callers' moments: on the thread that runs the menu's Lua,
+    // with none of the menu's Lua running.
+    match unsafe { crate::menu::close_lobby() } {
+        Some(true) => {
+            lua::hand_over();
+            lines.push(format!(
+                "menu: the Multiplayer window closed as the world came up (from {from}); the game's Multiplayer window opens in its place"
+            ));
+        }
+        Some(false) => lines.push(format!(
+            "menu: the world came up (seen from {from}) with the Multiplayer window closed: nothing to hand over"
+        )),
+        None => lines.push(format!(
+            "menu: the world came up (seen from {from}), but no Lua state of the main menu's on this thread can close the Multiplayer window"
+        )),
+    }
+}
+
+/// From the world's GUI, each time it asks whether the game's Multiplayer
+/// window should open (`tpf3mp_native.handover()`, every GUI frame): the
+/// moment that surely comes once the world runs. The main menu's `DoStep`
+/// may run no frame of the menu's own once the world's GUI is up (seen
+/// 2026-10-01: no hand-over after the world stepped), so the close the
+/// menu's frame did not do is done here, once the world that came up has
+/// stepped: its load is over, and no Lua of the menu's runs while the GUI's
+/// does.
+pub(crate) fn hand_over_from_gui() {
+    let due = {
+        let mut sight = menu_sight();
+        let due = sight
+            .hand_over_due
+            .is_some_and(|up| LAST_STEP.load(Ordering::Acquire) > up);
+        if due {
+            sight.hand_over_due = None;
+        }
+        due
+    };
+    if !due {
+        return;
+    }
+    let mut lines = Vec::new();
+    hand_over_lobby(&mut lines, "the world's GUI");
+    for line in lines {
+        log_line(&line);
     }
 }
 
@@ -318,7 +354,7 @@ pub(crate) fn menu_frame(menu: usize) {
         }
     }
     if hand_over {
-        hand_over_lobby(&mut lines);
+        hand_over_lobby(&mut lines, "the main menu's frame");
     }
     if !seen.allows() || !crate::menu::available() {
         for line in lines {
@@ -1645,6 +1681,90 @@ mod tests {
         let _ = lua::take_menu_load();
         lua::menu_load_failed(String::new());
         let _ = lua::take_load_failure();
+        forget_menu_sight();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The main menu's `DoStep` runs no frame of its own once the world's
+    /// GUI is up: the Multiplayer window is closed from the world's GUI,
+    /// asking `handover()`, once the world has stepped, and the game's own
+    /// window opens in its place; hook.log says so.
+    #[test]
+    fn the_window_is_handed_over_from_the_worlds_gui_when_the_menus_frames_stop() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        lua::forget_worlds();
+        forget_menu_sight();
+        crate::menu::tests::menu51();
+        crate::menu::tests::forget_all();
+        let dir = std::env::temp_dir().join(format!("tpf3mp-menu-gui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        *LOG.lock().unwrap() = Some(crate::Logger::open(Some(&dir)));
+        let hook_log = || std::fs::read_to_string(dir.join("hook.log")).unwrap_or_default();
+        let menu = Lua::new();
+        menu.run(
+            "LOADS = {} CLOSED = 0 \
+             api = { type = { SavegameId = { new = function() return {} end } } } \
+             resolveutil = { __tpf3mp_close = function() CLOSED = CLOSED + 1 end } \
+             app = { SaveGameNamespace = { getSavegame = function() return 'savegame' end }, \
+                     loadGame = function(id) LOADS[#LOADS + 1] = id.saveGameName end }",
+        )
+        .unwrap();
+        assert_eq!(unsafe { crate::menu::adopt(menu.state()) }, Ok(true));
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            Script::default(),
+            Box::new(crate::worlds::GuiWorlds::in_folder(Ok(dir.clone()))),
+        )));
+        LAST_STEP.store(0, Ordering::Release);
+        let mut cmenu = [0usize; 4];
+        crate::menu::set_game_field(8);
+        crate::menu::set_load_field(16);
+        let at = cmenu.as_mut_ptr() as usize;
+        // Another test's hand-over, not taken there, is taken now.
+        let world = Lua::new();
+        world.register();
+        let _ = world.run("return tpf3mp_native.handover()");
+        menu_frame(at);
+        // The world is loaded: the menu's last frame.
+        unsafe { std::ptr::write_volatile((at + 8) as *mut usize, 1) };
+        menu_frame(at);
+        assert_eq!(
+            menu.run("return CLOSED"),
+            Ok("0".into()),
+            "not before it runs"
+        );
+        // The world's GUI starts and asks before the world stepped: not yet.
+        assert_eq!(
+            world.run("return tpf3mp_native.handover()"),
+            Ok("false".into())
+        );
+        assert_eq!(menu.run("return CLOSED"), Ok("0".into()));
+        // The world steps; the menu's DoStep runs no more; the GUI asks.
+        MENU_CLOCK_SKEW.store(0, Ordering::Release);
+        LAST_STEP.store(now_ms() + 1_000, Ordering::Release);
+        assert_eq!(
+            world.run("return tpf3mp_native.handover()"),
+            Ok("true".into())
+        );
+        assert_eq!(menu.run("return CLOSED"), Ok("1".into()), "closed once");
+        assert_eq!(
+            world.run("return tpf3mp_native.handover()"),
+            Ok("false".into())
+        );
+        assert_eq!(menu.run("return CLOSED"), Ok("1".into()));
+        assert!(
+            hook_log().contains(
+                "menu: the Multiplayer window closed as the world came up (from the world's GUI)"
+            ),
+            "{}",
+            hook_log()
+        );
+
+        *LOG.lock().unwrap() = None;
+        *DRIVER.lock().unwrap() = None;
+        LAST_STEP.store(0, Ordering::Release);
+        crate::menu::tests::forget_all();
+        lua::forget_worlds();
         forget_menu_sight();
         let _ = std::fs::remove_dir_all(&dir);
     }

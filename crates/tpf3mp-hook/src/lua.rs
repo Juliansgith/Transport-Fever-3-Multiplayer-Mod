@@ -1505,6 +1505,9 @@ unsafe extern "C-unwind" fn native_handover(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
+    // The menu's window is closed from here if the menu's own frames did
+    // not (they may stop once the world's GUI is up).
+    let _ = std::panic::catch_unwind(crate::install::hand_over_from_gui);
     let handed = HANDED_OVER.swap(false, Ordering::AcqRel);
     // SAFETY: a C function's call has room for its result.
     unsafe { (api.pushboolean)(l, c_int::from(handed)) };
