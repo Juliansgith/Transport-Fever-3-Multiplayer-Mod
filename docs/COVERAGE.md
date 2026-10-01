@@ -22,10 +22,10 @@ Each way is one of:
 |---|---|---|
 | command factories (`api.cmd.make*Cmd`) | 61 | 17 carried (in part), 1 passed (speed), 43 refused |
 | game-script events the GUI sends | 21 | 10 carried, 11 refused |
-| native tools and windows (rows below) | 18 | 12 carried (in part), 6 refused |
+| native tools and windows (rows below) | 18 | 14 carried (in part), 4 refused |
 | unknown paths | 2 open, 1 closed | see "The gates and their holes" |
 
-Open gaps, by risk (each is worked through under "Gaps" below):
+The gaps, by risk, and what became of each ("Gaps" below):
 
 1. **Unknown:** the GUI's second Lua state has no guard. *Closed* by
    batch 2 (the guard in every GUI state).
@@ -42,7 +42,7 @@ Open gaps, by risk (each is worked through under "Gaps" below):
    *Done* (`DiscardCargo`, schema 19; a slot's cargo is a window's edit,
    carried already).
 8. Refused, needs an owner decision or a probe: the rest (the table at the
-   end).
+   end). These fail closed: refused with a reason, never acted locally.
 9. Carry: which of a construction's depots a vehicle is bought at (an
    airport's or harbour's second hangar or ship depot). *Done:* a depot
    no street reaches is named by the construction that lists it, and by
@@ -121,7 +121,7 @@ unless named otherwise.
 | `makeLineDestroyCmd` | line manager | carried: `EditLine` `Delete` | registry tests |
 | `makeEntitySetNameCmd` | entity windows' titles (`view_manager.tl`: any entity with a window), line manager (lines, vehicles, auto-rename schemes), company window | carried: lines (`EditLine` `Rename`), the room's companies (`CompanyOp` `Rename`), vehicles, stations, towns and other constructions (`Rename`); anything else refused ("renaming this") | `the_company_windows_rename_goes_to_the_room_as_the_companys`, `a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_room`, `every_game_renames_and_recolours_what_the_room_names` |
 | `makeEntitySetColorCmd` | line window, line manager, vehicle window, line manager's vehicle list | carried: lines, companies, vehicles (`VehicleOp` `Recolor`); anything else refused ("recolouring this") | `companies_are_founded_joined_renamed_recoloured_and_dissolved_alike`, `a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_room` |
-| `makeWorldBuildProposalCmd` | construction menu's parameters (`construction.tl`), station cargo buttons (`entity_window_util.tl`), bridge and tunnel window, double slip switch window, industry removal (`industry_util.tl`), map editor, debug panel | carried: an edit that replaces one construction (`BuildConstruction` with `replaces`); everything else refused ("building from this window") | `a_construction_edited_in_its_window_goes_to_the_room` |
+| `makeWorldBuildProposalCmd` | construction menu's parameters (`construction.tl`), station cargo buttons (`entity_window_util.tl`), bridge and tunnel window, a junction's window (carried as `EditJunctions`), industry removal (`industry_util.tl`), map editor, debug panel | carried: an edit that replaces one construction (`BuildConstruction` with `replaces`); everything else refused ("building from this window") | `a_construction_edited_in_its_window_goes_to_the_room` |
 | `makeScriptingSendEventCmd` | see "Game-script events" | carried for six events, refused for the rest | see there |
 | `makeGameSetSpeedCmd` | speed row | passed: the step gate reads it as a speed request | `in_the_rooms_game_the_gui_refuses_what_the_room_cannot_carry` |
 | `makeGameSetCalendarSpeedCmd` | game bar | refused (owner decision: who sets a room's calendar) | same (refusal is generic) |
@@ -185,11 +185,11 @@ the hook reads it.
 | module editor (`UI::ModuleBuilder`), station and airport modules, upgrades | carried: `BuildConstruction` with `replaces`, read natively (INFERRED, not seen) | `a_module_editor_click_goes_to_the_room_as_the_hook_read_it`; `modules.rs` unit tests |
 | terrain tools (raise, lower, smooth, flatten, heightmap) | carried: `Terraform`, read natively (not seen) | `a_terrain_tools_click_goes_to_the_room_as_terraform_actions`; `terrain.rs` unit tests |
 | module bulldozer | carried as the edit it is, if it reaches game scripts as the bulldozer (INFERRED); else stopped by the build gate | `a_station_edit_a_click_saw_goes_to_the_room_and_unhandled_events_are_logged` |
-| lane arrow tool, traffic light tool, crosswalk tool (`lane_modifier_tool`, `traffic_light_tool`, `crosswalk_modifier_tool`) | refused (build gate); being captured on `feat/combined` by the street-detail work | `the_build_a_click_saw_goes_to_the_room_and_other_tools_stay_refused` |
+| crossing tool (`lane_modifier_tool`, `UI::LaneModifier`), traffic light tool, crosswalk tool | carried: `EditJunctions` (the street detail work, a043140; HOOKS.md, "The street detail tools") | `the_traffic_light_tools_proposal_goes_to_the_room_and_every_game_lights_it_alike`, `a_crossing_tools_tram_lanes_join_a_railway_in_every_game_alike` |
 | terrain painter, asset brush (trees, rocks, plants), vegetation and asset erasers | refused (build gate; the hook names why) | `terrain.rs` `what_is_not_only_a_height_grid_is_refused_with_why` |
 | town builder tools | refused (build gate) | `in_the_rooms_game_the_build_tools_are_refused` |
 | bridge and tunnel window (bridge type) | refused ("building from this window") | `a_construction_edited_in_its_window_goes_to_the_room` |
-| double slip switch window | refused ("building from this window") | same |
+| a junction's window: traffic light phases, double slip switch | carried: `EditJunctions` (a043140) | `a_junctions_window_sends_its_phases_and_double_slip_to_the_room` |
 | industry window's extend, removal | refused | generic |
 | line manager's map clicks (stops, waypoints) | carried through `makeLineUpdateCmd`, waypoints included | `a_lines_waypoints_on_track_and_in_the_open_are_made_again_the_same` |
 | vehicle store | carried through `makeVehicleBuyCmd` | see the vehicle rows |
@@ -213,43 +213,23 @@ and intervals are the stops' waiting times (`minWaitingTime`,
 
 ## Gaps
 
-### Batch 2: a guard in every GUI Lua state (U1)
+Done on `feat/combined`, each batch its own commit:
 
-The React recipes' state gets the guard too, with the same carry rules but
-answers that need no result: a command handed to the room is answered as
-sent, and the kinds whose windows wait on what they made (`guard.RESULT`:
-buy, create a line, replace) are refused there with why, so `hook.log`
-shows if any window sends them from that state. hook.log says `the guard
-is on N command factories in the HUD's state`.
+| batch | what | schema | tests |
+|---|---|---|---|
+| 2 | the guard in the GUI's React state too (`tpf3mp/hudguard.lua`); a window there that waits on what its command made is refused, as the room's answers reach the plugin's state alone | | `in_the_huds_state_the_guard_carries_or_refuses_every_command` |
+| 3 | the hook logs every command kind queued in the room's game, once per call site (`cmdkinds.rs`): measurement for U2 | | `cmdkinds` unit tests |
+| | a ship depot or hangar no street reaches named by the construction that lists it (`capture.depotRef`) | | `a_ship_or_aircraft_is_bought_at_the_harbour_or_airport_that_lists_its_depot` |
+| 4 | `Rename` (vehicle, station, town, construction), `VehicleChange::Recolor` | 17 | `a_vehicle_station_town_or_depot_renamed_and_a_vehicle_recoloured_go_to_the_room`, `every_game_renames_and_recolours_what_the_room_names` |
+| 5 | `LineStop::waypoints`: on a lane by the edge's ends (node 0 first; a game whose edge runs the other way refuses) or the construction's network, or in the open for ships and aircraft | 18 | `a_lines_waypoints_on_track_and_in_the_open_are_made_again_the_same` |
+| 6, 7 | `Notification` (dismiss, enlist, ignored kinds), `DiscardCargo` | 19 | `the_notification_log_and_a_warehouses_discard_go_to_the_room` |
+| 9 | `BuyVehicle::depot_index`: the depot of a construction with several | 20 | `every_game_buys_at_the_constructions_depot_the_store_bought_at` |
 
-### Batch 3: native commands of other kinds (U2), measured
-
-The hook logs, once each, every command kind (the payload's variant index)
-queued in the room's game outside the room's own replays, with where its
-`Add` call returns to. A playtest then says which native paths exist
-besides the build tools and Lua's `sendCommand`; refusing them is the
-next step, once the Lua binding's call site is known (an in-game probe).
-
-### Batch 4: renaming and recolouring
-
-Vehicle rename and colour, station rename, town rename: `Rename` and
-`VehicleChange::Recolor`, every game checking the acting company may
-change it (a vehicle or station of its own; a town is anyone's).
-
-### Batch 5: line waypoints
-
-Rail waypoints by their edge and place, ship and aircraft route waypoints
-by their position, with the waypoint's tag.
-
-### Batch 6: notifications
-
-Dismissing, keeping (`enlist`) and the ignored types, through the
-Notifications script's own events in every game.
-
-### Batch 7: warehouses
-
-A warehouse slot's cargo and discarding its cargo, the warehouse by its
-construction.
+INFERRED in these, to see in a game: that a harbour's or airport's depot
+may have no street connector (the fallback is harmless if it has one);
+that the warehouse window's entity is the warehouse's construction; that
+assigning a `Line.Stop`'s `waypoints` and an `EdgePos` from Lua is taken
+as the line manager's own; and which windows render in the HUD's state.
 
 ### Needs an owner decision or an in-game probe
 
@@ -259,7 +239,7 @@ construction.
 | a town's rating sensitivity, cargo needs, development, distribution weights, a town building's blocked development | one company changing a town for all |
 | greening an industry, marketing campaigns | PLAN.md keeps greening refused; marketing is two commands (the event and its cost) |
 | industry extension (`makeCreateIndustryExtendProposalCmd`), industry removal | what the proposal builds: a probe |
-| bridge and tunnel window, double slip switch window | rebuild edges from a window: a probe of the proposal |
+| bridge and tunnel window | rebuilds edges from a window: a probe of the proposal |
 | the asset brush, the terrain painter, the asset bulldozer | rebuilding an asset group natively (HOOKS.md, "The build tools") |
 | the console's state (U3) | the tests use it; guarding it is the owner's call |
 | native commands of other kinds (U2) | refuse once batch 3's log names them |
