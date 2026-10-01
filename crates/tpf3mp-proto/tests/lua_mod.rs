@@ -9428,3 +9428,28 @@ fn a_junction_change_the_games_objects_will_not_take_is_made_nowhere() {
         "{why}"
     );
 }
+
+#[test]
+fn a_refused_build_says_what_it_collides_with() {
+    let (lua, _) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    let details: String = lua
+        .load(
+            "return ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua').refusalDetails({ \
+                 errorState = { critical = true, messages = { 'Construction Not Possible' }, \
+                                warnings = { 'Too steep' } }, \
+                 collisionInfo = { collisionEntities = { { entity = 201 }, { entity = 101 } } } })",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        details,
+        " (warnings Too steep; collides with depot/road_depot.con at (600.0, 0.0, 0.5), \
+         edge (0.0, 0.0)-(100.0, 0.0) street/country.lua)"
+    );
+    let nothing: String = lua
+        .load("return ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua').refusalDetails({})")
+        .eval()
+        .unwrap();
+    assert_eq!(nothing, "");
+}

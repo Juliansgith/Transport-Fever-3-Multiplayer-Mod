@@ -167,6 +167,45 @@ local function madeBy(field, data, entities)
 	return nil
 end
 
+-- What else a refused build's proposal data says, for the log: the game's
+-- warnings and the entities it collides with, each by what it is (a
+-- construction's file and place, an edge's ends and template, a town
+-- building's construction), a few at most. "" when it says nothing more.
+function apply.refusalDetails(data)
+	local parts = {}
+	pcall(function()
+		local warnings = {}
+		for _, w in ipairs(data.errorState.warnings or {}) do warnings[#warnings + 1] = tostring(w) end
+		if #warnings > 0 then parts[#parts + 1] = "warnings " .. table.concat(warnings, ", ") end
+	end)
+	pcall(function()
+		local CT = api.type.ComponentType
+		local list = data.collisionInfo.collisionEntities
+		local hit = {}
+		for i = 1, #list do
+			if i > 6 then hit[#hit + 1] = "and " .. (#list - 6) .. " more" break end
+			local e = list[i].entity
+			local text = "entity " .. tostring(e)
+			local c = api.engine.getComponent(e, CT.CONSTRUCTION)
+			local edge = api.engine.getComponent(e, CT.BASE_EDGE)
+			local node = api.engine.getComponent(e, CT.BASE_NODE)
+			if c and c.transf then
+				text = string.format("%s at (%.1f, %.1f, %.1f)", tostring(c.fileName), c.transf[13], c.transf[14], c.transf[15])
+			elseif edge then
+				local a, b = edge.position0 or {}, edge.position1 or {}
+				text = string.format("edge (%.1f, %.1f)-(%.1f, %.1f) %s", a.x or 0, a.y or 0, b.x or 0, b.y or 0,
+					tostring(edge.roadTemplate))
+			elseif node and node.position then
+				text = string.format("node (%.1f, %.1f, %.1f)", node.position.x, node.position.y, node.position.z)
+			end
+			hit[#hit + 1] = text
+		end
+		if #list > 0 then parts[#parts + 1] = "collides with " .. table.concat(hit, ", ") end
+	end)
+	if #parts == 0 then return "" end
+	return " (" .. table.concat(parts, "; ") .. ")"
+end
+
 -- Builds `proposal` as the player's own build. The game's verdict first, as
 -- its tools ask it: a build it would refuse (a collision, too steep, not
 -- enough money) fails here with its reasons, the same in every game, and is
@@ -179,7 +218,7 @@ local function buildProposal(proposal, context)
 		local messages = {}
 		for _, m in ipairs(state and state.messages or {}) do messages[#messages + 1] = tostring(m) end
 		if state and state.critical then
-			error("the game refuses the build: " .. table.concat(messages, "; "), 0)
+			error("the game refuses the build: " .. table.concat(messages, "; ") .. apply.refusalDetails(data), 0)
 		end
 		if #messages > 0 then log("the game warns of the build: " .. table.concat(messages, "; ")) end
 	end

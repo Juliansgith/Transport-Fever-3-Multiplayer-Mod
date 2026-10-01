@@ -380,7 +380,7 @@
    "actor": 0,
    "origin": "spot:#0:0",
    "expect": "applied",
-   "note": "Actor 0: a road depot whose entrance meets the T's free end at (60, 60)",
+   "note": "Actor 0: a road depot whose entrance snaps onto the T's free end at (60, 60)",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/road/road_depot/road_depot.con",
@@ -399,7 +399,7 @@
       "origin": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -414,7 +414,52 @@
      ],
      "name": "Scenario depot 0",
      "replaces": null,
-     "connection": null
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          60,
+          63,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          60,
+          60,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 0,
+         "y": -3000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": -3000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
     }
    }
   },
@@ -499,7 +544,7 @@
       "at": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -538,7 +583,7 @@
       "at": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -577,7 +622,7 @@
       "at": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -692,7 +737,7 @@
    "actor": 0,
    "origin": "spot:#0:0",
    "expect": "applied",
-   "note": "Actor 0: a rail depot whose track meets the track's east end",
+   "note": "Actor 0: a rail depot whose track snaps onto the track's east end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/rail/rail_depot.con",
@@ -710,7 +755,7 @@
       ],
       "origin": {
        "$pos": [
-        220,
+        223,
         -82.2,
         0
        ]
@@ -726,7 +771,52 @@
      ],
      "name": "Scenario rail depot 0",
      "replaces": null,
-     "connection": null
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          153,
+          -80,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          150,
+          -80,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Track"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": -3000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -3000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
     }
    }
   },
@@ -1192,7 +1282,7 @@
    "actor": 1,
    "origin": "spot:#1:0",
    "expect": "applied",
-   "note": "Actor 1: a road depot whose entrance meets the T's free end at (60, 60)",
+   "note": "Actor 1: a road depot whose entrance snaps onto the T's free end at (60, 60)",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/road/road_depot/road_depot.con",
@@ -1211,7 +1301,7 @@
       "origin": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -1226,7 +1316,52 @@
      ],
      "name": "Scenario depot 1",
      "replaces": null,
-     "connection": null
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          60,
+          63,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          60,
+          60,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 0,
+         "y": -3000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": -3000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
     }
    }
   },
@@ -1311,7 +1446,7 @@
       "at": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -1350,7 +1485,7 @@
       "at": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -1389,7 +1524,7 @@
       "at": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -1504,7 +1639,7 @@
    "actor": 1,
    "origin": "spot:#1:0",
    "expect": "applied",
-   "note": "Actor 1: a rail depot whose track meets the track's east end",
+   "note": "Actor 1: a rail depot whose track snaps onto the track's east end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/rail/rail_depot.con",
@@ -1522,7 +1657,7 @@
       ],
       "origin": {
        "$pos": [
-        220,
+        223,
         -82.2,
         0
        ]
@@ -1538,7 +1673,52 @@
      ],
      "name": "Scenario rail depot 1",
      "replaces": null,
-     "connection": null
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          153,
+          -80,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          150,
+          -80,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Track"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": -3000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -3000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
     }
    }
   },
@@ -2004,7 +2184,7 @@
    "actor": 2,
    "origin": "spot:#2:0",
    "expect": "applied",
-   "note": "Actor 2: a road depot whose entrance meets the T's free end at (60, 60)",
+   "note": "Actor 2: a road depot whose entrance snaps onto the T's free end at (60, 60)",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/road/road_depot/road_depot.con",
@@ -2023,7 +2203,7 @@
       "origin": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -2038,7 +2218,52 @@
      ],
      "name": "Scenario depot 2",
      "replaces": null,
-     "connection": null
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          60,
+          63,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          60,
+          60,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 0,
+         "y": -3000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": -3000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
     }
    }
   },
@@ -2123,7 +2348,7 @@
       "at": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -2162,7 +2387,7 @@
       "at": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -2201,7 +2426,7 @@
       "at": {
        "$pos": [
         60,
-        95,
+        98,
         0
        ]
       }
@@ -2316,7 +2541,7 @@
    "actor": 2,
    "origin": "spot:#2:0",
    "expect": "applied",
-   "note": "Actor 2: a rail depot whose track meets the track's east end",
+   "note": "Actor 2: a rail depot whose track snaps onto the track's east end",
    "action": {
     "BuildConstruction": {
      "file": "::/depots/rail/rail_depot.con",
@@ -2334,7 +2559,7 @@
       ],
       "origin": {
        "$pos": [
-        220,
+        223,
         -82.2,
         0
        ]
@@ -2350,7 +2575,52 @@
      ],
      "name": "Scenario rail depot 2",
      "replaces": null,
-     "connection": null
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          153,
+          -80,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          150,
+          -80,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Track"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": -3000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -3000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
     }
    }
   },
