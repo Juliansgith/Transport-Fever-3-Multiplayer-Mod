@@ -38,6 +38,7 @@ pub mod autoload;
 pub mod builds;
 pub mod clipboard;
 pub mod cmdkinds;
+pub mod copycheck;
 pub mod image;
 mod install;
 pub mod junctions;

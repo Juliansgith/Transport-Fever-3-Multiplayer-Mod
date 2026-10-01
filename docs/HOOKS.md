@@ -3324,6 +3324,53 @@ Other `MovePath` fields written alongside the flag may be engine-local in
 the same way; the `movepath` watch lines (`TPF3MP_HOOK_WATCH_ENTITIES`)
 would show one that differs between games.
 
+**The engine-copy checker** (`crate::copycheck`; read only, off unless
+`TPF3MP_PROBE_ENGINE_COPY` is `1` or `on`, or a number n for every n-th
+change of engine). It asks which other fields the copy leaves behind. The
+copy's per-type functions (`GetReplicaCompCopyFns`, `GameState.cpp`) bulk-copy
+19 component types; `MovePath`'s (`0x2699f0`) copies only bytes
+`+0x4c..+0x74` of each element of the contiguous store, none of the paged
+ones; the rest goes through `ecs::Engine::Replicate`'s recorded changes
+(`m_replicas`). At the first update of a room's step on the other engine
+than the update before (the seeds' `ecs::Engine::Update` detour, on the
+simulation thread before any system of the update runs, after
+`decision-sync`'s copy), the engine about to simulate has just received the
+other's copy, and both should be equal. For the transport vehicle loop's
+vehicles (road vehicles, trains, ships, aircraft) and the stations and lines
+their `TransportVehicle +0xc0`/`+0xb8` name, at most 256 of each a check (a
+longer list in turn), it compares `MovePath` (0xa0 bytes),
+`TransportVehicle` (0x1e8), `LandVehicle` (12), `CarriageList` (0x20),
+`Ship` (12), `Aircraft` (0x10), `MovePathAircraft` (0x238), `Station`
+(0x58) and `Line` (40) in both engines, by dword. The components come from
+the game's const getters (`Get<T> const`, the shape of `0x52bbc0`), found in
+`.text` by their code and the type descriptor their `lea` names, the size
+from their contiguous branch's arithmetic; the mutable getters (`0x2832a0`,
+which copy a shared page on access) have another shape and are never
+called. An entity is asked for only within the engine's tables (its
+components list at `+0x90..+0x98`, 24 bytes each, and its has-component
+bits at `+0xc0`), which the getter reads unbounded. An 8-byte word holding a
+readable address above 4 GiB in both copies is masked as a heap pointer; a
+run of them is compared by the distance between its first two (a vector's
+length). A component one engine has and the other not is a difference; one
+at the same address in both (a shared page) is equal. Nothing is written.
+
+```
+copycheck: on, read only: ... components MovePath (0xa0 bytes, getter +0x52bbc0), ...; not found: none; getters found in <n> ms
+copycheck: step <s> component <C> offset +0x<nn> differs in <k> of <n> vehicles (e.g. vehicle <id> (slot <i>|paged|store unknown): engine0=0x..., engine1=0x...; engine<0|1> ran the update before)
+copycheck: step <s> component <C> offset +0x<nn> (vector length, bytes) differs in ...
+copycheck: step <s> component <C> presence differs in ... (engine0=1, engine1=0: only one engine has it)
+copycheck: component <C>: <n> vehicles compared at step <s>: <n> at one address in both engines, <n> in the contiguous store, <n> paged, <n> store unknown; scratch fields masked: none known
+copycheck: component <C>: masks as heap addresses, not compared (...): +0x<nn> (<n>, <n> differing) ...
+copycheck: alive, checks=<n> engine changes=<n> at step <s>: <n> vehicles, <n> stations, <n> lines compared, <n> differing field(s); <us> us a check on average, <us> us at most
+```
+
+`engine0` and `engine1` are the engines in the order the checker met them
+since the last load. A difference is said the first time and then at most
+every 500 room steps, at most 24 lines a check (the rest wait). The step is
+the room's step about to run; the copy holds the world after the one
+before. With `TPF3MP_HOOK_DECISION_SYNC=0`, `MovePath +0x70` must differ;
+with the fix on, it must not.
+
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
 inherits it; a number above 1 is the interval, default 100 updates), three

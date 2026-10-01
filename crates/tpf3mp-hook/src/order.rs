@@ -1223,6 +1223,7 @@ pub mod platform {
                     visit.count = 0;
                     let n = VISIT_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
                     super::decision_sync::note_list(regs.rbp, regs.rdi);
+                    crate::copycheck::note_list(regs.rbp, regs.rdi);
                     match begin_loop(regs.rbp, regs.rax, regs.rdi, &mut visit.sorted) {
                         Ok((records, Sorted::Reordered)) => {
                             let reorders = VISIT_REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1985,27 +1986,28 @@ pub mod decision_sync {
         if GETTER.load(Ordering::Acquire) == 0 || BROKEN.load(Ordering::Relaxed) || !in_step() {
             return;
         }
+        if let Some(vehicles) = read_list(rbp, begin) {
+            state().vehicles = vehicles;
+        }
+    }
+
+    /// The transport vehicle loop's vehicles, by entity, read at its first
+    /// record (`rbp` its frame, `begin` its 8-byte records); `None` when the
+    /// count or a record is unreadable or the count is not plausible. Also
+    /// the engine-copy checker's list (crate::copycheck).
+    pub fn read_list(rbp: u64, begin: u64) -> Option<Vec<i32>> {
         let mut probe = Probe::new();
-        let Some(count) = rbp
-            .checked_add_signed(0x5b0)
-            .and_then(|at| probe.read::<i32>(at))
-        else {
-            return;
-        };
-        let Ok(count) = u64::try_from(count) else {
-            return;
-        };
+        let count = probe.read::<i32>(rbp.checked_add_signed(0x5b0)?)?;
+        let count = u64::try_from(count).ok()?;
         if count > MAX_VEHICLES {
-            return;
+            return None;
         }
         let mut vehicles = Vec::with_capacity(count as usize);
         for i in 0..count {
-            let Some(record) = probe.read::<u64>(begin + i * 8) else {
-                return;
-            };
+            let record = probe.read::<u64>(begin.checked_add(i * 8)?)?;
             vehicles.push(record as u32 as i32);
         }
-        state().vehicles = vehicles;
+        Some(vehicles)
     }
 
     /// Copies each vehicle's flag from the engine `before` into `engine`'s

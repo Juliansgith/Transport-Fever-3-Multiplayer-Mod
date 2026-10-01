@@ -954,6 +954,8 @@ mod native {
         // The platform-decision flag, from the engine the update before ran
         // on (crate::order::decision_sync).
         crate::order::decision_sync::before_update(engine);
+        // The engine-copy checker, after that copy (crate::copycheck).
+        crate::copycheck::before_update(engine);
     }
 
     extern "C" fn before_town_develop_c(_a: usize, _b: usize, _c: usize, _d: usize) {
