@@ -507,8 +507,36 @@ function engine.describe(proposal)
 			out[#out + 1] = "-n" .. tostring(n.entity) .. at(n.comp and n.comp.position)
 		end
 		for _, s in ipairs(list(get(street, "addedSegments"))) do
+			-- A street's precedence at each end (BaseEdgeStreet), where it reads.
+			local okP, p = pcall(function()
+				local se = get(s, "streetEdge")
+				local a, b = se and get(se, "precedenceNode0"), se and get(se, "precedenceNode1")
+				if a == nil and b == nil then return "" end
+				return "^" .. tostring(a) .. "/" .. tostring(b)
+			end)
 			out[#out + 1] = "+e" .. tostring(s.entity) .. mark(s.entity) .. "/" .. tostring(s.type) .. ":"
 				.. node(s.comp.node0) .. mark(s.comp.node0) .. ">" .. node(s.comp.node1) .. mark(s.comp.node1)
+				.. (okP and p or "")
+		end
+		-- The node configurations (BaseNodeConfig: lane connections, crosswalks,
+		-- traffic lights) the tool adds and removes: the replay makes none of
+		-- its own (docs/BUILDING.md), so the log says what the tool's had.
+		local okA, adds = pcall(list, get(street, "nodeConfigsToAdd"))
+		local okR, removes = pcall(list, get(street, "nodeConfigsToRemove"))
+		for _, nc in ipairs(okA and adds or {}) do
+			local okC, text = pcall(function()
+				local c = get(nc, "comp")
+				local tl = c and get(c, "trafficLightConfig")
+				return string.format("{tl=%s lc=%d cw=%d phases=%d dss=%s um=%s/%s}",
+					tostring(get(c, "trafficLightPreference")), #list(get(c, "laneConnections")),
+					#list(get(c, "crosswalks")), #list(tl and get(tl, "states")),
+					tostring(get(c, "doubleSlipSwitch")), tostring(get(c, "userModifiedLaneConnections")),
+					tostring(get(c, "userModifiedTrafficLightStates")))
+			end)
+			out[#out + 1] = "+cfg" .. tostring(get(nc, "entity")) .. (okC and text or "{?}")
+		end
+		for _, id in ipairs(okR and removes or {}) do
+			out[#out + 1] = "-cfg" .. tostring(id)
 		end
 		for _, s in ipairs(list(get(street, "removedSegments"))) do
 			out[#out + 1] = "-e" .. tostring(s.entity) .. ":" .. node(s.comp.node0) .. ">" .. node(s.comp.node1)

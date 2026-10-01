@@ -2146,6 +2146,36 @@ const RAIL_STATION_OPEN: &str = "{ toRemove = {}, \
           roadTemplate = '::/track/standard.track_template', roadStyle = '' } } {JOIN} }, \
     removedSegments = {}, removedNodes = {}, edgeObjectsToAdd = {} } }";
 
+/// A junction built through the room lacked what the game's own build gives
+/// it (2026-09-30: "it gets no traffic lines"). The replay makes no node
+/// configurations of its own, so the log says what the tool's proposal had:
+/// each new street's precedence at its ends, and the node configurations
+/// the tool adds and removes.
+#[test]
+fn the_log_says_what_a_junction_the_tool_proposed_carries() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let text: String = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local p = {STATION_BY_ROAD} \
+             p.proposal.addedSegments[2].streetEdge = {{ precedenceNode0 = 2, precedenceNode1 = 1 }} \
+             p.proposal.nodeConfigsToAdd = {{ {{ entity = -2, comp = {{ trafficLightPreference = 2, \
+                 laneConnections = {{ {{}}, {{}}, {{}} }}, crosswalks = {{}}, \
+                 trafficLightConfig = {{ states = {{ {{}}, {{}} }} }}, doubleSlipSwitch = false, \
+                 userModifiedLaneConnections = false, userModifiedTrafficLightStates = false }} }} }} \
+             p.proposal.nodeConfigsToRemove = {{ 8 }} \
+             return capture.describe(p)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(text.contains(">-2^2/1"), "{text}");
+    assert!(
+        text.contains("+cfg-2{tl=2 lc=3 cw=0 phases=2 dss=false um=false/false} -cfg8 -e100:"),
+        "{text}"
+    );
+}
+
 #[test]
 fn a_rail_station_on_open_ground_leaves_its_own_track_to_the_station() {
     let (lua, _script) = engine();

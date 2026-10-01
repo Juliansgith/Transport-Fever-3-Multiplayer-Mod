@@ -565,7 +565,15 @@ from its worker threads): the replay removes the configurations at the ends
 of the edges it removes (`nodeConfigsToRemove`), except at a node it removes,
 which takes its own along and may not be named for both, and the game makes
 new ones. A node's own settings (traffic lights, lane connections set by
-hand) go back to the game's defaults there. Before sending, the replay asks
+hand) go back to the game's defaults there. The replay carries none of the
+tool's own node configurations (`nodeConfigsToAdd`) or street precedences
+(`streetEdge`); a junction built through the room was seen without what
+single player gives it (2026-09-30), so the log's "handed the player's
+build" line shows them as the tool proposed them: `^a/b` after a new edge
+for its precedence at each end, `+cfg<node>{tl= lc= cw= phases= dss= um=}`
+for a configuration added (traffic light preference, lane connections,
+crosswalks, phases, double slip, user-modified), `-cfg<node>` for one
+removed. Before sending, the replay asks
 the game's verdict (`makeProposalData`) and refuses a build it calls
 critical, with its reasons.
 The tests `tpf3mp-proto/tests/lua_capture.rs` (a junction rebuilt around a
