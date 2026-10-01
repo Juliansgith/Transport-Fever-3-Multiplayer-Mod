@@ -60,3 +60,41 @@ nothing for it. What would show it, read only, in a real game: log
 `CGame+0x1e0`, `[CGame+0x1f0]+0x78`, `+0x80` and `+0x98` at each
 `CGame::Step` for a few frames (do they move, does `+0x1e0` equal either
 buffer), then locate the player field by the value 118368 in each.
+
+## The probe's answer (2026-10-01, three games, build a47b3d3)
+
+- **seen** The GUI's GameState is one of the engine's two buffers: james's
+  `[+0x1e0]` equalled buffer [0] with i 1, bob's and cat's buffer [1] with
+  i 0. A value written there for the GUI would be the simulation's too:
+  the GUI's GameState is not a path to the player's company.
+- **seen** The save's player (214443 in that save) stands at `+0x20cd` in
+  every state, an odd offset, so likely not the field itself; and at
+  `+0x174cd` or `+0x10ecd` in some.
+
+## Threads (static)
+
+- **seen** `GameSim::Step` (0x159390) has one caller, `sub_11e210`, reached
+  from `CGame::Step` (0x11f3b0), whose caller is `UI::CGameUI::vf50` (the
+  game UI's per-frame update). The simulation's step therefore runs on the
+  main thread, the GUI's, between the GUI's frames; the game scripts run on
+  "Sim Pool" threads during it (docs/HOOKS.md). Thread alone does not tell
+  the GUI from the simulation; being inside the hook's `GameSim::Step`
+  detour does.
+
+## Ownership checks (static, not settled)
+
+- **seen** The street graph answers an entity's owner through
+  `street_util::EngineStreetGraph::GetPlayerOwnedPtr` (vf5, 0xa45d90,
+  identical twin of four other slots, so not signable alone) and
+  `street_util::ProposalStreetGraph::GetPlayerOwnedPtr` (vf5, 0xa46cd0,
+  unique). Which callers compare that owner with a player, and whether the
+  simulation's command apply calls them too, is not found statically.
+- **seen** The GUI's pickers take the player from Lua
+  (`requireOwnedByPlayer = api.engine.util.getPlayer()`, sub_f09190 and
+  sub_f26220; `hideNonPlayerOwned`, sub_2401bc0), so they follow the mod's
+  answer already; the line manager's `player = true` filter is native.
+- **seen** The construction apply (`sub_9f96e0`, apply path, names
+  `company`/`headquarters`) asserts `ce.playerEntity != ecs::Entity()`: the
+  owner a proposal names is applied as given.
+- **not found** Where the street, track and construction tools take the
+  `playerEntity` they put in their proposals.
