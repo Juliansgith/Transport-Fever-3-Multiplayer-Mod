@@ -256,9 +256,13 @@ protected folder such as Program Files.
 - **The Multiplayer window.** In the room's game the game bar shows the
   room in one line: its name, how many players are in the game, its speed,
   and new chat. Click it, or the Multiplayer button among the mods'
-  buttons, for the Multiplayer window: the room's players (the host, you,
-  anyone away), its speed, whether your world matches the room's, and the
-  room's newest chat, where you can write to everyone. Rooms and invites
+  buttons (the main menu's Multiplayer glyph, with the number of new chat
+  lines), for the Multiplayer window: the room's players as their banners,
+  each marked **Owner**, **You**, **Away** and how far their game is
+  (**Downloading 42%**, **Loading...**, **Playing**), its speed, whether
+  your world matches the room's, the companies, **Leave room** (asks
+  first), and on the right the room's newest chat, where you can write to
+  everyone. Rooms and invites
   are on the main menu's Multiplayer window (see "Playing from the game's
   Multiplayer button").
 - **Speed and pause.** The room's owner sets the room's speed, pause

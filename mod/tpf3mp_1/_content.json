@@ -37,6 +37,7 @@
         "gui/tpf3mp/tpf3mp.script.lua",
         "gui/tpf3mp/tpf3mp_button.res.lua",
         "scripts/tpf3mp/apply.lua",
+        "scripts/tpf3mp/banners.lua",
         "scripts/tpf3mp/bridge.lua",
         "scripts/tpf3mp/capture.lua",
         "scripts/tpf3mp/companies.lua",

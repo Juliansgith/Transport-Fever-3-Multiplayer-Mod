@@ -39,7 +39,7 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
-	local MODULES = { "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
+	local MODULES = { "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
 		"bridge", "guard", "worldload" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
@@ -749,12 +749,65 @@ function data()
 		if shared.companyNote then line(shared.companyNote) end
 	end
 
-	local function windowRows(status, draft, drafts)
+	-- The menu's Multiplayer glyph (tools/art/icons/menu_icon.py), for the
+	-- button that opens the window.
+	local GLYPH = MOD .. "::/gui/tpf3mp/icons/menu_multiplayer_50.tga"
+	-- A banner strip's size, and the window's two columns.
+	local BANNER_W, BANNER_H = 160, 40
+	local LEFT_W, CHAT_W = 480, 360
+
+	-- A style sheet of one size, or nil where the state has none to make.
+	local function sized(w, h)
+		local ok, sheet = pcall(function()
+			local s = api.gui.StyleSheet.new()
+			s.size = api.type.Vec2f.new(w, h)
+			return s
+		end)
+		return ok and sheet or nil
+	end
+	local function hbox(children)
+		return builtin.BoxLayout{ orientation = builtin.type.Orientation.Horizontal, children = children }
+	end
+	local function column(children, w)
+		local sheet = w and sized(w, -1)
+		return builtin.Component{
+			meta = sheet and { styleSheet = sheet } or {},
+			layout = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical, children = children },
+		}
+	end
+	local function text(t, class)
+		return builtin.TextView{ meta = class and { class = class } or nil, text = t }
+	end
+
+	-- One player as a strip: their banner (tpf3mp/banners.lua, the same the
+	-- main menu's window shows), name, and marks: the room's owner, you,
+	-- away, and how far their game is with the room's world.
+	local function playerRow(p)
+		local banners = require("tpf3mp.banners")
+		local marks = {}
+		if p.owner then marks[#marks + 1] = "Owner" end
+		if p.me then marks[#marks + 1] = "You" end
+		if not p.connected then marks[#marks + 1] = "Away" end
+		marks[#marks + 1] = banners.stage(p, true)
+		local sheet = sized(BANNER_W, BANNER_H)
+		return hbox({
+			builtin.ImageView{
+				meta = sheet and { styleSheet = sheet } or {},
+				path = banners.picture(banners.of(p)),
+			},
+			column({ text(tostring(p.name), "font-scale-body"), text(table.concat(marks, " · ")) }),
+		})
+	end
+
+	-- The room page in the game: the room and its players with their
+	-- banners, the companies (companyRows), Leave room, which asks first;
+	-- the chat on the right.
+	local function windowContent(status, draft, drafts, confirm)
 		local shared = ui()
-		local function send(text)
+		local function send(t)
 			local l = shared.link
-			if not l or type(text) ~= "string" or text:match("^%s*$") then return end
-			local ok, why = l:say(text)
+			if not l or type(t) ~= "string" or t:match("^%s*$") then return end
+			local ok, why = l:say(t)
 			if ok then
 				draft:set("")
 			else
@@ -762,55 +815,74 @@ function data()
 			end
 			shared.version = shared.version + 1
 		end
-		local rows = {}
-		local function line(text) rows[#rows + 1] = builtin.TextView{ text = text } end
-		line("Room: " .. tostring(status.room))
-		if status.speed then line("Speed: " .. speedText(status.speed)) end
+		local left = {}
+		local function line(t, class) left[#left + 1] = text(t, class) end
+		line(tostring(status.room), "font-scale-title-4")
+		local about = {}
+		if status.speed then about[#about + 1] = "Speed " .. speedText(status.speed) end
 		if status.diverged then
-			line("Your world differed from the room's at step " .. tostring(status.diverged)
-				.. "; the room's is on its way")
+			about[#about + 1] = "Your world differed from the room's at step " .. tostring(status.diverged)
+				.. "; the room's is on its way"
 		else
-			line("Worlds match")
+			about[#about + 1] = "Worlds match"
 		end
-		line("")
-		line("Players")
-		for _, p in ipairs(status.players or {}) do
-			local tags = {}
-			if p.owner then tags[#tags + 1] = "host" end
-			if p.me then tags[#tags + 1] = "you" end
-			if not p.connected then tags[#tags + 1] = "away" end
-			line("  " .. tostring(p.name) .. (#tags > 0 and (" (" .. table.concat(tags, ", ") .. ")") or ""))
+		line(table.concat(about, " · "))
+		line("Players", "font-scale-title-5")
+		for _, p in ipairs(status.players or {}) do left[#left + 1] = playerRow(p) end
+		companyRows(left, status, shared, drafts)
+		if shared.leaveNote then line(shared.leaveNote) end
+		if confirm:get() then
+			line("Leave the room? Your game stops following it; start the game again from the launcher for the next room.")
+			left[#left + 1] = hbox({
+				builtin.Button{ content = text("Leave"), onClick = function()
+					confirm:set(false)
+					local l = shared.link
+					local ok, why = false, "not linked"
+					if l then ok, why = l:leave() end
+					shared.leaveNote = ok and "Leaving the room..." or ("Not left: " .. tostring(why))
+					shared.version = shared.version + 1
+				end },
+				builtin.Button{ content = text("Stay"), onClick = function()
+					confirm:set(false)
+					shared.version = shared.version + 1
+				end },
+			})
+		else
+			left[#left + 1] = builtin.Button{
+				meta = { tooltip = "Give up your seat in the room" },
+				content = text("Leave room"),
+				onClick = function()
+					confirm:set(true)
+					shared.version = shared.version + 1
+				end,
+			}
 		end
-		companyRows(rows, status, shared, drafts)
-		line("")
-		line("Chat")
+
+		local chat = { text("Chat", "font-scale-title-5") }
 		-- The newest lines only: the window sizes itself to what it holds.
-		for i = math.max(1, #shared.lines - CHAT_SHOWN + 1), #shared.lines do line(shared.lines[i]) end
-		if #shared.lines == 0 then line("Nobody said anything yet.") end
-		rows[#rows + 1] = builtin.BoxLayout{
-			orientation = builtin.type.Orientation.Horizontal,
-			children = {
-				builtin.TextInputField{
-					placeholderText = "Say something to the room",
-					value = draft:get(),
-					maxLength = 280,
-					acceptOnFocusLoss = false,
-					-- Clicking away keeps what was typed, and a redraw shows
-					-- it: Send sends what the field shows, never a line the
-					-- field dropped (it emptied itself on a cancel, build
-					-- 40408, while Send still had the text).
-					resetValueOnCancel = false,
-					onTyping = function(text) draft:set(text) end,
-					onCancel = function() shared.version = shared.version + 1 end,
-					onValueChange = function(text) send(text) end,
-				},
-				builtin.Button{
-					content = builtin.TextView{ text = "Send" },
-					onClick = function() send(draft:get()) end,
-				},
+		for i = math.max(1, #shared.lines - CHAT_SHOWN + 1), #shared.lines do chat[#chat + 1] = text(shared.lines[i]) end
+		if #shared.lines == 0 then chat[#chat + 1] = text("Nobody said anything yet.") end
+		chat[#chat + 1] = hbox({
+			builtin.TextInputField{
+				placeholderText = "Say something to the room",
+				value = draft:get(),
+				maxLength = 280,
+				acceptOnFocusLoss = false,
+				-- Clicking away keeps what was typed, and a redraw shows
+				-- it: Send sends what the field shows, never a line the
+				-- field dropped (it emptied itself on a cancel, build
+				-- 40408, while Send still had the text).
+				resetValueOnCancel = false,
+				onTyping = function(t) draft:set(t) end,
+				onCancel = function() shared.version = shared.version + 1 end,
+				onValueChange = function(t) send(t) end,
 			},
-		}
-		return rows
+			builtin.Button{
+				content = text("Send"),
+				onClick = function() send(draft:get()) end,
+			},
+		})
+		return hbox({ column(left, LEFT_W), column(chat, CHAT_W) })
 	end
 
 	-- The Multiplayer window, which the game's window container shows, as
@@ -824,6 +896,7 @@ function data()
 			shared.window = react.RegisterWrapperRecipe("Tpf3mpWindow", builtin.Window, function(params)
 				local drawn = react.useState(0)
 				local draft = react.useRef("")
+				local confirmLeave = react.useRef(false)
 				local drafts = { rename = react.useRef(""), found = react.useRef(""),
 					joinPassword = react.useRef(""), lockPassword = react.useRef("") }
 				react.onStep(function()
@@ -832,11 +905,12 @@ function data()
 				end)
 				local _ = drawn:old()
 				local status = ui().status
-				local rows
+				local content
 				if status then
-					rows = windowRows(status, draft, drafts)
+					content = windowContent(status, draft, drafts, confirmLeave)
 				else
-					rows = { builtin.TextView{ text = "Not in a room." } }
+					content = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical,
+						children = { builtin.TextView{ text = "Not in a room." } } }
 				end
 				return builtin.Window{
 					id = "tpf3mp.multiplayer.window",
@@ -848,7 +922,7 @@ function data()
 					-- the mods' buttons, which it would cover at 0, 0.
 					initialX = 0,
 					initialY = 0.15,
-					content = builtin.BoxLayout{ orientation = builtin.type.Orientation.Vertical, children = rows },
+					content = content,
 				}
 			end)
 		end
@@ -973,11 +1047,14 @@ function data()
 		local shared = ui()
 		local children = {}
 		if shared.status then
+			-- The main menu's Multiplayer glyph, and how many chat lines are
+			-- new.
+			local glyph = sized(32, 32)
+			local inside = { builtin.ImageView{ meta = glyph and { styleSheet = glyph } or {}, path = GLYPH } }
+			if shared.unread > 0 then inside[2] = builtin.TextView{ text = tostring(shared.unread) } end
 			children[1] = builtin.Button{
-				meta = { tooltip = "Multiplayer: the room, its players and its chat" },
-				content = builtin.TextView{
-					text = "Multiplayer" .. (shared.unread > 0 and (" (" .. shared.unread .. ")") or ""),
-				},
+				meta = { tooltip = "Multiplayer: the room, its players, companies and chat" },
+				content = builtin.BoxLayout{ orientation = builtin.type.Orientation.Horizontal, children = inside },
 				onClick = toggleWindow,
 			}
 		end

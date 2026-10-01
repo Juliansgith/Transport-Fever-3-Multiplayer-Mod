@@ -57,7 +57,9 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// [`LobbyAction::SetBanner`]; 17 a room's play style, co-op or
 /// competitive ([`LobbyRoom::competitive`], in [`LobbyAction::Create`] and
 /// the room list); 18 each member's loading progress
-/// ([`LobbyMember::loading`]).
+/// ([`LobbyMember::loading`]), and in the game's Multiplayer window each
+/// member's banner and loading progress ([`RoomMember`]), and its Leave
+/// as [`LobbyAction::Leave`].
 pub const BRIDGE_VERSION: u32 = 18;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
@@ -459,6 +461,10 @@ pub struct RoomMember {
     pub player: PlayerId,
     pub name: Text<32>,
     pub connected: bool,
+    /// The banner this member picked (`tpf3mp_proto::BANNERS`), if any.
+    pub banner: Option<tpf3mp_proto::BannerId>,
+    /// Where this member's game is with the room's world while it comes in.
+    pub loading: Option<tpf3mp_proto::LoadingStage>,
 }
 
 /// From the hook to the agent.

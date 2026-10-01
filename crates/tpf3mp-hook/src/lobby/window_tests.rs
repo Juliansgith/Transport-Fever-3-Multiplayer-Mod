@@ -14,10 +14,12 @@ use super::{LobbyState, parse_action};
 
 const FAKE_MENU: &str = include_str!("../../tests/lua/fake_menu.lua");
 const WINDOW: &str = include_str!("../../../../mod/tpf3mp_1/content/gui/menu/lobby.lua");
+const BANNERS: &str = include_str!("../../../../mod/tpf3mp_1/content/scripts/tpf3mp/banners.lua");
 
 fn menu() -> Lua {
     let lua = Lua::new();
     lua.globals().set("LOBBY_SOURCE", WINDOW).unwrap();
+    lua.globals().set("BANNERS_SOURCE", BANNERS).unwrap();
     lua.load(FAKE_MENU)
         .set_name("@fake_menu.lua")
         .exec()

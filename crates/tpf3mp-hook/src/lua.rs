@@ -91,9 +91,9 @@ use std::{
     },
 };
 
-use tpf3mp_bridge::{ModLists, Notice, Plan, RoomInfo};
+use tpf3mp_bridge::{LobbyAction, ModLists, Notice, Plan, RoomInfo};
 use tpf3mp_proto::{
-    ChatText, Payload, PlayerId, Seal, Secret, Text,
+    ChatText, LoadingStage, Payload, PlayerId, Seal, Secret, Text,
     action::{Action, CompanyOp},
     lua::{LuaValue, MAX_DEPTH, MAX_NODES, action_from_lua, action_to_lua},
 };
@@ -650,6 +650,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"status", native_status),
                 (b"chat", native_chat),
                 (b"say", native_say),
+                (b"leave", native_leave),
                 (b"dump", native_dump),
                 (b"dumped", native_dumped),
                 (b"mods", native_mods),
@@ -1271,6 +1272,27 @@ fn room_status() -> Option<LuaValue> {
                             LuaValue::string("id"),
                             LuaValue::string(&crate::lobby::hex(&member.player)),
                         ),
+                        (
+                            LuaValue::string("banner"),
+                            LuaValue::string(
+                                member.banner.as_ref().map_or("", |banner| banner.as_str()),
+                            ),
+                        ),
+                        (
+                            LuaValue::string("loading"),
+                            LuaValue::string(match member.loading {
+                                Some(LoadingStage::Fetching { .. }) => "fetching",
+                                Some(LoadingStage::Loading) => "loading",
+                                None => "",
+                            }),
+                        ),
+                        (
+                            LuaValue::string("percent"),
+                            LuaValue::Number(f64::from(match member.loading {
+                                Some(LoadingStage::Fetching { percent }) => percent.min(100),
+                                _ => 0,
+                            })),
+                        ),
                     ]),
                 )
             })
@@ -1413,6 +1435,30 @@ unsafe extern "C-unwind" fn native_say(l: State) -> c_int {
     // SAFETY: a C function's call has room for its results.
     unsafe {
         match said {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
+/// `leave()`: the player leaves the room from the game's Multiplayer
+/// window, as the launcher's Leave room does: the launcher takes it
+/// ([`crate::lobby::queue`]). `true`, or `false` and why not.
+unsafe extern "C-unwind" fn native_leave(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let left = crate::lobby::queue(LobbyAction::Leave);
+    // SAFETY: a C function's call has room for its results.
+    unsafe {
+        match left {
             Ok(()) => {
                 (api.pushboolean)(l, 1);
                 1
@@ -2068,6 +2114,20 @@ pub(crate) mod tests {
         })
     }
 
+    /// Leave room in the game's Multiplayer window goes to the launcher
+    /// as its own Leave room.
+    #[test]
+    fn leaving_from_the_game_goes_to_the_launcher() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        crate::lobby::reset();
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(lua.run("return tpf3mp_native.leave()"), Ok("true".into()));
+        assert_eq!(crate::lobby::take_actions(), vec![LobbyAction::Leave]);
+        crate::lobby::reset();
+    }
+
     /// The depot as the mod hands it over: metres and plain fractions.
     const DEPOT_TABLE: &str = "{ BuildConstruction = { \
         file = 'depot/road_depot_era_a.con', \
@@ -2539,11 +2599,15 @@ pub(crate) mod tests {
                     player: player(1),
                     name: Text::new("Julian").unwrap(),
                     connected: true,
+                    banner: Some(Text::new("dry").unwrap()),
+                    loading: None,
                 },
                 RoomMember {
                     player: player(2),
                     name: Text::new("Sam").unwrap(),
                     connected: false,
+                    banner: None,
+                    loading: Some(LoadingStage::Fetching { percent: 42 }),
                 },
             ])
             .unwrap(),
@@ -2559,9 +2623,9 @@ pub(crate) mod tests {
         });
         assert_eq!(
             lua.run(
-                "local s = tpf3mp_native.status()                  local out = { s.room, s.speed, s.diverged }                  for _, p in ipairs(s.players) do                      out[#out + 1] = p.name .. ':' .. tostring(p.connected) .. ':'                          .. tostring(p.owner) .. ':' .. tostring(p.me)                  end                  return table.concat(out, ' ')"
+                "local s = tpf3mp_native.status()                  local out = { s.room, s.speed, s.diverged }                  for _, p in ipairs(s.players) do                      out[#out + 1] = p.name .. ':' .. tostring(p.connected) .. ':'                          .. tostring(p.owner) .. ':' .. tostring(p.me) .. ':' .. p.banner                          .. ':' .. p.loading .. ':' .. p.percent                  end                  return table.concat(out, ' ')"
             ),
-            Ok("Sunday line 200 500 Julian:true:true:false Sam:false:false:true".into())
+            Ok("Sunday line 200 500 Julian:true:true:false:dry::0 Sam:false:false:true::fetching:42".into())
         );
         assert_eq!(
             lua.run(

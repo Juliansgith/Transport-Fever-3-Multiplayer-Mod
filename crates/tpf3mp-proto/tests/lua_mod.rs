@@ -197,6 +197,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
     assert_eq!(
         added,
         [
+            "tpf3mp.banners",
             "tpf3mp.bridge",
             "tpf3mp.capture",
             "tpf3mp.companies",
@@ -221,8 +222,9 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     lua.load(
         "HOOK.room = true \
          HOOK.status = { room = 'Sunday line', speed = 200, players = { \
-             { name = 'Julian', connected = true, owner = true, me = false }, \
-             { name = 'Sam', connected = true, owner = false, me = true } } } \
+             { name = 'Julian', connected = true, owner = true, me = false, banner = 'dry' }, \
+             { name = 'Sam', connected = true, owner = false, me = true, id = '0000002a', \
+               loading = 'fetching', percent = 42 } } } \
          HOOK.heard = { { from = 'Julian', text = 'the bus is late' } } \
          BAR = mount(loadPlugin()) BAR.step() BAR.render() \
          MODS = mount(loadPlugin(nil, 'Tpf3mpButton', 'MainModButtonAreaExtension')) \
@@ -237,25 +239,32 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     // The game bar: the room in one line, and a new chat line; the button
-    // in the mods' button area says the same new line; no window yet.
-    let (label, button, open): (String, String, bool) = lua
+    // in the mods' button area is the menu's Multiplayer glyph with the
+    // count of new lines; no window yet.
+    let (label, glyph, count, open): (String, String, String, bool) = lua
         .load(
-            "return views(BAR.layout)[1].params.content.params.text, \
-                    views(MODS.layout)[1].params.content.params.text, \
-                    WINDOWS.Tpf3mpWindow ~= nil",
+            "local b = views(MODS.layout) \
+             return views(BAR.layout)[1].params.content.params.text, b[2].params.path, \
+                    b[3].params.text, WINDOWS.Tpf3mpWindow ~= nil",
         )
         .eval()
         .unwrap();
     assert_eq!(label, "Multiplayer: Sunday line · 2/2 playing · 2x · 1 new");
-    assert_eq!(button, "Multiplayer (1)");
+    assert_eq!(glyph, "tpf3mp_1::/gui/tpf3mp/icons/menu_multiplayer_50.tga");
+    assert_eq!(count, "1");
     assert!(!open, "closed until a button is pressed");
     // The game bar's button opens the window in the game's window
-    // container: the room, its players, the chat.
-    let (title, texts): (String, Vec<String>) = lua
+    // container: the room page, its players with their banners and how far
+    // each is, Leave, and the chat.
+    let (title, texts, pictures): (String, Vec<String>, Vec<String>) = lua
         .load(
             "views(BAR.layout)[1].params.onClick() \
              WINDOWS.Tpf3mpWindow.step() \
-             return WINDOWS.Tpf3mpWindow.layout.params.title, texts()",
+             local pictures = {} \
+             for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                 if v.view == 'ImageView' then pictures[#pictures + 1] = v.params.path end \
+             end \
+             return WINDOWS.Tpf3mpWindow.layout.params.title, texts(), pictures",
         )
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
@@ -263,17 +272,25 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
     assert_eq!(
         texts,
         [
-            "Room: Sunday line",
-            "Speed: 2x",
-            "Worlds match",
-            "",
+            "Sunday line",
+            "Speed 2x · Worlds match",
             "Players",
-            "  Julian (host)",
-            "  Sam (you)",
-            "",
+            "Julian",
+            "Owner · Playing",
+            "Sam",
+            "You · Downloading 42%",
+            "Leave room",
             "Chat",
             "Julian: the bus is late",
             "Send"
+        ]
+    );
+    assert_eq!(
+        pictures,
+        [
+            "::/gui/menu/images/dry_ingame.tga",
+            // Sam's default, from the key 0x0000002a: 42 modulo 22 is 20, the 21st.
+            "::/gui/menu/images/loading_background_3.tga"
         ]
     );
     // What the player types goes to the room.
@@ -306,6 +323,31 @@ fn the_multiplayer_window_shows_the_room_and_sends_what_the_player_says() {
         .unwrap();
     assert_eq!(kept, "half typed");
     assert!(!resets, "the field keeps what was typed");
+    // Leave room asks first; Stay keeps the seat, Leave goes to the hook.
+    let (asked, stayed, left): (bool, u32, String) = lua
+        .load(
+            "local function button(label) \
+                 for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                     if v.view == 'Button' and v.params.content.params.text == label then return v end \
+                 end \
+             end \
+             button('Leave room').params.onClick() \
+             local asked = button('Leave') ~= nil and button('Leave room') == nil \
+             button('Stay').params.onClick() \
+             local stayed = HOOK.left or 0 \
+             button('Leave room').params.onClick() \
+             button('Leave').params.onClick() \
+             local out = {} \
+             for _, v in ipairs(views(WINDOWS.Tpf3mpWindow.render())) do \
+                 if v.view == 'TextView' and v.params.text:find('Leaving') then out[#out + 1] = v.params.text end \
+             end \
+             return asked, stayed, table.concat(out) .. '|' .. tostring(HOOK.left)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(asked, "asks first");
+    assert_eq!(stayed, 0, "Stay leaves nothing");
+    assert_eq!(left, "Leaving the room...|1");
     // The other button closes it, and opens it again; so does the window's
     // own close button.
     let (closed, reopened, closed_by_itself): (bool, bool, bool) = lua
@@ -481,6 +523,10 @@ tpf3mp_native = {
         HOOK.said[#HOOK.said + 1] = text
         return true
     end,
+    leave = function()
+        HOOK.left = (HOOK.left or 0) + 1
+        return true
+    end,
     -- A lane dump the hook asks for ({ step =, lanes = }), once; the
     -- entries go to HOOK.dumped as the hook writes them to its log.
     dump = function()
@@ -551,7 +597,7 @@ fn with_the_hook_the_gui_links_once() {
         "the GUI is linked|the guard is on 4 command factories|\
          the GUI's company cannot follow the player's: no api.engine.util.getPlayer (nil, nil)|\
          the company window shows the game's own rank only: the game's company progression did \
-         not load: fake_gui.lua:144: ug_require of an unknown path \
+         not load: fake_gui.lua:157: ug_require of an unknown path \
          /game_mechanics/company/company_progression_util.tl|\
          the line manager offers other companies' open stations (1 entity_util table(s))"
     );

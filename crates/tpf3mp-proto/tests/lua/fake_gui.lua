@@ -65,14 +65,27 @@ local builtin = { type = {
 	ScrollBarPolicy = { Simple = "Simple", AlwaysOff = "AlwaysOff" },
 } }
 function builtin.BoxLayout(params)
+	local children = params.children or {}
+	local n = 0
+	for k in pairs(children) do
+		if type(k) == "number" then n = math.max(n, k) end
+	end
+	for i = 1, n do assert(children[i] ~= nil, "a nil in a BoxLayout's children at " .. i) end
 	return { layout = "BoxLayout", params = params }
 end
 -- A view is a recipe the game has: called, it gives the node; its name
 -- says which recipe a wrapper wraps.
 for _, view in ipairs({ "TextView", "Button", "ScrollArea", "Component", "TextInputField", "Window",
-		"ColorChooserButton" }) do
+		"ColorChooserButton", "ImageView" }) do
 	builtin[view] = setmetatable({ viewName = view }, {
-		__call = function(_, params) return { view = view, params = params } end,
+		__call = function(_, params)
+			-- The game's rules: a picture names its file; a children list
+			-- has no holes.
+			if view == "ImageView" then
+				assert(type(params.path) == "string" and params.path ~= "", "an ImageView without a path")
+			end
+			return { view = view, params = params }
+		end,
 	})
 end
 

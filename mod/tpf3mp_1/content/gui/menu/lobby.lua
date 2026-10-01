@@ -29,6 +29,8 @@ local react = ug_require "::/gui/main/react.lua"
 local builtin = ug_require "::/gui/main/builtin.lua"
 local gui_react_util = ug_require "::/gui/main/gui_react_util.tl"
 local button_react_util = ug_require "::/gui/main/button_react_util.tl"
+-- The players' banners and loading words, shared with the game's window.
+local banners = ug_require "tpf3mp_1::/scripts/tpf3mp/banners.lua"
 
 local lobby = {}
 
@@ -555,49 +557,12 @@ end
 
 -- Banners ---------------------------------------------------------------------
 
--- The pictures players show in rooms: the server's set of banner ids
--- (tpf3mp_proto::BANNERS, in its order), each one of the game's own
--- pictures: its campaign's and climates' menu cards, the map editor's and
--- the mods', the main menu's and its loading screens.
-local BANNERS = {
-	{ "m01", "::/gui/menu/images/m01_ingame.tga" },
-	{ "m02", "::/gui/menu/images/m02_ingame.tga" },
-	{ "m03", "::/gui/menu/images/m03_ingame.tga" },
-	{ "m04", "::/gui/menu/images/m04_ingame.tga" },
-	{ "m05", "::/gui/menu/images/m05_ingame.tga" },
-	{ "m06", "::/gui/menu/images/m06_ingame.tga" },
-	{ "m07", "::/gui/menu/images/m07_ingame.tga" },
-	{ "m08", "::/gui/menu/images/m08_ingame.tga" },
-	{ "temperate", "::/gui/menu/images/temperate_ingame.tga" },
-	{ "subarctic", "::/gui/menu/images/subarctic_ingame.tga" },
-	{ "tropical", "::/gui/menu/images/tropical_ingame.tga" },
-	{ "dry", "::/gui/menu/images/dry_ingame.tga" },
-	{ "mapeditor", "::/gui/menu/images/mapeditor_ingame.tga" },
-	{ "mapeditor2", "::/gui/menu/images/mapeditor_ingame_2.tga" },
-	{ "mod01", "::/gui/menu/images/mod01_ingame.tga" },
-	{ "mod02", "::/gui/menu/images/mod02_ingame.tga" },
-	{ "main", "::/gui/menu/images/main.tga" },
-	{ "loadgame", "::/gui/menu/images/loadgame.tga" },
-	{ "loading1", "::/gui/menu/images/loading_background_1.tga" },
-	{ "loading2", "::/gui/menu/images/loading_background_2.tga" },
-	{ "loading3", "::/gui/menu/images/loading_background_3.tga" },
-	{ "loading4", "::/gui/menu/images/loading_background_4.tga" },
-}
+-- The pictures players show in rooms (tpf3mp/banners.lua, which the game's
+-- Multiplayer window shares).
+local BANNERS = banners.LIST
 lobby.BANNERS = BANNERS
-local BANNER_PATH = {}
-for _i, banner in ipairs(BANNERS) do BANNER_PATH[banner[1]] = banner[2] end
-
--- The banner a player shows: the one they picked, or one chosen from their
--- key (its first eight hex digits, modulo the set), the same in every
--- player's game.
-function lobby.bannerOf(member)
-	if member.banner and BANNER_PATH[member.banner] then return member.banner end
-	local n = tonumber(tostring(member.id or ""):sub(1, 8), 16) or 0
-	return BANNERS[(n % #BANNERS) + 1][1]
-end
-function lobby.bannerPicture(id)
-	return BANNER_PATH[id] or BANNERS[1][2]
-end
+lobby.bannerOf = banners.of
+lobby.bannerPicture = banners.picture
 
 -- A room member as a banner: a wide, short strip, one to a row of the
 -- players' column, with room at its right end for the owner's Remove.
@@ -632,17 +597,9 @@ local function pictureCard(picture, title, line, right, onClick, enabled, width,
 end
 lobby.pictureCard = pictureCard
 
--- Where a member's game is with the room's world: its download, its load,
--- then in the game; before the room starts, whether it is ready.
+-- Where a member's game is with the room's world (tpf3mp/banners.lua).
 function lobby.memberStage(member, playing)
-	if member.loading == "fetching" then
-		return string.format(_("Downloading %d%%"), math.floor(tonumber(member.percent) or 0))
-	elseif member.loading == "loading" then
-		return _("Loading...")
-	elseif playing then
-		return member.connected and _("Playing") or nil
-	end
-	return member.ready and _("Ready") or _("Not ready")
+	return banners.stage(member, playing, _)
 end
 
 -- A room member as a card: their banner, name, and what marks them.

@@ -173,8 +173,10 @@ function Link:results()
 end
 
 -- The room, for the Multiplayer window: { room =, speed =, diverged =,
--- players = { { name =, connected =, owner =, me = } } }, or nil before its
--- game.
+-- me_id =, players = { { id =, name =, connected =, owner =, me =, banner =,
+-- loading =, percent = } } }, or nil before its game. `banner` is empty for
+-- the player's default; `loading` is "fetching" (with `percent`),
+-- "loading" or empty.
 function Link:status()
 	local ok, status = pcall(self.native.status)
 	if not ok or type(status) ~= "table" then return nil end
@@ -194,6 +196,16 @@ function Link:say(text)
 	local ok, said, why = pcall(self.native.say, tostring(text))
 	if not ok then return nil, tostring(said) end
 	if said ~= true then return nil, tostring(why or "the hook did not take it") end
+	return true
+end
+
+-- Leaves the room, as the launcher's Leave room does: true, or nil and why
+-- not. A hook without leave (an older one) says so.
+function Link:leave()
+	if type(self.native.leave) ~= "function" then return nil, "this hook cannot leave from the game" end
+	local ok, left, why = pcall(self.native.leave)
+	if not ok then return nil, tostring(left) end
+	if left ~= true then return nil, tostring(why or "the hook did not take it") end
 	return true
 end
 

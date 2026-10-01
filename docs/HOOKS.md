@@ -748,8 +748,11 @@ for the table (`bridge.find`). Its contract is in
   `postUpdate`, after the batch's action `index` (from 1): whether it went,
   the entity it made, if any, and why not.
 - `tpf3mp_native.status()`: in the GUI: the room for the Multiplayer
-  window, `{ room =, speed =, diverged =, players = { { name =,
-  connected =, owner =, me = } } }`, or nil before the room's game. The
+  window, `{ room =, speed =, diverged =, me_id =, players = { { id =,
+  name =, connected =, owner =, me =, banner =, loading =, percent = } } }`,
+  or nil before the room's game. `banner` is the player's pick, empty for
+  their default; `loading` is `fetching` (with `percent`), `loading` or
+  empty (bridge version 18: `RoomMember::banner` and `loading`). The
   hook keeps what the room tells it (`Room`, `Speed`, `Diverged`), and
   forgets the divergence when a world loads (bridge version 9).
 - `tpf3mp_native.chat()`: in the GUI: what the room's members said since
@@ -757,6 +760,9 @@ for the table (`bridge.find`). Its contract is in
   at most. A world's GUI starts with none of the chat so far, so after
   `world()` the next call first gives the last 50 lines taken before
   again, with `old` set.
+- `tpf3mp_native.leave()`: in the GUI: the player leaves the room, as the
+  launcher's Leave room does: queued for the launcher as
+  `LobbyAction::Leave`, `true` or `false` and why.
 - `tpf3mp_native.say(text)`: in the GUI: says `text` (280 bytes at most,
   trimmed) to the room for the player, `true` or `false` and why; the step
   driver sends it (`Session::chat`) in the room's game only.

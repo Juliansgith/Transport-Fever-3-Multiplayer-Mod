@@ -95,11 +95,15 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
                     player: PlayerId(FixedBytes([1; 32])),
                     name: Text::new("Ann").unwrap(),
                     connected: true,
+                    banner: Some(Text::new("dry").unwrap()),
+                    loading: None,
                 },
                 RoomMember {
                     player: PlayerId(FixedBytes([2; 32])),
                     name: Text::new("Bo").unwrap(),
                     connected: false,
+                    banner: None,
+                    loading: Some(tpf3mp_proto::LoadingStage::Fetching { percent: 42 }),
                 },
             ])
             .unwrap(),

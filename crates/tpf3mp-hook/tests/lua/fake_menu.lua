@@ -228,6 +228,8 @@ local modules = {
 	["::/gui/main/gui_react_util.tl"] = gui_react_util,
 	["::/gui/main/button_react_util.tl"] = button_react_util,
 	["::/gui/menu/menu_icon_react_util.tl"] = menu_icon_react_util,
+	-- The mod's own module the window shares with the game's window.
+	["tpf3mp_1::/scripts/tpf3mp/banners.lua"] = assert(loadstring(BANNERS_SOURCE, "@banners.lua"))(),
 }
 function ug_require(path)
 	return assert(modules[path], "no module " .. path)

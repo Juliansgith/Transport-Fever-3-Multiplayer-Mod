@@ -1562,6 +1562,8 @@ fn room_info(room: &RoomView) -> RoomInfo {
             player: member.player,
             name: member.name.clone(),
             connected: member.connected,
+            banner: member.banner.clone(),
+            loading: member.loading,
         })
         .collect();
     RoomInfo {
