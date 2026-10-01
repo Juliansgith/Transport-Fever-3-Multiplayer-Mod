@@ -289,6 +289,27 @@ impl Link {
         (probe.agent_heartbeat() != before && probe.agent_pid() == pid).then_some(pid)
     }
 
+    /// Starts the link afresh in place, as [`Link::create`] does: both rings
+    /// emptied, a new [`Link::session`]. For the owner once its peer is gone
+    /// (the game closed), so the next peer to [`Link::open`] it reads
+    /// nothing meant for the last one: only the consumer may move a ring's
+    /// head, and a dead consumer never will.
+    pub fn reset(&self) {
+        self.layout.zero_header();
+        self.layout.write_fields(new_session());
+        match self.role {
+            Role::Hook => {
+                self.layout.set_hook_pid(std::process::id());
+                self.layout.set_hook_heartbeat(1);
+            }
+            Role::Agent => {
+                self.layout.set_agent_pid(std::process::id());
+                self.layout.set_agent_heartbeat(1);
+            }
+        }
+        self.layout.publish_magic();
+    }
+
     pub fn role(&self) -> Role {
         self.role
     }
@@ -420,6 +441,31 @@ mod tests {
         hook.send(b"to-agent").unwrap();
         assert_eq!(agent.recv_into(&mut buf).unwrap(), Some(8));
         assert_eq!(&buf[..8], b"to-agent");
+    }
+
+    /// What the owner sent a peer that is gone, unread, never reaches the
+    /// next peer once the owner resets the link; nor does what the old peer
+    /// left for the owner.
+    #[test]
+    fn a_reset_link_carries_nothing_of_the_last_peer() {
+        let name = unique_name("reset");
+        let agent = Link::create(&Config::new(name.clone()), Role::Agent).unwrap();
+        let old = Link::open(&name, Role::Hook).unwrap();
+        let before = agent.session();
+        agent.send(b"for the old game").unwrap();
+        agent.send(b"also for it").unwrap();
+        old.send(b"from the old game").unwrap();
+        drop(old);
+        agent.reset();
+        assert_ne!(agent.session(), before, "a new generation");
+        let mut buf = [0u8; 64];
+        assert_eq!(agent.recv_into(&mut buf).unwrap(), None);
+        let hook = Link::open(&name, Role::Hook).unwrap();
+        assert_eq!(hook.session(), agent.session());
+        assert_eq!(hook.recv_into(&mut buf).unwrap(), None, "nothing stale");
+        agent.send(b"hello").unwrap();
+        assert_eq!(hook.recv_into(&mut buf).unwrap(), Some(5));
+        assert_eq!(&buf[..5], b"hello");
     }
 
     #[test]

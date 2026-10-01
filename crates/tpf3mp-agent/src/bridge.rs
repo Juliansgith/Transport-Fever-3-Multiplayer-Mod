@@ -54,6 +54,10 @@ pub trait HookLink: Send {
     fn heartbeat(&mut self);
     /// The hook's heartbeat counter, which advances while it is alive.
     fn peer_heartbeat(&self) -> u64;
+    /// The game closed: whatever was queued for its hook, or left by it,
+    /// unread, is dropped, so the next game's hook reads the answer to its
+    /// own hello first. Links that keep nothing between games need not.
+    fn forget_unread(&mut self) {}
 }
 
 impl HookLink for tpf3mp_ipc::Link {
@@ -83,6 +87,12 @@ impl HookLink for tpf3mp_ipc::Link {
 
     fn peer_heartbeat(&self) -> u64 {
         tpf3mp_ipc::Link::peer_heartbeat(self)
+    }
+
+    fn forget_unread(&mut self) {
+        // The hook is gone, so nobody reads the agent's ring: started afresh,
+        // with a new generation (`Session::attach` and `follow` take it).
+        self.reset();
     }
 }
 

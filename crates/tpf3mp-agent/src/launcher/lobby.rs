@@ -314,13 +314,23 @@ impl<L: HookLink> IdleLink<L> {
     /// otherwise the launcher would go on showing a game attached, and its
     /// window would never offer to start the game again.
     pub(crate) fn given_back(link: L, build: Option<String>, game_runs: bool) -> Self {
+        let mut link = link;
+        if !game_runs {
+            // Nothing the room session queued for the closed game's hook
+            // reaches the next game's.
+            link.forget_unread();
+        }
         Self::resumed(link, build.filter(|_| game_runs))
     }
 
     /// The game that said hello on this link closed: the link waits for
-    /// the next one.
+    /// the next one, and drops what the closed game left unread (a lobby
+    /// sent while it was closing), so the next game's hook reads the answer
+    /// to its own hello first.
     pub(crate) fn forget_game(self) -> Self {
-        Self::new(self.link)
+        let mut link = self.link;
+        link.forget_unread();
+        Self::new(link)
     }
 
     /// The link and the game's build, for a room session to take over.
@@ -420,6 +430,10 @@ pub(crate) mod tests {
         fn peer_heartbeat(&self) -> u64 {
             0
         }
+        fn forget_unread(&mut self) {
+            self.to_hook.lock().unwrap().clear();
+            self.to_agent.lock().unwrap().clear();
+        }
     }
 
     fn hello() -> ToAgent {
@@ -476,6 +490,52 @@ pub(crate) mod tests {
             fake.hook_hears(),
             vec![ToHook::Lobby(Box::new(lobby("Ann B")))]
         );
+    }
+
+    /// The real link and the real hook session: the closed game left the
+    /// lobby unread on the link, and the next game's hook, saying hello,
+    /// reads the answer to it first (it refused the link before, "the agent
+    /// sent something before its hello").
+    #[test]
+    fn the_next_games_hook_hears_its_hello_first_after_a_game_closed_with_messages_unread() {
+        use std::time::{Duration, Instant};
+        let name = format!(
+            "test.lobby.closed.{}.{}",
+            std::process::id(),
+            Instant::now().elapsed().subsec_nanos()
+        );
+        let link = tpf3mp_ipc::Link::create(
+            &tpf3mp_ipc::Config::new(name.clone()),
+            tpf3mp_ipc::Role::Agent,
+        )
+        .unwrap();
+        let mut idle = IdleLink::new(link);
+        let attach = |name: String| {
+            std::thread::spawn(move || {
+                tpf3mp_bridge::Session::attach(&name, "40408", Duration::from_secs(5))
+            })
+        };
+        let serve = |idle: &mut IdleLink<tpf3mp_ipc::Link>, hook: std::thread::JoinHandle<_>| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !hook.is_finished() && Instant::now() < deadline {
+                idle.pump(&lobby("Ann")).unwrap();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            hook.join().unwrap()
+        };
+        // The first game: greeted; then it hangs and stops reading, and the
+        // lobby changes twice for it.
+        let first: Result<tpf3mp_bridge::Session, _> = serve(&mut idle, attach(name.clone()));
+        let first = first.unwrap();
+        idle.pump(&lobby("Ann B")).unwrap();
+        idle.pump(&lobby("Ann C")).unwrap();
+        // It closes, its messages unread.
+        drop(first);
+        let mut idle = idle.forget_game();
+        // The next game's hook says hello and hears it answered first.
+        let next: Result<tpf3mp_bridge::Session, _> = serve(&mut idle, attach(name));
+        assert!(next.is_ok(), "{:?}", next.err());
+        assert_eq!(idle.build(), Some("40408"));
     }
 
     #[test]
