@@ -3073,6 +3073,32 @@ must be equal; the first that differs says when the vehicle's own state
 split, or, when it never does before the decision, that what it ran into
 (another vehicle's claim or place) did.
 
+Round D (`ce52d45`, `TPF3MP_HOOK_WATCH_ENTITIES=217708`, cat's game the
+odd one) logged no `claim:` head line for 217708 at all: it is not in the
+land claim loop, whose contenders are the save's six trains (`n=6`, and
+the six vehicles of every `terminal decision` line). So 217708 is a road
+vehicle, a ship or an aircraft. Ships and aircraft keep the decision flag
+in their 0x238-byte movement component instead (`TransportVehicleSystem`
+reads `+0x1b8` for carrier 4, `+0xa0 == 3` or `+0xb0` for carrier 3;
+`ShipMoveSystem::Update2` sets `+0x1b8` at `0xaf779b`), and both systems
+claim space in their node list's own order (survey item 5, never fixed).
+Three more watcher lines, logging only:
+
+```
+watch: step <s> engine <n> vehicle <entity> transport <word> ...
+nodes: step <s> ships|aircraft n=<count> order=<fnv64> in entity order: yes|no[, first <ids>]
+nodes: step <s> ships|aircraft vehicle <entity> component <word> ...
+```
+
+The first, every visit of a watched entity in the platform loop: its
+whole `TransportVehicle` component (the first word is its carrier). The
+second, from each ship and aircraft `Update2`'s loop head
+(`ecs::ShipMoveSystem::Update2/node head` `0xaf644e`,
+`ecs::AircraftMoveSystem::Update2/node head` `0xa83ca7`), when the order of
+its node list changes: two games whose lines differ walk their ships or
+aircraft in different orders. The third, every update, a watched
+entity's movement component bit for bit.
+
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
 inherits it; a number above 1 is the interval, default 100 updates), three

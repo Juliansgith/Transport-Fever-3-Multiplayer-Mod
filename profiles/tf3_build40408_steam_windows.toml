@@ -647,6 +647,27 @@ offset = 0
 prologue = "88 4B 70 4B 8D 14 76"
 required = false
 
+# The ship and aircraft move systems' node watcher (crates/tpf3mp-hook/src/order.rs,
+# `nodes`), logging only. Each Update2 reloads its node list's begin every iteration
+# (`mov rax,[r14+8]; mov <reg>,[rax]`), then `add <reg>,rdx` (rdx the byte offset,
+# 16-byte records) and `mov <reg2>,[r14+0x10]`: those 7 bytes are stolen. Ships:
+# ecs::ShipMoveSystem::vf12 (0xaf6120) at 0xaf644e, the count at [rsp+0x188];
+# aircraft: ecs::AircraftMoveSystem::vf12 (0xa83a40) at 0xa83ca7, the count at
+# [rsp+0x1f8]. Nothing branches into either's stolen bytes past the first.
+[[target]]
+name = "ecs::ShipMoveSystem::Update2/node head"
+signature = "48 03 DA 49 8B 56 10 48 63 43 04 48 8D 0C 40"
+offset = 0
+prologue = "48 03 DA 49 8B 56 10"
+required = false
+
+[[target]]
+name = "ecs::AircraftMoveSystem::Update2/node head"
+signature = "48 03 FA 49 8B 46 10 48 63 57 04 48 C1 E2 04"
+offset = 0
+prologue = "48 03 FA 49 8B 46 10"
+required = false
+
 # transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
 [[target]]
 name = "transport::EdgeReservationManager::Reserve"
