@@ -431,6 +431,32 @@ replaces another, signals and waypoints stay refused.
   to the originator's. A stroke is held until the originator's own replay has
   applied, so the next part of the stroke is computed against the replayed
   heights.
+
+  **On Transport Fever 3** (build 40408, read from the binary, not yet seen
+  in the game) the same shape holds: the terrain tools (`UI::TerrainModifier`:
+  raise, lower, smooth, flatten, the heightmap brush), the painter and the
+  asset brush are `UI::ProposalAction`s that queue their `WorldBuildProposal`
+  from `ProposalAction::DoApply`, and tell game scripts nothing. The
+  proposal's `terrain.baseHeightMod` (at 0x2d8 of the `Proposal`) is a grid
+  `{ x0, y0, width, height; Vec2f cells }`, then the paint's material and
+  mask grids. The hook reads the height grid at the click (docs/HOOKS.md,
+  "Terraforming"); the GUI hands the room `Terraform` actions of it, the
+  cells' two values rounded to the millimetre, in bands of whole rows of
+  at most 4,096 cells; every game, the player's own included, arms the hook
+  with the grid and sends an empty `Proposal` as the player's build, which
+  the hook fills at its apply. So every game sets the same cells to the
+  same heights in the same update. What a stroke changes is carried, not
+  how the brush moved, so frame timing does not enter. TF3's tool is not
+  held between parts of a stroke as TPF2-MP's was: while the mouse is
+  down, the originator's tool computes against ground the room has not
+  changed yet. The lanes (`tpf3mp/lanes.lua`) do not read the terrain, so a
+  divergence in it alone is not caught at a checkpoint; INFERRED, TPF2's
+  lesson, that one shows soon after in the edges and constructions built
+  on it, which they do read.
+  It stays refused in a room until `tpf3mp/acceptance.lua`'s `terraform`
+  is turned on after a two-player game shows the same ground in every game
+  (COVERAGE.md); until then the GUI's sender and every game's replay
+  refuse it.
 - **Paint** is the material index and mask grids on the same path. The
   material texels are simulation data, not a graphics setting: a paint applied
   in the right place with the two games at different texture resolutions.
@@ -500,7 +526,7 @@ appended.
 | `EditLine` | a line and one change: rename, recolour, the whole line anew, or delete |
 | `AssignLine` | vehicles, the line or none, the first stop or none for the game's choice ("Next Reachable Stop") |
 | `PlaceStop` | a stop, waypoint or signal (`object`): the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, its construction, whether a stop is two-sided and whether a signal is one-way |
-| `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
+| `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height; on TF3 the corner is the first cell's index in the terrain's own grid times the cell size (4 m), and a stroke larger than 4,096 cells goes as several, a band of whole rows each. Gated off (`acceptance.lua`, `terraform`) |
 | `CompanyOp` | create, join, rename or delete a company |
 | `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
 | `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (sold there or not), reverse, depart, its colour |

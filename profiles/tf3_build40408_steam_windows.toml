@@ -148,6 +148,23 @@ offset = 18
 prologue = "E8"
 required = false
 
+# UI::ProposalAction::DoApply's call of CommandList::Add (0x549be5, in
+# 0x549ac0, whose lambda's RTTI names "UI::ProposalAction::DoApply(bool,
+# bool)"): `lea r9,[rsp+0x70]; mov r8,rax; lea rdx,[rsp+0x4e0]; mov rcx,rdi;
+# call Add`, after the factory 0x9ee860 made the command with
+# playerInitiated 1. The terrain tools (UI::TerrainModifier), the terrain
+# painter and the asset brush reach it, and only they (their vf17 tail-calls
+# DoApply); Add returns to this + 5 (0x549bea). The hook reads the
+# terraform's height grid there (crates/tpf3mp-hook/src/terrain.rs; found
+# with tpfre on this build: one match). Without it terraforming stays
+# refused.
+[[target]]
+name = "ProposalAction::DoApply/Add call"
+signature = "4C 8D 4C 24 70 4C 8B C0 48 8D 94 24 E0 04 00 00 48 8B CF E8 ?? ?? ?? ??"
+offset = 19
+prologue = "E8"
+required = false
+
 # Lua 5.2's C API, which the hook calls to give each Lua state the
 # `tpf3mp_native` table (HOOKS.md, "The Lua side"). luaB_print is found by its
 # own string; its calls name gettop, getglobal, pushvalue, callk, tolstring and

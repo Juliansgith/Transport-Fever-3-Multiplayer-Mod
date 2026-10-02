@@ -51,12 +51,20 @@
 //!   so far, or `nil` where the hook cannot take them to the room
 //!   ([`crate::builds`]).
 //! - `built(n)`: in the GUI: the build the module editor queued at click
-//!   `n`, read natively, as game scripts see a proposal; `nil` and why when
-//!   it did not read; `nil` when click `n` was not the module editor's
+//!   `n`, read natively, as game scripts see a proposal, or a terrain
+//!   tool's stroke as `{ terrain = grid }` ([`crate::terrain`]); `nil` and
+//!   why when it did not read; `nil` when click `n` was neither's
 //!   ([`crate::modules`]). Optional in the contract: a mod that does not
-//!   call it keeps the module editor refused.
+//!   call it keeps both refused.
 //! - `replaying(on)`: the game script begins or ends applying the room's
 //!   actions, whose builds the hook lets through ([`crate::builds`]).
+//! - `terrain(t)`: in a game script's `postUpdate`, while the room's actions
+//!   run: arms the next build it sends with the terraform `t` (`{ x0 =, y0
+//!   =, width =, height =, cells = { ... } }`), which the hook fills in at
+//!   the build's apply ([`crate::terrain`]). Returns `true`, or `nil` and
+//!   why. `terrain()` disarms, and answers whether a build was filled
+//!   (`nil` when none was armed). Optional in the contract: a hook without
+//!   it applies no terraform.
 //! - `applied(index, ok, entity, why)`: in a game script's `postUpdate`,
 //!   after applying the batch's action `index` (from 1): whether it went,
 //!   what it made, if anything, and why not. For one of the player's own,
@@ -669,6 +677,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"clicks", native_clicks),
                 (b"built", native_built),
                 (b"replaying", native_replaying),
+                (b"terrain", native_terrain),
                 (b"applied", native_applied),
                 (b"results", native_results),
                 (b"status", native_status),
@@ -1740,6 +1749,46 @@ unsafe fn number_arg(api: &LuaApi, l: State, index: c_int) -> Option<f64> {
     }
 }
 
+/// `terrain(t)`: arms the next build the room's actions send with the
+/// terraform `t`; `terrain()` disarms and answers whether a build was
+/// filled ([`crate::terrain`]).
+unsafe extern "C-unwind" fn native_terrain(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread; index 1 is
+    // the argument, if any; a C function's stack has LUA_MINSTACK free
+    // slots.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) == TNIL {
+            match crate::terrain::disarm() {
+                Some(filled) => (api.pushboolean)(l, c_int::from(filled)),
+                None => (api.pushnil)(l),
+            }
+            return 1;
+        }
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut nodes = 0;
+            let value = read(api, l, 1, 0, &mut nodes)?;
+            let grid = crate::terrain::Grid::from_lua(&value)?;
+            crate::terrain::arm(grid);
+            Ok::<(), String>(())
+        }))
+        .unwrap_or_else(|_| Err("reading the terrain grid failed".to_owned()));
+        match outcome {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushnil)(l);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
 /// `applied(index, ok, entity, why)`.
 unsafe extern "C-unwind" fn native_applied(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -2787,6 +2836,40 @@ my_timetables";
             lua.run("return tostring(tpf3mp_native.status())"),
             Ok("nil".into())
         );
+    }
+
+    #[test]
+    fn terrain_arms_a_checked_grid_and_disarming_says_whether_it_was_used() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let _armed = crate::terrain::TEST_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
+        assert_eq!(
+            lua.run(
+                "return tpf3mp_native.terrain({ x0 = -3, y0 = 4, width = 2, height = 1, \
+                 cells = { 101.5, 100, 102.25, 100 } })"
+            ),
+            Ok("true".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.terrain(nil)"),
+            Ok("false".into()),
+            "armed, and no build filled"
+        );
+        let refused = lua
+            .run(
+                "return tpf3mp_native.terrain({ x0 = 0, y0 = 0, width = 2, height = 1, \
+                 cells = { 1, 2, 3 } })",
+            )
+            .unwrap();
+        assert!(
+            refused.starts_with("nil|") && refused.contains("3 values"),
+            "{refused}"
+        );
+        assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
     }
 
     #[test]

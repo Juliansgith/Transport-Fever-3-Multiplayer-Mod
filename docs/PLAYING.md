@@ -401,8 +401,20 @@ protected folder such as Program Files.
   goes where your cursor is on the road. The road tools tab works too:
   tram tracks, bus lanes, noise barriers, trees along the road and the
   lock against the town's changes, and a road built through a stretch
-  with stops keeps them. Remove them, and roads and tracks, with the
-  bulldozer.
+  with stops keeps them. So do the track menu's tools: electrification,
+  a track's type and its decorations (seen with the road tools; the track
+  tools are not yet tried in a real game). Remove them, and roads and
+  tracks, with the bulldozer.
+- **Terraforming** (not in multiplayer yet: it is switched off until a
+  two-player game has shown it works; a stroke changes nothing, and the
+  hook's log says why). Once on: raise, lower, smooth and flatten the ground,
+  and the heightmap brush, as usual: every player's game reshapes the same
+  cells to the same heights, a moment after each stroke, and your company
+  pays. Your own game changes the ground only when the room's copy of a
+  stroke arrives, so while you hold the mouse down the brush works on the
+  ground as it was before your last strokes came back. A stroke of more
+  than 65,536 cells (a square about 1 km across) is refused. Painting the
+  ground and the asset brush (trees, rocks) are not in multiplayer yet.
 - **Town buildings.** Bulldoze a town's building as usual: every player's
   game removes the same building, a moment after your click; your company
   pays the demolition, and the town's opinion of it changes as in single

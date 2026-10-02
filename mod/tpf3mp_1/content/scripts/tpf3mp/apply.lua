@@ -809,6 +809,63 @@ function HANDLERS.BuildTrack(track)
 	return buildNetwork("Track", track.track, track.style, track.polyline)
 end
 
+-- An upgrade tool's build, said in the log once every game built it
+-- (tpf3mp/roads.lua upgradeSummary): the same line in every game.
+for _, name in ipairs({ "BuildRoad", "BuildTrack" }) do
+	local build = HANDLERS[name]
+	HANDLERS[name] = function(body)
+		local ok, why = build(body)
+		if ok == true then
+			local summarised, text = pcall(module("roads").upgradeSummary, { [name] = body })
+			if summarised and text then log("upgrade applied: " .. text) end
+		end
+		return ok, why
+	end
+end
+
+-- ------------------------------------------------------------ terraform
+--
+-- A terrain tool's stroke, as its height grid (tpf3mp/capture.lua,
+-- capture.terraform). A script cannot fill a proposal's height grid (Lua's
+-- GridVec2f has no setter, build 40408), so the hook does: the grid goes to
+-- the hook (apply.terrain, which the game script sets to the link's
+-- tpf3mp_native.terrain), then an empty proposal, the carrier, is sent as
+-- the player's build, paid by the player as the tool's is; the hook fills
+-- the carrier's height grid at its apply (crates/tpf3mp-hook/src/terrain.rs).
+-- Then the hook is disarmed, and the action fails unless the carrier was
+-- filled. No verdict first: the game's verdict reads the proposal as sent,
+-- empty.
+function HANDLERS.Terraform(t)
+	if type(apply.terrain) ~= "function" then error("this hook cannot apply a terraform", 0) end
+	local ok, resolution = pcall(function() return api.engine.terrain.getBaseResolution() end)
+	local cell = ok and resolution and (resolution.x or resolution[1])
+	if type(cell) ~= "number" or math.abs(cell - t.cell) > 1e-6 then
+		error("a grid of " .. tostring(t.cell) .. " m cells; this map's are " .. tostring(cell), 0)
+	end
+	local x0, y0 = t.origin.x / t.cell, t.origin.y / t.cell
+	if x0 ~= math.floor(x0) or y0 ~= math.floor(y0) then error("a grid that starts between cells", 0) end
+	local width = t.columns
+	local height = #t.cells / width
+	local values, low, high = {}, nil, nil
+	for i, c in ipairs(t.cells) do
+		values[2 * i - 1], values[2 * i] = c.target, c.before
+		low, high = math.min(low or c.target, c.target), math.max(high or c.target, c.target)
+	end
+	local armed, why = apply.terrain({ x0 = x0, y0 = y0, width = width, height = height, cells = values })
+	if armed ~= true then error("the hook would not take the grid: " .. tostring(why), 0) end
+	local context = api.type.Context.new()
+	context.player = company()
+	local sent, err = pcall(function()
+		return run(api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), context, true, true))
+	end)
+	local filled = apply.terrain(nil)
+	if not sent then error(err, 0) end
+	if filled ~= true then error("the hook filled no build with the grid", 0) end
+	log(string.format("terraform applied: %d by %d cells from cell (%d, %d), heights %.2f to %.2f m",
+		width, height, x0, y0, low or 0, high or 0))
+	return true
+end
+
 -- ---------------------------------------------------------------- stops
 --
 -- A stop is placed, or removed, as the stop tool and the bulldozer propose
