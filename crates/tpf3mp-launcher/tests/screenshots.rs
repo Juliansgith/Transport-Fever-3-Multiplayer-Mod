@@ -135,6 +135,7 @@ fn connected() -> State {
         connection: Connection::Connected,
         server_version: Some("0.1.0".into()),
         support_id: Some("S4TK9Q".into()),
+        log_session: Some("AB2CD3".into()),
         ..base()
     }
 }

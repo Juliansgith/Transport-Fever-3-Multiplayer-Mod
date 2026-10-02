@@ -184,6 +184,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             .unwrap(),
             room_mods_more: 0,
             rooms: None,
+            log_session: Text::new("K7QM2X").unwrap(),
         })),
     ];
     let to_agent = [
