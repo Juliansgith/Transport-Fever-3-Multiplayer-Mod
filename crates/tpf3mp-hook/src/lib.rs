@@ -59,6 +59,7 @@ pub mod roadtrace;
 pub mod scenario;
 pub mod seeds;
 pub mod step;
+pub mod stoptool;
 pub mod streettrace;
 pub mod terrain;
 pub mod ticks;

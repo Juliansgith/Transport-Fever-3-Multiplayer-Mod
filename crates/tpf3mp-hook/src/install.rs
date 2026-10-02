@@ -951,6 +951,11 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         (Ok(add), Ok(apply)) => {
             let module = at(crate::modules::MODULE_ADD_CALL).ok();
             let terrain = at(crate::terrain::DO_APPLY_ADD_CALL).ok();
+            // The stop tool takes its next click at once only where the
+            // profile finds both its call and its busy byte.
+            let stop = at(crate::stoptool::STOP_ADD_CALL)
+                .ok()
+                .filter(|_| at(crate::stoptool::STOP_BUSY_SET).is_ok());
             let junctions: Vec<Option<usize>> = crate::junctions::CALLS
                 .iter()
                 .map(|(name, _)| at(name).ok())
@@ -961,7 +966,15 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
             crate::junctions::enable(junction_layout);
             // SAFETY: as above.
             unsafe {
-                crate::builds::install(add, apply, module, terrain, &junctions, detour_forever)
+                crate::builds::install(
+                    add,
+                    apply,
+                    module,
+                    terrain,
+                    stop,
+                    &junctions,
+                    detour_forever,
+                )
             }
             .map(|()| {
                 let module = match module {
@@ -981,6 +994,14 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                                  stays refused"
                         .to_owned(),
                 };
+                let stop = match stop {
+                    Some(call) => format!(
+                        "the stop tool takes its next click at once where Add returns to {:#x}",
+                        call + 5
+                    ),
+                    None => "the profile has no stop tool call, so it waits for each                                  click's answer"
+                        .to_owned(),
+                };
                 let read = junctions.iter().filter(|call| call.is_some()).count();
                 let detail = if !junction_layout {
                     "the profile has no junction layout, so the junction tools stay refused"
@@ -992,7 +1013,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                         junctions.len()
                     )
                 };
-                format!("the build tools build through the room; {module}; {terrain}; {detail}")
+                format!(
+                    "the build tools build through the room; {module}; {terrain}; {stop};                      {detail}"
+                )
             })
             .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))
         }

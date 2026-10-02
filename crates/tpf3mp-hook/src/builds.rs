@@ -168,6 +168,9 @@ unsafe extern "C" fn add_detour(
 ) -> usize {
     let original = ADD_ORIGINAL.load(Ordering::Acquire);
     let return_address = take_return_address();
+    // The stop tool waiting on this click, freed once it is queued
+    // ([`crate::stoptool`]).
+    let mut stop_tool = None;
     if command != 0 && crate::lua::in_room() {
         // SAFETY: the game passes the command it adds, whose first field is
         // its payload.
@@ -187,6 +190,7 @@ unsafe extern "C" fn add_detour(
             crate::cmdkinds::note(kind, build, return_address);
         }
         if build {
+            stop_tool = crate::stoptool::before_add(return_address, callback);
             let click = CLICKS.fetch_add(1, Ordering::AcqRel);
             if crate::modules::is_module_editor(return_address) {
                 // Read before the game takes it: the command is the
@@ -207,7 +211,11 @@ unsafe extern "C" fn add_detour(
     // SAFETY: the trampoline of the add, called with the arguments the game
     // passed.
     let original: AddFn = unsafe { std::mem::transmute::<usize, AddFn>(original) };
-    unsafe { original(list, connection, command, callback, progress) }
+    let added = unsafe { original(list, connection, command, callback, progress) };
+    if let Some(tool) = stop_tool {
+        crate::stoptool::after_add(tool);
+    }
+    added
 }
 
 /// The build apply's signature: the dispatcher's context and the payload;
@@ -251,6 +259,7 @@ pub unsafe fn install(
     apply: usize,
     module_call: Option<usize>,
     terrain_call: Option<usize>,
+    stop_call: Option<usize>,
     junction_calls: &[Option<usize>],
     detour: unsafe fn(*mut u8, *const u8) -> Result<usize, String>,
 ) -> Result<(), String> {
@@ -259,6 +268,9 @@ pub unsafe fn install(
     }
     if let Some(call) = terrain_call {
         crate::terrain::set_call(call);
+    }
+    if let Some(call) = stop_call {
+        crate::stoptool::set_call(call);
     }
     for (index, call) in junction_calls.iter().enumerate() {
         if let Some(call) = call {
