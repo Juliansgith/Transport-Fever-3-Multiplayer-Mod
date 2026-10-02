@@ -52,6 +52,7 @@
         "scripts/tpf3mp/junctions.lua",
         "scripts/tpf3mp/hudguard.lua",
         "scripts/tpf3mp/lanes.lua",
+        "scripts/tpf3mp/modbuild.lua",
         "scripts/tpf3mp/modguard.lua",
         "scripts/tpf3mp/progression.lua",
         "scripts/tpf3mp/registry.lua",

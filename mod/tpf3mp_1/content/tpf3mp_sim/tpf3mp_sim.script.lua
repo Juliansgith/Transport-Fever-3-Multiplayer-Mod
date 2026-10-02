@@ -83,8 +83,12 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes, capture, registry, companies, progression =
-		false, nil, nil, nil, nil, nil, nil, nil
+	local tried, link, apply, lanes, capture, registry, companies, progression, modbuild =
+		false, nil, nil, nil, nil, nil, nil, nil, nil
+	-- Whether this state is applying the room's actions (in postUpdate);
+	-- the scripts' follow-up builds in the GUI's state, and whether their
+	-- wrapper is on there (tpf3mp/modbuild.lua).
+	local applying, followUps, followUpsOn = false, nil, false
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
 	local told, toldRegistry, toldOwnership = false, false, false
@@ -226,6 +230,35 @@ function data()
 		return { actions = actions, said = said, shape = "terrain tool" }
 	end
 
+	-- The builds scripts send from this, the game scripts' GUI state: in the
+	-- room's game, each goes to the room as the follow-up of this player's
+	-- build, or is stopped (tpf3mp/modbuild.lua). Put on once, from the
+	-- first guiUpdate with a link; guiUpdate runs in no other state.
+	local function followUpsInGui(l)
+		if followUpsOn then return end
+		followUpsOn = true
+		followUps = modbuild.tracker()
+		local okGuard, guardModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/guard.lua")
+		local okCmd, cmd = pcall(function() return api.cmd end)
+		local ok, why = nil, "api.cmd cannot be read"
+		if okCmd then
+			ok, why = modbuild.install(cmd, {
+				inRoom = function() return l:room() end,
+				applying = function() return applying end,
+				follows = function() return followUps.follows(l:note(modbuild.NOTE)) end,
+				clicks = function() return l:clicks() end,
+				keep = function(count, seen) snapshots[count] = seen end,
+				capture = function(shaped, network)
+					return capture[network == "Track" and "track" or "street"](shaped)
+				end,
+				callers = (okGuard and type(guardModule) == "table") and guardModule.callers or nil,
+				log = function(line) l:log(line) end,
+			})
+		end
+		l:log(ok and "scripts' builds from the game scripts' GUI state go to the room as their player's follow-ups"
+			or ("scripts' builds from the game scripts' GUI state are not guarded: " .. tostring(why)))
+	end
+
 	-- The guard on what this player's personal mods' game scripts send, in
 	-- this state (tpf3mp/modguard.lua): put on once the link is.
 	local PERSONAL_UNGUARDED = "personal-mods-unguarded"
@@ -318,7 +351,9 @@ function data()
 			local okRegistry, registryModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/registry.lua")
 			local okCompanies, companiesModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/companies.lua")
 			local okProgression, progressionModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/progression.lua")
+			local okModbuild, modbuildModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/modbuild.lua")
 			if okBridge and okApply and okLanes and okCapture and okRegistry and okCompanies and okProgression
+				and okModbuild and type(modbuildModule) == "table"
 				and type(companiesModule) == "table" and type(progressionModule) == "table" and type(bridge) == "table"
 				and type(applyModule) == "table" and type(lanesModule) == "table"
 				and type(captureModule) == "table" and type(registryModule) == "table" then
@@ -335,6 +370,7 @@ function data()
 				registry = registryModule
 				companies = companiesModule
 				progression = progressionModule
+				modbuild = modbuildModule
 				if link then
 					link:log("the game script is linked")
 					guardPersonalMods(companiesModule, registryModule)
@@ -467,6 +503,10 @@ function data()
 				-- The room's builds go through; the player's own the hook
 				-- stops.
 				if work.actions then l:replaying(true) end
+				applying = work.actions ~= nil
+				-- Whose build applied last: this player's or another's, for
+				-- the GUI's scripts' follow-ups (tpf3mp/modbuild.lua).
+				local lastBuild
 				for i, action in ipairs(work.actions or {}) do
 					-- Booked to the sender's company.
 					local player = work.origins and work.origins[i]
@@ -510,6 +550,10 @@ function data()
 						l:log("action " .. i .. " of this step made no " .. kind .. " this game could name")
 					end
 					l:applied(i, ok, entity, why)
+					if ok and modbuild.BUILDS[name] then
+						local status = l:status()
+						lastBuild = (status and status.me_id ~= nil and player == status.me_id) and "mine" or "other"
+					end
 					if not ok then
 						l:log("action " .. i .. " of this step was not applied: " .. tostring(why))
 					elseif name == "CompanyOp" then
@@ -523,6 +567,10 @@ function data()
 					end
 				end
 				if work.actions then l:replaying(false) end
+				applying = false
+				if lastBuild then
+					l:note(modbuild.NOTE, modbuild.noted(l:note(modbuild.NOTE), lastBuild == "mine"))
+				end
 				if work.monthly then
 					local ok, why = pcall(companies.chargeMonths, roster, work.monthly, apply.send, api)
 					if not ok then l:log("the companies' loans were not charged: " .. tostring(why)) end
@@ -666,6 +714,8 @@ function data()
 		guiUpdate = function(_params, _state, _guiState)
 			local l = linked()
 			if not l then return end
+			followUpsInGui(l)
+			if followUps then followUps.seen(l:note(modbuild.NOTE)) end
 			local clicks = l:clicks()
 			if clicks == nil then return end
 			if handled == nil then handled = clicks end
