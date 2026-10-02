@@ -1053,6 +1053,8 @@ pub(crate) mod tests {
         // The load never asks the progress monitor (the hook calls it only
         // while no load runs).
         assert_eq!(menu.run("return MONITOR"), Ok("0".into()));
+        assert_eq!(unsafe { serve("tpf3mp_room_7") }, Some(Served::Started));
+        assert_eq!(menu.run("return MONITOR"), Ok("0".into()));
         menu.run("FAIL = 'Game initialization is already active!'")
             .unwrap();
         assert_eq!(
@@ -1061,7 +1063,7 @@ pub(crate) mod tests {
                 "app.loadGame failed: Game initialization is already active!".into()
             ))
         );
-        assert_eq!(menu.run("return #LOADS"), Ok("1".into()));
+        assert_eq!(menu.run("return #LOADS"), Ok("2".into()));
         forget_all();
     }
 

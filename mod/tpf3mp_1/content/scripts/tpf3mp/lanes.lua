@@ -217,10 +217,36 @@ readers[lanes.VEHICLES] = function(api, emit, ids)
 		rows[#rows + 1] = row
 		if emit then
 			local pos = d and d.pathPos
+			local arrival = get(v, "arrivalStationTerminal")
+			local route = get(path, "path")
+			local detail = ""
+			if route then
+				local edges = get(route, "edges") or {}
+				local entries, nearby = {}, {}
+				local current = get(pos, "edgeIndex") or 0
+				for i = 1, math.min(#edges, 4096) do
+					local edge = edges[i]
+					local id = get(edge, "edgeId") or get(edge, 1)
+					local direction = get(edge, "dir")
+					if direction == nil then direction = get(edge, 2) end
+					local text = full(get(id, "entity")) .. "/" .. full(get(id, "index")) .. "/" .. tostring(direction)
+					entries[#entries + 1] = text
+					if i >= current - 1 and i <= current + 8 then nearby[#nearby + 1] = (i - 1) .. ":" .. text end
+				end
+				detail = " path_count=" .. #edges .. " path_hash=" .. hashStr(table.concat(entries, ";"))
+					.. " path_sampled=" .. #entries .. " path_near=" .. table.concat(nearby, ",")
+					.. " path_end=" .. full(get(route, "endOffset")) .. " decision_offset=" .. full(get(route, "terminalDecisionOffset"))
+					.. " end_param=" .. full(get(path, "endParam")) .. " end_pos=" .. full(get(path, "endPos"))
+					.. " blocked=" .. full(get(path, "blocked")) .. " move_state=" .. full(get(path, "state"))
+					.. " accel=" .. full(get(d, "accel")) .. " standing=" .. full(get(d, "timeStanding"))
+					.. " until_accel=" .. full(get(d, "timeUntilAccel")) .. " approaching=" .. tostring(get(d, "approachingStation"))
+			end
 			emit("vehicles", e, row, "state=" .. tostring(v and v.state) .. " stop=" .. tostring(v and v.stopIndex)
 				.. " line=" .. ids("lines", get(v, "line"), "line")
 				.. " edge=" .. full(pos and pos.edgeIndex) .. " pos=" .. full(pos and pos.pos)
-				.. " speed=" .. full(d and d.speed))
+				.. " speed=" .. full(d and d.speed)
+				.. " arrival=" .. full(get(arrival, "station")) .. "/" .. full(get(arrival, "terminal"))
+					.. " arrival_locked=" .. tostring(get(v, "arrivalStationTerminalLocked")) .. detail)
 		end
 	end
 	return summary(rows)

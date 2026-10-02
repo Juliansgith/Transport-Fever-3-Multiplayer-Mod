@@ -1362,6 +1362,7 @@ function HANDLERS.BuyVehicle(buy)
 		end)
 		error(tostring(data) .. (#facts > 0 and (" (" .. table.concat(facts, "; ") .. ")") or ""), 0)
 	end
+
 	local vehicle = madeBy("resultVehicleEntity", data, entities)
 	-- With more than one company, in its company's colour.
 	local roster = acting and acting.roster

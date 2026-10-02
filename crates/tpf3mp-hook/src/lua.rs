@@ -2155,7 +2155,13 @@ unsafe extern "C-unwind" fn native_note(l: State) -> c_int {
         let mut shared = shared();
         shared.notes.retain(|(k, _)| *k != key);
         if !value.is_empty() && key == PERSONAL_UNGUARDED && shared.notes.len() >= MAX_NOTES {
-            shared.notes.remove(0);
+            // These slots carry callbacks for already accepted commands.
+            // Keep them while admitting the personal-mod safety notice.
+            if let Some(index) = shared.notes.iter().position(|(key, _)| {
+                !matches!(key.as_str(), "tpf3mp.hud.tickets" | "tpf3mp.hud.answers")
+            }) {
+                shared.notes.remove(index);
+            }
         }
         if !value.is_empty() && shared.notes.len() < MAX_NOTES {
             shared.notes.push((key, value));
@@ -2569,12 +2575,14 @@ my_timetables";
         );
         let sim = Lua::new();
         sim.register();
+        sim.run("tpf3mp_native.note('tpf3mp.hud.tickets', '42') tpf3mp_native.note('tpf3mp.hud.answers', '42 1 123;')").unwrap();
         for i in 0..MAX_NOTES {
             sim.run(&format!("tpf3mp_native.note('k{i}', 'v')"))
                 .unwrap();
         }
         sim.run(&format!("tpf3mp_native.note('{PERSONAL_UNGUARDED}', '1')"))
             .unwrap();
+        assert_eq!(sim.run("return tpf3mp_native.note('tpf3mp.hud.tickets'), tpf3mp_native.note('tpf3mp.hud.answers')"), Ok("42|42 1 123;".into()));
         let plan = plan_mods(save).unwrap();
         assert_eq!(plan.mods, ["vehicles_pack", "tpf3mp_1"]);
         assert_eq!(plan.dropped, ["my_timetables"]);

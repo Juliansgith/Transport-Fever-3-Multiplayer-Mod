@@ -307,6 +307,11 @@ fn once(flag: &AtomicBool, message: &str) {
 }
 
 static UPDATE_HOOKED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the shared simulation-update detour is already installed.
+pub(crate) fn update_hooked() -> bool {
+    UPDATE_HOOKED.load(Ordering::Acquire)
+}
 static MISMATCH_LOGGED: AtomicBool = AtomicBool::new(false);
 static NO_API_LOGGED: AtomicBool = AtomicBool::new(false);
 static EXTRA_UPDATE_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -525,6 +530,9 @@ pub fn current_seed() -> Option<u32> {
 /// on the simulation thread): its step becomes the current one, for the
 /// script calls it runs.
 fn before_update() {
+    if crate::order::measure::enabled() {
+        crate::order::measure::update_begins();
+    }
     let step = lock(&BATCH).next_update();
     CURRENT_STEP.store(step.map_or(0, |step| step + 1), Ordering::Release);
     if step.is_none() && lock(&BATCH).count > 0 {

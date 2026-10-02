@@ -1953,8 +1953,10 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
         vehicles,
         [
             "lane 3 step 300 vehicle-0 state=1 stop=0 line=nil edge=3 pos=10.199999999999999 speed=5 \
+             arrival=nil/nil arrival_locked=nil \
              entity=401 row=1:0:3@10.20 v5.00",
-            "lane 3 step 300 vehicle-1 state=2 stop=1 line=nil edge=0 pos=0 speed=0 entity=402 \
+            "lane 3 step 300 vehicle-1 state=2 stop=1 line=nil edge=0 pos=0 speed=0 \
+             arrival=nil/nil arrival_locked=nil entity=402 \
              row=2:1:0@0.00 v0.00",
             &format!("lane 3 step 300 summary {}", read_lanes(&a)[3].1),
         ],
@@ -1999,6 +2001,81 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
         .unwrap();
     let none: Vec<String> = a.load("return HOOK.dumped").eval().unwrap();
     assert!(none.is_empty());
+}
+
+#[test]
+fn terminal_choices_and_locks_are_dumped_without_changing_the_vehicle_digest() {
+    let a = dumping_game(false);
+    let b = dumping_game(false);
+    a.load(
+        "WORLD[4][401].arrivalStationTerminal = { station = 0, terminal = 1 } \
+            WORLD[4][401].arrivalStationTerminalLocked = false",
+    )
+    .exec()
+    .unwrap();
+    b.load(
+        "WORLD[4][401].arrivalStationTerminal = { station = 0, terminal = 2 } \
+            WORLD[4][401].arrivalStationTerminalLocked = true",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(read_lanes(&a), read_lanes(&b));
+    let da = dump_at_checkpoint(&a, 50, "3");
+    let db = dump_at_checkpoint(&b, 50, "3");
+    let differences: Vec<_> = da.iter().zip(&db).filter(|(x, y)| x != y).collect();
+    assert_eq!(differences.len(), 1);
+    assert!(
+        differences[0]
+            .0
+            .contains(" arrival=0/1 arrival_locked=false ")
+    );
+    assert!(
+        differences[0]
+            .1
+            .contains(" arrival=0/2 arrival_locked=true ")
+    );
+}
+
+#[test]
+fn physical_paths_are_dumped_without_changing_the_vehicle_digest() {
+    let a = dumping_game(false);
+    let b = dumping_game(false);
+    for lua in [&a, &b] {
+        lua.load(
+            "WORLD[9][401].path = { edges = { \
+                { edgeId = { entity = 81, index = 2 }, dir = false }, \
+                { edgeId = { entity = 82, index = 0 }, dir = true } \
+              }, endOffset = 1.5, terminalDecisionOffset = 20 }",
+        )
+        .exec()
+        .unwrap();
+    }
+    b.load("WORLD[9][401].path.edges[2].edgeId.entity = 83")
+        .exec()
+        .unwrap();
+    assert_eq!(read_lanes(&a), read_lanes(&b));
+    let da = dump_at_checkpoint(&a, 50, "3");
+    let db = dump_at_checkpoint(&b, 50, "3");
+    let va = da.iter().find(|l| l.contains(" vehicle-0 ")).unwrap();
+    let vb = db.iter().find(|l| l.contains(" vehicle-0 ")).unwrap();
+    let field = |s: &str, key: &str| {
+        s.split_whitespace()
+            .find(|f| f.starts_with(key))
+            .unwrap()
+            .to_owned()
+    };
+    assert_ne!(field(va, "path_hash="), field(vb, "path_hash="));
+    assert!(va.contains(" path_count=2 "));
+    assert!(va.contains(" path_end=1.5 decision_offset=20 "));
+    // The real API uses named fields; the documented tuple form remains supported.
+    b.load(
+        "WORLD[9][401].path.edges = { \
+            { { entity = 81, index = 2 }, false }, \
+            { { entity = 82, index = 0 }, true } }",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(da, dump_at_checkpoint(&b, 50, "3"));
 }
 
 #[test]
@@ -8656,7 +8733,7 @@ fn in_the_huds_state_the_guard_carries_or_refuses_every_command() {
         .eval()
         .unwrap();
     assert_eq!(sold, Some(true));
-    assert_eq!(noted, None, "nothing waits any more");
+    assert_eq!(noted.as_deref(), Some("0"), "idle slot stays reserved");
 
     // The store's "buy onto a line": the buy goes to the room; told which
     // vehicle it bought once the registry names it, the store puts it on
@@ -8725,6 +8802,32 @@ fn in_the_huds_state_the_guard_carries_or_refuses_every_command() {
         ) && !logged.contains("a window that waits on what it made"),
         "{logged}"
     );
+    // A full queue refuses before sending another action. Every accepted
+    // command still receives its answer; none is evicted to make room.
+    lua.load(
+        r#"
+        local old = {}
+        for t = 1, #HOOK.commands do old[#old + 1] = { ticket = t, ok = false } end
+        ANSWER(old) FRAME() FRAME()
+        local before = #HOOK.commands
+        DONE = 0
+        for i = 1, HUD.MAX_PENDING + 1 do
+            api.cmd.sendCommand(api.cmd.makeVehicleSellCmd({ 5 }), function(_, ok)
+                assert(not ok); DONE = DONE + 1
+            end)
+        end
+        assert(#HOOK.commands == before + HUD.MAX_PENDING)
+        FRAME() FRAME()
+        assert(DONE == 1, 'only the refused extra command has answered')
+        local answers = {}
+        for t = before + 1, #HOOK.commands do answers[#answers + 1] = { ticket = t, ok = false } end
+        ANSWER(answers)
+        for i = 1, 10 do FRAME() ANSWER({}) end
+        assert(DONE == HUD.MAX_PENDING + 1, 'every accepted ticket must finish')
+    "#,
+    )
+    .exec()
+    .unwrap();
 }
 
 /// A road modifier's build, as the room orders it: the street 8-9 rebuilt in
@@ -10846,4 +10949,48 @@ fn the_game_scripts_gui_state_acts_for_the_players_company() {
         1,
         "once a state: {logged}"
     );
+}
+#[test]
+fn hud_answers_are_chunked_without_overwriting_unread_results() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(
+        r#"
+        local hud = ug_require('tpf3mp_1::/scripts/tpf3mp/hudguard.lua')
+        local link = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua').attach(tpf3mp_native)
+        local tickets, results = {}, {}
+        for i = 1, hud.MAX_PENDING do
+            local t = 8000000000000000 + i
+            tickets[i] = string.format('%.0f', t)
+            results[i] = { ticket = t, ok = true, entity = 8000000000000000 + i }
+        end
+        link:note(hud.TICKETS, table.concat(tickets, ','))
+        local first = hud.forward(link, results)
+        assert(first > 0 and first < #results, 'force multiple batches at the real note limit: ' .. first .. '/' .. #results .. ' tickets=' .. tostring(link:note(hud.TICKETS)))
+        local unread = link:note(hud.ANSWERS)
+        assert(#unread <= hud.NOTE_MAX)
+        assert(hud.forward(link, {}) == 0)
+        assert(link:note(hud.ANSWERS) == unread, 'unread answers must not be replaced')
+        local seen, count = {}, 0
+        while #tickets > 0 do
+            local batch = link:note(hud.ANSWERS)
+            assert(#batch <= hud.NOTE_MAX)
+            local n = 0
+            for t in batch:gmatch('(%d+) %d [%-%d]+;') do
+                assert(not seen[t], 'delivered twice')
+                seen[t] = true; count = count + 1; n = n + 1
+            end
+            assert(n > 0, 'queued results must continue without new incoming results')
+            local remaining = {}
+            for _, t in ipairs(tickets) do if not seen[t] then remaining[#remaining + 1] = t end end
+            tickets = remaining
+            link:note(hud.TICKETS, #tickets > 0 and table.concat(tickets, ',') or '0')
+            hud.forward(link, {})
+        end
+        assert(count == hud.MAX_PENDING)
+        assert(link:note(hud.ANSWERS) == '0')
+    "#,
+    )
+    .exec()
+    .unwrap();
 }

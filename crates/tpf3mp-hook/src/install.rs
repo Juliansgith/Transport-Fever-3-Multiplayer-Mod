@@ -202,17 +202,11 @@ fn menu_now_ms() -> u64 {
 fn menu_seen(menu: usize) -> MenuFrame {
     // SAFETY: DoStep's `this`, live, on its thread, after its frame.
     let world_loaded = unsafe { crate::menu::world_loaded(menu) };
-    // SAFETY: as above.
-    let engine_loading = unsafe { crate::menu::load_in_progress(menu) };
-    // A load the hook started counts from its start until its world's GUI
-    // starts, whatever the game's field says.
-    let loading = if lua::load_started() || engine_loading == Some(true) {
-        Some(true)
-    } else {
-        engine_loading
-    };
     let last_step_ms = LAST_STEP.load(Ordering::Acquire);
     let now_ms = menu_now_ms();
+    // Read the loader's future on its own thread, without Lua or its locks.
+    // SAFETY: DoStep's live receiver, on its thread.
+    let loading = unsafe { crate::menu::load_in_progress(menu) };
     let frame = crate::at_menu::Frame {
         now_ms,
         last_step_ms,
@@ -232,7 +226,9 @@ fn menu_seen(menu: usize) -> MenuFrame {
     }
     // The engine's player, read only, when asked (crate::probe).
     lines.extend(crate::probe::frame(menu, now_ms));
-    let lua_ok = loading == Some(false);
+    // No load may run, nor a frame inside another (dev's gate): the
+    // menu's Lua only then.
+    let lua_ok = crate::menu::outermost_frame() && !lua::load_started() && loading == Some(false);
     // Once per change; a load coming and going is one wait.
     let waiting = |seen: Option<Seen>| matches!(seen, Some(Seen::Loading | Seen::Closing));
     if sight.logged != Some(seen) && !(waiting(sight.logged) && waiting(Some(seen))) {
@@ -310,6 +306,22 @@ pub(crate) fn menu_frame(menu: usize) {
             }
             sight.held = held;
         }
+    }
+    // Fresh menus also run during loads. Unknown fields fail closed; a
+    // hook-started load remains busy until its GUI arrives or it fails.
+    if !lua_ok {
+        // The room's link is still read for its lobby (each player's
+        // loading progress), which takes no Lua and nothing of the game's.
+        if let Ok(mut guard) = DRIVER.try_lock()
+            && let Some(driver) = guard.as_mut()
+        {
+            driver.on_menu_loading();
+            lines.extend(driver.take_log());
+        }
+        for line in lines {
+            log_line(&line);
+        }
+        return;
     }
     if !seen.allows() || !crate::menu::available() {
         // Held back while the room's world loads: the room's link is still
@@ -1330,9 +1342,9 @@ mod tests {
         LAST_STEP.store(0, Ordering::Release);
         // The menu: no load runs (m_loadGameResult, its third word, clear);
         // whether a world is loaded, the hook cannot read here.
-        let cmenu = [0usize; 4];
+        let mut cmenu = [0usize; 4];
         crate::menu::set_load_field(16);
-        let at = cmenu.as_ptr() as usize;
+        let at = cmenu.as_mut_ptr() as usize;
 
         // No menu state yet: the menu does nothing (fail closed).
         menu_frame(at);
@@ -1341,6 +1353,23 @@ mod tests {
 
         assert_eq!(unsafe { crate::menu::adopt(menu.state()) }, Ok(true));
         // The lobby: nothing to load.
+        let before = crate::menu::tests::PCALLS.load(Ordering::SeqCst);
+        crate::menu::set_load_field(0);
+        menu_frame(at);
+        crate::menu::set_load_field(16);
+        unsafe {
+            std::ptr::write_volatile((at + 16) as *mut usize, 1);
+        }
+        menu_frame(at);
+        assert_eq!(
+            crate::menu::tests::PCALLS.load(Ordering::SeqCst),
+            before,
+            "unknown or active loads must never enter menu Lua"
+        );
+        assert!(!DRIVER.lock().unwrap().as_ref().unwrap().in_room());
+        unsafe {
+            std::ptr::write_volatile((at + 16) as *mut usize, 0);
+        }
         menu_frame(at);
         assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
         // The room begins and orders its save: the menu loads it.
@@ -1564,19 +1593,26 @@ mod tests {
         let calls = || crate::menu::tests::PCALLS.load(Ordering::SeqCst);
 
         // The game is loading something of its own when the room begins:
-        // the room's load waits, no Lua runs.
+        // the menu's work, the room's beginning and its load wait, no Lua
+        // runs.
         set(2, true);
         let before = calls();
         for _ in 0..4 {
             menu_frame(at);
         }
-        assert!(DRIVER.lock().unwrap().as_ref().unwrap().in_room(), "began");
+        assert!(
+            !DRIVER.lock().unwrap().as_ref().unwrap().in_room(),
+            "no menu work while the game loads"
+        );
         assert_eq!(calls(), before, "no Lua while the game loads");
         assert_eq!(menu.run("return #LOADS"), Ok("0".into()));
-        // Its load ends: the Multiplayer window closes, while the menu
-        // still runs, and the room's load starts, once.
+        // Its load ends: the room begins, the Multiplayer window closes,
+        // while the menu still runs, and the room's load starts, once.
         set(2, false);
-        menu_frame(at);
+        for _ in 0..3 {
+            menu_frame(at);
+        }
+        assert!(DRIVER.lock().unwrap().as_ref().unwrap().in_room(), "began");
         assert_eq!(menu.run("return CLOSED"), Ok("1".into()));
         assert_eq!(menu.run("return #LOADS"), Ok("1".into()));
         assert!(lua::load_started());

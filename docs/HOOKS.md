@@ -1049,8 +1049,9 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   target `UI::CMenuUI::DoStep/m_game test` (`0x6a01c0`, `cmp [rsi+0x6b0],
   r13`), and its displacement is the field's offset, which the menu's
   frame reads in the `CMenuUI` it is handed. A state given `app` while
-  `m_game` is set is the world's GUI's: the menu never loads from it, and
-  forgets it when the world closes.
+  `m_game` is set, or while a load runs (`m_loadGameResult` set, below), is
+  the world's GUI's: the menu never loads from it, and forgets it when the
+  world closes.
 - **Knows whether a load runs, without asking the game.** `DoStep` polls
   `CMenuUI::m_loadGameResult`, the future of a load under way, which it
   hands to `StartGame` when ready; that read is the optional profile
@@ -1063,12 +1064,11 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   menu's Lua (no load, no window close): the host's game hung on
   2026-09-30 when the frame asked the progress monitor (`getTask`) during
   a load, whose lock the loader holds while it runs frames. The chunk no
-  longer asks the progress monitor at all (dev's `busy()` check of it,
-  from #36, is left out of the merged chunk for this reason); before a
-  load it closes the lobby through the close the lobby leaves it
-  (`__tpf3mp_before_load`) and lets the menu draw one frame. A menu frame the game runs
-  inside its own `DoStep` (a nested frame, as a load's screen may run) is
-  left alone entirely; only the outermost frame does the menu's work.
+  longer asks the progress monitor at all; before a load it closes the
+  lobby through the close the lobby leaves it (`__tpf3mp_before_load`)
+  and lets the menu draw one frame. A menu frame the game runs inside its
+  own `DoStep` (a nested frame, as a load's screen may run) is left alone
+  entirely; only the outermost frame does the menu's work.
 - **Follows the room from the menu's frame.** `UI::CMenuUI::DoStep`
   (`0x6a0160`, the menu's per-frame update on the main thread) is
   detoured. After the game's own frame, the driver runs
@@ -1076,28 +1076,30 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   world, and a state of the menu's adopted on that thread is open
   (`crates/tpf3mp-hook/src/at_menu.rs`):
   - a game that has had no world up yet (never stepped, no world's GUI
-    started, `m_game` never set) is at its menu, loading or not;
+    started, `m_game` never set) is at its menu, but menu work still waits
+    until the native load field is known and clear;
   - a world loaded blocks, before its first step and while it stops
     stepping (saving the room's world, held for another player): an
     earlier rule of "no step for 2 s" took the room's session inside the
     owner's world and hung it, and the owner's menu frame once took it
     while saving the room's world before that world's first step (both
     measured 2026-09-30);
-  - after a world, the menu is back once `m_game` is clear and no load
-    runs (above) for 2 s with no step between. A load blocks: the GUI's
-    load stops the world first and loads after, and a moment without one
-    restarts the 2 s;
-  - after a world, a game whose `m_game` or `m_loadGameResult` the hook
-    cannot read (a target missing) is never taken for the menu (fail
-    closed).
+  - after a world, the menu is back once `m_game` is clear and the
+    native load field stays clear for 2 s with no step between. A load
+    blocks: the GUI's load stops the world first and loads after, and a
+    moment with a load restarts the 2 s;
+  - after a world, a game whose `m_game` the hook cannot read (the target
+    missing) or whose menu cannot say whether it loads is never taken for
+    the menu (fail closed): as before this rule, only a fresh game follows
+    the room from its menu.
 
-  In a fresh game `on_menu` runs through a load too (it only reads the
-  room's link), but the menu's Lua waits for a frame where no load runs.
-  A frame that holds the room back while the room's world loads still
-  reads the room's link (`StepDriver::on_menu_loading`; the session then
-  takes only the lobby and the room's end), so each player's loading
-  progress reaches the Multiplayer window; the load itself stays the
-  step's.
+  A frame where a load may run (the native field set or unknown, or a load
+  the hook started) runs neither `on_menu` nor the menu's Lua, in a fresh
+  game too. It, and a frame that holds the room back while the room's
+  world loads, still reads the room's link (`StepDriver::on_menu_loading`;
+  the session then takes only the lobby and the room's end), so each
+  player's loading progress reaches the Multiplayer window; the load
+  itself stays the step's.
 
   hook.log says where the menu sees the game on each change:
   `menu: a world is loaded (CMenuUI::m_game set)`, `menu: the world closed
@@ -1118,9 +1120,11 @@ checks are in `investigation/TPF3_MENU_JOIN_2026-09-30.md`):
   loading it from the menu, as the menu's own Load Game page does:
   `api.type.SavegameId.new()` with the name and the `savegame` namespace
   (`app.SaveGameNamespace.getSavegame()`), then `app.loadGame(id, false,
-  nil)`. It is started only on a frame where no load runs; while the
-  game reads the save's details it answers busy and is tried again on the
-  next such frame. Any other failure holds the world.
+  nil)`. A load the game is busy with already (its
+  native load future is set) is tried again on the next frame. Any
+  other failure holds the world. A hook-started load also blocks menu work
+  until its world GUI arrives or it fails. Nested menu frames do no hook
+  work; a missing load-field target refuses menu loading.
 - **Starts the world without Start Game.** The menu's pages call
   `app.setWaitForStartReadyGame()` before they load, which is what makes
   the loading screen wait for the player's Start Game
@@ -1377,6 +1381,16 @@ player's company, two clock ticks on. hook.log: `the guard is on N command
 factories in the HUD's state`, and each refusal there `... in the HUD's
 state: <why>`. Which windows render in that state is not known on build
 40408 beyond the store; the log says if any sends a command.
+
+The forwarding notes reserve their slots while idle. At most 24 commands
+wait for routing at once; another is refused before submission and can be
+retried. Answers are sent in batches of at most 512 bytes. Only the plugin
+writes the answer note; the HUD acknowledges a batch by removing its tickets.
+The plugin retains remaining answers and retries each frame, even without
+new results, instead of overwriting unread answers or dropping overflow.
+Vehicle parts with no load configuration use the store's first configuration
+for every model compartment. A partially specified set is refused before
+the engine buy command, with the expected and supplied compartment counts.
 
 Before the room begins, and after it ends, every command is sent as it
 would be, and every tool builds. A kind the room comes to carry is
@@ -2505,6 +2519,27 @@ read, and the room found no divergence over several checkpoints.
 
 #### Lane dumps
 
+Vehicle entries also include `arrival=<station-index>/<terminal-index>`
+and `arrival_locked=<bool>` from `TransportVehicle`, so a comparison can
+detect a different terminal choice before movement diverges. These are
+diagnostic fields only; they do not change the vehicle lane digest or the
+wire format. An unavailable field is printed as `nil`. When a `Path` is
+available, the dump also includes its physical edge count, an ordered hash
+of up to 4,096 edges (with the sampled count), nearby edge identities and
+directions, end and terminal-decision offsets, and movement/acceleration
+state. Different path lengths or decision offsets can expose route
+differences before movement diverges. Native edge indices are not portable:
+an industry rebuilt in a different order can give identical geometry
+different indices, so a path-hash mismatch alone is not proof of different
+physical routes. These fields are local diagnostics and never sent as actions.
+
+`TPF3MP_HOOK_TRACE_LINE=<native line entity>` additionally traces changes to
+that line's native route cache through `ecs::LineSystem::GetData/return`.
+It records terminals, edge counts, hashes of edge identity and direction
+(excluding padding), decision indices and invalid flags. The trace includes
+temporary engine contexts; compare simulation vehicle checkpoints before
+concluding that a cache read changed gameplay. It is disabled by default.
+
 A digest says *that* a lane differs, not which vehicle, line or edge, nor
 how. So after a divergence every game in the room writes the full text of
 the diverged lanes to its `hook.log`, entry by entry, at the same two
@@ -2831,8 +2866,30 @@ every thousandth step, and no mismatch line.
 
 ### The order fixes, as built
 
-Ported with the seeds, from the same commits; **not run in the game yet**
-either.
+Industry construction inputs also require stable ordering. Build 40408's
+base `industries/industryutil.lua` enumerates two string-keyed maps with
+`pairs`: `generatedData` for implicit terminals, and `generatedData.lanes.curves`
+for internal lanes. Different Lua hash orders can give a lane or terminal
+index a different physical meaning after an industry rebuild.
+
+The native Lua bytecode-cache lookup supplies a deferred wrapper for this
+base resource, including a construction worker's first load and cache hits.
+Intercepting only the loader body is insufficient: cache hits bypass it.
+The wrapper uses
+the game's original loader under a per-state recursion guard, then wraps
+`makeIndustryUpdateFn` with `industry_order.lua`. At each update the wrapper
+orders the input and then creates the original callback from that input,
+avoiding reliance on metatables surviving a worker transfer. Only the two input maps
+receive a sorted `__pairs` iterator; explicit terminal arrays and completed
+construction results are untouched. It neither changes global `pairs` nor
+writes to the game installation. The guard is cleared on load errors.
+Unknown map key types or pre-existing metatables are refused. Native
+validation and its current limits are recorded in
+`investigation/TPF3_ROAD_TERMINALS_2026-10-01.md`.
+
+The native collection fixes below were ported with the seeds, from the
+same commits. Their original static analysis follows; later real-game
+results are recorded in `investigation/TPF3_ROAD_TERMINALS_2026-10-01.md`.
 
 `crates/tpf3mp-hook/src/order.rs` ports the four order dependencies to
 TF3 Steam build 40408, from the static survey
@@ -3560,11 +3617,12 @@ update and lags it by one update after.
 
 **The measurement** (`order::measure`). Off, nothing is hooked. With
 `TPF3MP_HOOK_MEASURE_ORDER=1` in the launcher's environment (the game
-inherits it; a number above 1 is the interval, default 100 updates), three
-whole-function detours install: `ecs::Engine::Update` (`0x2bb8a50`, the
-per-step engine advance, one caller: `GameSim::Step`'s iteration loop;
-its `dt` rides in `xmm1`, which the detour's float parameter forwards)
-counts updates and closes each one's lanes, and the two `Reserve`
+inherits it; a number above 1 is the interval, default 100 updates),
+`ecs::Engine::Update` (`0x2bb8a50`, the per-step engine advance) counts
+updates and closes each one's lanes through the existing seeds hook.
+If that hook is absent, a measurement detour forwards the update's `dt`
+in `xmm1`. Sharing the installed hook avoids trying to detour an already
+modified prologue, which previously left measurements unclosed. The two `Reserve`
 overloads feed the `claims` lane. `EdgeUseManager::Add` and `AddRange`
 feed `appends` from the road entry fix's detours, which install while
 measuring even with that fix switched off. The fixes' sites feed the

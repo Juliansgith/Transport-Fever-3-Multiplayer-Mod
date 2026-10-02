@@ -83,6 +83,7 @@ const TARGETS: &[(&str, u64)] = &[
         0xb8bdb3,
     ),
     ("ecs::AircraftMoveSystem::Update2/node head", 0xa83ca7),
+    ("ecs::LineSystem::GetData/return", 0xad20f4),
     // The paused-tick fix (crates/tpf3mp-hook/src/ticks.rs).
     ("GameSim::Step/paused GameTime advance", 0x159412),
     ("CGameTime::Advance", 0xbace10),
@@ -118,6 +119,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("probe: GUI GameState getter", 0x6aa800),
     ("probe: engine GameState getter", 0x11ffd0),
     ("probe: ProposalStreetGraph::GetPlayerOwnedPtr", 0xa46cd0),
+    ("lua_cached_loadfile", 0x2fa8130),
 ];
 
 #[test]

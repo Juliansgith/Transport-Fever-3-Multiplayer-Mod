@@ -100,6 +100,7 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
         outcomes.extend(nodes::install(resolved));
     }
     outcomes.extend(measure::install(resolved, measuring));
+    outcomes.extend(route_trace::install(resolved));
     outcomes
 }
 
@@ -126,6 +127,114 @@ pub fn set_in_step(inside: bool) {
 /// Whether this thread is inside the game's step.
 pub fn in_step() -> bool {
     IN_STEP.with(|flag| flag.get())
+}
+
+/// Opt-in, read-only route-cache trace for reproducing terminal divergence.
+mod route_trace {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const SITE: &str = "ecs::LineSystem::GetData/return";
+    const EXPECTED: [u8; 9] = [0x48, 0x83, 0xc0, 0x18, 0x48, 0x83, 0xc4, 0x28, 0xc3];
+    static LINE: AtomicU64 = AtomicU64::new(u64::MAX);
+    static BROKEN: AtomicBool = AtomicBool::new(false);
+    static SEEN: Mutex<BTreeMap<i32, String>> = Mutex::new(BTreeMap::new());
+
+    pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
+        let Some(line) = std::env::var("TPF3MP_HOOK_TRACE_LINE")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+        else {
+            return Vec::new();
+        };
+        LINE.store(u64::from(line), Ordering::Release);
+        let result = resolved
+            .get(SITE)
+            .ok_or_else(|| "profile has no route trace site".to_owned())
+            .and_then(|site| {
+                // SAFETY: a checked return site, installed before worlds run.
+                unsafe { Splice::install(site.address as *mut u8, &EXPECTED, 8, hook) }
+                    .map(|s| {
+                        let _kept = std::mem::ManuallyDrop::new(s);
+                    })
+                    .map_err(|e| e.to_string())
+            });
+        vec![Outcome {
+            fix: "route-trace",
+            installed: result.is_ok(),
+            reason: result
+                .err()
+                .unwrap_or_else(|| format!("line {line}, cache changes only")),
+        }]
+    }
+
+    fn vector(probe: &mut Probe, at: u64, stride: u64, max: u64) -> Option<(u64, u64)> {
+        let start: u64 = probe.read(at)?;
+        let end: u64 = probe.read(at.checked_add(8)?)?;
+        let bytes = end.checked_sub(start)?;
+        if !bytes.is_multiple_of(stride) || bytes / stride > max {
+            return None;
+        }
+        if bytes > 0 && !probe.readable(usize::try_from(start).ok()?, usize::try_from(bytes).ok()?)
+        {
+            return None;
+        }
+        Some((start, bytes / stride))
+    }
+
+    fn describe(at: u64) -> Option<String> {
+        let mut p = Probe::new();
+        let (sections, n) = vector(&mut p, at, 24, 4096)?;
+        let mut out = Vec::new();
+        for s in 0..n {
+            let (paths, count) = vector(&mut p, sections + s * 24, 0xe8, 4096)?;
+            for i in 0..count {
+                let path = paths + i * 0xe8;
+                let terminals: [i32; 4] = p.read(path)?;
+                let (edges, len) = vector(&mut p, path + 0x10, 12, 65536)?;
+                let mut hash = Fnv1a::new();
+                for e in 0..len {
+                    let id: [u8; 8] = p.read(edges + e * 12)?;
+                    let dir: u8 = p.read(edges + e * 12 + 8)?;
+                    hash.write(&id);
+                    hash.write(&[dir]);
+                }
+                // ComputeTerminalDecisionIndices writes this signed index;
+                // FindPathToStop1 consumes it when attaching a vehicle path.
+                let decision: i32 = p.read(path + 0x90)?;
+                let invalid: u8 = p.read(path + 0xbc)?;
+                out.push(format!(
+                    "{s}/{i}:{terminals:?}:{len}/{:016x}:decision={decision}:invalid={invalid}",
+                    hash.0
+                ));
+            }
+        }
+        Some(out.join(";"))
+    }
+
+    unsafe extern "system" fn hook(regs: *mut SavedRegs) {
+        guarded("route-trace", &BROKEN, || {
+            // SAFETY: the splice holds its register block for this callback.
+            let regs = unsafe { &*regs };
+            if regs.rdx as u32 as u64 != LINE.load(Ordering::Acquire) {
+                return;
+            }
+            let line = regs.rdx as u32 as i32;
+            let description = regs
+                .rax
+                .checked_add(0x18)
+                .and_then(describe)
+                .unwrap_or_else(|| "unreadable cache shape".into());
+            let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+            if seen.get(&line) != Some(&description) {
+                log::line(&format!(
+                    "route cache: step={:?} line={line} {description}",
+                    crate::seeds::current_step()
+                ));
+                seen.insert(line, description);
+            }
+        });
+    }
 }
 
 /// Reads a plain value from the game's memory, only if it is readable (the
@@ -3703,7 +3812,7 @@ pub mod measure {
 
     /// The engine advances one update: the previous one's lanes close, and
     /// every `interval` updates they go to the log.
-    pub(super) fn update_begins() {
+    pub(crate) fn update_begins() {
         let closed = UPDATE.fetch_add(1, Ordering::AcqRel);
         let interval = INTERVAL.load(Ordering::Acquire).max(1);
         if closed == 0 || !closed.is_multiple_of(interval) {
@@ -3809,6 +3918,19 @@ pub mod measure {
             ),
         ];
         for (name, detour, original) in targets {
+            // Seeds owns the update prologue in normal games. Its callback
+            // closes these measurements too; installing another detour on
+            // the same prologue would fail and leave the lanes unclosed.
+            if name == ENGINE_UPDATE && crate::seeds::update_hooked() {
+                outcomes.push(Outcome {
+                    fix: FIX,
+                    installed: true,
+                    reason: format!(
+                        "{name} is measured through the shared seeds hook, every {interval} updates"
+                    ),
+                });
+                continue;
+            }
             let Some(target) = resolved.get(name) else {
                 outcomes.push(Outcome {
                     fix: FIX,

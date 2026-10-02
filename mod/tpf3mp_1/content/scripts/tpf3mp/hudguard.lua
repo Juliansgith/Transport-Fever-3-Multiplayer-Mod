@@ -115,6 +115,11 @@ hudguard.TICKETS = "tpf3mp.hud.tickets"
 hudguard.ANSWERS = "tpf3mp.hud.answers"
 -- The longest note the hook keeps (crates/tpf3mp-hook/src/lua.rs).
 hudguard.NOTE_MAX = 512
+-- Reserve room for every issued ticket (up to 16 digits plus a comma).
+-- Refuse before issuing another command, never discard an accepted one.
+hudguard.MAX_PENDING = 24
+local outgoing = {}
+local lastAnswers = nil
 
 local function clock()
 	local ok, t = pcall(function() return os.clock() end)
@@ -136,48 +141,48 @@ end
 
 local function writeTickets(link)
 	local list = {}
-	for i, t in ipairs(tickets) do list[i] = string.format("%d", t) end
+	for i, t in ipairs(tickets) do list[i] = string.format("%.0f", t) end
 	local text = table.concat(list, ",")
-	-- The hook keeps no longer note: the oldest waits are given up.
-	while #text > hudguard.NOTE_MAX and #tickets > 0 do
-		link:log("the HUD's state waits on too many answers: ticket " .. string.format("%d", tickets[1])
-			.. "'s window is not told")
-		table.remove(tickets, 1)
-		table.remove(list, 1)
-		text = table.concat(list, ",")
-	end
-	link:note(hudguard.TICKETS, text)
+	assert(#text <= hudguard.NOTE_MAX, "HUD ticket capacity exceeded")
+	link:note(hudguard.TICKETS, text ~= "" and text or "0")
 end
 
 -- In the plugin's state, which alone reads the room's answers
 -- (link:results()): passes on to this state the answers to its commands,
 -- as "ticket ok entity;" in a note. Returns how many it passed on.
 function hudguard.forward(link, results)
-	if type(results) ~= "table" or #results == 0 then return 0 end
 	local wanted = parseTickets(link:note(hudguard.TICKETS))
-	local lines = {}
-	for _, r in ipairs(results) do
+	local keep, known = {}, {}
+	for _, r in ipairs(outgoing) do
+		if wanted[r.ticket] then keep[#keep + 1] = r; known[r.ticket] = true end
+	end
+	outgoing = keep
+	for _, r in ipairs(results or {}) do
 		if type(r) == "table" and type(r.ticket) == "number" and wanted[r.ticket] then
-			lines[#lines + 1] = string.format("%d %d %s", r.ticket, r.ok == true and 1 or 0,
-				type(r.entity) == "number" and string.format("%d", r.entity) or "-")
+			if not known[r.ticket] then outgoing[#outgoing + 1] = r; known[r.ticket] = true end
 		end
 	end
-	if #lines == 0 then return 0 end
-	local text = (link:note(hudguard.ANSWERS) or "") .. table.concat(lines, ";") .. ";"
-	if #text > hudguard.NOTE_MAX then
-		link:log("the HUD's state's answers do not fit the note (" .. #text .. " bytes): "
-			.. #lines .. " answer(s) lost, their windows are not told")
-		return 0
+	-- Only the plugin writes ANSWERS. The HUD acknowledges a batch by
+	-- removing its tickets, avoiding a cross-state read/clear race.
+	for t in (link:note(hudguard.ANSWERS) or ""):gmatch("(%d+) %d [%-%d]+;") do
+		if wanted[tonumber(t)] then return 0 end
 	end
-	link:note(hudguard.ANSWERS, text)
-	return #lines
+	local text, count = "", 0
+	for _, r in ipairs(outgoing) do
+		local line = string.format("%.0f %d %s;", r.ticket, r.ok == true and 1 or 0,
+			type(r.entity) == "number" and string.format("%.0f", r.entity) or "-")
+		if #text + #line > hudguard.NOTE_MAX then break end
+		text, count = text .. line, count + 1
+	end
+	link:note(hudguard.ANSWERS, text ~= "" and text or "0")
+	return count
 end
 
 -- The answers the plugin's state passed on, taken once.
 local function takeAnswers(link)
 	local text = link:note(hudguard.ANSWERS)
-	if text == nil or text == "" then return {} end
-	link:note(hudguard.ANSWERS, "")
+	if text == nil or text == "0" or text == lastAnswers then return {} end
+	lastAnswers = text
 	local out = {}
 	for ticket, ok, entity in text:gmatch("(%d+) (%d) ([%-%d]+);") do
 		out[#out + 1] = { ticket = tonumber(ticket), ok = ok == "1", entity = tonumber(entity) }
@@ -252,6 +257,14 @@ function hudguard.install(cmd, link, api, where)
 	local refusals = {}
 	local label = where or "the HUD's state"
 	local routed = type(link.native) == "table" and type(link.native.note) == "function"
+	if routed then
+		-- Keep both slots reserved even while idle; no accepted command
+		-- should depend on finding a free note slot after it ran.
+		for _, key in ipairs({ hudguard.TICKETS, hudguard.ANSWERS }) do
+			if link:note(key) == nil then link:note(key, "0") end
+			if link:note(key) == nil then routed = false end
+		end
+	end
 	local context = hudguard.context(api)
 	local named = { vehicles = context.vehicle, lines = context.line }
 	local function sees(entity, kind)
@@ -265,6 +278,9 @@ function hudguard.install(cmd, link, api, where)
 	local wrapped, why = guard.install(cmd, {
 		inRoom = function() return link:room() end,
 		command = function(action)
+			if routed and #tickets >= hudguard.MAX_PENDING then
+				return nil, "waiting for the room's answers; try again shortly"
+			end
 			local ok, ticket = link:command(action)
 			if not ok then return nil, ticket end
 			if routed and type(ticket) == "number" then
