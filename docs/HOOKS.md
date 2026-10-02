@@ -956,6 +956,25 @@ stands still meanwhile:
   well report itself in between. Then `Session::loaded(next_step)`, and
   the room's steps run on. A world not up within `LOAD_PATIENCE` (600 s)
   is held.
+- **Cleaning up.** Each game's copies carry its process id, so every game
+  played would leave a whole world behind (`tpf3mp_room_<pid>.sav`, and a
+  `tpf3mp_<pid>_<event>.sav` whose save failed or was never moved). The
+  hook removes those of games no longer running
+  (`crate::worlds::sweep`): when it starts, after it copies a room's
+  world in, and after a save it moved out. It fails closed:
+  - only files named exactly `tpf3mp_room_<pid>.sav`,
+    `tpf3mp_<pid>_<event>.sav` or the `.jpg` beside either (decimal
+    numbers as the hook writes them, no leading zero, same case), never
+    a folder or a link: every other save, the player's, stays;
+  - never this game's own, `<pid>` its own: its `tpf3mp_room_<pid>.sav`
+    is the world it is loading or plays, replaced by the next load;
+  - never another running game's, two games on one PC sharing the
+    folder: a process the hook cannot ask about counts as running.
+
+  Nothing needs an older copy: every load, a rejoin's, a resume's or a
+  late join's, copies the world the agent fetched from the room in
+  afresh. The Multiplayer window does not offer these copies as a world
+  to start a room from.
 - **The folder** is Steam's for the account playing,
   `<Steam>/userdata/<account>/3493540/local/save`, from the registry
   (Steam's `SteamPath` and `ActiveProcess\ActiveUser`), or else the one
