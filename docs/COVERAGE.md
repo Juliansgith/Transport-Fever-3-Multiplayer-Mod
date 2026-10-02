@@ -73,6 +73,6 @@ The station-access decision is recorded in D22; other proposed policies remain u
 ## Compatibility
 
 This selected combination is distinct from both the previous `dev` and PR #37:
-protocol **15**, bridge **22**, action schema **24**. Update launcher, hook,
+protocol **16**, bridge **23**, action schema **24**. Update launcher, hook,
 mod and relay together before release. Older peers must fail version checks;
 this branch is not compatible with the currently deployed relay until upgraded.

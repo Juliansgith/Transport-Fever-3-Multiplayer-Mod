@@ -1105,10 +1105,10 @@ Rejected:
 - **Listing without the invite, joining by room id**: a second way into a
   room beside the invite, for the same result.
 
-## D27 (2026-10-02, *proposed*): a shared mod's follow-up build goes to the room from its player's game
+## D27 (2026-10-02, owner-approved for integration): a shared mod's follow-up build goes to the room from its player's game
 
-*Proposed for the owner (Juliansgith) to decide; not in force until
-approved.* The user asked on 2026-10-02 to get their mods Parallel Tracks
+*Approved for integration by the owner on 2026-10-02 when authorizing the
+new PRs to be merged alongside telemetry.* The user asked on 2026-10-02 to get their mods Parallel Tracks
 and Auto Signals working in a room, as a pull request to TPF3-MP. It
 answers, for builds, the question PLAN.md (Part 3) leaves open for the
 team: "a rule for mods that send commands from the GUI".

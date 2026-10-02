@@ -48,7 +48,8 @@ Rules:
   Merging one creates a commit that no check has seen and skips the stage
   before. Open pull requests into `dev` if you want a review; promote with
   the fast-forwards below.
-- Feel free to modify decisions and chart different paths to design in prs to the git, be Free!
+- Contributors may freely propose decision changes and alternative designs in
+  pull requests. Explain the trade-offs; the owner decides whether to adopt them.
 
 ### What GitHub enforces
 

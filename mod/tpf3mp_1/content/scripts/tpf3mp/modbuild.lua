@@ -1,6 +1,6 @@
 -- tpf3mp/modbuild.lua -- the builds a script sends from the game scripts'
 -- GUI state, in the room's game (docs/HOOKS.md, "Scripts' follow-up
--- builds"; proposed D27).
+-- builds"; D27).
 --
 -- Some mods build after the player builds: Parallel Tracks lays tracks
 -- beside the one drawn, Parallel Roads roads. They hear the build in their

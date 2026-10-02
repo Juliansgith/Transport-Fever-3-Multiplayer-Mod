@@ -334,8 +334,7 @@ Dev B:
   player's game sends them: forwarded, the room gets one city per player;
   dropped, the worlds differ. *Proposed (D25, for the owner):* such a mod is
   personal; the guard carries what the room carries and refuses the rest,
-  in every game alike ([MODS.md](MODS.md)). *Proposed (D27, for the
-  owner), for builds a shared mod sends after the player builds (Parallel
+  in every game alike ([MODS.md](MODS.md)). *Added (owner-approved D27), for builds a shared mod sends after the player builds (Parallel
   Tracks, Parallel Roads):* the follow-up of a player's build goes to the
   room from that player's game alone; every other game's is stopped
   (`tpf3mp/modbuild.lua`). Built for new streets and tracks; signals and
