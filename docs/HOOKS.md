@@ -764,12 +764,20 @@ for the table (`bridge.find`). Its contract is in
   tools" below).
 - `tpf3mp_native.built(n)`: in the GUI: the build the module editor
   queued at click `n`, read by the hook, as game scripts see a proposal,
-  once; `nil` and why when it did not read; `nil` when click `n` was not
-  the module editor's ("The module editor" below). An optional function:
-  the bridge's version stays 9, and a mod or hook without it keeps the
-  module editor refused.
+  once, or a terrain tool's stroke as `{ terrain = grid }`; `nil` and why
+  when it did not read (a terrain tool's reason starts `terrain tool: `);
+  `nil` when click `n` was neither's ("The module editor" and
+  "Terraforming" below). An optional function: the bridge's version stays
+  9, and a mod or hook without it keeps both refused.
 - `tpf3mp_native.replaying(on)`: the game script begins or ends applying
   the room's actions, whose builds the hook lets through.
+- `tpf3mp_native.terrain(t)`: in the game script's `postUpdate`, while the
+  room's actions run: arms the next build it sends with the terraform grid
+  `t` (`{ x0 =, y0 =, width =, height =, cells = { ... } }`), which the
+  hook fills in at that build's apply; `true`, or `nil` and why.
+  `terrain()` disarms and answers whether a build was filled (`nil` when
+  none was armed). Optional, as `built`: without it no terraform applies
+  ("Terraforming" below).
 - `tpf3mp_native.applied(index, ok, entity, why)`: in the game script's
   `postUpdate`, after the batch's action `index` (from 1): whether it went,
   the entity it made, if any, and why not.
@@ -1821,8 +1829,9 @@ builds it, paid by the player (`Context.player`) and clearing town
 buildings in its way (`gatherBuildings`), as the tool builds; without a
 context the game builds for free.
 
-Five tools build through the room so far, the module editor through the
-hook, and a construction's window its edits:
+Six tools build through the room so far, the module editor and the
+terrain tools through the hook ("Terraforming" below, gated off), and a
+construction's window its edits:
 
 - **The construction tool** (`constructionBuilder`): a proposal of one
   construction (a station, a depot, anything the tool places) becomes a
@@ -2081,6 +2090,36 @@ is the edge rebuilt in place, and every game's build gives it the objects
 of the edge it replaces under their own entities (`engine.keptInPlace`,
 `networkInto`); a stop moved onto another edge is refused. The same rule
 lets the road and track tools build through an edge with a stop on it.
+
+A track's catenary and type travel the same way, as far as the game's
+scripts say (build 40408's `construction_react_util.tl`: the
+electrification tool, the track upgrade and the track decorations are
+`TrackEdgeModifier`s, as the street ones are `StreetEdgeNodeModifier`s,
+and every such tool is the GUI's `streetTrackModifier`): the track
+template is the type, and catenary is the lanes' `ELECTRIC_TRAIN` mode, as
+a tram track is the road lanes' `TRAM_TRACK` (`TransportMode`, 0 to 15).
+INFERRED, not yet seen in the game: that the track tools' proposals have
+the street tools' shape and reach game scripts.
+
+Each upgrade is said in `hook.log`: in the player's game when it is handed
+to the room, and in every game, the player's included, once built, the
+same text everywhere (`roads.upgradeSummary`: what every rebuilt edge has
+after it, not what it had):
+
+```
+handed the player's build to the room [+e-1/0:8(...)>9(...) -e100:8(...)>9(...)]
+upgrade handed to the room: street upgrade of 1 edge(s) rebuilt in place; template ::/street/standard/town_medium_new.lua; 4 lane(s) carrying PERSON CAR BUS TRUCK TRAM ELECTRIC_TRAM TRAM_TRACK ELECTRIC_TRAM_TRACK; lane speeds 13.89 to 13.89; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0
+building +e-1/0:8>9 ::/street/standard/town_medium_new.lua -e100 -n -c8,9
+upgrade applied: street upgrade of 1 edge(s) rebuilt in place; template ...; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0
+```
+
+(the template, modes and speeds illustrative), and for an electrified
+track `track upgrade of N edge(s) rebuilt in place; template ...; M
+lane(s) carrying TRAIN ELECTRIC_TRAIN; ...`. A game whose build fails says
+`action 1 of this step was not applied: ...` instead of `upgrade
+applied`, and the room's check of the lanes (the network lane reads every
+edge's template) finds it.
+
 ### Junction tools
 
 Build 40408's native lane/crosswalk tools do not emit a Lua proposal preview.
@@ -2160,6 +2199,88 @@ and malformed memory. These tests do not launch the game and do not
 complete the playtest above. AGENTS.md currently prohibits automated game
 launches/modifications; a human must run this check or explicitly override
 that restriction before an agent runs it.
+
+### Terraforming
+
+The terrain tools (raise, lower, smooth, flatten and the heightmap brush,
+`UI::TerrainModifier`), the terrain painter and the asset brush tell game
+scripts nothing on build 40408. All three are `UI::ProposalAction`s
+(their `vf17` tail-calls `ProposalAction::DoApply`, 0x549ac0), which makes
+a `WorldBuildProposal` with `playerInitiated` 1 (the factory 0x9ee860's
+seventh argument, stored at payload + 0x3d2) and queues it with its one
+call of `CommandList::Add` (0x549be5, profile target
+`ProposalAction::DoApply/Add call`). So the click was counted and its
+apply stopped as every player's build is, and a stroke in the room's game
+changed nothing: "no proposal seen".
+
+The add's detour reads a click whose call returns to 0x549bea
+(`crates/tpf3mp-hook/src/terrain.rs`): the payload's `Proposal`, which
+must change nothing but its height grid. `Proposal.terrain` is at 0x2d8
+(`RegisterUsertypesTransport`, 0x22c1ab0, binds `terrain` there and
+`ProposalTerrain.baseHeightMod` at its start); the `Proposal`'s
+destructor (0x48ee90) frees three grids there, `{ x0, y0, width, height;
+data }` of 0x28 bytes each: the heights (`Vec2f` cells), the paint's
+materials (bytes) and its mask (words). A grid whose cell count is not
+width times height, a cell that is not finite, more than 65,536 cells, a
+street part, a construction (the asset brush), or paint (the painter) is
+refused with why. The grid is kept for the click like the module
+editor's, as `{ terrain = { x0, y0, width, height, cells = { v1, w1, ...
+} } }`, a reason as `terrain tool: ...`. The GUI takes it with `built(n)`
+and hands the room `Terraform` actions (`capture.terraform`): the first
+cell's index times the cell size (`api.engine.terrain.getBaseResolution`,
+4 m) as the corner, the columns, every cell's two values in millimetres,
+in bands of whole rows of at most 4,096 cells (the largest fits the
+48 KiB payload at any heights).
+
+Every game, the player's own included, applies a `Terraform` in its game
+script (`tpf3mp/apply.lua`): it checks the map's cell size, arms the hook
+with the grid (`tpf3mp_native.terrain(t)`, optional in the bridge
+contract), sends an empty `api.type.Proposal` as the player's build
+(`makeWorldBuildProposalCmd(proposal, context, true, true)`, paid by the
+acting company), and disarms (`terrain()`, which answers whether a build
+was filled). While the room's actions run, the apply's detour fills the
+next build with the armed grid: it must be an empty proposal (every list
+and the three grids zero), the cells go into a vector of the game's own
+heap (the UCRT's `malloc`, which the game's `operator new` calls, with
+MSVC's 32-byte alignment and the block's address before the data for
+4 KiB or more, as its `operator delete` expects), and the grid's header is
+set. A script cannot fill it: Lua's `GridVec2f` has `width`, `height`,
+`x0`, `y0` and `at`, no setter. A carrier that is not empty is answered
+false; a grid nobody filled fails the action in every game.
+
+INFERRED, not yet seen in the game: the order of a grid's four integers
+(TPF2's), that the cells go row by row, that the apply sets the heights
+from the grid alone, so every game gets the same ground, that an empty
+`api.type.Proposal` reaches the apply with its grids empty, and that the
+tool's click is one `DoApply` per stroke part. The lanes do not read the
+terrain (`tpf3mp/lanes.lua`).
+
+What `hook.log` says, in the player's game:
+
+```
+terraform: click 12 queued 18 by 17 cells from cell (-212, 455), 241 changed, heights 104.20 to 109.85 m
+terraform handed to the room: 18 by 17 cells of 4 m from cell (-212, 455), 241 changed, heights 104.20 to 109.85 m
+```
+
+and in every game, the player's included, when it applies:
+
+```
+terraform: filled the room's carrier with 18 by 17 cells from cell (-212, 455), 241 changed, heights 104.20 to 109.85 m
+terraform applied: 18 by 17 cells from cell (-212, 455), heights 104.20 to 109.85 m
+```
+
+(the numbers illustrative; a stroke cut in bands says `(part i of n)`).
+The `Terraform` action, and so terraforming, is gated: it stays refused in
+a room until `tpf3mp/acceptance.lua`'s `terraform` is turned on after a
+two-player game shows the same ground in every game (COVERAGE.md). With it
+off, the hook still reads a stroke at its click, but the GUI's sender
+refuses the actions (`terraform awaits two-player game acceptance`), and
+so would every game's replay; nothing is armed and no carrier is filled.
+
+The painter's and the asset brush's clicks are stopped with
+`terrain tool: click N cannot go to the room: terrain paint: the room
+does not carry it yet` (or `the asset brush: ...`), and the GUI's
+`stopped a build the room cannot carry: terrain tool: ...`.
 
 ### The world's lanes
 

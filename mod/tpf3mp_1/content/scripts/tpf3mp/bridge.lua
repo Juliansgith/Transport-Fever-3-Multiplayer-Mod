@@ -30,11 +30,16 @@
 --                                   -- in the room's game so far, or nil where
 --                                   -- the hook cannot take them to the room
 --     built   = function(n),        -- optional; in the GUI: the build the
---                                   -- module editor queued at click n, as
---                                   -- game scripts see a proposal | nil, why
---                                   -- | nil (not the module editor's)
+--                                   -- module editor or a terrain tool queued
+--                                   -- at click n, as the hook read it | nil,
+--                                   -- why | nil (neither's)
 --     replaying = function(on),     -- the game script applies the room's
 --                                   -- actions (true) or is done (false)
+--     terrain = function(t),        -- optional; while the room's actions run:
+--                                   -- arms the next build sent with the
+--                                   -- terraform grid t -> true | nil, why;
+--                                   -- terrain() disarms -> whether a build
+--                                   -- was filled | nil (none armed)
 --     applied = function(i, ok, entity, why), -- in a game script's postUpdate:
 --                                   -- what became of the batch's action i
 --     results = function(),         -- in the GUI: what became of the player's
@@ -374,6 +379,17 @@ end
 -- The game script begins (true) or ends applying the room's actions.
 function Link:replaying(on)
 	pcall(self.native.replaying, on == true)
+end
+
+-- While the room's actions run: arms the next build sent with the terraform
+-- grid `grid` (true, or nil and why), or with nil disarms, answering whether
+-- a build was filled (nil when none was armed). A hook without `terrain` (it
+-- is optional) applies no terraform.
+function Link:terrain(grid)
+	if type(self.native.terrain) ~= "function" then return nil, "this hook cannot apply a terraform" end
+	local ok, result, why = pcall(self.native.terrain, grid)
+	if not ok then return nil, "the hook refused: " .. tostring(result) end
+	return result, why
 end
 
 -- Whether the room's game runs. A hook that cannot say is taken to say yes:

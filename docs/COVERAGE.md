@@ -45,13 +45,20 @@ file is part of the installed-mod fingerprint.
 ## Deliberately excluded
 
 - Automatic creation of competitive companies.
-- Additional native terraforming and track-upgrade hooks.
 - Alternate simulation-buffer and world-loading experiments.
 - The expanded scenario runner and notification/discard additions.
 
 Station access per company (`CompanyOp::StationAccess`, action schema 23)
 came in afterwards on its own. It extends D22, which is still proposed:
 the owner decides whether per-company access belongs in it.
+
+Terraforming and the track upgrade tools came in afterwards on their own:
+the hook reads a terrain tool's stroke at its existing `CommandList::Add`
+detour (one more optional profile target, no new detour) and fills the
+room's carrier at its existing apply detour; the `Terraform` action stays
+refused, sending and replaying, behind `acceptance.lua`'s `terraform`
+until a two-player game shows the same ground. The track tools travel as
+`BuildTrack`, as the road modifiers do, and each upgrade is logged.
 
 The existing junction gate remains off pending its own game acceptance.
 No owner decision in PLAN.md or DECISIONS.md is changed by this integration.

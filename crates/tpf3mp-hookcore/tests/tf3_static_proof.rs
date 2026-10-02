@@ -28,6 +28,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("CommandList::Add", 0x9d29c0),
     ("WorldBuildProposal apply", 0x9e1160),
     ("ModuleBuilder::MousePressed/Add call", 0x543b25),
+    ("ProposalAction::DoApply/Add call", 0x549be5),
     ("BaseNodeConfig/field offsets", 0x1768337),
     ("StreetProposal/node configuration offsets", 0x22c395f),
     ("BaseNodeConfig/crosswalk set layout", 0xa4990d),
