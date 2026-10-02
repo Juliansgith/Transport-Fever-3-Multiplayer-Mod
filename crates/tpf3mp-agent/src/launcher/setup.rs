@@ -188,7 +188,9 @@ pub struct LauncherArgs {
     pub game_build: Option<String>,
 
     /// The game's program, when it is not found in the folder Steam
-    /// installed the game in.
+    /// installed the game in. Its folder is then the game's, with the
+    /// build Steam records for it when it is in a Steam library (under
+    /// Proton, not the native Linux game Steam may list).
     #[arg(long)]
     pub game_exe: Option<PathBuf>,
 
@@ -292,7 +294,7 @@ impl LauncherArgs {
     /// on first use), with the server and name remembered from last time
     /// where none are given, and the game's content and worlds.
     pub fn config(&self) -> Result<LauncherConfig> {
-        let installed = steam::find(steam::TRANSPORT_FEVER_3);
+        let installed = steam::find_game(self.game_exe.as_deref());
         let identity_file = identity_path(self.identity.as_deref())?;
         let identity = Arc::new(Identity::load_or_create(&identity_file)?);
         // Next to the identity: the same player's last server and name.

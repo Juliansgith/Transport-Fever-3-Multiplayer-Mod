@@ -492,6 +492,10 @@ function progression.follow(stateOf, require_)
 	if not ok or type(util) ~= "table" or type(util.getCompanyProgressionState) ~= "function" then
 		return false, "the game's company progression did not load: " .. tostring(util)
 	end
+	-- Once a module table: another of the GUI's states sharing it changed
+	-- it already.
+	if util.tpf3mpRanks then return true end
+	util.tpf3mpRanks = true
 	local original = util.getCompanyProgressionState
 	util.getCompanyProgressionState = function(entity, ...)
 		local read, mine = pcall(function() return progression.view(stateOf(), entity) end)

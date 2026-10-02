@@ -376,7 +376,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (D17): sent whenever it changes, before, during and after a room's
     game; only the newest counts (bridge version 9). Since bridge version
     10 it also carries the rules the server offers, the player's saves
-    (newest 40, by name) and the one offered first (`start_save`), where
+    (newest 40, by name; since version 22 the newest 100, the player's
+    own only: no `autosave_…` or `tpf3mp_…` copies) and the one offered
+    first (`start_save`), where
     the room's world is in this game (`world`: none, fetching with its
     bytes, loading, playing) and how the game differs from the room's.
     Since bridge version 14 it carries the page of the server's public
@@ -956,11 +958,37 @@ stands still meanwhile:
   well report itself in between. Then `Session::loaded(next_step)`, and
   the room's steps run on. A world not up within `LOAD_PATIENCE` (600 s)
   is held.
+- **Cleaning up.** Each game's copies carry its process id, so every game
+  played would leave a whole world behind (`tpf3mp_room_<pid>.sav`, and a
+  `tpf3mp_<pid>_<event>.sav` whose save failed or was never moved). The
+  hook removes those of games no longer running
+  (`crate::worlds::sweep`): once its save folder is resolved, after it copies a room's
+  world in, and after a save it moved out. It fails closed:
+  - only files named exactly `tpf3mp_room_<pid>.sav`,
+    `tpf3mp_<pid>_<event>.sav` or the `.jpg` beside either (decimal
+    numbers as the hook writes them, no leading zero, same case), never
+    a folder or a link: every other save, the player's, stays;
+  - never this game's own, `<pid>` its own: its `tpf3mp_room_<pid>.sav`
+    is the world it is loading or plays, replaced by the next load;
+  - never another running game's, two games on one PC sharing the
+    folder: a process the hook cannot ask about counts as running.
+
+  Nothing needs an older copy: every load, a rejoin's, a resume's or a
+  late join's, copies the world the agent fetched from the room in
+  afresh. The Multiplayer window does not offer these copies as a world
+  to start a room from.
 - **The folder** is Steam's for the account playing,
-  `<Steam>/userdata/<account>/3493540/local/save`, from the registry
-  (Steam's `SteamPath` and `ActiveProcess\ActiveUser`), or else the one
-  account with a save folder for the game. Without one, a load holds the
-  world and a save is reported failed.
+  `<Steam>/userdata/<account>/3493540/local/save`, found when first
+  needed and then kept. First as Steam's API in the game names it
+  (`ISteamUser::GetUserDataFolder` through the game's `steam_api64.dll`),
+  which works under Proton too, where the registry names Proton's
+  stand-in for Steam, without accounts' folders. Else under Steam's
+  folders: the registry's (`SteamPath`, `ActiveProcess\ActiveUser`),
+  Program Files', and under Proton the Steam client's that Proton names
+  (`STEAM_COMPAT_CLIENT_INSTALL_PATH`, through drive `Z:`), for the account
+  playing or else the one account with a save folder for the game. The
+  hook's log says which. Without one, a load holds the world and a save
+  is reported failed, with why for both ways.
 
 #### Loading from the main menu
 
@@ -1392,6 +1420,27 @@ state, which the game saves with the world:
   colour, and the HUD takes only a layout from the recipe ("Recipe child
   must be a layout"). The game's log says what became of the markers
   (`[tpf3mp] company markers: ...`).
+- *Capitals.* Build 40408 crowns one town on the map, the player's
+  capital: the town label's recipe (`town_hud_react_util.TownHudIcon`)
+  asks `town_util.isCapital(town)`, true for the town closest to
+  `getPlayer()`'s PLAYER `headquarters`, and gives that label the class
+  `capital-city` (blue, `hud_icon_master.css.lua`) and a crown; nothing
+  else in the GUI asks it. `gui/tpf3mp/capitals.res.lua`, a
+  `react-replacement-config`, in each GUI Lua state that renders recipes
+  and never in the simulation's, while the room has more than one company:
+  has `isCapital` answer true for every live company's capital as well
+  (each company's PLAYER `headquarters` and its closest town, read again
+  every 10 seconds, `tpf3mp/capitals.lua`), and replaces `TownHudIcon`
+  with a recipe that calls the game's inside a layout of its own, with a
+  line under it, "Capital of Rival" ("... and Pals" when two share a
+  town), and, for a capital not the viewer's company's, the class
+  `tpf3mp-capital-<n>` of that company's palette colour (the nearest for
+  a colour of its own); `gui/tpf3mp/tpf3mp.css.lua` colours the label's
+  tile and line in it in place of the game's blue. The viewer's own
+  capital keeps the game's blue, as it is the company `getPlayer()`
+  answers there (*The GUI's company*). The game's log says what became of
+  it (`[tpf3mp] capitals: ...`), including how many capitals each state
+  read: none where a state cannot read the companies' PLAYER.
 - *The GUI's company.* TF3's windows ask `api.engine.util.getPlayer()`
   whose money to show and what is the player's own ("Foreign" otherwise).
   In the GUI state the mod replaces it (a callable table on build 40408,
@@ -1629,10 +1678,82 @@ What the mod does, with more than one company in the room:
   rank. With one company, the game's own counts. `hook.log`: `the game's
   permits count each company's own constructions (N company_util
   table(s))`, and the same `in the HUD's state`.
+- **In the game scripts' GUI state** too, where the game's company script
+  checks a construction's permits as the tool proposes it
+  (`company.script.tl`, `builder.proposalCreate`: an error and
+  `skipRender`, so the tool shows no preview and builds nothing): the mod's
+  game script's `guiHandleEvent` puts on, once a state, getPlayer as the
+  player's company (`follow.lua`), the company's own rank
+  (`progression.follow`) and its own permit counts (`followPermits`), each
+  a no-op where another GUI state sharing the tables did first. Without
+  them a founded company's headquarters showed no preview (2026-10-01): the
+  script read the save's player's rank and counted every company's
+  headquarters. `hook.log`: `the game scripts' GUI state: getPlayer follows
+  the player's company; ranks are each company's; permits count each
+  company's own constructions`. The executable has no headquarters check
+  of its own in the construction tool: `"headquarters"` is read only by the
+  proposal's apply (`sub_9f96e0`, which sets the paying player's
+  headquarters) and the Lua bindings' setup.
 - After a headquarters is built, every game logs what the engine made of
-  it: `headquarters for company entity <e>: its PLAYER names <entity>`
-  (INFERRED that the engine sets `headquarters` for the paying company's
-  player entity; this line says, in a real game).
+  it: `headquarters for company entity <e>: its PLAYER names <entity>`.
+
+What a headquarters gives, and to whom (build 40408, its scripts and its
+executable, read 2026-10-01):
+
+- **Its town's growth.** The construction carries `town_growth` metadata:
+  experience +5% (`landmarks/hq/headquarter.script.tl`), +1% more for each
+  medium wing, and reputation recovery +1% for each large wing (the
+  modules' metadata, summed by `headquarter_addon.script.tl`). The game's
+  town script (`game_mechanics/towns/towns.script.tl`,
+  `updateConstructions`, every 20 updates) sums that metadata of every
+  construction in the world, **whoever owns it**, onto the town closest to
+  it (`landmarks/landmark_util.tl`, `collectTownGrowthMetadata`, without
+  `playerOwnedOnly`); the town's experience then grows by
+  `1 + xpIncrease` (`town_util.getXpFactor`, `town_growth.script.tl`), its
+  reputation recovers faster (`applyEventDecay`), and its "Bonuses" rating
+  in the town window shows Excellent instead of Good
+  (`town_util.getRatingBonuses`). So each company's headquarters gives
+  its town what a single player's gives, in every game alike, at the same
+  step: the mod adds nothing to it. Two headquarters closest to one town
+  add up, as the game adds up any landmarks there.
+- **Workplaces**: 24 industrial places (`personCapacity`), for any owner.
+- **Nothing per company.** No rank, experience, permit or company value
+  comes from having one: the company's experience is the world's
+  population (D23), the headquarters is itself a permit (rank 1) and its
+  wings are permits by rank (`rankAndPermits`, the company window's
+  "Headquarters Upgrades"), and `getCompaniesValue()` has no headquarters
+  term (`api/tealdef/api/type.d.tl`, `CompanyValue`).
+- **Its PLAYER `headquarters`.** The engine sets it in the build's apply
+  (`apply_proposal.cpp`, `sub_9f96e0`, rva 0x9fd78a-0x9fd9b0): for each
+  construction added whose description's company metadata says
+  `headquarters`, for the construction's own `playerEntity` (its assert
+  "ce.playerEntity != ecs::Entity()"), and a removed one clears it for its
+  owner. The room's builds name the acting company as `playerEntity`
+  (`apply.lua`), so each company's PLAYER names its own (read statically;
+  the log line above shows it in a real game). Only the GUI reads it: the
+  town's capital badge (`town_util.isCapital`), the "Headquarters"
+  tooltip and selection (`game_tooltips.tl`, `view_manager_util.tl`),
+  all through `getPlayer()`, which the GUI's states answer with the
+  player's company (`tpf3mp/follow.lua`): each player sees their own
+  company's town as the capital. The native selector filter
+  (`UI::CreateSelectorFilter`) reads the local player's, but selects any
+  owned construction anyway.
+
+With more than one company, at each of the companies' samples (four times
+a game month, `tpf3mp/progression.lua`), each game logs every company's
+headquarters and its town's bonus, read only, a line again only when it
+changed:
+
+```
+headquarters: Rival #1: headquarters 701 (a construction), owned by 901; closest town 31 (Ashford): on it xp +0.05, reputation recovery +0.00; the game's town script applies xp +0.05, reputation recovery +0.00 there
+```
+
+The headquarters is the one the company's PLAYER names; "owned by" another
+entity than the company's, "no construction", or a town script that
+applies less than what is on it, is a fault to report. The report is
+bounded and never waits: a few engine reads for each of at most eight
+companies, no pass over the world's constructions, nothing more while no
+company has a headquarters, every read in a `pcall`.
 
 Once a world is up, with more than one company, each game logs what each
 company owns as the engine records it, read only: `ownership: <company>
@@ -3104,3 +3225,11 @@ change disables one feature rather than the mod.
 
 The GUI hook exposes `copy(text)` for the room invite. The lobby uses the
 local `copy` action; clipboard errors are reported and never sent to the server.
+
+### Upgrade diagnostics
+
+Road and track modifiers log a bounded summary when handed to the room and
+again when applied in each game. The summary identifies the modifier and
+edge count without changing its payload. Track proposal tests use the Lua
+API stand-in; they do not establish native track-tool acceptance. Action
+handoff logs also include the action kind, without a wire format change.

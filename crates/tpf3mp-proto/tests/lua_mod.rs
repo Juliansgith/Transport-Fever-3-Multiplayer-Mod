@@ -6792,7 +6792,185 @@ fn a_vehicles_marker_wears_its_companys_colour() {
             classes.contains(&format!("!tpf3mp-company-{i} VehicleItem::Icon")),
             "{classes}"
         );
+        // And for every company's capital, in place of the game's blue.
+        assert!(
+            classes.contains(&format!("!tpf3mp-capital-{i} R::TownHudIcon!capital-city")),
+            "{classes}"
+        );
+        assert!(
+            classes.contains(&format!(
+                "!tpf3mp-capital-{i} TextView!tpf3mp-capital-label"
+            )),
+            "{classes}"
+        );
     }
+}
+
+/// Every company's capital on the map, for every player: with more than
+/// one company, the game's town label crowns each live company's
+/// headquarters town (the town closest to the headquarters its PLAYER
+/// names), the viewer's own in the game's blue (`capital-city`), another
+/// company's in its colour's class, with a line naming whose capital it is;
+/// two companies in one town are both named, a company without a
+/// headquarters crowns nothing. With one company, the game's own label.
+#[test]
+fn every_companys_capital_is_crowned_for_every_player() {
+    let lua = gui();
+    lua.load(
+        r#"
+        -- Companies' PLAYER components: the headquarters each names, and
+        -- each headquarters' closest town.
+        PLAYERS = {
+            [25] = { headquarters = 701 },  -- Company, in 31
+            [901] = { headquarters = 702 }, -- Rival, in 32
+            [902] = { headquarters = 703 }, -- Pals, in 32 too
+            [903] = { headquarters = -1 },  -- Late: none yet
+            [904] = { headquarters = 704 }, -- Odd, in 34, an own colour
+        }
+        CLOSEST = { [701] = 31, [702] = 32, [703] = 32, [704] = 34 }
+        ME = 901
+        ROSTER = nil
+        api = {
+            engine = {
+                getComponent = function(e, kind)
+                    if kind == 7 then return e == 77 and { state = { companies = ROSTER } } or nil end
+                    if kind == 5 then return PLAYERS[e] end
+                end,
+                util = { getPlayer = function() return ME end },
+                system = {
+                    gameScriptSystem = { getEntityForGameScript = function(name)
+                        return name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" and 77 or -1
+                    end },
+                    streetConnectorSystem = { getConstructionClosestTown = function(e)
+                        return CLOSEST[e] or -1
+                    end },
+                },
+            },
+            type = { ComponentType = { PLAYER = 5, GAME_SCRIPT = 7 } },
+        }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        -- The game's isCapital (game_mechanics/towns/town_util.tl): the
+        -- town closest to getPlayer()'s headquarters. The game loads it by
+        -- two names, one table.
+        local town_util = {}
+        function town_util.isCapital(town)
+            local p = api.engine.getComponent(api.engine.util.getPlayer(), 5)
+            if p and p.headquarters and p.headquarters >= 0 then
+                local t = api.engine.system.streetConnectorSystem.getConstructionClosestTown(p.headquarters)
+                if t >= 0 and t == town then return true end
+            end
+            return false
+        end
+        -- The game's town label (gui/main/town_hud_react_util.tl): a crown
+        -- and `capital-city` for what isCapital says.
+        local react = ug_require("::/gui/main/react.lua")
+        react.setMouseTransparent = react.setMouseTransparent or function() end
+        local town_hud = {}
+        town_hud.TownHudIcon = react.RegisterRecipe("TownHudIcon", function(params)
+            return { view = "Town", params = { entity = params.entity,
+                capital = town_util.isCapital(params.entity) } }
+        end)
+        GAME_MODULES = {
+            ["::/gui/main/town_hud_react_util.tl"] = town_hud,
+            ["::/game_mechanics/towns/town_util.tl"] = town_util,
+            ["/game_mechanics/towns/town_util.tl"] = town_util,
+        }
+        local script = "gui/tpf3mp/capitals.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        local exported = data()
+        exported.replace({ ReplaceRecipe = function(original, replacement)
+            assert(original == town_hud.TownHudIcon, "replaces the game's town label")
+            LABEL = replacement
+        end })
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        function companies(list) ROSTER = { list = list, members = {} } CLOCK = CLOCK + 10 end
+        -- A town's label as the HUD gets it: always a layout around the
+        -- game's; "<class> | <game's crown?> | <line under it>".
+        function town(entity)
+            local node = mount(LABEL, { entity = entity }).layout
+            assert(node.layout == "BoxLayout", "a town label's recipe gives a layout")
+            local children = node.params.children
+            local inner = children[1]
+            assert(inner.view == "Town" and inner.params.entity == entity, "around the game's label")
+            local meta = node.params.meta
+            for k in pairs(meta or {}) do assert(k == "class", "a wrapper's meta has a class only") end
+            local line = children[2]
+            assert(#children <= 2 and (line == nil or line.view == "TextView"))
+            return ((meta and meta.class) or "") .. " | " .. (inner.params.capital and "crown" or "-")
+                .. " | " .. (line and line.params.text or "")
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let town = |entity: i64| -> String {
+        lua.load(format!("return town({entity})"))
+            .eval()
+            .unwrap_or_else(|error| panic!("{entity}: {error}\n{}", log(&lua)))
+    };
+    let exec = |code: &str| {
+        lua.load(code)
+            .exec()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+
+    // No roster yet: the game's label, its own capital only.
+    assert_eq!(town(32), " | crown | ");
+    assert_eq!(town(31), " | - | ");
+    // One company (co-op): as in single player.
+    exec("ME = 25 companies({ { id = 0, entity = 25, name = 'Company', color = C.PALETTE[1] } })");
+    assert_eq!(town(31), " | crown | ");
+    assert_eq!(town(32), " | - | ");
+
+    // Five companies; the viewer plays for Rival.
+    exec(
+        "ME = 901 companies({ \
+           { id = 0, entity = 25, name = 'Company', color = C.PALETTE[1] }, \
+           { id = 1, entity = 901, name = 'Rival', color = C.PALETTE[2] }, \
+           { id = 2, entity = 902, name = 'Pals', color = C.PALETTE[3] }, \
+           { id = 3, entity = 903, name = 'Late', color = C.PALETTE[4] }, \
+           { id = 4, entity = 904, name = 'Odd', color = { 0.6, 0.3, 0.8 } } })",
+    );
+    // Another company's capital: crowned, in its colour, named.
+    assert_eq!(town(31), "tpf3mp-capital-1 | crown | Capital of Company");
+    // The viewer's own, shared with Pals: the game's blue, both named.
+    assert_eq!(town(32), " | crown | Capital of Rival and Pals");
+    // A colour of a company's own choosing: the palette's nearest.
+    assert_eq!(town(34), "tpf3mp-capital-5 | crown | Capital of Odd");
+    // No company's capital, and Late without a headquarters: nothing.
+    assert_eq!(town(33), " | - | ");
+    let logged = log(&lua);
+    assert!(
+        logged.contains(
+            "[tpf3mp] capitals: the game's isCapital crowns every company's capital (1 town_util table(s))"
+        ),
+        "{logged}"
+    );
+
+    // Another player, of the first company, sees the same capitals, its
+    // own in blue and Rival's in Rival's colour, named first.
+    exec("ME = 25");
+    assert_eq!(town(31), " | crown | Capital of Company");
+    assert_eq!(
+        town(32),
+        "tpf3mp-capital-2 | crown | Capital of Rival and Pals"
+    );
+
+    // Whose capital is where is read again only every ten seconds: Late's
+    // new headquarters shows once it is read.
+    exec("PLAYERS[903] = { headquarters = 705 } CLOSEST[705] = 33 CLOCK = CLOCK + 5");
+    assert_eq!(town(33), " | - | ");
+    exec("CLOCK = CLOCK + 5");
+    assert_eq!(town(33), "tpf3mp-capital-4 | crown | Capital of Late");
+
+    // Back to one company: the game's own again.
+    exec(
+        "companies({ ROSTER.list[1], \
+           { id = 1, entity = 901, name = 'Rival', color = C.PALETTE[2], gone = true } })",
+    );
+    assert_eq!(town(31), " | crown | ");
+    assert_eq!(town(32), " | - | ");
 }
 
 /// A world for the companies' progression (tpf3mp/progression.lua), over the
@@ -7766,6 +7944,247 @@ fn each_company_builds_one_headquarters_of_its_own() {
     assert!(logged.contains("ownership: "), "{logged}");
 }
 
+/// Each company's headquarters gives its own town the game's bonus: the
+/// game's town script sums every headquarters' `town_growth` onto its
+/// closest town, whoever owns it (towns.script.tl, landmark_util.tl), so
+/// the mod adds nothing and says, read only, what each company's
+/// headquarters is, what its PLAYER names and the bonus its town gets, at
+/// the companies' samples, again only when that changed.
+#[test]
+fn each_headquarters_bonus_is_logged_for_its_own_town() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        api.type.ComponentType.PLAYER_OWNED = 55
+        api.type.ComponentType.PLAYER = 5
+        api.type.ComponentType.GAME_SCRIPT = 77
+        api.type.ComponentType.GAME_TIME = 99
+        GAME_T = 0
+        api.engine.util.getWorld = function() return 1 end
+        api.util = { getDefaultMonthDuration = function() return 1000 end }
+        CONS, OWNERS, PLAYERS, NEXT_CON = {}, {}, {}, 700
+        -- Two towns: a headquarters' closest town by its x.
+        TOWN_OF, NAMES = {}, { [31] = 'Ashford', [32] = 'Brill' }
+        api.engine.util.getEntityName = function(e) return NAMES[e] end
+        api.engine.system.streetConnectorSystem = {
+            getConstructionClosestTown = function(e) return TOWN_OF[e] or -1 end }
+        -- The game's town script's state: what it applies to each town.
+        TOWNS = { townStates = {
+            { townEntity = { entity = 31 }, constructionBoni = { xpIncrease = 0, reputationRecoveryBoost = 0 } },
+            { townEntity = { entity = 32 }, constructionBoni = { xpIncrease = 0, reputationRecoveryBoost = 0 } } } }
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == '::/game_mechanics/towns/town.gs' then return 600 end return -1 end }
+        api.res = { constructionRep = {
+            find = function(file)
+                if file == '::/landmarks/hq/headquarter.con' then return 1 end
+                return -1
+            end,
+            get = function(id)
+                if id == 1 then return { metadata = { company = { headquarters = true, companyRank = 1 } } } end
+                return { metadata = {} }
+            end,
+        } }
+        api.engine.getComponent = function(e, kind)
+            if kind == 99 then return { gameTime = GAME_T } end
+            if kind == 2 then return CONS[e] end
+            if kind == 55 then return OWNERS[e] and { player = OWNERS[e] } end
+            if kind == 5 then return PLAYERS[e] end
+            if e == 600 and kind == 77 then return { state = TOWNS } end
+        end
+        api.engine.forEachEntityWithComponent = function(fn, kind)
+            if kind == 2 then for e in pairs(CONS) do fn(e) end end
+        end
+        -- What a build makes, as the engine makes it (apply_proposal.cpp):
+        -- the construction, owned by the proposal's playerEntity, whose
+        -- PLAYER then names it as its headquarters; the headquarters'
+        -- town_growth on it (headquarter.script.tl).
+        local make = api.cmd.makeWorldBuildProposalCmd
+        api.cmd.makeWorldBuildProposalCmd = function(proposal, context, ...)
+            for _, e in ipairs(proposal.constructionsToAdd or {}) do
+                NEXT_CON = NEXT_CON + 1
+                CONS[NEXT_CON] = { fileName = e.fileName,
+                                   persistentMetadata = { town_growth = { xpIncrease = 0.05 } } }
+                OWNERS[NEXT_CON] = e.playerEntity
+                PLAYERS[e.playerEntity] = { headquarters = NEXT_CON }
+                TOWN_OF[NEXT_CON] = e.transf[4][1] > 500 and 32 or 31
+            end
+            return make(proposal, context, ...)
+        end
+        A, B = string.rep("a", 64), string.rep("b", 64)
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A }
+        UPDATE({}, STATE, 0.2)
+        function hq(x)
+            return { BuildConstruction = { file = '::/landmarks/hq/headquarter.con',
+                transform = { basis = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, origin = { x = x, y = 200, z = 5 } },
+                params = {}, name = 'HQ' } }
+        end
+        HOOK.batch = { hq(100), hq(900) } HOOK.origins = { A, B }
+        UPDATE({}, STATE, 0.2)
+        -- The game's town script, at its next check of the constructions.
+        TOWNS.townStates[1].constructionBoni.xpIncrease = 0.05
+        TOWNS.townStates[2].constructionBoni.xpIncrease = 0.05
+        function headquartersLogged()
+            local out = {}
+            for _, l in ipairs(HOOK.logged) do
+                if l:sub(1, 14) == 'headquarters: ' then out[#out + 1] = l end
+            end
+            return out
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    // Both built, each owned by its company, which the PLAYER names.
+    assert_eq!(
+        eval(
+            "local out = {} for e, c in pairs(CONS) do out[#out + 1] = OWNERS[e] .. '>' .. TOWN_OF[e] end \
+             table.sort(out) return table.concat(out, ',')"
+        ),
+        "25>32,901>31"
+    );
+    let report = eval(
+        "local C = ug_require('tpf3mp_1::/scripts/tpf3mp/companies.lua') \
+         local lines = C.headquartersReport(STATE.value.companies, api) return table.concat(lines, '|')",
+    );
+    let lines: Vec<&str> = report.split('|').collect();
+    assert_eq!(lines.len(), 2, "{report}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("Company #0: headquarters ")
+                && l.contains(
+                    "closest town 32 (Brill): on it xp +0.05, reputation recovery +0.00; \
+                 the game's town script applies xp +0.05, reputation recovery +0.00 there"
+                )),
+        "{report}"
+    );
+    let rival = lines
+        .iter()
+        .find(|l| l.starts_with("Rival #1: headquarters "))
+        .unwrap_or_else(|| panic!("{report}"));
+    let hq = rival
+        .trim_start_matches("Rival #1: headquarters ")
+        .split(' ')
+        .next()
+        .unwrap();
+    assert!(
+        rival.contains(&format!(
+            "headquarters {hq} (a construction), owned by 901;"
+        )),
+        "the engine names Rival's own: {rival}"
+    );
+    assert!(
+        rival.contains("closest town 31 (Ashford): on it xp +0.05"),
+        "{rival}"
+    );
+    // The companies' sample in the update that built them said both, before
+    // the game's town script had checked the constructions; at the next,
+    // its bonus applied, both again; then nothing changed and nothing more
+    // is said.
+    assert_eq!(
+        eval(
+            "local l = headquartersLogged() return #l .. ' ' .. tostring(l[1]:find('applies xp +0.00', 1, true) ~= nil)"
+        ),
+        "2 true"
+    );
+    assert_eq!(
+        eval("GAME_T = 1000 UPDATE({}, STATE, 0.2) return tostring(#headquartersLogged())"),
+        "4"
+    );
+    assert_eq!(
+        eval("GAME_T = 2000 UPDATE({}, STATE, 0.2) return tostring(#headquartersLogged())"),
+        "4"
+    );
+    // A medium wing on Rival's: its town's bonus changes, and only Rival's
+    // line is said again.
+    assert_eq!(
+        eval(&format!(
+            "CONS[{hq}].persistentMetadata.town_growth.xpIncrease = 0.06 \
+             TOWNS.townStates[1].constructionBoni.xpIncrease = 0.06 \
+             GAME_T = 3000 UPDATE({{}}, STATE, 0.2) \
+             local l = headquartersLogged() return #l .. ' ' .. l[#l]"
+        )),
+        format!(
+            "5 headquarters: Rival #1: headquarters {hq} (a construction), owned by 901; closest town 31 (Ashford): \
+             on it xp +0.06, reputation recovery +0.00; the game's town script applies xp +0.06, \
+             reputation recovery +0.00 there"
+        )
+    );
+}
+
+/// The headquarters report can never hang or slow a game: it never walks
+/// the world's constructions, reads nothing more while no company has a
+/// headquarters (a room just after a company is founded, 2026-10-01),
+/// reads at most `REPORT_MAX` companies, and a read that fails or raises
+/// only leaves its part out.
+#[test]
+fn the_headquarters_report_is_bounded_and_never_raises() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        api.type.ComponentType.PLAYER_OWNED = 55
+        api.type.ComponentType.PLAYER = 5
+        api.type.ComponentType.GAME_SCRIPT = 77
+        C = ug_require('tpf3mp_1::/scripts/tpf3mp/companies.lua')
+        READS = 0
+        -- Walking the constructions raises here: the report must not walk.
+        api.engine.forEachEntityWithComponent = function() error('walked the constructions') end
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function()
+            READS = READS + 1 return 600 end }
+        PLAYERS = {}
+        api.engine.getComponent = function(e, kind)
+            READS = READS + 1
+            if kind == 5 then return PLAYERS[e] end
+            if kind == 2 and e == 777 then error('engine refuses') end
+            return nil
+        end
+        api.engine.system.streetConnectorSystem = {
+            getConstructionClosestTown = function() error('not a construction') end }
+        ROSTER = { list = {}, members = {} }
+        for i = 0, 11 do
+            ROSTER.list[#ROSTER.list + 1] = { id = i, entity = 100 + i, name = 'C' .. i }
+            PLAYERS[100 + i] = { headquarters = -1 }
+        end
+        function report()
+            READS = 0
+            local ok, lines, why = pcall(C.headquartersReport, ROSTER, api)
+            return tostring(ok) .. ' ' .. (lines and #lines or tostring(why)) .. ' ' .. READS
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    // No headquarters: one PLAYER read for each of the twelve companies,
+    // and nothing else.
+    assert_eq!(eval("return report()"), "true 0 12");
+    // Headquarters everywhere, the engine refusing the entity: eight lines
+    // at most, none raising.
+    assert_eq!(
+        eval(
+            "for i = 0, 11 do PLAYERS[100 + i] = { headquarters = 777 } end \
+             local lines = C.headquartersReport(ROSTER, api) return #lines .. '|' .. lines[1]"
+        ),
+        "8|C0 #0: headquarters 777 (no construction), owned by nil; closest town nil: \
+         on it xp +0.00, reputation recovery +0.00; the game's town script has no state for that town"
+    );
+    // No roster: nil and why, never an error.
+    assert_eq!(
+        eval("local l, why = C.headquartersReport(nil, api) return tostring(l) .. ' ' .. why"),
+        "nil no roster"
+    );
+}
+
 /// In the GUI, the game's permit counts count the player's company's own
 /// constructions while the room has more than one company: the
 /// construction menu offers each company its headquarters until it has
@@ -8248,4 +8667,53 @@ fn hud_answers_are_chunked_without_overwriting_unread_results() {
     )
     .exec()
     .unwrap();
+}
+
+/// In the GUI state the game scripts' GUI half runs in, where the game's
+/// company script checks a construction's permits for `getPlayer()`, the
+/// player's company answers getPlayer once the room's tools propose a
+/// build: a founded company's headquarters was refused there (no preview,
+/// nothing placed) by the save's player's rank and the whole world's
+/// headquarters (2026-10-01).
+#[test]
+fn the_game_scripts_gui_state_acts_for_the_players_company() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        JAMES = string.rep("a", 64)
+        ROSTER = { next = 2,
+            list = { { id = 0, entity = 25, name = "First", color = { 0.8, 0.16, 0.12 } },
+                     { id = 1, entity = 901, name = "Rival", color = { 0.13, 0.42, 0.85 }, founder = JAMES } },
+            members = { { player = JAMES, company = 1 } } }
+        api.type.ComponentType.GAME_SCRIPT = 7
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        local get = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+            if get then return get(e, kind) end
+        end
+        HOOK.room = true
+        HOOK.status = { room = "r", me_id = JAMES, players = { { name = "james", id = JAMES, me = true } } }
+        BEFORE = api.engine.util.getPlayer()
+        SCRIPT.guiHandleEvent({}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', {})
+        AFTER = api.engine.util.getPlayer()
+        SCRIPT.guiHandleEvent({}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', {})
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let (before, after): (u32, u32) = lua.load("return BEFORE, AFTER").eval().unwrap();
+    assert_eq!((before, after), (25, 901));
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        logged
+            .matches("the game scripts' GUI state: getPlayer follows the player's company")
+            .count(),
+        1,
+        "once a state: {logged}"
+    );
 }

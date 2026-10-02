@@ -76,6 +76,22 @@ local PENDING_POLLS = 20
 -- How many polls Copy says "Copied" for: about two seconds.
 local COPIED_POLLS = 5
 
+-- Whether the save `name` is one of the hook's own copies of a room's world
+-- (docs/HOOKS.md, "The room's world"), which it removes once their game
+-- ends: never a world to start a room from.
+local function plainUint(value, maximum)
+	return value ~= nil and value:match("^%d+$") ~= nil
+		and (value == "0" or value:sub(1, 1) ~= "0")
+		and (#value < #maximum or (#value == #maximum and value <= maximum))
+end
+local function hookCopy(name)
+	local pid = name:match("^tpf3mp_room_(%d+)$")
+	if pid then return pid ~= "0" and plainUint(pid, "4294967295") end
+	local owner, event = name:match("^tpf3mp_(%d+)_(%d+)$")
+	return owner ~= "0" and plainUint(owner, "4294967295")
+		and plainUint(event, "18446744073709551615")
+end
+
 -- The request channel -------------------------------------------------------
 
 local function say(line)
@@ -1461,7 +1477,7 @@ function lobby.content(onClose, focus, onNewGame)
 		local saves = state.saves or {}
 		local saveItems = { { "", _("Create a new world...") } }
 		for _i, save in ipairs(saves) do
-			if not save:match("^tpf3mp_room_%d+$") then saveItems[#saveItems + 1] = { save, save } end
+			if not hookCopy(save) then saveItems[#saveItems + 1] = { save, save } end
 		end
 		local pickedSave = saveS:old()
 		if pickedSave == nil then
@@ -1674,8 +1690,10 @@ function lobby.content(onClose, focus, onNewGame)
 			local current = (pick and pick.save) or (upload and upload.save) or (start and start.name) or ""
 			local items, listed = {}, false
 			for _i, save in ipairs(state.saves or {}) do
-				items[#items + 1] = { save, save }
-				if save == current then listed = true end
+				if not hookCopy(save) then
+					items[#items + 1] = { save, save }
+					if save == current then listed = true end
+				end
 			end
 			-- The room's own, even once it left the newest saves listed.
 			if current ~= "" and not listed then table.insert(items, 1, { current, current }) end

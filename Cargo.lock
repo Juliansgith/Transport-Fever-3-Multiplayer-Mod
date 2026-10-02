@@ -4409,6 +4409,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zip",
+ "zstd",
 ]
 
 [[package]]
@@ -4456,6 +4457,7 @@ name = "tpf3mp-hook"
 version = "1.1.0"
 dependencies = [
  "ctor",
+ "libc",
  "mlua",
  "ring",
  "serde",
@@ -4561,6 +4563,7 @@ dependencies = [
  "tokio-tungstenite",
  "tpf3mp-proto",
  "tpf3mp-snapshot",
+ "tracing",
  "webpki-roots",
 ]
 

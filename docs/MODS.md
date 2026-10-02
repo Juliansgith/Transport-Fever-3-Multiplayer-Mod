@@ -217,6 +217,21 @@ revision. A player's game once loaded an old copy of the same revision (a
 Sandboxie box's own copy, 2026-10-01): nothing noticed, and a road was
 built differently in that game.
 
+A room's world must have the mod among its save's mods: a world loads with
+its save's mods (or the room's plan of them, which keeps `tpf3mp_1` only
+when the save lists it), and without the mod's game script it held paused
+for good, without a word (2026-10-01). So:
+
+- the launcher refuses a start save whose mods read and do not list
+  `tpf3mp_1` (creating a room, and the owner's pick in the room), saying
+  "This save doesn't have the TPF3-MP mod enabled: load it once, turn
+  TPF3-MP on in its mods, save it, then pick it again"
+  (`crates/tpf3mp-agent/src/save_check.rs`);
+- the agent does not load a world from the room that does not list it:
+  the session ends, and both windows say why;
+- the hook's log says when a world's plan leaves it out, which a save whose
+  mods the agent could not read may still bring.
+
 - **What is compared** (`crates/tpf3mp-agent/src/own_mod.rs`): a SHA-256
   over the files the game loads from the mod, sorted by path, each path with
   its bytes: `mod.json`, `_content.json` and everything under `content/`.

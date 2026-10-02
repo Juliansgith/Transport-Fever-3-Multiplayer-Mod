@@ -326,6 +326,15 @@ function capture.junction(proposal)
 	return module("junctions").edit(proposal)
 end
 
+-- An upgrade tool's build in one line for the log, or nil for any other
+-- (tpf3mp/roads.lua upgradeSummary).
+function capture.upgradeSummary(action)
+	local ok, text = pcall(module("roads").upgradeSummary, action)
+	if ok then return text end
+	return nil
+end
+
+
 -- A stop placed on a street or track with the stop tool (tpf3mp_proto
 -- action::PlaceStop), read off its proposal by tpf3mp/engine.lua. Returns
 -- the action table; false for a proposal of nothing; or nil and why.
