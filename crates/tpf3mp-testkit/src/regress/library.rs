@@ -314,6 +314,7 @@ pub fn place_stop(a: Pos, b: Pos, pos: Pos) -> Action {
         two_sided: false,
         object: EdgeObjectKind::Stop,
         one_way: false,
+        name: None,
     })
 }
 

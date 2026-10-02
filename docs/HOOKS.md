@@ -2489,14 +2489,34 @@ terrain tools through the hook, and a construction's window its edits:
   what each new object is and which group holds it (`the new <stop>: 600
   a station in group 610 (owner nil); ...`), and each one handed over
   with its owner before (`the new <stop> made the acting company's`). The
-  stop's edge objects carry a name (`Stop`, never empty: a script build
-  with an empty name leaves the stop with no `NAME` and no owner,
-  docs/BUILDING.md), and once built its own group and stations are named
-  after the town the game counts the stop in (`stationSystem.getTown`),
-  with a number after it where another station group of that town has
-  that name (`Didcot`, `Didcot 2`), the same in every game. The stop
-  tool's own name never reaches game scripts (the proposal's edge objects
-  carry none), so a room's stop is named by this rule, not the tool's.
+  stop is named as the game's tool named it. Build 40408's stop tool
+  (`UI::StreetTerminalBuilder`, through `street_util::MakeEdgeObjectName`
+  in `construction_util_terminal.cpp`, `sub_2647e60`) gives a new stop
+  the name a station already there has, else the first street name of the
+  town's name list (the `streetNamesScript` of `names/*.names.lua`) that
+  no station has yet, else `Stop #n` with the first free n
+  (`sub_25d5a80`); signals and waypoints get `{townName} Signal #n` and
+  `Waypoint #n` (`sub_25d4540`). The choice reads the originator's world
+  and runs the name script, so it is made once: the capture reads it
+  from the proposal's edge object (`Proposal.EdgeObject.name`, which the
+  game binds for scripts), `PlaceStop::name` carries it (schema 24), and
+  every game builds the stop with it. A name longer than the schema's 64
+  bytes is left out. Where none is carried, or with
+  `apply.NATIVE_STOP_NAMES` false (the kill switch), the stop's edge
+  objects carry `Stop` (never empty: a script build with an empty name
+  leaves the stop with no `NAME` and no owner, docs/BUILDING.md), and once
+  built its own group and stations are named after the town the game
+  counts the stop in (`stationSystem.getTown`), with a number after it
+  where another station group of that town has that name (`Didcot`,
+  `Didcot 2`), the same in every game. A construction (a station, depot,
+  airport, harbour or truck station) is named natively the same way at
+  the originator, by `UI::ConstructionBuilder`'s
+  `CreateProposalAddConstruction` (`sub_a34a50`: `{townName}
+  {constructionName}`, or for a station `sub_25d4800`: `{townName}
+  Station`, a direction from the town centre, or one of nine suffixes,
+  `Annex` to `Upper`, in an order shuffled by a hash of the position, no
+  RNG, then `{stationName} #{number}`), and `BuildConstruction::name`
+  already carries that name to every game.
   A construction the room builds (a station, an airport, a harbour) names
   its own stations' group by the name the tool gave the construction
   where the game left it unnamed (`named station group N "..."` in

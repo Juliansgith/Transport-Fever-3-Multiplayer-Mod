@@ -575,7 +575,7 @@ function engine.describe(proposal)
 		-- Stops, signals and waypoints: whatever of their fields reads.
 		for _, o in ipairs(list(get(street, "edgeObjectsToAdd"))) do
 			local fields = {}
-			for _, key in ipairs({ "resultEntity", "category", "left", "playerEntity", "edgeEntity", "param", "model" }) do
+			for _, key in ipairs({ "resultEntity", "category", "left", "playerEntity", "edgeEntity", "param", "model", "name" }) do
 				local v = get(o, key)
 				if v ~= nil then fields[#fields + 1] = key .. "=" .. tostring(v) end
 			end
@@ -1134,8 +1134,20 @@ function engine.placeStop(proposal, noted, oneWay)
 		local d = geom.hermiteTangent(curve.a, curve.ta, curve.b, curve.tb, u)
 		local len = math.sqrt(d[1] * d[1] + d[2] * d[2] + d[3] * d[3])
 		if len == 0 then error("the stop's edge has no direction there", 0) end
+		-- The name the tool gave it (Proposal.EdgeObject.name, bound to game
+		-- scripts on build 40408: street_util::MakeEdgeObjectName, a street
+		-- name from the town's name list not yet taken, else "Stop #n"),
+		-- the first new object's that has one; every game builds it so.
+		-- Left out where it would not fit the schema's 64 bytes: every game
+		-- then names it as the mod does (tpf3mp/apply.lua).
+		local name
+		for _, k in ipairs(added) do
+			local n = get(toAdd[k], "name")
+			if name == nil and type(n) == "string" and n ~= "" and #n <= 64 then name = n end
+		end
 		return { PlaceStop = {
 			edge = ref,
+			name = name,
 			at = { x = at[1], y = at[2], z = at[3] },
 			left = left,
 			direction = { x = d[1] / len, y = d[2] / len, z = d[3] / len },

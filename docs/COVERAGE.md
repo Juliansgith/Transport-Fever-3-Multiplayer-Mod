@@ -62,7 +62,7 @@ this branch is not compatible with the currently deployed relay until upgraded.
 ## Local extras (`local/combined-dev`, not on dev)
 
 The local combined line is dev plus what #38 left out, for local testing
-only; it speaks action schema 23 (dev's 22 plus the actions below), with
+only; it speaks action schema 24 (dev's 22 plus the actions below, and `PlaceStop::name`), with
 dev's protocol 15 and bridge 21.
 
 - Competitive rooms found a company for each player automatically

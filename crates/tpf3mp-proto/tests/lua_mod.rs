@@ -6483,6 +6483,72 @@ fn a_stop_is_placed_beside_the_edges_others_and_never_on_a_taken_side() {
     assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
 }
 
+/// The stop tool names a stop natively (street_util::MakeEdgeObjectName:
+/// a street name from the town's name list, else "Stop #n"), and game
+/// scripts read it from the proposal's edge object. The capture carries
+/// it, and every game builds the stop with it, its group named so where
+/// the game left it unnamed. With the kill switch off, every game names it
+/// after its town.
+#[test]
+fn a_stop_keeps_the_name_the_tool_gave_it_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    let proposal = stop_proposal("", "", "").replace(
+        "category = 0, left = true,",
+        "category = 0, left = true, name = 'High Street',",
+    );
+    let (name, ok): (String, bool) = lua
+        .load(format!(
+            "local engine = ug_require('tpf3mp_1::/scripts/tpf3mp/engine.lua') \
+             local a = assert(engine.placeStop({proposal}, '::/stations/street/small_stops/small_new.con')) \
+             CAPTURED = a \
+             return tostring(a.PlaceStop.name), schema_check(a)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!((name.as_str(), ok), ("High Street", true));
+    let captured: mlua::Value = lua.globals().get("CAPTURED").unwrap();
+    let action = tpf3mp_proto::lua::action_from_lua(&common::tree(&captured)).unwrap();
+    match &action {
+        tpf3mp_proto::action::Action::PlaceStop(stop) => {
+            assert_eq!(stop.name.as_ref().map(|n| n.as_str()), Some("High Street"))
+        }
+        other => panic!("{other:?}"),
+    }
+
+    for (switch, sent, group) in [
+        ("true", "High Street>High Street", "High Street"),
+        ("false", "Stop>Stop", "Didcot 2"),
+    ] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.load(FAKE_STOPS).exec().unwrap();
+        lua.load(format!(
+            "ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua').NATIVE_STOP_NAMES = {switch}"
+        ))
+        .exec()
+        .unwrap();
+        lua.load(
+            STOP_OWNERS
+                .replace("{SHARED}", "")
+                .replace("{NAME}", ", name = 'High Street'"),
+        )
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+        let (names, named): (String, String) = lua
+            .load(
+                "local s = SENT[1].proposal.streetProposal \
+                 return s.edgeObjectsToAdd[1].name .. '>' .. s.edgeObjectsToAdd[2].name, \
+                     tostring(NAMES[610])",
+            )
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+        assert_eq!(names, sent, "switch {switch}");
+        assert_eq!(named, group, "switch {switch}: {}", hook_log(&lua));
+    }
+}
+
 /// The world of a stop placed for company Rival on edge 100, as build
 /// 40408 makes one: the stop's two edge objects are its stations
 /// themselves (EDGE_OBJECT and STATION), in one station group the engine
@@ -6527,7 +6593,7 @@ const STOP_OWNERS: &str = "local CT = api.type.ComponentType \
     HOOK.batch = { { PlaceStop = { edge = { network = 'Street', ends = { a = { x = 50, y = -40, z = 0 }, \
         b = { x = 50, y = 40, z = 0 } } }, at = { x = 50, y = 0, z = 0 }, left = true, two_sided = true, \
         direction = { x = 0, y = 1, z = 0 }, \
-        model = '::/stations/street/small_stops/small_old_twosided.con' } } } \
+        model = '::/stations/street/small_stops/small_old_twosided.con' {NAME} } } } \
     HOOK.origins = { A } \
     UPDATE({}, STATE, 0.2)";
 
@@ -6543,7 +6609,7 @@ fn a_stop_the_room_places_is_the_acting_companys() {
     let (lua, _script) = engine();
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(FAKE_STOPS).exec().unwrap();
-    lua.load(STOP_OWNERS.replace("{SHARED}", ""))
+    lua.load(STOP_OWNERS.replace("{SHARED}", "").replace("{NAME}", ""))
         .exec()
         .unwrap_or_else(|error| panic!("{error}"));
     let (ok, built, owners, given): (bool, String, String, String) = lua
@@ -6600,9 +6666,13 @@ fn a_stop_the_room_places_is_the_acting_companys() {
     let (lua, _script) = engine();
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(FAKE_STOPS).exec().unwrap();
-    lua.load(STOP_OWNERS.replace("{SHARED}", ", 800"))
-        .exec()
-        .unwrap_or_else(|error| panic!("{error}"));
+    lua.load(
+        STOP_OWNERS
+            .replace("{SHARED}", ", 800")
+            .replace("{NAME}", ""),
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
     let owners: String = lua
         .load(
             "local o = {} \

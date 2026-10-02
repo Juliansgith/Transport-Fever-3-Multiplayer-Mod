@@ -420,6 +420,7 @@ fn samples() -> Vec<Action> {
             two_sided: true,
             object: EdgeObjectKind::Stop,
             one_way: false,
+            name: Some(text("High Street")),
         }),
         Action::PlaceStop(PlaceStop {
             edge: EdgeRef {
@@ -437,6 +438,7 @@ fn samples() -> Vec<Action> {
             two_sided: false,
             object: EdgeObjectKind::Signal,
             one_way: true,
+            name: None,
         }),
         Action::Terraform(
             Terraform::new(

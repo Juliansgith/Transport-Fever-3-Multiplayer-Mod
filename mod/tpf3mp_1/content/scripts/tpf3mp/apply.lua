@@ -255,6 +255,10 @@ local removeEdgeObject
 -- station has no town. Each group and its stations get the name
 -- (makeEntitySetNameCmd); hook.log says which.
 local PROVISIONAL_STOP_NAME = "Stop"
+-- Whether a stop is built with the name the originator's tool gave it
+-- (PlaceStop.name, the game's own: street_util::MakeEdgeObjectName). The
+-- kill switch: false, and every stop is named by the town as above.
+apply.NATIVE_STOP_NAMES = true
 local function nameStationGroups(groups, name, fallback)
 	local named = {}
 	for _, g in ipairs(groups) do
@@ -1279,7 +1283,7 @@ end
 -- it is a station and which group holds it (2026-10-02, retest: the hand-
 -- over found the objects alone, and no icon showed). `kept` are the
 -- edge's objects as the proposal listed them, the new ones negative.
-local function settleStop(ref, kept, model)
+local function settleStop(ref, kept, model, name)
 	local ok, e = pcall(stopEdge, ref)
 	if not ok then
 		log("the new " .. tostring(model) .. ": its edge cannot be found again to settle its owner")
@@ -1367,7 +1371,9 @@ local function settleStop(ref, kept, model)
 			.. table.concat(fixed, ", "))
 	end
 	-- Named after its town, as nameStationGroups names a stop's group.
-	nameStationGroups(own, nil, PROVISIONAL_STOP_NAME)
+	-- By the tool's name where the stop carries one (only where the game
+	-- left its group unnamed), else after its town.
+	nameStationGroups(own, name, PROVISIONAL_STOP_NAME)
 end
 
 -- How near its edge's centreline a stop's place is: the originator's own
@@ -1379,6 +1385,8 @@ local NEW_EDGE_OBJECT = -400000000
 
 function HANDLERS.PlaceStop(stop)
 	local network = stop.edge.network
+	-- The tool's own name for it, as every game received it.
+	local native = apply.NATIVE_STOP_NAMES and type(stop.name) == "string" and stop.name ~= "" and stop.name or nil
 	local e = stopEdge(stop.edge)
 	local u, off = geom.parameterAt(e.a, e.ta, e.b, e.tb, stop.at.x, stop.at.y)
 	if off > STOP_TOLERANCE then error("the stop's place is not on its edge", 0) end
@@ -1424,7 +1432,7 @@ function HANDLERS.PlaceStop(stop)
 		-- A name, so the engine gives the stop its NAME and its owner
 		-- (docs/BUILDING.md: an empty name leaves both off); its group is
 		-- named after its town once built (settleStop).
-		eo.name = PROVISIONAL_STOP_NAME
+		eo.name = native or PROVISIONAL_STOP_NAME
 		added[k] = eo
 	end
 	local proposal = rebuildWith(e, network, objects)
@@ -1435,7 +1443,7 @@ function HANDLERS.PlaceStop(stop)
 	local context = api.type.Context.new()
 	context.player = company()
 	local built = buildProposal(proposal, context)
-	settleStop(stop.edge, objects, stop.model)
+	settleStop(stop.edge, objects, stop.model, native)
 	return built
 end
 
