@@ -8144,6 +8144,95 @@ fn every_game_gives_a_subsidy_to_the_first_company_to_accept_it() {
     assert_eq!(founded, "Rival");
 }
 
+/// The notification log's dismiss, keep and ignore, and a warehouse's
+/// discard, were refused in a room ("Not in multiplayer yet" at every
+/// popup closed): they go to the room, and every game does them through the
+/// game's own event and command.
+#[test]
+fn the_notification_log_and_a_warehouses_discard_go_to_the_room() {
+    let lua = gui();
+    // Mechanics fixture only: production refuses these channels pending game acceptance.
+    lua.load(
+        "local a = ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua') a.notifications = true a.discard = true",
+    )
+    .exec()
+    .unwrap();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "api.cmd.makeStockListDiscardCargoCmd = function(e, ids, t) return { kind = 'discard' } end \
+         api.type = { ComponentType = { GAME_SCRIPT = 7, CONSTRUCTION = 2 } } \
+         api.engine = { getComponent = function(e, kind) \
+             if kind == 2 and e == 201 then return { fileName = 'warehouse/warehouse_small.con', \
+                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end end } \
+         M = mount(loadPlugin()) M.step() HOOK.room = true \
+         local function event(name, param) \
+             api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Notifications', name, param)) end \
+         event('dismiss', { id = 12 }) \
+         event('enlist', { id = 13 }) \
+         event('updateIgnoredTypes', { ignoredTypes = { TownGrew = true, VehicleBroken = true, Old = false }, \
+             ignoreFully = false }) \
+         event('dismiss', { id = -1 }) \
+         api.cmd.sendCommand(api.cmd.makeStockListDiscardCargoCmd(201, { 3, 0 }, 1.0)) \
+         api.cmd.sendCommand(api.cmd.makeStockListDiscardCargoCmd(999, { 3 }, 1.0)) \
+         M.step()",
+    )
+    .exec()
+    .unwrap();
+    let handed: String = lua
+        .load(
+            "local n, out = HOOK.commands, {} \
+             out[1] = n[1].Notification.Dismiss out[2] = n[2].Notification.Enlist \
+             out[3] = table.concat(n[3].Notification.Ignore.types, ',') .. ':' .. tostring(n[3].Notification.Ignore.fully) \
+             local d = n[4].DiscardCargo \
+             out[4] = d.warehouse.file .. '@' .. d.warehouse.at.x .. ':' .. table.concat(d.stocks, ',') .. ':' .. d.remaining \
+             return #n .. ' ' .. #SENT .. ' ' .. table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        handed,
+        "4 0 12 13 TownGrew,VehicleBroken:false warehouse/warehouse_small.con@600:3,0:1"
+    );
+
+    let (lua, _script) = engine();
+    lua.load(
+        "local a = ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua') a.notifications = true a.discard = true",
+    )
+    .exec()
+    .unwrap();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        "api.cmd.makeStockListDiscardCargoCmd = function(e, ids, t) \
+             return { discard = { entity = e, ids = ids, t = t } } end \
+         HOOK.room = true UPDATE({}, STATE, 0.2) \
+         HOOK.batch = { { Notification = { Dismiss = 12 } }, { Notification = { Enlist = 13 } }, \
+             { Notification = { Ignore = { types = { 'TownGrew' }, fully = false } } }, \
+             { DiscardCargo = { warehouse = { file = 'depot/bus_depot.con', at = { x = 600, y = 10, z = 2 } }, \
+                 stocks = { 3, 0 }, remaining = 1 } } } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let done: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do \
+                 if c.event then \
+                     local p = c.event.param \
+                     out[#out + 1] = c.event.name .. ':' .. tostring(p.id or (p.ignoredTypes and p.ignoredTypes.TownGrew)) \
+                 elseif c.discard then \
+                     out[#out + 1] = 'discard:' .. c.discard.entity .. ':' .. table.concat(c.discard.ids, ',') .. ':' .. c.discard.t \
+                 end end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        done,
+        "dismiss:12 enlist:13 updateIgnoredTypes:true discard:201:3,0:1"
+    );
+}
+
 /// Both the sender and replay refuse new channels with production defaults.
 #[test]
 fn unaccepted_ports_cannot_be_sent_or_replayed() {
@@ -8159,6 +8248,9 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
             { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
             { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
+            { Notification = { Dismiss = 12 } },
+            { Notification = { Ignore = { types = { 'TownGrew' }, fully = false } } },
+            { DiscardCargo = { warehouse = { file = 'w.con', at = { x = 0, y = 0, z = 0 } }, stocks = { 1 }, remaining = 1 } },
         }
         for _, action in ipairs(actions) do
             local sent, reason = link:command(action)

@@ -610,6 +610,9 @@ impl State {
             Action::Subsidy(_) => Ok(()),
             // A name: the model keeps no names.
             Action::Rename { .. } => Ok(()),
+            // The notification log and a warehouse's stocks: the model keeps
+            // neither.
+            Action::Notification(_) | Action::DiscardCargo(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }

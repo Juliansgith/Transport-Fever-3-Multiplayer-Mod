@@ -817,6 +817,48 @@ function capture.setName(ctx, entity, name)
 	return { Rename = { what = what, name = name } }
 end
 
+-- The notification log's and popups' events to the game's Notifications
+-- script (notification_log.tl, notification_popups.tl): a notification
+-- dismissed or kept by its number, or the kinds the log ignores (a set of
+-- names, carried sorted) and whether fully.
+function capture.notification(_ctx, name, param)
+	if name == "dismiss" or name == "enlist" then
+		local id = get(param, "id")
+		if type(id) ~= "number" or id ~= math.floor(id) or id < 0 then error("a notification by no number", 0) end
+		if name == "dismiss" then return { Notification = { Dismiss = id } } end
+		return { Notification = { Enlist = id } }
+	end
+	local set = get(param, "ignoredTypes")
+	if set ~= nil and type(set) ~= "table" then error("ignored notifications it cannot read", 0) end
+	if get(param, "ignoredGuiTypes") ~= nil then error("ignoring notifications by their kind in the log", 0) end
+	local types = {}
+	for kind, on in pairs(set or {}) do
+		if type(kind) ~= "string" then error("an ignored notification named " .. tostring(kind), 0) end
+		if on == true then types[#types + 1] = kind end
+	end
+	table.sort(types)
+	local fully = get(param, "ignoreFully")
+	return { Notification = { Ignore = { types = types, fully = fully == true } } }
+end
+
+-- The warehouse window's discard (entity_window_util.tl): the stocks of a
+-- warehouse, named by its construction. INFERRED: the window's entity is
+-- the warehouse's construction.
+function capture.discardCargo(_ctx, entity, stocks, remaining)
+	local ok, c = pcall(function()
+		return api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
+	end)
+	local ref = ok and c ~= nil and capture.replaced(c) or nil
+	if ref == nil then error("a warehouse the room cannot name", 0) end
+	local ids = each(stocks, function(id)
+		if type(id) ~= "number" or id ~= math.floor(id) or id < 0 then error("a stock by no number", 0) end
+		return id
+	end)
+	if #ids == 0 then error("discarding no stock", 0) end
+	if type(remaining) ~= "number" then error("a discard without its time", 0) end
+	return { DiscardCargo = { warehouse = ref, stocks = ids, remaining = remaining } }
+end
+
 -- Recolouring: a line, the room's company, or a vehicle (the vehicle
 -- window's and the line manager's colour buttons, VehicleChange::Recolor).
 function capture.setColor(ctx, entity, color)

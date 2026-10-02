@@ -37,7 +37,11 @@ load gating and save setup. This is not a fresh two-player game playthrough.
 Subsidies, entity renaming/vehicle recolouring and line waypoints have capture,
 schema and replay code, but `content/scripts/tpf3mp/acceptance.lua` disables
 them. Both command submission and replay refuse these channels; subsidy
-settlement is disabled too. Mechanics fixtures explicitly enable a channel
+settlement is disabled too. The notification log (dismiss, keep, the
+ignored kinds) and a warehouse's discard came in afterwards the same way,
+behind `notifications` and `discard` (action schema 23): with the channel
+off a player's dismiss is refused as before, now saying why. On, the log
+is the room's, so one player's dismiss or ignore list is every player's. Mechanics fixtures explicitly enable a channel
 only in their own Lua state. Enable a channel only after ordinary two-player
 acceptance demonstrates matching outcomes, ownership and money. The gate
 file is part of the installed-mod fingerprint.
@@ -47,7 +51,7 @@ file is part of the installed-mod fingerprint.
 - Automatic creation of competitive companies and changes to station access.
 - Additional native terraforming and track-upgrade hooks.
 - Alternate simulation-buffer and world-loading experiments.
-- The expanded scenario runner and notification/discard additions.
+- The expanded scenario runner.
 
 The existing junction gate remains off pending its own game acceptance.
 No owner decision in PLAN.md or DECISIONS.md is changed by this integration.
@@ -55,6 +59,6 @@ No owner decision in PLAN.md or DECISIONS.md is changed by this integration.
 ## Compatibility
 
 This selected combination is distinct from both the previous `dev` and PR #37:
-protocol **15**, bridge **21**, action schema **22**. Update launcher, hook,
+protocol **15**, bridge **21**, action schema **23**. Update launcher, hook,
 mod and relay together before release. Older peers must fail version checks;
 this branch is not compatible with the currently deployed relay until upgraded.

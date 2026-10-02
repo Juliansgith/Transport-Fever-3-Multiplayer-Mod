@@ -93,6 +93,11 @@ guard.CARRY = {
 			-- A popup played a notification's first sound (the game's
 			-- notification_popups.tl): marked so in every game.
 			return { NotificationSeen = { notification = param.notificationId } }
+		elseif id == "Notifications" and (name == "dismiss" or name == "enlist" or name == "updateIgnoredTypes") then
+			-- The notification log and popups (notification_log.tl,
+			-- notification_popups.tl): done in every game, once the
+			-- channel is accepted (tpf3mp/acceptance.lua).
+			return capture().notification(ctx, name, param)
 		elseif id == "Subvention" and (name == "onAccept" or name == "onDecline") then
 			-- The subsidy window's Accept and Decline (subventions_gui.tl):
 			-- the offer by its number and kind (capture.subsidy).
@@ -115,6 +120,7 @@ guard.CARRY = {
 	makeLineDestroyCmd = by("lineDestroy"),
 	makeEntitySetNameCmd = by("setName"),
 	makeEntitySetColorCmd = by("setColor"),
+	makeStockListDiscardCargoCmd = by("discardCargo"),
 	-- A construction's parameters changed in its window: an edit of that
 	-- construction, which every game replaces alike. Other builds a window
 	-- sends stay refused.

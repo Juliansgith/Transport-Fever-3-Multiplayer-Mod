@@ -1199,6 +1199,17 @@ reference of its own to either. Once linked, the GUI wraps every
     (`capture.subsidy`); an offer this game no longer has is refused at
     the click ("a subsidy no longer offered"). A refusal by the room is
     told the player in the game bar;
+  - the notification log's and popups' `makeScriptingSendEventCmd("",
+    "Notifications", "dismiss" | "enlist" | "updateIgnoredTypes", …)`, as a
+    `Notification` action (the notification by the script's number, or the
+    ignored kinds by name, sorted), which every game's Notifications script
+    does alike, so the log is the room's: one player's dismiss or ignore
+    list is every player's; and the warehouse window's discard
+    (`makeStockListDiscardCargoCmd`), as `DiscardCargo`, the warehouse by
+    its construction (INFERRED: the window's entity is it), refused for a
+    warehouse another company owns. Both stay refused, in the sender and in
+    every game's replay, until `acceptance.lua`'s `notifications` and
+    `discard` are turned on after a two-player game (COVERAGE.md);
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
     file and position and its index among that construction's depots, an
     airport's second hangar say; a depot no street reaches by the

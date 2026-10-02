@@ -1215,6 +1215,30 @@ function HANDLERS.VehicleOp(op, ctx)
 	return false, "a vehicle change of no kind"
 end
 
+-- The notification log's events (action::NotificationOp), through the
+-- Notifications script's own, as the log sends them.
+function HANDLERS.Notification(op)
+	if op.Dismiss ~= nil then
+		return run(api.cmd.makeScriptingSendEventCmd("", "Notifications", "dismiss", { id = op.Dismiss }))
+	elseif op.Enlist ~= nil then
+		return run(api.cmd.makeScriptingSendEventCmd("", "Notifications", "enlist", { id = op.Enlist }))
+	elseif op.Ignore ~= nil then
+		local set = {}
+		for _, kind in ipairs(op.Ignore.types) do set[kind] = true end
+		return run(api.cmd.makeScriptingSendEventCmd("", "Notifications", "updateIgnoredTypes",
+			{ ignoredTypes = set, ignoreFully = op.Ignore.fully == true }))
+	end
+	return false, "a notification change of no kind"
+end
+
+-- A warehouse's cargo discarded (action::DiscardCargo): the warehouse at its
+-- place, which no other company owns.
+function HANDLERS.DiscardCargo(d)
+	local warehouse = constructionAt(d.warehouse)
+	mine(warehouse, "warehouse")
+	return run(api.cmd.makeStockListDiscardCargoCmd(warehouse, seq(d.stocks), d.remaining))
+end
+
 -- Renaming a vehicle, a station, a town or a construction (action::Renamed),
 -- as its window does: the acting company's own vehicle, a station or
 -- construction no other company owns, any town.
