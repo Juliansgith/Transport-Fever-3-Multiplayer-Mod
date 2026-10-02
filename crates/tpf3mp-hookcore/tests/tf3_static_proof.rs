@@ -101,6 +101,19 @@ const TARGETS: &[(&str, u64)] = &[
     ("lua_getfield", 0x2fbdb90),
     ("lua_loadfile", 0x2fa1d50),
     ("lua_cached_loadfile", 0x2fa8130),
+    // The person-order fixes (crates/tpf3mp-hook/src/persons.rs).
+    ("destination_util::GetTargetsByLandUse/candidates", 0x8e3d65),
+    (
+        "ecs::SimEntityAtBuildingSystem::Update2/leave batches",
+        0xb05f92,
+    ),
+    ("ecs::PersonMoveSystem::Update2/arrival batch", 0xaecfcd),
+    ("ecs::SimEntityNeedsPathSystem::Update/list", 0xb18213),
+    (
+        "ecs::SimEntityNeedsPathSystem::EntityToBeRemoved/data getter call",
+        0xb18121,
+    ),
+    ("ecs::Engine::EndModification/free-id append", 0x2bb4fd1),
 ];
 
 #[test]
@@ -186,6 +199,42 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     assert_eq!(&text_bytes[at(0x2b76b4f)..at(0x2b76b4f) + 2], &[0x75, 0x35]);
     assert_eq!(0x2b76b51 + 0x35, 0x2b76b86);
     assert_eq!(&text_bytes[at(0x2b76b1c)..at(0x2b76b1c) + 2], &[0x75, 0x2C]);
+    // The person-order fixes (crates/tpf3mp-hook/src/persons.rs).
+    // candidates: the leave handler reaches GetTargetsByLandUse through the
+    // destination assignment and GetRandomTargets, whose draw is
+    // BinarySearchIndex's; the vector at the site is the one the copy loop
+    // filled (`lea rbx, [rsp+0x70]`).
+    assert_eq!(callee(0xb2ec5f), 0xb2b040);
+    assert_eq!(callee(0x8e37d8), 0x8e3ac0);
+    assert_eq!(callee(0x8e24ae), 0x8e4400);
+    assert_eq!(
+        &text_bytes[at(0x8e3cd9)..at(0x8e3cd9) + 5],
+        &[0x48, 0x8D, 0x5C, 0x24, 0x70]
+    );
+    // departures and arrivals: their emits all reach one signal function;
+    // the thread-pool loop the departures come from is the call before
+    // their site; the leave handler and the arrival handler draw from a
+    // generator seeded by updateCount.
+    for site in [0xb05fad, 0xb05fd1, 0xaecfe8] {
+        assert_eq!(callee(site), 0xaeaeb0, "{site:#x} emits the batch");
+    }
+    assert_eq!(callee(0xb05f8d), 0xb052c0);
+    assert_eq!(callee(0xb2e9d2), 0x2a9680);
+    assert_eq!(callee(0xb33abc), 0x2a9680);
+    // needs-path: Update is PathFactory::Compute's caller, its results loop
+    // re-reads the list by position, and the getter call reaches the
+    // copy-on-write getter.
+    assert_eq!(callee(0xb1833a), 0x8d11e0);
+    assert_eq!(
+        &text_bytes[at(0xb183c0)..at(0xb183c0) + 11],
+        &[
+            0x49, 0x8B, 0x45, 0x10, 0x48, 0x8B, 0x08, 0x42, 0x8B, 0x1C, 0xA1
+        ]
+    );
+    assert_eq!(callee(0xb18121), 0xb186c0);
+    assert_eq!(callee(0xb17d0a), 0xb186c0);
+    // freed ids: the call after the site is the free-id deque's insert.
+    assert_eq!(callee(0x2bb4ff3), 0x2bb1110);
     // The land-vehicle shuffle's seed is the tickCount getter's answer.
     assert_eq!(callee(0xac1b23), 0x2a95c0);
     // The main menu's m_game test reads CMenuUI+0x6b0, the field StartGame
