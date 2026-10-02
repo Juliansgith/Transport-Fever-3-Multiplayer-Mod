@@ -2228,12 +2228,105 @@ pub mod path_ties {
         0xC4, 0xA1, 0x7A, 0x58, 0x5C, 0xD2, 0x0C, // vaddss xmm3, xmm0, [rdx+r10*8+0xc]
     ];
     pub const SEGMENT_LEN: usize = 24;
+    /// The three vehicle route searches' calls of the sort, from the first
+    /// (the profile's site): `0x266ce45`, `0x266d2b4`, `0x266d6e4`.
+    pub const VEHICLE_SITE_OFFSETS: [u64; 3] = [0, 0x46f, 0x89f];
+    /// The bytes before each call: `mov r8,rdx; sub r8,rcx; sar r8,2`.
+    pub const CALL_PREFIX: [u8; 10] = [0x4C, 0x8B, 0xC2, 0x4C, 0x2B, 0xC1, 0x49, 0xC1, 0xF8, 0x02];
     const MAX_SEGMENTS: usize = 1 << 26;
 
     static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
     static BROKEN: AtomicBool = AtomicBool::new(false);
     static CALLS: AtomicU64 = AtomicU64::new(0);
     static TIES: AtomicU64 = AtomicU64::new(0);
+
+    /// The search watcher (logging only): `TPF3MP_HOOK_WATCH_PATH_ENTITIES`
+    /// lists edge entities (commas), `TPF3MP_HOOK_WATCH_PATH_STEPS` a room
+    /// step range `from-to`; every sorted batch, in those steps, holding a
+    /// segment on one of those entities is said whole.
+    pub const WATCH_ENTITIES_ENV: &str = "TPF3MP_HOOK_WATCH_PATH_ENTITIES";
+    pub const WATCH_STEPS_ENV: &str = "TPF3MP_HOOK_WATCH_PATH_STEPS";
+
+    struct Watch {
+        entities: std::collections::HashSet<i32>,
+        from: u64,
+        to: u64,
+    }
+
+    static WATCH: std::sync::OnceLock<Option<Watch>> = std::sync::OnceLock::new();
+
+    /// A step range `from-to` (or one step).
+    pub fn parse_steps(value: &str) -> Option<(u64, u64)> {
+        let value = value.trim();
+        match value.split_once('-') {
+            Some((from, to)) => {
+                let (from, to) = (from.trim().parse().ok()?, to.trim().parse().ok()?);
+                (from <= to).then_some((from, to))
+            }
+            None => value.parse().ok().map(|step| (step, step)),
+        }
+    }
+
+    /// The batch line: each segment `entity/index/dir:<so far>+<heuristic>`
+    /// with the floats' bits, in the order the sort gave.
+    pub fn batch_line(step: u64, in_step: bool, search: u64, segments: &[&[u8]]) -> String {
+        let mut text = format!(
+            "pathsort: step {step} {} search {search:x} n={}:",
+            if in_step {
+                "step-thread"
+            } else {
+                "other-thread"
+            },
+            segments.len()
+        );
+        for seg in segments {
+            let word =
+                |at: usize| u32::from_le_bytes([seg[at], seg[at + 1], seg[at + 2], seg[at + 3]]);
+            text.push_str(&format!(
+                " {}/{}/{}:{:08x}+{:08x}",
+                word(0) as i32,
+                word(4) as i32,
+                seg[8],
+                word(0x0c),
+                word(0x10)
+            ));
+        }
+        text
+    }
+
+    fn watch_batch(indices: &[i32], segments: &[u8], this: usize) {
+        let Some(Some(watch)) = WATCH.get() else {
+            return;
+        };
+        let Some(step) = crate::seeds::current_step() else {
+            return;
+        };
+        if step < watch.from || step > watch.to {
+            return;
+        }
+        let seg = |i: i32| &segments[i as usize * SEGMENT_LEN..(i as usize + 1) * SEGMENT_LEN];
+        let hit = indices.iter().any(|&i| {
+            let s = seg(i);
+            watch
+                .entities
+                .contains(&i32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+        });
+        if !hit {
+            return;
+        }
+        // The search's identity in this log: its first segment's key, not
+        // its address (the address differs from game to game).
+        let first = if segments.len() >= SEGMENT_LEN {
+            let mut h = Fnv1a::new();
+            h.write(&segments[..9]);
+            h.0 & 0xffff_ffff
+        } else {
+            0
+        };
+        let _ = this;
+        let list: Vec<&[u8]> = indices.iter().map(|&i| seg(i)).collect();
+        log::line(&batch_line(step, in_step(), first, &list));
+    }
     static REFUSED: AtomicU64 = AtomicU64::new(0);
 
     type SortFn = unsafe extern "system" fn(*mut i32, *mut i32, isize, usize);
@@ -2268,11 +2361,12 @@ pub mod path_ties {
             let (ka, kb) = (key(seg(a)), key(seg(b)));
             ka.0.partial_cmp(&kb.0)
                 .unwrap_or_else(|| ka.0.total_cmp(&kb.0))
-                // The edge key (entity, index, direction byte), the cost so
-                // far, then the rest (padding in the vehicles' searches).
+                // The edge key (entity, index, direction byte: the search
+                // reads these, 0x266cf54..0x266cf7a), then the cost so far;
+                // bytes 9..12 are padding and never compared. Segments
+                // equal in all that keep their input order.
                 .then(ka.1[..9].cmp(&kb.1[..9]))
                 .then(ka.2.cmp(&kb.2))
-                .then(ka.1[9..].cmp(&kb.1[9..]))
         });
         Ok(indices
             .windows(2)
@@ -2289,6 +2383,21 @@ pub mod path_ties {
         if !wanted {
             return off(format!("{TOGGLE_ENV} says so; the engine's sort stands"));
         }
+        let entities =
+            super::claims::parse_entities(std::env::var(WATCH_ENTITIES_ENV).ok().as_deref());
+        let steps = std::env::var(WATCH_STEPS_ENV)
+            .ok()
+            .and_then(|v| parse_steps(&v));
+        let _ = WATCH.set(match (entities.is_empty(), steps) {
+            (false, Some((from, to))) => {
+                log::line(&format!(
+                    "order fix {FIX}: watching searches through {} entities in steps {from}-{to}",
+                    entities.len()
+                ));
+                Some(Watch { entities, from, to })
+            }
+            _ => None,
+        });
         let Some(site) = resolved.get(CALL_SITE) else {
             return off(format!("the profile has no {CALL_SITE:?}"));
         };
@@ -2317,22 +2426,50 @@ pub mod path_ties {
         {
             return off(format!("the sort at {target:#x} is not the shape expected"));
         }
-        // SAFETY: a function of the game whose code was just checked,
-        // detoured before any world exists; the detour has its ABI (four
-        // integer arguments, no return value).
-        match unsafe { InlineDetour::install(target as usize as *mut u8, sort as *const u8) } {
-            Ok(detoured) => {
-                ORIGINAL.store(detoured.trampoline() as usize, Ordering::Release);
-                let _kept = std::mem::ManuallyDrop::new(detoured);
-                Outcome {
-                    fix: FIX,
-                    installed: true,
-                    reason: format!(
-                        "the path finder's segment sort at {target:#x}: equal costs in one order, by the segment's key"
-                    ),
-                }
+        // Only the vehicles' searches: the three PrioritySearch copies of the
+        // vehicle route code (0x266cd50, 0x266d1d0, 0x266d600), each calling
+        // the sort after the same `mov r8,rdx; sub r8,rcx; sar r8,2`. The
+        // persons' searches (LinkPathSeg) share the sort's code but not, as
+        // far as checked, the key layout, and keep the engine's sort.
+        let mut sites = Vec::new();
+        for offset in VEHICLE_SITE_OFFSETS {
+            let at = site.address + offset;
+            let Some(bytes) = read(at - CALL_PREFIX.len() as u64, CALL_PREFIX.len() + 5) else {
+                return off(format!("the call at {at:#x} is unreadable"));
+            };
+            let rel = i32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
+            let callee = at.wrapping_add(5).wrapping_add_signed(i64::from(rel));
+            if bytes[..CALL_PREFIX.len()] != CALL_PREFIX || bytes[10] != 0xE8 || callee != target {
+                return off(format!("no call of the sort at {at:#x}"));
             }
-            Err(error) => off(format!("the sort at {target:#x}: {error}")),
+            sites.push(at);
+        }
+        ORIGINAL.store(target as usize, Ordering::Release);
+        let mut redirected = 0;
+        for at in &sites {
+            // SAFETY: a checked `call rel32` of the sort inside the game's
+            // vehicle route search, which no thread runs yet; `sort` has the
+            // sort's ABI (four integer arguments, no return value).
+            match unsafe {
+                tpf3mp_hookcore::detour::CallRedirect::install(
+                    *at as usize as *mut u8,
+                    target as usize,
+                    sort as *const u8,
+                )
+            } {
+                Ok(redirect) => {
+                    let _kept = std::mem::ManuallyDrop::new(redirect);
+                    redirected += 1;
+                }
+                Err(error) => return off(format!("the call at {at:#x}: {error}")),
+            }
+        }
+        Outcome {
+            fix: FIX,
+            installed: true,
+            reason: format!(
+                "the vehicle route searches' {redirected} calls of the segment sort at {target:#x}: equal costs in one order, by the segment's edge"
+            ),
         }
     }
 
@@ -2379,6 +2516,7 @@ pub mod path_ties {
                     Ok(ties) => {
                         TIES.fetch_add(ties, Ordering::Relaxed);
                         done = true;
+                        watch_batch(indices, segments, this);
                     }
                     Err(_) => {
                         REFUSED.fetch_add(1, Ordering::Relaxed);
@@ -3779,6 +3917,22 @@ mod tests {
         other.insert(call, vec![0x90; 5]);
         let mut read = reads(other);
         assert!(decision_sync::getter_from_call(call, &mut read).is_err());
+    }
+
+    #[test]
+    fn the_search_watch_reads_its_steps_and_says_each_segment() {
+        assert_eq!(path_ties::parse_steps("3190-3210"), Some((3190, 3210)));
+        assert_eq!(path_ties::parse_steps(" 3200 "), Some((3200, 3200)));
+        assert_eq!(path_ties::parse_steps("3210-3190"), None);
+        let mut seg = [0u8; path_ties::SEGMENT_LEN];
+        seg[..4].copy_from_slice(&362_201i32.to_le_bytes());
+        seg[4..8].copy_from_slice(&10i32.to_le_bytes());
+        seg[8] = 1;
+        seg[0x0c..0x10].copy_from_slice(&1.0f32.to_le_bytes());
+        assert_eq!(
+            path_ties::batch_line(3200, true, 0xab, &[&seg]),
+            "pathsort: step 3200 step-thread search ab n=1: 362201/10/1:3f800000+00000000"
+        );
     }
 
     #[test]

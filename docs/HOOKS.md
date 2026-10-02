@@ -3369,21 +3369,51 @@ per-game input made the two batches' orders differ is not established;
 the fix does not need it.
 
 The fix takes the sort from the road search's call (`0x266ce45`, profile
-target `PathFinder::PrioritySearch/sort call`), checks its prologue and
-its comparator's bytes, and detours it whole. It orders the indices by
-the cost (added as the engine adds it), then by the segment's edge key
-(its first 9 bytes: entity, index, direction), then by its cost so far,
-then by its other key bytes. The sort is stable, so one set of segments
-gives one order whatever the input order, still ordered by cost as the
-search needs. A range it cannot read goes to the engine's own sort. Once,
-and every `1 << 20` sorts:
+target `PathFinder::PrioritySearch/sort call`). It checks the sort's
+prologue and its comparator's bytes, and redirects only the three vehicle
+route searches' calls of it (`0x266ce45`, `0x266d2b4`, `0x266d6e4`, each
+checked: the same `mov r8,rdx; sub r8,rcx; sar r8,2` before a call of
+that sort). The replacement orders the indices by the cost (added as the
+engine adds it), then by the segment's edge (its first 9 bytes: the
+entity, index and direction the search reads at `0x266cf54..0x266cf7a`),
+then by its cost so far. It is a stable sort, so segments equal in all of
+that keep their input order; bytes 9..12 are padding and are never
+compared. The persons' `LinkPathSeg` searches share the sort's code but
+not, as far as checked, that key layout, so they keep the engine's sort.
+Until the correction after the tie-order round, the fix detoured the sort
+for every caller and compared the padding last. A range it cannot read
+goes to the engine's sort. Once, and every `1 << 20` sorts:
 
 ```
 order fix path-tie-order: alive, sorts=<n> ties=<n> refused=<n>
 ```
 
 `ties` counts neighbours of equal cost in the sorted ranges: the
-decisions the engine's order alone used to make.
+decisions the engine's order alone used to make. The sort also runs for searches
+outside the room's simulation (the GUI's), so two games' `ties` may differ
+without anything having diverged.
+
+The tie-order round (`7adeeae`, james and cat) split all the same: at step
+3200 217708's new route started on 362201 lane 4 and looped round road
+373171 (26 edges) in james's game, and started on lane 10 and went
+straight to the stop (10 edges) in cat's. Its `MovePath` (every word but
+padding and the per-copy snapshot) was equal in both games through step
+3092, its `TransportVehicle` through 3199, and its old 55-edge path the
+same. So the search's inputs differed: the costs or the blocking of
+station 362201's lanes. The search watcher, logging only, says every
+sorted batch that holds a segment on one of the edge entities
+`TPF3MP_HOOK_WATCH_PATH_ENTITIES` lists (commas), in the room steps
+`TPF3MP_HOOK_WATCH_PATH_STEPS` gives (`from-to`), with each segment's key
+and its two floats' bits:
+
+```
+pathsort: step <s> step-thread|other-thread search <id> n=<count>: <entity>/<index>/<dir>:<so far bits>+<heuristic bits> ...
+```
+
+`id` hashes the first segment's key; searches run on worker threads, so
+their order in the log may differ between games, but each search's batches
+must be equal. The first segment whose cost differs between two games, for
+the same key, names the lane whose cost differs.
 
 **The engine-copy checker** (`crate::copycheck`; read only, off unless
 `TPF3MP_PROBE_ENGINE_COPY` is `1` or `on`, or a number n for every n-th

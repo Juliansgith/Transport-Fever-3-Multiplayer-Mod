@@ -193,6 +193,8 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     assert_eq!(callee(0xb8572d), 0x255bce0);
     // The road search's segment sort, which the path-tie fix detours.
     assert_eq!(callee(0x266ce45), 0x5af710);
+    assert_eq!(callee(0x266d2b4), 0x5af710);
+    assert_eq!(callee(0x266d6e4), 0x5af710);
     // The road-entry fix: Add appends in place (`add qword [rcx+8], 0x14`).
     assert_eq!(
         &text_bytes[at(0x255ea6d)..at(0x255ea6d) + 5],
