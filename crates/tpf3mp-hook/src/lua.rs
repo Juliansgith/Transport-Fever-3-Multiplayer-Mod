@@ -97,6 +97,13 @@
 //!   changed since the last call, `{ { from =, action = }, ... }`, `from`
 //!   as 64 hex digits and `action` as `take()` gives one, absent once that
 //!   member's tool shows nothing. Both optional in the contract.
+//! - `draw(from)`, `drawn()` and `undraw(from)`: in the GUI, draws another
+//!   member's preview ([`crate::drawing`]): `draw` arms the GUI thread for
+//!   member `from` (64 hex digits), the GUI then has the game evaluate the
+//!   preview's proposal (`api.engine.util.proposal.makeProposalData`), which
+//!   the hook draws in that member's renderer, and `drawn` disarms: `true`,
+//!   or `false` and why, or `nil` when the game evaluated nothing. `undraw`
+//!   clears the member's renderer. Optional in the contract.
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -651,7 +658,7 @@ pub fn take_world_up() -> Option<u64> {
     }
 }
 
-fn log(line: String) {
+pub(crate) fn log(line: String) {
     let mut shared = shared();
     if shared.log.len() < MAX_LOG_LINES {
         shared.log.push_back(line);
@@ -717,6 +724,9 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"edgewatched", native_edgewatched),
                 (b"preview", native_preview),
                 (b"previews", native_previews),
+                (b"draw", native_draw),
+                (b"drawn", native_drawn),
+                (b"undraw", native_undraw),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -1250,6 +1260,77 @@ unsafe fn preview_from(api: &LuaApi, l: State) -> Result<Option<Payload>, String
         }
         Ok(Some(payload))
     }
+}
+
+/// The member a GUI call names by its first argument, 64 hex digits.
+///
+/// # Safety
+///
+/// Lua's own state, on its thread.
+unsafe fn member_arg(api: &LuaApi, l: State) -> Result<PlayerId, String> {
+    // SAFETY: the caller's.
+    let hex = unsafe { string_arg(api, l, 1, 64) };
+    hex.as_deref()
+        .and_then(crate::lobby::player)
+        .ok_or_else(|| "a member is 64 hex digits".to_owned())
+}
+
+/// Pushes `true`, or `false` and why.
+///
+/// # Safety
+///
+/// Lua's own state, inside a C function's call.
+unsafe fn push_outcome(api: &LuaApi, l: State, outcome: Result<(), String>) -> c_int {
+    // SAFETY: the caller's; a C function's call has room for its results.
+    unsafe {
+        match outcome {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
+/// `draw(from)`: arms this thread to draw member `from`'s preview with the
+/// next `makeProposalData` ([`crate::drawing::arm`]).
+unsafe extern "C-unwind" fn native_draw(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let outcome = unsafe { member_arg(api, l) }.and_then(crate::drawing::arm);
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
+/// `drawn()`: disarms, and says what the armed call came to: `true`, or
+/// `false` and why, or `nil` when the game evaluated nothing.
+unsafe extern "C-unwind" fn native_drawn(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    match crate::drawing::disarm() {
+        // SAFETY: Lua calls this with its own state.
+        Some(outcome) => unsafe { push_outcome(api, l, outcome) },
+        None => 0,
+    }
+}
+
+/// `undraw(from)`: member `from`'s tool shows nothing now.
+unsafe extern "C-unwind" fn native_undraw(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let outcome = unsafe { member_arg(api, l) }.map(crate::drawing::hide);
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
 }
 
 /// `previews()`: the other members' previews that changed since the last
@@ -3168,6 +3249,33 @@ my_timetables";
         );
         notice(&Notice::Ended(Text::new("the owner left").unwrap()));
         assert_eq!(lua.run("return #tpf3mp_native.previews()"), Ok("0".into()));
+    }
+
+    #[test]
+    fn a_build_that_cannot_draw_says_so_and_draws_nothing() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        let member = "ab".repeat(32);
+        assert_eq!(
+            lua.run(&format!("return tpf3mp_native.draw('{member}')")),
+            Ok("false|this build cannot draw the others' previews".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.draw('nobody')"),
+            Ok("false|a member is 64 hex digits".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.drawn()"),
+            Ok(String::new()),
+            "nothing armed"
+        );
+        assert_eq!(
+            lua.run(&format!("return tpf3mp_native.undraw('{member}')")),
+            Ok("true".into()),
+            "nothing drawn, nothing to clear"
+        );
     }
 
     #[test]

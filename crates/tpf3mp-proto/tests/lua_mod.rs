@@ -198,6 +198,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
         added,
         [
             "tpf3mp.acceptance",
+            "tpf3mp.apply",
             "tpf3mp.banners",
             "tpf3mp.bridge",
             "tpf3mp.capture",
@@ -207,6 +208,8 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.geom",
             "tpf3mp.guard",
             "tpf3mp.hudguard",
+            "tpf3mp.junctions",
+            "tpf3mp.previews",
             "tpf3mp.progression",
             "tpf3mp.registry",
             "tpf3mp.roads",
@@ -613,6 +616,27 @@ tpf3mp_native = {
         local changes = HOOK.incoming or {}
         HOOK.incoming = {}
         return changes
+    end,
+    -- Drawing another member's preview: armed for one member, then what
+    -- makeProposalData evaluated while armed is drawn; HOOK.drawing says
+    -- what happened, in order.
+    draw = function(from)
+        if #from ~= 64 then return false, 'a member is 64 hex digits' end
+        HOOK.armed = from
+        return true
+    end,
+    drawn = function()
+        local evaluated = HOOK.evaluated
+        HOOK.armed, HOOK.evaluated = nil, nil
+        if evaluated == nil then return nil end
+        HOOK.drawing = HOOK.drawing or {}
+        HOOK.drawing[#HOOK.drawing + 1] = 'drew ' .. evaluated
+        return true
+    end,
+    undraw = function(from)
+        HOOK.drawing = HOOK.drawing or {}
+        HOOK.drawing[#HOOK.drawing + 1] = 'undrew ' .. from:sub(1, 2)
+        return true
     end,
     -- A lane dump the hook asks for ({ step =, lanes = }), once; the
     -- entries go to HOOK.dumped as the hook writes them to its log.
@@ -2657,41 +2681,121 @@ fn a_preview_hides_once_its_tool_is_no_longer_active() {
 }
 
 #[test]
-fn the_other_members_previews_reach_the_renderer_and_the_log_says_the_first() {
+fn a_dry_run_makes_a_builds_proposal_and_sends_nothing() {
     let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')          local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')          apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end          local action = assert(capture.construction({CONSTRUCTION_PROPOSAL}))          P, C = apply.proposalOf(action, {{ company = 31 }})          NOT, WHY = apply.proposalOf({{ Bulldoze = {{}} }}, {{}})"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}
+{}", log(&lua)));
+    let (file, player, sent, logged): (String, i64, usize, usize) = lua
+        .load("return P.constructionsToAdd[1].fileName, C.player, #SENT, #HOOK.logged")
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}
+{}",
+                log(&lua)
+            )
+        });
+    assert!(file.ends_with(".con"), "{file}");
+    assert_eq!(player, 31, "built for the sender's company");
+    assert_eq!((sent, logged), (0, 0), "nothing sent, nothing said");
+    let why: String = lua
+        .load("return tostring(NOT) .. ' ' .. WHY")
+        .eval()
+        .unwrap();
+    assert_eq!(why, "nil no preview of Bulldoze");
+    // The next action applies as before: the dry run left nothing behind.
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')          local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')          OK = apply.run(assert(capture.construction({CONSTRUCTION_PROPOSAL})), {{}})"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}
+{}", log(&lua)));
+    let (ok, sent): (bool, usize) = lua.load("return OK, #SENT").eval().unwrap();
+    assert!(ok && sent == 1, "{}", log(&lua));
+}
+
+#[test]
+fn the_plugin_has_the_hook_draw_each_other_members_preview_and_mounts_nothing() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    // The proposal a preview makes here, as apply.proposalOf would make it,
+    // and the game's evaluation of it, which the hook draws while armed.
     lua.load(
-        "HOOK.room = true \
-         RENDERED = {} \
-         local previews = ug_require('tpf3mp_1::/scripts/tpf3mp/previews.lua') \
-         previews.render = function(from, action) \
-             RENDERED[#RENDERED + 1] = from:sub(1, 2) .. ' ' .. (action and next(action) or 'none') \
-         end \
-         HOOK.incoming = { { from = string.rep('ab', 32), action = { BuildTrack = {} } } } \
-         SCRIPT.guiUpdate({}, nil, nil) \
+        "api.engine = { util = { getPlayer = function() return 25 end, proposal = { \
+             makeProposalData = function(proposal, context) \
+                 if HOOK.armed then HOOK.evaluated = HOOK.armed:sub(1, 2) .. ' ' \
+                     .. tostring(proposal.track) .. ' for ' .. tostring(context.player) end \
+                 return {} \
+             end } } } \
+         package.loaded['tpf3mp.apply'] = { proposalOf = function(action) \
+             if action.BuildTrack then return { track = true }, { player = 25 } end \
+             return nil, 'this game has no such street' \
+         end } \
+         HOOK.room = true",
+    )
+    .exec()
+    .unwrap();
+    lua.load(
+        "M = mount(loadPlugin()) M.step() M.render() \
          HOOK.incoming = { { from = string.rep('ab', 32), action = { BuildTrack = {} } }, \
-                           { from = string.rep('cd', 32) } } \
-         SCRIPT.guiUpdate({}, nil, nil) \
-         HOOK.incoming = { { from = string.rep('ab', 32) } } \
-         SCRIPT.guiUpdate({}, nil, nil) \
-         previews.render = nil",
+                           { from = string.rep('cd', 32), action = { BuildRoad = {} } } } \
+         M.step() M.render()",
     )
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
-    let rendered: Vec<String> = lua.load("return RENDERED").eval().unwrap();
+    let (kept, mounted): (String, usize) = lua
+        .load(
+            "local kept = {} \
+             for from, p in pairs(require('tpf3mp.previews').remote()) do \
+                 kept[#kept + 1] = from:sub(1, 2) .. ' ' .. p.kind .. ' ' .. tostring(p.proposal.track) \
+             end \
+             local mounted = 0 \
+             for _, child in ipairs(M.layout.params.children) do \
+                 if child.view == 'ProposalViewer' then mounted = mounted + 1 end \
+             end \
+             return table.concat(kept, ','), mounted",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(
-        rendered,
-        ["ab BuildTrack", "ab BuildTrack", "cd none", "ab none"]
+        kept, "ab BuildTrack true",
+        "the track kept; the road this game cannot make not"
+    );
+    assert_eq!(
+        mounted, 0,
+        "no ProposalViewer outside a tool: build 40408 fails fatally (!IsTransformWithContext)"
+    );
+    let drawing: Vec<String> = lua.load("return HOOK.drawing").eval().unwrap();
+    assert_eq!(
+        drawing,
+        ["drew ab true for 25"],
+        "the hook drew the track, as evaluated"
     );
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
-    let arrived: Vec<&String> = logged
-        .iter()
-        .filter(|l| l.starts_with("another member's build preview arrived"))
-        .collect();
-    assert_eq!(
-        arrived,
-        ["another member's build preview arrived: BuildTrack from abababababababab"],
-        "once a member"
-    );
+    for line in [
+        "another member's build preview arrived: BuildTrack from abababababababab",
+        "drawing another member's build preview: BuildTrack from abababababababab",
+        "another member's BuildRoad preview does not show here: this game has no such street",
+    ] {
+        assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
+    }
+    // The member's tool shows nothing now: the hook clears it.
+    lua.load("HOOK.incoming = { { from = string.rep('ab', 32) } } M.step() M.render()")
+        .exec()
+        .unwrap();
+    let drawing: Vec<String> = lua.load("return HOOK.drawing").eval().unwrap();
+    assert_eq!(drawing, ["drew ab true for 25", "undrew ab"]);
+    let left: usize = lua
+        .load("local n = 0 for _ in pairs(require('tpf3mp.previews').remote()) do n = n + 1 end return n")
+        .eval()
+        .unwrap();
+    assert_eq!(left, 0);
 }
 
 #[test]
@@ -3654,6 +3758,28 @@ fn a_track_the_room_ordered_has_its_templates_track_distance() {
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(distances, ["5", "nil"], "{}", log(&lua));
+}
+
+#[test]
+fn a_roads_preview_is_the_proposal_its_build_would_send() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(format!(
+        "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')          apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end          P, C = apply.proposalOf({ROAD}, {{}})"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let (nodes, edges, removed, sent, logged): (usize, usize, String, usize, usize) = lua
+        .load(
+            "local p = P.streetProposal              return #p.nodesToAdd, #p.edgesToAdd, table.concat(p.edgesToRemove, ','), #SENT, #HOOK.logged",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        (nodes, edges, removed.as_str(), sent, logged),
+        (2, 4, "100", 0, 0),
+        "the build's nodes and edges, the split street's edge removed, nothing sent or said"
+    );
 }
 
 #[test]

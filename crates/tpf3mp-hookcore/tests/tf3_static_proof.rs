@@ -172,6 +172,22 @@ const TARGETS: &[(&str, u64)] = &[
         0xb18121,
     ),
     ("ecs::Engine::EndModification/free-id append", 0x2bb4fd1),
+    // The other players' build previews (crates/tpf3mp-hook/src/drawing.rs).
+    ("UI::RendererFactory::Create", 0x8266d0),
+    ("UI::CRendererComponent::AddRenderable", 0x6ae970),
+    ("UI::CRendererComponent::RemoveRenderable", 0x6afdf0),
+    ("UI::BuilderRenderer::Clear", 0x7ba590),
+    ("UI::BuilderRenderer::vf0", 0x7b89a0),
+    ("builder_renderer_util::AddToRenderer", 0x5e2b20),
+    ("CreateProposalData", 0xa1fd10),
+    ("makeProposalData/CreateProposalData call", 0x25122da),
+    ("UI::CGameUI::~CGameUI", 0x650470),
+    ("UI::CMenuUI::StartGame/CGameUI store", 0x6a4f52),
+    ("UI::CGameUI::CreateUI/RendererFactory field", 0x65be0c),
+    ("UI::CGameUI::CreateUI/mainView store", 0x65b1bc),
+    ("ProposalViewer/ModelData read", 0x2aa3b06),
+    ("ProposalViewer/evaluated test", 0x2aa39d5),
+    ("BuilderRenderer::EndHeightMod/upload flag", 0x7bbb6a),
 ];
 
 #[test]

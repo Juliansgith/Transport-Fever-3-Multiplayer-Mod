@@ -37,6 +37,7 @@ pub mod at_menu;
 pub mod autoload;
 pub mod builds;
 pub mod clipboard;
+pub mod drawing;
 pub mod edgewatch;
 pub mod guiplayer;
 pub mod image;

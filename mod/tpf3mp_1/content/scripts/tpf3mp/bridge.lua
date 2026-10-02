@@ -89,6 +89,12 @@
 --                                   -- members' tools show that changed since
 --                                   -- the last call, { { from =, action = } },
 --                                   -- no action for one that shows nothing
+--     draw    = function(from),     -- optional; in the GUI: the next
+--                                   -- makeProposalData draws member from's
+--                                   -- preview -> true | false, why
+--     drawn   = function(),         -- optional; what it came to -> true |
+--                                   -- false, why | nil (nothing evaluated)
+--     undraw  = function(from),     -- optional; member from's preview goes
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -377,6 +383,34 @@ function Link:previews()
 	local ok, changes = pcall(self.native.previews)
 	if not ok or type(changes) ~= "table" then return {} end
 	return changes
+end
+
+-- In the GUI: draws member `from`'s preview, the proposal `proposal` with
+-- `context`, in the hook's renderer for them (docs/HOOKS.md, "Build
+-- previews"): the hook draws what the game evaluates for it with `evaluate`
+-- (api.engine.util.proposal.makeProposalData). True, or nil and why; nil
+-- from a hook that cannot draw (`draw` is optional).
+function Link:drawPreview(from, proposal, context, evaluate)
+	local native = self.native
+	if type(native.draw) ~= "function" or type(native.drawn) ~= "function" then
+		return nil, "this hook draws no previews"
+	end
+	local ok, armed, why = pcall(native.draw, tostring(from))
+	if not ok then return nil, tostring(armed) end
+	if armed ~= true then return nil, tostring(why or "the hook did not arm") end
+	local evaluated, err = pcall(evaluate, proposal, context)
+	local okDrawn, drawn, whyNot = pcall(native.drawn)
+	if not evaluated then return nil, "the game did not evaluate it: " .. tostring(err) end
+	if not okDrawn then return nil, tostring(drawn) end
+	if drawn == nil then return nil, "the game made nothing to draw" end
+	if drawn ~= true then return nil, tostring(whyNot or "not drawn") end
+	return true
+end
+
+-- In the GUI: member `from`'s preview goes.
+function Link:undrawPreview(from)
+	if type(self.native.undraw) ~= "function" then return end
+	pcall(self.native.undraw, tostring(from))
 end
 
 -- Hands the hook what the edge watch read of `entity`.

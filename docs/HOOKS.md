@@ -2819,23 +2819,52 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
 - **In.** The hook keeps each member's latest (`crate::previews`); one not
   heard of again for six seconds is gone. `tpf3mp_native.previews()` gives
   the GUI what changed, `{ { from =, action = } }`, without `action` for
-  one gone, and the room's end clears them all. `tpf3mp/previews.lua`
-  hands each change to its renderer, `previews.render(from, action)`, and
-  says each member's first in the log ("another member's build preview
-  arrived: ...").
-- **Showing them.** The renderer draws a member's preview as the game draws
-  its own tool's, in 3D with the blue or red of a build the game would take
-  or refuse, from the proposal the action makes in this game (the same
-  proposal `tpf3mp/apply.lua` would build, never sent). Either the game's
-  own `builtin.ProposalViewer`, which the bridge and tunnel window uses to
-  show a proposal no tool made, if it can show one for each member beside
-  the player's own tool; or else, as TpF2 Multiplayer did, a
-  `UI::BuilderRenderer` of the hook's for each member, filled through
-  `builder_renderer_util::AddToRenderer` and added to the main renderer
-  component, with the build's targets in the profile: a build without them
-  shows nothing, never a part of a preview
-  (investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md). Not built yet: until
-  it is, previews are only kept and logged.
+  one gone, and the room's end clears them all. The Multiplayer plugin
+  (`gui/tpf3mp/tpf3mp.script.lua`), which stays mounted in the game bar,
+  takes them every frame (`tpf3mp/previews.lua`, `take`) and says each
+  member's first in the log ("another member's build preview arrived:
+  ...").
+- **Showing them.** Each preview is made into the proposal its action
+  would build in this game, for the sender's company:
+  `apply.proposalOf(action, ctx)` runs the build's handler dry, stopping
+  it at the proposal it would send, so nothing is sent, built or logged
+  (construction, road, track and stop builds only). One this game cannot
+  make (a street type it lacks, an edge it has not) does not show, and the
+  log says why.
+- **Drawing them** (`crate::drawing`), as TpF2 Multiplayer did
+  (`native/src/preview_plugin.cpp`): the hook keeps a `UI::BuilderRenderer`
+  of its own for each other member, made by the game's own
+  `RendererFactory` (`CGameUI+0x588`) and registered once with the main
+  `CRendererComponent` ("mainView", `CGameUI+0xbf0`), at most 16. To draw
+  one, the plugin arms the GUI thread for the member
+  (`tpf3mp_native.draw(from)`), has the game evaluate the proposal with
+  `api.engine.util.proposal.makeProposalData(proposal, context)`, and
+  disarms (`drawn()`). The hook redirects that binding's one call of
+  `CreateProposalData`: after the game's own call, on the armed thread
+  only, it clears the member's renderer and fills it with
+  `builder_renderer_util::AddToRenderer` from the toolkit, the converted
+  proposal and the `ProposalData` just made, as the game's own
+  ProposalViewer does (`ModelData` from `CGameUI+0x538`, no offset, an
+  empty entity map, no catchment-area job). Every other call of the
+  binding, the mod's own game script's included, is the game's alone. A
+  proposal the game did not evaluate (`ProposalData+0x570`) clears it
+  instead. `undraw(from)` clears a member's renderer when their tool shows
+  nothing. `~CGameUI` is detoured: its renderers are cleared, leave its main
+  component and are destroyed before the game's own destructor runs.
+  The tint is this game's verdict, blue, or red where this game would
+  refuse the build. A renderer's terrain heights are never uploaded (its
+  flag at `+0xf0` cleared): every renderer shares one view terrain, and
+  another player's embankments must never change this player's, so a
+  preview shows no cut or embankment. Every target and offset is in the
+  profile, each offset read from the game's own instruction that uses it;
+  a build without all of them draws nothing (fail closed), and the log
+  says so ("the others' build previews are (not) drawn").
+  The game's own `builtin.ProposalViewer` cannot draw them: build 40408
+  allows it only inside a tool's `ActionDescriptor`, and mounted anywhere
+  else (the plugin's layout, tried 2026-10-03) every game that received a
+  preview stopped with the fatal assertion `!IsTransformWithContext`
+  (`react_transform.cpp:97`). Inside the action slot it would take the
+  player's own tool's place.
 
 ### Terraforming
 

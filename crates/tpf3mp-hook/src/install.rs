@@ -212,6 +212,8 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
 /// started in the menu. Otherwise nothing: the step's detour drives the room
 /// while a world is up.
 pub(crate) fn menu_frame(menu: usize) {
+    // The GUI thread and its menu, for the others' previews drawn.
+    crate::drawing::note_menu(menu);
     if BROKEN.load(Ordering::Acquire) {
         return;
     }
@@ -777,6 +779,10 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     match unsafe { crate::menu::install(&at, detour_forever) } {
         Ok(line) | Err(line) => log_line(&line),
     }
+    // The others' build previews, drawn (docs/HOOKS.md, "Build previews"):
+    // without every target, nobody's is.
+    // SAFETY: as above.
+    log_line(&unsafe { crate::drawing::install(&at, detour_forever) });
     // The seeds and the order fixes (docs/HOOKS.md, "Seeds, as built" and
     // "The order fixes, as built") take the targets at their addresses in
     // this process; each piece installs, and fails closed, on its own, and

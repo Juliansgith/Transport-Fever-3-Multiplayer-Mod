@@ -391,10 +391,9 @@ Dev C:
   what a player's road, track, station or building tool shows before the
   click, the others see in 3D, in the game's own blue or red, while it
   shows (HOOKS.md, "Build previews"). Advisory, never part of the world.
-  First the transport (protocol 17, bridge 24: done); then the renderer:
-  the game's own `ProposalViewer` if it shows one preview per member beside
-  the player's own tool, else the hook's `UI::BuilderRenderer` for each
-  other member on build 40408
+  The transport (protocol 17, bridge 24) and the hook's
+  `UI::BuilderRenderer` for each other member on build 40408 are built
+  (the game's own `ProposalViewer` fails fatally outside a tool's action)
   (investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md). Tick once seen in the
   real game.
 - [ ] *Changed:* (D17, the hold lifted by the owner on 2026-09-30): the

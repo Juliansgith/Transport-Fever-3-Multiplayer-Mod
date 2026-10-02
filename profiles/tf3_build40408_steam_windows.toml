@@ -1348,3 +1348,157 @@ signature = "48 8B 01 FF 50 10 48 63 90 0C 02 00 00 48 8B CB E8 ?? ?? ?? ??"
 offset = 16
 prologue = "E8"
 required = false
+
+# The other players' build previews, drawn by the hook (crates/tpf3mp-hook/
+# src/drawing.rs; docs/HOOKS.md, "Build previews";
+# investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md). A UI::BuilderRenderer of
+# the hook's for each other member, made by the game's own RendererFactory,
+# filled by builder_renderer_util::AddToRenderer from the ProposalData the
+# mod's GUI has the game make (makeProposalData), and drawn by the main
+# CRendererComponent ("mainView"). Ported from TpF2 Multiplayer's
+# native/src/preview_plugin.cpp (build 35924). All are only called, but the
+# call site in makeProposalData, which is redirected, and ~CGameUI, which is
+# detoured. Without every one of them, nobody's preview is drawn.
+
+# UI::RendererFactory::Create (0x8266d0): rcx the factory, returns a new
+# BuilderRenderer (0x1d0 bytes, constructor 0x7b4160). Its 11 callers are
+# the tools' constructors.
+[[target]]
+name = "UI::RendererFactory::Create"
+signature = "48 89 5C 24 08 55 56 57 41 54 41 55 41 56 41 57 48 81 EC F0 00 00 00 4C 8B E9"
+offset = 0
+prologue = "48 89 5C 24 08 55 56 57 41 54 41 55 41 56 41 57"
+required = false
+
+# UI::CRendererComponent::AddRenderable (0x6ae970): its assert string; a
+# second registration of one renderable is a fatal assert.
+[[target]]
+name = "UI::CRendererComponent::AddRenderable"
+signature = "48 89 5C 24 08 48 89 74 24 18 48 89 54 24 10 57 48 83 EC 20 48 8B F2 48 8D B9 30 05 00 00"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 74 24 18 48 89 54 24 10"
+required = false
+
+# UI::CRendererComponent::RemoveRenderable (0x6afdf0): the mirror of Add,
+# which the tools' vf16 call.
+[[target]]
+name = "UI::CRendererComponent::RemoveRenderable"
+signature = "40 53 48 83 EC 20 4C 8B C2 48 8B D9 48 8B 91 38 05 00 00"
+offset = 0
+prologue = "40 53 48 83 EC 20 4C 8B C2 48 8B D9"
+required = false
+
+# UI::BuilderRenderer::Clear(renderer, models, view terrain, height mods)
+# (0x7ba590): 25 callers, the tools' Step among them.
+[[target]]
+name = "UI::BuilderRenderer::Clear"
+signature = "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D 6C 24 C9 48 81 EC F0 00 00 00 45 0F B6 F9"
+offset = 0
+prologue = "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20"
+required = false
+
+# UI::BuilderRenderer's scalar deleting destructor (vtable 0x36dca68, slot
+# 0, 0x7b89a0), the body inlined. It does not unregister itself.
+[[target]]
+name = "UI::BuilderRenderer::vf0"
+signature = "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 81 EC 10 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 00 01 00 00"
+offset = 0
+prologue = "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20"
+required = false
+
+# UI::builder_renderer_util::AddToRenderer (0x5e2b20): its assert strings;
+# the overload ending in three bools every tool calls (ModelData, toolkit,
+# renderer, Proposal, ProposalData, offset, map, bool x3).
+[[target]]
+name = "builder_renderer_util::AddToRenderer"
+signature = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 18 FE FF FF 48 81 EC E8 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 D0 01 00 00 49 8B F1"
+offset = 0
+prologue = "40 55 53 56 57 41 54 41 55 41 56 41 57"
+required = false
+
+# CreateProposalData (0xa1fd10, create_proposal_data.cpp): what the
+# redirected call below calls first, always.
+[[target]]
+name = "CreateProposalData"
+signature = "48 89 5C 24 10 48 89 6C 24 18 48 89 4C 24 08 56 57 41 56 48 83 EC 50 49 8B F1 49 8B E8"
+offset = 0
+prologue = "48 89 5C 24 10 48 89 6C 24 18 48 89 4C 24 08"
+required = false
+
+# makeProposalData's call of CreateProposalData (0x25122da, in the binding's
+# body 0x2511ec0): the toolkit in rdx, the converted Proposal in r9, the
+# ProposalData made into rcx. Redirected: after the game's own call, a call
+# the hook armed draws the result for the member it names.
+[[target]]
+name = "makeProposalData/CreateProposalData call"
+signature = "4C 8D 8D 40 03 00 00 4D 8B 45 50 48 8D 95 80 01 00 00 48 8D 8D A0 06 00 00 E8 ?? ?? ?? ??"
+offset = 25
+prologue = "E8"
+required = false
+
+# UI::CGameUI::~CGameUI's body (0x650470, from vf0 0x658af0): detoured, so
+# the hook's renderers leave its main component and are destroyed first.
+[[target]]
+name = "UI::CGameUI::~CGameUI"
+signature = "48 89 5C 24 10 48 89 74 24 18 55 57 41 54 41 56 41 57 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 38"
+offset = 0
+prologue = "48 89 5C 24 10 48 89 74 24 18 55 57 41 54 41 56"
+required = false
+
+# Layout anchors, read only: each instruction gives the offset the hook
+# reads. UI::CMenuUI::StartGame stores the new CGameUI (mov [rbx+0x6b8],rax
+# after its constructor, 0x6a4f52).
+[[target]]
+name = "UI::CMenuUI::StartGame/CGameUI store"
+signature = "E8 ?? ?? ?? ?? 90 48 89 83 B8 06 00 00"
+offset = 6
+prologue = "48 89 83"
+required = false
+
+# UI::CGameUI::CreateUI keeps its RendererFactory at +0x588 (lea
+# rax,[r12+0x588], 0x65be0c) ...
+[[target]]
+name = "UI::CGameUI::CreateUI/RendererFactory field"
+signature = "49 8D 84 24 88 05 00 00 48 8D 8D C0 03 00 00"
+offset = 0
+prologue = "49 8D 84 24"
+required = false
+
+# ... and its main CRendererComponent, "mainView", at +0xbf0 (mov
+# [r12+0xbf0],rcx, 0x65b1bc).
+[[target]]
+name = "UI::CGameUI::CreateUI/mainView store"
+signature = "48 89 4D 70 49 89 8C 24 F0 0B 00 00"
+offset = 4
+prologue = "49 89 8C 24"
+required = false
+
+# The game's ProposalViewer reads the CGameUI's ModelData at +0x538 for
+# AddToRenderer (mov rcx,[rcx+0x538], 0x2aa3b06) ...
+[[target]]
+name = "ProposalViewer/ModelData read"
+signature = "48 8B 4D 80 48 8B 89 38 05 00 00 E8"
+offset = 4
+prologue = "48 8B 89"
+required = false
+
+# ... after testing the ProposalData's preprocess flag at +0x570, set when
+# the game did not evaluate the proposal (cmp byte [r15+0x570],0,
+# 0x2aa39d5).
+[[target]]
+name = "ProposalViewer/evaluated test"
+signature = "41 80 BF 70 05 00 00 00 0F 85"
+offset = 0
+prologue = "41 80 BF"
+required = false
+
+# EndHeightMod uploads a renderer's terrain heights into the view terrain
+# every renderer shares only while its flag at +0xf0 is set (cmp byte
+# [rcx+0xf0],0, 0x7bbb6a). The hook clears it on its renderers: another
+# player's embankments never change this player's terrain.
+[[target]]
+name = "BuilderRenderer::EndHeightMod/upload flag"
+signature = "80 B9 F0 00 00 00 00 74 ?? 48 8B 91 B8 01 00 00 48 81 C2 F8 1A 00 00"
+offset = 0
+prologue = "80 B9"
+required = false

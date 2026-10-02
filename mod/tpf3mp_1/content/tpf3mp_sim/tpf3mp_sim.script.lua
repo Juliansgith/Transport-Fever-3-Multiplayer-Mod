@@ -734,6 +734,7 @@ function data()
 			if not l then return end
 			followUpsInGui(l)
 			if followUps then followUps.seen(l:note(modbuild.NOTE)) end
+			-- The player's own preview; the others' the Multiplayer plugin shows.
 			if previews and l:room() then previews.tick(l, api) end
 			local clicks = l:clicks()
 			if clicks == nil then return end
