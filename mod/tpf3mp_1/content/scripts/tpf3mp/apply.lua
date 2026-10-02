@@ -525,10 +525,40 @@ end
 -- own (ownStreets).
 function networkInto(proposal, network, templateName, style, polyline, dangling)
 	local links, skipped = polyline.links, {}
-	if dangling then links, skipped = apply.ownStreets(polyline) end
+	local settings = polyline.junctions
+	if dangling then
+		links, skipped = apply.ownStreets(polyline)
+		-- The tool's settings at the construction's own street's nodes, or
+		-- naming its own edges (the entrance at the junction it joins), go
+		-- with that street: they name what this build does not make
+		-- (2026-10-02: a street station refused in every game, "the
+		-- junction no longer exists"). The construction and its refresh
+		-- give those junctions the game's own, alike in every game.
+		local keep, ownEdges, ownNodes = {}, {}, {}
+		for _, link in ipairs(links) do keep[link] = true end
+		local function place(i)
+			local p = arr(polyline.vertices[i + 1].pos)
+			return { x = p[1], y = p[2], z = p[3] }
+		end
+		for _, link in ipairs(polyline.links) do
+			if not keep[link] then
+				local net = link.kind and link.kind.network
+				ownEdges[#ownEdges + 1] = { network = net, ends = { a = place(link.from), b = place(link.to) } }
+				for _, i in ipairs({ link.from, link.to }) do
+					if skipped[i + 1] then ownNodes[#ownNodes + 1] = { network = net, at = place(i) } end
+				end
+			end
+		end
+		local left
+		settings, left = junctions.without(settings, ownNodes, ownEdges)
+		if #left > 0 then
+			local ok, text = pcall(junctions.summary, { EditJunctions = { changes = left } })
+			log("left to the construction: " .. (ok and text or (#left .. " junction(s)")))
+		end
+	end
 	-- The junctions' settings go with it (junctions.into, below).
 	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
-		removed_nodes = polyline.removed_nodes, junctions = polyline.junctions }
+		removed_nodes = polyline.removed_nodes, junctions = settings }
 	local nodesOf = {}
 	local function nodes(n)
 		if nodesOf[n] == nil then nodesOf[n] = readNodes(n) end

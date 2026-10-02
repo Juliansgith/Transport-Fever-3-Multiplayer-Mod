@@ -3531,6 +3531,102 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
     );
 }
 
+/// As the game: a built construction is listed, and refreshed on request,
+/// its refresh snapping its entrance onto node 7777.
+const STATION_REFRESH: &str = "api.type.ComponentType.CONSTRUCTION = 2 \
+    CONSTRUCTIONS = {} \
+    local get = api.engine.getComponent \
+    api.engine.getComponent = function(e, kind) \
+        if kind == 2 then return CONSTRUCTIONS[e] end return get(e, kind) end \
+    api.engine.getEntitiesWithComponent = function(kind) \
+        local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
+    local send = api.cmd.sendCommand \
+    api.cmd.sendCommand = function(cmd, ...) \
+        local c = cmd.proposal and cmd.proposal.constructionsToAdd and cmd.proposal.constructionsToAdd[1] \
+        if c then CONSTRUCTIONS[5000] = { fileName = c.fileName, \
+            transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } end \
+        return send(cmd, ...) \
+    end \
+    api.engine.util.proposal = { refreshConstruction = function(e) return { refreshed = e, \
+        proposal = { addedSegments = { { entity = -2, comp = { node0 = -1, node1 = 7777 } } }, \
+                     removedSegments = { { entity = 6000 } } } } end }";
+
+/// A street station placed into a street (2026-10-02, live: refused in
+/// every game, "the junction no longer exists"). The tool's proposal
+/// configures the station's own entrance node -1, the new junction -2 its
+/// entrance joins, and the street's existing ends 8 and 9, each added and
+/// removed. Every game leaves out the entrance, which the station makes
+/// again itself, and with it the settings that name it: those at -1, and
+/// those at -2, whose turns lead into it. The settings at 8 and 9 name only
+/// the rebuilt street, and travel as the tool made them.
+#[test]
+fn a_station_by_a_road_leaves_its_own_entrances_junction_settings_to_it() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(CONFIG_WORDS).exec().unwrap();
+    lua.load(format!(
+        "local function config(turns, walks) \
+             local t = {{}} \
+             for i, p in ipairs(turns) do t[i] = {{ segment0 = p[1], lane0 = 0, segment1 = p[2], lane1 = 0, \
+                 withRoad = true, withTram = false }} end \
+             return {{ trafficLightPreference = 0, doubleSlipSwitch = false, userModifiedTrafficLightStates = false, \
+                 laneConnections = t, crosswalks = walks, trafficLightConfig = {{ trafficLightType = -1, states = {{}} }} }} \
+         end \
+         PROPOSAL = {STATION_BY_ROAD} \
+         local s = PROPOSAL.proposal \
+         s.nodeConfigsToAdd = {{ \
+             {{ entity = -1, comp = config({{}}, {{ -3 }}) }}, \
+             {{ entity = -2, comp = config({{ {{ -3, -4 }}, {{ -3, -5 }}, {{ -4, -3 }}, {{ -4, -5 }}, {{ -5, -3 }}, {{ -5, -4 }} }}, \
+                 {{ -3, -4, -5 }}) }}, \
+             {{ entity = 8, comp = config({{}}, {{ -4 }}) }}, \
+             {{ entity = 9, comp = config({{}}, {{ -5 }}) }} }} \
+         s.nodeConfigsToRemove = {{ 8, 9 }} \
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = assert(capture.construction(PROPOSAL)) \
+         assert(schema_check(ACTION)) \
+         assert(#ACTION.BuildConstruction.connection.junctions == 4, 'the four the tool proposed')"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    // Through the schema both ways, as the room hands it to every game.
+    let captured: mlua::Value = lua.globals().get("ACTION").unwrap();
+    let action = tpf3mp_proto::lua::action_from_lua(&common::tree(&captured))
+        .unwrap_or_else(|error| panic!("the schema refuses it: {error}"));
+    let back = tpf3mp_proto::lua::action_to_lua(&action).unwrap();
+    lua.globals()
+        .set("ACTION", common::value(&lua, &back))
+        .unwrap();
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let (ok, sends, sent, removed): (bool, usize, String, String) = lua
+        .load(
+            "local s = SENT[1] and SENT[1].proposal.streetProposal \
+             local removed = {} \
+             for i, n in ipairs(s and s.nodeConfigsToRemove or {}) do removed[i] = n end \
+             table.sort(removed) \
+             return HOOK.applied[1].ok == true, #SENT, s and SENT_WORDS(SENT[1]) or '', \
+                 table.concat(removed, ',')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(ok, "the station is built: {}", hook_log(&lua));
+    assert_eq!(sends, 2, "the station with its street, then its refresh");
+    assert_eq!(
+        sent,
+        "(50,-40) tl0 type-1  dss=false um=false/false turns  walks (50,-40)-(50,0) \
+         || (50,40) tl0 type-1  dss=false um=false/false turns  walks (50,0)-(50,40)",
+        "the street's ends as the tool configured them; nothing at the entrance or its junction"
+    );
+    assert_eq!(removed, "8,9", "the settings they replace go");
+    assert!(
+        hook_log(&lua).contains("left to the construction: 2 junction(s): Street(50.0,0.0)"),
+        "{}",
+        hook_log(&lua)
+    );
+}
+
 /// A construction whose own track the tool snapped onto an existing track
 /// node (2026-09-30: a rail depot placed against the end of a track). Every
 /// game builds the construction alone, then its refresh snaps its track:

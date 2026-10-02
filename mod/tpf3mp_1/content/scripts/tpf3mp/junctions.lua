@@ -206,6 +206,45 @@ local function makeConfig(config, edge, node)
 	return c
 end
 
+-- The changes that name none of `nodes` (node references) and none of
+-- `edges` (edge references) as their junction, a turn's end or a
+-- crosswalk; then those that do. A construction's own street, which the
+-- construction makes again itself (tpf3mp/apply.lua ownStreets), is left
+-- out of its build, and the tool's settings at its own nodes, or at a
+-- junction its entrance joins, with it: they name a node or an edge the
+-- build does not make, and the construction and its refresh give that
+-- junction the game's own settings, the same in every game.
+function junctions.without(changes, nodes, edges)
+	local function sameEdge(x)
+		for _, e in ipairs(edges or {}) do
+			local a, b = x.ends, e.ends
+			if x.network == e.network and ((near(a.a, b.a) and near(a.b, b.b)) or (near(a.a, b.b) and near(a.b, b.a))) then
+				return true
+			end
+		end
+		return false
+	end
+	local function names(change)
+		for _, n in ipairs(nodes or {}) do
+			if change.node.network == n.network and near(change.node.at, n.at) then return true end
+		end
+		local c = change.config
+		if c == nil then return false end
+		for _, turn in ipairs(c.connections or {}) do
+			if sameEdge(turn.incoming) or sameEdge(turn.outgoing) then return true end
+		end
+		for _, e in ipairs(c.crosswalks or {}) do
+			if sameEdge(e) then return true end
+		end
+		return false
+	end
+	local kept, left = {}, {}
+	for _, change in ipairs(changes or {}) do
+		if names(change) then left[#left + 1] = change else kept[#kept + 1] = change end
+	end
+	return kept, left
+end
+
 -- Add configs to a SimpleProposal. Match in three dimensions and reject
 -- ambiguous parallel edges/nodes instead of picking a game's lowest id.
 -- `preserve` names the existing nodes whose incident edges are rebuilt.
