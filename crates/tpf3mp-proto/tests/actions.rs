@@ -528,6 +528,11 @@ fn samples() -> Vec<Action> {
             permit: Some(text("::/game_mechanics/company/permitKeys/marketing.res")),
             cost: 4_000_000,
         }),
+        Action::Preserve(tpf3mp_proto::action::Preservation {
+            building: depot(),
+            index: 0,
+            preserved: true,
+        }),
     ]
 }
 

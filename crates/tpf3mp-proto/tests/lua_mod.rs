@@ -9181,6 +9181,7 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
         local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')
         local link = assert(bridge.attach(bridge.find()))
         local actions = {
+            { Preserve = { building = { file = 'b.con', at = { x = 0, y = 0, z = 0 } }, index = 0, preserved = true } },
             { Subsidy = { Decline = { uid = 1, kind = 'x' } } },
             { Rename = { what = { Vehicle = 1 }, name = 'x' } },
             { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
@@ -9560,3 +9561,134 @@ fn an_upgrade_handed_to_the_room_is_said_in_the_log() {
     let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
     assert_eq!(handed, 1);
 }
+
+/// Town buildings for the Historic Preservation tests: town building 501
+/// stands in construction 500, which the game names for it; 512, the
+/// second of construction 510's, only that construction's list names.
+const FAKE_TOWN_BUILDINGS: &str = r#"
+api.type = api.type or {}
+api.type.ComponentType = api.type.ComponentType or {}
+api.type.ComponentType.CONSTRUCTION = 2
+CONS = {
+    [500] = { fileName = 'town/res_1.con', townBuildings = { 501 },
+              transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 100.5, -20.25, 3, 1 } },
+    [510] = { fileName = 'town/com_2.con', townBuildings = { 511, 512 },
+              transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 300, 40, 5, 1 } },
+}
+api.engine = api.engine or {}
+api.engine.getEntitiesWithComponent = function(kind)
+    if kind == 2 then return { 500, 510 } end
+    return {}
+end
+api.engine.getComponent = function(e, kind)
+    if kind == 2 then return CONS[e] end
+end
+api.engine.system = api.engine.system or {}
+api.engine.system.streetConnectorSystem = { getConstructionEntityForSubconstruction = function(part)
+    if part == 501 then return 500 end
+    return -1
+end }
+"#;
+
+/// A town building's Historic Preservation checkbox was refused in a room:
+/// it goes to the room, the building by its construction and its place
+/// there, whether the game names that construction or only its list does.
+#[test]
+fn historic_preservation_goes_to_the_room_by_its_construction() {
+    let lua = gui();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').preservation = true")
+        .exec()
+        .unwrap();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "api.cmd.makeTownBuildingSetBlockedDevelopmentCmd = function(e, on) \
+             return { kind = 'preserve', entity = e, on = on } end",
+    )
+    .exec()
+    .unwrap();
+    lua.load(FAKE_TOWN_BUILDINGS).exec().unwrap();
+    lua.load(
+        "M = mount(loadPlugin()) M.step() HOOK.room = true \
+         local function preserve(e, on) \
+             api.cmd.sendCommand(api.cmd.makeTownBuildingSetBlockedDevelopmentCmd(e, on), function() end) end \
+         preserve(501, true) preserve(512, false) preserve(999, true) \
+         M.step()",
+    )
+    .exec()
+    .unwrap();
+    let (sent, handed): (usize, usize) = lua.load("return #SENT, #HOOK.commands").eval().unwrap();
+    assert_eq!(
+        (sent, handed),
+        (0, 2),
+        "not run here: the room orders it for every game"
+    );
+    let carried: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(HOOK.commands) do local p = c.Preserve \
+                 out[#out + 1] = table.concat({ p.building.file, p.building.at.x, p.building.at.y, \
+                     p.index, tostring(p.preserved) }, ':') end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        carried,
+        "town/res_1.con:100.5:-20.25:0:true town/com_2.con:300:40:1:false"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.contains("makeTownBuildingSetBlockedDevelopmentCmd")
+                && l.ends_with("a town building the room cannot name")),
+        "{logged:?}"
+    );
+}
+
+/// Every game sets the town building at that place in the construction's
+/// list, through the game's own command; one no longer there is refused
+/// in every game.
+#[test]
+fn every_game_preserves_the_same_town_building() {
+    let (lua, _script) = engine();
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').preservation = true")
+        .exec()
+        .unwrap();
+    lua.load(FAKE_TOWN_BUILDINGS).exec().unwrap();
+    lua.load(
+        "api.cmd.makeTownBuildingSetBlockedDevelopmentCmd = function(e, on) \
+             return { preserve = { entity = e, on = on } } end \
+         HOOK.room = true UPDATE({}, STATE, 0.2) \
+         HOOK.batch = { \
+             { Preserve = { building = { file = 'town/com_2.con', at = { x = 300.4, y = 40, z = 5 } }, \
+                 index = 1, preserved = true } }, \
+             { Preserve = { building = { file = 'town/res_1.con', at = { x = 100.5, y = -20.25, z = 3 } }, \
+                 index = 0, preserved = false } }, \
+             { Preserve = { building = { file = 'town/res_1.con', at = { x = 100.5, y = -20.25, z = 3 } }, \
+                 index = 1, preserved = true } }, \
+             { Preserve = { building = { file = 'town/res_1.con', at = { x = 900, y = 0, z = 0 } }, \
+                 index = 0, preserved = true } } } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let done: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do if c.preserve then \
+                 out[#out + 1] = c.preserve.entity .. ':' .. tostring(c.preserve.on) end end \
+             local why = {} for _, a in ipairs(HOOK.applied) do \
+                 why[#why + 1] = tostring(a.ok) .. ':' .. tostring(a.why) end \
+             return table.concat(out, ' ') .. ' | ' .. table.concat(why, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        done,
+        "512:true 501:false | true:nil true:nil \
+         false:no town building 1 in the town/res_1.con \
+         false:no town/res_1.con there"
+    );
+}
+

@@ -618,6 +618,9 @@ impl State {
             // A company perk: the model keeps no permits, towns' reputations
             // or emissions.
             Action::Perk(_) => Ok(()),
+            // A town building's preservation: the model keeps no towns'
+            // buildings.
+            Action::Preserve(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }

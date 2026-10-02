@@ -39,7 +39,7 @@ schema and replay code, but `content/scripts/tpf3mp/acceptance.lua` disables
 them. Both command submission and replay refuse these channels; subsidy
 settlement is disabled too. Bridge/tunnel window rebuilds remain gated at
 capture behind `bridges`. Industry Greenification and marketing campaigns
-remain gated at both submission and replay behind `perks`. Mechanics fixtures explicitly enable a channel
+remain gated at both submission and replay behind `perks`. Historic Preservation is likewise gated behind `preservation`. Mechanics fixtures explicitly enable a channel
 only in their own Lua state. Enable a channel only after ordinary two-player
 acceptance demonstrates matching outcomes, ownership and money. The gate
 file is part of the installed-mod fingerprint.

@@ -1089,6 +1089,20 @@ pub enum PerkOp {
     },
 }
 
+/// A town building's Historic Preservation checkbox
+/// (`makeTownBuildingSetBlockedDevelopmentCmd`,
+/// `gui/entity_window/town_building/town_building.tl`): the building keeps
+/// its look but still levels up. Appended under schema version 23.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preservation {
+    /// The construction the town building stands in, by its file and place.
+    pub building: ConstructionRef,
+    /// Which of that construction's town buildings, from 0.
+    pub index: u8,
+    /// Preserved (true), or free to change again (false).
+    pub preserved: bool,
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -1141,6 +1155,9 @@ pub enum Action {
     /// A company perk used on a town or an industry (`PerkOp`). Appended
     /// under schema version 23: the variants before it keep their bytes.
     Perk(PerkOp),
+    /// A town building's Historic Preservation (`Preservation`). Appended
+    /// under schema version 23: the variants before it keep their bytes.
+    Preserve(Preservation),
 }
 
 #[derive(Debug, Error)]
@@ -1193,6 +1210,7 @@ impl Action {
             Action::Subsidy(_) => "Subsidy",
             Action::Rename { .. } => "Rename",
             Action::Perk(_) => "Perk",
+            Action::Preserve(_) => "Preserve",
         }
     }
 
@@ -1560,6 +1578,20 @@ mod tests {
             permit: None,
         });
         assert_eq!(green.to_payload().unwrap().as_bytes(), [23, 21, 0, 5, 0]);
+        // Appended under schema version 23: Historic Preservation takes the
+        // next tag.
+        let preserve = Action::Preserve(Preservation {
+            building: ConstructionRef {
+                file: Text::new("b").unwrap(),
+                at: pos(1, 0, 0),
+            },
+            index: 0,
+            preserved: true,
+        });
+        assert_eq!(
+            preserve.to_payload().unwrap().as_bytes(),
+            [23, 21, 1, b'b', 2, 0, 0, 0, 1]
+        );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
             change: VehicleChange::ManualDeparture(true),

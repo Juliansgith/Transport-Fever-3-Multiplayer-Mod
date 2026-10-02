@@ -536,6 +536,7 @@ appended.
 | `Prospect` | prospecting near a town: the town, the cargo, the industry types that may be found in the originator's menu's order, and the company permit it uses. The outcome is not in it: every game's company script draws it from the game time, months later, alike ([investigation](../investigation/TPF3_PROSPECTING_2026-09-30.md)) |
 | `ApplyRank` | a company rank to take, as the company window sends the game's growth script (`applyLevel`); the acting player's company takes it ([HOOKS.md](HOOKS.md), "Company ranks") |
 | `Perk` | a company perk from the construction menu: Industry Greenification (the industry by its canonical id, `IndustryId`, which every game binds by its construction, and the permit), or a marketing campaign (the town, the campaign's duration and line cost factor, the permit, and the price the tool charged). Gated off (`acceptance.lua`, `perks`) ([HOOKS.md](HOOKS.md), "Company perks") |
+| `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Gated off (`acceptance.lua`, `preservation`) |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:

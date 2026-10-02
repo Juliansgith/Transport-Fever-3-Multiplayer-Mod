@@ -1064,6 +1064,55 @@ function capture.marketing(ctx, param)
 	} } }
 end
 
+-- ------------------------------------------------------ town buildings
+--
+-- The construction a town building stands in, and the building's place in
+-- its list of town buildings, from 1 (the construction lists them,
+-- api/tealdef/api/engine.d.tl, Construction.townBuildings): the
+-- construction the game names for the building as a subconstruction,
+-- or the building itself, or else the one construction that lists it.
+-- INFERRED: a town building's window names the TOWN_BUILDING entity, which
+-- its construction lists. Returns the construction's component and the
+-- place, or nil.
+function capture.townBuildingOf(entity)
+	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
+	local function lists(con)
+		local ok, c = pcall(function() return api.engine.getComponent(con, CONSTRUCTION) end)
+		local buildings = ok and c and get(c, "townBuildings") or nil
+		for i = 1, (length(buildings) or 0) do
+			if get(buildings, i) == entity then return c, i end
+		end
+		return nil
+	end
+	local ok, con = pcall(function()
+		return api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(entity)
+	end)
+	if ok and type(con) == "number" and con >= 0 then
+		local c, i = lists(con)
+		if c then return c, i end
+	end
+	local c, i = lists(entity)
+	if c then return c, i end
+	local listed, all = pcall(function() return api.engine.getEntitiesWithComponent(CONSTRUCTION) end)
+	for k = 1, (listed and length(all) or 0) do
+		c, i = lists(get(all, k))
+		if c then return c, i end
+	end
+	return nil
+end
+
+-- A town building's Historic Preservation checkbox (gui/entity_window/
+-- town_building/town_building.tl, HistoricBuildingCard): the building by
+-- its construction's file and place and its index there
+-- (action::Preservation).
+function capture.preserve(_ctx, entity, preserved)
+	if type(preserved) ~= "boolean" then error("a preservation it cannot read", 0) end
+	local c, i = capture.townBuildingOf(entity)
+	local ref = c and capture.replaced(c) or nil
+	if ref == nil or i > 256 then error("a town building the room cannot name", 0) end
+	return { Preserve = { building = ref, index = i - 1, preserved = preserved } }
+end
+
 -- Answering a subsidy offer: the subsidy window's Accept or Decline
 -- (game_mechanics/subventions/subventions_gui.tl sends the subsidy script
 -- `onAccept` or `onDecline` with { uid }), as the offer by its number and
