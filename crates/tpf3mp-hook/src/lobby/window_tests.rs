@@ -176,6 +176,9 @@ fn online() -> LobbyView {
         .unwrap(),
         saves: BoundedVec::new(vec![
             Text::new("newest").unwrap(),
+            // The hook's own copies, never offered.
+            Text::new("tpf3mp_room_41856").unwrap(),
+            Text::new("tpf3mp_41856_21").unwrap(),
             Text::new("mptest").unwrap(),
         ])
         .unwrap(),

@@ -374,6 +374,15 @@ protected folder such as Program Files.
   and your game reloads it. A notice says so.
 - **Saving.** The room saves everyone's game together from time to time,
   which you notice as a short pause, like an autosave.
+- **Room saves in your save folder.** To load the room's world, your game
+  copies it into Transport Fever 3's save folder
+  (`<Steam>/userdata/<account>/3493540/local/save`) as
+  `tpf3mp_room_<number>.sav`, and the room's saves pass through there as
+  `tpf3mp_<number>_<number>.sav`. They are not offered as saves to start
+  a room from. Each is a whole world, so TPF3-MP removes those of games
+  that have ended, when your game starts and each time it loads a room's
+  world; the copy of a game still running stays. Your own saves are never
+  touched.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
 - **Subsidies, entity renaming, vehicle recolouring and line waypoints.**
