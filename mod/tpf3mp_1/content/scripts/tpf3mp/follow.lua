@@ -361,6 +361,22 @@ function follow.lineReport(api, line)
 	end
 	local lineOwner = owner(line)
 	parts[#parts + 1] = "line " .. tostring(line) .. " owned by " .. tostring(lineOwner)
+	-- Its colour (the COLOR component the game paints it with) and how
+	-- many vehicles run it.
+	pcall(function()
+		local c = api.engine.getComponent(line, CT.COLOR)
+		local v = c and (c.color or c)
+		if v ~= nil then
+			parts[#parts + 1] = string.format("colour %.3f %.3f %.3f%s", v.x or v[1] or -1, v.y or v[2] or -1,
+				v.z or v[3] or -1, (v.w ~= nil) and string.format(" %.3f", v.w) or "")
+		else
+			parts[#parts + 1] = "no colour"
+		end
+	end)
+	pcall(function()
+		local vehicles = api.engine.system.transportVehicleSystem.getLineVehicles(line) or {}
+		parts[#parts + 1] = #vehicles .. " vehicle(s)"
+	end)
 	local okL, comp = pcall(function() return api.engine.getComponent(line, CT.LINE) end)
 	if not okL or comp == nil then
 		parts[#parts + 1] = "no LINE component"
@@ -455,8 +471,10 @@ function follow.watchLines(api, require_, link, where)
 					-- Each line's stops and the engine's verdict on it.
 					for _, l in ipairs(params and params.showLines or {}) do
 						local okE, entity = pcall(function() return type(l) == "number" and l or l.entity end)
+						local okT, transparency = pcall(function() return type(l) ~= "number" and l.transparency or nil end)
 						if okE and type(entity) == "number" then
-							say("probe: line to draw: " .. follow.lineReport(api, entity))
+							say("probe: line to draw: " .. follow.lineReport(api, entity)
+								.. (okT and transparency ~= nil and ("; handed at transparency " .. tostring(transparency)) or ""))
 						end
 					end
 				end)
