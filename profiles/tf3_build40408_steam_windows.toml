@@ -1019,3 +1019,88 @@ signature = "48 83 EC 28 4C 8B 49 20 4C 8B D1 49 8B 41 48 4D 8B 41 50 49 3B C0 7
 offset = 0
 prologue = "48 83 EC 28 4C 8B 49 20 4C 8B D1 49 8B 41 48"
 required = false
+
+# The person-order fixes (crates/tpf3mp-hook/src/persons.rs; docs/HOOKS.md,
+# "The person-order fixes"). Ported from silver2127's TPF2 Multiplayer
+# (docs/re/HOTJOIN_ORDER.md, native/src/slice/hotjoin_order.inl): each batch
+# the person simulation consumes in ECS node-list (or history) order is sorted
+# by entity id right before the engine reads it.
+#
+# candidates: destination_util::GetTargetsByLandUse (0x8e3ac0, our name; the
+# PersonCapacity family's node list copied into a local vector<Entity> at
+# [rsp+0x70]..[rsp+0x78], rbx = rsp+0x70 since 0x8e3cd9), right after the copy
+# loop and before the chunked build whose entries BinarySearchIndex (0x8e4400)
+# sums and searches with one draw. The site is `mov dword [rsp+0x60], 1`
+# (0x8e3d65, 8 bytes, stolen whole); nothing branches into 0x8e3d66..0x8e3d6c.
+[[target]]
+name = "destination_util::GetTargetsByLandUse/candidates"
+signature = "C7 44 24 60 01 00 00 00 E8 ?? ?? ?? ?? 4C 8B D0 48 8B 54 24 78 48 8B 4C 24 70 48 2B D1 48 C1 FA 02"
+offset = 0
+prologue = "C7 44 24 60 01 00 00 00"
+required = false
+
+# departures: ecs::SimEntityAtBuildingSystem::Update2 (vf12, 0xb05ea0) collects
+# the persons and cargo whose stay ran out, in node order, into two
+# vector<Entity> ([rbp+7], [rbp+0x1f]) and emits each to its signal
+# (0xaeaeb0): SimPersonSystem::NoteAtBuildingPersonsLeave (0xb2e950) draws
+# from one generator seeded by updateCount, in batch order. The site is the
+# test of the first vector after the thread-pool loop (0xb05f92, `mov rcx,
+# [rbp+7]; cmp rcx, [rbp+0xf]`, 8 bytes stolen); the only branch to it is
+# the je at 0xb05f51, to its first byte.
+[[target]]
+name = "ecs::SimEntityAtBuildingSystem::Update2/leave batches"
+signature = "48 8B C8 E8 ?? ?? ?? ?? 48 8B 4D 07 48 3B 4D 0F 74 1A 48 8B 47 30"
+offset = 8
+prologue = "48 8B 4D 07 48 3B 4D 0F 74 1A 48 8B 47 30 48 85 C0 74 11 48 8D 55 07 48 8B 48 10 E8"
+required = false
+
+# arrivals: ecs::PersonMoveSystem::Update2 (vf12, 0xaecaa0) collects the walk
+# arrivals, in node order, into a vector<Entity> at [rbp-0x78] and emits it
+# (0xaecfe8) to SimPersonSystem::NoteWalkPersonsArrived (0xb33a30), which
+# draws stay durations in batch order. The site (0xaecfcd, `mov rax,
+# [rbp-0x70]; cmp [rbp-0x78], rax`, 8 bytes stolen) is reached by the je at
+# 0xaecf11, at its first byte only.
+[[target]]
+name = "ecs::PersonMoveSystem::Update2/arrival batch"
+signature = "E8 ?? ?? ?? ?? 48 8B 45 90 48 39 45 88 74 17 49 8B 4F 68 48 85 C9 74 0E"
+offset = 5
+prologue = "48 8B 45 90 48 39 45 88 74 17 49 8B 4F 68 48 85 C9 74 0E 48 8D 55 88 48 8B 49 10 E8"
+required = false
+
+# needs-path (TF2's idle): ecs::SimEntityNeedsPathSystem::Update (vf11,
+# 0xb181b0), the only caller of PathFactory::Compute (0x8d11e0), builds one
+# input per entry of its own list m_systemData->add ([[this+0x10]], a
+# vector<Entity> in insertion order) and Compute seeds a generator per chunk
+# from updateCount and the chunk's start index. The site is the list's first
+# read (0xb18213, `mov rax, [r13+0x10]; mov rdx, [rax+8]`, 8 bytes stolen; no
+# branch reaches 0xb18213..0xb1821a).
+[[target]]
+name = "ecs::SimEntityNeedsPathSystem::Update/list"
+signature = "49 8B 45 10 48 8B 50 08 48 2B 10 48 C1 FA 02 4C 8D 45 30 48 8D 4D E0 E8"
+offset = 0
+prologue = "49 8B 45 10 48 8B 50 08 48 2B 10 48 C1 FA 02 4C 8D 45 30 48 8D 4D E0 E8"
+required = false
+
+# The list's data is copy-on-write (a shared_ptr at this+0x10, shared with
+# the replicated engine's copy): EntityToBeRemoved (vf5, 0xb18100) takes a
+# private copy through the getter this call reaches (0xb186c0) before it
+# writes. The needs-path fix calls the same getter before it sorts.
+[[target]]
+name = "ecs::SimEntityNeedsPathSystem::EntityToBeRemoved/data getter call"
+signature = "48 8D 4F 10 E8 ?? ?? ?? ?? 48 8B F8 4C 8B 40 08 48 8B 10 49 3B D0 74 40"
+offset = 4
+prologue = "E8"
+required = false
+
+# freed ids: ecs::Engine::EndModification (0x2bb4d90) appends the
+# modification's removed ids (m_betweenChanges, [[r12]] with r12 =
+# engine+0x1f0, a vector<Entity> in RemoveEntity order) to the FIFO free-id
+# deque at engine+0xd8 (deque insert 0x2bb1110 at 0x2bb4ff3); AddEntity
+# (0x2bb37b0) pops its front. The site is `lea rcx, [r13+0xd8]` (0x2bb4fd1,
+# 7 bytes stolen), reached by the je at 0x2bb4fbf, at its first byte only.
+[[target]]
+name = "ecs::Engine::EndModification/free-id append"
+signature = "49 8D 8D D8 00 00 00 4D 8B 0C 24 49 8B 41 08 48 89 44 24 20 4D 8B 09 4D 8B 85 F8 00 00 00 48 8D 55 87 E8 ?? ?? ?? ??"
+offset = 0
+prologue = "49 8D 8D D8 00 00 00 4D 8B 0C 24 49 8B 41 08 48 89 44 24 20 4D 8B 09 4D 8B 85 F8 00 00 00 48 8D 55 87 E8"
+required = false
