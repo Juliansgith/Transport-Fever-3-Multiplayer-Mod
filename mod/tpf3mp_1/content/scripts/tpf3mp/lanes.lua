@@ -44,7 +44,12 @@
 -- the hook hashes. The hook writes each entry to hook.log as
 -- `lane <n> step <step> <entry>`, for tools/lane_diff.py to diff between
 -- games (docs/HOOKS.md, "Lane dumps"). Reading a lane for its digest builds
--- none of it.
+-- none of it. The network lane's dump can be cut to a box: only the edges
+-- with an end inside it, and no junctions.
+--
+-- `lanes.watch` reads one entity for the edge watch (docs/HOOKS.md, "The
+-- edge watch"): an edge's nodes, ends and tangents, and its nodes'
+-- positions, at full precision; a node's position.
 --
 -- Pure Lua over the `api` it is given; the tests hand it a fake.
 
@@ -182,7 +187,7 @@ readers[lanes.NETWORK] = function(api, emit)
 					rows[#rows + 1] = row
 					if emit then
 						emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)
-							.. " template=" .. tostring(edge.roadTemplate))
+							.. " template=" .. tostring(edge.roadTemplate), { edge.position0, edge.position1 })
 					end
 				end
 			end
@@ -190,7 +195,7 @@ readers[lanes.NETWORK] = function(api, emit)
 	end
 	for _, row in ipairs(junctions.rows(api)) do
 		rows[#rows+1] = "junction:" .. row
-		if emit then emit(nil, nil, "junction:" .. row, "") end
+		if emit then emit(nil, nil, "junction:" .. row, "", false) end
 	end
 	return summary(rows)
 end
@@ -351,8 +356,25 @@ local PREFIX = { vehicles = "vehicle", lines = "line", towns = "town", industrie
 -- lane's text as lanes.read reads it; a lane that cannot be read is the one
 -- line `err <why>`. `reg` is the registry of the game script's state
 -- (tpf3mp/registry.lua), which names the keys; nil names none.
-function lanes.dump(api, lane, reg)
+-- Whether one of `points` (vectors) lies inside `box`, { x0, y0, x1, y1 }
+-- with x0 <= x1 and y0 <= y1.
+local function inBox(box, points)
+	for _, p in ipairs(points) do
+		local x, y = get(p, "x"), get(p, "y")
+		if type(x) ~= "number" and type(p) == "table" then x, y = p[1], p[2] end
+		if type(x) == "number" and type(y) == "number"
+			and x >= box[1] and x <= box[3] and y >= box[2] and y <= box[4] then
+			return true
+		end
+	end
+	return false
+end
+
+-- With `box` ({ x0, y0, x1, y1 }, the network lane only), the entries are
+-- the edges with an end inside it; the summary stays the whole lane's.
+function lanes.dump(api, lane, reg, box)
 	local reader = readers[lane]
+	if lane ~= lanes.NETWORK or type(box) ~= "table" or #box ~= 4 then box = nil end
 	if reader == nil then return { "err no lane " .. tostring(lane) } end
 	-- The registry's ids by entity, per kind, made when first asked.
 	local byEntity = {}
@@ -375,7 +397,8 @@ function lanes.dump(api, lane, reg)
 		return "entity-" .. tostring(e)
 	end
 	local entries = {}
-	local function emit(kind, e, row, fields)
+	local function emit(kind, e, row, fields, points)
+		if box and not (type(points) == "table" and inBox(box, points)) then return end
 		local id = idOf(kind, e)
 		local key, order
 		if id ~= nil then
@@ -401,5 +424,31 @@ function lanes.dump(api, lane, reg)
 end
 
 lanes.hash = hashStr
+
+-- One entity as the edge watch reads it, a line of text: `edge node0=
+-- node1= p0= p1= t0= t1= n0= n1= type=` (the ends and tangents of the
+-- edge, then its nodes' positions), `node pos=`, or `absent`. Never raises.
+function lanes.watch(api, entity)
+	local ok, text = pcall(function()
+		local edge = component(api, entity, "BASE_EDGE")
+		if edge then
+			local n0, n1 = get(edge, "node0"), get(edge, "node1")
+			local function nodePos(n)
+				if n == nil then return "nil" end
+				return vecFull(get(component(api, n, "BASE_NODE"), "position"))
+			end
+			return "edge node0=" .. full(n0) .. " node1=" .. full(n1)
+				.. " p0=" .. vecFull(get(edge, "position0")) .. " p1=" .. vecFull(get(edge, "position1"))
+				.. " t0=" .. vecFull(get(edge, "tangent0")) .. " t1=" .. vecFull(get(edge, "tangent1"))
+				.. " n0=" .. nodePos(n0) .. " n1=" .. nodePos(n1)
+				.. " type=" .. full(get(edge, "type")) .. " template=" .. full(get(edge, "roadTemplate"))
+		end
+		local node = component(api, entity, "BASE_NODE")
+		if node then return "node pos=" .. vecFull(get(node, "position")) end
+		return "absent"
+	end)
+	if ok then return text end
+	return "err " .. tostring(text)
+end
 
 return lanes

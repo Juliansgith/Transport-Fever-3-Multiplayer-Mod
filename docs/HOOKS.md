@@ -798,6 +798,10 @@ for the table (`bridge.find`). Its contract is in
   game script's `postUpdate` at a checkpoint: the lanes the hook wants
   written to its log entry by entry, and each entry ("Lane dumps" below).
   Optional, as `built`.
+- `tpf3mp_native.edgewatch()` and `tpf3mp_native.edgewatched(entity,
+  text)`: in a game script's `update`, the entities the edge watch reads in
+  this update, or `nil`; in its `postUpdate`, what it read of each ("The
+  edge watch" below). Optional, as `built`.
 - `tpf3mp_native.mods(list)`: the mods to load a save with, given the
   save's (names, one a line): that list, then those left out and those
   added, the same way, from the room's `Begin` (`tpf3mp_bridge::mods::plan`);
@@ -2270,6 +2274,17 @@ and nothing more.
   lanes at every checkpoint, for chasing a desync on purpose: `all`, or
   lane numbers (`3`, `0,3`). `off` dumps nothing, not even after a
   divergence. The hook says in its log what it read.
+- **A box of the network.** `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (the
+  world's x and y, metres, any two opposite corners) dumps the network lane
+  at every checkpoint in `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to` (steps,
+  both included; unset, every checkpoint), only the edges with an end
+  inside the box, and no junctions; the lane's `summary` line is still the
+  whole lane's. It works with `TPF3MP_HOOK_LANE_DUMP=off`, and gives way to
+  a whole dump of the lane asked for at the same checkpoint (a divergence,
+  or `TPF3MP_HOOK_LANE_DUMP` naming lane 0). The order carries the box to
+  the mod (`dump()` answers `{ step =, lanes =, box = { x0, y0, x1, y1 }
+  }`). A value that does not read is refused in `hook.log`, and nothing is
+  cut.
 - **In the game.** The driver passes the dump with the batch that ends at
   the checkpoint (`step::Batch::dump`, `lua::begin_batch`). In that
   batch's last update `tpf3mp_native.dump()` answers `{ step =, lanes = {
@@ -2377,6 +2392,105 @@ the size factors at full precision (`%.17g`) from the `TOWN` component,
 experience and level from the base game's town growth script's state, read
 as its own `town_cargo_util.getTownCargoState` reads it (`nil` when it
 cannot be read). `tools/lane_diff.py` diffs them like any lane.
+
+#### The edge watch
+
+`TPF3MP_HOOK_EDGE_WATCH=<entities>` (`325514,220468`, edges or nodes, at
+most 32) with `TPF3MP_HOOK_EDGE_WATCH_STEPS=<from>-<to>` (both included;
+unset, every step). Off unless the first is set; logging only
+(`crates/tpf3mp-hook/src/edgewatch.rs`). The round of 2026-10-02 on
+`twomptest` found the town trace's town updates alike in every game while
+an existing town street (entity 325514, a `town_old_small` dead end) had its
+free end moved between steps 12750 and 12800, to (-2356.4, -20690.8) in some
+runs and games and (-2360.9, -20680.5) in others. The watch finds the update
+that moves it and what was applied then.
+
+**Each update** in the window, the mod's game script asks the hook which
+entities to read (`edgewatch()` in its `update`, which then always hands
+`postUpdate` its work), and at the end of its `postUpdate` reads each with
+`lanes.watch` (`tpf3mp/lanes.lua`) and hands the text over
+(`edgewatched(entity, text)`). The hook logs it the first time and whenever
+it differs from the last:
+
+```
+edge watch: step <s> update <n> entity <e> first|changed edge node0=<n> node1=<n> p0=<x,y,z> p1=<x,y,z> t0=<x,y,z> t1=<x,y,z> n0=<x,y,z> n1=<x,y,z> type=<t> template=<t>
+edge watch: step <s> update <n> entity <e> first|changed node pos=<x,y,z>
+edge watch: step <s> update <n> entity <e> first|changed absent
+```
+
+`p0`/`p1` and `t0`/`t1` are the `BASE_EDGE`'s ends and tangents, `n0`/`n1`
+its nodes' `BASE_NODE` positions, all at full precision (`%.17g`); `update`
+is the game's `updateCount`. A change in update `n` happened after the
+watch's read in update `n-1` (after every system and every game script's
+`postUpdate` the mod's ran after) and before its read in `n`.
+
+**Every command applied** in the window, from any path, one line, by two
+logging-only splices in `CommandApply::One` (`0x9e1c10`, our name;
+"Simulation Thread: Apply Command", `apply_command.cpp`; `rcx` the
+`GameState`, `rdx` the `Command`): at its entry, whose return address names
+the path, and at its epilogue after the cookie check (`+0x352`), which both
+ways out reach:
+
+```
+apply: step <s>|after <s> update <n> from +<rva> (<path>) kind <k> result <r> entities <n> [<e>,...] -> <n> [<e>,...] entity-ids <before>-><after>[ watched]
+```
+
+- `step <s>`: applied inside the room's update of step `s`; `after <s>`:
+  between updates, after the batch that ended at step `s`.
+- `from` and the path: `queue` (`+0x11eb96`), the commands
+  `CGame::RunGameSimLoop` drains from `CommandList` between updates, which
+  is where everything the GUI queues lands (the street builder's
+  proposals among them), at whatever step the drain falls on; `script`
+  (`+0x1204bf`), a script's `sendCommand` applied at once by the send
+  lambda `0x120410`; `direct` (`+0x120334`), CGame's other send lambda;
+  `other`, any other site. In a game script's `update` the send lambda
+  does not apply a command: it appends it to that script's buffer
+  (`GameScriptSystem::Update` points a thread-local at it, `0xaad5f0`),
+  and the buffers are applied later through `GameState`'s command
+  function (`0x268ed0`), a tail jump into `One`, so those lines name the
+  site that called that function.
+- `kind`: the payload's variant index, the byte at `payload+0x9b8` that
+  `One` hands the dispatcher (`0x9d7350`).
+- `result`: the byte `One` leaves at `Command+0x30`.
+- `entities`: the command's entity list (`Command+8`, 16-byte entries, the
+  id in the first four bytes), its length and up to 8 ids, before and after
+  the apply. `watched` marks a line that lists a watched entity.
+- `entity-ids`: the length of the engine's entity table before and after
+  (more after: the command made entities).
+
+`step`, `update` and `from` of a line are `-`, `?` and `?` when unread.
+Before splicing, the epilogue site must lie at `One+0x352`, `One+0xaf` must
+be the kind's read (`movsx rcx, byte [r8+0x9b8]`), and each site's bytes the
+expected ones (the profile states them; the static proof checks the four
+paths reach `One` and the dispatcher's call); otherwise nothing is spliced,
+`hook.log` says why, and the edges are still watched. A panic switches the
+watch off. Calls nest (a command's apply can apply another): each entry is
+paired with its own epilogue by the stack pointer.
+
+**The street builder's pool.** `StreetBuilderPool` is the GUI tool's: it
+is made in `UI::StreetBuilder`'s constructor (`0x56a740`, with
+`action-streetbuilder`), as `TrackModifierPool` is in the track modifier's,
+and computes the player's proposals. Their results reach the world only as
+commands the GUI queues with `CommandList::Add`, which `One` applies from the
+`queue` path above, so the `apply:` lines are where such a job lands. The
+simulation's own pool work (`TownSystem::Update2`, `TransportNetworkSystem::
+Update2`, the street shape factories, ...) is `ThreadPool::Enqueue` returning
+a `JoiningFuture`, joined within the call that made it (read from the
+lambdas' RTTI names, not traced), so none of it lands on a later step; no
+separate hook is added for it.
+
+For the round after 2026-10-02 (the edge, its two neighbours, and a box
+around them):
+
+```
+TPF3MP_HOOK_EDGE_WATCH=325514,220468,261291
+TPF3MP_HOOK_EDGE_WATCH_STEPS=12700-12850
+TPF3MP_HOOK_LANE_DUMP_BOX=-2460,-20790,-2260,-20580
+TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=12700-12850
+```
+
+then, from each game's `hook.log`, `grep -E '^\[[0-9]+\] (edge watch|apply):'`
+and compare the games line by line by `step` and `update`.
 
 ### Seeds, as built
 

@@ -1862,6 +1862,92 @@ fn a_towns_dump_carries_its_size_factors_experience_and_level() {
 }
 
 #[test]
+fn a_network_dump_cut_to_a_box_keeps_the_edges_with_an_end_inside() {
+    let a = dumping_game(false);
+    let lanes = read_lanes(&a);
+    let dump = |lua: &Lua, order: &str| -> Vec<String> {
+        lua.load(format!(
+            "HOOK.dumped = {{}} HOOK.checkpoint = true HOOK.dump = {order} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        lua.load("return HOOK.dumped").eval().unwrap()
+    };
+    // Edge 102 runs from (100, 0) to (100, 80): its far end is in the box,
+    // edge 101's ends are not.
+    let cut = dump(
+        &a,
+        "{ step = 12800, lanes = { 0, 5 }, box = { 90, 50, 110, 90 } }",
+    );
+    let network: Vec<&String> = cut.iter().filter(|l| l.starts_with("lane 0 ")).collect();
+    assert_eq!(network.len(), 2, "{cut:#?}");
+    assert!(network[0].contains(" entity=102 "), "{cut:#?}");
+    assert_eq!(
+        network[1],
+        &format!("lane 0 step 12800 summary {}", lanes[0].1),
+        "the summary is the whole lane's"
+    );
+    // The box is the network lane's only: the towns lane is whole.
+    assert!(
+        cut.iter()
+            .any(|l| l.starts_with("lane 5 step 12800 town-0 "))
+    );
+    // Without a box, the whole lane.
+    let whole = dump(&a, "{ step = 12850, lanes = { 0 } }");
+    assert_eq!(whole.len(), 3, "{whole:#?}");
+    // A box nothing lies in: the summary alone.
+    let empty = dump(
+        &a,
+        "{ step = 12900, lanes = { 0 }, box = { -9, -9, -8, -8 } }",
+    );
+    assert_eq!(empty.len(), 1, "{empty:#?}");
+}
+
+#[test]
+fn the_edge_watch_reads_each_entity_every_update_it_is_asked_for() {
+    let a = dumping_game(false);
+    a.load(
+        r#"
+        api.type.ComponentType.BASE_NODE = 10
+        WORLD[10] = { [11] = { position = { x = 0, y = 0, z = 0 } },
+                      [12] = { position = { x = 100.04, y = 0, z = 1 } } }
+        local e = WORLD[1][101]
+        e.node0, e.node1 = 11, 12
+        e.tangent0, e.tangent1 = { x = 100, y = 0, z = 1 }, { x = 100, y = 0.5, z = 1 }
+        e.type = 0
+        HOOK.watched = {}
+        tpf3mp_native.edgewatch = function() return HOOK.watch end
+        tpf3mp_native.edgewatched = function(e, text) HOOK.watched[#HOOK.watched + 1] = e .. ' ' .. text end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    // Not asked: no read, and nothing for postUpdate to do.
+    let work: mlua::Value = a.load("return UPDATE({}, STATE, 0.2)").eval().unwrap();
+    assert!(work.is_nil());
+    // Asked: postUpdate runs and reads each one, an edge, a node and none.
+    a.load("HOOK.watch = { 101, 11, 999 } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let watched: Vec<String> = a.load("return HOOK.watched").eval().unwrap();
+    assert_eq!(
+        watched,
+        [
+            "101 edge node0=11 node1=12 p0=0,0,0 p1=100.04000000000001,0,1 t0=100,0,1 \
+             t1=100,0.5,1 n0=0,0,0 n1=100.04000000000001,0,1 type=0 template=street/country.lua",
+            "11 node pos=0,0,0",
+            "999 absent",
+        ]
+    );
+    // An older hook without the watch: nothing asked, nothing read.
+    a.load("tpf3mp_native.edgewatch = nil HOOK.watched = {} UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let watched: Vec<String> = a.load("return HOOK.watched").eval().unwrap();
+    assert!(watched.is_empty());
+}
+
+#[test]
 fn terminal_choices_and_locks_are_dumped_without_changing_the_vehicle_digest() {
     let a = dumping_game(false);
     let b = dumping_game(false);

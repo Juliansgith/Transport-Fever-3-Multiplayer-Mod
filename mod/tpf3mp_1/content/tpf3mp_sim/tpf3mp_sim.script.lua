@@ -25,6 +25,11 @@
 --   hands it the lanes asked for entry by entry, for hook.log (docs/HOOKS.md,
 --   "Lane dumps").
 --
+-- With the hook's edge watch on (TPF3MP_HOOK_EDGE_WATCH), `update` also
+-- asks which entities to read (`edgewatch`), and `postUpdate` reads each
+-- after everything else it does and hands it over (`edgewatched`;
+-- docs/HOOKS.md, "The edge watch"). Read only.
+--
 -- The hook holds the world if nobody took the actions, or if a checkpoint's
 -- lanes did not come.
 --
@@ -396,12 +401,15 @@ function data()
 			-- open: its money is settled (tpf3mp/companies.lua, "subsidies").
 			local day = companies.dayNow(api)
 			local subsidies = l:room() and type(saved) == "table" and companies.subsidiesDue(saved.companies, day)
-			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies then
+			-- The entities the hook's edge watch reads in this update.
+			local watch = l:edgewatch()
+			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies
+				and not watch then
 				return nil
 			end
 			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint,
 				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil,
-				subsidies = subsidies and day or nil }
+				subsidies = subsidies and day or nil, watch = watch }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
@@ -549,10 +557,12 @@ function data()
 					-- Every entry is handed over: the hook keeps the first
 					-- few thousand and counts the rest.
 					for _, lane in ipairs(dump.lanes) do
-						for _, entry in ipairs(lanes.dump(api, lane, reg)) do l:dumped(lane, entry) end
+						for _, entry in ipairs(lanes.dump(api, lane, reg, dump.box)) do l:dumped(lane, entry) end
 					end
 				end
 			end
+			-- The edge watch: each entity as it reads after this update.
+			for _, e in ipairs(work.watch or {}) do l:edgewatched(e, lanes.watch(api, e)) end
 		end,
 
 		guiHandleEvent = function(_params, _state, _guiState, _src, id, name, param)

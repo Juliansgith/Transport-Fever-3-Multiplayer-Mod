@@ -19,7 +19,9 @@
 //! adds its lanes: both diverged games of a room of three say one.
 //!
 //! [`ENV`] in the game's environment adds lanes to every checkpoint, for
-//! chasing a desync on purpose, or turns dumps off.
+//! chasing a desync on purpose, or turns dumps off. [`BOX_ENV`] (with
+//! [`BOX_STEPS_ENV`]) dumps the network lane at every checkpoint of a step
+//! range, cut to the edges with an end inside a box.
 //!
 //! Pure: the driver (`crate::step`) hands it the steps, the room's lines
 //! and the time.
@@ -33,6 +35,16 @@ use std::{
 /// at every checkpoint besides any a divergence asks for; `off` dumps
 /// nothing, not even after a divergence. Unset: only after a divergence.
 pub const ENV: &str = "TPF3MP_HOOK_LANE_DUMP";
+
+/// `x0,y0,x1,y1`: the network lane (0) is dumped at every checkpoint in
+/// [`BOX_STEPS_ENV`]'s range, only its edges with an end inside this box
+/// (metres, the world's x and y). Off unless set; works with [`ENV`] off.
+pub const BOX_ENV: &str = "TPF3MP_HOOK_LANE_DUMP_BOX";
+/// `from-to` (steps, both included): where [`BOX_ENV`] dumps; unset, at
+/// every checkpoint.
+pub const BOX_STEPS_ENV: &str = "TPF3MP_HOOK_LANE_DUMP_BOX_STEPS";
+/// The network lane.
+pub const NETWORK: u16 = 0;
 
 /// The lanes the mod reads (tpf3mp/lanes.lua): `all` means these.
 pub const LANES: u16 = 7;
@@ -97,15 +109,85 @@ pub fn parse(text: &str) -> Option<Ask> {
 }
 
 fn numbers<T: std::str::FromStr>(list: &str) -> Option<Vec<T>> {
-    list.split(',').map(|n| n.parse().ok()).collect()
+    list.split(',').map(|n| n.trim().parse().ok()).collect()
+}
+
+/// A range of steps, `from-to` with both included (`12750-12800`), or one
+/// step (`12800`); `None` for anything else, or `from` past `to`.
+pub fn parse_step_range(value: &str) -> Option<(u64, u64)> {
+    let value = value.trim();
+    let (from, to) = value.split_once('-').unwrap_or((value, value));
+    let (from, to) = (from.trim().parse().ok()?, to.trim().parse().ok()?);
+    (from <= to).then_some((from, to))
+}
+
+/// The network lane's dump cut to a box ([`BOX_ENV`]): the box, `[x0, y0,
+/// x1, y1]` with `x0 <= x1` and `y0 <= y1`, and the steps.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxDump {
+    pub rect: [f64; 4],
+    pub steps: Option<(u64, u64)>,
+}
+
+impl BoxDump {
+    /// From [`BOX_ENV`]'s and [`BOX_STEPS_ENV`]'s values: `Ok(None)` when
+    /// the box is unset, `Err(why)` for a value that does not read (no box
+    /// dump then).
+    pub fn from_env(rect: Option<&str>, steps: Option<&str>) -> Result<Option<Self>, String> {
+        let Some(rect) = rect.map(str::trim).filter(|v| !v.is_empty()) else {
+            return Ok(None);
+        };
+        let corners = numbers::<f64>(rect)
+            .filter(|n| n.len() == 4 && n.iter().all(|v| v.is_finite()))
+            .ok_or_else(|| {
+                format!("{BOX_ENV}={rect} is not four numbers x0,y0,x1,y1; no box dump")
+            })?;
+        let steps = match steps.map(str::trim).filter(|v| !v.is_empty()) {
+            None => None,
+            Some(value) => Some(parse_step_range(value).ok_or_else(|| {
+                format!(
+                    "{BOX_STEPS_ENV}={value} is not a step range such as 12750-12800; no box dump"
+                )
+            })?),
+        };
+        Ok(Some(Self {
+            rect: [
+                corners[0].min(corners[2]),
+                corners[1].min(corners[3]),
+                corners[0].max(corners[2]),
+                corners[1].max(corners[3]),
+            ],
+            steps,
+        }))
+    }
+
+    /// Whether the checkpoint at `step` is dumped.
+    pub fn covers(&self, step: u64) -> bool {
+        self.steps
+            .is_none_or(|(from, to)| (from..=to).contains(&step))
+    }
+
+    /// For the log.
+    pub fn describe(&self) -> String {
+        let [x0, y0, x1, y1] = self.rect;
+        let steps = match self.steps {
+            Some((from, to)) => format!("checkpoints {from} to {to}"),
+            None => "every checkpoint".to_owned(),
+        };
+        format!(
+            "dumping lane {NETWORK} at {steps}, only edges with an end in x {x0}..{x1}, y {y0}..{y1} ({BOX_ENV})"
+        )
+    }
 }
 
 /// Which lanes the environment dumps at every checkpoint, and whether dumps
 /// are off.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Setting {
     pub always: BTreeSet<u16>,
     pub off: bool,
+    /// The network lane cut to a box ([`BOX_ENV`]).
+    pub boxed: Option<BoxDump>,
 }
 
 impl Setting {
@@ -121,6 +203,7 @@ impl Setting {
                     Self {
                         always: BTreeSet::new(),
                         off: true,
+                        boxed: None,
                     },
                     None,
                 );
@@ -130,6 +213,7 @@ impl Setting {
                     Self {
                         always: (0..LANES).collect(),
                         off: false,
+                        boxed: None,
                     },
                     None,
                 );
@@ -141,6 +225,7 @@ impl Setting {
                 Self {
                     always: lanes.into_iter().collect(),
                     off: false,
+                    boxed: None,
                 },
                 None,
             ),
@@ -165,14 +250,24 @@ impl Setting {
         }
         self
     }
+
+    /// With the network lane's box dump ([`BOX_ENV`]).
+    #[must_use]
+    pub fn with_box(mut self, boxed: Option<BoxDump>) -> Self {
+        self.boxed = boxed;
+        self
+    }
 }
 
 /// One checkpoint's dump: its step, the lanes, and why, for the log.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DumpOrder {
     pub step: u64,
     pub lanes: Vec<u16>,
     pub why: String,
+    /// The network lane cut to this box, `[x0, y0, x1, y1]` ([`BOX_ENV`]);
+    /// `None` dumps it whole.
+    pub network_box: Option<[f64; 4]>,
 }
 
 /// The dumps to come.
@@ -331,6 +426,16 @@ impl LaneDumps {
             lanes.extend(planned.iter().copied());
             why.push(reason.clone());
         }
+        // The box cuts the network lane only where nothing else asks for it
+        // whole.
+        let mut network_box = None;
+        if let Some(boxed) = self.setting.boxed.filter(|b| b.covers(step))
+            && !lanes.contains(&NETWORK)
+        {
+            lanes.insert(NETWORK);
+            network_box = Some(boxed.rect);
+            why.push(BOX_ENV.to_owned());
+        }
         if lanes.is_empty() {
             return None;
         }
@@ -338,6 +443,7 @@ impl LaneDumps {
             step,
             lanes: lanes.into_iter().collect(),
             why: why.join(", "),
+            network_box,
         })
     }
 }
@@ -539,5 +645,40 @@ mod tests {
         let both = dumps.take(100).unwrap();
         assert_eq!(both.lanes, [0, 3]);
         assert!(both.why.contains(ENV) && both.why.contains("step 50 diverged"));
+    }
+
+    #[test]
+    fn a_box_dumps_the_network_lane_cut_at_the_checkpoints_of_its_range() {
+        assert_eq!(parse_step_range("12750-12800"), Some((12_750, 12_800)));
+        assert_eq!(parse_step_range(" 12800 "), Some((12_800, 12_800)));
+        assert_eq!(parse_step_range("12800-12750"), None);
+        assert_eq!(parse_step_range("a-b"), None);
+        assert_eq!(BoxDump::from_env(None, Some("1-2")), Ok(None));
+        assert!(BoxDump::from_env(Some("1,2,3"), None).is_err());
+        assert!(BoxDump::from_env(Some("1,2,3,4"), Some("9-1")).is_err());
+        let boxed = BoxDump::from_env(Some("-2300, -20650,-2400,-20720"), Some("12750-12850"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(boxed.rect, [-2400.0, -20720.0, -2300.0, -20650.0]);
+        assert!(boxed.describe().contains("checkpoints 12750 to 12850"));
+        let mut dumps = LaneDumps::new(Setting::default().with_box(Some(boxed)));
+        assert_eq!(dumps.take(12_700), None, "before the range");
+        let order = dumps.take(12_750).unwrap();
+        assert_eq!(order.lanes, [NETWORK]);
+        assert_eq!(order.network_box, Some(boxed.rect));
+        assert_eq!(order.why, BOX_ENV);
+        assert_eq!(dumps.take(12_900), None, "past it");
+        // The network lane asked for whole: whole it is.
+        let (all, _) = Setting::from_env(Some("0,5"));
+        let mut dumps = LaneDumps::new(all.with_box(Some(boxed)));
+        let order = dumps.take(12_800).unwrap();
+        assert_eq!(order.lanes, [0, 5]);
+        assert_eq!(order.network_box, None);
+        // Another lane at the box's checkpoints joins it.
+        let (towns, _) = Setting::from_env(Some("5"));
+        let mut dumps = LaneDumps::new(towns.with_box(Some(boxed)));
+        let order = dumps.take(12_800).unwrap();
+        assert_eq!(order.lanes, [0, 5]);
+        assert_eq!(order.network_box, Some(boxed.rect));
     }
 }
