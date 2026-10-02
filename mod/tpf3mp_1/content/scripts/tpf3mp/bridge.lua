@@ -30,11 +30,16 @@
 --                                   -- in the room's game so far, or nil where
 --                                   -- the hook cannot take them to the room
 --     built   = function(n),        -- optional; in the GUI: the build the
---                                   -- module editor queued at click n, as
---                                   -- game scripts see a proposal | nil, why
---                                   -- | nil (not the module editor's)
+--                                   -- module editor or a terrain tool queued
+--                                   -- at click n, as the hook read it | nil,
+--                                   -- why | nil (neither's)
 --     replaying = function(on),     -- the game script applies the room's
 --                                   -- actions (true) or is done (false)
+--     terrain = function(t),        -- optional; while the room's actions run:
+--                                   -- arms the next build sent with the
+--                                   -- terraform grid t -> true | nil, why;
+--                                   -- terrain() disarms -> whether a build
+--                                   -- was filled | nil (none armed)
 --     applied = function(i, ok, entity, why), -- in a game script's postUpdate:
 --                                   -- what became of the batch's action i
 --     results = function(),         -- in the GUI: what became of the player's
@@ -70,6 +75,11 @@
 --                                   -- Lua states notes for the others ("" to
 --                                   -- forget); note(key) reads it -> string
 --                                   -- | nil
+--     edgewatch = function(),       -- optional; in a game script's update:
+--                                   -- the entities the edge watch reads in
+--                                   -- this update, { e, ... } | nil
+--     edgewatched = function(e, text), -- optional; in its postUpdate: what
+--                                   -- it read of e (tpf3mp/lanes.lua watch)
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -325,6 +335,22 @@ function Link:dumped(lane, entry)
 	return ok and taken == true
 end
 
+-- In a game script's update: the entities the edge watch reads in this
+-- update (docs/HOOKS.md, "The edge watch"), a list; or nil, and nil from a
+-- hook without the watch (`edgewatch` is optional).
+function Link:edgewatch()
+	if type(self.native.edgewatch) ~= "function" then return nil end
+	local ok, list = pcall(self.native.edgewatch)
+	if ok and type(list) == "table" and #list > 0 then return list end
+	return nil
+end
+
+-- Hands the hook what the edge watch read of `entity`.
+function Link:edgewatched(entity, text)
+	if type(self.native.edgewatched) ~= "function" then return end
+	pcall(self.native.edgewatched, entity, tostring(text))
+end
+
 -- Names in a text, one a line.
 local function lines(text)
 	local out = {}
@@ -374,6 +400,17 @@ end
 -- The game script begins (true) or ends applying the room's actions.
 function Link:replaying(on)
 	pcall(self.native.replaying, on == true)
+end
+
+-- While the room's actions run: arms the next build sent with the terraform
+-- grid `grid` (true, or nil and why), or with nil disarms, answering whether
+-- a build was filled (nil when none was armed). A hook without `terrain` (it
+-- is optional) applies no terraform.
+function Link:terrain(grid)
+	if type(self.native.terrain) ~= "function" then return nil, "this hook cannot apply a terraform" end
+	local ok, result, why = pcall(self.native.terrain, grid)
+	if not ok then return nil, "the hook refused: " .. tostring(result) end
+	return result, why
 end
 
 -- Whether the room's game runs. A hook that cannot say is taken to say yes:

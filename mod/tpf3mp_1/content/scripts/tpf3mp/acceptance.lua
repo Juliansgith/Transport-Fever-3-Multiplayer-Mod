@@ -1,14 +1,19 @@
 -- New channels remain refused until ordinary two-game acceptance is recorded.
 -- These defaults travel with the mod fingerprint: every room member has the
 -- same settings. Fixtures may enable a channel explicitly to test its mechanics.
-local acceptance = { subsidies = false, rename = false, waypoints = false, perks = false }
+-- Height brushes passed local two-game acceptance on build 40408, 2026-10-02.
+-- See investigation/STATION_TERRAIN_2026-10-02.md for evidence and limits.
+-- Bridge/tunnel window rebuilds use ordinary road/track actions and are
+-- gated at capture.windowBuild until their own two-game acceptance.
+local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true, bridges = false, perks = false, preservation = false }
 
 function acceptance.check(action)
     local feature
     if action.Subsidy then feature = "subsidies" end
-    -- The construction menu's perk tools: Industry Greenification and the
-    -- marketing campaign (action::PerkOp).
+    if action.Terraform then feature = "terraform" end
     if action.Perk then feature = "perks" end
+    -- A town building's Historic Preservation (action::Preservation).
+    if action.Preserve then feature = "preservation" end
     if action.Rename or (action.VehicleOp and type(action.VehicleOp.change) == "table"
         and action.VehicleOp.change.Recolor) then feature = "rename" end
     local line = action.CreateLine and action.CreateLine.line

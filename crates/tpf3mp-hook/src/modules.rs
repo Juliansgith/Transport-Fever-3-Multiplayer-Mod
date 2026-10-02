@@ -132,7 +132,7 @@ impl Memory for Process {
     }
 }
 
-fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+pub(crate) fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     let mut word = [0u8; 8];
     word.copy_from_slice(&bytes[offset..offset + 8]);
     u64::from_le_bytes(word)
@@ -651,9 +651,10 @@ pub(crate) fn keep(click: u64, build: Result<LuaValue, String>) {
 #[cfg(test)]
 pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-/// The module editor's build at click `click`, once: `Some(Ok(table))`,
-/// `Some(Err(why))` when it did not read, or `None` when the click was not
-/// the module editor's (or was taken already).
+/// The build read natively at click `click`, once: the module editor's, or
+/// a terrain tool's ([`crate::terrain`]): `Some(Ok(table))`, `Some(Err(why))`
+/// when it did not read, or `None` when the click was neither (or was taken
+/// already).
 pub fn take(click: u64) -> Option<Result<LuaValue, String>> {
     let mut kept = KEPT_BUILDS.lock().unwrap_or_else(PoisonError::into_inner);
     let at = kept.iter().position(|(n, _)| *n == click)?;

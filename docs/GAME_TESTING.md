@@ -73,9 +73,11 @@ Once per machine:
 Before each test:
 
 ```powershell
-cargo build --release -p tpf3mp-testkit --bin tpf3mp-rig -p tpf3mp-hook
+cargo build --release -p tpf3mp-testkit --bin tpf3mp-rig
+cargo build --release -p tpf3mp-hook --lib
 ```
 
+Build these as two commands: Cargo's `--bin` filter otherwise skips the hook's library and can silently leave an old DLL beside a new rig.
 The rig loads `tpf3mp_hook.dll` from next to itself. A running game locks
 that DLL, so quit the games before rebuilding it. **Rebuild the hook after
 any change to `tpf3mp-proto`'s actions.** The hook checks the mod's
@@ -259,7 +261,7 @@ tools\game\quit.ps1 -GamePids 47320,43256
 ```
 
 This closes the window, then clicks Quit and Return to Desktop. A game
-still running a minute later is stopped by PID. The rig stops on its own
+still running a minute later is reported as a failure and left alive. The rig stops on its own
 once its games have exited. If it does not, stop it by the PID in
 `<run>\rig.pid`.
 

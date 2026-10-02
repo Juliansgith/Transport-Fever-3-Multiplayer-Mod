@@ -51,12 +51,20 @@
 //!   so far, or `nil` where the hook cannot take them to the room
 //!   ([`crate::builds`]).
 //! - `built(n)`: in the GUI: the build the module editor queued at click
-//!   `n`, read natively, as game scripts see a proposal; `nil` and why when
-//!   it did not read; `nil` when click `n` was not the module editor's
+//!   `n`, read natively, as game scripts see a proposal, or a terrain
+//!   tool's stroke as `{ terrain = grid }` ([`crate::terrain`]); `nil` and
+//!   why when it did not read; `nil` when click `n` was neither's
 //!   ([`crate::modules`]). Optional in the contract: a mod that does not
-//!   call it keeps the module editor refused.
+//!   call it keeps both refused.
 //! - `replaying(on)`: the game script begins or ends applying the room's
 //!   actions, whose builds the hook lets through ([`crate::builds`]).
+//! - `terrain(t)`: in a game script's `postUpdate`, while the room's actions
+//!   run: arms the next build it sends with the terraform `t` (`{ x0 =, y0
+//!   =, width =, height =, cells = { ... } }`), which the hook fills in at
+//!   the build's apply ([`crate::terrain`]). Returns `true`, or `nil` and
+//!   why. `terrain()` disarms, and answers whether a build was filled
+//!   (`nil` when none was armed). Optional in the contract: a hook without
+//!   it applies no terraform.
 //! - `applied(index, ok, entity, why)`: in a game script's `postUpdate`,
 //!   after applying the batch's action `index` (from 1): whether it went,
 //!   what it made, if anything, and why not. For one of the player's own,
@@ -65,13 +73,21 @@
 //!   `{ ticket =, ok =, entity =, why = }`, oldest first ([`refused`]).
 //! - `dump()`: in a game script's `postUpdate`, at a checkpoint whose lanes
 //!   the driver wants dumped ([`crate::lanedump`]): `{ step =, lanes = {
-//!   ... } }`, once, or `nil`. Optional in the contract, as `dumped` is.
+//!   ... }, box = { x0, y0, x1, y1 } }` (`box` only when the network lane
+//!   is cut to one), once, or `nil`. Optional in the contract, as `dumped`
+//!   is.
 //! - `dumped(lane, entry)`: one entry of a lane dumped there, which goes to
 //!   `hook.log` as `lane <lane> step <step> <entry>`, up to
 //!   [`MAX_DUMP_LINES`] a checkpoint. Returns `true`, or `false` once no
 //!   more are taken.
 //! - `note(key[, value])`: a short string one Lua state notes for the
 //!   others ([`native_note`]).
+//! - `edgewatch()`: in a game script's `update`: the entities to watch in
+//!   this update, a list, or `nil` (the edge watch is off or this step is
+//!   outside its window, [`crate::edgewatch`]).
+//! - `edgewatched(entity, text)`: what the script read of a watched entity
+//!   in this update's `postUpdate`; the hook logs it when it changed. Both
+//!   optional in the contract.
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -148,8 +164,10 @@ const MAX_NOTE_KEY: usize = 64;
 pub const PERSONAL_UNGUARDED: &str = "personal-mods-unguarded";
 const MAX_NOTE_VALUE: usize = 512;
 /// Most entries one checkpoint's lane dump writes, all its lanes together,
-/// and the longest entry kept.
-pub const MAX_DUMP_LINES: usize = 5000;
+/// and the longest entry kept. Room for the whole network lane of a large
+/// map: `twomptest`'s lane 0 has about 10,800 entries (round of
+/// 2026-10-02), which 5000 cut short. At most about 40 MB a checkpoint.
+pub const MAX_DUMP_LINES: usize = 20_000;
 const MAX_DUMP_LINE: usize = 2000;
 
 /// Where a Lua state keeps its globals.
@@ -238,6 +256,8 @@ struct Batch {
 struct Dump {
     step: u64,
     lanes: Vec<u16>,
+    /// The network lane cut to this box.
+    network_box: Option<[f64; 4]>,
     /// `dump()` handed it to the mod.
     taken: bool,
     written: usize,
@@ -436,6 +456,7 @@ pub fn begin_batch(
         dump: dump.filter(|_| lanes).map(|order| Dump {
             step: order.step,
             lanes: order.lanes.clone(),
+            network_box: order.network_box,
             taken: false,
             written: 0,
             left_out: 0,
@@ -669,6 +690,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"clicks", native_clicks),
                 (b"built", native_built),
                 (b"replaying", native_replaying),
+                (b"terrain", native_terrain),
                 (b"applied", native_applied),
                 (b"results", native_results),
                 (b"status", native_status),
@@ -681,6 +703,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"personal", native_personal),
                 (b"shared", native_shared),
                 (b"note", native_note),
+                (b"edgewatch", native_edgewatch),
+                (b"edgewatched", native_edgewatched),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -1758,6 +1782,46 @@ unsafe fn number_arg(api: &LuaApi, l: State, index: c_int) -> Option<f64> {
     }
 }
 
+/// `terrain(t)`: arms the next build the room's actions send with the
+/// terraform `t`; `terrain()` disarms and answers whether a build was
+/// filled ([`crate::terrain`]).
+unsafe extern "C-unwind" fn native_terrain(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread; index 1 is
+    // the argument, if any; a C function's stack has LUA_MINSTACK free
+    // slots.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) == TNIL {
+            match crate::terrain::disarm() {
+                Some(filled) => (api.pushboolean)(l, c_int::from(filled)),
+                None => (api.pushnil)(l),
+            }
+            return 1;
+        }
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut nodes = 0;
+            let value = read(api, l, 1, 0, &mut nodes)?;
+            let grid = crate::terrain::Grid::from_lua(&value)?;
+            crate::terrain::arm(grid);
+            Ok::<(), String>(())
+        }))
+        .unwrap_or_else(|_| Err("reading the terrain grid failed".to_owned()));
+        match outcome {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushnil)(l);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
 /// `applied(index, ok, entity, why)`.
 unsafe extern "C-unwind" fn native_applied(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -1866,14 +1930,14 @@ unsafe extern "C-unwind" fn native_dump(l: State) -> c_int {
         match batch.dump.as_mut() {
             Some(dump) if due && !dump.taken => {
                 dump.taken = true;
-                Some((dump.step, dump.lanes.clone()))
+                Some((dump.step, dump.lanes.clone(), dump.network_box))
             }
             _ => None,
         }
     };
     #[allow(clippy::cast_precision_loss)]
-    let table = order.map(|(step, lanes)| {
-        LuaValue::Table(vec![
+    let table = order.map(|(step, lanes, network_box)| {
+        let mut fields = vec![
             (LuaValue::string("step"), LuaValue::Number(step as f64)),
             (
                 LuaValue::string("lanes"),
@@ -1890,7 +1954,19 @@ unsafe extern "C-unwind" fn native_dump(l: State) -> c_int {
                         .collect(),
                 ),
             ),
-        ])
+        ];
+        if let Some(rect) = network_box {
+            fields.push((
+                LuaValue::string("box"),
+                LuaValue::Table(
+                    rect.iter()
+                        .enumerate()
+                        .map(|(i, v)| (LuaValue::Number((i + 1) as f64), LuaValue::Number(*v)))
+                        .collect(),
+                ),
+            ));
+        }
+        LuaValue::Table(fields)
     });
     // SAFETY: Lua calls this with its own state, on its thread.
     unsafe { push_or_nil(api, l, table.as_ref()) }
@@ -1983,6 +2059,48 @@ unsafe extern "C-unwind" fn native_note(l: State) -> c_int {
         None => unsafe { (api.pushnil)(l) },
     }
     1
+}
+
+/// `edgewatch()`: the entities to read in this update, or nil
+/// ([`crate::edgewatch`]).
+unsafe extern "C-unwind" fn native_edgewatch(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let table = crate::edgewatch::due_now().map(|entities| {
+        LuaValue::Table(
+            entities
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    (
+                        LuaValue::Number((i + 1) as f64),
+                        LuaValue::Number(f64::from(*e)),
+                    )
+                })
+                .collect(),
+        )
+    });
+    // SAFETY: Lua calls this with its own state, on its thread.
+    unsafe { push_or_nil(api, l, table.as_ref()) }
+}
+
+/// `edgewatched(entity, text)`: logged when it changed.
+unsafe extern "C-unwind" fn native_edgewatched(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let (entity, text) = unsafe { (number_arg(api, l, 1), string_arg(api, l, 2, MAX_DUMP_LINE)) };
+    if let (Some(entity), Some(text)) = (entity, text)
+        && entity.fract() == 0.0
+        && (0.0..=f64::from(u32::MAX)).contains(&entity)
+    {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        crate::edgewatch::watched_now(entity as u32, &text);
+    }
+    0
 }
 
 unsafe extern "C-unwind" fn native_log(l: State) -> c_int {
@@ -2422,6 +2540,7 @@ my_timetables";
             step: 300,
             lanes: vec![1, 3],
             why: "step 250 diverged".into(),
+            network_box: None,
         };
         begin_batch(&[], 2, true, Some(&order)).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
@@ -2488,10 +2607,15 @@ my_timetables";
             step: 50,
             lanes: vec![0, 3],
             why: String::new(),
+            network_box: Some([-2460.0, -20790.0, -2260.0, -20580.5]),
         };
         begin_batch(&[], 1, true, Some(&order)).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
-        lua.run(DUMP).unwrap();
+        // The box goes to the mod with the order.
+        assert_eq!(
+            lua.run("local d = tpf3mp_native.dump() return table.concat(d.box, ',')"),
+            Ok("-2460,-20790,-2260,-20580.5".into())
+        );
         let taken = lua
             .run(&format!(
                 "local n = 0 \
@@ -2842,6 +2966,40 @@ my_timetables";
             lua.run("return tostring(tpf3mp_native.status())"),
             Ok("nil".into())
         );
+    }
+
+    #[test]
+    fn terrain_arms_a_checked_grid_and_disarming_says_whether_it_was_used() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let _armed = crate::terrain::TEST_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
+        assert_eq!(
+            lua.run(
+                "return tpf3mp_native.terrain({ x0 = -3, y0 = 4, width = 2, height = 1, \
+                 cells = { 101.5, 100, 102.25, 100 } })"
+            ),
+            Ok("true".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.terrain(nil)"),
+            Ok("false".into()),
+            "armed, and no build filled"
+        );
+        let refused = lua
+            .run(
+                "return tpf3mp_native.terrain({ x0 = 0, y0 = 0, width = 2, height = 1, \
+                 cells = { 1, 2, 3 } })",
+            )
+            .unwrap();
+        assert!(
+            refused.starts_with("nil|") && refused.contains("3 values"),
+            "{refused}"
+        );
+        assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
     }
 
     #[test]

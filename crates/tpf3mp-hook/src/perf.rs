@@ -48,6 +48,8 @@ pub enum Piece {
     LandVehicle,
     /// `vehicles-at-stop-order`: the sort before the boarding loop.
     VehiclesAtStop,
+    /// The person-order fixes (`persons.rs`): one call per batch sorted.
+    PersonOrder,
     /// The game scripts' per-call reseed (update, postUpdate, handleEvent),
     /// on the threads that run the scripts.
     Reseed,
@@ -64,12 +66,13 @@ pub enum Piece {
 }
 
 impl Piece {
-    pub const ALL: [Piece; 10] = [
+    pub const ALL: [Piece; 11] = [
         Piece::RoadEntry,
         Piece::PlatformVisit,
         Piece::PlatformCandidates,
         Piece::LandVehicle,
         Piece::VehiclesAtStop,
+        Piece::PersonOrder,
         Piece::Reseed,
         Piece::PausedTick,
         Piece::Lanes,
@@ -85,6 +88,7 @@ impl Piece {
             Piece::PlatformCandidates => "platform-candidates",
             Piece::LandVehicle => "land-vehicle",
             Piece::VehiclesAtStop => "vehicles-at-stop",
+            Piece::PersonOrder => "person-order",
             Piece::Reseed => "reseed",
             Piece::PausedTick => "paused-tick",
             Piece::Lanes => "lanes",

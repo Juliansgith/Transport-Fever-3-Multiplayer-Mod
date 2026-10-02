@@ -284,54 +284,15 @@ function data()
 			or ("the company window shows the game's own rank only: " .. tostring(why)))
 	end
 
-	-- Whether this player's company may have its lines stop at `entity`, a
-	-- station group or a station's construction another company owns: while
-	-- that company keeps its stations open (tpf3mp/companies.lua, mayUse;
-	-- DECISIONS.md, D22, proposed). Every game checks the line again when
-	-- the room orders it; this only lets the line manager offer the station.
-	local function openToMe(entity)
-		local shared = ui()
-		local roster = shared.companies
-		if not (shared.status and roster and link and link:room()) then return false end
-		local ok, open = pcall(function()
-			local CT = api.type.ComponentType
-			local group = api.engine.getComponent(entity, CT.STATION_GROUP)
-			local con = group == nil and api.engine.getComponent(entity, CT.CONSTRUCTION) or nil
-			if group == nil and not (con and con.stations and #con.stations > 0) then return false end
-			local owned = api.engine.getComponent(entity, CT.PLAYER_OWNED)
-			local owner = owned and owned.player
-			for _, c in ipairs(roster.list or {}) do
-				if c.entity == owner then return not c.closed end
-			end
-			return false
-		end)
-		return ok and open == true
-	end
-
-	-- TF3's line manager offers only the player's own stations and those no
-	-- one owns (gui/line_vehicle_mgmt/manager_window.tl asks
-	-- scripts/entity_util.tl's isOwnedByPlayerOrNotOwned; seen on build
-	-- 40408); the game itself stops a line anywhere. In this GUI state the
-	-- mod's answer also takes another company's open stations. Other windows
-	-- ask the same function of vehicles and warehouses, which stay as the
-	-- game answers. Whether every script shares one entity_util table, as
-	-- one ug_require's cache would give, is INFERRED: hook.log says how many
-	-- the mod changed.
+	-- Install in this GUI state too; the HUD and game-script GUI install
+	-- the same helper in their own states.
 	local function offerOpenStations()
-		local changed, tried = 0, {}
-		for _, path in ipairs({ "/scripts/entity_util.tl", "::/scripts/entity_util.tl" }) do
-			local ok, util = pcall(ug_require, path)
-			if ok and type(util) == "table" and not tried[util]
-				and type(util.isOwnedByPlayerOrNotOwned) == "function" then
-				tried[util] = true
-				local original = util.isOwnedByPlayerOrNotOwned
-				util.isOwnedByPlayerOrNotOwned = function(entity, ...)
-					if original(entity, ...) then return true end
-					return openToMe(entity)
-				end
-				changed = changed + 1
+		local changed = require("tpf3mp.companies").followStations(api, ug_require, function()
+			local shared = ui()
+			if link and link:room() and shared.status then
+				return shared.companies, shared.status.me_id
 			end
-		end
+		end)
 		link:log(changed > 0 and ("the line manager offers other companies' open stations ("
 			.. changed .. " entity_util table(s))")
 			or "the line manager offers the player's own stations only: no entity_util.isOwnedByPlayerOrNotOwned")
@@ -478,7 +439,9 @@ function data()
 				-- window has no use for it.
 				local locked = type(c.lock) == "table"
 				out.list[#out.list + 1] = { id = c.id, entity = c.entity, name = name or c.name, color = c.color,
-					balance = balance, owed = owed, founder = c.founder, locked = locked, closed = c.closed == true }
+					balance = balance, owed = owed, founder = c.founder, locked = locked, closed = c.closed == true,
+					access = c.access }
+				for _, a in ipairs(c.access or {}) do sign[#sign + 1] = c.id .. ">" .. tostring(a.company) .. "=" .. tostring(a.open) end
 				local color = type(c.color) == "table" and c.color or {}
 				sign[#sign + 1] = table.concat({ c.id, name or c.name, tostring(balance), tostring(owed),
 					tostring(color[1]), tostring(color[2]), tostring(color[3]), tostring(locked),
@@ -794,16 +757,49 @@ function data()
 					function() companyOp(shared, { Unlock = c.id }, "Removing the password of " .. c.name) end)
 			end
 			row(lockChildren)
+			-- Who may add/change lines stopping at its stations (D22):
+			-- a default, which also holds for companies founded later, and a
+			-- choice for each other company, which wins over it. Per
+			-- company, not per player: a company's players share everything
+			-- it owns.
+			row({ label("Station access applies to new and changed routes. Existing services keep running.",
+				"font-scale-annotation", 500, 42) })
+			local open = not c.closed
 			row({
-				label(c.closed and "Stations: yours alone" or "Stations: open to other companies", "font-scale-annotation", 300, 28),
-				button(c.closed and "Open" or "Close", c.closed
-					and "Let other companies' lines stop at " .. tostring(c.name) .. "'s stations"
-					or "Keep " .. tostring(c.name) .. "'s stations to its own lines",
+				label("Stations, by default and for companies founded later: " .. (open and "allowed" or "denied"),
+					"font-scale-annotation", 300, 56),
+				button(open and "Deny by default" or "Allow by default", open
+					and "Keep " .. tostring(c.name) .. "'s stations from every company without a choice of its own"
+					or "Let every company without a choice of its own stop at " .. tostring(c.name) .. "'s stations",
 					function()
-						companyOp(shared, { ShareStations = { company = c.id, open = c.closed == true } },
-							(c.closed and "Opening " or "Closing ") .. "the stations of " .. c.name)
+						companyOp(shared, { ShareStations = { company = c.id, open = not open } },
+							(open and "Closing " or "Opening ") .. "the stations of " .. c.name .. " by default")
 					end),
 			})
+			for _, other in ipairs(roster.list) do
+				if other.id ~= c.id and not other.gone then
+					local choice = companies.choice(c, other.id)
+					local allowed = companies.lets(c, other.id)
+					local children = {
+						label(tostring(other.name) .. ": " .. (allowed and "allowed" or "denied")
+							.. (choice == nil and " (default)" or ""), "font-scale-annotation", 300, 28),
+						button(allowed and "Deny" or "Allow", (allowed and "Keep " or "Let ") .. tostring(other.name)
+							.. (allowed and "'s lines from " or "'s lines stop at ") .. tostring(c.name) .. "'s stations",
+							function()
+								companyOp(shared, { StationAccess = { company = c.id, other = other.id, open = not allowed } },
+									(allowed and "Denying " or "Allowing ") .. other.name)
+							end),
+					}
+					if choice ~= nil then
+						children[#children + 1] = button("Default", tostring(other.name) .. " follows the default again",
+							function()
+								companyOp(shared, { StationAccess = { company = c.id, other = other.id } },
+									"Putting " .. other.name .. " back to the default")
+							end)
+					end
+					row(children)
+				end
+			end
 			for _, player in ipairs(companies.members(roster, mine)) do
 				local p = byId[player]
 				if player ~= status.me_id and p then

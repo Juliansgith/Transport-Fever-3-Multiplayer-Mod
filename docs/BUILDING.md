@@ -431,6 +431,32 @@ replaces another, signals and waypoints stay refused.
   to the originator's. A stroke is held until the originator's own replay has
   applied, so the next part of the stroke is computed against the replayed
   heights.
+
+  **On Transport Fever 3** (build 40408, read from the binary, not yet seen
+  in the game) the same shape holds: the terrain tools (`UI::TerrainModifier`:
+  raise, lower, smooth, flatten, the heightmap brush), the painter and the
+  asset brush are `UI::ProposalAction`s that queue their `WorldBuildProposal`
+  from `ProposalAction::DoApply`, and tell game scripts nothing. The
+  proposal's `terrain.baseHeightMod` (at 0x2d8 of the `Proposal`) is a grid
+  `{ x0, y0, width, height; Vec2f cells }`, then the paint's material and
+  mask grids. The hook reads the height grid at the click (docs/HOOKS.md,
+  "Terraforming"); the GUI hands the room `Terraform` actions of it, the
+  cells' two values rounded to the millimetre, in bands of whole rows of
+  at most 4,096 cells; every game, the player's own included, arms the hook
+  with the grid and sends an empty `Proposal` as the player's build, which
+  the hook fills at its apply. So every game sets the same cells to the
+  same heights in the same update. What a stroke changes is carried, not
+  how the brush moved, so frame timing does not enter. TF3's tool is not
+  held between parts of a stroke as TPF2-MP's was: while the mouse is
+  down, the originator's tool computes against ground the room has not
+  changed yet. The lanes (`tpf3mp/lanes.lua`) do not read the terrain, so a
+  divergence in it alone is not caught at a checkpoint; INFERRED, TPF2's
+  lesson, that one shows soon after in the edges and constructions built
+  on it, which they do read.
+  It stays refused in a room until `tpf3mp/acceptance.lua`'s `terraform`
+  is turned on after a two-player game shows the same ground in every game
+  (COVERAGE.md); until then the GUI's sender and every game's replay
+  refuse it.
 - **Paint** is the material index and mask grids on the same path. The
   material texels are simulation data, not a graphics setting: a paint applied
   in the right place with the two games at different texture resolutions.
@@ -458,8 +484,8 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (**23**; 22 had no company perks (`Perk`)). This
-integration combines the existing
+`ACTION_SCHEMA_VERSION` (**24**; combines station access, company perks
+and preservation). This integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
 The Lua mod builds an action from a captured
@@ -501,15 +527,16 @@ appended.
 | `EditLine` | a line and one change: rename, recolour, the whole line anew, or delete |
 | `AssignLine` | vehicles, the line or none, the first stop or none for the game's choice ("Next Reachable Stop") |
 | `PlaceStop` | a stop, waypoint or signal (`object`): the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, its construction, whether a stop is two-sided and whether a signal is one-way |
-| `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
-| `CompanyOp` | create, join, rename or delete a company |
+| `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height; on TF3 the corner is the first cell's index in the terrain's own grid times the cell size (4 m), and a stroke larger than 4,096 cells goes as several, a band of whole rows each. Gated off (`acceptance.lua`, `terraform`) |
+| `CompanyOp` | create, join, rename or delete a company; its head's password, players and stations (`ShareStations` the default, `StationAccess` one other company over it) |
 | `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
-| `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (sold there or not), reverse, depart, its colour |
+| `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (never sold on arrival: build 40408 sells such a vehicle at the depot, then asks the removed vehicle where it is and fails its engine's assertion, `Engine.h:323`, in every game at once; `Action::validate` refuses it), reverse, depart, its colour |
 | `ReplaceVehicle` | a vehicle and its new consist, as `BuyVehicle` carries one, each part also saying which of the vehicle's own parts it keeps (by index, same model), or none for a part bought new; its groups and multiple units. One vehicle each: a group edit is one action per vehicle, as the game sends it |
 | `NotificationSeen` | a notification's popup played its first sound: every game's Notifications script marks it (its `initialSound` event), so no game plays it again |
 | `Prospect` | prospecting near a town: the town, the cargo, the industry types that may be found in the originator's menu's order, and the company permit it uses. The outcome is not in it: every game's company script draws it from the game time, months later, alike ([investigation](../investigation/TPF3_PROSPECTING_2026-09-30.md)) |
 | `ApplyRank` | a company rank to take, as the company window sends the game's growth script (`applyLevel`); the acting player's company takes it ([HOOKS.md](HOOKS.md), "Company ranks") |
 | `Perk` | a company perk from the construction menu: Industry Greenification (the industry by its canonical id, `IndustryId`, which every game binds by its construction, and the permit), or a marketing campaign (the town, the campaign's duration and line cost factor, the permit, and the price the tool charged). Gated off (`acceptance.lua`, `perks`) ([HOOKS.md](HOOKS.md), "Company perks") |
+| `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Gated off (`acceptance.lua`, `preservation`) |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:

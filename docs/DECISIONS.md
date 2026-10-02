@@ -859,6 +859,28 @@ Rejected:
   what a player can see and understand; a list per company or station can
   follow if players ask.
 
+### D22 station-access decision (2026-10-02)
+
+The owner approved the station-access proposal from PR #49 on 2026-10-02:
+"i think we can do the station access permissions". This decides the station
+access portion and extends it with per-company overrides; the other proposed
+D22 topics above are not decided by this entry.
+
+- Stations start open. A founded company's head controls its default and may
+  allow or deny individual other companies. An explicit choice overrides the
+  default; **Default** removes that choice. Newly founded companies follow the
+  default. Access is per company, not per individual station or player.
+- The existing head rule applies: founder while a member, then the longest
+  standing member. The room's first company stays shared, with open stations
+  and no head. A company always uses its own stations.
+- Every replica checks the same permissions for new and changed line stops,
+  and the line manager offers stations by the same rule. Existing services
+  are not forcibly removed when permission changes. The controls must explain
+  that the change applies when adding or changing a route.
+- Station upkeep remains the owner's; vehicle costs and line income remain
+  the operating company's. This permission never grants construction editing,
+  demolition or use of another company's depots.
+
 ## D23 (proposed, 2026-09-30): a company's progression is its share of each town, by deliveries and rating
 
 **Proposed, not decided: the owner (Juliansgith) approves or changes it.**

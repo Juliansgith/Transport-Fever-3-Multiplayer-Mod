@@ -807,13 +807,23 @@ impl<G: RoomGate> StepDriver<G> {
                     .heard(text.as_str(), next, self.checkpoint_interval, now)
                 {
                     None => {}
-                    Some(Ok(ask)) => self.log.push(format!(
-                        "{} asks for a lane dump: lanes {} at steps {} (step {} diverged there)",
-                        from.as_str(),
-                        join(&ask.lanes),
-                        join(&ask.steps),
-                        ask.diverged
-                    )),
+                    Some(Ok(ask)) => {
+                        self.log.push(format!(
+                            "{} asks for a lane dump: lanes {} at steps {} (step {} diverged there)",
+                            from.as_str(),
+                            join(&ask.lanes),
+                            join(&ask.steps),
+                            ask.diverged
+                        ));
+                        // The road entry recorder's last steps, in every
+                        // game that hears the ask (docs/HOOKS.md, "The road
+                        // entry trace").
+                        crate::roadtrace::flush_recorded(&format!(
+                            "{} asked for a lane dump, step {} diverged",
+                            from.as_str(),
+                            ask.diverged
+                        ));
+                    }
                     Some(Err(why)) => self.log.push(format!(
                         "not taking the lane dump {} asks for: {why}",
                         from.as_str()
