@@ -187,6 +187,11 @@ pub enum Request {
     /// room this player is in at once. Unknown ids are refused
     /// (`UnknownBanner`).
     SetBanner(Option<BannerId>),
+    /// Lines of this player's logs, redacted, each with its source (the
+    /// launcher, the agent, the hook, the game, its error reports), all
+    /// under the launcher's run (see "Diagnostics" in PROTOCOL.md). Takes
+    /// the place of [`Request::Diagnostics`] from version 16 on.
+    Telemetry(crate::Telemetry),
 }
 
 /// A player's picture: one of [`BANNERS`] or [`PORTRAITS`], by id. Long

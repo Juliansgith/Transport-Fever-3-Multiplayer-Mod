@@ -260,6 +260,7 @@ async fn run(args: Args) -> Result<ExitCode> {
             // The rig's players run the fake game, not one Steam installed.
             installed: None,
             diagnostics: None,
+            game_logs: None,
             hook: None,
             game_exe: None,
             game_env: Vec::new(),

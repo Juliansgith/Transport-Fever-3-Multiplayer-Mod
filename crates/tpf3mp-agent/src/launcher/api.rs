@@ -43,6 +43,8 @@ pub(crate) struct View {
     /// Whether the player's log goes to the server; `None` when this
     /// launcher has no diagnostics to send.
     pub(crate) diagnostics: Option<bool>,
+    /// The launcher's run, which every line of its diagnostics carries.
+    pub(crate) log_session: Option<String>,
     /// The player's saves, newest first, as last looked at.
     pub(crate) saves: Vec<String>,
     /// The save rooms this player creates start from, unless they pick
@@ -257,6 +259,11 @@ pub struct State {
     /// Whether lines of this launcher's log, redacted, go to the server
     /// ("Diagnostics" in PROTOCOL.md); `None` when it sends none at all.
     pub diagnostics: Option<bool>,
+    /// The code every line of this run's diagnostics carries, across all
+    /// its connections, while diagnostics are on: what the player quotes,
+    /// with the support code, to have the operator read all of the run's
+    /// logs (proposed D10 amendment).
+    pub log_session: Option<String>,
     /// The player's saves, newest first: what a room they create can start
     /// from ([`Action::Create`]).
     pub saves: Vec<String>,
@@ -664,6 +671,10 @@ pub(crate) fn snapshot(view: &View, status: &Status) -> State {
         notices: status.notices.iter().cloned().collect(),
         announcement: status.announcement.clone(),
         diagnostics: view.diagnostics,
+        log_session: view
+            .log_session
+            .clone()
+            .filter(|_| view.diagnostics == Some(true)),
         saves: view.saves.clone(),
         start_save: view.start_save.clone(),
         mods: view.mods.clone(),
@@ -893,5 +904,19 @@ mod tests {
         // Disconnected, there is none to quote.
         view.connected = false;
         assert_eq!(support_id(&view, &Status::default()), None);
+    }
+
+    /// The run's code shows, connected or not, while diagnostics are on.
+    #[test]
+    fn the_log_session_shows_while_diagnostics_are_on() {
+        let mut view = View {
+            log_session: Some("AB2CD3".into()),
+            diagnostics: Some(true),
+            ..View::default()
+        };
+        let shown = |view: &View| snapshot(view, &Status::default()).log_session;
+        assert_eq!(shown(&view).as_deref(), Some("AB2CD3"));
+        view.diagnostics = Some(false);
+        assert_eq!(shown(&view), None, "off: nothing goes under it");
     }
 }

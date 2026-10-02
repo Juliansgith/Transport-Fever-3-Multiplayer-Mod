@@ -59,8 +59,10 @@ const LIST_BURST: u32 = 5;
 const JOIN_BURST: u32 = 5;
 /// Diagnostics requests, on a budget of their own so that they never make
 /// a player's other requests wait or fail.
-const DIAGNOSTICS_PER_SECOND: u32 = 1;
-const DIAGNOSTICS_BURST: u32 = 8;
+/// They carry the hook's and the game's logs too: two a second, with a
+/// burst of sixteen, at most 32 lines each.
+const DIAGNOSTICS_PER_SECOND: u32 = 2;
+const DIAGNOSTICS_BURST: u32 = 16;
 /// Game messages one connection may send per second, and the burst on top,
 /// each kind on its own so a flood of one never starves another: dropping
 /// a member's progress reports would make its room wait for it.
@@ -331,6 +333,9 @@ struct Client {
     diagnostics: TokenBucket,
     /// Bytes of diagnostics this session has had kept.
     diagnostics_kept: u64,
+    /// The launcher runs this session has sent lines of, indexed under
+    /// them: one, unless a client changes its run.
+    runs: Vec<tpf3mp_proto::LogSession>,
     /// The banner this player picked, for the rooms it joins.
     banner: Option<tpf3mp_proto::BannerId>,
 }
@@ -370,6 +375,7 @@ impl Client {
             intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
             diagnostics: TokenBucket::new(DIAGNOSTICS_PER_SECOND, DIAGNOSTICS_BURST),
             diagnostics_kept: 0,
+            runs: Vec::new(),
             banner: None,
         }
     }
@@ -450,9 +456,11 @@ impl Client {
                 ClientMessage::Request { id, request } => {
                     let joining = matches!(request, Request::JoinRoom(_));
                     let listing = matches!(request, Request::ListRooms { .. });
-                    let result = if let Request::Diagnostics(batch) = &request {
+                    let diagnostics =
+                        matches!(request, Request::Diagnostics(_) | Request::Telemetry(_));
+                    let result = if diagnostics {
                         if self.diagnostics.take(now, 1) {
-                            self.keep_diagnostics(batch)
+                            self.request(request).await
                         } else {
                             Err(RequestError::RateLimited)
                         }
@@ -622,6 +630,7 @@ impl Client {
                 .await
             }
             Request::Diagnostics(batch) => self.keep_diagnostics(&batch),
+            Request::Telemetry(telemetry) => self.keep_telemetry(&telemetry),
             Request::SetBanner(banner) => {
                 if banner
                     .as_ref()
@@ -688,6 +697,44 @@ impl Client {
         match diagnostics.submit(self.session, self.player, self.diagnostics_kept, batch) {
             Ok(bytes) => {
                 self.diagnostics_kept += bytes;
+                Ok(Response::Done)
+            }
+            Err(crate::diagnostics::NotKept::Quota) => Err(RequestError::DiagnosticsNotKept),
+            // The client keeps them and tries again later.
+            Err(crate::diagnostics::NotKept::Busy) => Err(RequestError::RateLimited),
+        }
+    }
+
+    /// Keeps a batch of a launcher's lines, every source, under this
+    /// session, each with the launcher's run. Never waits on the writer.
+    fn keep_telemetry(
+        &mut self,
+        telemetry: &tpf3mp_proto::Telemetry,
+    ) -> Result<Response, RequestError> {
+        /// Runs one session indexes at most: a client has one.
+        const MAX_RUNS: usize = 4;
+        let diagnostics = self
+            .shared
+            .diagnostics
+            .as_ref()
+            .ok_or(RequestError::DiagnosticsNotKept)?;
+        let first = !self.runs.contains(&telemetry.run);
+        if first && self.runs.len() >= MAX_RUNS {
+            return Err(RequestError::DiagnosticsNotKept);
+        }
+        match diagnostics.submit_telemetry(
+            self.session,
+            self.player,
+            telemetry.run,
+            first,
+            self.diagnostics_kept,
+            &telemetry.lines,
+        ) {
+            Ok(bytes) => {
+                self.diagnostics_kept += bytes;
+                if first {
+                    self.runs.push(telemetry.run);
+                }
                 Ok(Response::Done)
             }
             Err(crate::diagnostics::NotKept::Quota) => Err(RequestError::DiagnosticsNotKept),

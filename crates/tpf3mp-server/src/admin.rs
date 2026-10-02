@@ -1,8 +1,9 @@
 //! The admin endpoint: Prometheus metrics at `/metrics`, a health check at
 //! `/healthz`, `POST /announce`, which tells everyone connected the
 //! request's body (up to 280 bytes of UTF-8), and players' diagnostics:
-//! `/diagnostics` lists the sessions with some, `/diagnostics/<session>`
-//! gives one session's, over plain HTTP. It has no authentication, so it
+//! `/diagnostics` lists the sessions and runs with some,
+//! `/diagnostics/<code>` gives one session's or run's (`?source=hook` one
+//! source's), over plain HTTP. It has no authentication, so it
 //! must only listen on a private address: loopback, or a VPN interface.
 
 use std::{sync::Arc, time::Duration};
@@ -107,8 +108,9 @@ async fn answer(mut stream: TcpStream, stats: &ServerStats) -> std::io::Result<(
     stream.shutdown().await
 }
 
-/// `/diagnostics`, the sessions with diagnostics, the latest first; or
-/// `/diagnostics/<session>`, one session's, one JSON object a line.
+/// `/diagnostics`, the sessions and runs with diagnostics, the latest
+/// first; or `/diagnostics/<code>`, one session's or run's, one JSON object
+/// a line, and `/diagnostics/<code>?source=hook` one source's of them.
 fn diagnostics(request_line: &[u8], stats: &ServerStats) -> (&'static str, &'static str, String) {
     let not_found = || ("404 Not Found", "text/plain", "not found\n".to_owned());
     let failed = |error: std::io::Error| {
@@ -140,15 +142,32 @@ fn diagnostics(request_line: &[u8], stats: &ServerStats) -> (&'static str, &'sta
                 Err(error) => failed(std::io::Error::other(error)),
             },
         },
-        session => match stats.session_diagnostics(session.trim_start_matches('/')) {
-            Ok(Some(lines)) => (
-                "200 OK",
-                "application/x-ndjson",
-                String::from_utf8_lossy(&lines).into_owned(),
-            ),
-            Ok(None) => not_found(),
-            Err(error) => failed(error),
-        },
+        session => {
+            // `/diagnostics/<code>?source=hook`: one source's lines.
+            let (code, query) = session
+                .trim_start_matches('/')
+                .split_once('?')
+                .unwrap_or((session.trim_start_matches('/'), ""));
+            let source = match query {
+                "" => None,
+                query => match query
+                    .strip_prefix("source=")
+                    .and_then(tpf3mp_proto::LogSource::from_name)
+                {
+                    Some(source) => Some(source),
+                    None => return not_found(),
+                },
+            };
+            match stats.diagnostics_of(code, source) {
+                Ok(Some(lines)) => (
+                    "200 OK",
+                    "application/x-ndjson",
+                    String::from_utf8_lossy(&lines).into_owned(),
+                ),
+                Ok(None) => not_found(),
+                Err(error) => failed(error),
+            }
+        }
     }
 }
 

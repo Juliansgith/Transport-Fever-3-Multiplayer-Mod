@@ -7,7 +7,11 @@
 #   status                        the server's container, health and version
 #   logs [--since 2h] [--tail 200] [--follow]
 #                                 the server's log
-#   diagnostics [<support code>]  players' diagnostics, all or one session's
+#   diagnostics [<code> [<source>]]
+#                                 players' diagnostics: all sessions, or one
+#                                 session's (support code) or launcher run's
+#                                 (log session), of one source if given:
+#                                 launcher, agent, hook, game or crash
 #   metrics                       the server's Prometheus metrics
 #   deploy [<commit>]             build and run main, or an earlier commit
 #                                 of main, from the project's repository
@@ -33,7 +37,7 @@ compose() {
 }
 
 usage() {
-  sed -n '7,13p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '7,17p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 command=${1:-help}
@@ -79,17 +83,24 @@ case "$command" in
   diagnostics)
     case $# in
       0) curl -fsS --max-time 20 "$ADMIN/diagnostics" ;;
-      1)
+      1 | 2)
         # Six of the code's letters and digits, in either case; nothing
         # else reaches the URL.
         code=$(printf '%s' "$1" | tr abcdefghjkmnpqrstuvwxyz ABCDEFGHJKMNPQRSTUVWXYZ)
         case $code in
-          *[!23456789ABCDEFGHJKMNPQRSTUVWXYZ]* | '') die "a support code is six letters and digits, such as K7QM2X" ;;
+          *[!23456789ABCDEFGHJKMNPQRSTUVWXYZ]* | '') die "a support code or log session is six letters and digits, such as K7QM2X" ;;
         esac
-        [ ${#code} -eq 6 ] || die "a support code is six letters and digits, such as K7QM2X"
-        curl -fsS --max-time 20 "$ADMIN/diagnostics/$code"
+        [ ${#code} -eq 6 ] || die "a support code or log session is six letters and digits, such as K7QM2X"
+        query=
+        if [ $# -eq 2 ]; then
+          case $2 in
+            launcher | agent | hook | game | crash) query="?source=$2" ;;
+            *) die "a source is one of launcher, agent, hook, game, crash" ;;
+          esac
+        fi
+        curl -fsS --max-time 60 "$ADMIN/diagnostics/$code$query"
         ;;
-      *) die "diagnostics takes one support code at most" ;;
+      *) die "diagnostics takes one code and one source at most" ;;
     esac
     ;;
   metrics)

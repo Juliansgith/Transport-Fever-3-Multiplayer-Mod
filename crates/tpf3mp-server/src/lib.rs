@@ -32,7 +32,10 @@ const ANNOUNCEMENTS: usize = 16;
 
 pub use crate::{
     admin::serve_admin,
-    diagnostics::{DiagnosticsConfig, Entry as DiagnosticsEntry, SESSION_QUOTA},
+    diagnostics::{
+        DiagnosticsConfig, Entry as DiagnosticsEntry, READ_LIMIT as DIAGNOSTICS_READ_LIMIT,
+        SESSION_QUOTA,
+    },
     ruleset::{AcceptAll, NATIVE, RulesChoice, RulesMenu, Ruleset, RulesetFactory},
     snapshots::SnapshotConfig,
     tunnel::{AddressRange, TunnelConfig},
@@ -472,8 +475,20 @@ impl ServerStats {
     /// One session's diagnostics, one JSON object a line; `None` when the
     /// server keeps none or has none for it.
     pub fn session_diagnostics(&self, session: &str) -> io::Result<Option<Vec<u8>>> {
+        self.diagnostics_of(session, None)
+    }
+
+    /// The diagnostics of a session, by its support code, or of a
+    /// launcher's run, by its log session, one JSON object a line, of `source` alone when one is
+    /// given: the newest [`DIAGNOSTICS_READ_LIMIT`] bytes at most. `None`
+    /// when the server keeps none or has none for it.
+    pub fn diagnostics_of(
+        &self,
+        code: &str,
+        source: Option<tpf3mp_proto::LogSource>,
+    ) -> io::Result<Option<Vec<u8>>> {
         match &self.shared.diagnostics {
-            Some(diagnostics) => diagnostics.read(session),
+            Some(diagnostics) => diagnostics.read(code, source),
             None => Ok(None),
         }
     }

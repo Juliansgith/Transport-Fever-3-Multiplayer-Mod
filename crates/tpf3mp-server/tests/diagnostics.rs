@@ -1,7 +1,9 @@
 //! Players' diagnostics: the lines a client's recorder holds reach the
-//! server, redacted, under the session its player sees as the support code;
-//! the admin endpoint lists and gives them; a server that keeps none says
-//! so, and the client stops sending.
+//! server, redacted, under the session its player sees as the support code,
+//! every one with its source and the launcher's run; the hook's and the
+//! game's logs go the same way; the admin endpoint lists and gives them, by
+//! session, by run and by source; a server that keeps none says so, and
+//! the client stops sending; switched off, nothing goes.
 
 #![allow(clippy::unwrap_used)]
 
@@ -14,7 +16,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
-use tpf3mp_agent::{ClientError, connect, diagnostics::Recorder};
+use tpf3mp_agent::{ClientError, connect, diagnostics::Recorder, game_logs::Sources};
 use tpf3mp_proto::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, Request, RequestError, Text,
 };
@@ -22,11 +24,11 @@ use tpf3mp_server::{DiagnosticsConfig, serve_admin};
 
 fn keeping(dir: &std::path::Path) -> impl FnOnce(&mut tpf3mp_server::ServerConfig) + '_ {
     |config| {
-        config.diagnostics = Some(DiagnosticsConfig {
-            dir: dir.to_owned(),
-            keep_for: Duration::from_secs(3600),
-            max_total: 1 << 30,
-        });
+        config.diagnostics = Some(DiagnosticsConfig::new(
+            dir.to_owned(),
+            Duration::from_secs(3600),
+            1 << 30,
+        ));
     }
 }
 
@@ -72,6 +74,13 @@ async fn a_players_lines_reach_the_server_under_their_session() {
     assert!(lines.contains(r#""level":"warn""#), "{lines}");
     assert!(lines.contains("the launcher closes"), "{lines}");
     assert!(recorder.is_empty(), "sent lines are not kept");
+    // Every line carries the launcher's run and its source.
+    let run = format!(r#""run":"{}""#, recorder.run());
+    for line in lines.lines() {
+        assert!(line.contains(&run), "{line}");
+    }
+    assert!(lines.contains(r#""source":"agent""#), "{lines}");
+    assert!(lines.contains(r#""source":"launcher""#), "{lines}");
 
     // The operator reads them by the support code.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -90,6 +99,89 @@ async fn a_players_lines_reach_the_server_under_their_session() {
         "AB2CD3"
     };
     assert_eq!(get(admin, &format!("/diagnostics/{other}")).await.0, 404);
+    server.shut_down().await;
+}
+
+/// The hook's log and the game's, from where they stood when the run
+/// began, and the game's error reports, go to the server played on,
+/// redacted, each line tagged; the operator reads them by the run's code,
+/// one source at a time; the opt-out stops them.
+#[tokio::test]
+async fn the_hooks_and_the_games_logs_reach_the_server_by_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let hook = files.path().join("hook.log");
+    let crash = files.path().join("crash_dump");
+    std::fs::create_dir_all(&crash).unwrap();
+    std::fs::write(&hook, "[0] from an earlier game\n").unwrap();
+    std::fs::write(crash.join("stdout.txt"), "").unwrap();
+    let server = RunningServer::start(keeping(dir.path())).await;
+    let recorder = Recorder::new();
+    let mut sources = Sources::new(hook.clone(), vec![crash.clone()]);
+    let mut options = server.options(new_identity(), "ann");
+    options.diagnostics = Some(recorder.clone());
+    let (client, _events) = connect(options).await.unwrap();
+    let append = |path: &std::path::Path, text: &str| {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+    };
+    append(&hook, "[1] loading C:\\Users\\Ann\\Saved Games\\x.sav\n");
+    append(
+        &crash.join("stdout.txt"),
+        "[2026-10-02 15:53:49Z - ERROR    - Main Thread - Main ]  oops\n",
+    );
+    std::fs::write(crash.join("e_1.json"), "\"userId\": \"125253817\",\n").unwrap();
+    std::fs::write(crash.join("e_0.dmp"), [0u8; 16]).unwrap();
+    sources.record(&recorder, std::time::Instant::now(), true);
+    client.close().await;
+
+    let run = recorder.run().to_string();
+    let all = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(lines) = server.stats.diagnostics_of(&run, None).unwrap()
+                && lines.iter().filter(|b| **b == b'\n').count() == 3
+            {
+                return String::from_utf8(lines).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the lines reach the server");
+    assert!(!all.contains("earlier game"), "from the run's start: {all}");
+    assert!(!all.contains("Ann") && !all.contains("125253817"), "{all}");
+    assert!(all.contains("<path>/x.sav"), "{all}");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let admin = listener.local_addr().unwrap();
+    tokio::spawn(serve_admin(listener, server.stats.clone()));
+    for (source, file) in [
+        ("hook", "hook.log"),
+        ("game", "stdout.txt"),
+        ("crash", "e_1.json"),
+    ] {
+        let (status, body) = get(admin, &format!("/diagnostics/{run}?source={source}")).await;
+        assert_eq!(status, 200);
+        assert_eq!(body.lines().count(), 1, "{source}: {body}");
+        assert!(body.contains(&format!(r#""target":"{file}""#)), "{body}");
+    }
+    assert_eq!(
+        get(admin, &format!("/diagnostics/{run}?source=dmp"))
+            .await
+            .0,
+        404
+    );
+
+    // Off: nothing more is read or sent.
+    recorder.set_on(false);
+    append(&hook, "[2] after the switch\n");
+    sources.record(&recorder, std::time::Instant::now(), true);
+    assert!(recorder.is_empty());
     server.shut_down().await;
 }
 

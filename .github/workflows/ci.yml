@@ -193,6 +193,9 @@ jobs:
           refused logs --until 2h
           refused diagnostics ../../etc/passwd
           refused diagnostics K7QM2X extra
+          refused diagnostics K7QM2X 'hook&source=game'
+          refused diagnostics K7QM2X hook extra
+          refused diagnostics K7QM2X dmp
           refused diagnostics K7QM2
           refused diagnostics K7QM2XA
           refused diagnostics 'K7QM2X/../../metrics'
