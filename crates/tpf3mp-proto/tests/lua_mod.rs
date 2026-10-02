@@ -9432,6 +9432,22 @@ fn every_game_uses_a_perk_through_the_company_scripts_own_event() {
         "true:nil true:nil false:no industries 5 in this world \
          false:not enough money for the campaign"
     );
+    lua.load(r#"
+        local before = #SENT
+        local function reject_balance(reader)
+            api.engine.util.finance.getPlayersBalance = reader
+            HOOK.batch = { { Perk = { Marketing = { town = 1, duration_ms = 1095000,
+                line_cost_factor = 0.5, permit = 'm.res', cost = 10000000 } } } }
+            UPDATE({}, STATE, 0.2)
+            local result = HOOK.applied[#HOOK.applied]
+            assert(not result.ok and result.why:find('cannot read the company balance'), tostring(result.why))
+            assert(#SENT == before, 'an unreadable balance must not spend a permit or book money')
+        end
+        reject_balance(function() error('unavailable') end)
+        reject_balance(function() return nil end)
+        reject_balance(function() return 0/0 end)
+        reject_balance(function() return math.huge end)
+    "#).exec().unwrap();
 }
 
 /// Both the sender and replay refuse new channels with production defaults.
@@ -9954,4 +9970,3 @@ fn every_game_preserves_the_same_town_building() {
          false:no town/res_1.con there"
     );
 }
-

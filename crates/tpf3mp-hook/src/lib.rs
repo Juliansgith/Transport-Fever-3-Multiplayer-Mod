@@ -53,10 +53,10 @@ mod platform;
 pub mod roadtrace;
 pub mod seeds;
 pub mod step;
+pub mod streettrace;
 pub mod terrain;
 pub mod ticks;
 pub mod townfield;
-pub mod streettrace;
 pub mod towntrace;
 pub mod worlds;
 

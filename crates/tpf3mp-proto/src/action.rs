@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 23;
+pub const ACTION_SCHEMA_VERSION: u32 = 24;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -1063,7 +1063,7 @@ pub enum Renamed {
 /// industry (`gui/construction/tools/*.script.tl`): an event to TF3's
 /// company script, which spends the perk's permit for the acting company
 /// and passes the perk on to the towns or emissions script. Appended under
-/// schema version 23.
+/// schema version 24.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PerkOp {
     /// Industry Greenification (`Companies` `MakeGreen`,
@@ -1092,7 +1092,7 @@ pub enum PerkOp {
 /// A town building's Historic Preservation checkbox
 /// (`makeTownBuildingSetBlockedDevelopmentCmd`,
 /// `gui/entity_window/town_building/town_building.tl`): the building keeps
-/// its look but still levels up. Appended under schema version 23.
+/// its look but still levels up. Appended under schema version 24.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preservation {
     /// The construction the town building stands in, by its file and place.
@@ -1153,10 +1153,10 @@ pub enum Action {
         name: ObjectName,
     },
     /// A company perk used on a town or an industry (`PerkOp`). Appended
-    /// under schema version 23: the variants before it keep their bytes.
+    /// under schema version 24: the variants before it keep their bytes.
     Perk(PerkOp),
     /// A town building's Historic Preservation (`Preservation`). Appended
-    /// under schema version 23: the variants before it keep their bytes.
+    /// under schema version 24: the variants before it keep their bytes.
     Preserve(Preservation),
 }
 
@@ -1398,7 +1398,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                23, // schema version
+                24, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1441,7 +1441,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                23, // schema version
+                24, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1476,7 +1476,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                23, // schema version
+                24, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1494,7 +1494,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                23, // schema version
+                24, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1509,7 +1509,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                23, // schema version
+                24, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1520,7 +1520,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                23, // schema version
+                24, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1532,7 +1532,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                23, // schema version
+                24, // schema version
                 19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1569,16 +1569,16 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [23, 11]);
+            assert_eq!(payload.as_bytes()[..2], [24, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
-        // Appended under schema version 23: the perk tools take the next tag.
+        // Appended under schema version 24: the perk tools take the next tag.
         let green = Action::Perk(PerkOp::Greenify {
             industry: IndustryId(5),
             permit: None,
         });
-        assert_eq!(green.to_payload().unwrap().as_bytes(), [23, 21, 0, 5, 0]);
-        // Appended under schema version 23: Historic Preservation takes the
+        assert_eq!(green.to_payload().unwrap().as_bytes(), [24, 21, 0, 5, 0]);
+        // Appended under schema version 24: Historic Preservation takes the
         // next tag.
         let preserve = Action::Preserve(Preservation {
             building: ConstructionRef {
@@ -1590,7 +1590,7 @@ mod tests {
         });
         assert_eq!(
             preserve.to_payload().unwrap().as_bytes(),
-            [23, 21, 1, b'b', 2, 0, 0, 0, 1]
+            [24, 22, 1, b'b', 2, 0, 0, 0, 1]
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
@@ -1599,7 +1599,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                23, // schema version
+                24, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

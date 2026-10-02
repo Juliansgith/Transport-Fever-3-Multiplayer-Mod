@@ -1542,9 +1542,13 @@ pub mod road {
     ) {
         guarded(FIX, &BROKEN, || {
             let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-            let edge_ids: Vec<u64> = edge_ids.collect();
+            let tracing = in_step() && crate::roadtrace::enabled();
+            let mut traced_edges = Vec::new();
             let mut reordered_now = 0;
-            for &edge_id in &edge_ids {
+            for edge_id in edge_ids {
+                if tracing {
+                    traced_edges.push(edge_id);
+                }
                 match sort_edge(probe, data, edge_id) {
                     Ok(Sorted::Reordered) => {
                         reordered_now += 1;
@@ -1559,7 +1563,7 @@ pub mod road {
                     Err(why) => REFUSALS.note(FIX, why),
                 }
             }
-            if in_step() {
+            if tracing {
                 // The road entry trace (logging only): the simulation's own
                 // appends, which two agreeing games make alike.
                 let step = crate::seeds::current_step();
@@ -1570,14 +1574,14 @@ pub mod road {
                     current: appended.current,
                     range: appended.range,
                     bounds: appended.bounds,
-                    edges: edge_ids
+                    edges: traced_edges
                         .iter()
                         .filter_map(|&id| edge_key(probe, id))
                         .collect(),
                 };
                 let entries: Option<Vec<_>> =
                     crate::roadtrace::wants_entries(appended.entity, step).then(|| {
-                        edge_ids
+                        traced_edges
                             .iter()
                             .filter_map(|&id| Some((edge_key(probe, id)?, listed(probe, data, id))))
                             .collect()

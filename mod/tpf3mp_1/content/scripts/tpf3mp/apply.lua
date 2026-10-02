@@ -1564,7 +1564,10 @@ function HANDLERS.Perk(op, ctx)
 		-- The tool will not start one the company cannot pay for; neither
 		-- does any game.
 		local read, balance = pcall(function() return api.engine.util.finance.getPlayersBalance(company()) end)
-		if read and type(balance) == "number" and balance < cost then
+		if not read or type(balance) ~= "number" or balance ~= balance or math.abs(balance) == math.huge then
+			error("cannot read the company balance for the campaign", 0)
+		end
+		if balance < cost then
 			error("not enough money for the campaign", 0)
 		end
 		log("marketing in town-" .. tostring(m.town) .. " (" .. tostring(town) .. ") for " .. tostring(cost))

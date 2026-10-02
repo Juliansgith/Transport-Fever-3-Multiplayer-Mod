@@ -2906,7 +2906,7 @@ A milestone comes every 65,536 appends, about 330 steps. The trace
 (`crates/tpf3mp-hook/src/roadtrace.rs`, logging only, on the road fix's two
 detours, so nothing new is hooked) narrows it:
 
-- **At every checkpoint**, always while the fix sorts, after the `ticks:`
+- **At every checkpoint**, when `TPF3MP_HOOK_ROAD_ENTRY_DIGEST=1`, a trace window or recorder is enabled, after the `ticks:`
   line, the appends inside the game's step since the last checkpoint line:
 
   ```
@@ -2935,7 +2935,9 @@ detours, so nothing new is hooked) narrows it:
   (applying a command) carries the step before, or `-` at a batch's first
   update. About 200 appends a step on `twomptest`.
 - **A recorder**, `TPF3MP_HOOK_ROAD_ENTRY_RECORD=<n>` (1 to 4000 steps):
-  the same lines for the last `n` steps are kept in memory and written when
+  the same lines for the last `n` steps are kept in memory (at most 100,000
+  lines and 64 MiB of text; oldest lines are dropped with an explicit
+  truncation marker) and written when
   the game takes a lane dump asked for in the room's chat (every game hears
   the ask a diverged game makes, itself included), after a line
   `road-entry record: <n> in-step append(s) of steps <a> to <b> (...)`. A
@@ -2948,7 +2950,8 @@ detours, so nothing new is hooked) narrows it:
   after the sort (`on <edge>:`, at most 16): the vehicles and persons ahead
   of and behind a watched vehicle, and their places.
 
-hook.log says what it read at start-up (`road-entry trace: ...`).
+All road tracing is off by default; ordinary play does not allocate or hash
+these diagnostic records. hook.log says what it read at start-up (`road-entry trace: ...`).
 
 For the round after soak 7, in every game:
 
