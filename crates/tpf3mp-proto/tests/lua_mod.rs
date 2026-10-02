@@ -1968,7 +1968,10 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
         assert!(dump_a.contains(&summary), "{summary} in {dump_a:#?}");
     }
     assert!(
-        dump_a.contains(&"lane 5 step 300 town-0 buildings=3 entity=7 row=7:3".to_owned()),
+        dump_a.contains(
+            &"lane 5 step 300 town-0 buildings=3 size=nil,nil,nil experience=nil level=nil entity=7 row=7:3"
+                .to_owned()
+        ),
         "{dump_a:#?}"
     );
     assert!(
@@ -2001,6 +2004,86 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
         .unwrap();
     let none: Vec<String> = a.load("return HOOK.dumped").eval().unwrap();
     assert!(none.is_empty());
+}
+
+#[test]
+fn edge_ends_are_dumped_from_the_games_userdata_vectors_at_full_precision() {
+    let a = dumping_game(false);
+    let b = dumping_game(false);
+    // As the game: an edge's ends are Vec3f userdata, whose x, y and z read,
+    // which print as their address and raise on a field they lack.
+    b.load(
+        r#"
+        local function vec(x, y, z)
+            local v = newproxy(true)
+            local fields = { x = x, y = y, z = z }
+            local mt = getmetatable(v)
+            mt.__index = function(_, k)
+                if fields[k] == nil then error("Vec3f has no member " .. tostring(k)) end
+                return fields[k]
+            end
+            mt.__tostring = function() return "Vec3f: 0x24bb8caeb48" end
+            return v
+        end
+        WORLD[1][101].position0 = vec(0, 0, 0)
+        WORLD[1][101].position1 = vec(100.04, 0, 1)
+    "#,
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(read_lanes(&a), read_lanes(&b));
+    let da = dump_at_checkpoint(&a, 50, "0");
+    let db = dump_at_checkpoint(&b, 50, "0");
+    assert_eq!(da, db, "a userdata vector dumps as its table twin");
+    assert!(
+        db.iter()
+            .any(|l| l.contains(" p0=0,0,0 p1=100.04000000000001,0,1 ")),
+        "{db:#?}"
+    );
+    assert!(!db.iter().any(|l| l.contains("Vec3f")), "{db:#?}");
+}
+
+#[test]
+fn a_towns_dump_carries_its_size_factors_experience_and_level() {
+    let a = dumping_game(false);
+    // The town's component, and the base game's town growth script's state
+    // as its own town_cargo_util reads it (state_native:findPath).
+    a.load(
+        r#"
+        api.type.ComponentType.GAME_SCRIPT = 20
+        WORLD[7][7] = { sizeFactors = { 1.5, 0.1, 2 } }
+        WORLD[20] = { [55] = { state_native = {
+            findPath = function(self, path)
+                assert(path[1] == "townState")
+                if path[2] ~= 7 then return nil end
+                return { asTable = function() return { experience = 1200, level = 3 } end }
+            end } } }
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            assert(name == "::/game_mechanics/towns/town_cargo.gs")
+            return 55
+        end }
+    "#,
+    )
+    .exec()
+    .unwrap();
+    let lanes = read_lanes(&a);
+    let dump = dump_at_checkpoint(&a, 50, "5");
+    assert_eq!(
+        dump,
+        [
+            "lane 5 step 50 town-0 buildings=3 size=1.5,0.10000000000000001,2 experience=1200 level=3 entity=7 row=7:3"
+                .to_owned(),
+            format!("lane 5 step 50 summary {}", lanes[5].1),
+        ]
+    );
+    // Without the native state, the plain one; the lane's text never
+    // changes with them.
+    a.load("WORLD[20][55] = { state = { townState = { [7] = { experience = 5, level = 0 } } } }")
+        .exec()
+        .unwrap();
+    let dump = dump_at_checkpoint(&a, 100, "5");
+    assert!(dump[0].contains(" experience=5 level=0 "), "{dump:#?}");
+    assert_eq!(read_lanes(&a), lanes);
 }
 
 #[test]

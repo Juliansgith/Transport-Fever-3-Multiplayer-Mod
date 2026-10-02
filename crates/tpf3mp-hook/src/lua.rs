@@ -160,8 +160,10 @@ const MAX_NOTE_KEY: usize = 64;
 pub const PERSONAL_UNGUARDED: &str = "personal-mods-unguarded";
 const MAX_NOTE_VALUE: usize = 512;
 /// Most entries one checkpoint's lane dump writes, all its lanes together,
-/// and the longest entry kept.
-pub const MAX_DUMP_LINES: usize = 5000;
+/// and the longest entry kept. Room for the whole network lane of a large
+/// map: `twomptest`'s lane 0 has about 10,800 entries (round of
+/// 2026-10-02), which 5000 cut short. At most about 40 MB a checkpoint.
+pub const MAX_DUMP_LINES: usize = 20_000;
 const MAX_DUMP_LINE: usize = 2000;
 
 /// Where a Lua state keeps its globals.

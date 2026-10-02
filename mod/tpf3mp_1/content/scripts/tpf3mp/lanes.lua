@@ -115,9 +115,41 @@ local function full(v)
 	return tostring(v)
 end
 
+-- A vector at full precision, for a dump: a table, or the game's userdata
+-- (a Vec3f, whose fields x, y and z read but which has no [1]); anything
+-- without numbers as text.
 local function vecFull(p)
-	if type(p) ~= "table" then return tostring(p) end
-	return full(p.x or p[1]) .. "," .. full(p.y or p[2]) .. "," .. full(p.z or p[3] or 0)
+	if p == nil then return "nil" end
+	local x, y, z = get(p, "x"), get(p, "y"), get(p, "z")
+	if type(x) ~= "number" and type(p) == "table" then x, y, z = p[1], p[2], p[3] end
+	if type(x) ~= "number" then return tostring(p) end
+	return full(x) .. "," .. full(y) .. "," .. full(z or 0)
+end
+
+-- The base game's town growth script's state, as its own
+-- town_cargo_util.getTownCargoState reads it: a function from a town to its
+-- { experience, level, ... }, or nil. For a dump only; it changes nothing.
+local function townGrowth(api)
+	local ok, script = pcall(function()
+		local e = api.engine.system.gameScriptSystem.getEntityForGameScript("::/game_mechanics/towns/town_cargo.gs")
+		return api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT)
+	end)
+	if not ok or script == nil then return function() return nil end end
+	local native, plain = get(script, "state_native"), nil
+	return function(town)
+		if native ~= nil then
+			local found, data = pcall(function()
+				local d = native:findPath({ "townState", town })
+				return d and d:asTable()
+			end)
+			if found and data ~= nil then return data end
+		end
+		if plain == nil then
+			local state = get(script, "state")
+			plain = type(state) == "table" and type(state.townState) == "table" and state.townState or false
+		end
+		return plain and plain[town] or nil
+	end
 end
 
 -- Each reader returns its lane's text. With `emit` (a dump), it also calls
@@ -264,6 +296,7 @@ end
 readers[lanes.TOWNS] = function(api, emit)
 	local map = api.engine.system.townBuildingSystem.getTown2BuildingMap()
 	local rows = {}
+	local growth = emit and townGrowth(api)
 	for _, town in ipairs(entities(api, "TOWN")) do
 		local count = 0
 		local buildings = map and map[town]
@@ -272,7 +305,17 @@ readers[lanes.TOWNS] = function(api, emit)
 		end
 		local row = tostring(town) .. ":" .. count
 		rows[#rows + 1] = row
-		if emit then emit("towns", town, row, "buildings=" .. count) end
+		if emit then
+			-- The town's size factors at full precision, and the growth
+			-- script's experience and level: what makeTownUpdateSizeCmd is
+			-- made from (docs/HOOKS.md, "The town trace").
+			local size = get(component(api, town, "TOWN"), "sizeFactors")
+			local factors = {}
+			for i = 1, 3 do factors[i] = full(get(size, i)) end
+			local data = growth(town)
+			emit("towns", town, row, "buildings=" .. count .. " size=" .. table.concat(factors, ",")
+				.. " experience=" .. full(get(data, "experience")) .. " level=" .. full(get(data, "level")))
+		end
 	end
 	return summary(rows)
 end

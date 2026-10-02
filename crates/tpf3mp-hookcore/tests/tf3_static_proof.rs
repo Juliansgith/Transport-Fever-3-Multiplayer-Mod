@@ -113,6 +113,11 @@ const TARGETS: &[(&str, u64)] = &[
         0xf41770,
     ),
     ("TownDevelopAt::Apply", 0x9dedf0),
+    // The town trace (crates/tpf3mp-hook/src/towntrace.rs).
+    ("TownUpdateSize::Apply", 0x9dfb10),
+    ("TownUpdateSize::Apply/develop", 0x9dfc8a),
+    ("TownUpdateSize::Apply/return", 0x9dfcd7),
+    ("TownDeveloper::Develop", 0x8dc240),
     ("lua_getfield", 0x2fbdb90),
     ("lua_loadfile", 0x2fa1d50),
     // The probe of the engine's player (crates/tpf3mp-hook/src/probe.rs).
@@ -206,6 +211,10 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     for site in [0x5290af, 0x538a80, 0x5391e4, 0x539368] {
         assert_eq!(callee(site), 0x9d29c0, "{site:#x} calls Add");
     }
+    // The town trace: the applier calls Develop between its two sites, and
+    // reads updateCount for the seed through its getter.
+    assert_eq!(callee(0x9dfccb), 0x8dc240);
+    assert_eq!(callee(0x9dfbf0), 0x2a9680);
     // The land-vehicle shuffle's seed is the tickCount getter's answer.
     assert_eq!(callee(0xac1b23), 0x2a95c0);
     // The main menu's m_game test reads CMenuUI+0x6b0, the field StartGame
