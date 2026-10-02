@@ -2433,7 +2433,19 @@ terrain tools through the hook, and a construction's window its edits:
   that also holds another stop's station is left as it is. hook.log says
   what each new object is and which group holds it (`the new <stop>: 600
   a station in group 610 (owner nil); ...`), and each one handed over
-  with its owner before (`the new <stop> made the acting company's`). A receiver
+  with its owner before (`the new <stop> made the acting company's`). The
+  stop's edge objects carry a name (`Stop`, never empty: a script build
+  with an empty name leaves the stop with no `NAME` and no owner,
+  docs/BUILDING.md), and once built its own group and stations are named
+  after the town the game counts the stop in (`stationSystem.getTown`),
+  with a number after it where another station group of that town has
+  that name (`Didcot`, `Didcot 2`), the same in every game. The stop
+  tool's own name never reaches game scripts (the proposal's edge objects
+  carry none), so a room's stop is named by this rule, not the tool's.
+  A construction the room builds (a station, an airport, a harbour) names
+  its own stations' group by the name the tool gave the construction
+  where the game left it unnamed (`named station group N "..."` in
+  hook.log). A receiver
   whose edge runs the other way flips `left`; a side already taken is
   refused (two stops on one side is a fatal assert in the game's lane
   creation on TPF2). Refused: a stop dropped where one stood (the game

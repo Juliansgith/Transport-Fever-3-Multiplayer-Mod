@@ -3551,6 +3551,53 @@ const STATION_REFRESH: &str = "api.type.ComponentType.CONSTRUCTION = 2 \
         proposal = { addedSegments = { { entity = -2, comp = { node0 = -1, node1 = 7777 } } }, \
                      removedSegments = { { entity = 6000 } } } } end }";
 
+/// Room-built stations stood unnamed (2026-10-02). Every game names the
+/// station group a new station's own stations make up by the name the
+/// tool gave the construction, where the game left it unnamed; a group
+/// that has a name keeps it.
+#[test]
+fn a_station_the_room_builds_names_its_group_as_the_tool_named_it() {
+    for (before, after) in [("nil", "Okehampton Station"), ("'Didcot'", "Didcot")] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             ACTION = capture.construction({STATION_BY_ROAD})"
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+        lua.load(STATION_REFRESH).exec().unwrap();
+        lua.load(format!(
+            "api.type.ComponentType.STATION_GROUP = 9 \
+             NAMES = {{ [5002] = {before} }} \
+             api.engine.util.getEntityName = function(e) return NAMES[e] end \
+             api.engine.system.stationGroupSystem = {{ getStationGroup = function(s) \
+                 if s == 5001 then return 5002 end return -1 end }} \
+             local get = api.engine.getComponent \
+             api.engine.getComponent = function(e, kind) \
+                 if kind == 9 and e == 5002 then return {{ stations = {{ 5001 }} }} end \
+                 return get(e, kind) \
+             end \
+             local send = api.cmd.sendCommand \
+             api.cmd.sendCommand = function(cmd, ...) \
+                 local r = send(cmd, ...) \
+                 if CONSTRUCTIONS[5000] then CONSTRUCTIONS[5000].stations = {{ 5001 }} end \
+                 if cmd.setName then NAMES[cmd.entity] = cmd.setName end \
+                 return r \
+             end \
+             HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+        let (ok, name): (bool, String) = lua
+            .load("return HOOK.applied[1].ok == true, tostring(NAMES[5002])")
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+        assert!(ok, "{}", hook_log(&lua));
+        assert_eq!(name, after, "{}", hook_log(&lua));
+    }
+}
+
 /// A street station placed into a street (2026-10-02, live: refused in
 /// every game, "the junction no longer exists"). The tool's proposal
 /// configures the station's own entrance node -1, the new junction -2 its
@@ -6455,12 +6502,18 @@ const STOP_OWNERS: &str = "local CT = api.type.ComponentType \
     end \
     api.engine.util.construction = { getConstructionEntity = function() return -1 end } \
     api.engine.system.stationGroupSystem = { getStationGroup = function(s) \
-        if s == 600 or s == 601 then return 610 end return -1 end } \
+        if s == 600 or s == 601 then return 610 end if s == 900 then return 620 end return -1 end } \
+    NAMES = { [5000] = 'Didcot', [620] = 'Didcot' } \
+    api.engine.util.getEntityName = function(e) return NAMES[e] end \
+    api.engine.system.stationSystem = { \
+        getTown = function(s) if s == 600 or s == 601 then return 5000 end return -1 end, \
+        getStations = function(t) if t == 5000 then return { 600, 601, 900 } end return {} end } \
     api.cmd.makeEntitySetPlayerCmd = function(entity, player) \
         return { setPlayer = entity, player = player } end \
     local send = api.cmd.sendCommand \
     api.cmd.sendCommand = function(cmd, ...) \
         if cmd.setPlayer then OWNERS[cmd.setPlayer] = cmd.player \
+        elseif cmd.setName then NAMES[cmd.entity] = cmd.setName \
         elseif cmd.proposal and cmd.proposal.streetProposal then \
             EDGES[100].objects = { { 555, 2 }, { 600, 0 }, { 601, 1 } } \
         end \
@@ -6499,9 +6552,10 @@ fn a_stop_the_room_places_is_the_acting_companys() {
              local o = {} \
              for _, e in ipairs({ 555, 600, 601, 610 }) do o[#o + 1] = e .. '=' .. tostring(OWNERS[e]) end \
              local g = {} \
-             for i = 2, #SENT do g[#g + 1] = tostring(SENT[i].setPlayer) end \
+             for i = 2, #SENT do if SENT[i].setPlayer then g[#g + 1] = tostring(SENT[i].setPlayer) end end \
              return HOOK.applied[1].ok == true, \
                  s.edgeObjectsToAdd[1].playerEntity .. '>' .. SENT[1].context.player \
+                     .. '>' .. s.edgeObjectsToAdd[1].name .. '>' .. s.edgeObjectsToAdd[2].name \
                      .. '>' .. tostring(s.edgesToAdd[1].playerOwned and s.edgesToAdd[1].playerOwned.player), \
                  table.concat(o, ' '), table.concat(g, ',')",
         )
@@ -6509,8 +6563,8 @@ fn a_stop_the_room_places_is_the_acting_companys() {
         .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
     assert!(ok, "{}", hook_log(&lua));
     assert_eq!(
-        built, "901>901>30",
-        "the stop named for the acting company, paid by it; its edge keeps its owner"
+        built, "901>901>Stop>Stop>30",
+        "the stop named for the acting company, paid by it, with a name; its edge keeps its owner"
     );
     assert_eq!(
         owners, "555=30 600=901 601=901 610=901",
@@ -6530,6 +6584,18 @@ fn a_stop_the_room_places_is_the_acting_companys() {
         "{log}"
     );
 
+    // Its group named after its town, after the town's other group of that
+    // name; its stations too.
+    let names: String = lua
+        .load("return NAMES[610] .. '|' .. NAMES[600] .. '|' .. NAMES[601] .. '|' .. NAMES[620]")
+        .eval()
+        .unwrap();
+    assert_eq!(names, "Didcot 2|Didcot 2|Didcot 2|Didcot");
+    assert!(
+        log.contains("named station group 610 \"Didcot 2\""),
+        "{log}"
+    );
+
     // A group that also holds another stop's station is not this stop's.
     let (lua, _script) = engine();
     lua.load(FAKE_NETWORK).exec().unwrap();
@@ -6546,6 +6612,8 @@ fn a_stop_the_room_places_is_the_acting_companys() {
         .eval()
         .unwrap();
     assert_eq!(owners, "600=901 601=901 610=nil");
+    let name: String = lua.load("return tostring(NAMES[610])").eval().unwrap();
+    assert_eq!(name, "nil", "nor its name");
 }
 
 #[test]

@@ -240,6 +240,95 @@ local constructionAt
 -- Removes a stop from its edge ("stops", below).
 local removeEdgeObject
 
+-- Names station groups the room built, the same in every game (2026-10-02:
+-- room-built stops and stations stood unnamed). The game's own tools name
+-- them natively, a name game scripts never see: a stop tool's proposal
+-- carries no name for its edge objects (build 40408), and a script build
+-- with an empty name leaves its entities with no NAME (docs/BUILDING.md,
+-- "What a script proposal must carry"). `groups` lists { group =, stations
+-- = { ... } }, each a group this build's own stations alone make up; one
+-- with a name of its own already keeps it. `name` is the name to give, or
+-- nil for the town's: the town the game counts the group's first station
+-- in (stationSystem.getTown), and a number after it where another station
+-- group of that town has that name ("Didcot", "Didcot 2", ...), so two
+-- games, which hold the same world, give the same. `fallback` where the
+-- station has no town. Each group and its stations get the name
+-- (makeEntitySetNameCmd); hook.log says which.
+local PROVISIONAL_STOP_NAME = "Stop"
+local function nameStationGroups(groups, name, fallback)
+	local named = {}
+	for _, g in ipairs(groups) do
+		local current
+		pcall(function() current = api.engine.util.getEntityName(g.group) end)
+		if type(current) ~= "string" or current == "" or current == PROVISIONAL_STOP_NAME then
+			local chosen = name
+			if chosen == nil then
+				local town = -1
+				pcall(function() town = api.engine.system.stationSystem.getTown(g.stations[1]) end)
+				local townName
+				if type(town) == "number" and town >= 0 then
+					pcall(function() townName = api.engine.util.getEntityName(town) end)
+				end
+				if type(townName) == "string" and townName ~= "" then
+					-- The names the town's other station groups have.
+					local taken = {}
+					pcall(function()
+						for _, s in ipairs(api.engine.system.stationSystem.getStations(town) or {}) do
+							local other = api.engine.system.stationGroupSystem.getStationGroup(s)
+							if type(other) == "number" and other >= 0 and other ~= g.group then
+								local n = api.engine.util.getEntityName(other)
+								if type(n) == "string" then taken[n] = true end
+							end
+						end
+					end)
+					chosen = townName
+					local k = 2
+					while taken[chosen] do
+						chosen = townName .. " " .. k
+						k = k + 1
+					end
+				else
+					chosen = fallback
+				end
+			end
+			if type(chosen) == "string" and chosen ~= "" then
+				local ok, why = pcall(function()
+					send(api.cmd.makeEntitySetNameCmd(g.group, chosen))
+					for _, s in ipairs(g.stations) do send(api.cmd.makeEntitySetNameCmd(s, chosen)) end
+				end)
+				named[#named + 1] = "station group " .. g.group .. " \"" .. chosen .. "\""
+					.. (ok and "" or (": refused, " .. tostring(why)))
+			end
+		end
+	end
+	if #named > 0 then log("named " .. table.concat(named, ", ")) end
+end
+
+-- The station groups construction `con`'s stations alone make up, as
+-- nameStationGroups takes them.
+local function constructionGroups(con)
+	local c = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+	local mine, byGroup, out = {}, {}, {}
+	for _, s in ipairs(c and c.stations or {}) do mine[s] = true end
+	for _, s in ipairs(c and c.stations or {}) do
+		local group = -1
+		pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(s) end)
+		if type(group) == "number" and group >= 0 and not byGroup[group] then
+			local g = api.engine.getComponent(group, api.type.ComponentType.STATION_GROUP)
+			local alone = g ~= nil
+			for _, other in ipairs(g and g.stations or {}) do
+				if not mine[other] then alone = false end
+			end
+			if alone then
+				byGroup[group] = { group = group, stations = {} }
+				out[#out + 1] = byGroup[group]
+			end
+		end
+		if byGroup[group] then table.insert(byGroup[group].stations, s) end
+	end
+	return out
+end
+
 -- An edit of a construction (its modules or parameters, an upgrade): the
 -- construction the action names removed and the new one built in one
 -- proposal, the old mapped to the new (old2new), as the game's own upgrade
@@ -302,6 +391,13 @@ function HANDLERS.BuildConstruction(build)
 	context.gatherBuildings = true
 	context.gatherFields = true
 	local built = buildProposal(proposal, context)
+	-- A station's group by the name the tool gave the construction, where
+	-- the game left it unnamed (nameStationGroups).
+	pcall(function()
+		local con = constructionAt({ file = build.file, at = build.transform.origin })
+		local groups = constructionGroups(con)
+		if #groups > 0 then nameStationGroups(groups, build.name) end
+	end)
 	if require_companies().isHeadquarters(api, build.file) then
 		-- Whether the engine took it as the company's headquarters (its
 		-- PLAYER component's `headquarters`), for hook.log: the game's
@@ -1247,6 +1343,7 @@ local function settleStop(ref, kept, model)
 		give(object, "stop")
 		if conOf[object] then give(conOf[object], "construction") end
 	end
+	local own, byGroup = {}, {}
 	for _, s in ipairs(stations) do
 		give(s, "station")
 		local group = groupOf(s)
@@ -1255,13 +1352,22 @@ local function settleStop(ref, kept, model)
 		for _, other in ipairs(g and g.stations or {}) do
 			if not mine[other] then alone = false end
 		end
-		if alone then give(group, "station group") end
+		if alone then
+			give(group, "station group")
+			if not byGroup[group] then
+				byGroup[group] = { group = group, stations = {} }
+				own[#own + 1] = byGroup[group]
+			end
+			table.insert(byGroup[group].stations, s)
+		end
 	end
 	log("the new " .. tostring(model) .. ": " .. table.concat(found, "; "))
 	if #fixed > 0 then
 		log("the new " .. tostring(model) .. " made the acting company's (" .. tostring(me) .. "): "
 			.. table.concat(fixed, ", "))
 	end
+	-- Named after its town, as nameStationGroups names a stop's group.
+	nameStationGroups(own, nil, PROVISIONAL_STOP_NAME)
 end
 
 -- How near its edge's centreline a stop's place is: the originator's own
@@ -1315,7 +1421,10 @@ function HANDLERS.PlaceStop(stop)
 		eo.oneWay = stop.one_way == true
 		eo.model = stop.model
 		eo.playerEntity = company()
-		eo.name = ""
+		-- A name, so the engine gives the stop its NAME and its owner
+		-- (docs/BUILDING.md: an empty name leaves both off); its group is
+		-- named after its town once built (settleStop).
+		eo.name = PROVISIONAL_STOP_NAME
 		added[k] = eo
 	end
 	local proposal = rebuildWith(e, network, objects)
