@@ -1536,6 +1536,55 @@ function HANDLERS.Prospect(p, ctx)
 	}))
 end
 
+-- A company perk (action::PerkOp) goes through the company script's own
+-- event, with the parameters the construction menu's perk tool sends it
+-- (gui/construction/tools/industry_greenify_tool.script.tl,
+-- marketing_campaign_tool.script.tl): here it runs at once, in every game
+-- at the same update, for the acting company, which spends the permit. The
+-- company script hands it on to the emissions or towns script, in this game
+-- alone, as in every other.
+
+function HANDLERS.Perk(op, ctx)
+	if op.Greenify then
+		local g = op.Greenify
+		local con = entityOf(ctx, "industries", g.industry)
+		local part = captureModule.industryPart(con)
+		if part == nil then error("industry-" .. tostring(g.industry) .. " is no one industry here", 0) end
+		log("greenifying industry-" .. tostring(g.industry) .. " (" .. tostring(part) .. ")")
+		return run(api.cmd.makeScriptingSendEventCmd("", "Companies", "MakeGreen", {
+			companyEntity = company(),
+			constructionEntity = part,
+			permitKey = g.permit,
+		}))
+	elseif op.Marketing then
+		local m = op.Marketing
+		local town = entityOf(ctx, "towns", m.town)
+		local cost = tonumber(m.cost)
+		if cost == nil or cost < 0 then error("a campaign of no price", 0) end
+		-- The tool will not start one the company cannot pay for; neither
+		-- does any game.
+		local read, balance = pcall(function() return api.engine.util.finance.getPlayersBalance(company()) end)
+		if read and type(balance) == "number" and balance < cost then
+			error("not enough money for the campaign", 0)
+		end
+		log("marketing in town-" .. tostring(m.town) .. " (" .. tostring(town) .. ") for " .. tostring(cost))
+		send(api.cmd.makeScriptingSendEventCmd("", "Companies", "startMarketingCampaign", {
+			townEntity = town,
+			companyEntity = company(),
+			marketingParams = { durationMs = m.duration_ms, lineCostFactor = m.line_cost_factor },
+			permitKey = m.permit,
+		}))
+		-- What the tool books once the campaign started (its command's
+		-- callback): the price, to the company, as another expense.
+		local entry = api.type.JournalEntry.new()
+		entry.amount = -cost
+		entry.time = -1
+		entry.category.type = api.type.JournalEntry.Type.OTHER
+		return run(api.cmd.makeJournalBookAssetCmd(company(), entry, api.type.Vec3f.new(0, 0, 0)))
+	end
+	return false, "a perk of no kind"
+end
+
 -- The room's companies (tpf3mp/companies.lua): the acting player founds,
 -- joins, renames, recolours or dissolves one, and its head locks it, sends a
 -- player out or shares its stations, in `ctx.roster`; `ctx.seal` is the

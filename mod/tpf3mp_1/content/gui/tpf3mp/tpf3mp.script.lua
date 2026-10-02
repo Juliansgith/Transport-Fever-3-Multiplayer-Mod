@@ -120,6 +120,8 @@ function data()
 		line = idOf("lines"),
 		group = idOf("groups"),
 		town = idOf("towns"),
+		-- An industry by its construction (capture.industryConstruction).
+		industry = idOf("industries"),
 		-- The room's company whose player entity `entity` is, by its id: the
 		-- game's company window renames the player's company so
 		-- (game_mechanics/company/company.tl, its editable title).

@@ -918,6 +918,9 @@ money, ran in the game script's `postUpdate`.
   companyEntity, townEntity, types, permitKey, cargoType })`, with the
   player's company, the town the registry names, and the industry types in
   the order the action carries them ("Prospecting" below);
+- `Perk`: the company script's own event, `MakeGreen` or
+  `startMarketingCampaign`, for the acting company, and for a campaign the
+  price booked to it after ("Company perks" below);
 - `Subsidy`: the subsidy script's own event, `makeScriptingSendEventCmd("",
   "Subvention", "onAccept" | "onDecline", { uid })`, once every game has
   checked the offer against its own script's state ("Subsidies" below).
@@ -1226,8 +1229,12 @@ reference of its own to either. Once linked, the GUI wraps every
     below);
   - taking a rank, the company window's `makeScriptingSendEventCmd("",
     "Companies", "applyLevel", { level })`, as an `ApplyRank` action
-    ("Company ranks" below). The company's other events (greening an
-    industry, `MakeGreen`; a marketing campaign) stay refused;
+    ("Company ranks" below);
+  - the construction menu's perk tools, `makeScriptingSendEventCmd("",
+    "Companies", "MakeGreen" | "startMarketingCampaign", …)`, as a `Perk`
+    action ("Company perks" below), refused in the sender and in every
+    game's replay until `acceptance.lua`'s `perks` is turned on after a
+    two-player game (COVERAGE.md);
   - answering a subsidy offer, the subsidy window's
     `makeScriptingSendEventCmd("", "Subvention", "onAccept" | "onDecline",
     { uid })`, as a `Subsidy` action naming the offer by its number and
@@ -1625,6 +1632,38 @@ alone (`company.script.tl`, its update looks at `getPlayer()` only, in the
 engine state): a prospection of another company is kept and its permit
 used, but its outcome is never drawn (seen in the scripts; not carried yet,
 docs/PLAN.md).
+
+### Company perks
+
+The construction menu's perk tools (`gui/construction/tools/`, build
+40408) each send the company script one event, which spends the perk's
+permit for the company and hands the perk on:
+
+- **Industry Greenification** (`industry_greenify_tool.script.tl`) sends
+  `Companies` `MakeGreen` with the industry part the player picked; the
+  company script tells the emissions script to cut its emissions. The
+  guard captures it (`capture.greenify`) as `Perk::Greenify`, the industry
+  by its canonical id: the registry binds industries by their
+  constructions (`tpf3mp/registry.lua`), and every game takes that
+  construction's one industry part (`capture.industryPart`). A
+  construction with more than one industry is refused, as no id tells its
+  parts apart.
+- **Marketing campaign** (`marketing_campaign_tool.script.tl`) sends
+  `Companies` `startMarketingCampaign` with the town and the campaign's
+  terms (`durationMs`, `lineCostFactor`); the company script starts it in
+  the towns script. The tool books its price in the event's callback with
+  `makeJournalBookAssetCmd`. The guard captures the event
+  (`capture.marketing`) as `Perk::Marketing`, with the price the tool
+  charges in that year (`capture.marketingCost`, the tool's own formula);
+  every game checks the company can pay it, starts the campaign through
+  the company script and books the price itself. The tool's own booking,
+  sent from its callback, is neither sent nor refused (`guard.FOLLOWS`),
+  so the price is paid once, in every game.
+
+Both are refused for another company, an industry or town the registry
+cannot name, and, until a two-player game shows matching permits, town
+reputations, emissions and money, by `acceptance.lua`'s `perks` gate in
+the sender and in every game's replay.
 
 ### Company ranks
 

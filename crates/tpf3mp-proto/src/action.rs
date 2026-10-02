@@ -160,6 +160,13 @@ canonical_id!(
     TownId,
     "town-"
 );
+canonical_id!(
+    /// An industry, by its construction. Industries come with the room's
+    /// world or from a prospection, and every game binds them as it binds
+    /// towns (`tpf3mp/registry.lua`, `industries`).
+    IndustryId,
+    "industry-"
+);
 
 /// The two transport networks. A road node and a track node can stand at
 /// the same place (a level crossing), so every reference to a node or edge
@@ -1052,6 +1059,36 @@ pub enum Renamed {
     Construction(ConstructionRef),
 }
 
+/// A company perk the construction menu's perk tools use on a town or an
+/// industry (`gui/construction/tools/*.script.tl`): an event to TF3's
+/// company script, which spends the perk's permit for the acting company
+/// and passes the perk on to the towns or emissions script. Appended under
+/// schema version 23.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PerkOp {
+    /// Industry Greenification (`Companies` `MakeGreen`,
+    /// `industry_greenify_tool.script.tl`): the industry's emissions cut.
+    Greenify {
+        industry: IndustryId,
+        /// The company permit it spends (`permitKey`), if it names one.
+        permit: Option<ResName>,
+    },
+    /// A marketing campaign in a town (`Companies`
+    /// `startMarketingCampaign`, `marketing_campaign_tool.script.tl`),
+    /// with the campaign's terms as the tool's metadata gives them, and its
+    /// cost, which the tool books to the company once the campaign started.
+    Marketing {
+        town: TownId,
+        /// How long it runs, in the game's milliseconds (`durationMs`).
+        duration_ms: i64,
+        /// `lineCostFactor`.
+        line_cost_factor: Fraction,
+        permit: Option<ResName>,
+        /// In the game's money, as the tool priced it at the click.
+        cost: i64,
+    },
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -1101,6 +1138,9 @@ pub enum Action {
         what: Renamed,
         name: ObjectName,
     },
+    /// A company perk used on a town or an industry (`PerkOp`). Appended
+    /// under schema version 23: the variants before it keep their bytes.
+    Perk(PerkOp),
 }
 
 #[derive(Debug, Error)]
@@ -1152,6 +1192,7 @@ impl Action {
             Action::EditJunctions(_) => "EditJunctions",
             Action::Subsidy(_) => "Subsidy",
             Action::Rename { .. } => "Rename",
+            Action::Perk(_) => "Perk",
         }
     }
 
@@ -1513,6 +1554,12 @@ mod tests {
             assert_eq!(payload.as_bytes()[..2], [23, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
+        // Appended under schema version 23: the perk tools take the next tag.
+        let green = Action::Perk(PerkOp::Greenify {
+            industry: IndustryId(5),
+            permit: None,
+        });
+        assert_eq!(green.to_payload().unwrap().as_bytes(), [23, 21, 0, 5, 0]);
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
             change: VehicleChange::ManualDeparture(true),
@@ -1558,5 +1605,6 @@ mod tests {
     fn ids_display_with_their_kind() {
         assert_eq!(LineId(7).to_string(), "line-7");
         assert_eq!(StationId(12).to_string(), "station-12");
+        assert_eq!(IndustryId(3).to_string(), "industry-3");
     }
 }
