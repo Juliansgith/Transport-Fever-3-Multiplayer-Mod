@@ -2175,6 +2175,28 @@ keep the game's. The getter is told by its code's shape, checked at every
 call. hook.log: `view-company: the GUI's Lua getPlayer answers the player's
 company 372426 natively (view: getPlayer binding/push)`.
 
+**The map's lines, probed.** After 55f81ed the player's own line was still
+not drawn on the map. Every line the game draws over the map is a React
+`LineViewer` (`gui/main/builtin.lua`; the native `UI::LineViewer`,
+`game/ui/util/lineviewer.cpp`) handed `showLines`, LineVisualizations by
+line entity, by a window: the line manager (its map mode hands it
+`getLinesForPlayer(getPlayer())`, `manager_window.tl` 427), the line,
+station, vehicle and town windows, the statistics. The native viewer has
+no owner test (tpfre: its functions read only the `Line` component); it
+draws what it is handed. So with `TPF3MP_PROBE_PLAYER=1` each GUI state
+says what every `LineViewer` is handed and what
+`lineSystem.getLinesForPlayer` answers, each line with its owner, once per
+answer and 40 lines at most (the hook notes `tpf3mp.probe` for the GUI's
+Lua, `follow.watchLines`); what is drawn never changes:
+
+```
+probe: getLinesForPlayer(372553) answers 1 line(s): 373300 (owned by 372553) (the HUD's state)
+probe: a line viewer is handed 1 line(s) to draw: 373300 (owned by 372553) (the HUD's state)
+```
+
+A company's line in that list but not drawn is the viewer's path (the
+line's own route through its stops); one missing from it is the list's.
+
 **A purchase's depot**, in hook.log when the store buys (the GUI's
 capture, `capture.depotText`): `the store buys at depot entity 5001 (owned
 by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7,

@@ -228,6 +228,7 @@ function data()
 			local ok, why = follow.install(api, function() read() return mine end,
 				function(line) l:log(line .. " (the game scripts' GUI state)") end)
 			follow.install(api, follow.noteSource(l))
+			pcall(follow.watchLines, api, ug_require, l, "the game scripts' GUI state")
 			parts[#parts + 1] = ok and "getPlayer follows the player's company" or ("getPlayer stays the game's: " .. tostring(why))
 		else
 			parts[#parts + 1] = "getPlayer stays the game's: tpf3mp/follow.lua did not load"

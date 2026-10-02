@@ -259,3 +259,22 @@ owner then asked for every company's icons and lines on the map.
   the line's network, the depot build's "Collision" warning, or an owner
   filter inside `findBestDepotForLine`); hook.log now names the depot each
   purchase uses and its owner.
+
+### The map's line, still not drawn (2026-10-02)
+
+Game test of 55f81ed (p1, company #1, 372553): the native getPlayer, the
+layer colours' owner test, the station viewer and the selector all
+answered the company; CreateLine (action 6) and EditLine 7-9 went through,
+the line's stops three room-placed two-sided stops each made the
+company's with a station group of its own; the line was not drawn.
+
+- **seen** Every map line is drawn by a `LineViewer` given its lines by a
+  window's Lua (`showLines`); the native `UI::LineViewer` reads the `Line`
+  component and no owner. The game's HUD has no always-on line overlay in
+  its Lua (no other `LineViewer` user; the public transport layer colours
+  stations by happiness).
+- **seen** The map's other line renderer, `UI::LineRenderView`, is the map
+  generator preview's (`map_preview_util::MakeStreetGeneratorLayerFn`).
+- Not known: whether the company's line reaches a `LineViewer`. The probe
+  (`follow.watchLines`) says, in one try, what each viewer is handed and
+  what `getLinesForPlayer` answers.

@@ -269,6 +269,7 @@ function data()
 	local function followMyCompany()
 		local follow = require("tpf3mp.follow")
 		local ok, why = follow.install(api, myCompany, function(line) link:log(line .. " (the Multiplayer plugin's state)") end)
+		pcall(follow.watchLines, api, ug_require, link, "the Multiplayer plugin's state")
 		link:log(ok and "the GUI's company follows the player's"
 			or ("the GUI's company cannot follow the player's: " .. tostring(why)))
 	end

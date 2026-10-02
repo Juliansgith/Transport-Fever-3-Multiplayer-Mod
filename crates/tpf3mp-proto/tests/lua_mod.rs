@@ -9610,6 +9610,86 @@ fn the_huds_state_follows_the_players_company() {
     );
 }
 
+/// With the hook's player probe on (its note `tpf3mp.probe`), each GUI
+/// state says which lines the game's LineViewer is handed to draw and what
+/// getLinesForPlayer answers, each line with its owner, once per answer;
+/// with the probe off it says nothing. What is drawn never changes.
+#[test]
+fn the_map_line_probe_says_what_the_line_viewer_draws() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(
+        r#"
+        ME = string.rep("b", 64)
+        OWNERS = { [700] = 901, [701] = 25 }
+        api = api or {}
+        api.engine = { util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) },
+                       system = { gameScriptSystem = { getEntityForGameScript = function() return -1 end },
+                                  lineSystem = { getLinesForPlayer = function(p)
+                                      if p == 901 then return { 700 } end return { 701 } end } },
+                       getComponent = function(e, kind)
+                           if kind == 9 then return OWNERS[e] and { player = OWNERS[e] } or nil end
+                       end }
+        api.type = { ComponentType = { GAME_SCRIPT = 7, PLAYER_OWNED = 9 } }
+        DRAWN = {}
+        local builtin = ug_require("::/gui/main/builtin.lua")
+        builtin.LineViewer = function(params) DRAWN[#DRAWN + 1] = params return {} end
+        local real = ug_require
+        ug_require = function(path)
+            if path == "::/gui/construction/construction_react_util.tl" then return { getActionParams = function() return {} end } end
+            return real(path)
+        end
+        HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
+        HOOK.notes = { ["tpf3mp.company"] = "901" }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        local script = "gui/tpf3mp/gui_state.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        data().prepare({})
+        ug_require = real
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let draw = "local lines = api.engine.system.lineSystem.getLinesForPlayer(api.engine.util.getPlayer())                 ug_require('::/gui/main/builtin.lua').LineViewer({ showLines = { { entity = lines[1] } } })                 return #DRAWN";
+    // The probe off: drawn, nothing said.
+    let drawn: i64 = lua.load(draw).eval().unwrap();
+    assert_eq!(drawn, 1, "the game's LineViewer still draws");
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(!logged.contains("probe: a line viewer"), "{logged}");
+    // The probe on: both said, once.
+    lua.load("HOOK.notes['tpf3mp.probe'] = '1' CLOCK = 5")
+        .exec()
+        .unwrap();
+    for _ in 0..3 {
+        let _: i64 = lua.load(draw).eval().unwrap();
+    }
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains(
+            "probe: getLinesForPlayer(901) answers 1 line(s): 700 (owned by 901) (the HUD's state)"
+        ),
+        "{logged}"
+    );
+    assert!(
+        logged.contains(
+            "probe: a line viewer is handed 1 line(s) to draw: 700 (owned by 901) (the HUD's state)"
+        ),
+        "{logged}"
+    );
+    assert_eq!(
+        logged.matches("probe: a line viewer").count(),
+        1,
+        "once per answer"
+    );
+}
+
 /// A purchase names its depot in hook.log: the entity the store passed, its
 /// owner, and the construction and index the room names it by, so a
 /// vehicle that leaves another depot than the player meant shows which one

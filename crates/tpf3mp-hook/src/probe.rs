@@ -34,6 +34,8 @@ use tpf3mp_hookcore::profile::ResolvedProfile;
 
 /// The environment variable that turns the probe on (`1`).
 pub const ENV: &str = "TPF3MP_PROBE_PLAYER";
+/// The note that tells the GUI's Lua the probe is on (`1`).
+pub const LUA_NOTE: &str = "tpf3mp.probe";
 /// The GUI's `GameState` getter, `CMenuUI::SwitchToGameUI`'s lambda_2
 /// (`mov rax,[rcx+8]; mov rax,[rax+m_game]; mov rax,[rax+state]; ret`).
 pub const GUI_TARGET: &str = "probe: GUI GameState getter";
@@ -1022,6 +1024,8 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> String {
     if !wanted {
         return format!("probe: the engine's player is not probed ({ENV}=1 turns it on)");
     }
+    // The GUI's Lua probes (tpf3mp/follow.lua, watchLineViewers) read this.
+    crate::lua::set_note(LUA_NOTE, "1");
     let (Some(gui), Some(sim)) = (resolved.get(GUI_TARGET), resolved.get(SIM_TARGET)) else {
         return format!(
             "probe: off, the profile has no {GUI_TARGET} or {SIM_TARGET}; nothing is read"

@@ -2163,6 +2163,16 @@ pub fn noted(key: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
+/// Notes `value` under `key` from the hook itself, as `note(key, value)`
+/// does from Lua ("" forgets it): what the hook tells every Lua state.
+pub fn set_note(key: &str, value: &str) {
+    let mut shared = shared();
+    shared.notes.retain(|(k, _)| k != key);
+    if !value.is_empty() && shared.notes.len() < MAX_NOTES {
+        shared.notes.push((key.to_owned(), value.to_owned()));
+    }
+}
+
 /// `log(line)`.
 /// `note(key)`: what a Lua state last noted under `key`, or nil;
 /// `note(key, value)`: notes `value` (a string; "" forgets it) under `key`

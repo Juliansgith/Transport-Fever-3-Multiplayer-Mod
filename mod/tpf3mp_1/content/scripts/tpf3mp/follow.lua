@@ -311,6 +311,97 @@ function follow.noteCompanies(link, roster, last)
 	return text
 end
 
+-- The probe of the map's lines (with the hook's TPF3MP_PROBE_PLAYER=1, which
+-- notes PROBE_NOTE): in each GUI state, what the game's LineViewer is
+-- handed to draw (gui/main/builtin.lua; the line manager hands it
+-- getLinesForPlayer(getPlayer()), manager_window.tl) and what
+-- lineSystem.getLinesForPlayer answers, each line with its owner, once per
+-- distinct answer and LINES_SAID at most. Nothing changes what is drawn.
+follow.PROBE_NOTE = "tpf3mp.probe"
+follow.LINES_SAID = 40
+follow.BUILTIN = "::/gui/main/builtin.lua"
+
+-- "373300 (owned by 372553)" for each line of `lines` (entities, or
+-- LineVisualizations with an entity), the first 12.
+function follow.linesText(api, lines)
+	local out, n = {}, 0
+	for _, l in ipairs(type(lines) == "table" and lines or {}) do
+		n = n + 1
+		if n <= 12 then
+			local entity = l
+			if type(l) ~= "number" then
+				local ok, e = pcall(function() return l.entity end)
+				entity = ok and e or nil
+			end
+			local owner
+			pcall(function()
+				local o = api.engine.getComponent(entity, api.type.ComponentType.PLAYER_OWNED)
+				owner = o and o.player
+			end)
+			out[#out + 1] = tostring(entity) .. " (owned by " .. (owner ~= nil and tostring(owner) or "no one") .. ")"
+		end
+	end
+	if n > 12 then out[#out + 1] = "and " .. (n - 12) .. " more" end
+	return n, table.concat(out, ", ")
+end
+
+function follow.watchLines(api, require_, link, where)
+	if not (link and link.note) then return 0 end
+	local saidCount, saidText = 0, {}
+	local checkedAt, on = nil, false
+	local function probing()
+		local ok, now = pcall(os.clock)
+		now = ok and now or 0
+		if checkedAt == nil or now - checkedAt >= 2 then
+			checkedAt = now
+			local okNote, v = pcall(function() return link:note(follow.PROBE_NOTE) end)
+			on = okNote and v == "1"
+		end
+		return on
+	end
+	local function say(text)
+		if saidCount >= follow.LINES_SAID or saidText[text] then return end
+		saidText[text] = true
+		saidCount = saidCount + 1
+		pcall(function() link:log(text .. " (" .. tostring(where) .. ")") end)
+	end
+	local wrapped = 0
+	local okB, builtin = pcall(require_, follow.BUILTIN)
+	if okB and type(builtin) == "table" and type(builtin.LineViewer) == "function" and not follow.wrappedTests[builtin.LineViewer] then
+		local original = builtin.LineViewer
+		local viewer = function(params, ...)
+			if probing() then
+				pcall(function()
+					local n, text = follow.linesText(api, params and params.showLines)
+					say("probe: a line viewer is handed " .. n .. " line(s) to draw: " .. text)
+				end)
+			end
+			return original(params, ...)
+		end
+		follow.wrappedTests[viewer] = true
+		builtin.LineViewer = viewer
+		wrapped = wrapped + 1
+	end
+	local okS, system = pcall(function() return api.engine.system.lineSystem end)
+	local get = okS and system and system.getLinesForPlayer
+	if get ~= nil and not follow.wrappedTests[get] then
+		local lister = function(player, ...)
+			local lines = get(player, ...)
+			if probing() then
+				pcall(function()
+					local n, text = follow.linesText(api, lines)
+					say("probe: getLinesForPlayer(" .. tostring(player) .. ") answers " .. n .. " line(s): " .. text)
+				end)
+			end
+			return lines
+		end
+		follow.wrappedTests[lister] = true
+		local took = pcall(function() system.getLinesForPlayer = lister end)
+		if took then wrapped = wrapped + 1 end
+	end
+	return wrapped
+end
+
 function follow.companyOf(roster, me)
 	if type(roster) ~= "table" or type(roster.members) ~= "table" or type(me) ~= "string" then return nil end
 	for _, m in ipairs(roster.members) do
