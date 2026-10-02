@@ -1075,3 +1075,57 @@ Rejected:
   shared one with friends did not agree to strangers joining.
 - **Listing without the invite, joining by room id**: a second way into a
   room beside the invite, for the same result.
+
+## D27 (2026-10-02, *proposed*): a shared mod's follow-up build goes to the room from its player's game
+
+*Proposed for the owner (Juliansgith) to decide; not in force until
+approved.* The user asked on 2026-10-02 to get their mods Parallel Tracks
+and Auto Signals working in a room, as a pull request to TPF3-MP. It
+answers, for builds, the question PLAN.md (Part 3) leaves open for the
+team: "a rule for mods that send commands from the GUI".
+
+Some shared mods build after the player builds: Parallel Tracks lays
+tracks beside the one drawn, Parallel Roads roads, Auto Signals more
+signals after the first. Each hears the build in its game script
+(`onPostBuildProposal`), which runs in every game, and builds from its GUI
+half (`guiUpdate`) with `makeWorldBuildProposalCmd`. So **every game that
+runs the mod sends the follow-up**, each from its own player's settings,
+for whichever player built (seen in the game, 2026-10-02: both games sent
+Parallel Tracks' tracks for one player's track). Today the hook stops each
+of them, in every game alike: the mod does nothing in a room.
+
+- **The follow-up of this player's build goes to the room from this game.**
+  In the game scripts' GUI state, a script's build is carried, as the
+  action the build tools' capture makes of it, when the last build this
+  game applied was its own player's, at most a few frames before
+  (`tpf3mp/modbuild.lua`, `FOLLOW_FRAMES`). The room orders it for every
+  game, as a tool's click.
+- **Another player's build is left to that player's game**, which sends
+  its own follow-up from its own settings. A script's build with no build
+  of the player's just before it is stopped.
+- **Every script's build there is the hook's to stop**: it is marked
+  `playerInitiated` whatever the script asked, so none builds in one game
+  alone. A script that asked for `false` would otherwise build in its own
+  game only (the hook lets builds that are not player-initiated through,
+  as towns' growth).
+- **What the build tools' capture does not carry stays stopped**:
+  constructions, removals, stops and signals, for now. Auto Signals needs
+  more: the room's signal (`PlaceStop`) does not carry the signal's
+  parameters, and its spacing removes and re-adds edges with signals on
+  them.
+
+Two players whose builds apply within one window may both hand a mod's
+follow-up: the room orders both and every game applies both alike, a
+duplicate or a collision the game refuses, never a world of one game alone.
+This is as precise as the room can be while mods do not say which build
+they follow.
+
+Rejected:
+
+- **Forward every game's follow-up**: one per player who runs the mod, each
+  from a different player's settings.
+- **The host's game alone sends follow-ups**: a guest's track would get the
+  host's settings, or none.
+- **Mods must change first**: the rule works for the mods as they are;
+  a mod that wants to be exact may still build only for its own player's
+  builds.
