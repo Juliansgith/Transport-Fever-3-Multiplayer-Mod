@@ -231,7 +231,7 @@ tested on all three platforms.
 
 ## D10 (2026-09-27): players' diagnostics go to the server by themselves
 
-*A proposed amendment below, not decided, adds the hook's and the game's
+*The owner-approved amendment below adds the hook's and the game's
 logs and the game's error reports to what goes, under one log session
 code for a launcher's run.*
 
@@ -271,10 +271,11 @@ collect-logs` when an operator asks for them. The page's
 `/api/collect-logs`, a way for the page to make the launcher write files,
 is gone with the button.
 
-### D10 amendment (PROPOSED amendment, not decided, 2026-10-02): the hook's and the game's logs go too
+### D10 amendment (approved by the owner, 2026-10-02): the hook's and the game's logs go too
 
-**Proposed, for the owner (Juliansgith) to approve or refuse in the pull
-request. D10 above stays in force until then.**
+**Approved by the owner (Juliansgith) on 2026-10-02 after the collection
+scope was explained: "you can merge those in". Live-game acceptance may
+follow integration into dev; this does not claim that acceptance passed.**
 
 A contributor, silver2127, asked for all of a player's logs to reach the
 server with one code naming them, and asked for D10 to change for it.

@@ -134,7 +134,7 @@ pub struct LauncherConfig {
     /// launcher sends them; `LauncherHandle` switches it.
     pub diagnostics: Option<crate::diagnostics::Recorder>,
     /// Where the hook's and the game's logs are, whose lines go with
-    /// `diagnostics` (proposed D10 amendment); `None` sends none of them.
+    /// `diagnostics` (approved D10 amendment); `None` sends none of them.
     /// A `TPF3MP_DATA_DIR` in `game_env` moves the hook's log there.
     pub game_logs: Option<crate::game_logs::Places>,
     /// The hook library the game is started with: in the package, next to

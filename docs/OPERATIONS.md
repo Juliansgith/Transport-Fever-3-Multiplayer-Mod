@@ -162,7 +162,7 @@ disk. The log never contains IP addresses or invites.
   memory. It holds no secrets and can be shared.
 - **The player's side, without asking:** players' launchers send the
   lines of their logs, redacted, to the server they play on (unless the
-  player switched that off): the launcher's own, and under the proposed
+  player switched that off): the launcher's own, and under the approved
   D10 amendment the in-game hook's `hook.log`, the game's `stdout.txt` and
   the text of the game's error reports, never its crash dumps. Every line
   names its source (`launcher`, `agent`, `hook`, `game`, `crash`) and the
@@ -677,3 +677,11 @@ tunnel instead, through the reverse proxy.
   meet it; it clears by itself.
 - Rotate the invite key only deliberately: every existing invite stops
   working.
+
+The crash-report collector snapshots existing file metadata when it starts and
+when diagnostics are disabled. New reports are identified without comparing
+filesystem timestamps to the wall clock, so coarse Windows timestamps do not
+hide a new report. Each diagnostics setting change invalidates in-flight file
+reads and upload retries. After an off/on transition, the next poll discards all
+unread file content (including any new lines since re-enabling) to ensure that
+content written while off is never sent later.

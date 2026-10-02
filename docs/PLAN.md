@@ -30,7 +30,7 @@ Flag each of these when a task asks for it:
 | A Dev track, choosing or going back to versions | Held until after launch by the owner (D20; D18, D19). *Changed:* the room moved into the game is no longer held (D17, amended 2026-09-30) | Ask the owner first |
 | Writing or changing a decision, or settling a question left open for the owner | The owner decides (AGENTS.md) | A pull request the owner approves |
 | Logging an invite code bare | D13: codes cannot be spotted in a log line | `invite=<code>`, which redaction hides |
-| Sending crash dumps, whole files, or players' logs to a server other than the one they play on | D10 (and its proposed amendment): redacted lines to the server played on, over the game's connection | The game's dumps through `collect-logs`, on the player's say |
+| Sending crash dumps, whole files, or players' logs to a server other than the one they play on | D10 (including its approved amendment): redacted lines to the server played on, over the game's connection | The game's dumps through `collect-logs`, on the player's say |
 
 ## Before release (done)
 
@@ -43,7 +43,7 @@ Flag each of these when a task asks for it:
   link.
 - [x] `tpf3mp-agent collect-logs` zips the game's own logs and crash dumps.
   The launcher's log goes to the server by itself (D10).
-  *Proposed (D10 amendment, 2026-10-02, not decided):* the hook's and the
+  *Added (owner-approved D10 amendment, 2026-10-02):* the hook's and the
   game's logs and the game's error reports go too, as redacted lines
   within budgets, every line under the launcher's log session; minidumps
   stay with `collect-logs`.

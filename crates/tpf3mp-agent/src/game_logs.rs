@@ -1,4 +1,4 @@
-//! The hook's and the game's logs, for the server played on (proposed D10
+//! The hook's and the game's logs, for the server played on (approved D10
 //! amendment): the hook's `hook.log` and the game's `stdout.txt`, tailed
 //! from where they stood when the launcher's run began, and the game's
 //! error reports (`.txt`, `.json`) in its `crash_dump` folder as they
@@ -220,7 +220,6 @@ fn push_line(lines: &mut Vec<String>, bytes: &[u8]) {
 #[derive(Debug)]
 pub struct CrashReports {
     dirs: Vec<PathBuf>,
-    since: SystemTime,
     seen: HashMap<PathBuf, (u64, SystemTime)>,
     budget: Budget,
 }
@@ -235,19 +234,45 @@ pub struct Report {
 }
 
 impl CrashReports {
-    /// Watches `dirs` for reports written from `since` on.
-    pub fn new(dirs: Vec<PathBuf>, since: SystemTime) -> Self {
-        Self {
+    /// Watches reports added or changed after this metadata snapshot.
+    /// Filesystem timestamps can lag the wall clock on Windows; comparing
+    /// them with SystemTime::now() would silently miss a new report.
+    pub fn new(dirs: Vec<PathBuf>) -> Self {
+        let mut reports = Self {
             dirs,
-            since,
             seen: HashMap::new(),
             budget: Budget::new(CRASH_PER_MINUTE, Instant::now()),
-        }
+        };
+        reports.skip_all();
+        reports
     }
 
     /// Marks every report there now as read: while diagnostics are off.
     pub fn skip_all(&mut self) {
-        self.since = SystemTime::now();
+        self.seen.clear();
+        for dir in &self.dirs {
+            let Ok(entries) = fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(is_report)
+                {
+                    continue;
+                }
+                let Ok(meta) = entry.metadata() else {
+                    continue;
+                };
+                if meta.is_file()
+                    && let Ok(modified) = meta.modified()
+                {
+                    self.seen.insert(path, (meta.len(), modified));
+                }
+            }
+        }
     }
 
     /// The reports written or changed since the last look, as far as the
@@ -272,7 +297,7 @@ impl CrashReports {
                 let Ok(modified) = meta.modified() else {
                     continue;
                 };
-                if !meta.is_file() || modified < self.since {
+                if !meta.is_file() {
                     continue;
                 }
                 let stamp = (meta.len(), modified);
@@ -370,6 +395,7 @@ pub struct Sources {
     hook: Tail,
     game: Vec<Tail>,
     crash: CrashReports,
+    generation: u64,
 }
 
 impl Sources {
@@ -383,7 +409,8 @@ impl Sources {
                 .iter()
                 .map(|dir| Tail::from_end(dir.join("stdout.txt"), GAME_PER_MINUTE))
                 .collect(),
-            crash: CrashReports::new(crash_dirs, SystemTime::now()),
+            crash: CrashReports::new(crash_dirs),
+            generation: 0,
         }
     }
 
@@ -400,23 +427,29 @@ impl Sources {
     /// `reports`, looks for new error reports too. Returns the bytes
     /// skipped over the budgets: the hook's, the game's.
     pub fn record(&mut self, recorder: &Recorder, now: Instant, reports: bool) -> [u64; 2] {
+        let recording = recorder.recording();
+        if !recording.on || recording.generation != self.generation {
+            self.skip();
+            self.generation = recording.generation;
+            return [0, 0];
+        }
         let at_ms = diagnostics::now_ms();
         let hook = self.hook.poll(now);
         for line in &hook.lines {
-            recorder.record_line(LogSource::Hook, hook_level(line), "hook.log", line, at_ms);
+            recording.record_line(LogSource::Hook, hook_level(line), "hook.log", line, at_ms);
         }
         let mut game_skipped = 0;
         for tail in &mut self.game {
             let game = tail.poll(now);
             game_skipped += game.skipped;
             for line in &game.lines {
-                recorder.record_line(LogSource::Game, game_level(line), "stdout.txt", line, at_ms);
+                recording.record_line(LogSource::Game, game_level(line), "stdout.txt", line, at_ms);
             }
         }
         if reports {
             for report in self.crash.poll(now) {
                 if report.cut > 0 {
-                    recorder.record_line(
+                    recording.record_line(
                         LogSource::Crash,
                         DiagnosticLevel::Warn,
                         &report.name,
@@ -425,7 +458,7 @@ impl Sources {
                     );
                 }
                 for line in &report.lines {
-                    recorder.record_line(
+                    recording.record_line(
                         LogSource::Crash,
                         DiagnosticLevel::Error,
                         &report.name,
@@ -452,10 +485,6 @@ pub fn start(recorder: Recorder, mut sources: Sources) -> JoinHandle<()> {
         let mut dropped = recorder.dropped();
         loop {
             ticks.tick().await;
-            if !recorder.is_on() {
-                sources.skip();
-                continue;
-            }
             let now = Instant::now();
             let reports = now.duration_since(looked) >= CRASH_POLL;
             if reports {
@@ -577,10 +606,7 @@ mod tests {
             .unwrap()
             .set_modified(SystemTime::now() - Duration::from_secs(3600))
             .unwrap();
-        let mut reports = CrashReports::new(
-            vec![dir.path().to_owned()],
-            SystemTime::now() - Duration::from_secs(60),
-        );
+        let mut reports = CrashReports::new(vec![dir.path().to_owned()]);
         fs::write(dir.path().join("a_1.txt"), "line one\nline two\n").unwrap();
         fs::write(
             dir.path().join("error.json"),
@@ -621,6 +647,13 @@ mod tests {
             "[2026-10-02 15:53:49Z - ERROR    - Main Thread - Main ]  bad\n",
         );
         fs::write(crash.join("e_1.json"), "\"userId\": \"125253817\",\n").unwrap();
+        // Reproduce coarse/skewed filesystem time without a timing-dependent sleep.
+        File::options()
+            .write(true)
+            .open(crash.join("e_1.json"))
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(2))
+            .unwrap();
         sources.record(&recorder, Instant::now(), true);
         let lines = recorder.waiting();
         assert_eq!(lines.len(), 3, "{lines:?}");
@@ -642,5 +675,34 @@ mod tests {
         let report = by(LogSource::Crash);
         assert_eq!(report.target.as_str(), "e_1.json");
         assert!(!report.text.as_str().contains("125253817"), "{report:?}");
+    }
+    #[test]
+    fn turning_off_and_on_between_polls_never_replays_off_period_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let hook = dir.path().join("hook.log");
+        let game = dir.path().join("stdout.txt");
+        let crash = dir.path().join("error.json");
+        let mut sources = Sources::new(hook.clone(), vec![dir.path().to_owned()]);
+        let recorder = Recorder::new();
+        let now = Instant::now();
+        for sampled_while_off in [false, true] {
+            recorder.set_on(false);
+            fs::write(&hook, "private while off\n").unwrap();
+            fs::write(&game, "private while off\n").unwrap();
+            fs::write(&crash, "private while off\n").unwrap();
+            if sampled_while_off {
+                sources.record(&recorder, now, true);
+            }
+            recorder.set_on(true);
+            sources.record(&recorder, now, true);
+            assert!(recorder.is_empty(), "off-period files must be skipped");
+            append(&hook, "new hook\n");
+            append(&game, "new game\n");
+            fs::write(&crash, "new crash\n").unwrap();
+            sources.record(&recorder, now, true);
+            let lines = recorder.waiting();
+            assert_eq!(lines.len(), 3, "{lines:?}");
+            assert!(lines.iter().all(|l| !l.text.as_str().contains("private")));
+        }
     }
 }

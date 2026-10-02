@@ -1,7 +1,7 @@
 //! Diagnostics ("Diagnostics" in PROTOCOL.md): the lines of this player's
 //! logs that go to the server they play on, so its operator can see what
 //! went wrong from the support code alone, without asking for files: the
-//! launcher's own log, and under the proposed D10 amendment the hook's and
+//! launcher's own log, and under the approved D10 amendment the hook's and
 //! the game's logs and the game's error reports ([`crate::game_logs`]).
 //!
 //! A [`Recorder`] takes every line, redacts it, and tags it with its
@@ -16,7 +16,7 @@ use std::{
     future::Future,
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -46,8 +46,59 @@ pub struct Recorder(Arc<Inner>);
 
 struct Inner {
     run: LogSession,
-    off: AtomicBool,
+    setting: Mutex<Setting>,
     queue: Queue,
+}
+
+struct Setting {
+    on: bool,
+    generation: u64,
+}
+
+/// A file read or upload belongs to one uninterrupted diagnostics setting.
+/// Turning off and back on invalidates work already in flight.
+pub(crate) struct Recording {
+    recorder: Recorder,
+    pub(crate) on: bool,
+    pub(crate) generation: u64,
+}
+
+impl Recording {
+    pub(crate) fn record_line(
+        &self,
+        source: LogSource,
+        level: DiagnosticLevel,
+        target: &str,
+        text: &str,
+        at_ms: u64,
+    ) {
+        let setting = self.recorder.setting();
+        if !setting.on || setting.generation != self.generation {
+            return;
+        }
+        self.recorder.0.queue.push(TelemetryLine {
+            at_ms,
+            level,
+            source,
+            target: Text::lossy(&redact(target)),
+            text: Text::lossy(&redact(text)),
+        });
+    }
+
+    fn take(&self) -> Vec<TelemetryLine> {
+        let setting = self.recorder.setting();
+        if !setting.on || setting.generation != self.generation {
+            return Vec::new();
+        }
+        self.recorder.0.queue.take()
+    }
+
+    fn put_back(&self, lines: Vec<TelemetryLine>) {
+        let setting = self.recorder.setting();
+        if setting.on && setting.generation == self.generation {
+            self.recorder.0.queue.put_back(lines);
+        }
+    }
 }
 
 impl Default for Recorder {
@@ -76,7 +127,10 @@ impl Recorder {
     pub fn for_run(run: LogSession) -> Self {
         Self(Arc::new(Inner {
             run,
-            off: AtomicBool::new(false),
+            setting: Mutex::new(Setting {
+                on: true,
+                generation: 0,
+            }),
             queue: Queue::new(KEPT, RUN_QUOTA),
         }))
     }
@@ -108,30 +162,40 @@ impl Recorder {
         text: &str,
         at_ms: u64,
     ) {
-        if !self.is_on() {
-            return;
-        }
-        let line = TelemetryLine {
-            at_ms,
-            level,
-            source,
-            target: Text::lossy(target),
-            text: Text::lossy(&redact(text)),
-        };
-        self.0.queue.push(line);
+        self.recording()
+            .record_line(source, level, target, text, at_ms);
     }
 
-    /// Turns recording, and with it sending, on or off: every source
-    /// alike. Off forgets what was kept.
+    fn setting(&self) -> std::sync::MutexGuard<'_, Setting> {
+        self.0
+            .setting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn recording(&self) -> Recording {
+        let setting = self.setting();
+        Recording {
+            recorder: self.clone(),
+            on: setting.on,
+            generation: setting.generation,
+        }
+    }
+
+    /// Changing the switch invalidates pending file reads and retries.
     pub fn set_on(&self, on: bool) {
-        self.0.off.store(!on, Ordering::Relaxed);
+        let mut setting = self.setting();
+        if setting.on != on {
+            setting.generation = setting.generation.wrapping_add(1);
+            setting.on = on;
+        }
         if !on {
             self.0.queue.clear();
         }
     }
 
     pub fn is_on(&self) -> bool {
-        !self.0.off.load(Ordering::Relaxed)
+        self.setting().on
     }
 
     /// Lines kept, not yet sent.
@@ -286,8 +350,8 @@ pub(crate) enum Sent {
 
 /// Sends one batch, if there are lines to send.
 pub(crate) async fn send(recorder: &Recorder, requests: &Requests) -> Sent {
-    let queue = &recorder.0.queue;
-    let lines = queue.take();
+    let recording = recorder.recording();
+    let lines = recording.take();
     if lines.is_empty() {
         return Sent::Nothing;
     }
@@ -304,15 +368,11 @@ pub(crate) async fn send(recorder: &Recorder, requests: &Requests) -> Sent {
         // This session may send no more; the lines are not kept anywhere.
         Err(ClientError::Refused(RequestError::DiagnosticsNotKept)) => Sent::Stop,
         Err(ClientError::Disconnected) => {
-            if recorder.is_on() {
-                queue.put_back(lines);
-            }
+            recording.put_back(lines);
             Sent::Stop
         }
         Err(_) => {
-            if recorder.is_on() {
-                queue.put_back(lines);
-            }
+            recording.put_back(lines);
             Sent::Later
         }
     }
@@ -431,5 +491,27 @@ mod tests {
         queue.push(line(&"y".repeat(100)));
         assert_eq!(queue.len(), 5, "over the quota");
         assert_eq!(queue.dropped(), 1);
+    }
+    #[test]
+    fn off_invalidates_in_flight_reads_and_upload_retries_even_after_reenabling() {
+        let recorder = Recorder::new();
+        recorder.record(DiagnosticLevel::Info, "agent", "before off");
+        let old = recorder.recording();
+        let batch = old.take();
+        assert_eq!(batch.len(), 1);
+        recorder.set_on(false);
+        recorder.set_on(true);
+        old.record_line(
+            LogSource::Crash,
+            DiagnosticLevel::Error,
+            "error.json",
+            "stale read",
+            0,
+        );
+        old.put_back(batch);
+        assert!(old.take().is_empty());
+        assert!(recorder.is_empty());
+        recorder.record(DiagnosticLevel::Info, "agent", "after on");
+        assert_eq!(recorder.len(), 1);
     }
 }

@@ -52,7 +52,7 @@ impl DiagnosticLevel {
 }
 
 /// Where a line of diagnostics comes from: the launcher's own log, as D10
-/// has it, and, under the proposed D10 amendment, the hook's and the
+/// has it, and, under the approved D10 amendment, the hook's and the
 /// game's logs and the game's error reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LogSource {
@@ -473,7 +473,7 @@ mod tests {
     }
 
     /// The game's own logs and error reports, which go too under the
-    /// proposed D10 amendment: the account they name is taken out.
+    /// approved D10 amendment: the account they name is taken out.
     #[test]
     fn the_games_reports_lose_the_account_they_name() {
         assert_eq!(

@@ -561,7 +561,7 @@ A client may send lines of its logs to the server, so the server's
 operator can see what went wrong for a player from the support code
 alone (the session ID, a code like an invite's that the server gives no
 two sessions while their diagnostics are kept). TPF2MP's relay kept its
-players' diagnostics the same way. Under the proposed D10 amendment
+players' diagnostics the same way. Under the approved D10 amendment
 (DECISIONS.md, not decided), the lines include the hook's and the game's
 logs and the game's error reports, and all of a launcher's run goes under
 one *log session*.

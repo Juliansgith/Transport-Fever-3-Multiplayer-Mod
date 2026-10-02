@@ -262,7 +262,7 @@ pub struct State {
     /// The code every line of this run's diagnostics carries, across all
     /// its connections, while diagnostics are on: what the player quotes,
     /// with the support code, to have the operator read all of the run's
-    /// logs (proposed D10 amendment).
+    /// logs (approved D10 amendment).
     pub log_session: Option<String>,
     /// The player's saves, newest first: what a room they create can start
     /// from ([`Action::Create`]).

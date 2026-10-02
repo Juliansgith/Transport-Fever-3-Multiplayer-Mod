@@ -395,7 +395,7 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (`server_default`), for the server setting. Since version 23 it
     carries the launcher's log session (`log_session`, empty while
     diagnostics are off), which the window shows with a Copy on its first
-    page and its Server page (proposed D10 amendment).
+    page and its Server page (approved D10 amendment).
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.
