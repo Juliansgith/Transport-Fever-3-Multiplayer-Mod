@@ -394,6 +394,313 @@ fn flush_callers(now_ms: u64) -> Vec<String> {
     callers_text(&rows, overflow, IMAGE_BASE.load(Ordering::Acquire) as u64)
 }
 
+/// The native tools' "owned by another player" test,
+/// `street_util::IsOwnedByOtherPlayer` as this probe names it (rva 0x610ea0,
+/// `game\ui\actions\street_builder_util.cpp`): the engine in rcx, the
+/// tool's player in edx, an entity in r8d; true when the entity has a
+/// `PlayerOwned` whose player is not the tool's. The street builder's snap
+/// (`CreateFindSnapPointRoadEarlyAbortContext`, the call at 0x5fc022) marks
+/// both ends of an edge it answers true for as fixed, so the tool snaps to
+/// the edge's ends only, never into its middle. Detoured to log what it
+/// answers true for, always answered by the original.
+pub const OTHER_OWNER_TARGET: &str = "probe: street_util IsOwnedByOtherPlayer";
+/// Edges (with the tool's player) logged apart; the rest are counted.
+const OWNER_SLOTS: usize = 64;
+
+/// What the owner of an edge the test called another player's turned out to
+/// be, found by asking the original again with each candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    /// Not asked yet (the row is being claimed).
+    Unknown = 0,
+    /// The company this player plays for (the GUI's note).
+    Company = 1,
+    /// The save's own player (the mod's game script's note).
+    SavePlayer = 2,
+    /// Neither: another company, or no company was noted.
+    Other = 3,
+}
+
+impl Owner {
+    fn from_u8(v: u8) -> Owner {
+        match v {
+            1 => Owner::Company,
+            2 => Owner::SavePlayer,
+            3 => Owner::Other,
+            _ => Owner::Unknown,
+        }
+    }
+}
+
+struct OwnerRow {
+    /// `(player << 32) | entity`, both as u32; 0 while free.
+    key: AtomicU64,
+    /// The first caller's return address.
+    ret: AtomicU64,
+    owner: std::sync::atomic::AtomicU8,
+    count: AtomicU64,
+}
+
+#[allow(clippy::declare_interior_mutable_const)]
+const OWNER_ROW: OwnerRow = OwnerRow {
+    key: AtomicU64::new(0),
+    ret: AtomicU64::new(0),
+    owner: std::sync::atomic::AtomicU8::new(0),
+    count: AtomicU64::new(0),
+};
+
+static OWNER_ROWS: [OwnerRow; OWNER_SLOTS] = [OWNER_ROW; OWNER_SLOTS];
+static OWNER_OVERFLOW: AtomicU64 = AtomicU64::new(0);
+/// The test's original (the trampoline), 0 while not detoured.
+static OWNER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+/// The company this player plays for and the save's player, as noted; -1
+/// while unknown. Refreshed from the notes on the main thread.
+static NOTED_COMPANY: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+static NOTED_SAVE_PLAYER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+fn owner_key(player: i32, entity: i32) -> u64 {
+    // A key of 0 marks a free row; (0, 0) is no edge a tool asks about.
+    (u64::from(player as u32) << 32) | u64::from(entity as u32)
+}
+
+/// Counts one "another player's" answer for `entity` under the tool's
+/// `player`, from `ret`. When the row is new, `classify` says whose the
+/// edge is. Lock-free, as [`count`].
+pub fn note_other_owner(player: i32, entity: i32, ret: u64, classify: impl FnOnce() -> Owner) {
+    let key = owner_key(player, entity);
+    if key == 0 {
+        return;
+    }
+    let start = usize::try_from((key ^ (key >> 29)) % OWNER_SLOTS as u64).unwrap_or(0);
+    for i in 0..OWNER_SLOTS {
+        let row = &OWNER_ROWS[(start + i) % OWNER_SLOTS];
+        let now = row.key.load(Ordering::Acquire);
+        if now == key {
+            row.count.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if now == 0 {
+            match row
+                .key
+                .compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    row.ret.store(ret, Ordering::Relaxed);
+                    row.owner.store(classify() as u8, Ordering::Release);
+                    row.count.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                Err(other) if other == key => {
+                    row.count.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    OWNER_OVERFLOW.fetch_add(1, Ordering::Relaxed);
+}
+
+/// One logged edge: the tool's player, the edge, whose it is, the first
+/// caller and the answers since the last flush.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtherOwned {
+    pub player: i32,
+    pub entity: i32,
+    pub owner: Owner,
+    pub ret: u64,
+    pub count: u64,
+}
+
+/// The edges answered since the last call, most asked first, and the
+/// overflow. Rows keep their edge, so an edge is described once and counted
+/// again later.
+pub fn take_other_owned() -> (Vec<OtherOwned>, u64) {
+    let mut rows = Vec::new();
+    for row in &OWNER_ROWS {
+        let key = row.key.load(Ordering::Acquire);
+        if key == 0 {
+            continue;
+        }
+        let count = row.count.swap(0, Ordering::Relaxed);
+        if count == 0 {
+            continue;
+        }
+        rows.push(OtherOwned {
+            player: (key >> 32) as u32 as i32,
+            entity: key as u32 as i32,
+            owner: Owner::from_u8(row.owner.load(Ordering::Acquire)),
+            ret: row.ret.load(Ordering::Relaxed),
+            count,
+        });
+    }
+    rows.sort_by_key(|r| (std::cmp::Reverse(r.count), r.entity));
+    (rows, OWNER_OVERFLOW.swap(0, Ordering::Relaxed))
+}
+
+/// The flush's lines for the edges, at most 12, the caller as an RVA.
+pub fn other_owned_text(
+    rows: &[OtherOwned],
+    overflow: u64,
+    base: u64,
+    company: i64,
+    save: i64,
+) -> Vec<String> {
+    let mut lines: Vec<String> = rows
+        .iter()
+        .take(12)
+        .map(|r| {
+            let owner = match r.owner {
+                Owner::Company => format!("owned by this player's company {company}"),
+                Owner::SavePlayer => format!("owned by the save's player {save}"),
+                Owner::Other if company < 0 => {
+                    "owned by another player (no company noted for this player)".to_owned()
+                }
+                Owner::Other => format!(
+                    "owned by neither this player's company {company} nor the save's player {save}"
+                ),
+                Owner::Unknown => "owner not read yet".to_owned(),
+            };
+            format!(
+                "probe: a native tool took entity {} for another player's: the tool acts as player {}, the entity is {owner}; {} time(s), first from rva {:#x}",
+                r.entity,
+                r.player,
+                r.count,
+                r.ret.saturating_sub(base)
+            )
+        })
+        .collect();
+    if rows.len() > 12 || overflow > 0 {
+        lines.push(format!(
+            "probe: a native tool took {} more entities for another player's, {overflow} answer(s) uncounted",
+            rows.len().saturating_sub(12)
+        ));
+    }
+    lines
+}
+
+/// The detour's body: asks the original, and when it answers "another
+/// player's", counts the edge and, the first time, asks the original again
+/// with the noted company and the save's player to say whose it is. Returns
+/// the original's first answer unchanged.
+extern "C" fn other_owner(engine: usize, player: i32, entity: i32, ret: u64) -> bool {
+    let original = OWNER_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: the trampoline of the function this detours, stored before
+    // the detour could be reached; it takes the engine, the player and the
+    // entity in rcx, edx and r8d, as the original was called, and returns a
+    // bool in al. It reads the engine's components only.
+    let original: extern "C" fn(usize, i32, i32) -> bool =
+        unsafe { std::mem::transmute::<usize, extern "C" fn(usize, i32, i32) -> bool>(original) };
+    let answer = original(engine, player, entity);
+    if answer {
+        note_other_owner(player, entity, ret, || {
+            let company = NOTED_COMPANY.load(Ordering::Relaxed);
+            let save = NOTED_SAVE_PLAYER.load(Ordering::Relaxed);
+            // Owned, by not `who`: the original answers false for its owner.
+            let owned_by = |who: i64| {
+                i32::try_from(who).is_ok_and(|who| who >= 0 && !original(engine, who, entity))
+            };
+            if owned_by(company) {
+                Owner::Company
+            } else if owned_by(save) {
+                Owner::SavePlayer
+            } else {
+                Owner::Other
+            }
+        });
+    }
+    answer
+}
+
+/// The detour's entry: hands the return address to [`other_owner`] in r9,
+/// which the original does not take (engine in rcx, player in edx, entity
+/// in r8d), and jumps there on the caller's stack.
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[unsafe(naked)]
+extern "C" fn other_owner_entry() {
+    core::arch::naked_asm!("mov r9, [rsp]", "jmp {body}", body = sym other_owner);
+}
+
+/// Detours [`OTHER_OWNER_TARGET`] for logging; returns its log line.
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn install_other_owner(resolved: &ResolvedProfile) -> String {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    let Some(target) = resolved.get(OTHER_OWNER_TARGET) else {
+        return format!(
+            "probe: the native tools' ownership test is not logged: the profile has no {OTHER_OWNER_TARGET}"
+        );
+    };
+    // SAFETY: a null name asks for the executable's own base.
+    let base = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
+    IMAGE_BASE.store(base, Ordering::Release);
+    // SAFETY: a leaf function the profile resolved and prologue-checked in
+    // this build, detoured while the game starts; the entry forwards every
+    // argument register untouched but r9, which the original does not take.
+    let installed = unsafe {
+        tpf3mp_hookcore::detour::InlineDetour::install(
+            target.address as usize as *mut u8,
+            other_owner_entry as *const u8,
+        )
+    };
+    match installed {
+        Ok(detoured) => {
+            OWNER_ORIGINAL.store(detoured.trampoline() as usize, Ordering::Release);
+            let _kept = std::mem::ManuallyDrop::new(detoured);
+            format!(
+                "probe: logging what {OTHER_OWNER_TARGET} at {:#x} takes for another player's, its answer unchanged; flushed every {} s",
+                target.address,
+                EVERY_MS / 1000
+            )
+        }
+        Err(error) => {
+            format!(
+                "probe: the native tools' ownership test is not logged: detouring failed: {error:?}"
+            )
+        }
+    }
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn install_other_owner(_resolved: &ResolvedProfile) -> String {
+    "probe: the native tools' ownership test is not logged: Windows x86-64 only".into()
+}
+
+fn noted_entity(key: &str) -> i64 {
+    crate::lua::noted(key)
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|&v| v >= 0)
+        .unwrap_or(-1)
+}
+
+/// When the ownership lines were last flushed.
+static OWNER_FLUSHED_MS: AtomicU64 = AtomicU64::new(0);
+
+/// The ownership lines when due (every [`EVERY_MS`]), and the notes read
+/// afresh for the next answers; none while not logging.
+fn flush_other_owned(now_ms: u64) -> Vec<String> {
+    if OWNER_ORIGINAL.load(Ordering::Acquire) == 0 {
+        return Vec::new();
+    }
+    NOTED_COMPANY.store(noted_entity("tpf3mp.company"), Ordering::Relaxed);
+    NOTED_SAVE_PLAYER.store(noted_entity("tpf3mp.player"), Ordering::Relaxed);
+    let last = OWNER_FLUSHED_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last) < EVERY_MS {
+        return Vec::new();
+    }
+    OWNER_FLUSHED_MS.store(now_ms, Ordering::Relaxed);
+    let (rows, overflow) = take_other_owned();
+    if rows.is_empty() && overflow == 0 {
+        return Vec::new();
+    }
+    other_owned_text(
+        &rows,
+        overflow,
+        IMAGE_BASE.load(Ordering::Acquire) as u64,
+        NOTED_COMPANY.load(Ordering::Relaxed),
+        NOTED_SAVE_PLAYER.load(Ordering::Relaxed),
+    )
+}
+
 /// When the probe last looked, and at which game.
 struct Pace {
     game: usize,
@@ -448,8 +755,9 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> String {
     SIM_BASE.store(s.base, Ordering::Release);
     ON.store(true, Ordering::Release);
     let callers = install_callers(resolved);
+    let owners = install_other_owner(resolved);
     format!(
-        "{callers}\nprobe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
+        "{callers}\n{owners}\nprobe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
         g.game,
         g.state,
         s.states,
@@ -487,6 +795,7 @@ pub fn frame(menu: usize, now_ms: u64) -> Vec<String> {
         return Vec::new();
     }
     let mut lines = flush_callers(now_ms);
+    lines.extend(flush_other_owned(now_ms));
     lines.extend(states(menu, now_ms));
     lines
 }
@@ -656,6 +965,46 @@ mod tests {
         // two above still hold theirs.
         assert_eq!(rows.len(), SLOTS - 2);
         assert_eq!(overflow, [0, 0, 5]);
+    }
+
+    #[test]
+    fn edges_taken_for_another_players_are_described_once_and_counted() {
+        let mut asked = 0;
+        // The street tool (player 214443) on a road the room built for
+        // company 372363, three times, and on another edge once.
+        for _ in 0..3 {
+            note_other_owner(214_443, 380_001, 0x1_405f_c027, || {
+                asked += 1;
+                Owner::Company
+            });
+        }
+        note_other_owner(214_443, 380_002, 0x1_405f_c027, || Owner::Other);
+        assert_eq!(asked, 1, "whose it is is asked once per edge");
+        let (rows, overflow) = take_other_owned();
+        assert_eq!(overflow, 0);
+        assert_eq!(
+            other_owned_text(&rows, overflow, 0x1_4000_0000, 372_363, 214_443),
+            [
+                "probe: a native tool took entity 380001 for another player's: the tool acts as player 214443, the entity is owned by this player's company 372363; 3 time(s), first from rva 0x5fc027",
+                "probe: a native tool took entity 380002 for another player's: the tool acts as player 214443, the entity is owned by neither this player's company 372363 nor the save's player 214443; 1 time(s), first from rva 0x5fc027",
+            ]
+        );
+        let (rows, _) = take_other_owned();
+        assert!(rows.is_empty(), "taken once");
+        // Counted again later, still described.
+        note_other_owner(214_443, 380_001, 0, || unreachable!("described already"));
+        let (rows, _) = take_other_owned();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].owner, Owner::Company);
+        assert_eq!(rows[0].count, 1);
+        let other = OtherOwned {
+            owner: Owner::Other,
+            ..rows[0].clone()
+        };
+        assert!(
+            other_owned_text(&[other], 0, 0, -1, 214_443)[0]
+                .contains("owned by another player (no company noted for this player)")
+        );
     }
 
     #[test]

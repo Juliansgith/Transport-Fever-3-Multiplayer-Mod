@@ -135,6 +135,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("probe: GUI GameState getter", 0x6aa800),
     ("probe: engine GameState getter", 0x11ffd0),
     ("probe: ProposalStreetGraph::GetPlayerOwnedPtr", 0xa46cd0),
+    ("probe: street_util IsOwnedByOtherPlayer", 0x610ea0),
     ("lua_cached_loadfile", 0x2fa8130),
     // The person-order fixes (crates/tpf3mp-hook/src/persons.rs).
     ("destination_util::GetTargetsByLandUse/candidates", 0x8e3d65),

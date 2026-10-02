@@ -1020,6 +1020,24 @@ offset = 0
 prologue = "48 83 EC 28 4C 8B 49 20 4C 8B D1 49 8B 41 48"
 required = false
 
+# The probe's log of the native tools' ownership test (probe.rs), only with
+# TPF3MP_PROBE_PLAYER=1: rva 0x610ea0 in game\ui\actions\
+# street_builder_util.cpp, unnamed; the probe calls it
+# street_util::IsOwnedByOtherPlayer. The engine in rcx, the tool's player
+# in edx (false when negative), an entity in r8d; looks the entity's
+# PlayerOwned up (the RTTI type descriptor at 0x610ec4) and answers
+# owner != player, false for an entity no player owns. The street
+# builder's snap (CreateFindSnapPointRoadEarlyAbortContext, call at
+# 0x5fc022) marks both ends of an edge it answers true for as fixed. A leaf
+# that never reads r9; detoured to log what it answers true for, always
+# answered by the original.
+[[target]]
+name = "probe: street_util IsOwnedByOtherPlayer"
+signature = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 49 63 F8 8B DA 48 8B E9 85 D2 0F 88 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 83 C1 48 4C 8D 44 24 58"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18"
+required = false
+
 # The person-order fixes (crates/tpf3mp-hook/src/persons.rs; docs/HOOKS.md,
 # "The person-order fixes"). Ported from silver2127's TPF2 Multiplayer
 # (docs/re/HOTJOIN_ORDER.md, native/src/slice/hotjoin_order.inl): each batch

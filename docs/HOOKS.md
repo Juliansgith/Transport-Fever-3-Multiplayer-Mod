@@ -1948,6 +1948,27 @@ probe: owner reads: none in 3 s
 A caller counted under GUI only is a tool's or the GUI's own; one under
 the step or the pool is the simulation's.
 
+With the same variable it also logs what the native tools' ownership test
+takes for another player's (`probe: street_util IsOwnedByOtherPlayer`, rva
+0x610ea0; investigation/TF3_LOCAL_PLAYER_2026-10-01.md, "Why the street
+tool will not split a road the room built"): a pass-through detour that
+always returns the original's answer. When it answers true it counts the
+entity, under the tool's player, in a fixed table of 64 rows (no lock, no
+allocation), and the first time asks the original again with the company
+this player plays for (the GUI's `note("tpf3mp.company")`,
+`tpf3mp/follow.lua`) and with the save's player (`note("tpf3mp.player")`)
+to say whose the entity is. Every 3 s, from the menu's frame, nothing when
+nothing was answered:
+
+```
+probe: logging what probe: street_util IsOwnedByOtherPlayer at 0x... takes for another player's, its answer unchanged; flushed every 3 s
+probe: a native tool took entity 380001 for another player's: the tool acts as player 214443, the entity is owned by this player's company 372363; 41 time(s), first from rva 0x5fc027
+```
+
+A line like that one, for a road the room built for the player's own
+company, is the street tool refusing to snap into it; rva 0x5fc027 is the
+street builder's snap.
+
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and
 `getCompaniesValue()` take no company and answer for the engine's local

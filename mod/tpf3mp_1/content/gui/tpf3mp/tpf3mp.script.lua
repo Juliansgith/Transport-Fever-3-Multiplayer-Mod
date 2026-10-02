@@ -548,6 +548,9 @@ function data()
 				changed = true
 			end
 			foundOwnCompany(shared)
+			-- The company for the hook's probe of the native tools'
+			-- ownership checks (tpf3mp/follow.lua, noteCompany).
+			shared.companyNoted = require("tpf3mp.follow").noteCompany(link, myCompany(), shared.companyNoted)
 		end
 		-- A new world's GUI gets the chat so far again, as old lines: they
 		-- fill the window without counting as new.

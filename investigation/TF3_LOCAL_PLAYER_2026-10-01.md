@@ -60,3 +60,63 @@ nothing for it. What would show it, read only, in a real game: log
 `CGame+0x1e0`, `[CGame+0x1f0]+0x78`, `+0x80` and `+0x98` at each
 `CGame::Step` for a few frames (do they move, does `+0x1e0` equal either
 buffer), then locate the player field by the value 118368 in each.
+
+## Why the street tool will not split a road the room built (2026-10-02)
+
+Reported in a competitive room: the street tool snaps into the middle of
+the save's roads, but only to the ends of roads built during the session,
+the player's own company's included; some of those roads cannot be
+bulldozed either, and hook.log has no bulldoze for them. Static findings
+with `tools/tpfre` on build 40408:
+
+- **seen** The room's replay makes each road edge it builds the acting
+  company's (`apply.lua`, `networkInto`: `link.owned` gives the edge a
+  `PlayerOwned` of `company()`, e.g. 372363), where the native tool, in
+  single player, makes it the save's player's. The engine adds that
+  `PlayerOwned` as given (`street_util::AddToEngine` 0x25f9480, `0x25f957f`);
+  the edge's `BaseEdgeStreet` is always added for a street (`0x25f9514`),
+  so it is no other component that differs.
+- **seen** `sub_610ea0` (`game\ui\actions\street_builder_util.cpp`), called
+  here `IsOwnedByOtherPlayer(engine, player, entity)`: false for a
+  negative player; looks the entity's `PlayerOwned` up and answers
+  `owner != player`; false for an entity no player owns (a town's road).
+- **seen** The street builder's snap,
+  `CreateFindSnapPointRoadEarlyAbortContext` (0x60c360) through `0x5fb370`:
+  for each candidate edge it reads whether each end node belongs to a
+  construction (`sub_b4db80`, the flags at `[rsp+0xa4]`, `[rsp+0xa5]`), then
+  calls `sub_610ea0` (0x5fc022) and, when it answers true, sets both flags:
+  the edge is snapped to as a construction's is, at its ends only.
+- **seen** The player it passes is the street builder's own,
+  `UI::StreetBuilder+0xc0`, stored by its constructor (0x56a740, `mov
+  [rsi+0xc0], eax` at 0x56a816) from an argument, and handed down by
+  `StreetBuilder::Step` (`mov eax, [r14+0xc0]`, 0x586b4e) to `sub_571820`
+  and `sub_25ef740`. The tools' proposals carry the save's player
+  (`playerEntity=118368`, seen above), so that is the player it holds.
+- **seen** The street bulldozer filters the same way:
+  `UI::StreetBulldozerAction::vf2` (0x5f2e30) and its check `sub_5f2a00`
+  call `sub_5f7db0(engine, players, entity, flag)`, true when the
+  players list is empty or the entity's `PlayerOwned` owner is in it,
+  else the edge is not offered ("Protected - Cannot Be Bulldozed" is the
+  other branch). The module and street connector bulldozers call it too.
+- **inferred** So for a player of any company but the room's first, every
+  edge the room built for a company is another player's to the native
+  tools: no split, no bulldoze, and (the earlier reports) no snapping onto
+  the company's own stations and no tram track onto its rail. Ends still
+  connect: a node has no `PlayerOwned`, and an edge marked fixed is still
+  snapped to at its nodes. The save's roads are the save's player's or a
+  town's (no owner), which the test lets through.
+
+Not changed yet: the fix needs a decision. The tools could act as the
+player's company (write the company into each tool's own player, GUI
+objects only: the street builder's `+0xc0`, the bulldozer's players list),
+which the room then checks as it does now (`companies.mayTouch` refuses
+another company's edges in every game); or the room could leave road and
+track edges the save's player's, which moves every company's road upkeep
+and ownership to the room's first company. `sub_610ea0` itself is no place
+to change the answer: `construction_builder_util` (`MakeProposalRemove`,
+`CreateProposalReplace`, `MakeStreetProposal`) reaches it too, and the
+simulation calls those.
+
+To see it in one try: `TPF3MP_PROBE_PLAYER=1` logs each entity the test
+takes for another player's, with the tool's player and whose the entity
+is (docs/HOOKS.md, "The probe of the engine's player").

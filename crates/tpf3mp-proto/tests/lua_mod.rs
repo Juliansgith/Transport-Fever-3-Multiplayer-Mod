@@ -7902,6 +7902,13 @@ fn the_guis_company_is_the_one_the_player_plays_for() {
         .eval()
         .unwrap();
     assert_eq!(first, 25, "playing for the first company: the game's own");
+    // The hook's probe of the native tools' ownership checks reads the
+    // company from a note: none for the room's first company.
+    let noted: Option<String> = lua
+        .load("return (HOOK.notes or {})['tpf3mp.company']")
+        .eval()
+        .unwrap();
+    assert_eq!(noted, None);
     lua.load("ROSTER.members = { { player = ME, company = 1 } }")
         .exec()
         .unwrap();
@@ -7911,6 +7918,22 @@ fn the_guis_company_is_the_one_the_player_plays_for() {
         .eval()
         .unwrap();
     assert_eq!(mine, 901, "playing for Rival: Rival");
+    let noted: Option<String> = lua
+        .load("return (HOOK.notes or {})['tpf3mp.company']")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        noted.as_deref(),
+        Some("901"),
+        "Rival's entity, for the hook"
+    );
+    lua.load("ROSTER.members = {}").exec().unwrap();
+    run_frames(&lua, 20);
+    let noted: Option<String> = lua
+        .load("return (HOOK.notes or {})['tpf3mp.company']")
+        .eval()
+        .unwrap();
+    assert_eq!(noted, None, "back to the first company: forgotten");
     let logged: String = lua
         .load("return table.concat(HOOK.logged, '|')")
         .eval()

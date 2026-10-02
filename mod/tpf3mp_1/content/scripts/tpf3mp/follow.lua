@@ -151,6 +151,23 @@ end
 -- The player entity of the company the player `me` (64 hex digits) plays
 -- for in `roster` (tpf3mp/companies.lua), or nil: not in the roster, or
 -- playing for the room's first, which is the save's own player anyway.
+-- The note (tpf3mp_native.note) that tells the hook the player entity of the
+-- company this player plays for, "" for none (the room's first company, or
+-- outside the room). Only the hook's opt-in probe of the native tools'
+-- ownership checks reads it (crates/tpf3mp-hook/src/probe.rs,
+-- TPF3MP_PROBE_PLAYER=1); nothing the simulation does depends on it.
+follow.COMPANY_NOTE = "tpf3mp.company"
+
+-- Notes `entity` (or none) under COMPANY_NOTE through `link` when it is not
+-- `last`, the text noted before. Returns the text noted now.
+function follow.noteCompany(link, entity, last)
+	local text = type(entity) == "number" and string.format("%d", entity) or ""
+	if text ~= last and link and link.note then
+		pcall(function() link:note(follow.COMPANY_NOTE, text) end)
+	end
+	return text
+end
+
 function follow.companyOf(roster, me)
 	if type(roster) ~= "table" or type(roster.members) ~= "table" or type(me) ~= "string" then return nil end
 	for _, m in ipairs(roster.members) do
