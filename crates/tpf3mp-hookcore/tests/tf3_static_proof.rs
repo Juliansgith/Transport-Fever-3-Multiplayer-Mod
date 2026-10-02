@@ -156,6 +156,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("view: react RailroadCrossingComp/player", 0x289e116),
     ("view: HudIconManager icon pass/owner", 0x674906),
     ("view: getPlayer binding/push", 0x24ed2d2),
+    ("view: LineViewer lines of the player/call", 0x7f3f12),
     ("probe: StreetBulldozerAction edge test", 0x5f2a00),
     ("probe: bulldozer owner test", 0x5f7db0),
     ("probe: LineViewer route data test", 0x7f03e7),

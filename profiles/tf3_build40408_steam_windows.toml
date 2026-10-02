@@ -1373,3 +1373,19 @@ signature = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 A0 48 8
 offset = 0
 prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
 required = false
+
+# The line viewers' candidate lines (guiplayer.rs): sub_7f3ea0 (called by
+# UI::LineViewer::Update 0x7f554c and UI::MetroViewer::vf4 0x7fdbd9) calls
+# the line system's player-to-lines index sub_ad2620(index, player) with the
+# player the viewer stored at +0x28 when sub_29f66d0 made it; only those
+# lines get their whole route built (sub_7f10a0 with stop filter -1) and
+# drawn. The call is redirected: in a room it answers every company's lines
+# (the companies the GUI notes, tpf3mp.companies), else the game's answer.
+# The index function itself and its other callers (the simulation's
+# sub_c5a4a0 among them) are untouched. The callee's first bytes are checked.
+[[target]]
+name = "view: LineViewer lines of the player/call"
+signature = "48 89 7C 24 50 33 DB 89 5C 24 58 8B 55 78 E8 ?? ?? ?? ??"
+offset = 14
+prologue = "E8"
+required = false
