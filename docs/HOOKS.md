@@ -1229,9 +1229,18 @@ reference of its own to either. Once linked, the GUI wraps every
     told the player in the game bar;
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
     file and position and its index among that construction's depots, an
-    airport's second hangar say; a depot no street reaches by the
-    construction that lists it; the consist part by part, as the store configured
-    it), selling, putting on a line, and the vehicle window's stop, start,
+    airport's second hangar say. A construction's depots are its
+    `depots`, then its subconstructions that are depots: an airfield's or
+    airport's hangar is its hangar module's subconstruction, which the
+    store buys at (build 40408). The construction is the one the street
+    connector names for the depot, else for the depot as a subconstruction,
+    else the one construction listing it; a depot two constructions list,
+    or one its construction does not list, is refused at the click, never
+    bought at the first depot. Every game refuses a purchase naming a depot
+    the construction does not have, saying how many it has: an airfield or
+    airport built without its hangar module has none, and a harbour never
+    has one, ships being bought at a ship depot. The consist part by part,
+    as the store configured it), selling, putting on a line, and the vehicle window's stop, start,
     to the depot (sold there or not), reverse and depart; replacing
     (`makeVehicleReplaceCmd`, the vehicle window's "modify" and the store's
     "replace", `ReplaceVehicle`). The store sends one command per vehicle,
