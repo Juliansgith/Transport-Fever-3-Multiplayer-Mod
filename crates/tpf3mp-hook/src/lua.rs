@@ -703,6 +703,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"personal", native_personal),
                 (b"shared", native_shared),
                 (b"note", native_note),
+                (b"trees", native_trees),
                 (b"edgewatch", native_edgewatch),
                 (b"edgewatched", native_edgewatched),
             ] {
@@ -1906,6 +1907,28 @@ unsafe extern "C-unwind" fn native_results(l: State) -> c_int {
     1
 }
 
+/// Whether this game may hand the room the asset bulldozer's removals,
+/// trees and other assets taken out of their group: only with
+/// [`TREES_ENV`] set to `1`, for a trial of the replay (docs/HOOKS.md, "The
+/// build tools"). Read once.
+pub const TREES_ENV: &str = "TPF3MP_TREE_BULLDOZE";
+
+fn trees_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var(TREES_ENV).is_ok_and(|v| v == "1"))
+}
+
+/// `trees()`: whether the asset bulldozer's removals go to the room
+/// ([`TREES_ENV`]).
+unsafe extern "C-unwind" fn native_trees(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe { (api.pushboolean)(l, c_int::from(trees_on())) };
+    1
+}
+
 /// `room()`: `true` while the room's game runs.
 unsafe extern "C-unwind" fn native_room(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -2013,6 +2036,28 @@ unsafe extern "C-unwind" fn native_dumped(l: State) -> c_int {
     // SAFETY: a C function's stack has LUA_MINSTACK free slots.
     unsafe { (api.pushboolean)(l, c_int::from(taken)) };
     1
+}
+
+/// What a Lua state last noted under `key` (`note`), for the hook's own
+/// readers; `None` when nothing is, or when the notes are busy (never
+/// waits).
+pub fn noted(key: &str) -> Option<String> {
+    let shared = SHARED.try_lock().ok()?;
+    shared
+        .notes
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
+/// Notes `value` under `key` from the hook itself, as `note(key, value)`
+/// does from Lua ("" forgets it): what the hook tells every Lua state.
+pub fn set_note(key: &str, value: &str) {
+    let mut shared = shared();
+    shared.notes.retain(|(k, _)| k != key);
+    if !value.is_empty() && shared.notes.len() < MAX_NOTES {
+        shared.notes.push((key.to_owned(), value.to_owned()));
+    }
 }
 
 /// `log(line)`.

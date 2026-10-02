@@ -55,7 +55,11 @@ function data()
 				end
 			end
 			local function myCompany() read() return mine end
-			local followed, why = follow.install(api, myCompany)
+			-- The room's roster first, then the company the Multiplayer
+			-- plugin's state notes for the hook (tpf3mp/follow.lua).
+			local followed, why = follow.install(api, myCompany, function(line) link:log(line .. " (the HUD's state)") end)
+			follow.install(api, follow.noteSource(link))
+			pcall(follow.watchLines, api, ug_require, link, "the HUD's state")
 			link:log(followed and "the GUI's company follows the player's in the HUD's state"
 				or ("the GUI's company cannot follow the player's in the HUD's state: " .. tostring(why)))
 			local stations = companies.followStations(api, ug_require, function()

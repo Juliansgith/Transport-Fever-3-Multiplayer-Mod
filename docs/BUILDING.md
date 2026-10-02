@@ -39,7 +39,7 @@ The shape tells the tool apart (measured unless noted):
 | stop or signal bulldoze | the edge removed and re-added without the object |
 | construction bulldoze | `toRemove` populated, nothing added |
 | road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408) |
-| tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file: the group rebuilt without the assets removed (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408) |
+| tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file, its desc `autoRemovable`: the group rebuilt without the assets removed, thin instances then full ones (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408); nothing added when the last assets of a group go |
 | terraform | no nodes or segments; a `Grid<{height, base}>` of 4 m cells |
 | paint | no nodes or segments; the material index grid and its mask |
 | asset brush | `toAdd` records of an asset-group type whose per-asset data is a vector of `{model path, matrix}` (decompiled); its commit clears `old2new` first |
@@ -309,6 +309,18 @@ road rebuilt through a station junction still travels. The construction
 generates its own internal track, then its refresh snaps the entrance.
 Ordinary road and track builds do not use this branch removal.
 
+The junction configurations the tool proposed go with the branches they
+name (2026-10-02: a street terminal placed into a road was refused in
+every game, "the junction no longer exists"). The tool configures the
+station's own entrance node and the new junction its entrance joins, and
+both name the entrance edge, which replay leaves out; so every game drops
+a configuration whose node is a removed branch's vertex, or whose turns or
+crosswalks name a removed branch's edge (`junctions.without`), and logs it
+as "left to the construction". The construction and its refresh give those
+junctions the game's own settings, the same in every game. Configurations
+at existing nodes that name only the rebuilt street still travel as the
+tool made them.
+
 `lua_mod.rs` reproduces the recorded depot topology: before the fix its
 first build contains four duplicate nodes and edges; afterwards it contains
 none, and the stand-in engine accepts the refresh. A longer station
@@ -484,8 +496,9 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (**24**; combines station access, company perks
-and preservation). This integration combines the existing
+`ACTION_SCHEMA_VERSION` (**25**; combines station access, company perks
+and preservation, plus named stops and gated asset removal). This
+integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
 The Lua mod builds an action from a captured

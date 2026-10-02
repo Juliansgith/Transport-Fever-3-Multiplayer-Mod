@@ -394,10 +394,10 @@ fn the_room_panel_keeps_large_rosters_and_unicode_chat_inside_scroll_areas() {
         shared.companies = { list = {}, members = {}, loans = {} }
         api.type.Vec3f = { new = function(x,y,z) return { x=x, y=y, z=z } end }
         for i = 0, 7 do
-            shared.companies.list[i+1] = { id=i, entity=i+1, name=string.rep('界', 64),
+            shared.companies.list[i+1] = { id=i, entity=i+1, name=string.rep('ç•Œ', 64),
                 color={0.8,0.2,0.1}, balance=44149292, owed=50050007 }
         end
-        shared.lines = { string.rep('界', 280) }
+        shared.lines = { string.rep('ç•Œ', 280) }
         views(BAR.layout)[1].params.onClick()
         LAYOUT = WINDOWS.Tpf3mpWindow.render()
         "#,
@@ -426,7 +426,7 @@ fn the_room_panel_keeps_large_rosters_and_unicode_chat_inside_scroll_areas() {
                 if v.view == 'TextInputField' and v.params.placeholderText:find('A new name', 1, true) then
                     assert(cards == 1, 'manage your own company before scrolling past the other companies')
                 end
-                if v.view == 'TextView' and v.params.meta.tooltip == string.rep('界',64) then
+                if v.view == 'TextView' and v.params.meta.tooltip == string.rep('ç•Œ',64) then
                     cards = cards + 1
                     companyText = v.params.text:gsub('\n','')
                 end
@@ -449,8 +449,8 @@ fn the_room_panel_keeps_large_rosters_and_unicode_chat_inside_scroll_areas() {
         .eval()
         .unwrap();
     assert_eq!((areas, cards), (3, 8));
-    assert_eq!(company_text, "界".repeat(64));
-    assert_eq!(chat_text, "界".repeat(280));
+    assert_eq!(company_text, "ç•Œ".repeat(64));
+    assert_eq!(chat_text, "ç•Œ".repeat(280));
     assert!(
         composer_outside,
         "chat can be sent without scrolling past a roster"
@@ -2883,6 +2883,224 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
     );
 }
 
+/// As the game: a built construction is listed, and refreshed on request,
+/// its refresh snapping its entrance onto node 7777.
+const STATION_REFRESH: &str = "api.type.ComponentType.CONSTRUCTION = 2 \
+    CONSTRUCTIONS = {} \
+    local get = api.engine.getComponent \
+    api.engine.getComponent = function(e, kind) \
+        if kind == 2 then return CONSTRUCTIONS[e] end return get(e, kind) end \
+    api.engine.getEntitiesWithComponent = function(kind) \
+        local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
+    local send = api.cmd.sendCommand \
+    api.cmd.sendCommand = function(cmd, ...) \
+        local c = cmd.proposal and cmd.proposal.constructionsToAdd and cmd.proposal.constructionsToAdd[1] \
+        if c then CONSTRUCTIONS[5000] = { fileName = c.fileName, \
+            transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } end \
+        return send(cmd, ...) \
+    end \
+    api.engine.util.proposal = { refreshConstruction = function(e) return { refreshed = e, \
+        proposal = { addedSegments = { { entity = -2, comp = { node0 = -1, node1 = 7777 } } }, \
+                     removedSegments = { { entity = 6000 } } } } end }";
+
+/// Room-built stations stood unnamed (2026-10-02). Every game names the
+/// station group a new station's own stations make up by the name the
+/// tool gave the construction, where the game left it unnamed; a group
+/// that has a name keeps it.
+#[test]
+fn a_station_the_room_builds_names_its_group_as_the_tool_named_it() {
+    for (before, after) in [("nil", "Okehampton Station"), ("'Didcot'", "Didcot")] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             ACTION = capture.construction({STATION_BY_ROAD})"
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+        lua.load(STATION_REFRESH).exec().unwrap();
+        lua.load(format!(
+            "api.type.ComponentType.STATION_GROUP = 9 \
+             NAMES = {{ [5002] = {before} }} \
+             api.engine.util.getEntityName = function(e) return NAMES[e] end \
+             api.engine.system.stationGroupSystem = {{ getStationGroup = function(s) \
+                 if s == 5001 then return 5002 end return -1 end }} \
+             local get = api.engine.getComponent \
+             api.engine.getComponent = function(e, kind) \
+                 if kind == 9 and e == 5002 then return {{ stations = {{ 5001 }} }} end \
+                 return get(e, kind) \
+             end \
+             local send = api.cmd.sendCommand \
+             api.cmd.sendCommand = function(cmd, ...) \
+                 local r = send(cmd, ...) \
+                 if CONSTRUCTIONS[5000] then CONSTRUCTIONS[5000].stations = {{ 5001 }} end \
+                 if cmd.setName then NAMES[cmd.entity] = cmd.setName end \
+                 return r \
+             end \
+             HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+        let (ok, name): (bool, String) = lua
+            .load("return HOOK.applied[1].ok == true, tostring(NAMES[5002])")
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+        assert!(ok, "{}", hook_log(&lua));
+        assert_eq!(name, after, "{}", hook_log(&lua));
+    }
+}
+
+/// A street station placed into a street (2026-10-02, live: refused in
+/// every game, "the junction no longer exists"). The tool's proposal
+/// configures the station's own entrance node -1, the new junction -2 its
+/// entrance joins, and the street's existing ends 8 and 9, each added and
+/// removed. Every game leaves out the entrance, which the station makes
+/// again itself, and with it the settings that name it: those at -1, and
+/// those at -2, whose turns lead into it. The settings at 8 and 9 name only
+/// the rebuilt street, and travel as the tool made them.
+#[test]
+fn a_station_by_a_road_leaves_its_own_entrances_junction_settings_to_it() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(CONFIG_WORDS).exec().unwrap();
+    lua.load(format!(
+        "local function config(turns, walks) \
+             local t = {{}} \
+             for i, p in ipairs(turns) do t[i] = {{ segment0 = p[1], lane0 = 0, segment1 = p[2], lane1 = 0, \
+                 withRoad = true, withTram = false }} end \
+             return {{ trafficLightPreference = 0, doubleSlipSwitch = false, userModifiedTrafficLightStates = false, \
+                 laneConnections = t, crosswalks = walks, trafficLightConfig = {{ trafficLightType = -1, states = {{}} }} }} \
+         end \
+         PROPOSAL = {STATION_BY_ROAD} \
+         local s = PROPOSAL.proposal \
+         s.nodeConfigsToAdd = {{ \
+             {{ entity = -1, comp = config({{}}, {{ -3 }}) }}, \
+             {{ entity = -2, comp = config({{ {{ -3, -4 }}, {{ -3, -5 }}, {{ -4, -3 }}, {{ -4, -5 }}, {{ -5, -3 }}, {{ -5, -4 }} }}, \
+                 {{ -3, -4, -5 }}) }}, \
+             {{ entity = 8, comp = config({{}}, {{ -4 }}) }}, \
+             {{ entity = 9, comp = config({{}}, {{ -5 }}) }} }} \
+         s.nodeConfigsToRemove = {{ 8, 9 }} \
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = assert(capture.construction(PROPOSAL)) \
+         assert(schema_check(ACTION)) \
+         assert(#ACTION.BuildConstruction.connection.junctions == 4, 'the four the tool proposed')"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    // Through the schema both ways, as the room hands it to every game.
+    let captured: mlua::Value = lua.globals().get("ACTION").unwrap();
+    let action = tpf3mp_proto::lua::action_from_lua(&common::tree(&captured))
+        .unwrap_or_else(|error| panic!("the schema refuses it: {error}"));
+    let back = tpf3mp_proto::lua::action_to_lua(&action).unwrap();
+    lua.globals()
+        .set("ACTION", common::value(&lua, &back))
+        .unwrap();
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let (ok, sends, sent, removed): (bool, usize, String, String) = lua
+        .load(
+            "local s = SENT[1] and SENT[1].proposal.streetProposal \
+             local removed = {} \
+             for i, n in ipairs(s and s.nodeConfigsToRemove or {}) do removed[i] = n end \
+             table.sort(removed) \
+             return HOOK.applied[1].ok == true, #SENT, s and SENT_WORDS(SENT[1]) or '', \
+                 table.concat(removed, ',')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(ok, "the station is built: {}", hook_log(&lua));
+    assert_eq!(sends, 2, "the station with its street, then its refresh");
+    assert_eq!(
+        sent,
+        "(50,-40) tl0 type-1  dss=false um=false/false turns  walks (50,-40)-(50,0) \
+         || (50,40) tl0 type-1  dss=false um=false/false turns  walks (50,0)-(50,40)",
+        "the street's ends as the tool configured them; nothing at the entrance or its junction"
+    );
+    assert_eq!(removed, "8,9", "the settings they replace go");
+    assert!(
+        hook_log(&lua).contains("left to the construction: 2 junction(s): Street(50.0,0.0)"),
+        "{}",
+        hook_log(&lua)
+    );
+}
+
+/// A construction whose own track the tool snapped onto an existing track
+/// node (2026-09-30: a rail depot placed against the end of a track). Every
+/// game builds the construction alone, then its refresh snaps its track:
+/// built beside it as well, the track collided with the construction's own,
+/// the refresh was refused and the depot stood unconnected in every game.
+#[test]
+fn a_construction_whose_own_track_the_tool_snapped_is_built_alone_then_snapped() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let joined = RAIL_STATION_OPEN.replace(
+        "{JOIN}",
+        ", { entity = -6, type = 1, comp = { node0 = -3, node1 = 8, type = 0, typeIndex = -1, \
+           tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+           roadTemplate = '::/track/standard.track_template', roadStyle = '' } }",
+    );
+    let links: usize = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             ACTION = capture.construction({joined}) \
+             return #ACTION.BuildConstruction.connection.links"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(links, 3, "the tool's proposal, as it was");
+    // Node 8 a track node too, and the track's template known.
+    lua.load(
+        "api.engine.system.streetSystem.getNode2TrackEdgeMap = function() return { [8] = { 100 } } end \
+         local find, get = api.res.streetTemplateRep.find, api.res.streetTemplateRep.get \
+         api.res.streetTemplateRep.find = function(n) \
+             if n == '::/track/standard.track_template' then return 6 end return find(n) end \
+         api.res.streetTemplateRep.get = function(id) \
+             if id == 6 then return { laneConfigs = { 'track lanes' }, streetStyle = '' } end return get(id) end \
+         api.type.ComponentType.CONSTRUCTION = 2 \
+         CONSTRUCTIONS = {} \
+         local getc = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 2 then return CONSTRUCTIONS[e] end return getc(e, kind) end \
+         api.engine.getEntitiesWithComponent = function(kind) \
+             local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
+         local send = api.cmd.sendCommand \
+         api.cmd.sendCommand = function(cmd, ...) \
+             local c = cmd.proposal and cmd.proposal.constructionsToAdd and cmd.proposal.constructionsToAdd[1] \
+             if c then CONSTRUCTIONS[5000] = { fileName = c.fileName, \
+                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } end \
+             return send(cmd, ...) \
+         end \
+         api.engine.util.proposal = { refreshConstruction = function(e) return { refreshed = e, \
+             proposal = { addedSegments = { { entity = -1, comp = { node0 = 8, node1 = -2 } } }, \
+                          removedSegments = { { entity = 6000 } } } } end } \
+         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let built: String = lua
+        .load(
+            "local p = SENT[1].proposal local s = p.streetProposal \
+             return table.concat({ #SENT, p.constructionsToAdd[1].fileName, #(s.edgesToAdd or {}), \
+                 #(s.nodesToAdd or {}), tostring(SENT[2] and SENT[2].proposal.refreshed), \
+                 tostring(HOOK.applied[1].ok) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        built,
+        "2|::/stations/rail/rail_station.con|0|0|5000|true",
+        "the construction alone, then its refresh, which snaps its own track: {:?}",
+        lua.load("return HOOK.logged").eval::<Vec<String>>()
+    );
+}
+
 #[test]
 fn a_depot_placed_on_existing_track_leaves_all_its_internal_branches_to_the_construction() {
     for refuse_snap in [false, true] {
@@ -4988,6 +5206,330 @@ fn a_bulldoze_the_room_cannot_name_is_refused() {
     );
 }
 
+/// Trees over FAKE_NETWORK and FAKE_TOWN: asset group 7000 of four firs
+/// (thin instances), 7001 of two firs elsewhere, 7002 of a fir and a
+/// boulder (a full instance, with its own matrix), 7003 of one boulder and
+/// 7004 of one fir; the game's model files and octree, and the full
+/// proposal's types as TF3 (build 40408) binds them: a
+/// `Proposal.ConstructionEntity` whose `fileName` only reads (the desc's),
+/// whose `desc` and `construction` (a `ConstructionResult`) are written
+/// back whole. `TOOL(removed, group)` is the asset bulldozer's proposal
+/// taking the assets at the given indices (thin ones first, then full ones)
+/// out of `group` (7000 by default), as UI::AssetBulldozerAction builds it:
+/// the group in `toRemove`, and, unless every asset went, one construction
+/// entity at the origin, its desc autoRemovable, whose models are the assets
+/// kept, thin then full, each its file and world matrix.
+const FAKE_TREES: &str = r#"
+local FILES = { [41] = 'assets/trees/fir.mdl', [42] = 'assets/rocks/boulder.mdl' }
+api.res.modelRep = { getName = function(id) return FILES[id] end }
+api.type.Vec2f = { new = function(x, y) return { x = x, y = y } end }
+local READ_ONLY = { fileName = true, params = true, hasCargoPlatform = true }
+api.type.Proposal = {
+    new = function() return { kind = 'Proposal' } end,
+    TransformedModel = { new = function() return {} end },
+    Subconstruction = { new = function() return {} end },
+    ConstructionEntity = { new = function()
+        local fields = { desc = { fileName = '', autoRemovable = false }, construction = {}, playerEntity = -1 }
+        return setmetatable({}, {
+            __index = function(_, k)
+                if k == 'fileName' then return fields.desc.fileName end
+                return fields[k]
+            end,
+            __newindex = function(_, k, v)
+                if READ_ONLY[k] then error("no writable member '" .. k .. "'") end
+                fields[k] = v
+            end,
+        })
+    end },
+}
+local function fir(x, y, rot) return { modelId = 41, pos = { x = x, y = y, z = 3 }, rot = rot, scale = 1.25 } end
+local function boulder(x, y)
+    return { modelId = 42, transf = { 0, 2, 0, 0, -2, 0, 0, 0, 0, 0, 2, 0, x, y, 2, 1 } }
+end
+GROUPS = {
+    [7000] = { fir(10, 20, 0), fir(14, 21, 0.5), fir(18, 19, 1), fir(22, 20, 2) },
+    [7001] = { fir(400, 20, 0), fir(404, 20, 0) },
+    [7002] = { fir(600, 50, 0.25) },
+    [7003] = {},
+    [7004] = { fir(800, 70, 1.5) },
+}
+FULL = { [7002] = { boulder(602, 50) }, [7003] = { boulder(700, 60) } }
+local get = api.engine.getComponent
+api.engine.getComponent = function(e, kind)
+    if kind == 30 and GROUPS[e] then return {} end
+    if kind == 31 and GROUPS[e] then return { fatInstances = FULL[e] or {}, thinInstances = GROUPS[e] } end
+    return get(e, kind)
+end
+api.engine.util.octree = { findEntitiesInCircle = function(at, r, kind)
+    local out = {}
+    for e in pairs(GROUPS) do out[#out + 1] = e end
+    table.sort(out)
+    return out
+end }
+tpf3mp_native.trees = function() return HOOK.trees == true end
+function TOOL(removed, group)
+    group = group or 7000
+    local engine = ug_require('tpf3mp_1::/scripts/tpf3mp/engine.lua')
+    local gone, models, n = {}, {}, 0
+    for _, i in ipairs(removed) do gone[i] = true end
+    for _, t in ipairs(GROUPS[group]) do
+        n = n + 1
+        if not gone[n] then
+            models[#models + 1] = { id = '::/' .. FILES[t.modelId], tag = '', thin = false,
+                transf = engine.assetMatrix({ x = t.pos.x, y = t.pos.y, z = t.pos.z, rot = t.rot,
+                    scale = t.scale }, false) }
+        end
+    end
+    for _, f in ipairs(FULL[group] or {}) do
+        n = n + 1
+        if not gone[n] then
+            models[#models + 1] = { id = '::/' .. FILES[f.modelId], tag = '', thin = false, transf = f.transf }
+        end
+    end
+    local toAdd = {}
+    if #models > 0 then
+        toAdd[1] = { fileName = '', playerEntity = -1, desc = { fileName = '', autoRemovable = true },
+            transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
+            construction = { subconstructions = { { models = models } } } }
+    end
+    return { toRemove = { group }, toAdd = toAdd,
+        proposal = { addedNodes = {}, addedSegments = {}, removedNodes = {}, removedSegments = {},
+            edgeObjectsToAdd = {} } }
+end
+"#;
+
+/// Trees bulldozed through the room, behind TPF3MP_TREE_BULLDOZE=1: the
+/// player's game names the group by its first tree and how many it holds,
+/// and the trees taken out by model and place; every game rebuilds its own
+/// copy of the group without them, for the acting company, and says so in
+/// its log. Without the flag, and wherever the group is not exactly the
+/// player's, nothing is removed.
+#[test]
+fn trees_bulldozed_go_in_every_game_behind_the_flag() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    lua.load(FAKE_TREES).exec().unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code).eval::<String>().unwrap_or_else(|error| {
+            panic!(
+                "{code}: {error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        })
+    };
+    let capture = "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') ";
+    // Without the flag: today's refusal.
+    assert_eq!(
+        eval(&format!(
+            "{capture} local _, why = capture.bulldoze(TOOL({{ 2 }})) return why"
+        )),
+        "removing trees or other assets (asset group 7000), which the room does not carry yet"
+    );
+    // With it: the fir at (14, 21) taken out of the group of four.
+    let carried = eval(&format!(
+        "HOOK.trees = true {capture} \
+         TREES = capture.bulldoze(TOOL({{ 2 }})) \
+         local a = TREES.Bulldoze.Assets local r = a.removed[1] \
+         return table.concat({{ a.first.model, a.first.at.x, a.first.at.y, a.count, #a.removed, r.model, \
+             r.at.x, r.at.y, tostring(a.mirrored), tostring(a.owned), tostring(schema_check(TREES)) }}, '|')"
+    ));
+    assert_eq!(
+        carried,
+        "::/assets/trees/fir.mdl|10|20|4|1|::/assets/trees/fir.mdl|14|21|false|false|true"
+    );
+    // A rebuilt group with a tree the group did not hold is refused.
+    assert_eq!(
+        eval(&format!(
+            "{capture} local p = TOOL({{ 2 }}) \
+             p.toAdd[1].construction.subconstructions[1].models[1].transf[13] = 99 \
+             local _, why = capture.bulldoze(p) return why"
+        )),
+        "the rebuilt group holds ::/assets/trees/fir.mdl at 99, 20, 3, which the group did not"
+    );
+    // Every game: a player of Rival bulldozes; the group is rebuilt with
+    // the three firs kept, each where it stood and turned as it was.
+    lua.load(
+        "A = string.rep('a', 64) \
+         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+         UPDATE({}, STATE, 0.2) \
+         SENT = {} HOOK.applied = {} HOOK.logged = {} \
+         HOOK.batch = { TREES } HOOK.origins = { A } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let rebuilt = eval(
+        "local out = {} for _, a in ipairs(HOOK.applied) do \
+             out[#out + 1] = tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+         local s = SENT[1] local ce = s.proposal.toAdd[1] \
+         local models = ce.construction.subconstructions[1].models \
+         local m = models[2].transf \
+         return table.concat({ table.concat(out, ','), s.proposal.kind, s.proposal.toRemove[1], #models, \
+             models[1].id, ce.fileName, ce.playerEntity, s.context.player, tostring(s.playerInitiated), \
+             string.format('%.4f,%.4f,%.1f,%.1f', m[1][1], m[1][2], m[4][1], m[4][2]), \
+             tostring(ce.desc.autoRemovable) }, '|')",
+    );
+    assert_eq!(
+        rebuilt,
+        "true|Proposal|7000|3|::/assets/trees/fir.mdl||-1|901|true|0.6754,1.0518,18.0,19.0|true"
+    );
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains(
+            "trees: asset group 7000 of 4 assets, 1 removed (::/assets/trees/fir.mdl at 14.00,21.00), \
+             rebuilt with 3"
+        ),
+        "{logged}"
+    );
+    assert!(
+        logged
+            .contains("trees: after the rebuild 1 group(s) hold the first tree kept, of 4 assets"),
+        "{logged}"
+    );
+    // A game whose group is not the player's (a tree fewer) refuses, and
+    // sends nothing.
+    lua.load(
+        "SENT = {} HOOK.applied = {} table.remove(GROUPS[7000], 4) \
+         HOOK.batch = { TREES } HOOK.origins = { A } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(
+        eval(
+            "local a = HOOK.applied[1] return tostring(a.ok) .. ':' .. tostring(a.why) .. ':' .. #SENT"
+        ),
+        "false:no asset group of 4 assets with those trees here:0"
+    );
+}
+
+/// Rocks and whole groups bulldozed through the room, behind
+/// TPF3MP_TREE_BULLDOZE=1: a boulder (a full model instance) taken out of a
+/// group with a fir, the group rebuilt with the fir alone; the fir taken
+/// instead, the group rebuilt with the boulder at its own matrix; a group of
+/// one boulder, or of one fir, removed whole with nothing rebuilt, as the
+/// tool does. Every game logs the group and what stands after. Two assets
+/// of one model at one place are refused, as is a tool that moves a full
+/// instance: the room could not say which went, or would build it elsewhere.
+#[test]
+fn rocks_and_whole_asset_groups_bulldozed_go_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    lua.load(FAKE_TREES).exec().unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code).eval::<String>().unwrap_or_else(|error| {
+            panic!(
+                "{code}: {error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        })
+    };
+    lua.load(
+        "HOOK.trees = true A = string.rep('a', 64) \
+         CAPTURE = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         function CARRY(removed, group) \
+             local action, why = CAPTURE.bulldoze(TOOL(removed, group)) \
+             if action == nil then return nil, why end \
+             SENT = {} HOOK.applied = {} HOOK.logged = {} \
+             HOOK.batch = { action } HOOK.origins = { A } UPDATE({}, STATE, 0.2) \
+             return action \
+         end \
+         function SAID(action) \
+             local a = action.Bulldoze.Assets local r = a.removed[1] \
+             return table.concat({ a.first.model, a.first.at.x, a.first.at.y, a.count, #a.removed, r.model, \
+                 r.at.x, r.at.y, r.at.z, tostring(schema_check(action)) }, '|') \
+         end \
+         function BUILT() \
+             local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+             local p = SENT[1].proposal local ce = p.toAdd and p.toAdd[1] \
+             local models = ce and ce.construction.subconstructions[1].models or {} \
+             local t = models[1] and models[1].transf \
+             return table.concat({ table.concat(out, ','), p.toRemove[1], ce and 1 or 0, #models, \
+                 models[1] and models[1].id or '-', \
+                 t and string.format('%.3f,%.3f,%.1f,%.1f,%.1f', t[1][1], t[1][2], t[4][1], t[4][2], t[4][3]) \
+                     or '-', ce and tostring(ce.desc.autoRemovable) or '-' }, '|') \
+         end",
+    )
+    .exec()
+    .unwrap();
+    // The boulder out of 7002: the fir stays, rebuilt alone.
+    assert_eq!(
+        eval("return SAID(CARRY({ 2 }, 7002))"),
+        "::/assets/trees/fir.mdl|600|50|2|1|::/assets/rocks/boulder.mdl|602|50|2|true"
+    );
+    assert_eq!(
+        eval("return BUILT()"),
+        "true|7002|1|1|::/assets/trees/fir.mdl|1.211,0.309,600.0,50.0,3.0|true"
+    );
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains(
+            "trees: asset group 7002 of 2 assets, 1 removed (::/assets/rocks/boulder.mdl at 602.00,50.00), \
+             rebuilt with 1"
+        ),
+        "{logged}"
+    );
+    // The fir out of 7002 instead: the boulder stays, at its own matrix.
+    assert_eq!(
+        eval("return SAID(CARRY({ 1 }, 7002))"),
+        "::/assets/trees/fir.mdl|600|50|2|1|::/assets/trees/fir.mdl|600|50|3|true"
+    );
+    assert_eq!(
+        eval("return BUILT()"),
+        "true|7002|1|1|::/assets/rocks/boulder.mdl|0.000,2.000,602.0,50.0,2.0|true"
+    );
+    // A group of one boulder: removed whole, nothing rebuilt.
+    assert_eq!(
+        eval("return SAID(CARRY({ 1 }, 7003))"),
+        "::/assets/rocks/boulder.mdl|700|60|1|1|::/assets/rocks/boulder.mdl|700|60|2|true"
+    );
+    assert_eq!(eval("return BUILT()"), "true|7003|0|0|-|-|-");
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains(
+            "trees: asset group 7003 of 1 assets, 1 removed (::/assets/rocks/boulder.mdl at 700.00,60.00), \
+             rebuilt with 0"
+        ),
+        "{logged}"
+    );
+    assert!(
+        logged.contains(
+            "trees: after the rebuild 1 group(s) hold the first tree removed, of 1 assets"
+        ),
+        "{logged}"
+    );
+    // A group of one fir: the same.
+    assert_eq!(
+        eval("return SAID(CARRY({ 1 }, 7004))"),
+        "::/assets/trees/fir.mdl|800|70|1|1|::/assets/trees/fir.mdl|800|70|3|true"
+    );
+    assert_eq!(eval("return BUILT()"), "true|7004|0|0|-|-|-");
+    // Without the flag, a whole group's removal stays refused.
+    assert_eq!(
+        eval("HOOK.trees = false local _, why = CARRY({ 1 }, 7004) HOOK.trees = true return why"),
+        "removing trees or other assets (asset group 7004), which the room does not carry yet"
+    );
+    // Two firs of one model at one place, one taken: refused at the click.
+    assert_eq!(
+        eval(
+            "GROUPS[7005] = { GROUPS[7004][1], { modelId = 41, pos = { x = 800, y = 70, z = 3 }, rot = 0, \
+                 scale = 1 } } \
+             local _, why = CARRY({ 2 }, 7005) GROUPS[7005] = nil return why"
+        ),
+        "two assets of ::/assets/trees/fir.mdl at 800.000, 70.000, 3.000: which one went is not clear"
+    );
+    // A tool that moves the boulder it keeps: refused.
+    assert_eq!(
+        eval(
+            "local p = TOOL({ 1 }, 7002) p.toAdd[1].construction.subconstructions[1].models[1].transf = \
+                 { 0, 2, 0, 0, -2, 0, 0, 0, 0, 0, 3, 0, 602, 50, 2, 1 } \
+             local _, why = CAPTURE.bulldoze(p) return why"
+        ),
+        "the tool moves the full instance ::/assets/rocks/boulder.mdl (element 11: 3, not 2)"
+    );
+}
+
 /// Stops over FAKE_NETWORK: the game's edge object types, the stop's model
 /// and construction, and the script proposal's edge object record. Edge
 /// 100 runs north from node 8 (50, -40) to node 9 (50, 40).
@@ -5320,6 +5862,209 @@ fn a_stop_is_placed_beside_the_edges_others_and_never_on_a_taken_side() {
     .exec()
     .unwrap();
     assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+}
+
+/// The stop tool names a stop natively (street_util::MakeEdgeObjectName:
+/// a street name from the town's name list, else "Stop #n"), and game
+/// scripts read it from the proposal's edge object. The capture carries
+/// it, and every game builds the stop with it, its group named so where
+/// the game left it unnamed. With the kill switch off, every game names it
+/// after its town.
+#[test]
+fn a_stop_keeps_the_name_the_tool_gave_it_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    let proposal = stop_proposal("", "", "").replace(
+        "category = 0, left = true,",
+        "category = 0, left = true, name = 'High Street',",
+    );
+    let (name, ok): (String, bool) = lua
+        .load(format!(
+            "local engine = ug_require('tpf3mp_1::/scripts/tpf3mp/engine.lua') \
+             local a = assert(engine.placeStop({proposal}, '::/stations/street/small_stops/small_new.con')) \
+             CAPTURED = a \
+             return tostring(a.PlaceStop.name), schema_check(a)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!((name.as_str(), ok), ("High Street", true));
+    let captured: mlua::Value = lua.globals().get("CAPTURED").unwrap();
+    let action = tpf3mp_proto::lua::action_from_lua(&common::tree(&captured)).unwrap();
+    match &action {
+        tpf3mp_proto::action::Action::PlaceStop(stop) => {
+            assert_eq!(stop.name.as_ref().map(|n| n.as_str()), Some("High Street"))
+        }
+        other => panic!("{other:?}"),
+    }
+
+    for (switch, sent, group) in [
+        ("true", "High Street>High Street", "High Street"),
+        ("false", "Stop>Stop", "Didcot 2"),
+    ] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.load(FAKE_STOPS).exec().unwrap();
+        lua.load(format!(
+            "ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua').NATIVE_STOP_NAMES = {switch}"
+        ))
+        .exec()
+        .unwrap();
+        lua.load(
+            STOP_OWNERS
+                .replace("{SHARED}", "")
+                .replace("{NAME}", ", name = 'High Street'"),
+        )
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+        let (names, named): (String, String) = lua
+            .load(
+                "local s = SENT[1].proposal.streetProposal \
+                 return s.edgeObjectsToAdd[1].name .. '>' .. s.edgeObjectsToAdd[2].name, \
+                     tostring(NAMES[610])",
+            )
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+        assert_eq!(names, sent, "switch {switch}");
+        assert_eq!(named, group, "switch {switch}: {}", hook_log(&lua));
+    }
+}
+
+/// The world of a stop placed for company Rival on edge 100, as build
+/// 40408 makes one: the stop's two edge objects are its stations
+/// themselves (EDGE_OBJECT and STATION), in one station group the engine
+/// made no one's; no construction. `{SHARED}` adds another station to that
+/// group.
+const STOP_OWNERS: &str = "local CT = api.type.ComponentType \
+    CT.CONSTRUCTION, CT.STATION_GROUP, CT.PLAYER_OWNED, CT.STATION = 2, 9, 15, 16 \
+    api.type.PlayerOwned = { new = function() return {} end } \
+    OWNERS = { [100] = 30 } \
+    local groups = { [610] = { stations = { 600, 601 {SHARED} } } } \
+    local get = api.engine.getComponent \
+    api.engine.getComponent = function(id, kind) \
+        if kind == 15 then return OWNERS[id] and { player = OWNERS[id] } or nil end \
+        if kind == 9 then return groups[id] end \
+        if kind == 16 and (id == 600 or id == 601) then return {} end \
+        return get(id, kind) \
+    end \
+    api.engine.util.construction = { getConstructionEntity = function() return -1 end } \
+    api.engine.system.stationGroupSystem = { getStationGroup = function(s) \
+        if s == 600 or s == 601 then return 610 end if s == 900 then return 620 end return -1 end } \
+    NAMES = { [5000] = 'Didcot', [620] = 'Didcot' } \
+    api.engine.util.getEntityName = function(e) return NAMES[e] end \
+    api.engine.system.stationSystem = { \
+        getTown = function(s) if s == 600 or s == 601 then return 5000 end return -1 end, \
+        getStations = function(t) if t == 5000 then return { 600, 601, 900 } end return {} end } \
+    api.cmd.makeEntitySetPlayerCmd = function(entity, player) \
+        return { setPlayer = entity, player = player } end \
+    local send = api.cmd.sendCommand \
+    api.cmd.sendCommand = function(cmd, ...) \
+        if cmd.setPlayer then OWNERS[cmd.setPlayer] = cmd.player \
+        elseif cmd.setName then NAMES[cmd.entity] = cmd.setName \
+        elseif cmd.proposal and cmd.proposal.streetProposal then \
+            EDGES[100].objects = { { 555, 2 }, { 600, 0 }, { 601, 1 } } \
+        end \
+        return send(cmd, ...) \
+    end \
+    EDGES[100].objects = { { 555, 2 } } OWNERS[555] = 30 \
+    A = string.rep('a', 64) \
+    HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+    UPDATE({}, STATE, 0.2) \
+    SENT = {} HOOK.applied = {} \
+    HOOK.batch = { { PlaceStop = { edge = { network = 'Street', ends = { a = { x = 50, y = -40, z = 0 }, \
+        b = { x = 50, y = 40, z = 0 } } }, at = { x = 50, y = 0, z = 0 }, left = true, two_sided = true, \
+        direction = { x = 0, y = 1, z = 0 }, \
+        model = '::/stations/street/small_stops/small_old_twosided.con' {NAME} } } } \
+    HOOK.origins = { A } \
+    UPDATE({}, STATE, 0.2)";
+
+/// A stop a company's player placed came out another company's, and had no
+/// station icon for its player (2026-10-02, and its retest: the hand-over
+/// found the two edge objects alone). A street stop's edge objects are its
+/// stations, and its station group, which the windows, the icons and the
+/// line manager ask, is the station group system's. Once built, every game
+/// gives the stop's objects and their group to the acting company, but not
+/// a group another stop's station shares; the edge keeps its own owner.
+#[test]
+fn a_stop_the_room_places_is_the_acting_companys() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(STOP_OWNERS.replace("{SHARED}", "").replace("{NAME}", ""))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let (ok, built, owners, given): (bool, String, String, String) = lua
+        .load(
+            "local s = SENT[1].proposal.streetProposal \
+             local o = {} \
+             for _, e in ipairs({ 555, 600, 601, 610 }) do o[#o + 1] = e .. '=' .. tostring(OWNERS[e]) end \
+             local g = {} \
+             for i = 2, #SENT do if SENT[i].setPlayer then g[#g + 1] = tostring(SENT[i].setPlayer) end end \
+             return HOOK.applied[1].ok == true, \
+                 s.edgeObjectsToAdd[1].playerEntity .. '>' .. SENT[1].context.player \
+                     .. '>' .. s.edgeObjectsToAdd[1].name .. '>' .. s.edgeObjectsToAdd[2].name \
+                     .. '>' .. tostring(s.edgesToAdd[1].playerOwned and s.edgesToAdd[1].playerOwned.player), \
+                 table.concat(o, ' '), table.concat(g, ',')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(ok, "{}", hook_log(&lua));
+    assert_eq!(
+        built, "901>901>Stop>Stop>30",
+        "the stop named for the acting company, paid by it, with a name; its edge keeps its owner"
+    );
+    assert_eq!(
+        owners, "555=30 600=901 601=901 610=901",
+        "the stop's stations and their group the company's; the edge's signal as it was"
+    );
+    assert_eq!(given, "600,601,610");
+    let log = hook_log(&lua);
+    assert!(
+        log.contains(
+            "the new ::/stations/street/small_stops/small_old_twosided.con: \
+             600 a station in group 610 (owner nil); 601 a station in group 610 (owner nil)"
+        ),
+        "{log}"
+    );
+    assert!(
+        log.contains("made the acting company's (901): stop 600 (was nil), stop 601 (was nil), station group 610 (was nil)"),
+        "{log}"
+    );
+
+    // Its group named after its town, after the town's other group of that
+    // name; its stations too.
+    let names: String = lua
+        .load("return NAMES[610] .. '|' .. NAMES[600] .. '|' .. NAMES[601] .. '|' .. NAMES[620]")
+        .eval()
+        .unwrap();
+    assert_eq!(names, "Didcot 2|Didcot 2|Didcot 2|Didcot");
+    assert!(
+        log.contains("named station group 610 \"Didcot 2\""),
+        "{log}"
+    );
+
+    // A group that also holds another stop's station is not this stop's.
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(
+        STOP_OWNERS
+            .replace("{SHARED}", ", 800")
+            .replace("{NAME}", ""),
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let owners: String = lua
+        .load(
+            "local o = {} \
+             for _, e in ipairs({ 600, 601, 610 }) do o[#o + 1] = e .. '=' .. tostring(OWNERS[e]) end \
+             return table.concat(o, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(owners, "600=901 601=901 610=nil");
+    let name: String = lua.load("return tostring(NAMES[610])").eval().unwrap();
+    assert_eq!(name, "nil", "nor its name");
 }
 
 #[test]
@@ -7052,6 +7797,13 @@ fn the_guis_company_is_the_one_the_player_plays_for() {
         .eval()
         .unwrap();
     assert_eq!(first, 25, "playing for the first company: the game's own");
+    // The hook's probe of the native tools' ownership checks reads the
+    // company from a note: none for the room's first company.
+    let noted: Option<String> = lua
+        .load("return (HOOK.notes or {})['tpf3mp.company']")
+        .eval()
+        .unwrap();
+    assert_eq!(noted, None);
     lua.load("ROSTER.members = { { player = ME, company = 1 } }")
         .exec()
         .unwrap();
@@ -7061,6 +7813,31 @@ fn the_guis_company_is_the_one_the_player_plays_for() {
         .eval()
         .unwrap();
     assert_eq!(mine, 901, "playing for Rival: Rival");
+    let noted: Option<String> = lua
+        .load("return (HOOK.notes or {})['tpf3mp.company']")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        noted.as_deref(),
+        Some("901"),
+        "Rival's entity, for the hook"
+    );
+    let listed: Option<String> = lua
+        .load("return (HOOK.notes or {})['tpf3mp.companies']")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        listed.as_deref(),
+        Some("25,901"),
+        "every company of the room, for the map's icons"
+    );
+    lua.load("ROSTER.members = {}").exec().unwrap();
+    run_frames(&lua, 20);
+    let noted: Option<String> = lua
+        .load("return (HOOK.notes or {})['tpf3mp.company']")
+        .eval()
+        .unwrap();
+    assert_eq!(noted, None, "back to the first company: forgotten");
     let logged: String = lua
         .load("return table.concat(HOOK.logged, '|')")
         .eval()
@@ -8258,6 +9035,232 @@ fn the_huds_state_follows_the_players_company() {
             && logged.contains("the stop tool's stop is noted"),
         "{logged}"
     );
+}
+
+/// With the hook's player probe on (its note `tpf3mp.probe`), each GUI
+/// state says which lines the game's LineViewer is handed to draw and what
+/// getLinesForPlayer answers, each line with its owner, once per answer;
+/// with the probe off it says nothing. What is drawn never changes.
+#[test]
+fn the_map_line_probe_says_what_the_line_viewer_draws() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(
+        r#"
+        ME = string.rep("b", 64)
+        OWNERS = { [700] = 901, [701] = 25 }
+        api = api or {}
+        api.engine = { util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) },
+                       system = { gameScriptSystem = { getEntityForGameScript = function() return -1 end },
+                                  lineSystem = { getLinesForPlayer = function(p)
+                                      if p == 901 then return { 700 } end return { 701 } end,
+                                      getLineStopsForTerminal = function(station, terminal)
+                                          if station == 900 and terminal == 1 then return { { 700, 0 } } end return {} end,
+                                      getProblemLines = function() return { { 700, 3 } } end } },
+                       getComponent = function(e, kind)
+                           if kind == 9 then return OWNERS[e] and { player = OWNERS[e] } or nil end
+                           if kind == 10 and e == 700 then
+                               return { stops = { { stationGroup = 800, station = 0, terminal = 1 },
+                                                  { stationGroup = 800, station = 1, terminal = 0 } } }
+                           end
+                           if kind == 11 and e == 800 then return { stations = { 900 } } end
+                           if kind == 12 and e == 900 then return { terminals = { {}, {} } } end
+                       end }
+        api.type = { ComponentType = { GAME_SCRIPT = 7, PLAYER_OWNED = 9, LINE = 10, STATION_GROUP = 11, STATION = 12 } }
+        DRAWN = {}
+        local builtin = ug_require("::/gui/main/builtin.lua")
+        builtin.LineViewer = function(params) DRAWN[#DRAWN + 1] = params return {} end
+        local real = ug_require
+        ug_require = function(path)
+            if path == "::/gui/construction/construction_react_util.tl" then return { getActionParams = function() return {} end } end
+            return real(path)
+        end
+        HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
+        HOOK.notes = { ["tpf3mp.company"] = "901" }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        local script = "gui/tpf3mp/gui_state.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        data().prepare({})
+        ug_require = real
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let draw = "local lines = api.engine.system.lineSystem.getLinesForPlayer(api.engine.util.getPlayer())                 ug_require('::/gui/main/builtin.lua').LineViewer({ showLines = { { entity = lines[1] } } })                 return #DRAWN";
+    // The probe off: drawn, nothing said.
+    let drawn: i64 = lua.load(draw).eval().unwrap();
+    assert_eq!(drawn, 1, "the game's LineViewer still draws");
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(!logged.contains("probe: a line viewer"), "{logged}");
+    // The probe on: both said, once.
+    lua.load("HOOK.notes['tpf3mp.probe'] = '1' CLOCK = 5")
+        .exec()
+        .unwrap();
+    for _ in 0..3 {
+        let _: i64 = lua.load(draw).eval().unwrap();
+    }
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains(
+            "probe: getLinesForPlayer(901) answers 1 line(s): 700 (owned by 901) (the HUD's state)"
+        ),
+        "{logged}"
+    );
+    assert!(
+        logged.contains(
+            "probe: a line viewer is handed 1 line(s) to draw: 700 (owned by 901) (the HUD's state)"
+        ),
+        "{logged}"
+    );
+    assert_eq!(
+        logged.matches("probe: a line viewer").count(),
+        1,
+        "once per answer"
+    );
+    // Each line's stops and the engine's verdict on it.
+    assert!(
+        logged.contains(
+            "probe: line to draw: line 700 owned by 901; 2 stop(s); stop 1: group 800 station 0 terminal 1, group of 1 station(s) owned by nil, station 900 owned by nil with 2 terminal(s), listed at the terminal; stop 2: group 800 station 1 terminal 0, group of 1 station(s) owned by nil, no station 1 in the group; line system problem 3 (the HUD's state)"
+        ),
+        "{logged}"
+    );
+}
+
+/// A purchase names its depot in hook.log: the entity the store passed, its
+/// owner, and the construction and index the room names it by, so a
+/// vehicle that leaves another depot than the player meant shows which one
+/// the store chose.
+#[test]
+fn a_purchases_depot_is_said() {
+    let lua = Lua::new();
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../mod/tpf3mp_1/content/scripts/tpf3mp/capture.lua"
+    ))
+    .unwrap();
+    let capture: Table = lua.load(&source).eval().unwrap();
+    let text: Function = capture.get("depotText").unwrap();
+    let place = lua.create_table().unwrap();
+    place
+        .set("file", "::/depots/road/road_depot/road_depot.con")
+        .unwrap();
+    let at = lua.create_table().unwrap();
+    at.set("x", 1360.7).unwrap();
+    at.set("y", -8829.4).unwrap();
+    at.set("z", 7.2).unwrap();
+    place.set("at", at).unwrap();
+    let said: String = text
+        .call((5001, 372_426, place, 0, mlua::Value::Nil))
+        .unwrap();
+    assert_eq!(
+        said,
+        "the store buys at depot entity 5001 (owned by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7, -8829.4, 7.2)"
+    );
+    let refused: String = text
+        .call((
+            5002,
+            mlua::Value::Nil,
+            mlua::Value::Nil,
+            mlua::Value::Nil,
+            "a depot no construction lists",
+        ))
+        .unwrap();
+    assert_eq!(
+        refused,
+        "the store buys at depot entity 5002 (owned by no one), which the room cannot name: a depot no construction lists"
+    );
+}
+
+/// The GUI's views decide "mine" with the game's ownership tests
+/// (scripts/entity_util.tl) and getPlayer. When a state's api is made anew
+/// after the mod's scripts ran, the tests put the company back in front
+/// before they answer; and where the room's roster cannot be read, the
+/// company the Multiplayer plugin's state notes for the hook answers.
+#[test]
+fn the_guis_ownership_tests_follow_the_company_after_a_new_api() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(
+        r#"
+        ME = string.rep("b", 64)
+        -- No roster readable in this state: only the note says the company.
+        local function freshApi()
+            return { engine = { util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) },
+                                system = { gameScriptSystem = { getEntityForGameScript = function() return -1 end } },
+                                getComponent = function(e, kind)
+                                    if kind == 9 then return { player = OWNERS[e] } end
+                                end },
+                     type = { ComponentType = { GAME_SCRIPT = 7, PLAYER_OWNED = 9 } } }
+        end
+        FRESH = freshApi
+        OWNERS = { [500] = 901, [501] = 25 }
+        api = freshApi()
+        -- The game's entity_util, as build 40408 has it.
+        ENTITY_UTIL = {}
+        function ENTITY_UTIL.getPlayerOwned(e) return api.engine.getComponent(e, api.type.ComponentType.PLAYER_OWNED) end
+        function ENTITY_UTIL.isOwnedByPlayer(e)
+            local o = ENTITY_UTIL.getPlayerOwned(e) return o ~= nil and api.engine.util.getPlayer() == o.player end
+        function ENTITY_UTIL.isOwnedByPlayerOrNotOwned(e)
+            local o = ENTITY_UTIL.getPlayerOwned(e) return o == nil or api.engine.util.getPlayer() == o.player end
+        local real = ug_require
+        ug_require = function(path)
+            if path == "/scripts/entity_util.tl" or path == "::/scripts/entity_util.tl" then return ENTITY_UTIL end
+            if path == "::/gui/construction/construction_react_util.tl" then return { getActionParams = function() return {} end } end
+            return real(path)
+        end
+        HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
+        HOOK.notes = { ["tpf3mp.company"] = "901" }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        local script = "gui/tpf3mp/gui_state.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        data().prepare({})
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let answer = |lua: &mlua::Lua| -> (i64, bool, bool) {
+        lua.load(
+            "return api.engine.util.getPlayer(), ENTITY_UTIL.isOwnedByPlayer(500), ENTITY_UTIL.isOwnedByPlayer(501)",
+        )
+        .eval()
+        .unwrap()
+    };
+    assert_eq!(
+        answer(&lua),
+        (901, true, false),
+        "the note's company: its station is mine, the first company's is not"
+    );
+    // The state is given a new api: the game's own getPlayer again, until
+    // a window asks an ownership test.
+    lua.load("api = FRESH()").exec().unwrap();
+    let mine: bool = lua
+        .load("return ENTITY_UTIL.isOwnedByPlayerOrNotOwned(500)")
+        .eval()
+        .unwrap();
+    assert!(mine, "the test put the company back before it answered");
+    assert_eq!(answer(&lua), (901, true, false));
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains("the GUI's getPlayer answers the player's company 901 (the HUD's state)")
+            && logged.contains("was the game's own again"),
+        "{logged}"
+    );
+    // The room's first company, or outside the room: the game's own.
+    lua.load("HOOK.notes['tpf3mp.company'] = nil")
+        .exec()
+        .unwrap();
+    assert_eq!(answer(&lua), (25, false, true));
 }
 
 /// The GUI's other Lua state, where the game renders its React recipes (the
@@ -10126,4 +11129,79 @@ fn every_game_preserves_the_same_town_building() {
          false:no town building 1 in the town/res_1.con \
          false:no town/res_1.con there"
     );
+}
+
+const CONFIG_WORDS: &str = r#"
+function CONFIG_WORDS(configs, nodeAt, edgeAt)
+    local out = {}
+    for _, c in ipairs(configs) do
+        local comp = c.comp
+        local turns = {}
+        for _, l in ipairs(comp.laneConnections) do
+            turns[#turns + 1] = edgeAt(l.segment0) .. '#' .. l.lane0 .. '->' .. edgeAt(l.segment1) .. '#'
+                .. l.lane1 .. (l.withRoad and 'r' or '') .. (l.withTram and 't' or '')
+        end
+        local walks = {}
+        for _, e in ipairs(comp.crosswalks) do walks[#walks + 1] = edgeAt(e) end
+        local phases = {}
+        for _, s in ipairs(comp.trafficLightConfig.states) do
+            phases[#phases + 1] = '[' .. table.concat(s.lockedLanes, ',') .. string.format(' %g/%g', s.duration,
+                s.minDuration) .. (s.canSkip and ' skip' or '') .. ']'
+        end
+        out[#out + 1] = nodeAt(c.entity) .. ' tl' .. tostring(comp.trafficLightPreference) .. ' type'
+            .. tostring(comp.trafficLightConfig.trafficLightType) .. ' ' .. table.concat(phases)
+            .. ' dss=' .. tostring(comp.doubleSlipSwitch == true)
+            .. ' um=' .. tostring(comp.userModifiedLaneConnections == true)
+            .. '/' .. tostring(comp.userModifiedTrafficLightStates == true)
+            .. ' turns ' .. table.concat(turns, ' ') .. ' walks ' .. table.concat(walks, ' ')
+    end
+    return table.concat(out, ' || ')
+end
+function PLACE(p) return string.format('(%g,%g)', p.x, p.y) end
+function ENDS(a, b) a, b = PLACE(a), PLACE(b) if a > b then a, b = b, a end return a .. '-' .. b end
+-- The tool's proposal, placed: its own new nodes and edges, else the world's.
+function TOOL_WORDS(p)
+    local s = p.proposal
+    local nodes, edges = {}, {}
+    for _, n in ipairs(s.addedNodes) do nodes[n.entity] = n.comp.position end
+    local function nodeAt(e) return PLACE(nodes[e] or NODES[e]) end
+    for _, e in ipairs(s.addedSegments) do edges[e.entity] = e.comp end
+    local function edgeAt(e)
+        local c = edges[e] or EDGES[e]
+        return ENDS(nodes[c.node0] or NODES[c.node0], nodes[c.node1] or NODES[c.node1])
+    end
+    return CONFIG_WORDS(s.nodeConfigsToAdd, nodeAt, edgeAt)
+end
+-- What a replay sent, placed the same way.
+function SENT_WORDS(sent)
+    local s = sent.proposal.streetProposal
+    local nodes, edges = {}, {}
+    for _, n in ipairs(s.nodesToAdd) do nodes[n.entity] = n.comp.position end
+    local function nodeAt(e) return PLACE(nodes[e] or NODES[e]) end
+    for _, e in ipairs(s.edgesToAdd) do edges[e.entity] = e.comp end
+    local function edgeAt(e)
+        local c = edges[e] or EDGES[e]
+        return ENDS(nodes[c.node0] or NODES[c.node0], nodes[c.node1] or NODES[c.node1])
+    end
+    return CONFIG_WORDS(s.nodeConfigsToAdd or {}, nodeAt, edgeAt)
+end
+"#;
+
+fn hook_log(lua: &Lua) -> String {
+    lua.load("return table.concat(HOOK.logged or {}, '\\n')")
+        .eval()
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_simulation_notes_the_save_player_for_native_company_tools() {
+    let (lua, _) = engine();
+    lua.load("api.engine.util.getPlayer = function() return 214443 end UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let noted: String = lua
+        .load("return HOOK.notes['tpf3mp.player']")
+        .eval()
+        .unwrap();
+    assert_eq!(noted, "214443");
 }

@@ -853,6 +853,66 @@ offset = 0
 prologue = "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20"
 required = false
 
+# The probe of the engine's player (crates/tpf3mp-hook/src/probe.rs,
+# investigation/TF3_LOCAL_PLAYER_2026-10-01.md). Read only, and only with
+# TPF3MP_PROBE_PLAYER=1: the hook takes field offsets from these two getters'
+# displacements and never calls, detours or writes them.
+#
+# The GUI's GameState getter: UI::CMenuUI::SwitchToGameUI's lambda_1/lambda_2,
+# a std::function<GameState const &()> vf2 (rva 0x6aa800): `mov rax,[rcx+8];
+# mov rax,[rax+0x6b0]; mov rax,[rax+0x1e0]; ret`, m_game then its GameState.
+# The GameState displacement is fixed in the signature: its twin (lambda_3,
+# 0x6aaaa0, GameRes at +0x1d8) has the same shape.
+[[target]]
+name = "probe: GUI GameState getter"
+signature = "48 8B 41 08 48 8B 80 ?? ?? ?? ?? 48 8B 80 E0 01 00 00 C3"
+offset = 0
+prologue = "48 8B 41 08 48 8B 80"
+required = false
+
+# The game scripts' GameState getter: CGame::CGame's lambda_3/lambda_1, a
+# std::function<GameState const &()> vf2 (rva 0x11ffd0): `[[CGame+0x1f0] +
+# 0x78 + 8*i]`, i the int at +0x98, or 1 - i when the functor's flag is set.
+[[target]]
+name = "probe: engine GameState getter"
+signature = "80 79 10 00 48 8B 41 08 48 8B 80 ?? ?? ?? ?? 74 ?? B9 01 00 00 00 2B 88 ?? ?? ?? ?? 48 63 D1 48 8B 44 D0 ?? C3"
+offset = 0
+prologue = "80 79 10 00 48 8B 41 08"
+required = false
+
+# The probe's caller count (crates/tpf3mp-hook/src/probe.rs), only with
+# TPF3MP_PROBE_PLAYER=1: street_util::ProposalStreetGraph::GetPlayerOwnedPtr,
+# vf5 of the proposal street graph (rva 0xa46cd0; named by its assert string
+# "street_util::ProposalStreetGraph::GetPlayerOwnedPtr"), this in rcx and the
+# entity in edx, the entity's PlayerOwned (or null) in rax. Detoured to count
+# the return addresses of its callers, inside and outside GameSim::Step, and
+# always answered by the original. The live graph's twin (vf5, 0xa45d90) is
+# byte-identical to four other slots and has no unique signature.
+[[target]]
+name = "probe: ProposalStreetGraph::GetPlayerOwnedPtr"
+signature = "48 83 EC 28 4C 8B 49 20 4C 8B D1 49 8B 41 48 4D 8B 41 50 49 3B C0 74 ?? 39 10 0F 84 ?? ?? ?? ?? 48 05 50 03 00 00 49 3B C0 75 ?? 49 8B 49 18 49 8B 41 20 48 3B C8 74 ?? 39 11 0F 84 ?? ?? ?? ?? 48 81 C1 50 03 00 00 48 3B C8 75 ?? 4D 63 42 34"
+offset = 0
+prologue = "48 83 EC 28 4C 8B 49 20 4C 8B D1 49 8B 41 48"
+required = false
+
+# The probe's log of the native tools' ownership test (probe.rs), only with
+# TPF3MP_PROBE_PLAYER=1: rva 0x610ea0 in game\ui\actions\
+# street_builder_util.cpp, unnamed; the probe calls it
+# street_util::IsOwnedByOtherPlayer. The engine in rcx, the tool's player
+# in edx (false when negative), an entity in r8d; looks the entity's
+# PlayerOwned up (the RTTI type descriptor at 0x610ec4) and answers
+# owner != player, false for an entity no player owns. The street
+# builder's snap (CreateFindSnapPointRoadEarlyAbortContext, call at
+# 0x5fc022) marks both ends of an edge it answers true for as fixed. A leaf
+# that never reads r9; detoured to log what it answers true for, always
+# answered by the original.
+[[target]]
+name = "probe: street_util IsOwnedByOtherPlayer"
+signature = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 49 63 F8 8B DA 48 8B E9 85 D2 0F 88 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 83 C1 48 4C 8D 44 24 58"
+offset = 0
+prologue = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18"
+required = false
+
 # The person-order fixes (crates/tpf3mp-hook/src/persons.rs; docs/HOOKS.md,
 # "The person-order fixes"). Ported from silver2127's TPF2 Multiplayer
 # (docs/re/HOTJOIN_ORDER.md, native/src/slice/hotjoin_order.inl): each batch
@@ -936,4 +996,355 @@ name = "ecs::Engine::EndModification/free-id append"
 signature = "49 8D 8D D8 00 00 00 4D 8B 0C 24 49 8B 41 08 48 89 44 24 20 4D 8B 09 4D 8B 85 F8 00 00 00 48 8D 55 87 E8 ?? ?? ?? ??"
 offset = 0
 prologue = "49 8D 8D D8 00 00 00 4D 8B 0C 24 49 8B 41 08 48 89 44 24 20 4D 8B 09 4D 8B 85 F8 00 00 00 48 8D 55 87 E8"
+required = false
+
+# The tools' player (crates/tpf3mp-hook/src/toolplayer.rs; docs/HOOKS.md,
+# "The tools' player"), off with TPF3MP_HOOK_TOOL_COMPANY=0. UI::CGameUI's
+# constructor (0x647860) reads the save's player once ([rbp-0x50], 0x648ace)
+# and hands a copy to each tool it builds. In a room the hook writes the
+# player's company into three tools' copies at the start of each tool's
+# Step, on the main thread. Every field is a UI object's, read by its own
+# class's code only (tpfre, every dword read of the offset in the class's
+# code range, and the vtable's only users being the constructor and
+# destructor):
+# - UI::StreetBuilder (street and track builder, both built by CGameUI,
+#   "action.streetbuilder.street"/".track") +0xc0: stored by the ctor
+#   0x56a740 only; read by 0x56fc80 (CreateProposalAndUpdate's pool lambda),
+#   0x5755b0, CreateProposalAndUpdate 0x577ed0 (x2), 0x580900, Step 0x585e50
+#   (x2, the snap at 0x586b4e), 0x589980 and the ctor's lambda 0x58caf0.
+# - UI::TrackModifier (road and track modifiers) +0xa0: stored by the ctor
+#   0x5b41b0 only; read by Step 0x5bc120, Build 0x5bf880 (x2), vf5 0x5cbf80
+#   (x2, the snap at 0x5cca24) and the ctor's lambda 0x5cf120.
+# - UI::Bulldozer's BulldozerFilter (vtable 0x36aef70, made only in the
+#   ctor 0x4c49a0, kept at +0xc0): its player list at +0x10, set once by the
+#   ctor to { the bulldozer's player } (0x4c4f33..0x4c4fb7) and copied only
+#   by BulldozerFilter::vf1 0x4d5070 into each action's query, which
+#   sub_5f7db0 checks owners against.
+
+# UI::StreetBuilder::Step (vf5).
+[[target]]
+name = "UI::StreetBuilder::Step"
+signature = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 C0 CB FF FF"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
+required = false
+
+# The street builder ctor's player store: mov eax,[rbp+0x128]; mov
+# [rsi+0xc0],eax (the field's offset read from the code).
+[[target]]
+name = "UI::StreetBuilder ctor/player store"
+signature = "48 8B 85 10 01 00 00 48 89 86 B0 00 00 00 48 8B 85 18 01 00 00 48 89 86 B8 00 00 00 8B 85 28 01 00 00 89 86 C0 00 00 00"
+offset = 0
+prologue = "48 8B 85 10 01 00 00"
+required = false
+
+# UI::TrackModifier::Step (vf5).
+[[target]]
+name = "UI::TrackModifier::Step"
+signature = "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 50 CC FF FF"
+offset = 0
+prologue = "48 89 5C 24 20 55 56 57 41 54 41 55 41 56"
+required = false
+
+# The track modifier ctor's player store: mov eax,[rbp+0x330]; mov
+# [r14+0xa0],eax.
+[[target]]
+name = "UI::TrackModifier ctor/player store"
+signature = "48 8B 85 20 03 00 00 49 89 86 98 00 00 00 8B 85 30 03 00 00 41 89 86 A0 00 00 00"
+offset = 0
+prologue = "48 8B 85 20 03 00 00"
+required = false
+
+# UI::Bulldozer::Step (vf5).
+[[target]]
+name = "UI::Bulldozer::Step"
+signature = "48 8B C4 48 89 58 20 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 28 F1 FF FF"
+offset = 0
+prologue = "48 8B C4 48 89 58 20 55 56 57 41 54 41 55"
+required = false
+
+# The bulldozer ctor's BulldozerFilter: lea rax,[vtable]; its fields
+# (players at +0x10..+0x20); mov [r14+0xc0],rbx.
+[[target]]
+name = "UI::Bulldozer ctor/filter"
+signature = "48 8D 05 ?? ?? ?? ?? 48 89 03 48 89 73 08 48 89 7B 10 48 89 7B 18 48 89 7B 20 66 C7 43 28 00 00 EB 03 48 8B DF 48 89 5D D8 49 89 9E C0 00 00 00"
+offset = 0
+prologue = "48 8D 05"
+required = false
+
+# The tools' player, the station tools and the bulldozer's own player
+# (toolplayer.rs). CGameUI hands the player read once ([rbp-0x50]) to:
+# - UI::ConstructionBuilder (sub_50b3b0, 0x649f28) +0xa0: stored only by
+#   its ctor (0x50b453); read by sub_514f90 (x2), MousePressed 0x51bbc0
+#   (x2) and Step 0x51cd60, all game\ui\actions\constructionbuilder.cpp.
+# - UI::StreetTerminalBuilder (sub_5906e0 through sub_645ee0, the stop
+#   builder 0x649df0 and the signal and waypoint builder 0x64a232) +0xa0:
+#   stored only by its ctor (0x590795); read by sub_594f50 (x3, the snap
+#   through 0x5936d0) and Step 0x595f30.
+# - UI::ModuleBuilder (sub_540390 through sub_645940, 0x64a739) +0xa8:
+#   stored only by its ctor (0x540456); read by sub_5423b0, MousePressed
+#   0x543630 (x2).
+# - UI::Bulldozer +0x28, its own player: stored by its ctor (0x4c4a4f, the
+#   4th argument); read by the ctor (seeding the filter), its lambda
+#   0x4d2650 (x2), 0x4d2b70, 0x4d46b0 and Step 0x4d6340, the proposals it
+#   makes for its player.
+[[target]]
+name = "UI::ConstructionBuilder::Step"
+signature = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 B0 D5 FF FF"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
+required = false
+
+[[target]]
+name = "UI::ConstructionBuilder ctor/player store"
+signature = "49 89 B6 90 00 00 00 48 8B 85 E0 02 00 00 49 89 86 98 00 00 00 8B 85 F0 02 00 00 41 89 86 A0 00 00 00"
+offset = 0
+prologue = "49 89 B6 90 00 00 00"
+required = false
+
+[[target]]
+name = "UI::StreetTerminalBuilder::Step"
+signature = "40 53 56 57 41 54 41 55 41 56 41 57 B8 80 14 00 00"
+offset = 0
+prologue = "40 53 56 57 41 54 41 55 41 56 41 57 B8 80 14 00 00"
+required = false
+
+[[target]]
+name = "UI::StreetTerminalBuilder ctor/player store"
+signature = "49 89 BE 88 00 00 00 49 89 B6 90 00 00 00 48 8B 85 C0 01 00 00 49 89 86 98 00 00 00 8B 85 D0 01 00 00 41 89 86 A0 00 00 00"
+offset = 0
+prologue = "49 89 BE 88 00 00 00"
+required = false
+
+[[target]]
+name = "UI::ModuleBuilder::Step"
+signature = "40 53 56 57 41 54 41 55 41 56 41 57 B8 A0 10 00 00"
+offset = 0
+prologue = "40 53 56 57 41 54 41 55 41 56 41 57 B8 A0 10 00 00"
+required = false
+
+[[target]]
+name = "UI::ModuleBuilder ctor/player store"
+signature = "48 8B 85 C8 02 00 00 48 89 87 98 00 00 00 49 8B 04 24 33 C9 49 89 0C 24 48 89 87 A0 00 00 00 8B 85 E0 02 00 00 89 87 A8 00 00 00"
+offset = 0
+prologue = "48 8B 85 C8 02 00 00"
+required = false
+
+[[target]]
+name = "UI::Bulldozer ctor/player store"
+signature = "48 8D 05 ?? ?? ?? ?? 49 89 06 49 89 76 20 41 89 5E 28 48 8B 85 C8 01 00 00"
+offset = 0
+prologue = "48 8D 05"
+required = false
+
+# The probe's log of the street bulldozer's answers (probe.rs), only with
+# TPF3MP_PROBE_PLAYER=1: the edge test, a lambda of
+# UI::StreetBulldozerAction::vf2 (sub_5f2a00: captures in rcx, edge in edx),
+# and the owner test every bulldozer action calls (sub_5f7db0: engine,
+# owner list, entity, flag). Pass-through detours.
+[[target]]
+name = "probe: StreetBulldozerAction edge test"
+signature = "40 53 57 41 56 48 83 EC 20 48 8B 41 08 8B DA"
+offset = 0
+prologue = "40 53 57 41 56 48 83 EC 20 48 8B 41 08 8B DA"
+required = false
+
+[[target]]
+name = "probe: bulldozer owner test"
+signature = "48 89 5C 24 18 55 56 41 56 48 83 EC 30 48 8B 42 08"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 41 56 48 83 EC 30 48 8B 42 08"
+required = false
+
+# The bulldozer's owner list (toolplayer.rs): a std::vector<Entity> at
+# +0xa8, which its ctor fills with its player (0x4c4f6f) and copies into
+# its filter (0x4c4fb7), and from which every query it makes is built
+# (sub_4d51c0, called by Step 0x4d6a82, 0x4d4ac0, 0x4d2eb1 and its ctor's
+# lambda 0x4d2897, 0x4d29ff). Its setter sub_4d6220 (this, list) assigns
+# both; the menu's step calls it (CMenuUI::DoStep's lambda, sub_68f070,
+# sub_6a76e0, sub_6a1410 at 0x6a14bc) with the GUI's player
+# ([[game+0x1e0]+0x20c]) or an empty list. Readers of +0xa8 in the
+# bulldozer: those calls, the ctor, the setter, and its dtor sub_4cb390.
+[[target]]
+name = "UI::Bulldozer ctor/owner list"
+signature = "49 89 BE 98 00 00 00 49 89 BE A0 00 00 00 4D 8D BE A8 00 00 00 49 89 3F 49 89 7F 08 49 89 7F 10"
+offset = 0
+prologue = "49 89 BE 98 00 00 00"
+required = false
+
+[[target]]
+name = "UI::Bulldozer set owner list"
+signature = "48 89 5C 24 08 57 48 83 EC 30 48 8D 99 A8 00 00 00 4C 8B C2 48 8B F9 48 3B DA"
+offset = 0
+prologue = "48 89 5C 24 08 57 48 83 EC 30 48 8D 99 A8 00 00 00"
+required = false
+
+# The views' player (crates/tpf3mp-hook/src/guiplayer.rs; docs/HOOKS.md,
+# "The views' player"), off with TPF3MP_HOOK_GUI_COMPANY=0. Each site reads
+# the player of the GameState the GUI's IGameStateProvider gives (+0x20c,
+# one of the simulation's buffers, never written) in a UI function, and is
+# spliced at the target: after the read, the register holding the player
+# becomes the player's company in a room; at an owner test, the owner's
+# pointer is pointed at a copy. Every target's splice takes whole
+# instructions no branch lands inside, with no branch, call or RIP-relative
+# operand (tpfre, every jump target of the function checked).
+
+# UI::HudIconManager::PreemptiveOctreeTraversal (hudiconmanager.cpp), via PreparePreemptiveOctreeTraversalFn's lambda 0x680850; eax = player, stored in the traversal's context (function 0x67b610, splice 0x67b7db).
+[[target]]
+name = "view: HudIconManager::PreemptiveOctreeTraversal/player"
+signature = "8B 80 0C 02 00 00 4C 89 75 B8 48 89 5D C0"
+offset = 6
+prologue = "4C 89 75 B8 48 89 5D C0"
+required = false
+
+# UI::StationViewer::vf4; ebx = player (function 0x83a570, splice 0x83a608).
+[[target]]
+name = "view: StationViewer::vf4/player"
+signature = "8B 98 0C 02 00 00 48 8B 46 10 4C 8D 70 78"
+offset = 6
+prologue = "48 8B 46 10 4C 8D 70 78"
+required = false
+
+# sub_839c50 from sub_557b90 from UI::CSelector (vf2@8, vf5@8); ebx = player (function 0x839c50, splice 0x839cd9).
+[[target]]
+name = "view: CSelector pick/player"
+signature = "8B 98 0C 02 00 00 48 8B 47 10 4C 8D 70 78"
+offset = 6
+prologue = "48 8B 47 10 4C 8D 70 78"
+required = false
+
+# UI::ViewCreator::vf1, from UI::CreateSelectorFilter; ebx = player, looked up as a Player (function 0x867030, splice 0x86712a).
+[[target]]
+name = "view: ViewCreator::vf1/player"
+signature = "41 8B 9D 0C 02 00 00 48 8D 05 F6 CB 48 03 48 8D 55 38 48 89 45 38"
+offset = 14
+prologue = "48 8D 55 38 48 89 45 38"
+required = false
+
+# sub_8764c0, from UI::layers::CatchmentAreaHelper's ctor lambda 0x878400; r8d = player (function 0x8764c0, splice 0x8765f5).
+[[target]]
+name = "view: CatchmentAreaHelper/player 1"
+signature = "44 8B 80 0C 02 00 00 48 8B 5D 90 48 8B 53 10"
+offset = 7
+prologue = "48 8B 5D 90 48 8B 53 10"
+required = false
+
+# sub_8764c0; ebx = player, kept across the call to sub_867550 (function 0x8764c0, splice 0x876f36).
+[[target]]
+name = "view: CatchmentAreaHelper/player 2"
+signature = "8B 98 0C 02 00 00 49 8B CC E8 1A 06 FF FF 40 88 7C 24 20"
+offset = 14
+prologue = "40 88 7C 24 20"
+required = false
+
+# sub_8764c0; ebx = player (function 0x8764c0, splice 0x8770ba).
+[[target]]
+name = "view: CatchmentAreaHelper/player 3"
+signature = "8B 98 0C 02 00 00 4D 8D 77 10 49 8B CE"
+offset = 6
+prologue = "4D 8D 77 10 49 8B CE"
+required = false
+
+# sub_8764c0; ebx = player, kept across the call to sub_867550 (function 0x8764c0, splice 0x8770fd).
+[[target]]
+name = "view: CatchmentAreaHelper/player 4"
+signature = "8B 98 0C 02 00 00 49 8B CE E8 53 04 FF FF C6 44 24 20 00"
+offset = 14
+prologue = "C6 44 24 20 00"
+required = false
+
+# sub_8779c0 from sub_8764c0; mov eax,[player]; cmp [rbx],eax: rbx the owner, dead after (overwritten at 0x877b73; the jne lands in the epilogue 0x877e01) (function 0x8779c0, splice 0x877b39).
+[[target]]
+name = "view: CatchmentAreaHelper/owner test"
+signature = "8B 80 0C 02 00 00 39 03"
+offset = 0
+prologue = "8B 80 0C 02 00 00 39 03"
+required = false
+
+# sub_87b7f0 from sub_882250 (LayerManagerColorMap) from UI::CGameUI::vf50; eax = player (function 0x87b7f0, splice 0x87b840).
+[[target]]
+name = "view: LayerManagerColorMap/player 1"
+signature = "8B 80 0C 02 00 00 49 8B 10 49 8B 48 10"
+offset = 6
+prologue = "49 8B 10 49 8B 48 10"
+required = false
+
+# sub_87b7f0; ebx = player (function 0x87b7f0, splice 0x87b919).
+[[target]]
+name = "view: LayerManagerColorMap/player 2"
+signature = "11 FF 52 08 48 8B 4B 08 8B 98 0C 02 00 00 48 8B 79 38 48 8B 71 30"
+offset = 14
+prologue = "48 8B 79 38 48 8B 71 30"
+required = false
+
+# sub_87b7f0; ebx = player (function 0x87b7f0, splice 0x87b9ef).
+[[target]]
+name = "view: LayerManagerColorMap/player 3"
+signature = "11 FF 52 08 48 8B 4B 10 8B 98 0C 02 00 00 48 8B 79 38 48 8B 71 30"
+offset = 14
+prologue = "48 8B 79 38 48 8B 71 30"
+required = false
+
+# a lambda of UI::layers::LayerManager; eax = player (function 0x883020, splice 0x88307b).
+[[target]]
+name = "view: LayerManager colour lambda/player"
+signature = "8B 80 0C 02 00 00 48 8B 51 10 4C 8B 09"
+offset = 6
+prologue = "48 8B 51 10 4C 8B 09"
+required = false
+
+# sub_885b10, from LayerManager::SetColorFunction's lambda_2 (0x8830e0); mov eax,[player]; cmp [rdx],eax: rdx the owner, dead after (overwritten at 0x885cab; the jne lands in the epilogue 0x885f0c) (function 0x885b10, splice 0x885c82).
+[[target]]
+name = "view: LayerManager colour/owner test"
+signature = "8B 85 0C 02 00 00 39 02"
+offset = 0
+prologue = "8B 85 0C 02 00 00 39 02"
+required = false
+
+# sub_29f66d0, a UI::react params::RendererComponentDelegate builtin; ebx = player (function 0x29f66d0, splice 0x29f689a).
+[[target]]
+name = "view: react RendererComponentDelegate/player"
+signature = "8B 98 0C 02 00 00 49 8B 07 49 8B CF"
+offset = 6
+prologue = "49 8B 07 49 8B CF"
+required = false
+
+# sub_289e060, a UI::react params::RailroadCrossingComp builtin; r14d = player (function 0x289e060, splice 0x289e116).
+[[target]]
+name = "view: react RailroadCrossingComp/player"
+signature = "44 8B B0 0C 02 00 00 48 8B 03 48 8B 08"
+offset = 7
+prologue = "48 8B 03 48 8B 08"
+required = false
+
+# The map with every company (guiplayer.rs; TPF3MP_HOOK_GUI_ALL_COMPANIES=0
+# keeps it to the player's own). The HUD icon pass, sub_674430 (a lambda of
+# UI::HudIconManager::PreemptiveOctreeTraversal through its std::_Binder,
+# 0x680c10; and sub_66c160 from the traversal 0x67b610), skips an entity
+# whose PlayerOwned owner is not the pass's player: lea rdx,[rax+rcx*4];
+# test rdx,rdx; je; cmp [rdx],r12d; jne. Spliced at the lea (a jump target,
+# 0x6748d9 lands there; nothing lands inside): for an owner that is a
+# company of the room the pointer is formed at a copy of the pass's player.
+# rax and rcx are dead after (rax reloaded at 0x674949 or replaced at
+# 0x674990, rcx written at 0x67492f, 0x6744a5, 0x674542 before any read).
+[[target]]
+name = "view: HudIconManager icon pass/owner"
+signature = "48 8B 04 D0 48 8D 14 88 48 85 D2 74 05 44 39 22 75"
+offset = 4
+prologue = "48 8D 14 88 48 85 D2"
+required = false
+
+# The getPlayer binding (SetupUtilInterface's "getPlayer", registered by
+# sub_24791a0 at 0x253a01a; its closure sub_24ed220): rdi the closure, its
+# std::function getter at +0x38 called (call [rax+0x10]), movsxd
+# rdx,[GameState+0x20c], then the Lua integer push sub_2fbe300 at the
+# target. Redirected: for a closure whose getter is the GUI's
+# (CMenuUI::SwitchToGameUI's, 0x6aa800) or the React GUI's
+# (ScriptComponentRoot::ReloadInterfaces's, 0x27c80a0), both reading the
+# GUI's slot +0x1e0, the pushed answer is the player's company in a room.
+[[target]]
+name = "view: getPlayer binding/push"
+signature = "48 8B 01 FF 50 10 48 63 90 0C 02 00 00 48 8B CB E8 ?? ?? ?? ??"
+offset = 16
+prologue = "E8"
 required = false

@@ -190,6 +190,98 @@ local constructionAt
 -- Removes a stop from its edge ("stops", below).
 local removeEdgeObject
 
+-- Names station groups the room built, the same in every game (2026-10-02:
+-- room-built stops and stations stood unnamed). The game's own tools name
+-- them natively; the room carries that name from the originator's proposal.
+-- A script build with an empty name leaves its entities with no NAME (docs/BUILDING.md,
+-- "What a script proposal must carry"). `groups` lists { group =, stations
+-- = { ... } }, each a group this build's own stations alone make up; one
+-- with a name of its own already keeps it. `name` is the name to give, or
+-- nil for the town's: the town the game counts the group's first station
+-- in (stationSystem.getTown), and a number after it where another station
+-- group of that town has that name ("Didcot", "Didcot 2", ...), so two
+-- games, which hold the same world, give the same. `fallback` where the
+-- station has no town. Each group and its stations get the name
+-- (makeEntitySetNameCmd); hook.log says which.
+local PROVISIONAL_STOP_NAME = "Stop"
+-- Whether a stop is built with the name the originator's tool gave it
+-- (PlaceStop.name, the game's own: street_util::MakeEdgeObjectName). The
+-- kill switch: false, and every stop is named by the town as above.
+apply.NATIVE_STOP_NAMES = true
+local function nameStationGroups(groups, name, fallback)
+	local named = {}
+	for _, g in ipairs(groups) do
+		local current
+		pcall(function() current = api.engine.util.getEntityName(g.group) end)
+		if type(current) ~= "string" or current == "" or current == PROVISIONAL_STOP_NAME then
+			local chosen = name
+			if chosen == nil then
+				local town = -1
+				pcall(function() town = api.engine.system.stationSystem.getTown(g.stations[1]) end)
+				local townName
+				if type(town) == "number" and town >= 0 then
+					pcall(function() townName = api.engine.util.getEntityName(town) end)
+				end
+				if type(townName) == "string" and townName ~= "" then
+					-- The names the town's other station groups have.
+					local taken = {}
+					pcall(function()
+						for _, s in ipairs(api.engine.system.stationSystem.getStations(town) or {}) do
+							local other = api.engine.system.stationGroupSystem.getStationGroup(s)
+							if type(other) == "number" and other >= 0 and other ~= g.group then
+								local n = api.engine.util.getEntityName(other)
+								if type(n) == "string" then taken[n] = true end
+							end
+						end
+					end)
+					chosen = townName
+					local k = 2
+					while taken[chosen] do
+						chosen = townName .. " " .. k
+						k = k + 1
+					end
+				else
+					chosen = fallback
+				end
+			end
+			if type(chosen) == "string" and chosen ~= "" then
+				local ok, why = pcall(function()
+					send(api.cmd.makeEntitySetNameCmd(g.group, chosen))
+					for _, s in ipairs(g.stations) do send(api.cmd.makeEntitySetNameCmd(s, chosen)) end
+				end)
+				named[#named + 1] = "station group " .. g.group .. " \"" .. chosen .. "\""
+					.. (ok and "" or (": refused, " .. tostring(why)))
+			end
+		end
+	end
+	if #named > 0 then log("named " .. table.concat(named, ", ")) end
+end
+
+-- The station groups construction `con`'s stations alone make up, as
+-- nameStationGroups takes them.
+local function constructionGroups(con)
+	local c = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+	local mine, byGroup, out = {}, {}, {}
+	for _, s in ipairs(c and c.stations or {}) do mine[s] = true end
+	for _, s in ipairs(c and c.stations or {}) do
+		local group = -1
+		pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(s) end)
+		if type(group) == "number" and group >= 0 and not byGroup[group] then
+			local g = api.engine.getComponent(group, api.type.ComponentType.STATION_GROUP)
+			local alone = g ~= nil
+			for _, other in ipairs(g and g.stations or {}) do
+				if not mine[other] then alone = false end
+			end
+			if alone then
+				byGroup[group] = { group = group, stations = {} }
+				out[#out + 1] = byGroup[group]
+			end
+		end
+		if byGroup[group] then table.insert(byGroup[group].stations, s) end
+	end
+	return out
+end
+
 -- An edit of a construction (its modules or parameters, an upgrade): the
 -- construction the action names removed and the new one built in one
 -- proposal, the old mapped to the new (old2new), as the game's own upgrade
@@ -247,6 +339,13 @@ function HANDLERS.BuildConstruction(build)
 	context.gatherBuildings = true
 	context.gatherFields = true
 	local built = buildProposal(proposal, context)
+	-- A station's group by the name the tool gave the construction, where
+	-- the game left it unnamed (nameStationGroups).
+	pcall(function()
+		local con = constructionAt({ file = build.file, at = build.transform.origin })
+		local groups = constructionGroups(con)
+		if #groups > 0 then nameStationGroups(groups, build.name) end
+	end)
 	if require_companies().isHeadquarters(api, build.file) then
 		-- Whether the engine took it as the company's headquarters (its
 		-- PLAYER component's `headquarters`), for hook.log: the game's
@@ -423,40 +522,75 @@ end
 -- its own entrance and internal track. Removing only the outermost links
 -- leaves duplicate track inside a branched depot (Steam 40408). Existing
 -- nodes and splits anchor the external network and are never peeled off.
-function networkInto(proposal, network, templateName, style, polyline, dangling)
+function apply.ownStreets(polyline)
 	local links, skipped = polyline.links, {}
-	if dangling then
-		local degree, incident = {}, {}
-		for i = 0, #polyline.vertices - 1 do degree[i], incident[i] = 0, {} end
-		for k, link in ipairs(links) do
-			for _, i in ipairs({ link.from, link.to }) do
-				degree[i] = degree[i] + 1
-				incident[i][#incident[i] + 1] = k
+	local degree, incident = {}, {}
+	for i = 0, #polyline.vertices - 1 do degree[i], incident[i] = 0, {} end
+	for k, link in ipairs(links) do
+		for _, i in ipairs({ link.from, link.to }) do
+			degree[i] = degree[i] + 1
+			incident[i][#incident[i] + 1] = k
+		end
+	end
+	local function loose(i) return polyline.vertices[i + 1].resolve == "New" and degree[i] == 1 end
+	local queue, removed = {}, {}
+	for i = 0, #polyline.vertices - 1 do if loose(i) then queue[#queue + 1] = i end end
+	local head = 1
+	while head <= #queue do
+		local i = queue[head]
+		head = head + 1
+		for _, k in ipairs(incident[i]) do
+			if not removed[k] then
+				removed[k] = true
+				local link = links[k]
+				local other = link.from == i and link.to or link.from
+				degree[i], degree[other] = degree[i] - 1, degree[other] - 1
+				if loose(other) then queue[#queue + 1] = other end
 			end
 		end
-		local function loose(i) return polyline.vertices[i + 1].resolve == "New" and degree[i] == 1 end
-		local queue, removed = {}, {}
-		for i = 0, #polyline.vertices - 1 do if loose(i) then queue[#queue + 1] = i end end
-		local head = 1
-		while head <= #queue do
-			local i = queue[head]
-			head = head + 1
-			for _, k in ipairs(incident[i]) do
-				if not removed[k] then
-					removed[k] = true
-					local link = links[k]
-					local other = link.from == i and link.to or link.from
-					degree[i], degree[other] = degree[i] - 1, degree[other] - 1
-					if loose(other) then queue[#queue + 1] = other end
+	end
+	links = {}
+	for k, link in ipairs(polyline.links) do if not removed[k] then links[#links + 1] = link end end
+	for i, v in ipairs(polyline.vertices) do skipped[i] = v.resolve == "New" and degree[i - 1] == 0 end
+	return links, skipped
+end
+
+function networkInto(proposal, network, templateName, style, polyline, dangling)
+	local links, skipped = polyline.links, {}
+	local settings = polyline.junctions
+	if dangling then
+		links, skipped = apply.ownStreets(polyline)
+		-- The tool's settings at the construction's own street's nodes, or
+		-- naming its own edges (the entrance at the junction it joins), go
+		-- with that street: they name what this build does not make
+		-- (2026-10-02: a street station refused in every game, "the
+		-- junction no longer exists"). The construction and its refresh
+		-- give those junctions the game's own, alike in every game.
+		local keep, ownEdges, ownNodes = {}, {}, {}
+		for _, link in ipairs(links) do keep[link] = true end
+		local function place(i)
+			local p = arr(polyline.vertices[i + 1].pos)
+			return { x = p[1], y = p[2], z = p[3] }
+		end
+		for _, link in ipairs(polyline.links) do
+			if not keep[link] then
+				local net = link.kind and link.kind.network
+				ownEdges[#ownEdges + 1] = { network = net, ends = { a = place(link.from), b = place(link.to) } }
+				for _, i in ipairs({ link.from, link.to }) do
+					if skipped[i + 1] then ownNodes[#ownNodes + 1] = { network = net, at = place(i) } end
 				end
 			end
 		end
-		links = {}
-		for k, link in ipairs(polyline.links) do if not removed[k] then links[#links + 1] = link end end
-		for i, v in ipairs(polyline.vertices) do skipped[i] = v.resolve == "New" and degree[i - 1] == 0 end
+		local left
+		settings, left = junctions.without(settings, ownNodes, ownEdges)
+		if #left > 0 then
+			local ok, text = pcall(junctions.summary, { EditJunctions = { changes = left } })
+			log("left to the construction: " .. (ok and text or (#left .. " junction(s)")))
+		end
 	end
+	-- The junctions' settings go with it (junctions.into, below).
 	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
-		removed_nodes = polyline.removed_nodes, junctions = polyline.junctions }
+		removed_nodes = polyline.removed_nodes, junctions = settings }
 	local nodesOf = {}
 	local function nodes(n)
 		if nodesOf[n] == nil then nodesOf[n] = readNodes(n) end
@@ -732,6 +866,142 @@ end
 -- demolition beyond what was asked). Raises otherwise; returns the
 -- entities it removes, for the log. A removal whose list does not read
 -- passes only when it names none (as before schema 15).
+-- The asset groups near (x, y) that hold an asset of `model` there: the
+-- game's octree first, every asset group where it gives none.
+local function assetGroupsAt(model, x, y, z)
+	local engine = module("engine")
+	local GROUP = api.type.ComponentType.ASSET_GROUP
+	local candidates = {}
+	local ok, near = pcall(function()
+		return api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(x, y), 1, GROUP)
+	end)
+	if ok and type(near) == "table" then candidates = near end
+	-- TF3 (build 40408) refuses to list asset groups ("Cannot loop over this
+	-- component type"): then the octree's answer, none, stands.
+	if #candidates == 0 then
+		local okAll, all = pcall(api.engine.getEntitiesWithComponent, GROUP)
+		if okAll and type(all) == "table" then candidates = all end
+	end
+	local out = {}
+	for i = 1, #candidates do
+		local g = candidates[i]
+		local okA, assets = pcall(engine.assetsOf, g)
+		if okA then
+			for _, a in ipairs(assets) do
+				if engine.assetAt(a, model, x, y, z) then
+					out[#out + 1] = { entity = g, assets = assets }
+					break
+				end
+			end
+		end
+	end
+	return out
+end
+
+-- Trees and other assets the asset bulldozer took out of their group
+-- (action::Bulldoze::Assets): the one group here that holds exactly
+-- `count` assets, the first and every one removed among them, removed and,
+-- unless every asset of it went, built again from this game's own copy
+-- without them, as the tool builds it (tpf3mp/engine.lua, captureAssets;
+-- construction_builder_util::CreateProposalAddAsset, build 40408): one
+-- construction entity at the world's origin whose desc is autoRemovable and
+-- whose one subconstruction lists the assets kept, the thin ones then the
+-- full ones, each its model's file and its world matrix. TF3's
+-- Proposal.ConstructionEntity has no writable fileName (it reads the
+-- desc's, empty as new() makes it), and its construction is a
+-- Proposal.ConstructionResult, whose subconstructions are set. Any other
+-- group here, or a removed asset this game cannot tell from another,
+-- refuses it, so no game removes other trees than the player's. Paid by the
+-- player's company, as the player's own build. The log says the group and
+-- its assets before and after, in every game.
+local function removeAssets(a, context)
+	local engine = module("engine")
+	local f = a.first
+	local found = {}
+	for _, g in ipairs(assetGroupsAt(f.model, f.at.x, f.at.y, f.at.z)) do
+		if #g.assets == a.count then
+			local used, all = {}, true
+			for _, r in ipairs(a.removed) do
+				if not engine.takeAsset(g.assets, used, r.model, r.at.x, r.at.y, r.at.z) then all = false break end
+			end
+			if all then found[#found + 1] = { entity = g.entity, assets = g.assets, used = used } end
+		end
+	end
+	if #found ~= 1 then
+		error(#found == 0 and ("no asset group of " .. a.count .. " assets with those trees here")
+			or ("more than one asset group of " .. a.count .. " assets with those trees here"), 0)
+	end
+	local group = found[1]
+	for _, r in ipairs(a.removed) do
+		if engine.assetsAt(group.assets, r.model, r.at.x, r.at.y, r.at.z) > 1 then
+			error(string.format("two assets of %s at %.3f, %.3f, %.3f here: which one went is not clear",
+				tostring(r.model), r.at.x, r.at.y, r.at.z), 0)
+		end
+	end
+	local P = api.type.Proposal
+	local column = api.type.Vec4f.new
+	local function mat4(m)
+		return api.type.Mat4f.new(column(m[1], m[2], m[3], m[4]), column(m[5], m[6], m[7], m[8]),
+			column(m[9], m[10], m[11], m[12]), column(m[13], m[14], m[15], m[16]))
+	end
+	-- The assets kept, in the group's order (thin, then full), as the tool
+	-- lists them.
+	local models = {}
+	for i, asset in ipairs(group.assets) do
+		if not group.used[i] then
+			local tm = P.TransformedModel.new()
+			tm.id = asset.model
+			tm.transf = mat4(engine.assetMatrix(asset, a.mirrored))
+			models[#models + 1] = tm
+		end
+	end
+	local proposal = P.new()
+	proposal.toRemove = { group.entity }
+	if #models > 0 then
+		local sub = P.Subconstruction.new()
+		sub.models = models
+		local ce = P.ConstructionEntity.new()
+		local desc = ce.desc
+		if desc == nil then error("this game makes no construction desc for an asset group", 0) end
+		desc.autoRemovable = true
+		ce.desc = desc
+		local con = ce.construction
+		if con == nil then error("this game makes no construction for an asset group", 0) end
+		con.subconstructions = { sub }
+		ce.construction = con
+		ce.transf = mat4({ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 })
+		ce.playerEntity = a.owned and company() or -1
+		proposal.toAdd = { ce }
+	end
+	log(string.format("trees: asset group %d of %d assets, %d removed (%s at %.2f,%.2f), rebuilt with %d",
+		group.entity, #group.assets, #a.removed, tostring(a.removed[1].model), a.removed[1].at.x,
+		a.removed[1].at.y, #models))
+	run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	-- What stands now: the group that holds the first asset kept, and how
+	-- many it holds; with none kept, whether a group still holds the first
+	-- one removed (the same in every game, or the replay differed).
+	local function holding(model, x, y, z, what)
+		local now = assetGroupsAt(model, x, y, z)
+		local counts = {}
+		for _, g in ipairs(now) do counts[#counts + 1] = tostring(#g.assets) end
+		return #now == 0 and ("no group holds the " .. what)
+			or (#now .. " group(s) hold the " .. what .. ", of " .. table.concat(counts, ",") .. " assets")
+	end
+	local after
+	for i, asset in ipairs(group.assets) do
+		if not group.used[i] then
+			after = holding(asset.model, asset.x, asset.y, asset.z, "first tree kept")
+			break
+		end
+	end
+	if after == nil then
+		local r = a.removed[1]
+		after = holding(r.model, r.at.x, r.at.y, r.at.z, "first tree removed")
+	end
+	log("trees: after the rebuild " .. after)
+	return true
+end
+
 local function townBuildingsRemoved(proposal, named)
 	local ok, removed = pcall(function()
 		local l, out = proposal.toRemove, {}
@@ -806,6 +1076,8 @@ function HANDLERS.Bulldoze(b)
 	elseif b.EdgeObject then
 		-- A simple proposal: the game's verdict first (buildProposal).
 		return removeEdgeObject(b.EdgeObject, context)
+	elseif b.Assets then
+		return removeAssets(b.Assets, context)
 	else
 		return false, "a bulldoze of no kind"
 	end
@@ -903,6 +1175,18 @@ local function rebuildWith(e, network, objects)
 	s.comp = api.engine.getComponent(e.id, api.type.ComponentType.BASE_EDGE)
 	s.type = network == "Track" and 1 or 0
 	s.comp.objects = objects
+	-- The edge keeps its owner: its PlayerOwned is a component of its own,
+	-- which the edge's BASE_EDGE does not carry, and without it the rebuilt
+	-- edge would be no one's (a company's road everyone's).
+	local owner = require_companies().ownerOf(api, e.id)
+	if owner ~= nil then
+		local ok = pcall(function() s.playerOwned.player = owner end)
+		if not ok then
+			local owned = api.type.PlayerOwned.new()
+			owned.player = owner
+			s.playerOwned = owned
+		end
+	end
 	proposal.streetProposal.edgesToAdd = { s }
 	proposal.streetProposal.edgesToRemove = { e.id }
 	local configs = {}
@@ -915,6 +1199,117 @@ local function rebuildWith(e, network, objects)
 	return proposal
 end
 
+-- A stop the room placed is the acting company's, the same in every game
+-- (2026-10-02: a company's stops came out another company's, and its
+-- player could not open them). The stop's edge object is named for it
+-- (`playerEntity`), but what the game's windows and its line manager ask
+-- is the owner of the stop's station group (gui/entity_window/
+-- station_group.tl). A street stop's edge object is its station itself
+-- (mission/name_util.tl: an entity with EDGE_OBJECT and STATION), and its
+-- group is the station group system's (getStationGroup of the object); a
+-- stop built as a construction has its stations in the construction. So,
+-- once built, each new object on the edge, its station group, and any
+-- construction with its stations and their groups are given to the acting
+-- company where they are anyone else's, as the game's own missions hand a
+-- stop over (transfer_ownership_util.tl, makeEntitySetPlayerCmd). A
+-- station group that holds a station of another stop is left as it is: it
+-- is not this stop's to give. hook.log says, for each new object, whether
+-- it is a station and which group holds it (2026-10-02, retest: the hand-
+-- over found the objects alone, and no icon showed). `kept` are the
+-- edge's objects as the proposal listed them, the new ones negative.
+local function settleStop(ref, kept, model, name)
+	local ok, e = pcall(stopEdge, ref)
+	if not ok then
+		log("the new " .. tostring(model) .. ": its edge cannot be found again to settle its owner")
+		return
+	end
+	local had = {}
+	for _, o in ipairs(kept) do
+		if o[1] >= 0 then had[o[1]] = true end
+	end
+	local me = company()
+	local companies = require_companies()
+	local C = api.type.ComponentType
+	local seen, fixed, found = {}, {}, {}
+	local function give(entity, what)
+		if type(entity) ~= "number" or entity < 0 or seen[entity] then return end
+		seen[entity] = true
+		local owner = companies.ownerOf(api, entity)
+		if owner == me then return end
+		-- The stop stands either way: a refusal is logged, not the action's.
+		local sent, why = pcall(function() send(api.cmd.makeEntitySetPlayerCmd(entity, me)) end)
+		fixed[#fixed + 1] = what .. " " .. entity .. " (was " .. tostring(owner) .. ")"
+			.. (sent and "" or (": refused, " .. tostring(why)))
+	end
+	local function groupOf(station)
+		local group = -1
+		pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(station) end)
+		if type(group) ~= "number" or group < 0 then return nil end
+		return group
+	end
+	-- The new objects, and every station of this stop: what its groups may
+	-- hold and still be its own.
+	local objects, stations, mine, conOf = {}, {}, {}, {}
+	for _, o in ipairs(e.comp.objects or {}) do
+		if not had[o[1]] then
+			objects[#objects + 1] = o[1]
+			mine[o[1]] = true
+		end
+	end
+	for _, object in ipairs(objects) do
+		local isStation = false
+		pcall(function() isStation = api.engine.getComponent(object, C.STATION) ~= nil end)
+		local con = -1
+		pcall(function() con = api.engine.util.construction.getConstructionEntity(object) end)
+		if type(con) ~= "number" then con = -1 end
+		local group = groupOf(object)
+		found[#found + 1] = tostring(object) .. (isStation and " a station" or " no station")
+			.. (group and (" in group " .. group .. " (owner " .. tostring(companies.ownerOf(api, group)) .. ")")
+				or " in no group")
+			.. (con >= 0 and (", construction " .. con) or "")
+		if isStation or group then stations[#stations + 1] = object end
+		if con >= 0 then
+			local c = api.engine.getComponent(con, C.CONSTRUCTION)
+			for _, s in ipairs(c and c.stations or {}) do
+				stations[#stations + 1] = s
+				mine[s] = true
+			end
+			conOf[object] = con
+		end
+	end
+	for _, object in ipairs(objects) do
+		give(object, "stop")
+		if conOf[object] then give(conOf[object], "construction") end
+	end
+	local own, byGroup = {}, {}
+	for _, s in ipairs(stations) do
+		give(s, "station")
+		local group = groupOf(s)
+		local g = group and api.engine.getComponent(group, C.STATION_GROUP)
+		local alone = g ~= nil and g ~= false
+		for _, other in ipairs(g and g.stations or {}) do
+			if not mine[other] then alone = false end
+		end
+		if alone then
+			give(group, "station group")
+			if not byGroup[group] then
+				byGroup[group] = { group = group, stations = {} }
+				own[#own + 1] = byGroup[group]
+			end
+			table.insert(byGroup[group].stations, s)
+		end
+	end
+	log("the new " .. tostring(model) .. ": " .. table.concat(found, "; "))
+	if #fixed > 0 then
+		log("the new " .. tostring(model) .. " made the acting company's (" .. tostring(me) .. "): "
+			.. table.concat(fixed, ", "))
+	end
+	-- Named after its town, as nameStationGroups names a stop's group.
+	-- By the tool's name where the stop carries one (only where the game
+	-- left its group unnamed), else after its town.
+	nameStationGroups(own, name, PROVISIONAL_STOP_NAME)
+end
+
 -- How near its edge's centreline a stop's place is: the originator's own
 -- point of that centreline, rounded to the millimetre.
 local STOP_TOLERANCE = 0.5
@@ -924,6 +1319,8 @@ local NEW_EDGE_OBJECT = -400000000
 
 function HANDLERS.PlaceStop(stop)
 	local network = stop.edge.network
+	-- The tool's own name for it, as every game received it.
+	local native = apply.NATIVE_STOP_NAMES and type(stop.name) == "string" and stop.name ~= "" and stop.name or nil
 	local e = stopEdge(stop.edge)
 	local u, off = geom.parameterAt(e.a, e.ta, e.b, e.tb, stop.at.x, stop.at.y)
 	if off > STOP_TOLERANCE then error("the stop's place is not on its edge", 0) end
@@ -966,7 +1363,10 @@ function HANDLERS.PlaceStop(stop)
 		eo.oneWay = stop.one_way == true
 		eo.model = stop.model
 		eo.playerEntity = company()
-		eo.name = ""
+		-- A name, so the engine gives the stop its NAME and its owner
+		-- (docs/BUILDING.md: an empty name leaves both off); its group is
+		-- named after its town once built (settleStop).
+		eo.name = native or PROVISIONAL_STOP_NAME
 		added[k] = eo
 	end
 	local proposal = rebuildWith(e, network, objects)
@@ -976,7 +1376,9 @@ function HANDLERS.PlaceStop(stop)
 	-- Paid by the player, as the tool builds.
 	local context = api.type.Context.new()
 	context.player = company()
-	return buildProposal(proposal, context)
+	local built = buildProposal(proposal, context)
+	settleStop(stop.edge, objects, stop.model, native)
+	return built
 end
 
 -- A stop the bulldozer removes: the object of that construction on the

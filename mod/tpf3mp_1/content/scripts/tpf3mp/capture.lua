@@ -479,18 +479,33 @@ end
 -- (capture.construction), or refused. One that removes something that is no
 -- construction and adds a construction of no file is the asset
 -- bulldozer's (trees and other assets: their group rebuilt without the ones
--- removed), refused with what it removes (tpf3mp/engine.lua,
--- notConstruction).
+-- removed), as is one that removes an asset group alone (its last assets
+-- taken): carried behind TPF3MP_TREE_BULLDOZE=1 (engine.captureAssets),
+-- else refused with what it removes (tpf3mp/engine.lua, notConstruction).
 function capture.bulldoze(proposal)
 	local toRemove = get(proposal, "toRemove")
 	if (length(get(proposal, "toAdd")) or 0) > 0 and (length(toRemove) or 0) > 0 then
 		for i = 1, length(toRemove) do
 			local entity = get(toRemove, i)
 			local c = api.engine.getComponent(entity, api.type.ComponentType.CONSTRUCTION)
-			if c == nil then return nil, module("engine").notConstruction(entity) end
+			if c == nil then
+				local engine = module("engine")
+				-- Trees and other assets: carried where the hook lets
+				-- them (TPF3MP_TREE_BULLDOZE=1), for a trial of the replay.
+				local okA, asset = pcall(api.engine.getComponent, entity, api.type.ComponentType.ASSET_GROUP)
+				if okA and asset ~= nil and engine.treesOn() then return engine.captureAssets(proposal) end
+				return nil, engine.notConstruction(entity)
+			end
 			if (length(get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
 		end
 		return nil, "a bulldozer proposal that builds"
+	end
+	-- The last assets of a group taken: the asset bulldozer removes the
+	-- group and adds nothing (CreateProposalAddAsset with no model kept).
+	if (length(get(proposal, "toAdd")) or 0) == 0 and (length(toRemove) or 0) == 1 then
+		local engine = module("engine")
+		local okA, asset = pcall(api.engine.getComponent, get(toRemove, 1), api.type.ComponentType.ASSET_GROUP)
+		if okA and asset ~= nil and engine.treesOn() then return engine.captureAssets(proposal) end
 	end
 	return module("engine").bulldoze(proposal)
 end
@@ -729,9 +744,27 @@ function capture.depotRef(api, depot)
 	return nil, nil, "a depot " .. file .. " does not list among its depots"
 end
 
+-- What the log says of a purchase's depot: the entity the store passed, its
+-- owner, and the construction and index the room names it by (or why it
+-- cannot), so a vehicle that leaves another depot than the player meant
+-- shows which one the store chose.
+function capture.depotText(depot, owner, ref, index, why)
+	local whose = type(owner) == "number" and ("owned by " .. string.format("%d", owner)) or "owned by no one"
+	if ref == nil then
+		return string.format("the store buys at depot entity %s (%s), which the room cannot name: %s",
+			tostring(depot), whose, tostring(why))
+	end
+	return string.format("the store buys at depot entity %s (%s): depot %d of %s at (%.1f, %.1f, %.1f)",
+		tostring(depot), whose, index or -1, tostring(ref.file), ref.at.x, ref.at.y, ref.at.z)
+end
+
 -- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
 function capture.vehicleBuy(ctx, _player, depot, config)
 	local ref, index, why = ctx.depot(depot)
+	if type(ctx.say) == "function" then
+		local owner = type(ctx.owner) == "function" and ctx.owner(depot) or nil
+		pcall(ctx.say, capture.depotText(depot, owner, ref, index, why))
+	end
 	if ref == nil then
 		error("a depot the room cannot name" .. (why and (": " .. tostring(why)) or ""), 0)
 	end

@@ -70,9 +70,21 @@ Terrain paint and asset brushes remain refused. The track tools travel as
 The existing junction gate remains off pending its own game acceptance.
 The station-access decision is recorded in D22; other proposed policies remain unchanged.
 
+## Company tools and stop follow-up (2026-10-03)
+
+Ported the newer `local/combined-dev` changes through `34a2edf`: native GUI
+and tool company selection, refreshed Lua APIs, room-company map markers,
+stop/station ownership and names, and station entrance junction filtering.
+The current branch-pruning algorithm and all existing acceptance gates stay.
+The line-viewer probe remains diagnostic; it does not repair invalid route data.
+Trees and rocks can be removed through the room only with
+`TPF3MP_TREE_BULLDOZE=1`; they are still disabled by default.
+Lua fixtures and native helper/static-profile checks cover this integration;
+no fresh ordinary two-player game acceptance is claimed.
+
 ## Compatibility
 
 This selected combination is distinct from both the previous `dev` and PR #37:
-protocol **16**, bridge **23**, action schema **24**. Update launcher, hook,
+protocol **16**, bridge **23**, action schema **25**. Update launcher, hook,
 mod and relay together before release. Older peers must fail version checks;
 this branch is not compatible with the currently deployed relay until upgraded.
