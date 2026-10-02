@@ -2239,6 +2239,29 @@ drawn says the line system keeps route data for the save's player's lines
 only, which is the simulation's own and is not changed; the next step is
 then to find what fills `line2data` and its player.
 
+**The line viewers draw every company's lines** (`view: LineViewer lines
+of the player/call`, guiplayer.rs; found 2026-10-02 with the probes of
+4415a50). A line viewer builds a line's whole route (`sub_7f10a0` with
+stop filter -1) only for its candidate lines, and `sub_7f3ea0` (called by
+`LineViewer::Update` and `UI::MetroViewer::vf4`) makes them the lines of
+one player from the line system's player-to-lines index (`sub_ad2620`,
+the index `getLinesForPlayer` reads), that player being the one the viewer
+stored when it was made (`[viewer+0x28]`, from the GUI player read of
+`sub_29f66d0`, `RendererComponentDelegate`). So only the save's player's
+lines were drawn while the GUI was the room's first company, and none
+otherwise (seen: a founded company's line and the first company's both
+got only stop filter 0 geometry, and only the first company's got -1, and
+only while the player played for it). That one call is redirected: in a
+room it answers the lines of every company the GUI notes
+(`tpf3mp.companies`), or with `TPF3MP_HOOK_GUI_ALL_COMPANIES=0` the
+player's company's, in a vector the hook keeps until the next call (the
+caller copies it at once). Outside a room it answers as the game. The
+index function and its other callers, the simulation's among them, are
+untouched: the change is to which lines a viewer draws. hook.log, once:
+`view-company: the line viewers draw the lines of 214443, 372609 (2
+line(s)) in place of player 372609's (view: LineViewer lines of the
+player/call)`.
+
 **A purchase's depot**, in hook.log when the store buys (the GUI's
 capture, `capture.depotText`): `the store buys at depot entity 5001 (owned
 by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7,
