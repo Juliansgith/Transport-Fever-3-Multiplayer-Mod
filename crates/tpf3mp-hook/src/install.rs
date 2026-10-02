@@ -42,6 +42,10 @@ pub const PRINT_TARGET: &str = "luaB_print";
 /// them the tools stay refused in the room's game (crate::builds).
 pub const ADD_TARGET: &str = "CommandList::Add";
 pub const BUILD_APPLY_TARGET: &str = "WorldBuildProposal apply";
+/// The profile's name for the build tools' own preview, which they draw
+/// natively and tell no game script about (crate::preview). Without it no game
+/// shows another player's build in progress.
+pub const PREVIEW_UPDATE_TARGET: &str = "UI::StreetBuilder::CreateProposalAndUpdate";
 
 /// Lua's `print`, reached through its detour's trampoline.
 static PRINT_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -97,6 +101,8 @@ static GAME_TIME: AtomicUsize = AtomicUsize::new(0);
 /// The room's step the last batch ended at: a batch that does not start
 /// right after it (a world loaded) logs its counters too.
 static LAST_STEP_RUN: AtomicU64 = AtomicU64::new(u64::MAX);
+/// What [`log_preview`] last wrote, so it writes only when a counter moved.
+static PREVIEW_LOGGED: Mutex<(u64, u64, u64)> = Mutex::new((0, 0, 0));
 /// The time of the game's own step inside the step detour's call running
 /// now (`crate::perf`): the detour's time less this is the gate's.
 static STEP_GAME_NANOS: AtomicU64 = AtomicU64::new(0);
@@ -423,7 +429,33 @@ fn log_counters(first: u64, updates: u32, checkpoint: bool) {
         if let Some(line) = crate::roadtrace::take_checkpoint(last) {
             log_line(&line);
         }
+        log_preview();
     }
+}
+
+/// What the build preview detour has seen, when it has moved since the last
+/// time it said: the previews this game reported to the room, the pointers it
+/// heard from the room, and the frames the game's own renderer drew the other
+/// player's preview (docs/HOOKS.md, "The other player's build preview"). No
+/// `reported` at all means the detour never fires, which is what a game with no
+/// build tool open looks like; `heard` without `drawn` means the room's pointer
+/// is here and there is no builder to draw it with.
+fn log_preview() {
+    let seen = crate::preview::seen();
+    let drawn = crate::preview::drawn();
+    let received = crate::preview::received();
+    let mut last = PREVIEW_LOGGED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if *last == (seen, drawn, received) {
+        return;
+    }
+    *last = (seen, drawn, received);
+    drop(last);
+    log_line(&format!(
+        "preview: {seen} reported to the room, {received} heard from it, \
+         {drawn} frame(s) drawn for the other player"
+    ));
 }
 
 /// The detour: every call of the game's step comes here, and runs the
@@ -482,6 +514,9 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         }
         for text in lua::take_said() {
             driver.say(text);
+        }
+        if let Some(cursor) = lua::take_cursor() {
+            driver.cursor(cursor);
         }
         // The main menu's Multiplayer window, whose lobby the step just read.
         crate::lobby::exchange(driver.as_mut());
@@ -766,6 +801,26 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         _ => "the build tools stay refused: the profile has no build targets".to_owned(),
     };
     log_line(&builds);
+
+    // The player's build preview, where the game draws it. The tools tell no
+    // game script about it, so without this the room never hears a cursor and
+    // no game shows another player's build in progress.
+    let preview = match at(PREVIEW_UPDATE_TARGET) {
+        // SAFETY: the function the profile resolved, which no thread runs yet;
+        // detour_forever installs it for good.
+        Ok(target) => {
+            // SAFETY: as above.
+            unsafe { crate::preview::install(target, detour_forever) }
+                .map(|()| {
+                    "the player's build preview is read where the game draws it, and the \
+                     other player's is drawn there by this game's own renderer"
+                        .to_owned()
+                })
+                .unwrap_or_else(|error| format!("the build preview is not read: {error}"))
+        }
+        Err(_) => "the build preview is not read: the profile has no preview target".to_owned(),
+    };
+    log_line(&preview);
     // Loading the room's world from the main menu (docs/HOOKS.md, "Loading
     // from the main menu"): without it, a game needs a world up to take the
     // room's, as before.

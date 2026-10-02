@@ -40,10 +40,10 @@ use tpf3mp_net::{
 };
 use tpf3mp_proto::{
     CONTROL_MAX_FRAME, ChatText, ClientMessage, ContentDiff, ContentManifest, CreateRoom,
-    GameMessage, Hello, IntentRejection, Invite, JoinRoom, LaneDigest, PROTOCOL_VERSION, Payload,
-    Platform, PlayerId, RejectReason, Request, RequestError, Response, RoomView, SavedWorld,
-    Secret, ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
-    Welcome,
+    DATAGRAM_MAX_FRAME, Datagram, GameMessage, Hello, IntentRejection, Invite, JoinRoom,
+    LaneDigest, PROTOCOL_VERSION, Payload, Platform, PlayerId, RejectReason, Request, RequestError,
+    Response, RoomView, SavedWorld, Secret, ServerMessage, SnapshotId, Speed, TURN_MAX_FRAME, Text,
+    Turn, TurnMessage, TurnStart, Welcome, decode_datagram, encode_datagram,
 };
 
 pub use follower::{Action, FollowError, TurnFollower};
@@ -296,6 +296,8 @@ pub enum ClientEvent {
     ContentDiff(Option<ContentDiff>),
     /// The server's operator says something to everyone connected.
     Notice(ChatText),
+    /// An advisory datagram from another member of the room.
+    Advisory(Datagram),
     /// The connection ended.
     Closed(quinn::ConnectionError),
 }
@@ -537,6 +539,7 @@ async fn connect_within(
         events.clone(),
         Arc::new(Semaphore::new(EVENT_BYTES)),
     ));
+    tokio::spawn(read_advisory(connection.clone(), events.clone()));
     tokio::spawn({
         let connection = connection.clone();
         async move {
@@ -793,6 +796,23 @@ impl Client {
         }
     }
 
+    /// Sends an advisory datagram, for cursor and preview updates.
+    ///
+    /// Advisory datagrams are fire-and-forget: they bypass the turn stream,
+    /// are not buffered if the peer's window is full, and do not stall the
+    /// sequencer if lost.
+    pub fn send_advisory(&self, datagram: &Datagram) -> Result<(), ClientError> {
+        let frame = match encode_datagram(datagram, DATAGRAM_MAX_FRAME) {
+            Ok(frame) => frame,
+            Err(_) => return Ok(()),
+        };
+        match self.connection.send_datagram(frame.into()) {
+            Ok(()) => Ok(()),
+            Err(quinn::SendDatagramError::ConnectionLost(_)) => Err(ClientError::Disconnected),
+            Err(_) => Ok(()),
+        }
+    }
+
     async fn send(&self, message: GameMessage) -> Result<(), ClientError> {
         self.requests
             .outgoing
@@ -1003,6 +1023,26 @@ async fn read_turn_stream(
             // The server finished the stream, or the connection ended.
             Err(error) if error.is_disconnect() => return Ok(()),
             Err(_) => return Err(TurnStreamError::Violation),
+        }
+    }
+}
+
+/// Reads advisory datagrams from the server and forwards them to the event
+/// channel.
+async fn read_advisory(connection: quinn::Connection, events: mpsc::Sender<Queued>) {
+    loop {
+        let Ok(frame) = connection.read_datagram().await else {
+            return;
+        };
+        let Ok(datagram) = decode_datagram::<Datagram>(&frame, DATAGRAM_MAX_FRAME) else {
+            continue;
+        };
+        if events
+            .send((ClientEvent::Advisory(datagram), None))
+            .await
+            .is_err()
+        {
+            return;
         }
     }
 }

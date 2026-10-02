@@ -64,8 +64,8 @@ use tpf3mp_bridge::{
     StepGate,
 };
 use tpf3mp_proto::{
-    ChatText, Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Seal, Secret, Speed,
-    action::Action,
+    ChatText, Cursor, Event, EventBody, FixedBytes, LaneDigest, Payload, PlayerId, Seal, Secret,
+    Speed, action::Action,
 };
 
 use crate::lanedump::{self, DumpOrder, LaneDumps};
@@ -130,6 +130,11 @@ pub trait RoomGate {
     /// The launcher's lobby, if new ([`Session::take_lobby`]).
     fn take_lobby(&mut self) -> Option<LobbyView> {
         None
+    }
+    /// Sends an advisory cursor update to the room.
+    fn cursor(&mut self, cursor: Cursor) -> Result<(), SessionError> {
+        let _ = cursor;
+        Ok(())
     }
 }
 
@@ -247,6 +252,9 @@ impl RoomGate for Session {
     fn take_lobby(&mut self) -> Option<LobbyView> {
         Session::take_lobby(self)
     }
+    fn cursor(&mut self, cursor: Cursor) -> Result<(), SessionError> {
+        Session::cursor(self, cursor)
+    }
 }
 
 /// The game, as the session sees it. It keeps the actions the room orders
@@ -314,8 +322,11 @@ impl Game for HookGame {
             self.refused.push((*command, format!("{reason:?}")));
         }
         self.window.push(notice.clone());
-        // The room and its chat are for the Multiplayer window, not the log.
-        if !matches!(notice, Notice::Room(_) | Notice::Chat { .. }) {
+        // The room, its chat and advisory cursors are for the GUI, not the log.
+        if !matches!(
+            notice,
+            Notice::Room(_) | Notice::Chat { .. } | Notice::Cursor(_)
+        ) {
             self.notices.push(format!("{notice:?}"));
         }
     }
@@ -353,6 +364,8 @@ pub trait StepHandler: Send {
     fn chosen_speed(&mut self, speedup: u64);
     /// See [`StepDriver::say`].
     fn say(&mut self, text: ChatText);
+    /// See [`StepDriver::cursor`].
+    fn cursor(&mut self, cursor: Cursor);
     /// See [`StepDriver::on_menu`].
     fn on_menu(&mut self);
     /// See [`StepDriver::lobby`].
@@ -380,6 +393,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn say(&mut self, text: ChatText) {
         StepDriver::say(self, text);
+    }
+    fn cursor(&mut self, cursor: Cursor) {
+        StepDriver::cursor(self, cursor);
     }
     fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
         StepDriver::lobby(self, actions)
@@ -589,6 +605,14 @@ impl<G: RoomGate> StepDriver<G> {
             self.log
                 .push(format!("the room did not hear the player: {error}"));
         }
+    }
+
+    /// Sends the player's pointer or build preview to the room.
+    pub fn cursor(&mut self, cursor: Cursor) {
+        if self.phase != Phase::Running {
+            return;
+        }
+        let _ = self.gate.cursor(cursor);
     }
 
     /// The game's speed row says `speedup` (0 paused, 1 for 1x, ...). In the

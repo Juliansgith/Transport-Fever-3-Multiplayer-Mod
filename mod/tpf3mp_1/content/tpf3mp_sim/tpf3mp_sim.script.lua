@@ -262,6 +262,240 @@ function data()
 			or ("scripts' builds from the game scripts' GUI state are not guarded: " .. tostring(why)))
 	end
 
+	local function xy(v)
+		if v == nil then return nil end
+		local x = v.x or v[1]
+		local y = v.y or v[2]
+		if type(x) == "number" and type(y) == "number" then return x, y end
+		return nil
+	end
+
+	-- Extracts ground-plane position and optional Hermite curves from a build proposal.
+	local function extractProposalPreview(_id, proposal)
+		if type(proposal) ~= "table" and type(proposal) ~= "userdata" then return nil, nil end
+		local ok, px, py, curves = pcall(function()
+			local street = type(proposal.proposal) == "table" and proposal.proposal or nil
+			local curveList = {}
+			local nodeMap = {}
+			if street and type(street.addedNodes) == "table" then
+				for _, n in ipairs(street.addedNodes) do
+					if type(n.entity) == "number" and n.comp and n.comp.position then
+						local nx, ny = xy(n.comp.position)
+						if nx and ny then nodeMap[n.entity] = { nx, ny } end
+					end
+				end
+			end
+			local function getNodePos(entityId)
+				if type(entityId) ~= "number" then return nil end
+				if nodeMap[entityId] then return nodeMap[entityId] end
+				if entityId > 0 and api and api.engine and api.engine.entityExists and api.engine.entityExists(entityId) then
+					local okComp, c = pcall(api.engine.getComponent, entityId, api.type.ComponentType.BASE_NODE)
+					if okComp and c and c.position then
+						local nx, ny = xy(c.position)
+						if nx and ny then
+							nodeMap[entityId] = { nx, ny }
+							return nodeMap[entityId]
+						end
+					end
+				end
+				return nil
+			end
+			if street and type(street.addedSegments) == "table" then
+				for _, seg in ipairs(street.addedSegments) do
+					local comp = seg.comp
+					if comp and comp.node0 and comp.node1 then
+						local p0 = getNodePos(comp.node0)
+						local p1 = getNodePos(comp.node1)
+						local tx0, ty0 = xy(comp.tangent0)
+						local tx1, ty1 = xy(comp.tangent1)
+						if p0 and p1 and tx0 and ty0 and tx1 and ty1 then
+							curveList[#curveList + 1] = {
+								p0[1], p0[2],
+								p1[1], p1[2],
+								tx0, ty0,
+								tx1, ty1,
+							}
+							if #curveList >= 16 then break end
+						end
+					end
+				end
+			end
+			local x, y
+			if #curveList > 0 then
+				local lastCurve = curveList[#curveList]
+				x, y = lastCurve[3], lastCurve[4]
+			elseif street and type(street.addedNodes) == "table" and #street.addedNodes > 0 then
+				local last = street.addedNodes[#street.addedNodes]
+				local pos = last and last.comp and last.comp.position
+				if pos then x, y = xy(pos) end
+			end
+			if not x or not y then
+				local toAdd = type(proposal.toAdd) == "table" and proposal.toAdd or nil
+				if toAdd and #toAdd > 0 then
+					local first = toAdd[1]
+					local transf = first and (first.transf or first.transformation)
+					if type(transf) == "table" and #transf >= 14 then
+						x, y = transf[13], transf[14]
+					end
+				end
+			end
+			return x, y, (#curveList > 0 and curveList or nil)
+		end)
+		if ok and px and py then
+			return px, py, curves
+		end
+		return nil, nil
+	end
+
+	-- Generates a closed ribbon polygon along Hermite curve c = {x0, y0, x1, y1, tx0, ty0, tx1, ty1}
+	local function previewPolygon(c, width)
+		local span = (c[3] - c[1]) ^ 2 + (c[4] - c[2]) ^ 2
+		local length = math.sqrt(span)
+		local samples = math.max(6, math.min(32, math.ceil(length / 15)))
+		local left, right = {}, {}
+		for i = 0, samples do
+			local t = i / samples
+			local t2, t3 = t * t, t * t * t
+			local h0, h1 = 2 * t3 - 3 * t2 + 1, -2 * t3 + 3 * t2
+			local h2, h3 = t3 - 2 * t2 + t, t3 - t2
+			local x = h0 * c[1] + h1 * c[3] + h2 * c[5] + h3 * c[7]
+			local y = h0 * c[2] + h1 * c[4] + h2 * c[6] + h3 * c[8]
+			local d0, d1 = 6 * t2 - 6 * t, -6 * t2 + 6 * t
+			local d2, d3 = 3 * t2 - 4 * t + 1, 3 * t2 - 2 * t
+			local dx = d0 * c[1] + d1 * c[3] + d2 * c[5] + d3 * c[7]
+			local dy = d0 * c[2] + d1 * c[4] + d2 * c[6] + d3 * c[8]
+			local norm = math.sqrt(dx * dx + dy * dy)
+			if norm < 0.001 then
+				dx, dy = c[3] - c[1], c[4] - c[2]
+				norm = math.sqrt(dx * dx + dy * dy)
+			end
+			if norm < 0.001 then return nil end
+			local nx, ny = -dy / norm * width, dx / norm * width
+			left[#left + 1] = { x + nx, y + ny }
+			right[#right + 1] = { x - nx, y - ny }
+		end
+		local poly = {}
+		for _, pt in ipairs(left) do poly[#poly + 1] = pt end
+		for i = #right, 1, -1 do poly[#poly + 1] = right[i] end
+		return poly
+	end
+
+	local function makeVec2f(x, y)
+		if api and api.type and api.type.Vec2f and api.type.Vec2f.new then
+			return api.type.Vec2f.new(x, y)
+		end
+		return { x, y }
+	end
+
+	local function makeVec4f(r, g, b, a)
+		if api and api.type and api.type.Vec4f and api.type.Vec4f.new then
+			return api.type.Vec4f.new(r, g, b, a)
+		end
+		return { r, g, b, a }
+	end
+
+	local function canDrawMissionZone()
+		return api and api.gui and api.gui.mission
+			and type(api.gui.mission.setZone) == "function"
+			and type(api.gui.mission.removeZone) == "function"
+	end
+
+	-- The sandbox has no mission (api.gui.mission is nil), so the ribbon
+	-- cannot be drawn there. api.util.debug.draw.point draws in world
+	-- coordinates on a layer mask instead, so the same polyline is sampled
+	-- into a chain of points every frame: a dotted hologram in the world,
+	-- visible from any camera, without the game's mission system.
+	--
+	-- This is only the fallback. When a build tool is open, the other player's
+	-- pointer is handed to this game's own StreetBuilder and the game's own
+	-- renderer draws the preview as it does the local player's
+	-- (tpf3mp_hook/src/preview.rs); tpf3mp_native.previewed() says when that
+	-- is going on, and the marker stands down for it.
+	local DEBUG_LAYER = 0x40000000
+	-- Once per game: what the game's own drawing API offers, so the ribbon can
+	-- be drawn with the game's primitives where it has more than a point. The
+	-- game's stdout has it (crash_dump/stdout.txt); print is the one sink every
+	-- Lua state has.
+	local dumpedDraw = false
+	local function dumpDrawApi()
+		if dumpedDraw then return end
+		dumpedDraw = true
+		local function names(t)
+			if type(t) ~= "table" then return "nil" end
+			local out = {}
+			for k in pairs(t) do
+				if type(k) == "string" then out[#out + 1] = k end
+			end
+			table.sort(out)
+			return table.concat(out, " ")
+		end
+		print("[tpf3mp] debug draw api: " .. names(api and api.util and api.util.debug and api.util.debug.draw))
+		print("[tpf3mp] debug api: " .. names(api and api.util and api.util.debug))
+		print("[tpf3mp] gui api: " .. names(api and api.gui))
+	end
+	local function gameDrawsPreview()
+		local native = rawget(_G, "tpf3mp_native")
+		return type(native) == "table" and type(native.previewed) == "function"
+			and native.previewed() == true
+	end
+	local function canDrawDebugPoints()
+		if gameDrawsPreview() then return false end
+		return api and api.util and api.util.debug and api.util.debug.draw
+			and type(api.util.debug.draw.point) == "function"
+			and type(api.util.debug.draw.clear) == "function"
+	end
+
+	local function drawWorldPoint(x, y, z, r, g, b)
+		local vec = api.type and api.type.Vec3f and api.type.Vec3f.new
+			and api.type.Vec3f.new(x, y, z) or { x = x, y = y, z = z }
+		local col = api.type and api.type.Vec3f and api.type.Vec3f.new
+			and api.type.Vec3f.new(r, g, b) or { x = r, y = g, z = b }
+		pcall(api.util.debug.draw.point, vec, col, DEBUG_LAYER)
+	end
+
+	-- One Hermite curve as world points: c = {x0,y0,x1,y1,tx0,ty0,tx1,ty1}.
+	local function drawCurvePoints(c, r, g, b)
+		local span = (c[3] - c[1]) ^ 2 + (c[4] - c[2]) ^ 2
+		local length = math.sqrt(span)
+		local samples = math.max(8, math.min(48, math.ceil(length / 8)))
+		for i = 0, samples do
+			local t = i / samples
+			local t2, t3 = t * t, t * t * t
+			local h0, h1 = 2 * t3 - 3 * t2 + 1, -2 * t3 + 3 * t2
+			local h2, h3 = t3 - 2 * t2 + t, t3 - t2
+			drawWorldPoint(
+				h0 * c[1] + h1 * c[3] + h2 * c[5] + h3 * c[7],
+				h0 * c[2] + h1 * c[4] + h2 * c[6] + h3 * c[8],
+				0.5, r, g, b)
+		end
+	end
+
+	local function playerColor(roster, player)
+		if roster and companies then
+			local ok, c = pcall(companies.of, roster, player)
+			if ok and c and type(c.color) == "table" and #c.color >= 3 then
+				return c.color
+			end
+		end
+		local palette = (companies and companies.PALETTE) or {
+			{ 0.80, 0.16, 0.12 },
+			{ 0.13, 0.42, 0.85 },
+			{ 0.18, 0.66, 0.27 },
+			{ 0.95, 0.72, 0.08 },
+		}
+		local hash = 0
+		local s = tostring(player)
+		for i = 1, #s do
+			hash = (hash * 31 + string.byte(s, i)) % #palette
+		end
+		return palette[hash + 1] or palette[1]
+	end
+
+	local activeProposalSeen = false
+	local localCursorActive = false
+	local lastRemoteCursor = {}
+	local drawnZones = {}
+
 	-- The guard on what this player's personal mods' game scripts send, in
 	-- this state (tpf3mp/modguard.lua): put on once the link is.
 	local PERSONAL_UNGUARDED = "personal-mods-unguarded"
@@ -658,6 +892,14 @@ function data()
 			end
 			local l = linked()
 			if not l or not l:room() then return nil end
+			if type(param) == "table" and param[1] then
+				local px, py, curves = extractProposalPreview(id, param[1])
+				if px and py then
+					activeProposalSeen = true
+					localCursorActive = true
+					l:cursor(px, py, true, tostring(id), curves)
+				end
+			end
 			local clicks = l:clicks()
 			local kind = CAPTURE[id]
 			if kind == nil then note(l, id, name) end
@@ -721,6 +963,127 @@ function data()
 			if not l then return end
 			followUpsInGui(l)
 			if followUps then followUps.seen(l:note(modbuild.NOTE)) end
+
+			if l:room() then
+				dumpDrawApi()
+				if activeProposalSeen then
+					activeProposalSeen = false
+				elseif localCursorActive then
+					localCursorActive = false
+					l:cursor(nil)
+				end
+				-- The world's own debug points of our layer are this frame's:
+				-- clear them, then draw every remote preview again.
+				local debugPoints = canDrawDebugPoints() and not canDrawMissionZone()
+				if debugPoints then pcall(api.util.debug.draw.clear, DEBUG_LAYER) end
+				local cursors = l:cursors()
+				local saved = _state and _state.get and state:get()
+				local roster = type(saved) == "table" and saved.companies or nil
+				local activePlayers = {}
+				for player, cursor in pairs(cursors) do
+					if cursor.building and cursor.x and cursor.y then
+						activePlayers[player] = true
+						local key = tostring(player) .. " " .. tostring(cursor.label or "")
+						if key ~= lastRemoteCursor[player] then
+							lastRemoteCursor[player] = key
+							l:log("player " .. tostring(player):sub(1, 8) .. " previewing build with "
+								.. tostring(cursor.label or "tool") .. " at ("
+								.. string.format("%.1f", cursor.x) .. ", "
+								.. string.format("%.1f", cursor.y) .. ")")
+						end
+
+						if canDrawMissionZone() then
+							local color = playerColor(roster, player)
+							local drawColor = makeVec4f(color[1], color[2], color[3], 0.55)
+							local currentKeys = {}
+
+							if cursor.curves and #cursor.curves > 0 then
+								local width = (cursor.label == "trackBuilder" or cursor.label == "rail") and 2.5 or 4.5
+								for i, c in ipairs(cursor.curves) do
+									local poly = previewPolygon(c, width)
+									if poly and #poly >= 3 then
+										local polyVec2 = {}
+										for _, pt in ipairs(poly) do
+											polyVec2[#polyVec2 + 1] = makeVec2f(pt[1], pt[2])
+										end
+										local zoneKey = "tpf3mp_holo_" .. player .. "_c" .. i
+										currentKeys[zoneKey] = true
+										pcall(api.gui.mission.setZone, zoneKey, polyVec2, true, drawColor, false, false, 0.05)
+									end
+								end
+								local circleKey = "tpf3mp_holo_" .. player .. "_ptr"
+								currentKeys[circleKey] = true
+								pcall(api.gui.mission.setZoneCircle, circleKey, makeVec2f(cursor.x, cursor.y), 5.0, true, drawColor, false, false, 0.05)
+							else
+								local radius = 15.0
+								if cursor.label and string.find(cursor.label, "bulldoze", 1, true) then
+									radius = 8.0
+								elseif cursor.label and string.find(cursor.label, "Terminal", 1, true) then
+									radius = 12.0
+								elseif cursor.label and string.find(cursor.label, "construction", 1, true) then
+									radius = 25.0
+								end
+								local circleKey = "tpf3mp_holo_" .. player .. "_circle"
+								currentKeys[circleKey] = true
+								pcall(api.gui.mission.setZoneCircle, circleKey, makeVec2f(cursor.x, cursor.y), radius, true, drawColor, false, false, 0.05)
+							end
+
+							for oldKey in pairs(drawnZones[player] or {}) do
+								if not currentKeys[oldKey] then
+									pcall(api.gui.mission.removeZone, oldKey)
+								end
+							end
+							drawnZones[player] = currentKeys
+						elseif debugPoints then
+							-- No mission: the same preview as world points.
+							local color = playerColor(roster, player)
+							local r, g, b = color[1], color[2], color[3]
+							if cursor.curves and #cursor.curves > 0 then
+								for _, c in ipairs(cursor.curves) do drawCurvePoints(c, r, g, b) end
+								drawWorldPoint(cursor.x, cursor.y, 0.5, r, g, b)
+							else
+								local radius = 15.0
+								if cursor.label and string.find(cursor.label, "bulldoze", 1, true) then
+									radius = 8.0
+								elseif cursor.label and string.find(cursor.label, "Terminal", 1, true) then
+									radius = 12.0
+								elseif cursor.label and string.find(cursor.label, "construction", 1, true) then
+									radius = 25.0
+								end
+								for i = 0, 16 do
+									local a = i / 16 * math.pi * 2
+									drawWorldPoint(cursor.x + math.cos(a) * radius, cursor.y + math.sin(a) * radius, 0.5, r, g, b)
+								end
+								drawWorldPoint(cursor.x, cursor.y, 0.5, r, g, b)
+							end
+						end
+					elseif not cursor.building and lastRemoteCursor[player] then
+						lastRemoteCursor[player] = nil
+					end
+				end
+
+				if canDrawMissionZone() then
+					for player, keys in pairs(drawnZones) do
+						if not activePlayers[player] then
+							for key in pairs(keys) do
+								pcall(api.gui.mission.removeZone, key)
+							end
+							drawnZones[player] = nil
+						end
+					end
+				end
+			else
+				if canDrawMissionZone() and next(drawnZones) ~= nil then
+					for _, keys in pairs(drawnZones) do
+						for key in pairs(keys) do
+							pcall(api.gui.mission.removeZone, key)
+						end
+					end
+					drawnZones = {}
+				end
+				if canDrawDebugPoints() then pcall(api.util.debug.draw.clear, DEBUG_LAYER) end
+			end
+
 			local clicks = l:clicks()
 			if clicks == nil then return end
 			if handled == nil then handled = clicks end

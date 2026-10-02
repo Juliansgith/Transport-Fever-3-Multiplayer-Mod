@@ -34,6 +34,12 @@ const TURN_STREAMS: u32 = 4;
 /// and one bulk stream, for a snapshot.
 const BIDI_STREAMS: u32 = 2;
 
+/// How many bytes of advisory datagrams one connection holds in each
+/// direction. A pointer datagram is a few dozen bytes and the room rate-limits
+/// them (crates/tpf3mp-server/src/connection.rs), so this is a buffer for a
+/// burst, not a queue that has to be drained in time.
+const DATAGRAM_WINDOW: usize = 64 * 1024;
+
 #[derive(Debug, Error)]
 pub enum TlsError {
     #[error("cannot read PEM data: {0}")]
@@ -256,28 +262,43 @@ fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
 }
 
 /// What a client may make the server hold. A client opens its control
-/// stream and at most one bulk stream at a time, and sends no datagrams;
-/// anything else would only sit in the server's buffers unread.
+/// stream and at most one bulk stream at a time; datagrams carry the advisory
+/// traffic (a player's pointer, tpf3mp-proto/src/datagram.rs), so the
+/// connection has to say it will take them: with the buffer off, every
+/// `send_datagram` is refused and a pointer never reaches the other game.
 fn server_transport() -> quinn::TransportConfig {
     let mut transport = base_transport();
     transport
         .max_concurrent_bidi_streams(BIDI_STREAMS.into())
         .max_concurrent_uni_streams(0u32.into())
         .stream_receive_window(SERVER_STREAM_WINDOW.into())
-        .receive_window(SERVER_CONNECTION_WINDOW.into())
-        .datagram_receive_buffer_size(None);
+        .receive_window(SERVER_CONNECTION_WINDOW.into());
+    datagrams(&mut transport);
     transport
 }
 
-/// The server opens turn streams and nothing else.
+/// The server opens turn streams and the advisory datagrams back.
 fn client_transport() -> quinn::TransportConfig {
     let mut transport = base_transport();
     transport
         .keep_alive_interval(Some(KEEP_ALIVE_INTERVAL))
         .max_concurrent_bidi_streams(0u32.into())
-        .max_concurrent_uni_streams(TURN_STREAMS.into())
-        .datagram_receive_buffer_size(None);
+        .max_concurrent_uni_streams(TURN_STREAMS.into());
+    datagrams(&mut transport);
     transport
+}
+
+/// Both ends of a connection take advisory datagrams and hold a window of
+/// them: a player's pointer is a datagram, and with the receive buffer off
+/// every `send_datagram` is refused, so the pointer never reaches the other
+/// game. The window is a buffer for a burst, not a queue that has to be drained
+/// in time: the room rate-limits what it passes on
+/// (crates/tpf3mp-server/src/connection.rs) and drops what a member is too far
+/// behind for.
+fn datagrams(transport: &mut quinn::TransportConfig) {
+    transport
+        .datagram_receive_buffer_size(Some(DATAGRAM_WINDOW))
+        .datagram_send_buffer_size(DATAGRAM_WINDOW);
 }
 
 fn base_transport() -> quinn::TransportConfig {
@@ -286,4 +307,43 @@ fn base_transport() -> quinn::TransportConfig {
         quinn::IdleTimeout::try_from(IDLE_TIMEOUT).expect("30 s is a valid QUIC idle timeout"),
     ));
     transport
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A player's pointer only reaches the other game as a datagram, and
+    /// quinn refuses every `send_datagram` on a connection whose receive
+    /// buffer is off. Both ends of a room's connection have to say they will
+    /// take them; this is the check that keeps the next change from quietly
+    /// turning the pointer off again. quinn keeps the buffer private, so this
+    /// reads it out of the configuration it prints.
+    #[test]
+    fn both_ends_of_a_connection_take_advisory_datagrams() {
+        for (which, transport) in [
+            ("server", server_transport()),
+            ("client", client_transport()),
+        ] {
+            let printed = format!("{transport:?}");
+            assert!(
+                printed.contains(&format!(
+                    "datagram_receive_buffer_size: Some({DATAGRAM_WINDOW})"
+                )),
+                "the {which} end would refuse every pointer: {printed}"
+            );
+        }
+    }
+
+    /// The advisory traffic a player produces is a pointer a few times a
+    /// second, so the window has to hold a burst of them rather than a
+    /// trickle; and it is a buffer, not a queue the game has to drain.
+    #[test]
+    fn the_datagram_window_holds_a_burst_of_pointers() {
+        let frames = DATAGRAM_WINDOW / 128;
+        assert!(
+            frames > 64,
+            "{frames} frames is too few for the room's rate limit of 120 a second"
+        );
+    }
 }

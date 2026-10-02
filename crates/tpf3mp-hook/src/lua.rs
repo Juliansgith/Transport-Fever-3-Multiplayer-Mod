@@ -100,7 +100,7 @@
 use tpf3mp_proto::LoadingStage;
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     ffi::{CStr, c_char, c_int, c_void},
     panic::AssertUnwindSafe,
     sync::{
@@ -111,8 +111,8 @@ use std::{
 
 use tpf3mp_bridge::{ModLists, Notice, Plan, RoomInfo};
 use tpf3mp_proto::{
-    ChatText, Payload, PlayerId, Seal, Secret, Text,
-    action::{Action, CompanyOp},
+    ChatText, Cursor, FixedBytes, Payload, PlayerId, PreviewCurve, Seal, Secret, Text,
+    action::{Action, CompanyOp, Pos2},
     lua::{LuaValue, MAX_DEPTH, MAX_NODES, action_from_lua, action_to_lua},
 };
 
@@ -339,6 +339,10 @@ struct RoomStatus {
     replay: bool,
     /// What the player said, for the room.
     said: VecDeque<ChatText>,
+    /// Other players' advisory cursors, by player id.
+    cursors: BTreeMap<PlayerId, Cursor>,
+    /// The player's own outbound cursor, waiting to be sent to the room.
+    outbound_cursor: Option<Cursor>,
 }
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
@@ -372,6 +376,8 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
         history: VecDeque::new(),
         replay: false,
         said: VecDeque::new(),
+        cursors: BTreeMap::new(),
+        outbound_cursor: None,
     },
     told: 0,
     menu_load: None,
@@ -704,8 +710,11 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"shared", native_shared),
                 (b"note", native_note),
                 (b"trees", native_trees),
+                (b"cursor", native_cursor),
+                (b"cursors", native_cursors),
                 (b"edgewatch", native_edgewatch),
                 (b"edgewatched", native_edgewatched),
+                (b"previewed", native_previewed),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -1174,14 +1183,32 @@ pub fn notice(notice: &Notice) {
         Notice::Ended(_) => {
             room.info = None;
             room.diverged = None;
+            room.cursors.clear();
+            crate::preview::remote(None);
         }
         Notice::Refused { .. } => {}
+        Notice::Cursor(cursor) => {
+            if cursor.at.is_some() {
+                room.cursors.insert(cursor.player, cursor.clone());
+            } else {
+                room.cursors.remove(&cursor.player);
+            }
+            // The room's last cursor is what this game's own preview is drawn
+            // from, while a build tool is open (tpf3mp-hook/src/preview.rs).
+            crate::preview::remote(cursor.at);
+        }
     }
 }
 
 /// The local player, as the room's `Begin` names it.
 pub fn set_me(player: PlayerId) {
     shared().room.me = Some(player);
+}
+
+/// What the player's pointer or build preview reported since the last call, for
+/// the room.
+pub fn take_cursor() -> Option<Cursor> {
+    shared().room.outbound_cursor.take()
 }
 
 /// The mods the room's worlds load with, as the room's `Begin` gives them:
@@ -1561,6 +1588,284 @@ unsafe extern "C-unwind" fn native_say(l: State) -> c_int {
             }
         }
     }
+}
+
+/// Sets the room's copy of the player's own build preview, for the hook's
+/// own detour ([`crate::preview`]) to report where the game draws it: the
+/// pointer on the ground plane in metres, and whether a tool is showing a
+/// preview at all. `None` for `at` lifts it. Repeated the same position is
+/// not sent again, so a pointer that stands still costs nothing.
+pub fn report_cursor(at: Option<(f32, f32)>, curves: Option<Vec<PreviewCurve>>, building: bool) {
+    let mut shared = shared();
+    let player = shared.room.me.unwrap_or(PlayerId(FixedBytes([0u8; 32])));
+    let at = at.map(|(x, y)| {
+        #[allow(clippy::cast_possible_truncation)]
+        Pos2 {
+            x: (x * 1000.0).round() as i32,
+            y: (y * 1000.0).round() as i32,
+        }
+    });
+    if let Some(previous) = &shared.room.outbound_cursor
+        && previous.at == at
+        && previous.building == building
+    {
+        return;
+    }
+    shared.room.outbound_cursor = Some(Cursor {
+        player,
+        at,
+        building,
+        label: None,
+        curves: curves.unwrap_or_default(),
+    });
+}
+
+fn parse_preview_curves(tree: &LuaValue) -> Vec<PreviewCurve> {
+    let LuaValue::Table(entries) = tree else {
+        return Vec::new();
+    };
+    let mut curves = Vec::new();
+    for (_, curve_val) in entries {
+        if curves.len() >= 16 {
+            break;
+        }
+        let LuaValue::Table(curve_fields) = curve_val else {
+            continue;
+        };
+        let mut x0 = None;
+        let mut y0 = None;
+        let mut x1 = None;
+        let mut y1 = None;
+        let mut tx0 = None;
+        let mut ty0 = None;
+        let mut tx1 = None;
+        let mut ty1 = None;
+        for (k, v) in curve_fields {
+            let num = match v {
+                LuaValue::Number(n) => *n,
+                _ => continue,
+            };
+            match k {
+                #[allow(clippy::cast_possible_truncation)]
+                LuaValue::Number(idx) => match *idx as usize {
+                    1 => x0 = Some(num),
+                    2 => y0 = Some(num),
+                    3 => x1 = Some(num),
+                    4 => y1 = Some(num),
+                    5 => tx0 = Some(num),
+                    6 => ty0 = Some(num),
+                    7 => tx1 = Some(num),
+                    8 => ty1 = Some(num),
+                    _ => {}
+                },
+                LuaValue::String(s) => match s.as_slice() {
+                    b"x0" => x0 = Some(num),
+                    b"y0" => y0 = Some(num),
+                    b"x1" => x1 = Some(num),
+                    b"y1" => y1 = Some(num),
+                    b"tx0" => tx0 = Some(num),
+                    b"ty0" => ty0 = Some(num),
+                    b"tx1" => tx1 = Some(num),
+                    b"ty1" => ty1 = Some(num),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        if let (
+            Some(x0),
+            Some(y0),
+            Some(x1),
+            Some(y1),
+            Some(tx0),
+            Some(ty0),
+            Some(tx1),
+            Some(ty1),
+        ) = (x0, y0, x1, y1, tx0, ty0, tx1, ty1)
+        {
+            #[allow(clippy::cast_possible_truncation)]
+            curves.push(PreviewCurve {
+                p0: Pos2 {
+                    x: (x0 * 1000.0).round() as i32,
+                    y: (y0 * 1000.0).round() as i32,
+                },
+                p1: Pos2 {
+                    x: (x1 * 1000.0).round() as i32,
+                    y: (y1 * 1000.0).round() as i32,
+                },
+                t0: Pos2 {
+                    x: (tx0 * 1000.0).round() as i32,
+                    y: (ty0 * 1000.0).round() as i32,
+                },
+                t1: Pos2 {
+                    x: (tx1 * 1000.0).round() as i32,
+                    y: (ty1 * 1000.0).round() as i32,
+                },
+            });
+        }
+    }
+    curves
+}
+
+/// `cursor(x, y, building, label, curves)` or `cursor(nil)`.
+///
+/// Sets the local player's pointer or build preview position, in metres on the
+/// ground plane. `nil` or no coordinates clears the pointer.
+unsafe extern "C-unwind" fn native_cursor(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state on its thread.
+    let top = unsafe { (api.gettop)(l) };
+    let (at, building, label, curves) = if top >= 2
+        && unsafe { (api.type_of)(l, 1) == TNUMBER && (api.type_of)(l, 2) == TNUMBER }
+    {
+        let x = unsafe { (api.tonumberx)(l, 1, std::ptr::null_mut()) };
+        let y = unsafe { (api.tonumberx)(l, 2, std::ptr::null_mut()) };
+        let building = top >= 3 && unsafe { (api.toboolean)(l, 3) != 0 };
+        let label = unsafe { string_arg(api, l, 4, 32) }.and_then(|s| ChatText::new(&s).ok());
+        #[allow(clippy::cast_possible_truncation)]
+        let at = Some(Pos2 {
+            x: (x * 1000.0).round() as i32,
+            y: (y * 1000.0).round() as i32,
+        });
+        let curves = if top >= 5 && unsafe { (api.type_of)(l, 5) == TTABLE } {
+            let mut nodes = 0;
+            if let Ok(tree) = unsafe { read(api, l, 5, 0, &mut nodes) } {
+                parse_preview_curves(&tree)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        (at, building, label, curves)
+    } else {
+        (None, false, None, Vec::new())
+    };
+    let mut shared = shared();
+    let player = shared.room.me.unwrap_or(PlayerId(FixedBytes([0u8; 32])));
+    shared.room.outbound_cursor = Some(Cursor {
+        player,
+        at,
+        building,
+        label,
+        curves,
+    });
+    0
+}
+
+/// `cursors()`: other players' pointers and build previews:
+/// `{ [player_hex] = { x =, y =, building =, label =, curves = } }`
+unsafe extern "C-unwind" fn native_cursors(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let cursors = {
+        let shared = shared();
+        let room = &shared.room;
+        let me = room.me;
+        let entries: Vec<(LuaValue, LuaValue)> = room
+            .cursors
+            .iter()
+            .filter(|(player, _)| Some(**player) != me)
+            .filter_map(|(player, cursor)| {
+                let pos = cursor.at?;
+                #[allow(clippy::cast_precision_loss)]
+                let mut fields = vec![
+                    (
+                        LuaValue::string("x"),
+                        LuaValue::Number(f64::from(pos.x) / 1000.0),
+                    ),
+                    (
+                        LuaValue::string("y"),
+                        LuaValue::Number(f64::from(pos.y) / 1000.0),
+                    ),
+                    (
+                        LuaValue::string("building"),
+                        LuaValue::Boolean(cursor.building),
+                    ),
+                ];
+                if let Some(label) = &cursor.label {
+                    fields.push((LuaValue::string("label"), LuaValue::string(label.as_str())));
+                }
+                if !cursor.curves.is_empty() {
+                    let curve_values: Vec<(LuaValue, LuaValue)> = cursor
+                        .curves
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| {
+                            let curve_elems = vec![
+                                (
+                                    LuaValue::Number(1.0),
+                                    LuaValue::Number(f64::from(c.p0.x) / 1000.0),
+                                ),
+                                (
+                                    LuaValue::Number(2.0),
+                                    LuaValue::Number(f64::from(c.p0.y) / 1000.0),
+                                ),
+                                (
+                                    LuaValue::Number(3.0),
+                                    LuaValue::Number(f64::from(c.p1.x) / 1000.0),
+                                ),
+                                (
+                                    LuaValue::Number(4.0),
+                                    LuaValue::Number(f64::from(c.p1.y) / 1000.0),
+                                ),
+                                (
+                                    LuaValue::Number(5.0),
+                                    LuaValue::Number(f64::from(c.t0.x) / 1000.0),
+                                ),
+                                (
+                                    LuaValue::Number(6.0),
+                                    LuaValue::Number(f64::from(c.t0.y) / 1000.0),
+                                ),
+                                (
+                                    LuaValue::Number(7.0),
+                                    LuaValue::Number(f64::from(c.t1.x) / 1000.0),
+                                ),
+                                (
+                                    LuaValue::Number(8.0),
+                                    LuaValue::Number(f64::from(c.t1.y) / 1000.0),
+                                ),
+                            ];
+                            #[allow(clippy::cast_precision_loss)]
+                            (
+                                LuaValue::Number((i + 1) as f64),
+                                LuaValue::Table(curve_elems),
+                            )
+                        })
+                        .collect();
+                    fields.push((LuaValue::string("curves"), LuaValue::Table(curve_values)));
+                }
+                Some((
+                    LuaValue::string(&crate::lobby::hex(player)),
+                    LuaValue::Table(fields),
+                ))
+            })
+            .collect();
+        LuaValue::Table(entries)
+    };
+    // SAFETY: Lua calls this with its own state on its thread.
+    unsafe { push_or_nil(api, l, Some(&cursors)) }
+}
+
+/// `previewed()`: in the GUI: whether this game's own build preview is being
+/// drawn for the other player right now, which the mod's own marker stands
+/// down for (tpf3mp-hook/src/preview.rs, "The other player's preview").
+unsafe extern "C-unwind" fn native_previewed(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        if crate::preview::drawn_lately() {
+            (api.pushboolean)(l, 1);
+        } else {
+            (api.pushboolean)(l, 0);
+        }
+    }
+    1
 }
 
 /// `copy(text)`: in the GUI: puts `text`, the room's invite code, on the
@@ -2402,6 +2707,8 @@ pub(crate) mod tests {
             history: VecDeque::new(),
             replay: false,
             said: VecDeque::new(),
+            cursors: BTreeMap::new(),
+            outbound_cursor: None,
         };
     }
 
@@ -2762,10 +3069,11 @@ my_timetables";
                  type(tpf3mp_native.checkpoint), type(tpf3mp_native.lanes), \
                  type(tpf3mp_native.clicks), type(tpf3mp_native.built), \
                  type(tpf3mp_native.replaying), \
-                 type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
-                 type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note)"
+                 type(tpf3mp_native.applied), type(tpf3mp_native.results), type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
+                 type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note), \
+                 type(tpf3mp_native.cursor), type(tpf3mp_native.cursors)"
             ),
-            Ok("12|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("12|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -3319,5 +3627,59 @@ my_timetables";
             .unwrap();
         assert_eq!(take_world_up(), Some(first + 2));
         assert_eq!(take_world_up(), None);
+    }
+
+    #[test]
+    fn cursor_and_cursors_round_trip_with_preview_curves() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+
+        // 1. Local cursor with curves:
+        lua.run(
+            "tpf3mp_native.cursor(10.5, 20.25, true, 'streetBuilder', { \
+                { 1.0, 2.0, 3.0, 4.0, 0.5, 0.5, 0.5, 0.5 } \
+             })",
+        )
+        .unwrap();
+        let outbound = take_cursor().expect("outbound cursor set");
+        assert_eq!(outbound.at, Some(Pos2 { x: 10500, y: 20250 }));
+        assert!(outbound.building);
+        assert_eq!(
+            outbound.label.as_ref().map(ChatText::as_str),
+            Some("streetBuilder")
+        );
+        assert_eq!(outbound.curves.len(), 1);
+        assert_eq!(outbound.curves[0].p0, Pos2 { x: 1000, y: 2000 });
+        assert_eq!(outbound.curves[0].p1, Pos2 { x: 3000, y: 4000 });
+
+        // 2. Remote cursor with curves:
+        let other = player(7);
+        let remote_cursor = Cursor {
+            player: other,
+            at: Some(Pos2 { x: 50000, y: 60000 }),
+            building: true,
+            label: Some(ChatText::new("trackBuilder").unwrap()),
+            curves: vec![PreviewCurve {
+                p0: Pos2 { x: 50000, y: 60000 },
+                p1: Pos2 { x: 70000, y: 80000 },
+                t0: Pos2 { x: 10000, y: 10000 },
+                t1: Pos2 { x: 10000, y: 10000 },
+            }],
+        };
+        shared().room.cursors.insert(other, remote_cursor);
+
+        let res = lua
+            .run(
+                "local cs = tpf3mp_native.cursors() \
+                 local hex = string.rep('07', 32) \
+                 local c = cs[hex] \
+                 if not c or not c.curves or #c.curves ~= 1 then return 'fail' end \
+                 local crv = c.curves[1] \
+                 return string.format('ok:%.1f,%.1f->%.1f,%.1f', crv[1], crv[2], crv[3], crv[4])",
+            )
+            .unwrap();
+        assert_eq!(res, "ok:50.0,60.0->70.0,80.0");
     }
 }

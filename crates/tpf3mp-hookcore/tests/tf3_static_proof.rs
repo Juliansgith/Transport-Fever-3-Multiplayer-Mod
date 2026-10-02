@@ -27,6 +27,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("CommandList::Add::lambda", 0x9d23c0),
     ("CommandList::Add", 0x9d29c0),
     ("WorldBuildProposal apply", 0x9e1160),
+    ("UI::StreetBuilder::CreateProposalAndUpdate", 0x577ed0),
     ("ModuleBuilder::MousePressed/Add call", 0x543b25),
     ("ProposalAction::DoApply/Add call", 0x549be5),
     ("BaseNodeConfig/field offsets", 0x1768337),

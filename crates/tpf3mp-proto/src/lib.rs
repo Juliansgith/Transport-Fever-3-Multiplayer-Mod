@@ -17,6 +17,7 @@ mod bounded;
 mod bytes;
 mod content;
 mod control;
+mod datagram;
 mod diagnostics;
 mod ids;
 pub mod lua;
@@ -41,6 +42,7 @@ pub use control::{
     RoomPage, RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage,
     Speed, StartSave, StartView, Welcome, is_banner, is_portrait,
 };
+pub use datagram::{Cursor, DATAGRAM_MAX_FRAME, Datagram, PreviewCurve};
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText, LogSource,
     MAX_DIAGNOSTIC_EVENTS, Telemetry, TelemetryLine, TelemetryLines, redact,
@@ -212,6 +214,32 @@ pub fn decode_frame<T: DeserializeOwned>(payload: &[u8]) -> Result<T, FrameError
         return Err(FrameError::TrailingBytes(rest.len()));
     }
     Ok(message)
+}
+
+/// Encodes one QUIC datagram. Unlike a stream frame, a QUIC datagram already
+/// has a length: it must carry the postcard payload alone, with no frame
+/// header.
+pub fn encode_datagram<T: Serialize>(message: &T, max: usize) -> Result<Vec<u8>, FrameError> {
+    let payload = postcard::to_stdvec(message)?;
+    if payload.len() > max {
+        return Err(FrameError::TooLarge {
+            len: payload.len(),
+            max,
+        });
+    }
+    Ok(payload)
+}
+
+/// Decodes one QUIC datagram. Its size is checked before deserializing so a
+/// peer cannot make an advisory reader retain an oversized packet.
+pub fn decode_datagram<T: DeserializeOwned>(payload: &[u8], max: usize) -> Result<T, FrameError> {
+    if payload.len() > max {
+        return Err(FrameError::TooLarge {
+            len: payload.len(),
+            max,
+        });
+    }
+    decode_frame(payload)
 }
 
 #[cfg(test)]

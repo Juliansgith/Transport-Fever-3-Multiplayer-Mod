@@ -29,8 +29,8 @@ mod session;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tpf3mp_proto::{
-    BoundedVec, ChatText, Event, IntentRejection, LaneDigest, MAX_ROOM_MEMBERS, Payload, PlayerId,
-    RulesName, Secret, Speed, Text,
+    BoundedVec, ChatText, Cursor, Event, IntentRejection, LaneDigest, MAX_ROOM_MEMBERS, Payload,
+    PlayerId, RulesName, Secret, Speed, Text,
 };
 
 pub use gate::{Gate, GateError, Gated};
@@ -141,6 +141,8 @@ pub enum ToHook {
     /// room's game. Only the latest counts. Boxed: it is far larger than
     /// the other messages.
     Lobby(Box<LobbyView>),
+    /// A member's pointer moved or their build tool is previewing.
+    Cursor(Cursor),
 }
 
 /// Most chat lines a [`LobbyView`] carries: the newest.
@@ -582,6 +584,8 @@ pub enum ToAgent {
     MenuUp { menu: u64 },
     /// The player asked for this in the main menu's Multiplayer window.
     Lobby(LobbyAction),
+    /// The player's pointer moved or their build tool is previewing.
+    Cursor(Cursor),
 }
 
 #[derive(Debug, Error)]

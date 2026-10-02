@@ -9,7 +9,8 @@ use std::sync::Arc;
 use common::{FAST, RunningServer, content, join, modded, room};
 use tpf3mp_agent::{ClientError, ClientEvent};
 use tpf3mp_proto::{
-    Code, CreateRoom, Invite, JoinRoom, RequestError, RoomPhase, RoomSettings, Text,
+    Code, CreateRoom, Cursor, Datagram, Invite, JoinRoom, RequestError, RoomPhase, RoomSettings,
+    Text, action::Pos2,
 };
 use tpf3mp_server::{AcceptAll, RulesChoice, RulesMenu};
 
@@ -42,6 +43,50 @@ async fn a_room_is_joined_with_its_invite() {
     // Both see the full table.
     ann.room_where(|room| room.members.len() == 2).await;
     bob.room_where(|room| room.members.len() == 2).await;
+    server.shut_down().await;
+}
+
+#[tokio::test]
+async fn a_members_cursor_reaches_the_other_member_as_an_advisory_datagram() {
+    let server = RunningServer::start(|_| {}).await;
+    let ann = server.client("ann").await;
+    let mut bob = server.client("bob").await;
+    let (invite, _) = ann.client.create_room(room("table", FAST)).await.unwrap();
+    bob.client.join_room(join(&invite)).await.unwrap();
+    bob.room_where(|room| room.members.len() == 2).await;
+
+    ann.client
+        .send_advisory(&Datagram::Cursor(Cursor {
+            // The server stamps this field with the authenticated sender.
+            player: bob.client.player(),
+            at: Some(Pos2 {
+                x: 12_345,
+                y: -67_890,
+            }),
+            building: true,
+            label: None,
+            curves: Vec::new(),
+        }))
+        .unwrap();
+
+    let cursor = bob
+        .wait_for(|event| match event {
+            ClientEvent::Advisory(Datagram::Cursor(cursor)) => Some(cursor),
+            _ => None,
+        })
+        .await;
+    assert_eq!(cursor.player, ann.client.player());
+    assert_eq!(
+        cursor.at,
+        Some(Pos2 {
+            x: 12_345,
+            y: -67_890
+        })
+    );
+    assert!(cursor.building);
+
+    ann.client.close().await;
+    bob.client.close().await;
     server.shut_down().await;
 }
 

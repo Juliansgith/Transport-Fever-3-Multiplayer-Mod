@@ -169,7 +169,9 @@ async fn a_connection_cannot_pin_server_memory_with_unread_streams() {
             .is_err(),
         "no third bidirectional stream"
     );
-    assert_eq!(connection.max_datagram_size(), None, "no datagrams");
+    // Advisory datagrams (for pointer/preview cursor synchronization) are enabled
+    // and bounded by the transport window.
+    assert!(connection.max_datagram_size().is_some());
     settle().await;
     let held = live().saturating_sub(before);
 

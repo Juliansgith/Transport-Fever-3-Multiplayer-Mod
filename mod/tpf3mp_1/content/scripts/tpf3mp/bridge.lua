@@ -214,6 +214,24 @@ function Link:say(text)
 	return true
 end
 
+-- Reports where the player points over the world plane, or nil when the
+-- pointer is lifted. True for building while dragging a build tool.
+-- Optional curves carries Hermite curves for linear build previews (roads/tracks).
+function Link:cursor(x, y, building, label, curves)
+	if self.native.cursor then
+		pcall(self.native.cursor, x, y, building == true, label and tostring(label) or nil, type(curves) == "table" and curves or nil)
+	end
+end
+
+-- What other players' pointers are showing:
+-- { [player_id] = { x =, y =, building =, label = } }
+function Link:cursors()
+	if not self.native.cursors then return {} end
+	local ok, cursors = pcall(self.native.cursors)
+	if not ok or type(cursors) ~= "table" then return {} end
+	return cursors
+end
+
 -- Puts `text`, the room's invite code, on the clipboard: true, or nil and
 -- why not.
 function Link:copy(text)
