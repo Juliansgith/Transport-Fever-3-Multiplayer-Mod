@@ -624,15 +624,21 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     );
     let env = std::env::var(crate::lanedump::ENV).ok();
     let (setting, refused) = crate::lanedump::Setting::from_env(env.as_deref());
+    // The town trace adds the towns lane, its size factors, experience and
+    // level, at every checkpoint (crate::towntrace).
+    let setting = setting.with_town_trace(crate::towntrace::wanted(
+        std::env::var(crate::towntrace::ENV).ok().as_deref(),
+    ));
     if let Some(why) = refused {
         log_line(&why);
     } else if setting.off {
         log_line("lane dumps are off, even after a divergence");
     } else if !setting.always.is_empty() {
         log_line(&format!(
-            "dumping lanes {:?} at every checkpoint ({})",
+            "dumping lanes {:?} at every checkpoint ({} or {})",
             setting.always,
-            crate::lanedump::ENV
+            crate::lanedump::ENV,
+            crate::towntrace::ENV
         ));
     }
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
@@ -738,6 +744,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     log_line(&crate::ticks::install(&absolute));
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
+    }
+    for line in crate::towntrace::install(&absolute, base as u64) {
+        log_line(&line);
     }
     Ok(step_rva)
 }

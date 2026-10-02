@@ -36,6 +36,9 @@ pub const ENV: &str = "TPF3MP_HOOK_LANE_DUMP";
 
 /// The lanes the mod reads (tpf3mp/lanes.lua): `all` means these.
 pub const LANES: u16 = 7;
+/// The towns lane, whose dump carries each town's size factors, experience
+/// and level (tpf3mp/lanes.lua).
+pub const TOWNS: u16 = 5;
 /// Most lanes one dump names.
 pub const MAX_LANES: usize = 16;
 /// Checkpoints dumped after a divergence.
@@ -148,6 +151,19 @@ impl Setting {
                 )),
             ),
         }
+    }
+}
+
+impl Setting {
+    /// With the town trace on (`crate::towntrace::ENV`), the towns lane is
+    /// dumped at every checkpoint too, even with dumps after a divergence
+    /// off: one line a town with its size factors, experience and level.
+    #[must_use]
+    pub fn with_town_trace(mut self, on: bool) -> Self {
+        if on {
+            self.always.insert(TOWNS);
+        }
+        self
     }
 }
 
@@ -491,6 +507,23 @@ mod tests {
                 .is_err()
         );
         assert_eq!(off.diverged(250, &[3], 262, EVERY, now), None);
+    }
+
+    #[test]
+    fn the_town_trace_dumps_the_towns_lane_at_every_checkpoint() {
+        let (setting, _) = Setting::from_env(Some("3"));
+        assert_eq!(setting.clone().with_town_trace(false), setting);
+        let mut dumps = LaneDumps::new(setting.with_town_trace(true));
+        assert_eq!(dumps.take(50).unwrap().lanes, [3, TOWNS]);
+        let (off, _) = Setting::from_env(Some("off"));
+        let mut dumps = LaneDumps::new(off.with_town_trace(true));
+        assert_eq!(dumps.take(100).unwrap().lanes, [TOWNS]);
+        assert_eq!(dumps.diverged(50, &[0], 62, EVERY, Instant::now()), None);
+        assert!(
+            LaneDumps::new(Setting::default().with_town_trace(false))
+                .take(50)
+                .is_none()
+        );
     }
 
     #[test]

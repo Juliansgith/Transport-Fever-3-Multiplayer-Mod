@@ -2263,7 +2263,8 @@ and nothing more.
   lanes (both diverged games of a room of three say one). A line heard is
   checked: at most 16 lanes and two steps, each a checkpoint step, not past,
   and no more than 20 checkpoints ahead. One checkpoint writes at most
-  `lua::MAX_DUMP_LINES` (5000) entries, all its lanes together, each cut to
+  `lua::MAX_DUMP_LINES` (20,000: room for the whole network lane of
+  `twomptest`, about 10,800 entries) entries, all its lanes together, each cut to
   2000 bytes; the rest are counted.
 - **By hand.** `TPF3MP_HOOK_LANE_DUMP` in the game's environment dumps
   lanes at every checkpoint, for chasing a desync on purpose: `all`, or
@@ -2293,12 +2294,12 @@ and nothing more.
 
   | lane | fields |
   |---|---|
-  | 0 network | `p0`, `p1` (the edge's ends), `template` |
+  | 0 network | `p0`, `p1` (the edge's ends, `x,y,z`, read from the game's `Vec3f` userdata), `template` |
   | 1 constructions | `file`, `x`, `y`, `z` |
   | 2 lines | `stops`, then `stop<i>=<group>/<station>/<terminal>` |
   | 3 vehicles | `state`, `stop` (index), `line`, `edge`, `pos`, `speed` (`MOVE_PATH.dyn`) |
   | 4 economy | `balance` |
-  | 5 towns | `buildings` |
+  | 5 towns | `buildings`, `size` (the three size factors), `experience`, `level` (the town growth script's state) |
   | 6 people | `count` |
 
   A vehicle's line, a line's stops and their station groups are read for
@@ -2318,6 +2319,64 @@ by key and prints the ones that differ, grouping the games that agree and
 showing only the fields that differ, and whether the lane's text itself
 differed (a difference below the lane's rounding leaves it alike). It exits
 1 when an entry differs. `python tools/test_lane_diff.py` tests it.
+
+#### The town trace
+
+`TPF3MP_HOOK_TOWN_TRACE=1` (or `on`; off unless set; logging only,
+`crates/tpf3mp-hook/src/towntrace.rs`). Round of 2026-10-02 on
+`twomptest`: one town street (entity 325514, a `town_old_small` dead end)
+was built at another angle in one of three games between steps 12750 and
+12800, with `tickCount`, `updateCount` and so the town developer's seed
+equal in all three. The trace tells apart three readings: the size
+factors the `town_growth` script sends differ; the developer's context at
+`GameState+0x200`, which `GameState::Replicate` (`0x255de0`) does not
+copy, differs with the frames' batching; or the developer read world
+input the lanes do not hash.
+
+`TownUpdateSize::Apply` (`0x9dfb10`, our name) applies the script's
+`makeTownUpdateSizeCmd`: it writes the size factors into the town, seeds
+a `minstd_rand` from an FNV-1a of `updateCount` and calls
+`TownDeveloper::Develop` (`0x8dc240`) with `GameState+0x200` and the
+generator. Two splices in the applier (`+0x17a`, right before the call
+is set up, the seed in `ecx`; `+0x1c7`, at the return, the generator after
+`Develop` still in the frame) say one line a call; a splice at `Develop`'s
+entry says one line a call from any caller:
+
+```
+town: step <s> update <n> town <e> size <hex>,<hex>,<hex> (<f>,<f>,<f>) flag <0|1> seed <n> (expected <n>) gamestate <ptr> buffer <0|1> engine <ptr> developer <ptr> developer-engine <own|other(buffer n)|ptr> gen-after <n> entity-ids <before>-><after>
+town: step <s> develop from +<call rva> town <e> flag <0|1> gen <n> developer <ptr> engine <ptr>
+```
+
+The size factors are the command's raw float bits, then their values.
+`expected` is the seed recomputed from `updateCount` (`towntrace::
+town_seed`). `buffer` numbers the `GameState`s in the order this game first
+saw them; `developer-engine` names the engine the developer's context holds
+at `+0xb0` (where `Develop` reads the town): this update's, the other
+buffer's, or another. `gen-after` is the generator after `Develop`: equal
+seeds and different `gen-after` mean `Develop` drew a different number of
+times, so its input differed. `entity-ids` is the length of the engine's
+entity table before and after. `step` is `-` outside a released update,
+`update` `?` when unread. Pointers differ between games by nature; the
+other fields of one step's lines must agree.
+
+Before splicing, the two sites must lie at their offsets from the
+applier's start, the call between them must reach `Develop`, and each
+site's bytes must be the expected ones (the profile states them; the static
+proof checks the call and that every target resolves uniquely); otherwise
+nothing is spliced and `hook.log` says why (`town trace: ... not traced,
+...`). A panic switches the trace off.
+
+The switch also dumps the towns lane at every checkpoint (lane dumps
+above, even with `TPF3MP_HOOK_LANE_DUMP=off`): one line a town,
+
+```
+lane 5 step <s> town-<id> buildings=<n> size=<f1>,<f2>,<f3> experience=<n> level=<n> entity=<e> row=<row>
+```
+
+the size factors at full precision (`%.17g`) from the `TOWN` component,
+experience and level from the base game's town growth script's state, read
+as its own `town_cargo_util.getTownCargoState` reads it (`nil` when it
+cannot be read). `tools/lane_diff.py` diffs them like any lane.
 
 ### Seeds, as built
 
@@ -2946,6 +3005,13 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |
 | `TPF3MP_HOOK_MEASURE_ORDER` | (unset by default) the order measurement, which adds its own detours and hashing when set |
 | `TPF3MP_HOOK_PERF` | the timing and these lines |
+
+Off unless set, and logging only (they change nothing the game computes,
+so one game may run them alone):
+
+| switch | turns on |
+|---|---|
+| `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump ("The town trace") |
 
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
