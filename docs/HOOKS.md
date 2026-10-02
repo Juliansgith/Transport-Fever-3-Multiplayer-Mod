@@ -2044,9 +2044,13 @@ construction's window its edits:
   adds, each edge in its own kind (the street it joins is rebuilt through
   the new junction in that street's template), and the edges and nodes it
   removes. The replay builds it as the game's own scripted track builder
-  does, `nodesToRemove` included. A build that moves or removes an edge
-  with a stop or signal on it, or that places stops, signals or
-  constructions, is refused.
+  does, `nodesToRemove` included. Each new track edge gets its template's
+  distance between track centres (`StreetTemplate.trackDistance`, the
+  edge's `distance`): without it the game laid no shared ballast bed or
+  catenary with the tracks beside it, and the ground showed between them
+  (seen 2026-10-02, tracks laid side by side in a room). A build that
+  moves or removes an edge with a stop or signal on it, or that places
+  stops, signals or constructions, is refused.
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a

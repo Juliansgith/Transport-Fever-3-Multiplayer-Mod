@@ -585,6 +585,15 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 		s.comp.roadTemplate = kind.template
 		s.comp.roadStyle = kind.style or t.streetStyle
 		s.comp.roadType = kind.network == "Track" and enum("RoadType").TRACK or enum("RoadType").STREET
+		-- A track's distance between its centre and its neighbours', its
+		-- template's (StreetTemplate.trackDistance): without it the game lays
+		-- no shared ballast bed or catenary with the tracks beside it, and
+		-- the ground shows between them (2026-10-02, tracks laid side by
+		-- side in a room). Every game reads the same template.
+		if kind.network == "Track" then
+			local ok, d = pcall(function() return t.trackDistance end)
+			if ok and type(d) == "number" and d > 0 then s.comp.distance = d end
+		end
 		-- What the tool left on it: its decorations (by name, as every game
 		-- numbers them), the towns' lock, and the acting company's ownership.
 		local decorations = {}

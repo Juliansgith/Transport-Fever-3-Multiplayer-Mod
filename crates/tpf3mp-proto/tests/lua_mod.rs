@@ -3244,6 +3244,61 @@ const ROAD: &str = "{ BuildRoad = { street = '::/street/town_small.street_templa
           structure = { Bridge = '::/bridge/stone.lua' } } }, \
     removals = {} } } }";
 
+/// Every game builds a track with its template's distance between track
+/// centres (`trackDistance`), as the track tool does: without it the game
+/// lays no shared ballast bed or catenary with the tracks beside it, and
+/// the ground shows between them (2026-10-02). A street gets none.
+#[test]
+fn a_track_the_room_ordered_has_its_templates_track_distance() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(
+        r#"
+        local get = api.res.streetTemplateRep.get
+        local find = api.res.streetTemplateRep.find
+        api.res.streetTemplateRep.find = function(name)
+            if name == '::/track/standard.street_template' then return 6 end
+            return find(name)
+        end
+        api.res.streetTemplateRep.get = function(id)
+            if id == 6 then
+                return { laneConfigs = { 'track lanes' }, streetStyle = '::/style/track.street_style',
+                         trackDistance = 5 }
+            end
+            return get(id)
+        end
+        local function across(network, template)
+            local polyline = { vertices = {
+                    { pos = { x = 200, y = 0, z = 0 }, resolve = 'New' },
+                    { pos = { x = 300, y = 0, z = 0 }, resolve = 'New' } },
+                links = { { from = 0, to = 1, tangent0 = { x = 100, y = 0, z = 0 },
+                    tangent1 = { x = 100, y = 0, z = 0 }, structure = 'Ground' } },
+                removals = {} }
+            if network == 'Track' then
+                return { BuildTrack = { track = template, catenary = true, polyline = polyline } }
+            end
+            return { BuildRoad = { street = template, bus_lane = false, tram = 'None', polyline = polyline } }
+        end
+        HOOK.batch = { across('Track', '::/track/standard.street_template'),
+                       across('Street', '::/street/country.street_template') }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let distances: Vec<String> = lua
+        .load(
+            "local out = {} \
+             for i, c in ipairs(SENT) do \
+                 out[i] = tostring(c.proposal.streetProposal.edgesToAdd[1].comp.distance) \
+             end \
+             return out",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(distances, ["5", "nil"], "{}", log(&lua));
+}
+
 #[test]
 fn the_game_script_builds_a_road_as_the_players_tool_would() {
     let (lua, _script) = engine();
