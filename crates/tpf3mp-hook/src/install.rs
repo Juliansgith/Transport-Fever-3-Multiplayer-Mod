@@ -750,6 +750,7 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
     }
+    log_line(&crate::townfield::install(&absolute));
     Ok(step_rva)
 }
 

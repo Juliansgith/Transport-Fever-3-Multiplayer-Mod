@@ -679,6 +679,30 @@ offset = 0
 prologue = "48 8B C4 48 89 58 18 55 56 57 41 54 41 55"
 required = false
 
+# The town street field's cache fix (crates/tpf3mp-hook/src/townfield.rs,
+# town-field-cache; on unless TPF3MP_HOOK_TOWN_FIELD_CACHE=0). StreetField::At
+# (our name; called by TryCandidate's open pass at 0x967e0e): rcx the field,
+# r8 the street's end; it answers the field's two axes there from a std::map
+# at field+0x18 keyed by the end's 50 m cell, else computes them (0x2b76b86..)
+# and inserts them (0x2b76660). The cached answer is the first point's in the
+# cell, per GameState, unsaved. The site is the lookup's end test (0x2b76b4a,
+# `cmp byte [r9+0x19],0`, 5 bytes stolen; then `jne` to the miss path): the
+# fix points r9 at the head (r10). Only the jne at 0x2b76b1c branches to it,
+# to its first byte. 0x2b76a90
+[[target]]
+name = "StreetField::At"
+signature = "40 55 56 41 54 41 55 41 56 41 57 48 81 EC 98 00 00 00 C4 C1 7A 10 00 C5 FA 5E 0D ?? ?? ?? ?? C5 F2 58 15 ?? ?? ?? ?? 4C 8B 51 18"
+offset = 0
+prologue = "40 55 56 41 54 41 55 41 56 41 57"
+required = false
+
+[[target]]
+name = "StreetField::At/cache found"
+signature = "80 79 19 00 74 D6 41 80 79 19 00 75 35 41 3B 69 1C 75 0A 41 3B 71 20 75 04 32 D2 EB 04 41 0F 4D D3 84 D2 78 1D 4D 3B CA 74 18"
+offset = 6
+prologue = "41 80 79 19 00"
+required = false
+
 # Junction layout anchors from the Lua binding registration code. Read-only:
 # these instructions establish the field offsets used by junctions.rs.
 [[target]]
