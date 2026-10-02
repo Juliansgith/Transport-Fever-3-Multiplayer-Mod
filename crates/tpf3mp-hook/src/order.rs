@@ -94,6 +94,27 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
     outcomes
 }
 
+thread_local! {
+    /// Set on this thread while it runs the game's own step
+    /// ([`set_in_step`]).
+    static IN_STEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// From the step detour, around its call of the game's `GameSim::Step`:
+/// this thread is inside the simulation's step. The second engine's copy
+/// (`GameState::Replicate` -> `Replicator::Apply`) runs from the game's
+/// frame, outside the step, as often as the frames come, so the fixes count
+/// what they see inside the step apart: those counts are what two games'
+/// logs must agree on.
+pub fn set_in_step(inside: bool) {
+    IN_STEP.with(|flag| flag.set(inside));
+}
+
+/// Whether this thread is inside the game's step.
+pub fn in_step() -> bool {
+    IN_STEP.with(|flag| flag.get())
+}
+
 /// Opt-in, read-only route-cache trace for reproducing terminal divergence.
 mod route_trace {
     use super::*;

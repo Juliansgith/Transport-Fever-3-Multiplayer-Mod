@@ -2614,6 +2614,11 @@ on hand-written functions in the test binary.
 | 3, road edge entries | `road-entry-order` | `EdgeUseManager::Add` (`0x255e940`), `AddRange` (`0x255cc70`) | keeps each edge's entries in entity order after every append (kill switch `TPF3MP_HOOK_ROAD_ENTRY_ORDER=0`) |
 | 4, vehicles at a stop | `vehicles-at-stop-order` | `ecs::SimEntityAtTerminalSystem::Update/vehicles at stop` (`0xb0e35c`) | sorts the vehicles at a line stop by entity id before the boarding loop (kill switch `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER=0`) |
 | 5, platform choice | `platform-order` | `ecs::TransportVehicleSystem::Update2/visit` (`0xb8bccb`), `FindNextFreeTerminal/candidate sort` (`0xb85430`) | asks the vehicles for a free platform in entity order, and puts the candidate terminals in one order before their cost sort (kill switch `TPF3MP_HOOK_PLATFORM_ORDER=0`) |
+| TF2 `candidates` (person-order) | `person-candidates-order` | `destination_util::GetTargetsByLandUse/candidates` (`0x8e3d65`) | sorts the PersonCapacity candidates by entity id before their capacities are summed for the destination draw ("The person-order fixes"; kill switch `TPF3MP_HOOK_PERSON_CANDIDATES_ORDER=0`) |
+| TF2 `departures` (person-order) | `person-departures-order` | `ecs::SimEntityAtBuildingSystem::Update2/leave batches` (`0xb05f92`) | sorts the persons and cargo leaving buildings by entity id before they are signalled (kill switch `TPF3MP_HOOK_PERSON_DEPARTURES_ORDER=0`) |
+| TF2 `arrivals` (person-order) | `person-arrivals-order` | `ecs::PersonMoveSystem::Update2/arrival batch` (`0xaecfcd`) | sorts the walk arrivals by entity id before they are signalled (kill switch `TPF3MP_HOOK_PERSON_ARRIVALS_ORDER=0`) |
+| TF2 `idle` (person-order) | `person-needs-path-order` | `ecs::SimEntityNeedsPathSystem::Update/list` (`0xb18213`) | sorts the persons waiting for a path by entity id before `PathFactory::Compute` seeds by their place (kill switch `TPF3MP_HOOK_PERSON_NEEDS_PATH_ORDER=0`) |
+| TF2 `freed ids` (person-order) | `freed-id-order` | `ecs::Engine::EndModification/free-id append` (`0x2bb4fd1`) | sorts each modification's freed ids before they join the free-id queue (kill switch `TPF3MP_HOOK_FREED_ID_ORDER=0`; all five off with `TPF3MP_HOOK_PERSON_ORDER=0`, alike in every game of a room) |
 
 **The mid-function splice** (`tpf3mp_hookcore::detour::Splice`) is what
 the two fixes hook with. A whole-function detour cannot reach a point in
@@ -2874,6 +2879,265 @@ directly; a lane that differs names the container. The hashes are FNV-1a
 too; TF3's ids are expected equal (the survey), and the `reordered`
 counts say whether the sorts changed anything.
 
+### The person-order fixes
+
+`crates/tpf3mp-hook/src/persons.rs` ports silver2127's TPF2 Multiplayer
+person-order sorts (`tpf2-multiplayer`: `docs/re/HOTJOIN_ORDER.md`,
+"Mechanism" and "The fix"; `native/src/slice/hotjoin_order.inl`; the Linux
+reference `native/linux/src/order_canon_linux.cpp`) to TF3 Steam build
+40408. In TF2 the person simulation read its batches in ECS node-list
+order, which is add/swap-remove history in a running world and
+registration order in a loaded one, and drew one random stream across a
+batch in that order. The same draw then picked another building, or gave
+another person the stay. The fix sorts each batch ascending by entity id
+right before the engine reads it, so each decision depends on the batch's
+contents only.
+
+**Why now.** On `twomptest` three games split at step 25950. One bus ran
+about 0.15 s behind in one game. The first evidence was the road edge
+appends between steps 25520 and 25850: persons' `Add` and vehicles'
+`AddRange` came in another order, inside the `road-entry-order` fix's
+counters. A later split, at step 36400, differed only by a fare (+310).
+Both look like the person simulation drifting, and the TF3 port had none of
+TF2's person-order sorts.
+
+**Every game of a room must run the same person-order settings.** The
+sorts change what the simulation decides. A game with a batch sorted and a
+game with it in the engine's order pick different buildings for the same
+draw. All five fixes are on by default. `TPF3MP_HOOK_PERSON_ORDER=0` (or
+`off`, `false`, `no`) turns all of them off, and each fix's own switch
+turns it off alone (table below). Either kind of switch must be set alike
+on every machine of the room. hook.log's first line of the group says so:
+
+```
+person-order: on (TPF3MP_HOOK_PERSON_ORDER=0 turns every person-order fix off); every game of a room must run the same person-order settings
+```
+
+The sites were read statically with `tools/tpfre` (build 40408). Every
+batch is a `std::vector<Entity>` (4-byte ids) that the engine reads next,
+and nothing indexes it by position across the sort. The hook splices in
+(`tpf3mp_hookcore::detour::Splice`, as the order fixes do) and sorts the
+ids in place.
+
+| TF2 batch (TF2 Windows site) | TF3 fix | TF3 site (RVA) | what reads the batch in order | status |
+|---|---|---|---|---|
+| 1, candidates (`0x927df6`) | `person-candidates-order` | `destination_util::GetTargetsByLandUse/candidates` (`0x8e3d65`) | `BinarySearchIndex` (`0x8e4400`) sums free capacity in entry order and binary-searches one draw | ported |
+| 2, departures (`0xa7c9fd`) | `person-departures-order` | `ecs::SimEntityAtBuildingSystem::Update2/leave batches` (`0xb05f92`) | `SimPersonSystem::NoteAtBuildingPersonsLeave` (`0xb2e950`): one generator seeded from `updateCount`, drawn in batch order | ported |
+| 3, arrivals (`0xa59928`) | `person-arrivals-order` | `ecs::PersonMoveSystem::Update2/arrival batch` (`0xaecfcd`) | `SimPersonSystem::NoteWalkPersonsArrived` (`0xb33a30`): stay draws in batch order | ported |
+| 4, idle (`0xa867ce`) | `person-needs-path-order` | `ecs::SimEntityNeedsPathSystem::Update/list` (`0xb18213`) | `PathFactory::Compute` (`0x8d11e0`): one generator per chunk, seeded from `updateCount` and the chunk's start index | ported |
+| 5, capacity maps (`0x21234de`) | none | (`~SimEntityUpdateHelper` `0x256b0c0`, `0x256b349`) | `ApplySimPersonData` (`0x256da20`) walks five phmap flat maps in slot order with one shared stream | skipped (below) |
+| 6, freed ids (`0x23de385`) | `freed-id-order` | `ecs::Engine::EndModification/free-id append` (`0x2bb4fd1`) | the FIFO free-id deque `AddEntity` (`0x2bb37b0`) pops | ported |
+| person target-set, network person and network index order (Linux only) | none | none | none | not needed (below) |
+
+| switch (`0`, `off`, `false` or `no`) | turns off |
+|---|---|
+| `TPF3MP_HOOK_PERSON_ORDER` | all five fixes below |
+| `TPF3MP_HOOK_PERSON_CANDIDATES_ORDER` | `person-candidates-order` |
+| `TPF3MP_HOOK_PERSON_DEPARTURES_ORDER` | `person-departures-order` |
+| `TPF3MP_HOOK_PERSON_ARRIVALS_ORDER` | `person-arrivals-order` |
+| `TPF3MP_HOOK_PERSON_NEEDS_PATH_ORDER` | `person-needs-path-order` |
+| `TPF3MP_HOOK_FREED_ID_ORDER` | `freed-id-order` |
+
+Each fix installs on its own and fails closed on its own:
+
+- Its profile target must resolve (`required = false`, so a build without
+  the site loses that fix, not the profile).
+- The splice compares the site's bytes with the fix's: the stolen
+  instructions and every instruction after them up to the call that hands
+  the vector on, so the frame slot it sorts is the one the engine passes.
+- Each fix also checks the code around its site (below), and refuses
+  with the reason in hook.log on any mismatch.
+- Every read on the game's thread goes through `image::Readable`.
+- A vector of another shape (pointers out of order, not whole aligned ids,
+  more than 2^24 of them) is refused for that call. The refusal is said
+  once per reason and the engine's order stands.
+- A panic switches the fix off for the rest of the game.
+
+hook.log carries one line per fix: `order fix <name>: installed (at <rva>,
+...)` or `order fix <name>: off, <why>`.
+
+**Candidates** (`person-candidates-order`). `GetTargetsByLandUse`
+(`0x8e3ac0`, our name) gets the `PersonCapacity` family and copies its
+node list (8-byte `{entity, index}` records) into a local
+`vector<Entity>` at `[rsp+0x70]` (`0x8e3d10..0x8e3d3f`). It then builds
+one 0x24-byte `TargetDataEntry` per entity, in that order, on the thread
+pool. The chunks are joined in index order, not in completion order, so
+threads add nothing but the list's order.
+
+`BinarySearchIndex` later sums the entries' free capacity in entry order
+and binary-searches one draw. The entries also index a sibling vector, so
+the fix sorts the entity list before the build, not the entries after it.
+
+- *Site:* `mov dword [rsp+0x60], 1` (`0x8e3d65`, 8 bytes stolen), after
+  the copy loop and before the build. Nothing branches into its bytes.
+- *Checks:* `lea rbx, [rsp+0x70]` before the copy loop (`site-0x8c`), and
+  the build's size computation from `[rsp+0x78] - [rsp+0x70]` after the
+  site. At run time the hook refuses unless `rbx` names `rsp+0x70`.
+- *Reach:* the leave handler reaches it through the destination
+  assignment (`0xb2b040`) and `GetRandomTargets` (`0x8e2e10`). The town
+  system's new-person path and the Lua `getTargetsByLandUse` reach it too.
+  It is called synchronously from all of them.
+
+**Departures** (`person-departures-order`).
+`SimEntityAtBuildingSystem::Update2` (vf12, `0xb05ea0`) gathers the
+entities whose stay ran out on the thread pool, in node order. The pool
+loop is `0xb052c0`, chunks of 256 joined in index order. The result is
+two `vector<Entity>`, at `[rbp+7]` and `[rbp+0x1f]`, and each is emitted to
+its signal (`0xaeaeb0`). `NoteAtBuildingPersonsLeave` seeds one generator
+from an FNV hash of `updateCount` and draws, person by person in batch
+order, whether the person recomputes its destination.
+
+- *Site:* the test of the first vector after the pool loop (`0xb05f92`,
+  `mov rcx, [rbp+7]; cmp rcx, [rbp+0xf]`, 8 bytes stolen). The only branch
+  to it is the `je` at `0xb05f51`, to its first byte.
+- *Sorting:* both vectors are sorted (persons and cargo).
+- *Checks:* the second emit's bytes, and both emits must call one function.
+
+**Arrivals** (`person-arrivals-order`). `PersonMoveSystem::Update2` (vf12,
+`0xaecaa0`) gathers the walk arrivals on the pool, in node order (chunks
+of 128 joined in index order), into a `vector<Entity>` at `[rbp-0x78]`. It
+emits that vector (`0xaecfe8`) to `NoteWalkPersonsArrived`, which seeds
+from `updateCount` and draws stay durations in batch order.
+
+- *Site:* `0xaecfcd` (`mov rax, [rbp-0x70]; cmp [rbp-0x78], rax`, 8 bytes
+  stolen), reached only by the `je` at `0xaecf11`, to its first byte.
+- *Checks:* its emit must call the signal that the departures' two emits
+  call, so it needs the departures target to resolve.
+
+**Needs-path, TF2's idle** (`person-needs-path-order`). TF3 has no
+`SimEntityIdleSystem`. Its counterpart is
+`ecs::SimEntityNeedsPathSystem::Update` (vf11, `0xb181b0`, on odd
+`updateCount`s), the only caller of `PathFactory::Compute`. It builds one
+`PathFactoryInput` per entry of its own list `m_systemData->add`
+(`[[this+0x10]]`). That list is a `vector<Entity>` that `EntityAdded`
+appends to and `EntityToBeRemoved` erases from in place, so it is in
+insertion history.
+
+Compute runs three items per person (one per mode) in chunks. Each chunk
+seeds one generator from `updateCount` and the chunk's start index and
+draws for every item in it, so each trip's path and mode follow the
+person's place in the list. The results are matched back to `add` by
+position in the same call (`0xb183c0`, which the fix checks). Sorting the
+list in place before its first read therefore keeps them paired.
+
+- *Site:* that first read (`0xb18213`, `mov rax, [r13+0x10]; mov rdx,
+  [rax+8]`, 8 bytes stolen).
+- *Shared data:* the list's data is copy-on-write, a `shared_ptr` that
+  the replicated engine's copy may share. The system's own writers take a
+  private copy through a getter (`0xb186c0`) before they write.
+- *What the fix does when it is shared:* if the use count in the control
+  block (`[[this+0x18]+8]`) is above 1, the fix calls the same getter, the
+  way `EntityToBeRemoved` does (`0xb18121`, the profile target
+  `.../data getter call`; the getter's head is checked at install). Only
+  then does it sort.
+- *Why not refuse instead:* that would apply the sort in some games and
+  not in others, depending on the frame pacing.
+
+**Freed ids** (`freed-id-order`). `ecs::Engine::EndModification`
+(`0x2bb4d90`) appends the modification's removed ids to the FIFO free-id
+deque at `engine+0xd8`, through the deque's insert `0x2bb1110` at its end.
+The removed ids are `m_betweenChanges` (`[[engine+0x1f0]]`), a
+`vector<Entity>` that `RemoveEntity` pushes to in call order.
+`AddEntity` (`0x2bb37b0`) pops the deque's front, and the deque is saved
+(`Engine::Load` asserts `m_freeIds.empty()` before it reads it).
+
+Sorting each batch before the append makes the deque depend only on which
+ids each modification removed. The order matters because the 40 callers
+of `RemoveEntity` include walks of node lists and hash maps.
+
+- *Site:* `lea rcx, [r13+0xd8]` (`0x2bb4fd1`, 7 bytes stolen), reached only
+  by the `je` at `0x2bb4fbf`. `r12` there is `engine+0x1f0`.
+- *The second engine:* `Replicator::Apply` (`0x2bb4430`) replays the sim's
+  modifications one by one, Begin, the removals, then End through the same
+  `EndModification`. So it sorts the same batches, and its `AddEntity`
+  check (`entity == c.entity`) still holds.
+
+**Not ported**:
+
+- *Capacity maps* (TF2's `capacity`). TF3's `SimEntityUpdateHelper` keeps
+  its affected persons and cargo in nine phmap flat maps and sets at its
+  data block (`[helper+0x130]`), not in MSVC `unordered_map`s with a list.
+  `~SimEntityUpdateHelper` seeds one generator from `updateCount * 3 mod
+  (2^31-1)`, not mt19937 with 5489. `ApplySimPersonData` walks the five
+  person maps in slot order and hands the shared seed to every apply
+  function. There is no list to relink.
+- *Why the slots cannot just be permuted:* the walks also look entries up
+  in the same maps.
+- *When slot order can differ:* it is a function of the key set, the
+  capacity and the insertion order among colliding keys, and phmap's hash
+  has no per-process seed. Two games part here only if the builder
+  (`PrepareSimPersonData`, `0x2574d70`) inserts in history order, which was
+  not traced.
+- *The possible fix, not built:* rebuild each map in ascending key order
+  with phmap's exact insert at `0x256b349` (`mov rdi, [r13+0x130]`, the
+  twin of TF2's site). It is risky enough to need its own measurement
+  first.
+- *The Linux-only orders* (`target_order_linux.cpp`,
+  `network_person_order_linux.cpp`, `network_index_order_linux.cpp`,
+  `person_map_order_linux.cpp`; `RESUME_STATUS.md`,
+  `LINE_COST_DESYNC.md`). These make a libstdc++ build walk its sets, and
+  hash its costs, the way the Windows build does. Every TF3 game in a room
+  runs the same Windows executable, so they are not needed. A native Linux
+  TF3 game in a room would need their counterparts.
+- *The step canon* (TF2's `step`, every family's node list in entity order
+  at each `Engine::Update`). It is a different fix, and still the
+  candidate the order fixes above name for the ship and aircraft families.
+
+**PathFactory's chunks do not depend on the core count.**
+`PathFactory::Compute`'s chunk size is `max(1, ceil(3n / [pool+0xc4]))`
+(`0x8ceec1..0x8ceeef`), and each chunk's seed comes from its start index.
+`[pool+0xc4]` is a constant cap of 100, written only in
+`ThreadPool::ThreadPool` (`0x3055a9f`), not the pool's thread count. So the
+chunk boundaries, and with the list sorted the path seeds, are the same on
+every machine whatever its number of cores.
+
+The one machine-dependent case is a pool with exactly one worker thread.
+`LoopImpl`'s shortcut (`0x8cf502..0x8cf517`) then runs the whole batch as
+one chunk with one seed. That happens on a 1-vCPU machine, or with the
+debug "Num. Sim. threads" slider at 1. Such a game would draw other paths
+than a game with a bigger pool.
+
+**What the log says.**
+
+- At the first call of each fix and every `2^12` calls (`2^14` for
+  candidates, `2^16` for freed ids), an alive line:
+
+  ```
+  order fix <name>: alive, calls=<n> reordered=<n> refused=<n> (in the step <calls>/<reordered>)
+  ```
+
+- At every such multiple of calls inside the game's step, the counts two
+  games of a room must agree on:
+
+  ```
+  order fix <name>: in-step calls=<n> reordered=<n>
+  ```
+
+  `freed-id-order` also counts the second engine's modifications, which
+  run outside the step as often as frames come. That is why the in-step
+  counts are the ones to compare.
+
+The time goes to the `person-order` piece of the `perf:` line.
+
+**Tested without the game:**
+
+- `persons::tests`: the sort, the vector checks, each site's frame
+  slots, the departures, freed-id and needs-path hooks on vectors in
+  memory, the switches and the off lines, the master line, and that the
+  profile states each site's bytes.
+- `persons::splice_tests`: the freed-id hook through its real 35 site
+  bytes on a hand-written function.
+- The static proof (`tf3_static_proof.rs`): the six targets resolve
+  uniquely at their RVAs in the installed game, plus the calls the checks
+  rely on. Those are the emits to `0xaeaeb0`, the pool loop, the
+  `updateCount` seeds, Compute's caller, the results loop's re-read, the
+  getter and the deque insert.
+
+**In the game:** soak 9 on `twomptest` (three games on one PC, all five
+fixes on) passed step 26100 in sync, past the step-25950 split. Whether it
+also passes the step-36400 fare split was not yet known when this was
+written.
+
 ### What the hook costs: the `perf:` lines
 
 `crates/tpf3mp-hook/src/perf.rs` times the hook's per-update work where
@@ -2894,7 +3158,7 @@ hook.log (nothing while no step runs, at the main menu):
 
 ```
 perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 90000 hits, 1200 misses
-perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
+perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, person-order 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
 ```
 
 The first line: the window's length; the game's step, its total time,
@@ -2914,6 +3178,7 @@ one `VirtualQuery` or more). Each piece of the second line is
 | `platform-candidates` | `platform-order`'s candidate sort | `FindNextFreeTerminal` sorts |
 | `land-vehicle` | `land-vehicle-order`'s sort | reservation updates |
 | `vehicles-at-stop` | `vehicles-at-stop-order`'s sort | stop lookups |
+| `person-order` | the person-order fixes' sorts ("The person-order fixes") | batches: candidate lists, leave and arrival batches, needs-path lists, freed-id batches |
 | `reseed` | the per-call reseed of the game scripts (update, postUpdate, handleEvent), its checks and `math.randomseed` | script calls |
 | `paused-tick` | the paused-tick redirect's decision (the game's own advance, when passed on, is not counted) | paused frames |
 | `lanes` | `tpf3mp_native.lanes(t)`: the lanes' text read off the Lua stack at a checkpoint (the mod's own reading of the world is Lua, inside the game's step) | checkpoints |
@@ -2941,6 +3206,7 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_PLATFORM_ORDER` | `platform-order`, both sites |
 | `TPF3MP_HOOK_LAND_VEHICLE_ORDER` | `land-vehicle-order` |
 | `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER` | `vehicles-at-stop-order` |
+| `TPF3MP_HOOK_PERSON_ORDER` | every person-order fix; each also has its own ("The person-order fixes") |
 | `TPF3MP_HOOK_PAUSED_TICK` | the paused-tick redirect |
 | `TPF3MP_HOOK_SCRIPT_RESEED` | the game scripts' per-call reseed (the per-update detour stays, so the mod's own `tpf3mp_native.seed` still works) |
 | `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |

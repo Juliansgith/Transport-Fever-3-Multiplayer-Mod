@@ -378,8 +378,10 @@ unsafe fn run_step(
     // answers for it.
     crate::image::invalidate();
     let started = crate::perf::start();
+    crate::order::set_in_step(true);
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
+    crate::order::set_in_step(false);
     if let Some(started) = started {
         let nanos = crate::perf::nanos_since(started);
         crate::perf::game_step(nanos);
@@ -738,6 +740,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     log_line(&crate::ticks::install(&absolute));
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
+    }
+    for line in crate::persons::install(&absolute) {
+        log_line(&line);
     }
     Ok(step_rva)
 }

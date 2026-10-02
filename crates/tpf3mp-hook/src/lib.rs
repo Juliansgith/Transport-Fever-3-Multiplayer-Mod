@@ -47,6 +47,7 @@ pub mod menu;
 pub mod modules;
 pub mod order;
 pub mod perf;
+pub mod persons;
 mod platform;
 pub mod seeds;
 pub mod step;
