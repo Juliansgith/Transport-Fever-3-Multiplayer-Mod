@@ -158,6 +158,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("view: getPlayer binding/push", 0x24ed2d2),
     ("probe: StreetBulldozerAction edge test", 0x5f2a00),
     ("probe: bulldozer owner test", 0x5f7db0),
+    ("probe: LineViewer route data test", 0x7f03e7),
     ("lua_cached_loadfile", 0x2fa8130),
     // The person-order fixes (crates/tpf3mp-hook/src/persons.rs).
     ("destination_util::GetTargetsByLandUse/candidates", 0x8e3d65),

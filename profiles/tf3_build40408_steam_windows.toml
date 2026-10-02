@@ -1348,3 +1348,16 @@ signature = "48 8B 01 FF 50 10 48 63 90 0C 02 00 00 48 8B CB E8 ?? ?? ?? ??"
 offset = 16
 prologue = "E8"
 required = false
+
+# The probe's log of the map's line viewer (probe.rs), only with
+# TPF3MP_PROBE_PLAYER=1: in sub_7f01d0 (UI::LineViewer::Update's lambda,
+# game/ui/util/lineviewer.cpp), right after LineSystem::GetData(line)
+# (call at 0x7f03e2): mov ecx,[r15+0x80]; cmp [rax+0x18],ecx; jne skip;
+# then the data's segment lists against the line's stops (0x7f0444). Spliced
+# at the mov (no branch lands inside), read only.
+[[target]]
+name = "probe: LineViewer route data test"
+signature = "48 8B C8 E8 ?? ?? ?? ?? 41 8B 8F 80 00 00 00 39 48 18"
+offset = 8
+prologue = "41 8B 8F 80 00 00 00"
+required = false

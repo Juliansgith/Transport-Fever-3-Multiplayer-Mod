@@ -295,3 +295,19 @@ company's with a station group of its own; the line was not drawn.
   system could not compute. The probe now reports each stop and the
   engine's verdict for every line a viewer is handed, the first company's
   lines too, so one try compares them.
+
+### Drawing depends on the owner, not in the viewer (2026-10-02, probe of 34a2edf)
+
+- **seen** (p1) company #1's line 342589, its stops' groups, stations and
+  terminals all there and the company's, listed at every terminal, "3
+  detailed stop problem(s)", not drawn; the first company's new line
+  329152 on room-placed stops, "2 detailed stop problem(s)", drawn.
+- **seen** No player read and no `PlayerOwned` lookup six calls deep from
+  the viewer (tpfre). The line system's own owner reads (`LineSystem` vf4,
+  vf5, vf8, vf9, through `sub_95790`) keep its player-to-lines index
+  (`+0x58`, what `getLinesForPlayer` reads), not route data. The sim
+  loop's player read (`sub_157860`) is `player_util::ClearPositions`.
+- **open** What makes the line system's data for a company's line differ.
+  The probe now logs the viewer's route data test per line (revision and
+  segment lists against what it expects), so one try shows whether the
+  company's line fails it and how.
