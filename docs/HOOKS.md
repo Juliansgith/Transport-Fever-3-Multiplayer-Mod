@@ -3338,17 +3338,25 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_MEASURE_ORDER` | (unset by default) the order measurement, which adds its own detours and hashing when set |
 | `TPF3MP_HOOK_PERF` | the timing and these lines |
 
-Off unless set, and logging only (they change nothing the game computes,
-so one game may run them alone):
-
-| switch | turns on |
-|---|---|
-| `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump ("The town trace") |
-| `TPF3MP_HOOK_STREET_TRACE` (`1` or `on`; narrowed by `TPF3MP_HOOK_STREET_TRACE_STEPS` and `TPF3MP_HOOK_STREET_TRACE_BOX`) | the `street:` lines ("The street trace") |
-
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
 every game has the same switches, or alone.
+
+The desync diagnostics are off unless set, and logging only: they change
+nothing the game computes, so one game of a room may run them alone.
+
+| switch | turns on |
+|---|---|
+| `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (with `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to`) | the network lane (0) dumped at every checkpoint of those steps, only its edges with an end in the box, even with lane dumps off ("Lane dumps") |
+| `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump at every checkpoint ("The town trace") |
+| `TPF3MP_HOOK_EDGE_WATCH=<e>,...` (with `TPF3MP_HOOK_EDGE_WATCH_STEPS=from-to`) | the `edge watch:` lines for those entities and an `apply:` line for every command applied ("The edge watch") |
+| `TPF3MP_HOOK_STREET_TRACE` (`1` or `on`; narrowed by `TPF3MP_HOOK_STREET_TRACE_STEPS` and `TPF3MP_HOOK_STREET_TRACE_BOX`) | the `street:` lines ("The street trace") |
+| `TPF3MP_HOOK_ROAD_ENTRY_TRACE=from-to` | a `road:` line for every in-step road edge append in those steps ("The road entry trace") |
+| `TPF3MP_HOOK_ROAD_ENTRY_RECORD=<n>` | the last `n` steps' `road:` lines kept in memory and written when the room asks for a lane dump |
+| `TPF3MP_HOOK_WATCH_ENTITIES=<e>,...` | each traced or recorded append of those entities lists the entries of the edges it touched |
+
+The `road-entry:` digest at every checkpoint needs no switch: it is on
+while `road-entry-order` sorts.
 
 ## Release-day procedure: adding a target for a new build
 
