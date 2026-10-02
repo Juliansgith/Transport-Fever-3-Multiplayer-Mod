@@ -1163,16 +1163,21 @@ end
 -- A stop the room placed is the acting company's, the same in every game
 -- (2026-10-02: a company's stops came out another company's, and its
 -- player could not open them). The stop's edge object is named for it
--- (`playerEntity`), but what the game's windows ask is the owner of the
--- stop's station group (gui/entity_window/station_group.tl), and the
--- stop's construction and station are made by the engine, not named in the
--- proposal. So, once built, each new object on the edge, its construction,
--- the construction's stations and their station groups are given to the
--- acting company where they are anyone else's, as the game's own missions
--- hand a stop over (transfer_ownership_util.tl, makeEntitySetPlayerCmd).
--- A station group that holds a station of another stop is left as it is:
--- it is not this stop's to give. `kept` are the edge's objects as the
--- proposal listed them, the new ones negative.
+-- (`playerEntity`), but what the game's windows and its line manager ask
+-- is the owner of the stop's station group (gui/entity_window/
+-- station_group.tl). A street stop's edge object is its station itself
+-- (mission/name_util.tl: an entity with EDGE_OBJECT and STATION), and its
+-- group is the station group system's (getStationGroup of the object); a
+-- stop built as a construction has its stations in the construction. So,
+-- once built, each new object on the edge, its station group, and any
+-- construction with its stations and their groups are given to the acting
+-- company where they are anyone else's, as the game's own missions hand a
+-- stop over (transfer_ownership_util.tl, makeEntitySetPlayerCmd). A
+-- station group that holds a station of another stop is left as it is: it
+-- is not this stop's to give. hook.log says, for each new object, whether
+-- it is a station and which group holds it (2026-10-02, retest: the hand-
+-- over found the objects alone, and no icon showed). `kept` are the
+-- edge's objects as the proposal listed them, the new ones negative.
 local function settleStop(ref, kept, model)
 	local ok, e = pcall(stopEdge, ref)
 	if not ok then
@@ -1186,7 +1191,7 @@ local function settleStop(ref, kept, model)
 	local me = company()
 	local companies = require_companies()
 	local C = api.type.ComponentType
-	local seen, fixed = {}, {}
+	local seen, fixed, found = {}, {}, {}
 	local function give(entity, what)
 		if type(entity) ~= "number" or entity < 0 or seen[entity] then return end
 		seen[entity] = true
@@ -1197,33 +1202,57 @@ local function settleStop(ref, kept, model)
 		fixed[#fixed + 1] = what .. " " .. entity .. " (was " .. tostring(owner) .. ")"
 			.. (sent and "" or (": refused, " .. tostring(why)))
 	end
+	local function groupOf(station)
+		local group = -1
+		pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(station) end)
+		if type(group) ~= "number" or group < 0 then return nil end
+		return group
+	end
+	-- The new objects, and every station of this stop: what its groups may
+	-- hold and still be its own.
+	local objects, stations, mine, conOf = {}, {}, {}, {}
 	for _, o in ipairs(e.comp.objects or {}) do
-		local object = o[1]
-		if not had[object] then
-			give(object, "stop")
-			local con = -1
-			pcall(function() con = api.engine.util.construction.getConstructionEntity(object) end)
-			if type(con) == "number" and con >= 0 then
-				give(con, "construction")
-				local c = api.engine.getComponent(con, C.CONSTRUCTION)
-				local stations = {}
-				for _, s in ipairs(c and c.stations or {}) do stations[#stations + 1] = s end
-				local mine = {}
-				for _, s in ipairs(stations) do mine[s] = true end
-				for _, s in ipairs(stations) do
-					give(s, "station")
-					local group = -1
-					pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(s) end)
-					local g = type(group) == "number" and group >= 0 and api.engine.getComponent(group, C.STATION_GROUP)
-					local alone = g ~= nil and g ~= false
-					for _, other in ipairs(g and g.stations or {}) do
-						if not mine[other] then alone = false end
-					end
-					if alone then give(group, "station group") end
-				end
-			end
+		if not had[o[1]] then
+			objects[#objects + 1] = o[1]
+			mine[o[1]] = true
 		end
 	end
+	for _, object in ipairs(objects) do
+		local isStation = false
+		pcall(function() isStation = api.engine.getComponent(object, C.STATION) ~= nil end)
+		local con = -1
+		pcall(function() con = api.engine.util.construction.getConstructionEntity(object) end)
+		if type(con) ~= "number" then con = -1 end
+		local group = groupOf(object)
+		found[#found + 1] = tostring(object) .. (isStation and " a station" or " no station")
+			.. (group and (" in group " .. group .. " (owner " .. tostring(companies.ownerOf(api, group)) .. ")")
+				or " in no group")
+			.. (con >= 0 and (", construction " .. con) or "")
+		if isStation or group then stations[#stations + 1] = object end
+		if con >= 0 then
+			local c = api.engine.getComponent(con, C.CONSTRUCTION)
+			for _, s in ipairs(c and c.stations or {}) do
+				stations[#stations + 1] = s
+				mine[s] = true
+			end
+			conOf[object] = con
+		end
+	end
+	for _, object in ipairs(objects) do
+		give(object, "stop")
+		if conOf[object] then give(conOf[object], "construction") end
+	end
+	for _, s in ipairs(stations) do
+		give(s, "station")
+		local group = groupOf(s)
+		local g = group and api.engine.getComponent(group, C.STATION_GROUP)
+		local alone = g ~= nil and g ~= false
+		for _, other in ipairs(g and g.stations or {}) do
+			if not mine[other] then alone = false end
+		end
+		if alone then give(group, "station group") end
+	end
+	log("the new " .. tostring(model) .. ": " .. table.concat(found, "; "))
 	if #fixed > 0 then
 		log("the new " .. tostring(model) .. " made the acting company's (" .. tostring(me) .. "): "
 			.. table.concat(fixed, ", "))

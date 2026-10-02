@@ -2380,14 +2380,19 @@ terrain tools through the hook, and a construction's window its edits:
   rebuilt edge keeps its own `PlayerOwned` (a company's road stays the
   company's). Once built, the stop is settled as the acting company's
   (2026-10-02: a company's stops came out another company's, and its
-  player could not open them): each new object on the edge, its
-  construction (`api.engine.util.construction.getConstructionEntity`),
-  the construction's stations and the station groups that hold only
-  those stations, where anyone else owns them, are handed over with
-  `makeEntitySetPlayerCmd`, as the game's own missions hand a stop over
-  (`transfer_ownership_util.tl`); the windows ask the station group's
-  owner (`station_group.tl`). hook.log names each one handed over and
-  its owner before (`the new <stop> made the acting company's`). A receiver
+  player could not open them, nor see its station icon): each new
+  object on the edge, which for a street stop is its station itself
+  (`EDGE_OBJECT` and `STATION`, `mission/name_util.tl`), its station
+  group (`stationGroupSystem.getStationGroup` of the object), and for a
+  stop built as a construction that construction and its stations, are
+  handed over with `makeEntitySetPlayerCmd` where anyone else owns them,
+  as the game's own missions hand a stop over
+  (`transfer_ownership_util.tl`); the windows, the icons and the line
+  manager ask the station group's owner (`station_group.tl`). A group
+  that also holds another stop's station is left as it is. hook.log says
+  what each new object is and which group holds it (`the new <stop>: 600
+  a station in group 610 (owner nil); ...`), and each one handed over
+  with its owner before (`the new <stop> made the acting company's`). A receiver
   whose edge runs the other way flips `left`; a side already taken is
   refused (two stops on one side is a fatal assert in the game's lane
   creation on TPF2). Refused: a stop dropped where one stood (the game

@@ -6436,66 +6436,68 @@ fn a_stop_is_placed_beside_the_edges_others_and_never_on_a_taken_side() {
     assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
 }
 
-/// A stop a company's player placed came out another company's, and its
-/// player could not open it (2026-10-02). The engine makes the stop's
-/// construction, station and station group itself; once built, every game
-/// gives each of them that is anyone else's to the acting company, but not
-/// a station group another stop's station shares. The edge it stands on
-/// keeps its own owner.
+/// The world of a stop placed for company Rival on edge 100, as build
+/// 40408 makes one: the stop's two edge objects are its stations
+/// themselves (EDGE_OBJECT and STATION), in one station group the engine
+/// made no one's; no construction. `{SHARED}` adds another station to that
+/// group.
+const STOP_OWNERS: &str = "local CT = api.type.ComponentType \
+    CT.CONSTRUCTION, CT.STATION_GROUP, CT.PLAYER_OWNED, CT.STATION = 2, 9, 15, 16 \
+    api.type.PlayerOwned = { new = function() return {} end } \
+    OWNERS = { [100] = 30 } \
+    local groups = { [610] = { stations = { 600, 601 {SHARED} } } } \
+    local get = api.engine.getComponent \
+    api.engine.getComponent = function(id, kind) \
+        if kind == 15 then return OWNERS[id] and { player = OWNERS[id] } or nil end \
+        if kind == 9 then return groups[id] end \
+        if kind == 16 and (id == 600 or id == 601) then return {} end \
+        return get(id, kind) \
+    end \
+    api.engine.util.construction = { getConstructionEntity = function() return -1 end } \
+    api.engine.system.stationGroupSystem = { getStationGroup = function(s) \
+        if s == 600 or s == 601 then return 610 end return -1 end } \
+    api.cmd.makeEntitySetPlayerCmd = function(entity, player) \
+        return { setPlayer = entity, player = player } end \
+    local send = api.cmd.sendCommand \
+    api.cmd.sendCommand = function(cmd, ...) \
+        if cmd.setPlayer then OWNERS[cmd.setPlayer] = cmd.player \
+        elseif cmd.proposal and cmd.proposal.streetProposal then \
+            EDGES[100].objects = { { 555, 2 }, { 600, 0 }, { 601, 1 } } \
+        end \
+        return send(cmd, ...) \
+    end \
+    EDGES[100].objects = { { 555, 2 } } OWNERS[555] = 30 \
+    A = string.rep('a', 64) \
+    HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+    UPDATE({}, STATE, 0.2) \
+    SENT = {} HOOK.applied = {} \
+    HOOK.batch = { { PlaceStop = { edge = { network = 'Street', ends = { a = { x = 50, y = -40, z = 0 }, \
+        b = { x = 50, y = 40, z = 0 } } }, at = { x = 50, y = 0, z = 0 }, left = true, two_sided = true, \
+        direction = { x = 0, y = 1, z = 0 }, \
+        model = '::/stations/street/small_stops/small_old_twosided.con' } } } \
+    HOOK.origins = { A } \
+    UPDATE({}, STATE, 0.2)";
+
+/// A stop a company's player placed came out another company's, and had no
+/// station icon for its player (2026-10-02, and its retest: the hand-over
+/// found the two edge objects alone). A street stop's edge objects are its
+/// stations, and its station group, which the windows, the icons and the
+/// line manager ask, is the station group system's. Once built, every game
+/// gives the stop's objects and their group to the acting company, but not
+/// a group another stop's station shares; the edge keeps its own owner.
 #[test]
 fn a_stop_the_room_places_is_the_acting_companys() {
     let (lua, _script) = engine();
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(FAKE_STOPS).exec().unwrap();
-    lua.load(
-        "local CT = api.type.ComponentType \
-         CT.CONSTRUCTION, CT.STATION_GROUP, CT.PLAYER_OWNED = 2, 9, 15 \
-         api.type.PlayerOwned = { new = function() return {} end } \
-         OWNERS = { [100] = 30 } \
-         local parts = { [700] = { stations = { 701, 704 } }, \
-             [702] = { stations = { 701 } }, [705] = { stations = { 704, 800 } } } \
-         local get = api.engine.getComponent \
-         api.engine.getComponent = function(id, kind) \
-             if kind == 15 then return OWNERS[id] and { player = OWNERS[id] } or nil end \
-             if kind == 2 or kind == 9 then return parts[id] end \
-             return get(id, kind) \
-         end \
-         api.engine.util.construction = { getConstructionEntity = function(e) \
-             if e == 600 then return 700 end return -1 end } \
-         api.engine.system.stationGroupSystem = { getStationGroup = function(s) \
-             if s == 701 then return 702 end if s == 704 then return 705 end return -1 end } \
-         api.cmd.makeEntitySetPlayerCmd = function(entity, player) \
-             return { setPlayer = entity, player = player } end \
-         local send = api.cmd.sendCommand \
-         api.cmd.sendCommand = function(cmd, ...) \
-             if cmd.setPlayer then OWNERS[cmd.setPlayer] = cmd.player \
-             elseif cmd.proposal and cmd.proposal.streetProposal then \
-                 EDGES[100].objects = { { 555, 1 }, { 600, 0 } } \
-                 OWNERS[600], OWNERS[700], OWNERS[701], OWNERS[702], OWNERS[704], OWNERS[705] = \
-                     25, 25, 25, nil, 25, 30 \
-             end \
-             return send(cmd, ...) \
-         end \
-         EDGES[100].objects = { { 555, 1 } } OWNERS[555] = 30 \
-         A = string.rep('a', 64) \
-         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
-         UPDATE({}, STATE, 0.2) \
-         SENT = {} HOOK.applied = {} \
-         HOOK.batch = { { PlaceStop = { edge = { network = 'Street', ends = { a = { x = 50, y = -40, z = 0 }, \
-             b = { x = 50, y = 40, z = 0 } } }, at = { x = 50, y = 0, z = 0 }, left = true, \
-             direction = { x = 0, y = 1, z = 0 }, \
-             model = '::/stations/street/small_stops/small_old_twosided.con' } } } \
-         HOOK.origins = { A } \
-         UPDATE({}, STATE, 0.2)",
-    )
-    .exec()
-    .unwrap_or_else(|error| panic!("{error}"));
+    lua.load(STOP_OWNERS.replace("{SHARED}", ""))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
     let (ok, built, owners, given): (bool, String, String, String) = lua
         .load(
-            "local p = SENT[1].proposal \
-             local s = p.streetProposal \
+            "local s = SENT[1].proposal.streetProposal \
              local o = {} \
-             for _, e in ipairs({ 555, 600, 700, 701, 702, 704, 705 }) do o[#o + 1] = e .. '=' .. tostring(OWNERS[e]) end \
+             for _, e in ipairs({ 555, 600, 601, 610 }) do o[#o + 1] = e .. '=' .. tostring(OWNERS[e]) end \
              local g = {} \
              for i = 2, #SENT do g[#g + 1] = tostring(SENT[i].setPlayer) end \
              return HOOK.applied[1].ok == true, \
@@ -6511,16 +6513,39 @@ fn a_stop_the_room_places_is_the_acting_companys() {
         "the stop named for the acting company, paid by it; its edge keeps its owner"
     );
     assert_eq!(
-        owners, "555=30 600=901 700=901 701=901 702=901 704=901 705=30",
-        "the stop, its construction, stations and own group the company's; \
-         another stop's, and a group it shares, as they were"
+        owners, "555=30 600=901 601=901 610=901",
+        "the stop's stations and their group the company's; the edge's signal as it was"
     );
-    assert_eq!(given, "600,700,701,702,704");
+    assert_eq!(given, "600,601,610");
+    let log = hook_log(&lua);
     assert!(
-        hook_log(&lua).contains("made the acting company's (901): stop 600 (was 25)"),
-        "{}",
-        hook_log(&lua)
+        log.contains(
+            "the new ::/stations/street/small_stops/small_old_twosided.con: \
+             600 a station in group 610 (owner nil); 601 a station in group 610 (owner nil)"
+        ),
+        "{log}"
     );
+    assert!(
+        log.contains("made the acting company's (901): stop 600 (was nil), stop 601 (was nil), station group 610 (was nil)"),
+        "{log}"
+    );
+
+    // A group that also holds another stop's station is not this stop's.
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(STOP_OWNERS.replace("{SHARED}", ", 800"))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let owners: String = lua
+        .load(
+            "local o = {} \
+             for _, e in ipairs({ 600, 601, 610 }) do o[#o + 1] = e .. '=' .. tostring(OWNERS[e]) end \
+             return table.concat(o, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(owners, "600=901 601=901 610=nil");
 }
 
 #[test]
