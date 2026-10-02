@@ -47,7 +47,11 @@ file is part of the installed-mod fingerprint.
 - Automatic creation of competitive companies and changes to station access.
 - Additional native terraforming and track-upgrade hooks.
 - Alternate simulation-buffer and world-loading experiments.
-- The expanded scenario runner and notification/discard additions.
+- Notification/discard additions.
+
+The scenario runner came in afterwards on its own: the hook's test mode
+(REGRESSION.md, "The hook's test mode"), off unless a person names a
+scenario on the launcher. It adds no action and opens no gate.
 
 The existing junction gate remains off pending its own game acceptance.
 No owner decision in PLAN.md or DECISIONS.md is changed by this integration.

@@ -1,0 +1,1147 @@
+{
+ "name": "road_upgrades",
+ "comment": "Play in a co-op room, every actor for the room's first company. A curved street, a straight one upgraded with a bus lane and then with a tram track, the curved street bulldozed, a town building demolished, and a headquarters, a second one refused.",
+ "observe_every": 10,
+ "items": [
+  {
+   "at": 50,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a curved street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          40,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 70000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 10000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 100,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a straight street to upgrade",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -40,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          -40,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 150,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: the straight street rebuilt with a bus lane (an upgrade)",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": true,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [
+       {
+        "network": "Street",
+        "ends": {
+         "a": {
+          "$pos": [
+           0,
+           -40,
+           0
+          ]
+         },
+         "b": {
+          "$pos": [
+           100,
+           -40,
+           0
+          ]
+         }
+        }
+       }
+      ],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 200,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: rebuilt again as a tram street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/town/town_old_small_tram.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "Plain",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [
+       {
+        "network": "Street",
+        "ends": {
+         "a": {
+          "$pos": [
+           0,
+           -40,
+           0
+          ]
+         },
+         "b": {
+          "$pos": [
+           100,
+           -40,
+           0
+          ]
+         }
+        }
+       }
+      ],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 260,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: the curved street bulldozed",
+   "action": {
+    "Bulldoze": {
+     "Edges": {
+      "network": "Street",
+      "edges": [
+       {
+        "a": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "b": {
+         "$pos": [
+          100,
+          40,
+          0
+         ]
+        }
+       }
+      ],
+      "buildings": []
+     }
+    }
+   }
+  },
+  {
+   "at": 320,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: the town building nearest town #0's centre demolished",
+   "action": {
+    "Bulldoze": {
+     "Construction": {
+      "$building": "#0:0"
+     }
+    }
+   }
+  },
+  {
+   "at": 380,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "any",
+   "note": "Actor 0: the company's headquarters (any: the save's may have one)",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/landmarks/hq/headquarter.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        150,
+        0,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
+      }
+     ],
+     "name": "Scenario HQ 0",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 1550,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a curved street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          40,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 70000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 10000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1600,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a straight street to upgrade",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -40,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          -40,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1650,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: the straight street rebuilt with a bus lane (an upgrade)",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": true,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [
+       {
+        "network": "Street",
+        "ends": {
+         "a": {
+          "$pos": [
+           0,
+           -40,
+           0
+          ]
+         },
+         "b": {
+          "$pos": [
+           100,
+           -40,
+           0
+          ]
+         }
+        }
+       }
+      ],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1700,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: rebuilt again as a tram street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/town/town_old_small_tram.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "Plain",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [
+       {
+        "network": "Street",
+        "ends": {
+         "a": {
+          "$pos": [
+           0,
+           -40,
+           0
+          ]
+         },
+         "b": {
+          "$pos": [
+           100,
+           -40,
+           0
+          ]
+         }
+        }
+       }
+      ],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1760,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: the curved street bulldozed",
+   "action": {
+    "Bulldoze": {
+     "Edges": {
+      "network": "Street",
+      "edges": [
+       {
+        "a": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "b": {
+         "$pos": [
+          100,
+          40,
+          0
+         ]
+        }
+       }
+      ],
+      "buildings": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1820,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: the town building nearest town #1's centre demolished",
+   "action": {
+    "Bulldoze": {
+     "Construction": {
+      "$building": "#1:0"
+     }
+    }
+   }
+  },
+  {
+   "at": 1880,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "refused",
+   "note": "Actor 1: the company's headquarters",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/landmarks/hq/headquarter.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        150,
+        0,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
+      }
+     ],
+     "name": "Scenario HQ 1",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  },
+  {
+   "at": 3050,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a curved street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          40,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 70000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 10000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3100,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a straight street to upgrade",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -40,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          -40,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3150,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: the straight street rebuilt with a bus lane (an upgrade)",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": true,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [
+       {
+        "network": "Street",
+        "ends": {
+         "a": {
+          "$pos": [
+           0,
+           -40,
+           0
+          ]
+         },
+         "b": {
+          "$pos": [
+           100,
+           -40,
+           0
+          ]
+         }
+        }
+       }
+      ],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3200,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: rebuilt again as a tram street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/town/town_old_small_tram.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "Plain",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          100,
+          -40,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 100000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [
+       {
+        "network": "Street",
+        "ends": {
+         "a": {
+          "$pos": [
+           0,
+           -40,
+           0
+          ]
+         },
+         "b": {
+          "$pos": [
+           100,
+           -40,
+           0
+          ]
+         }
+        }
+       }
+      ],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3260,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: the curved street bulldozed",
+   "action": {
+    "Bulldoze": {
+     "Edges": {
+      "network": "Street",
+      "edges": [
+       {
+        "a": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "b": {
+         "$pos": [
+          100,
+          40,
+          0
+         ]
+        }
+       }
+      ],
+      "buildings": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3320,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: the town building nearest town #2's centre demolished",
+   "action": {
+    "Bulldoze": {
+     "Construction": {
+      "$building": "#2:0"
+     }
+    }
+   }
+  },
+  {
+   "at": 3380,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "refused",
+   "note": "Actor 2: the company's headquarters",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/landmarks/hq/headquarter.con",
+     "transform": {
+      "basis": [
+       1000000,
+       0,
+       0,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        150,
+        0,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
+      }
+     ],
+     "name": "Scenario HQ 2",
+     "replaces": null,
+     "connection": null
+    }
+   }
+  }
+ ]
+}

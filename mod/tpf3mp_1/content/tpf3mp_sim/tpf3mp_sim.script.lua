@@ -80,6 +80,9 @@ function data()
 	local subscribed = false
 	-- Says what a prospection did (below).
 	local prospected
+	-- The world's summary for the hook's test mode (tpf3mp/observe.lua):
+	-- loaded when first asked for, per state; false when it would not load.
+	local observer = nil
 
 	-- The events the script needs: its console event, and the build tools'
 	-- proposals. Each by name, since a save may carry an older mod's
@@ -475,6 +478,23 @@ function data()
 				end
 				local ok, why = l:lanes(read)
 				if not ok then l:log("the lanes were not taken: " .. tostring(why)) end
+				-- The hook's test mode asks for a summary of the world at some
+				-- checkpoints (crates/tpf3mp-hook/src/scenario.rs).
+				local observeStep, full = l:observe()
+				if observeStep then
+					if observer == nil then
+						local ok, module = pcall(ug_require, MOD .. "::/scripts/tpf3mp/observe.lua")
+						observer = ok and type(module) == "table" and module or false
+					end
+					local saved = state and state.get and state:get()
+					local ok, text = false, "the observer did not load"
+					if observer then ok, text = pcall(observer.read, api, saved, observeStep, full) end
+					if not ok then
+						text = string.format('{"step":%d,"errors":["observe: %s"]}', observeStep,
+							(tostring(text):gsub('[%c"\\]', " ")))
+					end
+					l:observed(observeStep, text)
+				end
 				local dump = l:dump()
 				if dump then
 					local saved = state and state.get and state:get()

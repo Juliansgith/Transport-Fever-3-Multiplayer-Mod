@@ -1,0 +1,3714 @@
+{
+ "name": "roads",
+ "comment": "Play in a co-op room, each actor founding a company of its own. Streets, a T junction, a crossroads, a bus street with two stops and a road depot snapped onto its end, a bus line with three buses bought at once, a track with a rail depot snapped to its end, a loan taken first and repaid, a town street no building stands by bulldozed, and a bus at no depot, which every game must refuse. Each actor plays for a company it founds.",
+ "observe_every": 10,
+ "items": [
+  {
+   "at": 5,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: founds a company of its own (companies+0)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 0"
+     }
+    }
+   }
+  },
+  {
+   "at": 20,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: borrows 3000000 to build and buy with (its company has no money)",
+   "action": {
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 50,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a straight street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          120,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 120000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 120000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 100,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a T junction, splitting the street at 60 m",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          60,
+          0,
+          0
+         ]
+        },
+        "resolve": {
+         "Split": {
+          "network": "Street",
+          "ends": {
+           "a": {
+            "$pos": [
+             0,
+             0,
+             0
+            ]
+           },
+           "b": {
+            "$pos": [
+             120,
+             0,
+             0
+            ]
+           }
+          }
+         }
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          60,
+          60,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 150,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a crossroads, splitting the street's east half at 90 m",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          90,
+          -60,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          90,
+          0,
+          0
+         ]
+        },
+        "resolve": {
+         "Split": {
+          "network": "Street",
+          "ends": {
+           "a": {
+            "$pos": [
+             60,
+             0,
+             0
+            ]
+           },
+           "b": {
+            "$pos": [
+             120,
+             0,
+             0
+            ]
+           }
+          }
+         }
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          90,
+          60,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       },
+       {
+        "from": 1,
+        "to": 2,
+        "tangent0": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 180,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: the bus street, south of the junctions",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          20,
+          -50,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          170,
+          -50,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 200,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a bus stop on the bus street",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         20,
+         -50,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         170,
+         -50,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       70,
+       -50,
+       0
+      ]
+     },
+     "left": true,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 230,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a second stop on the bus street's other side",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         20,
+         -50,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         170,
+         -50,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       140,
+       -50,
+       0
+      ]
+     },
+     "left": false,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 260,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a road depot west of the bus street, its entrance snapped onto the end",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/depots/road/road_depot/road_depot.con",
+     "transform": {
+      "basis": [
+       0,
+       1000000,
+       0,
+       -1000000,
+       0,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
+      }
+     ],
+     "name": "Scenario depot 0",
+     "replaces": null,
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          17.0,
+          -50.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          20,
+          -50,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 3000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 3000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 320,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a bus line between the two stops, stations 0 and 1 of station group +0",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario bus line 0",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+0"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+0"
+        },
+        "terminal": {
+         "station": 1,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       3
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 360,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: bus 1 of 3, bought in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 361,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: bus 2 of 3, bought in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 362,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: bus 3 of 3, bought in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 420,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: the three buses onto the line",
+   "action": {
+    "AssignLine": {
+     "vehicles": [
+      {
+       "$id": "vehicles+0"
+      },
+      {
+       "$id": "vehicles+1"
+      },
+      {
+       "$id": "vehicles+2"
+      }
+     ],
+     "line": {
+      "$id": "lines+0"
+     },
+     "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 480,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a straight track south of the streets",
+   "action": {
+    "BuildTrack": {
+     "track": "::/infrastructure/track/simple/simple.street_template",
+     "style": "::/infrastructure/track/simple/simple.street",
+     "catenary": false,
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -80,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          150,
+          -80,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 520,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "applied",
+   "note": "Actor 0: a rail depot on the track's east end, as the construction tool proposes it",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/depots/rail/rail_depot.con",
+     "transform": {
+      "basis": [
+       0,
+       -1000000,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        220.0,
+        -82.2,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
+      }
+     ],
+     "name": "Scenario rail depot 0",
+     "replaces": null,
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          150.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Track"
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          155.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          170.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          204.0,
+          -88.2,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          270.0,
+          -88.2,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          204.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          245.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 5000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 5000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 2,
+        "to": 1,
+        "tangent0": {
+         "x": -15000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -15000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 3,
+        "to": 1,
+        "tangent0": {
+         "x": -72000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -45000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 3,
+        "to": 4,
+        "tangent0": {
+         "x": 66000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 66000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 5,
+        "to": 2,
+        "tangent0": {
+         "x": -34000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -34000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 6,
+        "to": 5,
+        "tangent0": {
+         "x": -41000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -41000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 800,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: a street of town #0 no building stands by, bulldozed",
+   "action": {
+    "Bulldoze": {
+     "Edges": {
+      "network": "Street",
+      "edges": [
+       {
+        "$edge": "#0:free:0"
+       }
+      ],
+      "buildings": []
+     }
+    }
+   }
+  },
+  {
+   "at": 900,
+   "actor": 0,
+   "origin": "spot:#0:0",
+   "expect": "refused",
+   "note": "Actor 0: a bus at no depot: refused",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -500,
+        -500,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 1000,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: pays back the loan loans+0 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+0"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1505,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: founds a company of its own (companies+1)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 1"
+     }
+    }
+   }
+  },
+  {
+   "at": 1520,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: borrows 3000000 to build and buy with (its company has no money)",
+   "action": {
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1550,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a straight street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          120,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 120000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 120000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1600,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a T junction, splitting the street at 60 m",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          60,
+          0,
+          0
+         ]
+        },
+        "resolve": {
+         "Split": {
+          "network": "Street",
+          "ends": {
+           "a": {
+            "$pos": [
+             0,
+             0,
+             0
+            ]
+           },
+           "b": {
+            "$pos": [
+             120,
+             0,
+             0
+            ]
+           }
+          }
+         }
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          60,
+          60,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1650,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a crossroads, splitting the street's east half at 90 m",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          90,
+          -60,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          90,
+          0,
+          0
+         ]
+        },
+        "resolve": {
+         "Split": {
+          "network": "Street",
+          "ends": {
+           "a": {
+            "$pos": [
+             60,
+             0,
+             0
+            ]
+           },
+           "b": {
+            "$pos": [
+             120,
+             0,
+             0
+            ]
+           }
+          }
+         }
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          90,
+          60,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       },
+       {
+        "from": 1,
+        "to": 2,
+        "tangent0": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1680,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: the bus street, south of the junctions",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          20,
+          -50,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          170,
+          -50,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1700,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a bus stop on the bus street",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         20,
+         -50,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         170,
+         -50,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       70,
+       -50,
+       0
+      ]
+     },
+     "left": true,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 1730,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a second stop on the bus street's other side",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         20,
+         -50,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         170,
+         -50,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       140,
+       -50,
+       0
+      ]
+     },
+     "left": false,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 1760,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a road depot west of the bus street, its entrance snapped onto the end",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/depots/road/road_depot/road_depot.con",
+     "transform": {
+      "basis": [
+       0,
+       1000000,
+       0,
+       -1000000,
+       0,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
+      }
+     ],
+     "name": "Scenario depot 1",
+     "replaces": null,
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          17.0,
+          -50.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          20,
+          -50,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 3000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 3000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 1820,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a bus line between the two stops, stations 0 and 1 of station group +1",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario bus line 1",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+1"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+1"
+        },
+        "terminal": {
+         "station": 1,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       3
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 1860,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: bus 1 of 3, bought in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 1861,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: bus 2 of 3, bought in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 1862,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: bus 3 of 3, bought in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 1920,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: the three buses onto the line",
+   "action": {
+    "AssignLine": {
+     "vehicles": [
+      {
+       "$id": "vehicles+3"
+      },
+      {
+       "$id": "vehicles+4"
+      },
+      {
+       "$id": "vehicles+5"
+      }
+     ],
+     "line": {
+      "$id": "lines+1"
+     },
+     "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 1980,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a straight track south of the streets",
+   "action": {
+    "BuildTrack": {
+     "track": "::/infrastructure/track/simple/simple.street_template",
+     "style": "::/infrastructure/track/simple/simple.street",
+     "catenary": false,
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -80,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          150,
+          -80,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 2020,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "applied",
+   "note": "Actor 1: a rail depot on the track's east end, as the construction tool proposes it",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/depots/rail/rail_depot.con",
+     "transform": {
+      "basis": [
+       0,
+       -1000000,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        220.0,
+        -82.2,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
+      }
+     ],
+     "name": "Scenario rail depot 1",
+     "replaces": null,
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          150.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Track"
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          155.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          170.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          204.0,
+          -88.2,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          270.0,
+          -88.2,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          204.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          245.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 5000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 5000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 2,
+        "to": 1,
+        "tangent0": {
+         "x": -15000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -15000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 3,
+        "to": 1,
+        "tangent0": {
+         "x": -72000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -45000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 3,
+        "to": 4,
+        "tangent0": {
+         "x": 66000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 66000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 5,
+        "to": 2,
+        "tangent0": {
+         "x": -34000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -34000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 6,
+        "to": 5,
+        "tangent0": {
+         "x": -41000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -41000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 2300,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: a street of town #1 no building stands by, bulldozed",
+   "action": {
+    "Bulldoze": {
+     "Edges": {
+      "network": "Street",
+      "edges": [
+       {
+        "$edge": "#1:free:0"
+       }
+      ],
+      "buildings": []
+     }
+    }
+   }
+  },
+  {
+   "at": 2400,
+   "actor": 1,
+   "origin": "spot:#1:0",
+   "expect": "refused",
+   "note": "Actor 1: a bus at no depot: refused",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -500,
+        -500,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 2440,
+   "actor": 1,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 1: actor 0's first bus sold: refused (another company's)",
+   "action": {
+    "SellVehicle": {
+     "vehicles": [
+      {
+       "$id": "vehicles+0"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 2500,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: pays back the loan loans+1 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+1"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3005,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: founds a company of its own (companies+2)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Scenario company 2"
+     }
+    }
+   }
+  },
+  {
+   "at": 3020,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: borrows 3000000 to build and buy with (its company has no money)",
+   "action": {
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3050,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a straight street",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          120,
+          0,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 120000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 120000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3100,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a T junction, splitting the street at 60 m",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          60,
+          0,
+          0
+         ]
+        },
+        "resolve": {
+         "Split": {
+          "network": "Street",
+          "ends": {
+           "a": {
+            "$pos": [
+             0,
+             0,
+             0
+            ]
+           },
+           "b": {
+            "$pos": [
+             120,
+             0,
+             0
+            ]
+           }
+          }
+         }
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          60,
+          60,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3150,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a crossroads, splitting the street's east half at 90 m",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          90,
+          -60,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          90,
+          0,
+          0
+         ]
+        },
+        "resolve": {
+         "Split": {
+          "network": "Street",
+          "ends": {
+           "a": {
+            "$pos": [
+             60,
+             0,
+             0
+            ]
+           },
+           "b": {
+            "$pos": [
+             120,
+             0,
+             0
+            ]
+           }
+          }
+         }
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          90,
+          60,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       },
+       {
+        "from": 1,
+        "to": 2,
+        "tangent0": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 0,
+         "y": 60000,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3180,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: the bus street, south of the junctions",
+   "action": {
+    "BuildRoad": {
+     "street": "::/infrastructure/street/country/country_old_small.street_template",
+     "style": null,
+     "bus_lane": false,
+     "tram": "None",
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          20,
+          -50,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          170,
+          -50,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3200,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a bus stop on the bus street",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         20,
+         -50,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         170,
+         -50,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       70,
+       -50,
+       0
+      ]
+     },
+     "left": true,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 3230,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a second stop on the bus street's other side",
+   "action": {
+    "PlaceStop": {
+     "edge": {
+      "network": "Street",
+      "ends": {
+       "a": {
+        "$pos": [
+         20,
+         -50,
+         0
+        ]
+       },
+       "b": {
+        "$pos": [
+         170,
+         -50,
+         0
+        ]
+       }
+      }
+     },
+     "at": {
+      "$pos": [
+       140,
+       -50,
+       0
+      ]
+     },
+     "left": false,
+     "direction": {
+      "x": 1000000,
+      "y": 0,
+      "z": 0
+     },
+     "model": "::/stations/street/small_stops/small_old.con",
+     "two_sided": false,
+     "object": "Stop",
+     "one_way": false
+    }
+   }
+  },
+  {
+   "at": 3260,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a road depot west of the bus street, its entrance snapped onto the end",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/depots/road/road_depot/road_depot.con",
+     "transform": {
+      "basis": [
+       0,
+       1000000,
+       0,
+       -1000000,
+       0,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
+      }
+     ],
+     "name": "Scenario depot 2",
+     "replaces": null,
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          17.0,
+          -50.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          20,
+          -50,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Street"
+        }
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 3000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 3000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3320,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a bus line between the two stops, stations 0 and 1 of station group +2",
+   "action": {
+    "CreateLine": {
+     "name": "Scenario bus line 2",
+     "color": {
+      "r": 130000,
+      "g": 420000,
+      "b": 850000
+     },
+     "line": {
+      "stops": [
+       {
+        "group": {
+         "$id": "groups+2"
+        },
+        "terminal": {
+         "station": 0,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       },
+       {
+        "group": {
+         "$id": "groups+2"
+        },
+        "terminal": {
+         "station": 1,
+         "terminal": 0
+        },
+        "alternatives": [],
+        "load_mode": "LoadIfAvailable",
+        "min_wait": 0,
+        "max_wait": 180000000,
+        "max_extra_wait": 0,
+        "rules": {
+         "load": [],
+         "max_load": [],
+         "force_unload": false,
+         "destroy_for_config_change": false,
+         "destroy_for_refresh": false
+        }
+       }
+      ],
+      "modes": [
+       3
+      ],
+      "custom_filters": false,
+      "reservation_priority": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 3360,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: bus 1 of 3, bought in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3361,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: bus 2 of 3, bought in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3362,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: bus 3 of 3, bought in one burst",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -18.0,
+        -50.0,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3420,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: the three buses onto the line",
+   "action": {
+    "AssignLine": {
+     "vehicles": [
+      {
+       "$id": "vehicles+6"
+      },
+      {
+       "$id": "vehicles+7"
+      },
+      {
+       "$id": "vehicles+8"
+      }
+     ],
+     "line": {
+      "$id": "lines+2"
+     },
+     "first_stop": null
+    }
+   }
+  },
+  {
+   "at": 3480,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a straight track south of the streets",
+   "action": {
+    "BuildTrack": {
+     "track": "::/infrastructure/track/simple/simple.street_template",
+     "style": "::/infrastructure/track/simple/simple.street",
+     "catenary": false,
+     "polyline": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          0,
+          -80,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          150,
+          -80,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 150000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3520,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "applied",
+   "note": "Actor 2: a rail depot on the track's east end, as the construction tool proposes it",
+   "action": {
+    "BuildConstruction": {
+     "file": "::/depots/rail/rail_depot.con",
+     "transform": {
+      "basis": [
+       0,
+       -1000000,
+       0,
+       1000000,
+       0,
+       0,
+       0,
+       0,
+       1000000
+      ],
+      "origin": {
+       "$pos": [
+        220.0,
+        -82.2,
+        0
+       ]
+      }
+     },
+     "params": [
+      {
+       "key": "seed",
+       "value": {
+        "Int": 0
+       }
+      },
+      {
+       "key": "year",
+       "value": {
+        "Int": 1912
+       }
+      }
+     ],
+     "name": "Scenario rail depot 2",
+     "replaces": null,
+     "connection": {
+      "vertices": [
+       {
+        "pos": {
+         "$pos": [
+          150.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": {
+         "Node": "Track"
+        }
+       },
+       {
+        "pos": {
+         "$pos": [
+          155.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          170.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          204.0,
+          -88.2,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          270.0,
+          -88.2,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          204.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       },
+       {
+        "pos": {
+         "$pos": [
+          245.0,
+          -80.0,
+          0
+         ]
+        },
+        "resolve": "New"
+       }
+      ],
+      "links": [
+       {
+        "from": 0,
+        "to": 1,
+        "tangent0": {
+         "x": 5000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 5000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 2,
+        "to": 1,
+        "tangent0": {
+         "x": -15000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -15000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 3,
+        "to": 1,
+        "tangent0": {
+         "x": -72000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -45000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 3,
+        "to": 4,
+        "tangent0": {
+         "x": 66000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": 66000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 5,
+        "to": 2,
+        "tangent0": {
+         "x": -34000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -34000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       },
+       {
+        "from": 6,
+        "to": 5,
+        "tangent0": {
+         "x": -41000,
+         "y": 0,
+         "z": 0
+        },
+        "tangent1": {
+         "x": -41000,
+         "y": 0,
+         "z": 0
+        },
+        "structure": "Ground",
+        "kind": {
+         "network": "Track",
+         "template": "::/infrastructure/track/simple/simple.street_template",
+         "style": "::/infrastructure/track/simple/simple.street"
+        },
+        "decorations": [],
+        "locked": false,
+        "owned": false,
+        "lanes": [
+         {
+          "speed": 27777,
+          "width": 4000,
+          "height": 530,
+          "offset": 0,
+          "forward": true,
+          "modes": 16512
+         }
+        ],
+        "precedence": null
+       }
+      ],
+      "removals": [],
+      "removed_nodes": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3800,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: a street of town #2 no building stands by, bulldozed",
+   "action": {
+    "Bulldoze": {
+     "Edges": {
+      "network": "Street",
+      "edges": [
+       {
+        "$edge": "#2:free:0"
+       }
+      ],
+      "buildings": []
+     }
+    }
+   }
+  },
+  {
+   "at": 3900,
+   "actor": 2,
+   "origin": "spot:#2:0",
+   "expect": "refused",
+   "note": "Actor 2: a bus at no depot: refused",
+   "action": {
+    "BuyVehicle": {
+     "depot": {
+      "file": "::/depots/road/road_depot/road_depot.con",
+      "at": {
+       "$pos": [
+        -500,
+        -500,
+        0
+       ]
+      }
+     },
+     "consist": [
+      {
+       "model": "::/vehicle/bus/american_post_coach/american_post_coach.mdl",
+       "reversed": false,
+       "loads": [],
+       "color": {
+        "r": 800000,
+        "g": 160000,
+        "b": 120000
+       }
+      }
+     ],
+     "groups": [
+      1
+     ],
+     "multiple_units": [
+      ""
+     ]
+    }
+   }
+  },
+  {
+   "at": 3940,
+   "actor": 2,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 2: actor 0's first bus sold: refused (another company's)",
+   "action": {
+    "SellVehicle": {
+     "vehicles": [
+      {
+       "$id": "vehicles+0"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 4000,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: pays back the loan loans+2 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 3000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+2"
+       }
+      }
+     }
+    }
+   }
+  }
+ ]
+}

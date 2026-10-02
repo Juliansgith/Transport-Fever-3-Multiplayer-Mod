@@ -1,0 +1,908 @@
+{
+ "name": "money",
+ "comment": "Play in a co-op room, each actor founding a company of its own. Companies, loans, subsidies, ranks, prospecting and notifications: each actor founds a company, renames and recolours it, closes and opens its stations, borrows twice and repays one; a subsidy no game offers and a rank not reached are refused; actor 1 joins actor 0's company and founds its own again.",
+ "observe_every": 10,
+ "items": [
+  {
+   "at": 10,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: founds a company (companies+0)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Money company 0"
+     }
+    }
+   }
+  },
+  {
+   "at": 40,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: renames it",
+   "action": {
+    "CompanyOp": {
+     "Rename": {
+      "company": {
+       "$id": "companies+0"
+      },
+      "name": "Renamed company 0"
+     }
+    }
+   }
+  },
+  {
+   "at": 60,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: recolours it",
+   "action": {
+    "CompanyOp": {
+     "Recolor": {
+      "company": {
+       "$id": "companies+0"
+      },
+      "color": {
+       "r": 180000,
+       "g": 660000,
+       "b": 270000
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 80,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: closes its stations to others",
+   "action": {
+    "CompanyOp": {
+     "ShareStations": {
+      "company": {
+       "$id": "companies+0"
+      },
+      "open": false
+     }
+    }
+   }
+  },
+  {
+   "at": 120,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: opens them again",
+   "action": {
+    "CompanyOp": {
+     "ShareStations": {
+      "company": {
+       "$id": "companies+0"
+      },
+      "open": true
+     }
+    }
+   }
+  },
+  {
+   "at": 140,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: unlocks it (it has no password)",
+   "action": {
+    "CompanyOp": {
+     "Unlock": {
+      "$id": "companies+0"
+     }
+    }
+   }
+  },
+  {
+   "at": 200,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: a small loan (loans+0)",
+   "action": {
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 500000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 500000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 260,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: a medium loan (loans+1)",
+   "action": {
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Medium",
+       "amount": 1000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Medium",
+       "amount": 1000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 400,
+   "actor": 0,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 0: pays back the loan loans+0 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 500000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+0"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 420,
+   "actor": 0,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 0: the medium loan named with the wrong amount: refused",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 999,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+1"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 460,
+   "actor": 0,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 0: accepts a subsidy no game offers: refused",
+   "action": {
+    "Subsidy": {
+     "Accept": {
+      "uid": 999999,
+      "kind": "::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"
+     }
+    }
+   }
+  },
+  {
+   "at": 480,
+   "actor": 0,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 0: declines one no game offers: refused",
+   "action": {
+    "Subsidy": {
+     "Decline": {
+      "uid": 999998,
+      "kind": "::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"
+     }
+    }
+   }
+  },
+  {
+   "at": 520,
+   "actor": 0,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 0: takes rank 15, not reached: refused",
+   "action": {
+    "ApplyRank": {
+     "level": 15
+    }
+   }
+  },
+  {
+   "at": 560,
+   "actor": 0,
+   "origin": "none",
+   "expect": "any",
+   "note": "Actor 0: prospects for coal near town id 0 (any: the company script decides)",
+   "action": {
+    "Prospect": {
+     "town": 0,
+     "cargo": "::/cargos/coal/coal.cargo",
+     "industries": [],
+     "permit": null
+    }
+   }
+  },
+  {
+   "at": 600,
+   "actor": 0,
+   "origin": "none",
+   "expect": "any",
+   "note": "Actor 0: marks a notification seen (any: there may be none 1)",
+   "action": {
+    "NotificationSeen": {
+     "notification": 1
+    }
+   }
+  },
+  {
+   "at": 1510,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: founds a company (companies+1)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Money company 1"
+     }
+    }
+   }
+  },
+  {
+   "at": 1540,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: renames it",
+   "action": {
+    "CompanyOp": {
+     "Rename": {
+      "company": {
+       "$id": "companies+1"
+      },
+      "name": "Renamed company 1"
+     }
+    }
+   }
+  },
+  {
+   "at": 1560,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: recolours it",
+   "action": {
+    "CompanyOp": {
+     "Recolor": {
+      "company": {
+       "$id": "companies+1"
+      },
+      "color": {
+       "r": 180000,
+       "g": 660000,
+       "b": 270000
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1580,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: closes its stations to others",
+   "action": {
+    "CompanyOp": {
+     "ShareStations": {
+      "company": {
+       "$id": "companies+1"
+      },
+      "open": false
+     }
+    }
+   }
+  },
+  {
+   "at": 1620,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: opens them again",
+   "action": {
+    "CompanyOp": {
+     "ShareStations": {
+      "company": {
+       "$id": "companies+1"
+      },
+      "open": true
+     }
+    }
+   }
+  },
+  {
+   "at": 1640,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: unlocks it (it has no password)",
+   "action": {
+    "CompanyOp": {
+     "Unlock": {
+      "$id": "companies+1"
+     }
+    }
+   }
+  },
+  {
+   "at": 1700,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: a small loan (loans+2)",
+   "action": {
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 500000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 500000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1760,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: a medium loan (loans+3)",
+   "action": {
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Medium",
+       "amount": 1000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Medium",
+       "amount": 1000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1900,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: pays back the loan loans+2 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 500000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+2"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1920,
+   "actor": 1,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 1: the medium loan named with the wrong amount: refused",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 999,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+3"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 1960,
+   "actor": 1,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 1: accepts a subsidy no game offers: refused",
+   "action": {
+    "Subsidy": {
+     "Accept": {
+      "uid": 999999,
+      "kind": "::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"
+     }
+    }
+   }
+  },
+  {
+   "at": 1980,
+   "actor": 1,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 1: declines one no game offers: refused",
+   "action": {
+    "Subsidy": {
+     "Decline": {
+      "uid": 999998,
+      "kind": "::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"
+     }
+    }
+   }
+  },
+  {
+   "at": 2020,
+   "actor": 1,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 1: takes rank 15, not reached: refused",
+   "action": {
+    "ApplyRank": {
+     "level": 15
+    }
+   }
+  },
+  {
+   "at": 2060,
+   "actor": 1,
+   "origin": "none",
+   "expect": "any",
+   "note": "Actor 1: prospects for coal near town id 1 (any: the company script decides)",
+   "action": {
+    "Prospect": {
+     "town": 1,
+     "cargo": "::/cargos/coal/coal.cargo",
+     "industries": [],
+     "permit": null
+    }
+   }
+  },
+  {
+   "at": 2100,
+   "actor": 1,
+   "origin": "none",
+   "expect": "any",
+   "note": "Actor 1: marks a notification seen (any: there may be none 1)",
+   "action": {
+    "NotificationSeen": {
+     "notification": 1
+    }
+   }
+  },
+  {
+   "at": 3010,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: founds a company (companies+2)",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Money company 2"
+     }
+    }
+   }
+  },
+  {
+   "at": 3040,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: renames it",
+   "action": {
+    "CompanyOp": {
+     "Rename": {
+      "company": {
+       "$id": "companies+2"
+      },
+      "name": "Renamed company 2"
+     }
+    }
+   }
+  },
+  {
+   "at": 3060,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: recolours it",
+   "action": {
+    "CompanyOp": {
+     "Recolor": {
+      "company": {
+       "$id": "companies+2"
+      },
+      "color": {
+       "r": 180000,
+       "g": 660000,
+       "b": 270000
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3080,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: closes its stations to others",
+   "action": {
+    "CompanyOp": {
+     "ShareStations": {
+      "company": {
+       "$id": "companies+2"
+      },
+      "open": false
+     }
+    }
+   }
+  },
+  {
+   "at": 3120,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: opens them again",
+   "action": {
+    "CompanyOp": {
+     "ShareStations": {
+      "company": {
+       "$id": "companies+2"
+      },
+      "open": true
+     }
+    }
+   }
+  },
+  {
+   "at": 3140,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: unlocks it (it has no password)",
+   "action": {
+    "CompanyOp": {
+     "Unlock": {
+      "$id": "companies+2"
+     }
+    }
+   }
+  },
+  {
+   "at": 3200,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: a small loan (loans+4)",
+   "action": {
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Small",
+       "amount": 500000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Small",
+       "amount": 500000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3260,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: a medium loan (loans+5)",
+   "action": {
+    "Loan": {
+     "Take": {
+      "next": {
+       "type": "Medium",
+       "amount": 1000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      },
+      "offer": {
+       "type": "Medium",
+       "amount": 1000000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": null
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3400,
+   "actor": 2,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 2: pays back the loan loans+4 (its id from the baseline)",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 500000,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+4"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3420,
+   "actor": 2,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 2: the medium loan named with the wrong amount: refused",
+   "action": {
+    "Loan": {
+     "Repay": {
+      "loan": {
+       "type": "Small",
+       "amount": 999,
+       "duration": 31536000000,
+       "percentage": 30000,
+       "birthDay": null,
+       "cooldownUntil": null,
+       "lastPayDay": null,
+       "timesPaid": null,
+       "id": {
+        "$id": "loans+5"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "at": 3460,
+   "actor": 2,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 2: accepts a subsidy no game offers: refused",
+   "action": {
+    "Subsidy": {
+     "Accept": {
+      "uid": 999999,
+      "kind": "::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"
+     }
+    }
+   }
+  },
+  {
+   "at": 3480,
+   "actor": 2,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 2: declines one no game offers: refused",
+   "action": {
+    "Subsidy": {
+     "Decline": {
+      "uid": 999998,
+      "kind": "::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res"
+     }
+    }
+   }
+  },
+  {
+   "at": 3520,
+   "actor": 2,
+   "origin": "none",
+   "expect": "refused",
+   "note": "Actor 2: takes rank 15, not reached: refused",
+   "action": {
+    "ApplyRank": {
+     "level": 15
+    }
+   }
+  },
+  {
+   "at": 3560,
+   "actor": 2,
+   "origin": "none",
+   "expect": "any",
+   "note": "Actor 2: prospects for coal near town id 2 (any: the company script decides)",
+   "action": {
+    "Prospect": {
+     "town": 2,
+     "cargo": "::/cargos/coal/coal.cargo",
+     "industries": [],
+     "permit": null
+    }
+   }
+  },
+  {
+   "at": 3600,
+   "actor": 2,
+   "origin": "none",
+   "expect": "any",
+   "note": "Actor 2: marks a notification seen (any: there may be none 1)",
+   "action": {
+    "NotificationSeen": {
+     "notification": 1
+    }
+   }
+  },
+  {
+   "at": 4510,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: joins actor 0's company",
+   "action": {
+    "CompanyOp": {
+     "Join": {
+      "$id": "companies+0"
+     }
+    }
+   }
+  },
+  {
+   "at": 4560,
+   "actor": 1,
+   "origin": "none",
+   "expect": "applied",
+   "note": "Actor 1: founds a company of its own again",
+   "action": {
+    "CompanyOp": {
+     "Create": {
+      "name": "Money company 1 again"
+     }
+    }
+   }
+  }
+ ]
+}

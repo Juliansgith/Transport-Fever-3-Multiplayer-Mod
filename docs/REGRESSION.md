@@ -182,3 +182,92 @@ PLAN.md's order:
 
 A person starts real games with the rig. Automation never launches the
 game (AGENTS.md).
+
+### The hook's test mode
+
+Items 2 and 3 have a first form, for unattended playtests of real games in
+one room (`crates/tpf3mp-hook/src/scenario.rs`). It is not item 3 itself:
+the hook does not walk the harness's `Cursor` or answer its checks; it
+plays a list of actions and logs what every game made of them. It is off
+unless the game's environment names a scenario, which only a person sets,
+on the launcher they start:
+
+```sh
+tpf3mp-launcher ... --scenario tools/scenarios/roads.json --scenario-actor 0   # the room's owner
+tpf3mp-launcher ... --scenario tools/scenarios/roads.json --scenario-actor 1   # the next to join
+```
+
+(or `TPF3MP_SCENARIO=<file>` and `TPF3MP_SCENARIO_ACTOR=<n>` in the
+launcher's environment, which the game inherits). Without them the hook
+and the mod do nothing of this. A file that does not read is refused
+whole, and the game plays as any other. Every game of the room names the
+same file.
+
+A scenario is a list of actions, each `{ at, actor, origin, expect, note,
+action }`, the action written as serde writes
+`tpf3mp_proto::action::Action`. Places and ids come from the world:
+
+- at the room's first checkpoint, the mod's game script observes the world
+  (`tpf3mp/observe.lua`): towns with their centres, a few free flat spots
+  near each, the streets nearest each centre, counts of edges, stations,
+  depots, lines and vehicles, the companies and their money, lines, the
+  registry's next ids, the game's vehicle models. That *baseline* goes to
+  `hook.log` as `scenario: observe step <n> {json}`, and the scenario's
+  steps count from it;
+- `$pos` places a position in metres from the item's `origin`
+  (`spot:#0:0`, `water:#0:0`, `town:#1`, `town:<name>`, or absolute),
+  `$id` counts the registry's ids from the baseline (`lines+0` is the first
+  line made after it; `loans+0` the room's next loan), `$edge` names a
+  street the baseline listed (`#0:free:0`: one no town building stands by,
+  which a bulldozer takes alone), `$building` a town building, `$cell2` a
+  terrain cell's corner and `$z` a height above the origin.
+
+Every scenario plays in a co-op room, as a room starts (D21). Its
+`comment` says whose company each actor plays for: in `roads` and `money`
+each actor founds a company of its own first, which starts with no money,
+so it borrows next and pays back last, the loan named by the baseline's
+next loan id; the others play for the room's first company and its money,
+with no loans. Depots stand with their entrance on the free end of the
+scenario's own street or track, so vehicles can leave.
+
+The actor's game hands its items to the room through `Session::command`,
+as a player's captured actions go, with tickets of their own that never
+reach the GUI. Every game names every scripted action it applies, its own
+or another's, by the item it matches:
+
+```text
+scenario: step 50 action 3 (BuildRoad) handed to the room: Actor 0: a straight street
+scenario: step 50 action 3 (BuildRoad) applied
+scenario: step 900 action 40 (BuyVehicle) refused: no ::/depots/road/road_depot/road_depot.con there
+scenario: step 260 action 9 (BuildConstruction) refused UNEXPECTED (expected applied): the game refused it: Collision
+scenario: observe step 500 {"companies":[...],"counts":{...},...}
+scenario: progress: 41 of 120 items ordered; 38 applied, 3 refused, 1 unexpected, 0 unscripted
+```
+
+Every `observe_every` checkpoints the observation is logged again: the
+room's games diff their logs (`grep 'scenario: ' hook.log`), and the same
+world reads the same lines. In the test mode the player's own actions are
+also logged in full (`scenario: captured <kind> {json}`), the way to write
+new items from a real build; outside it, the hook's log names each
+action's kind as it goes to the room (`handed the player's action 42
+(BuildRoad) to the room`). `tools/scenarios/make_scenarios.py` writes the
+shipped scenarios (edit it, not the JSON), three actors each, every actor
+near a town of its own and one after the other, so the ids they make come
+in a known order:
+
+| scenario | covers |
+|---|---|
+| `roads` | streets, a T junction, a crossroads, bus stops, a road depot, a bus line with three buses bought at once, a track and rail depot, a loan, a town street bulldozed, one refusal |
+| `road_upgrades` | a curved street, bus lane and tram upgrades, bulldozing, a town building demolished, a headquarters and a second one refused |
+| `rail` | track, a signal, a station, a depot, electrification, a train on a line, stop and start |
+| `road_vehicles` | truck stops and station, three trucks at once, line rename, recolour and delete, the vehicle window's orders, replace, sell, another company's truck refused |
+| `water`, `air` | a ship depot and harbour (on the baseline's `waters`), an airfield; a ship and a plane on lines |
+| `money` | company found, rename, recolour, stations shared, join; loans; subsidies and a rank refused; prospecting |
+
+The scripted actions take the same gates as a player's: a channel
+`acceptance.lua` keeps refused (subsidies, renames, waypoints) is refused
+in every game, and the scenarios expect that. Resource names,
+construction parameters and vehicle models are inferred from the game's
+content, not captured from a player's build: an item marked `any` is one
+whose outcome a real game decides, and the first runs correct them from
+the logs (`captured` lines, the baseline's `models`).

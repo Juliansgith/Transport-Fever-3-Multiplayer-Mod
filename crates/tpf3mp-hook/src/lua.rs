@@ -72,6 +72,12 @@
 //!   more are taken.
 //! - `note(key[, value])`: a short string one Lua state notes for the
 //!   others ([`native_note`]).
+//! - `observe()`: in a game script's `postUpdate` at a checkpoint, in the
+//!   test mode only ([`crate::scenario`]): the step to observe the world
+//!   after and whether to look for free places, once, or `nil`.
+//! - `observed(step, text)`: the observation, a JSON text, which the hook
+//!   writes to `hook.log`. Both optional in the contract: a mod without them
+//!   plays no scenario.
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -681,6 +687,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"personal", native_personal),
                 (b"shared", native_shared),
                 (b"note", native_note),
+                (b"observe", native_observe),
+                (b"observed", native_observed),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -1758,12 +1766,16 @@ unsafe extern "C-unwind" fn native_applied(l: State) -> c_int {
         return 0;
     };
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let index = index as usize;
+    crate::scenario::applied(index, ok, why.clone());
     let ticket = shared()
         .batch
         .tickets
-        .get(index as usize - 1)
+        .get(index - 1)
         .copied()
-        .flatten();
+        .flatten()
+        // The test mode's own are the scenario's, never the GUI's.
+        .filter(|ticket| *ticket < crate::scenario::TICKET_BASE);
     if let Some(ticket) = ticket {
         answer(Answer {
             ticket,
@@ -1771,6 +1783,54 @@ unsafe extern "C-unwind" fn native_applied(l: State) -> c_int {
             entity: entity.filter(|e| e.fract() == 0.0),
             why,
         });
+    }
+    0
+}
+
+/// `observe()`: in a game script's `postUpdate` at a checkpoint, in the
+/// test mode only: the step to observe the world after, once, and whether to
+/// look for free places too; or `nil` (`crate::scenario`).
+unsafe extern "C-unwind" fn native_observe(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread; a C
+    // function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        match crate::scenario::take_observe() {
+            Some((step, full)) => {
+                #[allow(clippy::cast_precision_loss)]
+                (api.pushnumber)(l, step as f64);
+                (api.pushboolean)(l, c_int::from(full));
+                2
+            }
+            None => {
+                (api.pushnil)(l);
+                1
+            }
+        }
+    }
+}
+
+/// `observed(step, text)`: the world as `observe()` asked, a JSON text of at
+/// most [`crate::scenario::MAX_OBSERVATION`] bytes.
+unsafe extern "C-unwind" fn native_observed(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let (step, text) = unsafe {
+        (
+            number_arg(api, l, 1),
+            string_arg(api, l, 2, crate::scenario::MAX_OBSERVATION),
+        )
+    };
+    if let (Some(step), Some(text)) = (step, text)
+        && step >= 0.0
+        && step.fract() == 0.0
+    {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        crate::scenario::observed(step as u64, text);
     }
     0
 }

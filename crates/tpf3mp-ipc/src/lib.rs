@@ -54,6 +54,12 @@ pub const LAUNCHER_PID_ENV: &str = "TPF3MP_LAUNCHER_PID";
 /// page would, with no Start Game to press (the launcher's `--auto-load`).
 pub const AUTO_LOAD_ENV: &str = "TPF3MP_AUTO_LOAD";
 
+/// For unattended playtests: the scenario file the hook's test mode plays
+/// (the launcher's `--scenario`; docs/REGRESSION.md, "With the real game").
+pub const SCENARIO_ENV: &str = "TPF3MP_SCENARIO";
+/// This game's actor in that scenario, from 0 (`--scenario-actor`).
+pub const SCENARIO_ACTOR_ENV: &str = "TPF3MP_SCENARIO_ACTOR";
+
 /// The folder the hook keeps its log and profiles in, instead of the
 /// per-user one: one per game when several run on one PC.
 pub const DATA_DIR_ENV: &str = "TPF3MP_DATA_DIR";

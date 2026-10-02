@@ -636,6 +636,13 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         ));
     }
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
+    // The test mode, only where the game's environment names a scenario; one
+    // that does not read is refused whole (crate::scenario).
+    match crate::scenario::from_env(|key| std::env::var(key).ok(), crate::scenario::read_file) {
+        None => {}
+        Some(Ok(runner)) => driver.set_scenario(runner),
+        Some(Err(why)) => log_line(&format!("scenario: test mode refused: {why}")),
+    }
     *DRIVER.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(driver));
 
     // SAFETY: both targets are functions the profile resolved, exactly once,

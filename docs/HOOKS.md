@@ -1518,7 +1518,7 @@ In `hook.log`, prospecting for coal near a town shows first, in the game
 of the player who picked the town:
 
 ```
-handed the player's action 42 to the room
+handed the player's action 42 (Prospect) to the room
 ```
 
 then in every game of the room, at the same step:

@@ -499,6 +499,9 @@ pub struct StepDriver<G> {
     log: Vec<String>,
     /// What last went wrong with the lobby, logged once.
     lobby_fault: Option<String>,
+    /// The test mode's scenario, when the game's environment names one
+    /// ([`crate::scenario`]).
+    scenario: Option<crate::scenario::Runner>,
 }
 
 impl<G: RoomGate> StepDriver<G> {
@@ -525,6 +528,60 @@ impl<G: RoomGate> StepDriver<G> {
             next_step: None,
             log: Vec::new(),
             lobby_fault: None,
+            scenario: None,
+        }
+    }
+
+    /// Plays `runner`'s scenario in the room's game: the test mode
+    /// ([`crate::scenario`]).
+    pub fn set_scenario(&mut self, runner: crate::scenario::Runner) {
+        self.log.push(runner.started());
+        self.scenario = Some(runner);
+        crate::scenario::set_active(true);
+    }
+
+    /// The scenario's items due now, for the room, in the room's game only.
+    fn scenario_due(&mut self, commands: &mut Vec<Handed>) {
+        if self.phase != Phase::Running {
+            return;
+        }
+        let next = self.gate.next_step();
+        if let Some(runner) = &mut self.scenario {
+            let (due, lines) = runner.due(next);
+            commands.extend(due);
+            self.log.extend(lines);
+        }
+    }
+
+    /// Before a batch: names the room's actions by the scenario's items, and
+    /// asks for an observation at a checkpoint.
+    fn scenario_arm(&mut self, actions: &[Ordered], lanes: bool) {
+        let Some(runner) = &mut self.scenario else {
+            return;
+        };
+        let mut labels = Vec::with_capacity(actions.len());
+        for ordered in actions {
+            let (label, line) = runner.label(&ordered.action, &ordered.player);
+            labels.push(label);
+            self.log.extend(line);
+        }
+        let observe =
+            (lanes && self.phase == Phase::Running && runner.observe_due(self.checkpoint_step))
+                .then(|| (self.checkpoint_step, runner.baseline().is_none()));
+        crate::scenario::arm(labels, observe);
+    }
+
+    /// After a batch: what the scenario's actions did, and the observation.
+    fn scenario_after(&mut self) {
+        let Some(runner) = &mut self.scenario else {
+            return;
+        };
+        let (observations, outcomes) = crate::scenario::take();
+        for (label, ok, why) in outcomes {
+            self.log.push(runner.outcome(&label, ok, why.as_deref()));
+        }
+        for (step, text) in observations {
+            self.log.extend(runner.observed(step, &text));
         }
     }
 
@@ -574,7 +631,18 @@ impl<G: RoomGate> StepDriver<G> {
                     .push((ticket, format!("the room refused it: {why}")));
             }
         }
-        std::mem::take(&mut self.refused)
+        let mut refused = std::mem::take(&mut self.refused);
+        // The scenario's own are the scenario's to say, never the GUI's.
+        if let Some(runner) = &mut self.scenario {
+            refused.retain(|(ticket, why)| match runner.refused_by_room(*ticket, why) {
+                Some(line) => {
+                    self.log.push(line);
+                    false
+                }
+                None => *ticket < crate::scenario::TICKET_BASE,
+            });
+        }
+        refused
     }
 
     /// Says `text` to the room for the player, in the room's game only:
@@ -661,6 +729,8 @@ impl<G: RoomGate> StepDriver<G> {
         }
         // After the gate is read: the call that begins the room's game
         // already hands the player's actions over.
+        let mut commands = commands;
+        self.scenario_due(&mut commands);
         self.hand_over(commands);
         for notice in self.game.notices.drain(..) {
             self.log.push(format!("the room says: {notice}"));
@@ -707,6 +777,7 @@ impl<G: RoomGate> StepDriver<G> {
                 dump.step
             ));
         }
+        self.scenario_arm(&actions, lanes);
         let batch = Batch {
             updates,
             actions: &actions,
@@ -716,7 +787,9 @@ impl<G: RoomGate> StepDriver<G> {
             dump: dump.as_ref(),
         };
         crate::seeds::before_updates(released, updates);
-        match run(&batch) {
+        let ran = run(&batch);
+        self.scenario_after();
+        match ran {
             Ok(lanes) => {
                 if batch.lanes {
                     match lanes {
@@ -844,11 +917,24 @@ impl<G: RoomGate> StepDriver<G> {
         }
         let mut commands = commands.into_iter();
         for (ticket, payload, secret) in commands.by_ref() {
+            // Its kind, for the log; one this game cannot read goes all the
+            // same, and the room judges it.
+            let kind = Action::from_payload(&payload).map_or("unreadable", |a| a.kind());
+            // In the test mode, the player's own actions in full: what a
+            // scenario's items are written from.
+            if self.scenario.is_some()
+                && ticket < crate::scenario::TICKET_BASE
+                && let Ok(action) = Action::from_payload(&payload)
+                && let Ok(json) = serde_json::to_string(&action)
+            {
+                self.log.push(format!("scenario: captured {kind} {json}"));
+            }
             match self.gate.command(payload, secret) {
                 Ok(number) => {
                     self.tickets.insert(number, ticket);
-                    self.log
-                        .push(format!("handed the player's action {number} to the room"));
+                    self.log.push(format!(
+                        "handed the player's action {number} ({kind}) to the room"
+                    ));
                 }
                 Err(error) => {
                     self.refused.push((ticket, format!("{error}")));
@@ -2527,5 +2613,103 @@ pub(crate) mod tests {
         let mut calls = Vec::new();
         assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
         assert_eq!(d.gate.loaded, vec![1]);
+    }
+
+    /// The test mode: the scenario's items go to the room once the baseline
+    /// is observed, every game names what the room orders by them, and the
+    /// player's own actions are logged in full.
+    #[test]
+    fn the_test_mode_hands_the_scenario_to_the_room_and_says_what_became_of_it() {
+        use crate::scenario::{self, Runner, Scenario, TICKET_BASE};
+        let _lock = scenario::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let build = serde_json::to_string(&depot_build()).unwrap();
+        let text = format!(
+            r#"{{ "name": "t", "observe_every": 1, "items": [
+                {{ "at": 1, "actor": 0, "action": {build} }},
+                {{ "at": 1, "actor": 1, "action": {build}, "expect": "refused" }} ] }}"#
+        );
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin_every(2)));
+        script.gates.push_back(StepGate::Load(Load {
+            file: None,
+            next_step: 1,
+        }));
+        script.gates.extend((0..8).map(|_| StepGate::Run));
+        script.gates.push_back(StepGate::Wait);
+        let (mut d, _) = driver(script);
+        d.set_scenario(Runner::new(Scenario::parse(&text).unwrap(), 0));
+        // The mod: observes when asked, and applies the first action, not
+        // the second.
+        let mut run = |batch: &Batch<'_>| {
+            if let Some((step, _)) = scenario::take_observe() {
+                scenario::observed(step, r#"{ "towns": [], "next": {} }"#.into());
+            }
+            for index in 1..=batch.actions.len() {
+                scenario::applied(index, index == 1, (index > 1).then(|| "Collision".into()));
+            }
+            Ok(batch.lanes.then(Vec::new))
+        };
+        // The load, and steps 1 and 2 to the first checkpoint: the baseline.
+        d.on_step(Vec::new(), &mut run);
+        assert!(d.gate.commands.is_empty(), "nothing before the baseline");
+        let log = d.take_log();
+        assert!(log.iter().any(|l| l.starts_with("scenario: test mode on")));
+        assert!(
+            log.iter()
+                .any(|l| l.contains("scenario: baseline at step 2")),
+            "{log:?}"
+        );
+        // Step 3 is the baseline's 1: this game's item goes, with a player's
+        // own action beside it.
+        d.on_step(
+            vec![(7, depot_build().to_payload().unwrap(), None)],
+            &mut run,
+        );
+        assert_eq!(d.gate.commands.len(), 2);
+        let log = d.take_log();
+        assert!(
+            log.iter()
+                .any(|l| l.contains("step 1 action 0 (BuildConstruction) handed"))
+        );
+        assert!(
+            log.iter()
+                .any(|l| l.starts_with("scenario: captured BuildConstruction {")),
+            "{log:?}"
+        );
+        // The room orders this game's item and the other actor's: both named.
+        let own = Event {
+            seq: 1,
+            step: 5,
+            body: EventBody::Command {
+                player: ME,
+                client_seq: 1,
+                payload: depot_build().to_payload().unwrap(),
+                seal: None,
+            },
+        };
+        d.gate
+            .events
+            .extend([vec![own, command_event(2, 5, &depot_build())]]);
+        d.on_step(Vec::new(), &mut run);
+        d.on_step(Vec::new(), &mut run);
+        let log = d.take_log();
+        assert!(
+            log.contains(&"scenario: step 1 action 0 (BuildConstruction) applied".to_string()),
+            "{log:?}"
+        );
+        assert!(log.contains(
+            &"scenario: step 1 action 1 (BuildConstruction) refused: Collision".to_string()
+        ));
+        assert!(
+            log.iter().any(|l| l.contains("scenario: observe step")),
+            "observed every checkpoint"
+        );
+        // The room refusing one of the scenario's is the scenario's to say.
+        d.refused.push((TICKET_BASE, "RateLimited".into()));
+        d.refused.push((7, "RateLimited".into()));
+        assert_eq!(d.take_refused(), vec![(7, "RateLimited".to_string())]);
+        scenario::set_active(false);
     }
 }
