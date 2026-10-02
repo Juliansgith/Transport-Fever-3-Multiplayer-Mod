@@ -247,7 +247,9 @@ window too.
      password if it has one, and **Join** or **Cancel**. A private room is
      joined by invite, either here or through **Join a friend** on the main menu.
    - **Host a room**: a **room name** (your name's room if you leave it
-     empty); **Start from this save**, one of your saves, newest first, or
+     empty); **Start from this save**, one of your own saves, newest first
+     and up to 100 (the game's autosaves and the copies TPF3-MP writes for
+     rooms are not listed), or
      **Create a new world...** (offered first). The save must have TPF3-MP
      among its mods: a save without it is refused with "This save doesn't
      have the TPF3-MP mod enabled: load it once, turn TPF3-MP on in its
