@@ -610,6 +610,9 @@ impl State {
             Action::Subsidy(_) => Ok(()),
             // A name: the model keeps no names.
             Action::Rename { .. } => Ok(()),
+            // A company perk: the model keeps no permits, towns' reputations
+            // or emissions.
+            Action::Perk(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }

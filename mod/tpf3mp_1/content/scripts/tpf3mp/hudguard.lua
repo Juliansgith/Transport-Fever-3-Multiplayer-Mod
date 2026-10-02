@@ -59,6 +59,7 @@ function hudguard.context(api)
 		line = idOf("lines"),
 		group = idOf("groups"),
 		town = idOf("towns"),
+		industry = idOf("industries"),
 		company = function(entity)
 			local s = state()
 			local roster = s and s.companies
