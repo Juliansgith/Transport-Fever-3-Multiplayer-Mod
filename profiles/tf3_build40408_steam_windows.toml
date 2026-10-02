@@ -1196,3 +1196,87 @@ signature = "48 8D 05 ?? ?? ?? ?? 48 89 03 48 89 73 08 48 89 7B 10 48 89 7B 18 4
 offset = 0
 prologue = "48 8D 05"
 required = false
+
+# The tools' player, the station tools and the bulldozer's own player
+# (toolplayer.rs). CGameUI hands the player read once ([rbp-0x50]) to:
+# - UI::ConstructionBuilder (sub_50b3b0, 0x649f28) +0xa0: stored only by
+#   its ctor (0x50b453); read by sub_514f90 (x2), MousePressed 0x51bbc0
+#   (x2) and Step 0x51cd60, all game\ui\actions\constructionbuilder.cpp.
+# - UI::StreetTerminalBuilder (sub_5906e0 through sub_645ee0, the stop
+#   builder 0x649df0 and the signal and waypoint builder 0x64a232) +0xa0:
+#   stored only by its ctor (0x590795); read by sub_594f50 (x3, the snap
+#   through 0x5936d0) and Step 0x595f30.
+# - UI::ModuleBuilder (sub_540390 through sub_645940, 0x64a739) +0xa8:
+#   stored only by its ctor (0x540456); read by sub_5423b0, MousePressed
+#   0x543630 (x2).
+# - UI::Bulldozer +0x28, its own player: stored by its ctor (0x4c4a4f, the
+#   4th argument); read by the ctor (seeding the filter), its lambda
+#   0x4d2650 (x2), 0x4d2b70, 0x4d46b0 and Step 0x4d6340, the proposals it
+#   makes for its player.
+[[target]]
+name = "UI::ConstructionBuilder::Step"
+signature = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 B0 D5 FF FF"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
+required = false
+
+[[target]]
+name = "UI::ConstructionBuilder ctor/player store"
+signature = "49 89 B6 90 00 00 00 48 8B 85 E0 02 00 00 49 89 86 98 00 00 00 8B 85 F0 02 00 00 41 89 86 A0 00 00 00"
+offset = 0
+prologue = "49 89 B6 90 00 00 00"
+required = false
+
+[[target]]
+name = "UI::StreetTerminalBuilder::Step"
+signature = "40 53 56 57 41 54 41 55 41 56 41 57 B8 80 14 00 00"
+offset = 0
+prologue = "40 53 56 57 41 54 41 55 41 56 41 57 B8 80 14 00 00"
+required = false
+
+[[target]]
+name = "UI::StreetTerminalBuilder ctor/player store"
+signature = "49 89 BE 88 00 00 00 49 89 B6 90 00 00 00 48 8B 85 C0 01 00 00 49 89 86 98 00 00 00 8B 85 D0 01 00 00 41 89 86 A0 00 00 00"
+offset = 0
+prologue = "49 89 BE 88 00 00 00"
+required = false
+
+[[target]]
+name = "UI::ModuleBuilder::Step"
+signature = "40 53 56 57 41 54 41 55 41 56 41 57 B8 A0 10 00 00"
+offset = 0
+prologue = "40 53 56 57 41 54 41 55 41 56 41 57 B8 A0 10 00 00"
+required = false
+
+[[target]]
+name = "UI::ModuleBuilder ctor/player store"
+signature = "48 8B 85 C8 02 00 00 48 89 87 98 00 00 00 49 8B 04 24 33 C9 49 89 0C 24 48 89 87 A0 00 00 00 8B 85 E0 02 00 00 89 87 A8 00 00 00"
+offset = 0
+prologue = "48 8B 85 C8 02 00 00"
+required = false
+
+[[target]]
+name = "UI::Bulldozer ctor/player store"
+signature = "48 8D 05 ?? ?? ?? ?? 49 89 06 49 89 76 20 41 89 5E 28 48 8B 85 C8 01 00 00"
+offset = 0
+prologue = "48 8D 05"
+required = false
+
+# The probe's log of the street bulldozer's answers (probe.rs), only with
+# TPF3MP_PROBE_PLAYER=1: the edge test, a lambda of
+# UI::StreetBulldozerAction::vf2 (sub_5f2a00: captures in rcx, edge in edx),
+# and the owner test every bulldozer action calls (sub_5f7db0: engine,
+# owner list, entity, flag). Pass-through detours.
+[[target]]
+name = "probe: StreetBulldozerAction edge test"
+signature = "40 53 57 41 56 48 83 EC 20 48 8B 41 08 8B DA"
+offset = 0
+prologue = "40 53 57 41 56 48 83 EC 20 48 8B 41 08 8B DA"
+required = false
+
+[[target]]
+name = "probe: bulldozer owner test"
+signature = "48 89 5C 24 18 55 56 41 56 48 83 EC 30 48 8B 42 08"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 41 56 48 83 EC 30 48 8B 42 08"
+required = false

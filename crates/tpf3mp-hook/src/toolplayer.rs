@@ -10,7 +10,7 @@
 //! company's own edges for another player's: no split in the middle of a
 //! road (`sub_610ea0` from the street builder's snap), no bulldozing, no
 //! tram track onto its rail. This writes the company the GUI notes
-//! (`note("tpf3mp.company")`, `tpf3mp/follow.lua`) into three tools' own
+//! (`note("tpf3mp.company")`, `tpf3mp/follow.lua`) into six tools' own
 //! copies, at the start of each tool's frame, on the main thread:
 //!
 //! - `UI::StreetBuilder` (the street and the track builder, one class built
@@ -18,9 +18,16 @@
 //!   [`STREET_STORE`]);
 //! - `UI::TrackModifier` (the road and track modifiers: tram track, bus
 //!   lane, electrification, ...), its player at `+0xa0` ([`MODIFIER_STORE`]);
-//! - `UI::Bulldozer`, the one entry of its `BulldozerFilter`'s player list
-//!   (`[[+0xc0] + 0x10]`, [`BULLDOZER_FILTER`]), which every bulldozer action
-//!   asks (`sub_5f7db0`).
+//! - `UI::ConstructionBuilder` (stations, depots, every construction the
+//!   menu places), `+0xa0` ([`CONSTRUCTION_STORE`]);
+//! - `UI::StreetTerminalBuilder` (the stop builder, and the signal and
+//!   waypoint builder, a second instance), `+0xa0` ([`TERMINAL_STORE`]);
+//! - `UI::ModuleBuilder` (a station's modules), `+0xa8` ([`MODULE_STORE`]);
+//! - `UI::Bulldozer`: its own player at `+0x28`, which its proposals are
+//!   made for ([`BULLDOZER_STORE`]), and the one entry of its
+//!   `BulldozerFilter`'s player list (`[[+0xc0] + 0x10]`,
+//!   [`BULLDOZER_FILTER`]), which every bulldozer action asks
+//!   (`sub_5f7db0`).
 //!
 //! Each is a UI object, made by `CGameUI` and read by its own class's code
 //! only (the readers are listed in the profile). Nothing the simulation
@@ -208,27 +215,131 @@ pub fn decide(
     }
 }
 
+/// `UI::ConstructionBuilder::Step` (vf5, rva 0x51cd60): stations, depots
+/// and every construction the construction menu places.
+pub const CONSTRUCTION_STEP: &str = "UI::ConstructionBuilder::Step";
+/// Its constructor's store of its player (rva 0x50b438: `... mov
+/// eax,[rbp+0x2f0]; mov [r14+0xa0],eax`).
+pub const CONSTRUCTION_STORE: &str = "UI::ConstructionBuilder ctor/player store";
+pub const CONSTRUCTION_STORE_BYTES: [u8; 34] = [
+    0x49, 0x89, 0xB6, 0x90, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x85, 0xE0, 0x02, 0x00, 0x00, 0x49, 0x89,
+    0x86, 0x98, 0x00, 0x00, 0x00, 0x8B, 0x85, 0xF0, 0x02, 0x00, 0x00, 0x41, 0x89, 0x86, 0xA0, 0x00,
+    0x00, 0x00,
+];
+pub const CONSTRUCTION_DISP_AT: usize = 30;
+/// `UI::StreetTerminalBuilder::Step` (vf5, rva 0x595f30): the stop builder
+/// and, a second instance of the class, the signal and waypoint builder.
+pub const TERMINAL_STEP: &str = "UI::StreetTerminalBuilder::Step";
+/// Its constructor's store of its player (rva 0x590773: `... mov
+/// eax,[rbp+0x1d0]; mov [r14+0xa0],eax`).
+pub const TERMINAL_STORE: &str = "UI::StreetTerminalBuilder ctor/player store";
+pub const TERMINAL_STORE_BYTES: [u8; 41] = [
+    0x49, 0x89, 0xBE, 0x88, 0x00, 0x00, 0x00, 0x49, 0x89, 0xB6, 0x90, 0x00, 0x00, 0x00, 0x48, 0x8B,
+    0x85, 0xC0, 0x01, 0x00, 0x00, 0x49, 0x89, 0x86, 0x98, 0x00, 0x00, 0x00, 0x8B, 0x85, 0xD0, 0x01,
+    0x00, 0x00, 0x41, 0x89, 0x86, 0xA0, 0x00, 0x00, 0x00,
+];
+pub const TERMINAL_DISP_AT: usize = 37;
+/// `UI::ModuleBuilder::Step` (vf5, rva 0x545b50): a station's modules.
+pub const MODULE_STEP: &str = "UI::ModuleBuilder::Step";
+/// Its constructor's store of its player (rva 0x540431: `... mov
+/// eax,[rbp+0x2e0]; mov [rdi+0xa8],eax`).
+pub const MODULE_STORE: &str = "UI::ModuleBuilder ctor/player store";
+pub const MODULE_STORE_BYTES: [u8; 43] = [
+    0x48, 0x8B, 0x85, 0xC8, 0x02, 0x00, 0x00, 0x48, 0x89, 0x87, 0x98, 0x00, 0x00, 0x00, 0x49, 0x8B,
+    0x04, 0x24, 0x33, 0xC9, 0x49, 0x89, 0x0C, 0x24, 0x48, 0x89, 0x87, 0xA0, 0x00, 0x00, 0x00, 0x8B,
+    0x85, 0xE0, 0x02, 0x00, 0x00, 0x89, 0x87, 0xA8, 0x00, 0x00, 0x00,
+];
+pub const MODULE_DISP_AT: usize = 39;
+/// The bulldozer constructor's store of its own player (rva 0x4c4a41:
+/// `lea rax,[vtable]; mov [r14],rax; mov [r14+0x20],rsi; mov
+/// [r14+0x28],ebx; ...`), which its proposals are made for (`Step`
+/// 0x4d687e, 0x4d46b0, 0x4d2b70, its lambda 0x4d2650).
+pub const BULLDOZER_STORE: &str = "UI::Bulldozer ctor/player store";
+/// The store, with the vtable's disp32 at 3..7 a wildcard; the field's
+/// disp8 at [`BULLDOZER_DISP_AT`].
+pub const BULLDOZER_STORE_BYTES: [u8; 25] = [
+    0x48, 0x8D, 0x05, 0, 0, 0, 0, 0x49, 0x89, 0x06, 0x49, 0x89, 0x76, 0x20, 0x41, 0x89, 0x5E, 0x28,
+    0x48, 0x8B, 0x85, 0xC8, 0x01, 0x00, 0x00,
+];
+pub const BULLDOZER_DISP_AT: usize = 17;
+
+/// The bulldozer's own player offset, if `code` is its store.
+pub fn bulldozer_player_offset(code: &[u8]) -> Option<usize> {
+    let code = code.get(..BULLDOZER_STORE_BYTES.len())?;
+    let same = code
+        .iter()
+        .zip(BULLDOZER_STORE_BYTES)
+        .enumerate()
+        .all(|(i, (c, e))| (3..7).contains(&i) || i == BULLDOZER_DISP_AT || *c == e);
+    let offset = usize::from(*code.get(BULLDOZER_DISP_AT)?);
+    (same && offset.is_multiple_of(4) && offset < 0x80).then_some(offset)
+}
+
 /// Which tool a field is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Street,
     Modifier,
+    Construction,
+    Terminal,
+    Module,
     Bulldozer,
 }
 
 impl Tool {
+    pub const ALL: [Tool; 6] = [
+        Tool::Street,
+        Tool::Modifier,
+        Tool::Construction,
+        Tool::Terminal,
+        Tool::Module,
+        Tool::Bulldozer,
+    ];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
     fn name(self) -> &'static str {
         match self {
             Tool::Street => "the street and track builder",
             Tool::Modifier => "the road and track modifier",
+            Tool::Construction => "the construction builder",
+            Tool::Terminal => "the stop and signal builder",
+            Tool::Module => "the module builder",
             Tool::Bulldozer => "the bulldozer",
+        }
+    }
+
+    /// Its `Step` and the target that gives its field.
+    fn targets(self) -> (&'static str, &'static str) {
+        match self {
+            Tool::Street => (STREET_STEP, STREET_STORE),
+            Tool::Modifier => (MODIFIER_STEP, MODIFIER_STORE),
+            Tool::Construction => (CONSTRUCTION_STEP, CONSTRUCTION_STORE),
+            Tool::Terminal => (TERMINAL_STEP, TERMINAL_STORE),
+            Tool::Module => (MODULE_STEP, MODULE_STORE),
+            Tool::Bulldozer => (BULLDOZER_STEP, BULLDOZER_STORE),
+        }
+    }
+
+    /// For a tool with one stored player: the store's bytes and where its
+    /// disp32 is.
+    fn store(self) -> Option<(&'static [u8], usize)> {
+        match self {
+            Tool::Street => Some((&STREET_STORE_BYTES, STREET_DISP_AT)),
+            Tool::Modifier => Some((&MODIFIER_STORE_BYTES, MODIFIER_DISP_AT)),
+            Tool::Construction => Some((&CONSTRUCTION_STORE_BYTES, CONSTRUCTION_DISP_AT)),
+            Tool::Terminal => Some((&TERMINAL_STORE_BYTES, TERMINAL_DISP_AT)),
+            Tool::Module => Some((&MODULE_STORE_BYTES, MODULE_DISP_AT)),
+            Tool::Bulldozer => None,
         }
     }
 }
 
-/// The objects seen, by the field's address: at most this many are kept
-/// (CGameUI makes a handful; a new world makes them anew).
-const SLOTS: usize = 32;
+/// The fields seen, by address: at most this many are kept (CGameUI makes
+/// a handful of tools; a new world makes them anew).
+const SLOTS: usize = 64;
 
 struct State {
     slots: Vec<(usize, Slot)>,
@@ -242,12 +353,16 @@ static STATE: Mutex<State> = Mutex::new(State {
 static ON: AtomicBool = AtomicBool::new(false);
 /// Set when a frame's work panicked: no more writes for this game.
 static BROKEN: AtomicBool = AtomicBool::new(false);
-static STREET_FIELD: AtomicUsize = AtomicUsize::new(0);
-static MODIFIER_FIELD: AtomicUsize = AtomicUsize::new(0);
+/// Each tool's player offset (the bulldozer's own player for the
+/// bulldozer), 0 while its tool is not handled.
+static FIELDS: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
 static FILTER_FIELD: AtomicUsize = AtomicUsize::new(0);
 static FILTER_VTABLE: AtomicUsize = AtomicUsize::new(0);
 static STREET_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static MODIFIER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static CONSTRUCTION_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static TERMINAL_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static MODULE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static BULLDOZER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
 fn say_once(state: &mut State, line: String) {
@@ -271,42 +386,37 @@ fn read_usize(address: usize) -> Option<usize> {
     Some(unsafe { std::ptr::read_unaligned(address as *const usize) })
 }
 
-/// The address of `tool`'s player field in the object `this`, if its shape
-/// is the one expected.
-fn field_of(tool: Tool, this: usize) -> Option<usize> {
-    match tool {
-        Tool::Street => this.checked_add(STREET_FIELD.load(Ordering::Acquire)),
-        Tool::Modifier => this.checked_add(MODIFIER_FIELD.load(Ordering::Acquire)),
-        Tool::Bulldozer => {
-            let filter = read_usize(this.checked_add(FILTER_FIELD.load(Ordering::Acquire))?)?;
-            if read_usize(filter)? != FILTER_VTABLE.load(Ordering::Acquire) {
-                return None;
-            }
-            let begin = read_usize(filter + FILTER_PLAYERS)?;
-            let end = read_usize(filter + FILTER_PLAYERS + 8)?;
-            // Exactly one player, as the constructor makes the list.
-            (end.checked_sub(begin) == Some(4)).then_some(begin)
-        }
+/// The bulldozer filter's one player, if the filter has the shape expected.
+fn filter_player(this: usize) -> Option<usize> {
+    let filter = read_usize(this.checked_add(FILTER_FIELD.load(Ordering::Acquire))?)?;
+    if read_usize(filter)? != FILTER_VTABLE.load(Ordering::Acquire) {
+        return None;
     }
+    let begin = read_usize(filter + FILTER_PLAYERS)?;
+    let end = read_usize(filter + FILTER_PLAYERS + 8)?;
+    // Exactly one player, as the constructor makes the list.
+    (end.checked_sub(begin) == Some(4)).then_some(begin)
 }
 
-/// One tool's frame, before the game's own: brings its player field to
-/// what [`decide`] says.
-fn frame(tool: Tool, this: usize) {
-    if !ON.load(Ordering::Acquire) || BROKEN.load(Ordering::Acquire) || this == 0 {
-        return;
+/// The addresses of `tool`'s player fields in the object `this`, with what
+/// each is, if its shape is the one expected.
+fn fields_of(tool: Tool, this: usize) -> Option<Vec<(usize, &'static str)>> {
+    let offset = FIELDS[tool.index()].load(Ordering::Acquire);
+    if offset == 0 {
+        return None;
     }
-    let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
-    let Some(field) = field_of(tool, this) else {
-        say_once(
-            &mut state,
-            format!(
-                "{FIX}: {} at {this:#x} is not the shape expected; its player is left as the game made it",
-                tool.name()
-            ),
-        );
-        return;
-    };
+    let own = this.checked_add(offset)?;
+    if tool == Tool::Bulldozer {
+        return Some(vec![
+            (own, "its player"),
+            (filter_player(this)?, "its owner filter"),
+        ]);
+    }
+    Some(vec![(own, "its player")])
+}
+
+/// One field: brings it to what [`decide`] says.
+fn field(state: &mut State, tool: Tool, this: usize, field: usize, what: &str) {
     if !crate::image::readable(field, 4) || !field.is_multiple_of(4) {
         return;
     }
@@ -320,9 +430,9 @@ fn frame(tool: Tool, this: usize) {
     match decide(current, slot, save, company, crate::lua::in_room()) {
         Decision::Leave => {}
         Decision::Unknown => say_once(
-            &mut state,
+            state,
             format!(
-                "{FIX}: {} holds player {current}, neither the save's player {} nor a company this wrote; left alone",
+                "{FIX}: {} ({what}) holds player {current}, neither the save's player {} nor a company this wrote; left alone",
                 tool.name(),
                 save.map_or("(unknown)".into(), |s| s.to_string())
             ),
@@ -348,16 +458,37 @@ fn frame(tool: Tool, this: usize) {
             }
             crate::log::line(&if restoring {
                 format!(
-                    "{FIX}: {} at {this:#x} acts as the save's player {value} again",
+                    "{FIX}: {} at {this:#x} ({what}) acts as the save's player {value} again",
                     tool.name()
                 )
             } else {
                 format!(
-                    "{FIX}: {} at {this:#x} acts as the player's company {value} (was player {current})",
+                    "{FIX}: {} at {this:#x} ({what}) acts as the player's company {value} (was player {current})",
                     tool.name()
                 )
             });
         }
+    }
+}
+
+/// One tool's frame, before the game's own.
+fn frame(tool: Tool, this: usize) {
+    if !ON.load(Ordering::Acquire) || BROKEN.load(Ordering::Acquire) || this == 0 {
+        return;
+    }
+    let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(fields) = fields_of(tool, this) else {
+        say_once(
+            &mut state,
+            format!(
+                "{FIX}: {} at {this:#x} is not the shape expected; its player is left as the game made it",
+                tool.name()
+            ),
+        );
+        return;
+    };
+    for (address, what) in fields {
+        field(&mut state, tool, this, address, what);
     }
 }
 
@@ -373,6 +504,15 @@ extern "system" fn before_street(this: usize) {
 }
 extern "system" fn before_modifier(this: usize) {
     before(Tool::Modifier, this);
+}
+extern "system" fn before_construction(this: usize) {
+    before(Tool::Construction, this);
+}
+extern "system" fn before_terminal(this: usize) {
+    before(Tool::Terminal, this);
+}
+extern "system" fn before_module(this: usize) {
+    before(Tool::Module, this);
 }
 extern "system" fn before_bulldozer(this: usize) {
     before(Tool::Bulldozer, this);
@@ -419,6 +559,13 @@ macro_rules! entry {
 
 entry!(street_entry, before_street, STREET_ORIGINAL);
 entry!(modifier_entry, before_modifier, MODIFIER_ORIGINAL);
+entry!(
+    construction_entry,
+    before_construction,
+    CONSTRUCTION_ORIGINAL
+);
+entry!(terminal_entry, before_terminal, TERMINAL_ORIGINAL);
+entry!(module_entry, before_module, MODULE_ORIGINAL);
 entry!(bulldozer_entry, before_bulldozer, BULLDOZER_ORIGINAL);
 
 /// `len` bytes of the game's code at `address`, if readable.
@@ -456,7 +603,7 @@ fn detour(
     }
 }
 
-/// Installs the three tools' frames unless [`ENV`] says no; the lines for
+/// Installs the tools' frames unless [`ENV`] says no; the lines for
 /// hook.log.
 pub fn install(resolved: &ResolvedProfile) -> Vec<String> {
     install_with(
@@ -475,34 +622,47 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> Vec<String> {
     install_tools(resolved)
 }
 
+/// Reads `tool`'s field offsets from its constructor's code (`shape`, and
+/// the filter's target for the bulldozer); false when the code is not the
+/// code expected.
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn read_layout(resolved: &ResolvedProfile, tool: Tool, shape: u64) -> bool {
+    if let Some((bytes, at)) = tool.store() {
+        let Some(offset) = code(shape, bytes.len()).and_then(|c| store_offset(c, bytes, at)) else {
+            return false;
+        };
+        FIELDS[tool.index()].store(offset, Ordering::Release);
+        return true;
+    }
+    let player = code(shape, BULLDOZER_STORE_BYTES.len()).and_then(bulldozer_player_offset);
+    let filter = resolved
+        .get(BULLDOZER_FILTER)
+        .and_then(|f| code(f.address, 48).and_then(|c| filter_layout(c, f.address as usize)));
+    match (player, filter) {
+        (Some(player), Some(filter)) => {
+            FIELDS[tool.index()].store(player, Ordering::Release);
+            FILTER_FIELD.store(filter.filter, Ordering::Release);
+            FILTER_VTABLE.store(filter.vtable, Ordering::Release);
+            true
+        }
+        _ => false,
+    }
+}
+
 #[cfg(all(windows, target_arch = "x86_64"))]
 fn install_tools(resolved: &ResolvedProfile) -> Vec<String> {
     let mut lines = Vec::new();
     let mut any = false;
-    let tools: [(Tool, &str, &str, unsafe extern "C" fn(), &AtomicUsize); 3] = [
-        (
-            Tool::Street,
-            STREET_STEP,
-            STREET_STORE,
-            street_entry,
-            &STREET_ORIGINAL,
-        ),
-        (
-            Tool::Modifier,
-            MODIFIER_STEP,
-            MODIFIER_STORE,
-            modifier_entry,
-            &MODIFIER_ORIGINAL,
-        ),
-        (
-            Tool::Bulldozer,
-            BULLDOZER_STEP,
-            BULLDOZER_FILTER,
-            bulldozer_entry,
-            &BULLDOZER_ORIGINAL,
-        ),
-    ];
-    for (tool, step, shape, entry, original) in tools {
+    for tool in Tool::ALL {
+        let (step, shape) = tool.targets();
+        let (entry, original): (unsafe extern "C" fn(), &AtomicUsize) = match tool {
+            Tool::Street => (street_entry, &STREET_ORIGINAL),
+            Tool::Modifier => (modifier_entry, &MODIFIER_ORIGINAL),
+            Tool::Construction => (construction_entry, &CONSTRUCTION_ORIGINAL),
+            Tool::Terminal => (terminal_entry, &TERMINAL_ORIGINAL),
+            Tool::Module => (module_entry, &MODULE_ORIGINAL),
+            Tool::Bulldozer => (bulldozer_entry, &BULLDOZER_ORIGINAL),
+        };
         let (Some(step_at), Some(shape_at)) = (resolved.get(step), resolved.get(shape)) else {
             lines.push(format!(
                 "{FIX}: {} stays the save's player's: the profile lacks {step} or {shape}",
@@ -510,25 +670,10 @@ fn install_tools(resolved: &ResolvedProfile) -> Vec<String> {
             ));
             continue;
         };
-        let layout = match tool {
-            Tool::Street => code(shape_at.address, STREET_STORE_BYTES.len())
-                .and_then(|c| store_offset(c, &STREET_STORE_BYTES, STREET_DISP_AT))
-                .map(|f| STREET_FIELD.store(f, Ordering::Release)),
-            Tool::Modifier => code(shape_at.address, MODIFIER_STORE_BYTES.len())
-                .and_then(|c| store_offset(c, &MODIFIER_STORE_BYTES, MODIFIER_DISP_AT))
-                .map(|f| MODIFIER_FIELD.store(f, Ordering::Release)),
-            Tool::Bulldozer => code(shape_at.address, 48)
-                .and_then(|c| filter_layout(c, shape_at.address as usize))
-                .map(|l| {
-                    FILTER_FIELD.store(l.filter, Ordering::Release);
-                    FILTER_VTABLE.store(l.vtable, Ordering::Release);
-                }),
-        };
-        if layout.is_none() {
+        if !read_layout(resolved, tool, shape_at.address) {
             lines.push(format!(
-                "{FIX}: {} stays the save's player's: {shape} at {:#x} is not the code expected",
-                tool.name(),
-                shape_at.address
+                "{FIX}: {} stays the save's player's: {shape} is not the code expected",
+                tool.name()
             ));
             continue;
         }
@@ -589,6 +734,41 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn the_station_tools_stores_give_their_fields() {
+        for (bytes, at, want) in [
+            (&CONSTRUCTION_STORE_BYTES[..], CONSTRUCTION_DISP_AT, 0xa0),
+            (&TERMINAL_STORE_BYTES[..], TERMINAL_DISP_AT, 0xa0),
+            (&MODULE_STORE_BYTES[..], MODULE_DISP_AT, 0xa8),
+        ] {
+            assert_eq!(store_offset(bytes, bytes, at), Some(want));
+            let mut other = bytes.to_vec();
+            other[at - 6] ^= 0x10;
+            assert_eq!(store_offset(&other, bytes, at), None, "another source");
+        }
+        for tool in Tool::ALL {
+            let (step, shape) = tool.targets();
+            assert!(!step.is_empty() && !shape.is_empty());
+            assert_eq!(tool.store().is_none(), tool == Tool::Bulldozer);
+        }
+    }
+
+    #[test]
+    fn the_bulldozers_own_player_is_read_from_its_store() {
+        // Build 40408 at rva 0x4c4a41: lea rax,[rip+0x31ea3f0]; ...; mov
+        // [r14+0x28],ebx.
+        let mut bytes = BULLDOZER_STORE_BYTES;
+        bytes[3..7].copy_from_slice(&0x031e_a3f0_i32.to_le_bytes());
+        assert_eq!(bulldozer_player_offset(&bytes), Some(0x28));
+        bytes[15] = 0x88;
+        assert_eq!(
+            bulldozer_player_offset(&bytes),
+            None,
+            "not a store of ebx: refused"
+        );
+        assert_eq!(bulldozer_player_offset(&BULLDOZER_STORE_BYTES[..10]), None);
     }
 
     #[test]

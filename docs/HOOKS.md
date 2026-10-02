@@ -1970,6 +1970,22 @@ A line like that one, for a road the room built for the player's own
 company, is the street tool refusing to snap into it; rva 0x5fc027 is the
 street builder's snap.
 
+With the same variable it also logs the street bulldozer's answers: its
+edge test (`probe: StreetBulldozerAction edge test`, rva 0x5f2a00, a lambda
+of `UI::StreetBulldozerAction::vf2`) and the owner test every bulldozer
+action calls (`probe: bulldozer owner test`, `sub_5f7db0`), each with the
+entity, the owner list it had and the answer, merged by equal answers,
+every 3 s:
+
+```
+probe: the street bulldozer's edge test on entity 380001: refused with owner list [372363]; 4 time(s)
+probe: the bulldozer's owner test on entity 380001: allowed with owner list [372363]; 4 time(s)
+```
+
+An edge refused by the edge test with the company in its list, and no
+owner-test line for it, was refused before ownership (a construction's
+edge, another network, the underground mode).
+
 **The tools' player** (`crates/tpf3mp-hook/src/toolplayer.rs`), on unless
 `TPF3MP_HOOK_TOOL_COMPANY=0`. `UI::CGameUI`'s constructor reads the save's
 player once and hands each native tool a copy; the room builds roads,
@@ -1986,7 +2002,10 @@ thread, the hook writes the company the GUI notes
 |---|---|---|
 | `UI::StreetBuilder` (the street and the track builder) | `+0xc0` | `0x585e50` |
 | `UI::TrackModifier` (tram track, bus lane, electrification and the other modifiers) | `+0xa0` | `0x5cbf80` |
-| `UI::Bulldozer` (every bulldozer action) | the one player of its `BulldozerFilter` (`[[+0xc0]+0x10]`) | `0x4d6340` |
+| `UI::ConstructionBuilder` (stations, depots, every construction the menu places) | `+0xa0` | `0x51cd60` |
+| `UI::StreetTerminalBuilder` (the stop builder, and the signal and waypoint builder, a second instance) | `+0xa0` | `0x595f30` |
+| `UI::ModuleBuilder` (a station's modules) | `+0xa8` | `0x545b50` |
+| `UI::Bulldozer` (every bulldozer action) | its own player (`+0x28`, what its proposals are made for) and the one player of its `BulldozerFilter` (`[[+0xc0]+0x10]`) | `0x4d6340` |
 
 Each field's offset is read from its constructor's code (profile targets
 `... ctor/player store`, `UI::Bulldozer ctor/filter`, which also gives the
@@ -2010,12 +2029,15 @@ tool-company: the street and track builder at 0x... acts as the player's company
 tool-company: the street and track builder at 0x... acts as the save's player 214443 again
 ```
 
-Not covered: the construction builder (stations, depots: snapping onto a
-company's own station), the stop and signal builder
-(`UI::StreetTerminalBuilder`), the module builder and the other tools
-`CGameUI` hands the player to (`sub_50b3b0`, `sub_5906e0`, `sub_540390`,
-`sub_59b890`, `sub_5a2480`); and the bulldozer's own player (`+0x28`),
-which only seeds the filter.
+In the first game test (2026-10-02, build aaa331c) the street tool split
+the company's road mid-span; stations and stops were still refused before
+capture (the construction and stop builders kept the save's player), and so
+was bulldozing the company's road: the filter's player was written, but
+the bulldozer's own player (`+0x28`), which its proposals are made for
+(`Step` 0x4d687e, 0x4d46b0, 0x4d2b70, its lambda 0x4d2650), was not. Both
+are written now. Not covered: the town, terrain and other tools CGameUI
+hands the player to (`sub_59b890`, `sub_5a2480` and the rest), which build
+nothing a company owns.
 
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and

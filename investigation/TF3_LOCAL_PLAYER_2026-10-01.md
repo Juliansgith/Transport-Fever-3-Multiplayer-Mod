@@ -134,3 +134,29 @@ reaches it too, and the simulation calls those.
 To see it in one try: `TPF3MP_PROBE_PLAYER=1` logs each entity the test
 takes for another player's, with the tool's player and whose the entity
 is (docs/HOOKS.md, "The probe of the engine's player").
+
+### The station tools and the bulldozer's own player (2026-10-02)
+
+Game test of aaa331c: the street tool split the company's road; stations,
+stops and bulldozing the company's road still did nothing, with no capture.
+
+- **seen** `CGameUI` hands the same player ([rbp-0x50]) to
+  `UI::ConstructionBuilder` (ctor `sub_50b3b0`, 0x649f28, by value; stored
+  at `+0xa0`, 0x50b453), `UI::StreetTerminalBuilder` (ctor `sub_5906e0`
+  through the factory `sub_645ee0`, by pointer, dereferenced at 0x646035;
+  `+0xa0`, 0x590795; built twice, the stop builder and the signal and
+  waypoint builder) and `UI::ModuleBuilder` (ctor `sub_540390` through
+  `sub_645940`, dereferenced at 0x6459c0; `+0xa8`, 0x540456). Each field's
+  readers are its class's own code (profile comments list them).
+- **seen** `UI::Bulldozer` keeps its own player at `+0x28` (ctor 0x4c4a4f,
+  its 4th argument); besides seeding the filter (0x4c4f33) it is read for
+  the proposals it makes (`Step` 0x4d687e, 0x4d46b0, 0x4d2b70, and its
+  lambda 0x4d2650, which hands it to `sub_ccf6d0` at 0x4d2952). The
+  street bulldozer's own test reads the filter's copied list only (both
+  `sub_5f7db0` calls, 0x5f2ae6 and 0x5f376f, take the query's list), so
+  the filter was right and the bulldozer's player was not: the edge was
+  offered, the proposal made for the save's player was empty.
+- **inferred** That the proposal is what refused the bulldoze; the probe
+  (TPF3MP_PROBE_PLAYER=1) logs both tests' answers to confirm it.
+
+All four now get the company the same way (toolplayer.rs).

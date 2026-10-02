@@ -704,6 +704,247 @@ fn flush_other_owned(now_ms: u64) -> Vec<String> {
     )
 }
 
+/// The street bulldozer action's test of one edge (rva 0x5f2a00, a lambda
+/// of `UI::StreetBulldozerAction::vf2`, `game\ui\actions\bulldozer`): its
+/// captures in rcx (the query at `+0x18`, whose owner list is at `+8`), the
+/// edge in edx; true when the edge may be bulldozed. Detoured to log each
+/// edge it answers and the owner list it had, its answer unchanged.
+pub const BULLDOZE_EDGE_TARGET: &str = "probe: StreetBulldozerAction edge test";
+/// The bulldozer actions' owner test `sub_5f7db0` (rva 0x5f7db0): the engine
+/// in rcx, the owner list in rdx, the entity in r8d, a flag in r9b; true
+/// when the list is empty, the entity's owner is in it, or (flag clear) it
+/// has no owner. Detoured to log each answer, unchanged.
+pub const BULLDOZE_OWNER_TARGET: &str = "probe: bulldozer owner test";
+/// Rows kept between flushes; the rest are counted.
+const BULLDOZE_ROWS: usize = 48;
+
+/// One answer: which test, the entity, the first players of the list (and
+/// how many), the answer, and how often.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulldozeRow {
+    pub owner_test: bool,
+    pub entity: i32,
+    pub players: Vec<i32>,
+    pub listed: usize,
+    pub answer: bool,
+    pub count: u64,
+}
+
+struct BulldozeLog {
+    rows: Vec<BulldozeRow>,
+    dropped: u64,
+    flushed_ms: u64,
+}
+
+static BULLDOZE_LOG: Mutex<BulldozeLog> = Mutex::new(BulldozeLog {
+    rows: Vec::new(),
+    dropped: 0,
+    flushed_ms: 0,
+});
+static BULLDOZE_EDGE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static BULLDOZE_OWNER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts one answer, merging it with an equal one since the last flush.
+pub fn note_bulldoze(
+    owner_test: bool,
+    entity: i32,
+    players: Vec<i32>,
+    listed: usize,
+    answer: bool,
+) {
+    let mut log = BULLDOZE_LOG.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(row) = log.rows.iter_mut().find(|r| {
+        r.owner_test == owner_test
+            && r.entity == entity
+            && r.answer == answer
+            && r.players == players
+            && r.listed == listed
+    }) {
+        row.count += 1;
+        return;
+    }
+    if log.rows.len() >= BULLDOZE_ROWS {
+        log.dropped += 1;
+        return;
+    }
+    log.rows.push(BulldozeRow {
+        owner_test,
+        entity,
+        players,
+        listed,
+        answer,
+        count: 1,
+    });
+}
+
+/// The lines for `rows`, and for answers that found no row.
+pub fn bulldoze_text(rows: &[BulldozeRow], dropped: u64) -> Vec<String> {
+    let mut lines: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            let list = if r.listed == 0 {
+                "an empty owner list".to_owned()
+            } else {
+                let shown: Vec<String> = r.players.iter().map(i32::to_string).collect();
+                format!(
+                    "owner list [{}{}]",
+                    shown.join(", "),
+                    if r.listed > r.players.len() {
+                        ", ..."
+                    } else {
+                        ""
+                    }
+                )
+            };
+            format!(
+                "probe: {} entity {}: {} with {list}; {} time(s)",
+                if r.owner_test {
+                    "the bulldozer's owner test on"
+                } else {
+                    "the street bulldozer's edge test on"
+                },
+                r.entity,
+                if r.answer { "allowed" } else { "refused" },
+                r.count
+            )
+        })
+        .collect();
+    if dropped > 0 {
+        lines.push(format!(
+            "probe: {dropped} more bulldozer answer(s) not listed"
+        ));
+    }
+    lines
+}
+
+/// The players of a `std::vector<Entity>` at `vector` (begin, end): the
+/// first four, and how many; none when unreadable.
+fn players_at(vector: usize) -> (Vec<i32>, usize) {
+    let (Some(begin), Some(end)) = (pointer(vector), pointer(vector.wrapping_add(8))) else {
+        return (Vec::new(), 0);
+    };
+    let Some(bytes) = end.checked_sub(begin) else {
+        return (Vec::new(), 0);
+    };
+    let listed = bytes / 4;
+    if listed > 4096 {
+        return (Vec::new(), 0);
+    }
+    let shown = listed.min(4);
+    if shown == 0 || !crate::image::readable(begin, shown * 4) {
+        return (Vec::new(), listed);
+    }
+    // SAFETY: `shown` readable dwords at the list's start, only read.
+    let players = (0..shown)
+        .map(|i| unsafe { std::ptr::read_unaligned((begin + 4 * i) as *const i32) })
+        .collect();
+    (players, listed)
+}
+
+extern "C" fn bulldoze_edge(captures: usize, entity: i32) -> bool {
+    let original = BULLDOZE_EDGE_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: the trampoline of the function this detours, stored before
+    // the detour could be reached; called as the game called it.
+    let original: extern "C" fn(usize, i32) -> bool =
+        unsafe { std::mem::transmute::<usize, extern "C" fn(usize, i32) -> bool>(original) };
+    let answer = original(captures, entity);
+    let _ = std::panic::catch_unwind(|| {
+        let query = pointer(captures.wrapping_add(0x18)).unwrap_or(0);
+        let (players, listed) = if query == 0 {
+            (Vec::new(), 0)
+        } else {
+            players_at(query + 8)
+        };
+        note_bulldoze(false, entity, players, listed, answer);
+    });
+    answer
+}
+
+extern "C" fn bulldoze_owner(engine: usize, list: usize, entity: i32, flag: u8) -> bool {
+    let original = BULLDOZE_OWNER_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: as [`bulldoze_edge`]; the four arguments in rcx, rdx, r8d and
+    // r9b, as the game passed them.
+    let original: extern "C" fn(usize, usize, i32, u8) -> bool = unsafe {
+        std::mem::transmute::<usize, extern "C" fn(usize, usize, i32, u8) -> bool>(original)
+    };
+    let answer = original(engine, list, entity, flag);
+    let _ = std::panic::catch_unwind(|| {
+        let (players, listed) = players_at(list);
+        note_bulldoze(true, entity, players, listed, answer);
+    });
+    answer
+}
+
+/// Detours the two bulldozer tests for logging; their log lines.
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn install_bulldoze(resolved: &ResolvedProfile) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (name, entry, original) in [
+        (
+            BULLDOZE_EDGE_TARGET,
+            bulldoze_edge as *const u8,
+            &BULLDOZE_EDGE_ORIGINAL,
+        ),
+        (
+            BULLDOZE_OWNER_TARGET,
+            bulldoze_owner as *const u8,
+            &BULLDOZE_OWNER_ORIGINAL,
+        ),
+    ] {
+        let Some(target) = resolved.get(name) else {
+            lines.push(format!("probe: {name} not logged: the profile lacks it"));
+            continue;
+        };
+        // SAFETY: a function the profile resolved and prologue-checked in
+        // this build, detoured while the game starts; the detour takes the
+        // same arguments and calls the original with them.
+        let installed = unsafe {
+            tpf3mp_hookcore::detour::InlineDetour::install(
+                target.address as usize as *mut u8,
+                entry,
+            )
+        };
+        match installed {
+            Ok(detoured) => {
+                original.store(detoured.trampoline() as usize, Ordering::Release);
+                let _kept = std::mem::ManuallyDrop::new(detoured);
+                lines.push(format!(
+                    "probe: logging the answers of {name} at {:#x}, unchanged; flushed every {} s",
+                    target.address,
+                    EVERY_MS / 1000
+                ));
+            }
+            Err(error) => lines.push(format!(
+                "probe: {name} not logged: detouring failed: {error:?}"
+            )),
+        }
+    }
+    lines
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn install_bulldoze(_resolved: &ResolvedProfile) -> Vec<String> {
+    vec!["probe: the bulldozer's tests are not logged: Windows x86-64 only".into()]
+}
+
+/// The bulldozer lines when due.
+fn flush_bulldoze(now_ms: u64) -> Vec<String> {
+    if BULLDOZE_EDGE_ORIGINAL.load(Ordering::Acquire) == 0
+        && BULLDOZE_OWNER_ORIGINAL.load(Ordering::Acquire) == 0
+    {
+        return Vec::new();
+    }
+    let mut log = BULLDOZE_LOG.lock().unwrap_or_else(PoisonError::into_inner);
+    if now_ms.saturating_sub(log.flushed_ms) < EVERY_MS {
+        return Vec::new();
+    }
+    log.flushed_ms = now_ms;
+    let rows = std::mem::take(&mut log.rows);
+    let dropped = std::mem::take(&mut log.dropped);
+    drop(log);
+    bulldoze_text(&rows, dropped)
+}
+
 /// When the probe last looked, and at which game.
 struct Pace {
     game: usize,
@@ -759,8 +1000,9 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> String {
     ON.store(true, Ordering::Release);
     let callers = install_callers(resolved);
     let owners = install_other_owner(resolved);
+    let bulldoze = install_bulldoze(resolved).join("\n");
     format!(
-        "{callers}\n{owners}\nprobe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
+        "{callers}\n{owners}\n{bulldoze}\nprobe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
         g.game,
         g.state,
         s.states,
@@ -799,6 +1041,7 @@ pub fn frame(menu: usize, now_ms: u64) -> Vec<String> {
     }
     let mut lines = flush_callers(now_ms);
     lines.extend(flush_other_owned(now_ms));
+    lines.extend(flush_bulldoze(now_ms));
     lines.extend(states(menu, now_ms));
     lines
 }
@@ -1008,6 +1251,38 @@ mod tests {
             other_owned_text(&[other], 0, 0, -1, 214_443)[0]
                 .contains("owned by another player (no company noted for this player)")
         );
+    }
+
+    #[test]
+    fn the_bulldozers_answers_are_merged_and_said() {
+        note_bulldoze(false, 380_001, vec![372_363], 1, false);
+        note_bulldoze(false, 380_001, vec![372_363], 1, false);
+        note_bulldoze(true, 380_001, vec![214_443], 1, false);
+        note_bulldoze(true, 380_002, Vec::new(), 0, true);
+        let rows = std::mem::take(
+            &mut BULLDOZE_LOG
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .rows,
+        );
+        assert_eq!(
+            bulldoze_text(&rows, 2),
+            [
+                "probe: the street bulldozer's edge test on entity 380001: refused with owner list [372363]; 2 time(s)",
+                "probe: the bulldozer's owner test on entity 380001: refused with owner list [214443]; 1 time(s)",
+                "probe: the bulldozer's owner test on entity 380002: allowed with an empty owner list; 1 time(s)",
+                "probe: 2 more bulldozer answer(s) not listed",
+            ]
+        );
+        let shown = BulldozeRow {
+            owner_test: true,
+            entity: 1,
+            players: vec![1, 2, 3, 4],
+            listed: 9,
+            answer: true,
+            count: 1,
+        };
+        assert!(bulldoze_text(&[shown], 0)[0].contains("[1, 2, 3, 4, ...]"));
     }
 
     #[test]
