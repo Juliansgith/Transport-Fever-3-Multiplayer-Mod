@@ -1608,6 +1608,25 @@ state, which the game saves with the world:
   No state saying it answers the company while a window still shows the
   first company's things would mean a Lua state the mod's scripts never
   run in.
+
+  The notes live as long as the game's process, the entities they name
+  as long as their world. When a world closes the hook forgets
+  `tpf3mp.company` and `tpf3mp.companies` (`lua::forget_world_notes`,
+  from the menu frame that sees `CMenuUI::m_game` cleared), and says so:
+
+  ```
+  menu: the closed world's company note(s) forgotten (2): the next world's views follow its own room's roster
+  ```
+
+  Kept, the next world's GUI answered getPlayer with the last world's
+  company, natively and through `follow.noteSource`, and the game's own
+  game bar asked `getPlayersBalance` of an entity that world does not
+  have: the engine's `Account` lookup is unchecked, so a brand-new world
+  started from the Multiplayer lobby crashed in its first frame
+  (2026-10-02: an access violation reported as a hang, entity 372610;
+  then `Engine.h:323 GetComponentDataIndex: Assertion 'it !=
+  components.end()'` for entity 63030, an animal there, followed by the
+  shutdown's "Buffer has not been destroyed" render errors).
 - *In a competitive room* the GUI founds the player a company of their
   own (`tpf3mp.script.lua`, `foundOwnCompany`): the same `CompanyOp`
   `Create` **Found** sends, named `<name>'s company`, sent by the

@@ -2163,6 +2163,30 @@ pub fn noted(key: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
+/// The notes that name entities of the loaded world: the player's company
+/// (`tpf3mp/follow.lua`, `noteCompany`) and the room's companies
+/// (`noteCompanies`). The notes outlive a world, the hook's process being
+/// the game's, but these entities do not: the next world, a new one above
+/// all, has other entities under those numbers or none. Handed on, the
+/// GUI's `getPlayer` answered the last world's company and the game's own
+/// game bar read its balance (`getPlayersBalance`, the engine's `Account`
+/// lookup, unchecked): an access violation in the first frame of a new
+/// world (entity 372610, a hang report, 2026-10-02), or the engine's
+/// assertion on an animal (entity 63030, the same day).
+pub const WORLD_NOTES: [&str; 2] = ["tpf3mp.company", "tpf3mp.companies"];
+
+/// Forgets the [`WORLD_NOTES`], when a world closes: the next world's GUI
+/// notes its own once it reads its room's roster. Returns how many there
+/// were.
+pub fn forget_world_notes() -> usize {
+    let mut shared = shared();
+    let before = shared.notes.len();
+    shared
+        .notes
+        .retain(|(k, _)| !WORLD_NOTES.contains(&k.as_str()));
+    before - shared.notes.len()
+}
+
 /// Notes `value` under `key` from the hook itself, as `note(key, value)`
 /// does from Lua ("" forgets it): what the hook tells every Lua state.
 pub fn set_note(key: &str, value: &str) {
@@ -2562,6 +2586,41 @@ pub(crate) mod tests {
             player: PlayerId(FixedBytes([7; 32])),
             seal: None,
         }
+    }
+
+    /// A brand-new world after a room's world: the last world's company,
+    /// noted by its GUI, is forgotten with it, so a GUI state of the new
+    /// world that reads the note (`tpf3mp/follow.lua`, `noteSource`) finds
+    /// none and its getPlayer stays the game's. Handed on, the game's game
+    /// bar read the balance of an entity the new world does not have and
+    /// the game crashed (2026-10-02). Notes of other kinds stay.
+    #[test]
+    fn a_closed_worlds_company_notes_are_forgotten() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let gui = Lua::new();
+        gui.register();
+        gui.run(
+            "tpf3mp_native.note('tpf3mp.company', '372610') \
+             tpf3mp_native.note('tpf3mp.companies', '372553,372610') \
+             tpf3mp_native.note('tpf3mp.hud.tickets', '42')",
+        )
+        .unwrap();
+        assert_eq!(forget_world_notes(), 2);
+        let next = Lua::new();
+        next.register();
+        assert_eq!(
+            next.run(
+                "return tostring(tpf3mp_native.note('tpf3mp.company')), \
+                 tostring(tpf3mp_native.note('tpf3mp.companies')), \
+                 tpf3mp_native.note('tpf3mp.hud.tickets')"
+            ),
+            Ok("nil|nil|42".into())
+        );
+        assert_eq!(noted("tpf3mp.company"), None);
+        // Nothing left to forget: a second close says none.
+        assert_eq!(forget_world_notes(), 0);
+        shared().notes.clear();
     }
 
     /// What one Lua state notes, another reads; "" forgets it; the number

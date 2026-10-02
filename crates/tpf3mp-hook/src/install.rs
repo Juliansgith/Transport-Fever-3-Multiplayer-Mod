@@ -238,6 +238,14 @@ fn menu_seen(menu: usize) -> MenuFrame {
         lines.push(format!(
             "menu: the world closed (CMenuUI::m_game cleared); the {forgotten} Lua state(s) its GUI was given are never used by the main menu"
         ));
+        // Its company's entity is no entity of the next world: forgotten
+        // before the views' refresh below, so no GUI hands it on.
+        let notes = lua::forget_world_notes();
+        if notes > 0 {
+            lines.push(format!(
+                "menu: the closed world's company note(s) forgotten ({notes}): the next world's views follow its own room's roster"
+            ));
+        }
     }
     // The engine's player, read only, when asked (crate::probe).
     // What the views' player reads answer until the next frame.
@@ -1578,6 +1586,14 @@ mod tests {
         menu_frame(at);
         assert!(!DRIVER.lock().unwrap().as_ref().unwrap().in_room());
         assert!(hook_log().contains("menu: a world is loaded (CMenuUI::m_game set)"));
+        // The world's GUI noted its company and the room's companies, and
+        // the save's player; the probe's switch is the hook's own.
+        lua::set_note("tpf3mp.company", "372610");
+        lua::set_note("tpf3mp.companies", "372553,372610");
+        lua::set_note("tpf3mp.player", "214443");
+        lua::set_note("tpf3mp.probe", "1");
+        menu_frame(at);
+        assert_eq!(lua::noted("tpf3mp.company").as_deref(), Some("372610"));
         // The world closes, and the next one loads: still out.
         set_world(false);
         set_loading(true);
@@ -1585,6 +1601,21 @@ mod tests {
         MENU_CLOCK_SKEW.store(20 * crate::at_menu::QUIET_MS, Ordering::Release);
         menu_frame(at);
         assert!(hook_log().contains("menu: the world closed (CMenuUI::m_game cleared)"));
+        // Its company is no entity of the next world (a new world's first
+        // frame crashed on it, 2026-10-02): forgotten with the world, so
+        // the views answer the game's own player until the next world's
+        // GUI notes its own. The rest stays.
+        assert_eq!(lua::noted("tpf3mp.company"), None);
+        assert_eq!(lua::noted("tpf3mp.companies"), None);
+        assert_eq!(lua::noted("tpf3mp.player").as_deref(), Some("214443"));
+        assert_eq!(lua::noted("tpf3mp.probe").as_deref(), Some("1"));
+        assert!(
+            hook_log().contains("menu: the closed world's company note(s) forgotten (2)"),
+            "{}",
+            hook_log()
+        );
+        lua::set_note("tpf3mp.player", "");
+        lua::set_note("tpf3mp.probe", "");
         assert!(hook_log().contains("menu: no world loaded, but the game is loading one"));
         // Nothing loads: quiet for the stretch, then the menu follows the
         // room, which begins, and loads the room's save.
