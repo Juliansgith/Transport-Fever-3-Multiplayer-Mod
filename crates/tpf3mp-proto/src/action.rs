@@ -767,7 +767,9 @@ pub struct AssignLine {
 pub enum VehicleChange {
     /// Stopped by the player (true), or running again (false).
     Stop(bool),
-    /// To the nearest depot, sold on arrival if `sell`.
+    /// To the nearest depot. `sell` (sold on arrival) must be false:
+    /// [`Action::validate`] refuses it, as build 40408 crashes when such a
+    /// vehicle reaches its depot. The field stays for the wire's bytes.
     ToDepot {
         sell: bool,
     },
@@ -1099,6 +1101,15 @@ pub enum ActionError {
     TrailingBytes(usize),
     #[error(transparent)]
     TooLarge(#[from] PayloadTooLarge),
+    /// A vehicle sent to its depot to be sold there. Build 40408 sells it on
+    /// arrival (`Engine::RemoveEntity`) and then asks the removed vehicle
+    /// where its depot is, which fails the engine's assertion
+    /// (`Engine.h:323`, `GetComponentDataIndex`) and ends every game in the
+    /// room at the same step. TF3's own windows only ever send `false`.
+    #[error(
+        "selling a vehicle when it reaches its depot (the game crashes there; sell it instead)"
+    )]
+    SellOnArrival,
 }
 
 impl Action {
@@ -1130,9 +1141,15 @@ impl Action {
         }
     }
 
-    /// Validate relationships within a junction, beyond the wire's bounds.
+    /// Validate what the wire's bounds do not: the relationships within a
+    /// junction, and no vehicle sent to be sold on arrival
+    /// ([`ActionError::SellOnArrival`]).
     pub fn validate(&self) -> Result<(), ActionError> {
         let changes = match self {
+            Self::VehicleOp(VehicleOp {
+                change: VehicleChange::ToDepot { sell: true },
+                ..
+            }) => return Err(ActionError::SellOnArrival),
             Self::EditJunctions(edit) => {
                 if edit.changes.is_empty() {
                     return Err(ActionError::Junction("empty edit"));
