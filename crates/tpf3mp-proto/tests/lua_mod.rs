@@ -1017,7 +1017,7 @@ fn in_the_rooms_game_the_gui_refuses_what_the_room_cannot_carry() {
     assert!(
         logged.contains(
             &"refused the player's makeVehicleBuyCmd in the room's game (1 so far): \
-               a depot the room cannot name"
+               a depot the room cannot name: no construction component to read"
                 .to_owned()
         ),
         "{logged:?}"
@@ -3473,7 +3473,7 @@ fn a_bought_vehicle_goes_to_the_room_and_the_store_hears_which_it_is() {
                  if kind == 7 and e == 77 then return { state = { registry = { \
                      vehicles = { next = 4, bound = { { 3, 500 } } }, \
                      lines = { next = 2, bound = { { 1, 600 } } }, groups = { next = 0, bound = {} } } } } end \
-                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', \
+                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', depots = { 202 }, \
                      transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end \
              end, \
              system = { \
@@ -3631,7 +3631,157 @@ fn every_game_buys_at_the_constructions_depot_the_store_bought_at() {
         .unwrap();
     assert_eq!(depot, 203);
     assert!(!ok);
-    assert_eq!(why, "the construction there has no depot 3");
+    assert_eq!(
+        why, "the depot/bus_depot.con there has 2 depot(s), and no depot 3",
+        "never another of its depots"
+    );
+}
+
+/// An airfield's or airport's hangar is a subconstruction of it with a
+/// depot (build 40408, stations/air/airfield/af_hangar.module.lua), which
+/// the store buys at: every game buys the plane at the hangar its
+/// construction lists among its subconstructions, by its index there, when
+/// `depots` does not list it. An airfield built without its hangar module has
+/// no depot, and the purchase is refused in every game, saying so.
+#[test]
+fn every_game_buys_a_plane_at_the_airfields_hangar_and_refuses_one_without() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(format!(
+        "local CT = api.type.ComponentType CT.VEHICLE_DEPOT = 12 \
+         local base = api.engine.getComponent \
+         local AIRFIELDS = {{ \
+             [211] = {{ fileName = '::/stations/air/airfield.con', depots = {{}}, \
+                        subconstructions = {{ 710, 711, 712 }}, \
+                        transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 900,50,3,1 }} }}, \
+             [221] = {{ fileName = '::/stations/air/airfield.con', depots = {{}}, subconstructions = {{ 720 }}, \
+                        transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 1900,50,3,1 }} }} }} \
+         api.engine.getComponent = function(e, kind) \
+             if kind == CT.CONSTRUCTION and AIRFIELDS[e] then return AIRFIELDS[e] end \
+             if kind == CT.VEHICLE_DEPOT then \
+                 if e == 711 or e == 712 then return {{ carrier = 'AIR' }} end \
+                 return nil \
+             end \
+             return base(e, kind) \
+         end \
+         local list = api.engine.getEntitiesWithComponent \
+         api.engine.getEntitiesWithComponent = function(kind) \
+             if kind == CT.CONSTRUCTION then return {{ 201, 211, 221 }} end \
+             return list(kind) \
+         end \
+         HOOK.room = true UPDATE({{}}, STATE, 0.2) \
+         local function plane(x, index) \
+             local buy = {BUY_BUS} \
+             buy.BuyVehicle.depot = {{ file = '::/stations/air/airfield.con', at = {{ x = x, y = 50, z = 3 }} }} \
+             buy.BuyVehicle.depot_index = index \
+             return buy \
+         end \
+         HOOK.batch = {{ plane(900, 0), plane(900, 1), plane(900, 2), plane(1900, 0) }} \
+         UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let bought: String = lua
+        .load(
+            "local out = {} \
+             for _, s in ipairs(SENT) do if s.buy then out[#out + 1] = s.buy.depot end end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(bought, "711 712", "the first and the second hangar");
+    let (ok, why, bare, bare_why): (bool, String, bool, String) = lua
+        .load(
+            "return HOOK.applied[3].ok, HOOK.applied[3].why, HOOK.applied[4].ok, HOOK.applied[4].why",
+        )
+        .eval()
+        .unwrap();
+    assert!(!ok);
+    assert_eq!(
+        why,
+        "the ::/stations/air/airfield.con there has 2 depot(s), and no depot 3"
+    );
+    assert!(!bare);
+    assert_eq!(
+        bare_why,
+        "the ::/stations/air/airfield.con there has no depot: an airfield or airport has one only \
+         with a hangar module, and a harbour never has one (ships are bought at a ship depot)"
+    );
+}
+
+/// The player's plane, bought at an airfield's hangar: the street connector
+/// names no construction for the hangar, the subconstruction lookup names
+/// the airfield, and the purchase names the airfield and the hangar's index
+/// among its depots (`depots`, then the subconstructions that are depots).
+/// Failing closed: a depot two constructions list, and one whose
+/// construction does not list it, are refused at the click, never bought
+/// at the construction's first depot.
+#[test]
+fn a_plane_bought_at_an_airfields_hangar_names_the_airfield_and_the_hangar() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "api.type = { ComponentType = { GAME_SCRIPT = 7, CONSTRUCTION = 2, VEHICLE_DEPOT = 12 } } \
+         COMPONENTS = { \
+             [201] = { fileName = 'depot/bus_depot.con', depots = { 202 }, \
+                       transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } }, \
+             [211] = { fileName = '::/stations/air/airfield.con', depots = {}, \
+                       subconstructions = { 710, 711, 712 }, \
+                       transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 900,50,3,1 } }, \
+             [231] = { fileName = 'a.con', depots = { 730 }, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 1,1,1,1 } }, \
+             [232] = { fileName = 'b.con', depots = { 730 }, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 2,2,2,1 } } } \
+         api.engine = { \
+             getComponent = function(e, kind) \
+                 if kind == 7 and e == 77 then return { state = { registry = {} } } end \
+                 if kind == 2 then return COMPONENTS[e] end \
+                 if kind == 12 and (e == 711 or e == 712 or e == 202 or e == 730 or e == 740) then return {} end \
+             end, \
+             getEntitiesWithComponent = function(kind) if kind == 2 then return { 201, 211, 231, 232 } end return {} end, \
+             system = { \
+                 gameScriptSystem = { getEntityForGameScript = function(name) \
+                     if name == 'tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs' then return 77 end return -1 end }, \
+                 streetConnectorSystem = { \
+                     getConstructionEntityForDepot = function(d) \
+                         if d == 202 or d == 740 then return 201 end return -1 end, \
+                     getConstructionEntityForSubconstruction = function(e) \
+                         if e >= 710 and e <= 712 then return 211 end return -1 end, \
+                 }, \
+             }, \
+         } \
+         api.res = { modelRep = { getName = function(id) if id == 51 then return 'vehicle/plane/f13.mdl' end end } } \
+         M = mount(loadPlugin()) M.step() HOOK.room = true \
+         CONFIG = { vehicles = { { part = { modelId = 51, reversed = false, compartment2loadConfig = {}, \
+             color = { x = 0, y = 0, z = 1 } } } }, vehicleGroups = { 1 }, muFileNames = { '' } } \
+         for _, depot in ipairs({ 712, 711, 730, 740 }) do \
+             api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(25, depot, CONFIG)) \
+         end \
+         M.step()",
+    )
+    .exec()
+    .unwrap();
+    let handed: String = lua
+        .load(
+            "local out = {} \
+             for _, a in ipairs(HOOK.commands) do \
+                 local b = a.BuyVehicle \
+                 out[#out + 1] = b.depot.file .. '|' .. b.depot.at.x .. '|' .. b.depot_index \
+             end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        handed, "::/stations/air/airfield.con|900|1 ::/stations/air/airfield.con|900|0",
+        "the second hangar, then the first; nothing else"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for why in [
+        "a depot the room cannot name: a depot 2 constructions list",
+        "a depot the room cannot name: a depot depot/bus_depot.con does not list among its depots",
+    ] {
+        assert!(logged.iter().any(|l| l.contains(why)), "{why}: {logged:?}");
+    }
 }
 
 /// Renaming in an entity window's title, and recolouring a vehicle: a
@@ -3810,7 +3960,7 @@ fn a_vehicle_bought_onto_a_line_is_put_on_it_once_the_room_can_name_it() {
              getComponent = function(e, kind) \
                  if kind == 7 and e == 77 then return { state = { registry = { vehicles = VEHICLES, \
                      lines = { next = 2, bound = { { 1, 600 } } }, groups = { next = 0, bound = {} } } } } end \
-                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', \
+                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', depots = { 202 }, \
                      transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end \
              end, \
              system = { \
@@ -3873,7 +4023,7 @@ fn vehicles_bought_onto_a_line_in_a_burst_all_get_the_line() {
              getComponent = function(e, kind) \
                  if kind == 7 and e == 77 then return { state = { registry = { vehicles = VEHICLES, \
                      lines = { next = 2, bound = { { 1, 600 } } }, groups = { next = 0, bound = {} } } } } end \
-                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', \
+                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', depots = { 202 }, \
                      transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end \
              end, \
              system = { \
