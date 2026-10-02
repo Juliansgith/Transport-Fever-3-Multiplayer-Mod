@@ -1458,7 +1458,11 @@ function HANDLERS.VehicleOp(op, ctx)
 	if type(change) == "table" and change.Stop ~= nil then
 		return run(api.cmd.makeVehicleSetStoppedByUserCmd(vehicle, change.Stop == true))
 	elseif type(change) == "table" and change.ToDepot then
-		return run(api.cmd.makeVehicleSendToDepotCmd(vehicle, change.ToDepot.sell == true))
+		-- Sold on arrival, the game crashes at the depot (capture.vehicleToDepot).
+		if change.ToDepot.sell == true then
+			return false, "selling a vehicle when it reaches the depot (the game crashes there)"
+		end
+		return run(api.cmd.makeVehicleSendToDepotCmd(vehicle, false))
 	elseif change == "Reverse" then
 		return run(api.cmd.makeVehicleReverseCmd(vehicle))
 	elseif change == "Depart" then

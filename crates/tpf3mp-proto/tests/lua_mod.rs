@@ -4505,6 +4505,46 @@ fn every_game_renames_and_recolours_what_the_room_names() {
     );
 }
 
+/// A vehicle sent to be sold on arrival crashes build 40408 at the depot, in
+/// every game at the same step (2026-10-02): the vehicle window's send is
+/// taken kept, the sale refused at the click and, from an older peer, in
+/// every game alike, never sent to the game.
+#[test]
+fn a_vehicle_is_never_sent_to_be_sold_on_arrival() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    let (taken, why): (bool, String) = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')              local ok, why = pcall(capture.vehicleToDepot, {}, 401, true)              return ok, why",
+        )
+        .eval()
+        .unwrap();
+    assert!(!taken);
+    assert!(why.contains("the game crashes there"), "{why}");
+    lua.load(
+        "api.cmd.makeVehicleSendToDepotCmd = function(e, sell) return { toDepot = e, sell = sell } end          HOOK.room = true UPDATE({}, STATE, 0.2)          HOOK.batch = {              { VehicleOp = { vehicle = 0, change = { ToDepot = { sell = true } } } },              { VehicleOp = { vehicle = 0, change = { ToDepot = { sell = false } } } } }          UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let sent: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do                  if c.toDepot then out[#out + 1] = c.toDepot .. ':' .. tostring(c.sell) end end              return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(sent, "401:false");
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do                  out[#out + 1] = a.i .. ':' .. tostring(a.ok) .. (a.why and (':' .. a.why) or '') end              return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied,
+        "1:false:selling a vehicle when it reaches the depot (the game crashes there) 2:true"
+    );
+}
+
 /// The store's "buy and put on a line" (2026-09-30): the GUI's world has the
 /// new vehicle a moment before the game script's state, which names it, so
 /// the store hears of it only once its line assignment can name it; heard

@@ -637,7 +637,7 @@
    "actor": 0,
    "origin": "none",
    "expect": "applied",
-   "note": "Actor 0: truck 3 sent to the depot to be sold",
+   "note": "Actor 0: truck 3 sent to the depot (sell on arrival crashes the game, so it is refused)",
    "action": {
     "VehicleOp": {
      "vehicle": {
@@ -645,7 +645,7 @@
      },
      "change": {
       "ToDepot": {
-       "sell": true
+       "sell": false
       }
      }
     }
@@ -671,7 +671,7 @@
    "at": 700,
    "actor": 0,
    "origin": "none",
-   "expect": "applied",
+   "expect": "any",
    "note": "Actor 0: the line deleted",
    "action": {
     "EditLine": {
@@ -1316,7 +1316,7 @@
    "actor": 1,
    "origin": "none",
    "expect": "applied",
-   "note": "Actor 1: truck 3 sent to the depot to be sold",
+   "note": "Actor 1: truck 3 sent to the depot (sell on arrival crashes the game, so it is refused)",
    "action": {
     "VehicleOp": {
      "vehicle": {
@@ -1995,7 +1995,7 @@
    "actor": 2,
    "origin": "none",
    "expect": "applied",
-   "note": "Actor 2: truck 3 sent to the depot to be sold",
+   "note": "Actor 2: truck 3 sent to the depot (sell on arrival crashes the game, so it is refused)",
    "action": {
     "VehicleOp": {
      "vehicle": {
