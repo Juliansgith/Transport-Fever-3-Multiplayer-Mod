@@ -998,6 +998,152 @@ fn flush_bulldoze(now_ms: u64) -> Vec<String> {
     bulldoze_text(&rows, dropped, IMAGE_BASE.load(Ordering::Acquire) as u64)
 }
 
+/// The map's line viewer's test of a line's route data (in `sub_7f01d0`,
+/// `UI::LineViewer::Update`'s lambda): right after
+/// `LineSystem::GetData(line)` (rax the data, rbx the line's entity, r15
+/// the line's own state), before `mov ecx,[r15+0x80]; cmp [rax+0x18],ecx`
+/// and the segment count check. Spliced to log, per line, the data's
+/// revision and segments against what the viewer expects; nothing changes.
+pub const VIEWER_TARGET: &str = "probe: LineViewer route data test";
+/// The bytes the splice takes there.
+pub const VIEWER_BYTES: [u8; 7] = [0x41, 0x8B, 0x8F, 0x80, 0x00, 0x00, 0x00];
+const VIEWER_ROWS: usize = 32;
+
+/// One line's route data as the viewer found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewerRow {
+    pub line: i32,
+    pub revision: i32,
+    pub expected_revision: i32,
+    pub segments: i64,
+    pub expected_segments: i64,
+}
+
+static VIEWER_LOG: Mutex<Vec<ViewerRow>> = Mutex::new(Vec::new());
+static VIEWER_SAID: Mutex<Vec<ViewerRow>> = Mutex::new(Vec::new());
+
+/// A vector's element count, for elements of `size` bytes, from its begin
+/// and end at `at`.
+fn vector_len(at: usize, size: usize) -> Option<i64> {
+    let begin = pointer(at)?;
+    let end = pointer(at.wrapping_add(8))?;
+    let bytes = end.checked_sub(begin)?;
+    i64::try_from(bytes / size).ok()
+}
+
+fn read_i32(at: usize) -> Option<i32> {
+    if at == 0 || !crate::image::readable(at, 4) {
+        return None;
+    }
+    // SAFETY: four readable bytes; only read.
+    Some(unsafe { std::ptr::read_unaligned(at as *const i32) })
+}
+
+/// The line for hook.log.
+pub fn viewer_text(r: &ViewerRow) -> String {
+    let drawn = r.revision == r.expected_revision && r.segments == r.expected_segments;
+    format!(
+        "probe: the line viewer's route data for line {}: revision {} (it expects {}), {} segment list(s) (it expects {}); {}",
+        r.line,
+        r.revision,
+        r.expected_revision,
+        r.segments,
+        r.expected_segments,
+        if drawn {
+            "it draws the line"
+        } else {
+            "it skips the line"
+        }
+    )
+}
+
+unsafe extern "system" fn viewer_hook(regs: *mut tpf3mp_hookcore::detour::SavedRegs) {
+    let _ = std::panic::catch_unwind(|| {
+        // SAFETY: the stub's block, held until the hook returns; only read.
+        let regs = unsafe { &*regs };
+        let data = regs.rax as usize;
+        let state = regs.r15 as usize;
+        let Some(line) = read_i32(regs.rbx as usize) else {
+            return;
+        };
+        let (Some(revision), Some(expected_revision)) = (
+            read_i32(data.wrapping_add(0x18)),
+            read_i32(state.wrapping_add(0x80)),
+        ) else {
+            return;
+        };
+        let (Some(segments), Some(expected_segments)) = (
+            vector_len(data, 0x18),
+            vector_len(state.wrapping_add(0x68), 0x18),
+        ) else {
+            return;
+        };
+        let row = ViewerRow {
+            line,
+            revision,
+            expected_revision,
+            segments,
+            expected_segments,
+        };
+        let Ok(mut log) = VIEWER_LOG.try_lock() else {
+            return;
+        };
+        if !log.contains(&row) && log.len() < VIEWER_ROWS {
+            log.push(row);
+        }
+    });
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn install_viewer(resolved: &ResolvedProfile) -> String {
+    let Some(site) = resolved.get(VIEWER_TARGET) else {
+        return format!("probe: {VIEWER_TARGET} not logged: the profile lacks it");
+    };
+    // SAFETY: a site the profile resolved by a unique signature inside the
+    // line viewer, spliced before any world runs; the bytes are checked
+    // again by Splice::install; no branch lands inside them (tpfre); the
+    // hook only reads.
+    match unsafe {
+        tpf3mp_hookcore::detour::Splice::install(
+            site.address as usize as *mut u8,
+            &VIEWER_BYTES,
+            VIEWER_BYTES.len(),
+            viewer_hook,
+        )
+    } {
+        Ok(splice) => {
+            let _kept = std::mem::ManuallyDrop::new(splice);
+            format!(
+                "probe: logging the line viewer's route data test at {:#x}, unchanged",
+                site.address
+            )
+        }
+        Err(error) => format!("probe: {VIEWER_TARGET} not logged: {error}"),
+    }
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn install_viewer(_resolved: &ResolvedProfile) -> String {
+    "probe: the line viewer is not logged: Windows x86-64 only".into()
+}
+
+/// The viewer's lines not said before, once each.
+fn flush_viewer() -> Vec<String> {
+    let rows = match VIEWER_LOG.try_lock() {
+        Ok(mut log) => std::mem::take(&mut *log),
+        Err(_) => return Vec::new(),
+    };
+    let mut said = VIEWER_SAID.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut lines = Vec::new();
+    for row in rows {
+        if !said.contains(&row) && said.len() < 4 * VIEWER_ROWS {
+            said.push(row);
+            lines.push(viewer_text(&row));
+        }
+    }
+    lines
+}
+
 /// When the probe last looked, and at which game.
 struct Pace {
     game: usize,
@@ -1056,8 +1202,9 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> String {
     let callers = install_callers(resolved);
     let owners = install_other_owner(resolved);
     let bulldoze = install_bulldoze(resolved).join("\n");
+    let viewer = install_viewer(resolved);
     format!(
-        "{callers}\n{owners}\n{bulldoze}\nprobe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
+        "{callers}\n{owners}\n{bulldoze}\n{viewer}\nprobe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
         g.game,
         g.state,
         s.states,
@@ -1097,6 +1244,7 @@ pub fn frame(menu: usize, now_ms: u64) -> Vec<String> {
     let mut lines = flush_callers(now_ms);
     lines.extend(flush_other_owned(now_ms));
     lines.extend(flush_bulldoze(now_ms));
+    lines.extend(flush_viewer());
     lines.extend(states(menu, now_ms));
     lines
 }
@@ -1341,6 +1489,32 @@ mod tests {
             count: 1,
         };
         assert!(bulldoze_text(&[shown], 0, 0)[0].contains("[1, 2, 3, 4, ...]"));
+    }
+
+    #[test]
+    fn the_viewers_route_data_test_is_said() {
+        let skipped = ViewerRow {
+            line: 342_589,
+            revision: 0,
+            expected_revision: 7,
+            segments: 0,
+            expected_segments: 3,
+        };
+        assert_eq!(
+            viewer_text(&skipped),
+            "probe: the line viewer's route data for line 342589: revision 0 (it expects 7), 0 segment list(s) (it expects 3); it skips the line"
+        );
+        let drawn = ViewerRow {
+            revision: 7,
+            segments: 3,
+            ..skipped
+        };
+        assert!(viewer_text(&drawn).ends_with("it draws the line"));
+        assert_eq!(
+            VIEWER_BYTES[..3],
+            [0x41, 0x8B, 0x8F],
+            "mov ecx,[r15+disp32]"
+        );
     }
 
     #[test]
