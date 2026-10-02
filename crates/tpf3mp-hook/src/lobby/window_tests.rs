@@ -176,6 +176,9 @@ fn online() -> LobbyView {
         .unwrap(),
         saves: BoundedVec::new(vec![
             Text::new("newest").unwrap(),
+            // The hook's own copies, never offered.
+            Text::new("tpf3mp_room_41856").unwrap(),
+            Text::new("tpf3mp_41856_21").unwrap(),
             Text::new("mptest").unwrap(),
         ])
         .unwrap(),
@@ -269,6 +272,37 @@ fn a_game_without_its_launcher_says_so_and_offers_nothing() {
     let shown = texts(&lua);
     assert!(shown.contains("no link to the TPF3-MP launcher"), "{shown}");
     assert!(!enabled(&lua, "Connect to the TPF3-MP server"));
+}
+
+#[test]
+fn the_save_picker_preserves_user_names_and_recovery_saves() {
+    let lua = menu();
+    let mut view = online();
+    let kept = [
+        "tpf3mp_fixture",
+        "tpf3mp_01_2",
+        "tpf3mp_room_0",
+        "tpf3mp_room_4294967296",
+        "autosave_recovery",
+    ];
+    let mut saves = view.saves.to_vec();
+    saves.extend(kept.iter().map(|name| Text::new(*name).unwrap()));
+    view.saves = BoundedVec::new(saves).unwrap();
+    show(&lua, Some(&view));
+    open(&lua, None);
+    call(&lua, "click_card", "Host a room");
+    let (values, _) = offered(&lua, "Start from this save");
+    for name in kept {
+        assert!(
+            values.iter().any(|value| value == name),
+            "missing {name}: {values:?}"
+        );
+    }
+    assert!(
+        !values
+            .iter()
+            .any(|v| v == "tpf3mp_room_41856" || v == "tpf3mp_41856_21")
+    );
 }
 
 #[test]

@@ -3,7 +3,7 @@
 # Each can be set beforehand in the environment:
 #   TPF3MP_GAME_EXE    TransportFever3.exe (else found through Steam)
 #   TPF3MP_GAME_LOCAL  the game's per-user folder, Steam's
-#                      userdata\<account>\3493540\local (else the newest)
+#                      userdata\<account>\3493540\local (else the active or only account)
 #   TPF3MP_GAME_WORK   where runs, screenshots and logs go
 #                      (else target\game-runs in the repository)
 #   TPF3MP_BIN         the built tpf3mp-rig.exe and tpf3mp_hook.dll
@@ -37,9 +37,15 @@ function Find-GameExe {
 
 function Find-GameLocal {
   if ($env:TPF3MP_GAME_LOCAL) { return $env:TPF3MP_GAME_LOCAL }
-  $found = Get-ChildItem "$(Get-SteamRoot)\userdata\*\$AppId\local" -Directory -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-  if ($found) { return $found.FullName }
+  $active = (Get-ItemProperty 'HKCU:\Software\Valve\Steam\ActiveProcess' -ErrorAction SilentlyContinue).ActiveUser
+  if ($active) {
+    $local = "$(Get-SteamRoot)\userdata\$active\$AppId\local"
+    if (Test-Path -LiteralPath $local -PathType Container) { return $local }
+    throw 'The active Steam account has no game folder; set TPF3MP_GAME_LOCAL explicitly'
+  }
+  $found = @(Get-ChildItem "$(Get-SteamRoot)\userdata\*\$AppId\local" -Directory -ErrorAction SilentlyContinue)
+  if ($found.Count -gt 1) { throw 'Several Steam accounts found; set TPF3MP_GAME_LOCAL explicitly' }
+  if ($found.Count -eq 1) { return $found[0].FullName }
   return $null
 }
 

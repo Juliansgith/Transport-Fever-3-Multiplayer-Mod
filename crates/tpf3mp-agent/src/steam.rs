@@ -313,7 +313,7 @@ pub fn find_save_in(roots: &[PathBuf], active: Option<u32>, name: &str) -> Resul
 }
 
 /// The saves in Transport Fever 3's save folder that [`find_save`] finds by
-/// name, newest first: of the account Steam names as playing, or, when it
+/// name, newest named saves first, then autosaves: of the account Steam names as playing, or, when it
 /// names none, those only one account on this machine has.
 pub fn list_saves() -> Vec<String> {
     list_saves_in(&steam_roots(), active_account())
@@ -383,18 +383,34 @@ pub fn list_saves_in(roots: &[PathBuf], active: Option<u32>) -> Vec<String> {
             .map(|(_, name, modified)| (name.clone(), *modified))
             .collect(),
     };
-    saves.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    // Keep automatic recovery saves available, after the player's named saves.
+    let automatic = |name: &str| name.to_ascii_lowercase().starts_with("autosave_");
+    saves.sort_by(|a, b| {
+        automatic(&a.0)
+            .cmp(&automatic(&b.0))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
     saves.dedup_by(|a, b| a.0.eq_ignore_ascii_case(&b.0));
     saves.into_iter().map(|(name, _)| name).collect()
 }
 
-/// Whether a save is one a player picks a room's world from: not the game's
-/// autosaves (`autosave_…`) and not the copies the mod writes for a room's
-/// own use (`tpf3mp_room_…`, `tpf3mp_<game>_<event>`), which crowd the
-/// player's own saves out of the list.
+/// Exclude only exact internal copy names. User saves such as
+/// `tpf3mp_fixture` and automatic recovery saves remain selectable.
 fn offered_save(stem: &str) -> bool {
-    let lower = stem.to_ascii_lowercase();
-    !(lower.starts_with("autosave_") || lower.starts_with("tpf3mp_"))
+    let plain = |text: &str| {
+        !text.is_empty()
+            && text.bytes().all(|b| b.is_ascii_digit())
+            && (text == "0" || !text.starts_with('0'))
+    };
+    let pid = |text: &str| plain(text) && text.parse::<u32>().is_ok_and(|n| n > 0);
+    if let Some(rest) = stem.strip_prefix("tpf3mp_room_") {
+        return !pid(rest);
+    }
+    if let Some((process, event)) = stem.strip_prefix("tpf3mp_").and_then(|s| s.split_once('_')) {
+        return !(pid(process) && plain(event) && event.parse::<u64>().is_ok());
+    }
+    true
 }
 
 fn read_small(path: &Path) -> Option<String> {
@@ -866,15 +882,26 @@ mod tests {
     }
 
     #[test]
-    fn autosaves_and_the_mods_room_copies_are_not_offered() {
+    fn only_internal_room_copies_are_hidden_and_named_saves_come_first() {
         let root = temp("save-list-filter");
         put_save(&root, "111", "twomptest.sav");
         put_save(&root, "111", "autosave_two_1913-02-01.sav");
         put_save(&root, "111", "Autosave_New Game_1912-1-1.sav");
         put_save(&root, "111", "tpf3mp_room_56032.sav");
         put_save(&root, "111", "tpf3mp_84808_26.sav");
+        put_save(&root, "111", "tpf3mp_fixture.sav");
+        put_save(&root, "111", "tpf3mp_01_2.sav");
         let roots = [root.clone()];
-        assert_eq!(list_saves_in(&roots, None), ["twomptest"]);
+        let listed = list_saves_in(&roots, None);
+        assert_eq!(listed.len(), 5);
+        assert!(listed[..3].iter().any(|s| s == "twomptest"));
+        assert!(listed[..3].iter().any(|s| s == "tpf3mp_fixture"));
+        assert!(listed[..3].iter().any(|s| s == "tpf3mp_01_2"));
+        assert!(
+            listed[3..]
+                .iter()
+                .all(|s| s.to_ascii_lowercase().starts_with("autosave_"))
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 

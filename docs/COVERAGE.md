@@ -55,7 +55,7 @@ No owner decision in PLAN.md or DECISIONS.md is changed by this integration.
 ## Compatibility
 
 This selected combination is distinct from both the previous `dev` and PR #37:
-protocol **15**, bridge **21**, action schema **22**. Update launcher, hook,
+protocol **15**, bridge **22**, action schema **22**. Update launcher, hook,
 mod and relay together before release. Older peers must fail version checks;
 this branch is not compatible with the currently deployed relay until upgraded.
 

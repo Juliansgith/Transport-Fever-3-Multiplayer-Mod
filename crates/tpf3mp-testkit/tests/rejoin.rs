@@ -125,6 +125,21 @@ async fn in_a_room(
     mpsc::Sender<Control>,
     SharedStatus,
 ) {
+    in_a_room_with_patience(address, trust, hook, lobby, Duration::from_secs(120), None).await
+}
+
+async fn in_a_room_with_patience(
+    address: SocketAddr,
+    trust: ServerTrust,
+    hook: ScriptedHook,
+    lobby: Option<LobbyLink>,
+    patience: Duration,
+    rejoin_address: Option<SocketAddr>,
+) -> (
+    JoinHandle<Result<BridgeEnd, BridgeFault>>,
+    mpsc::Sender<Control>,
+    SharedStatus,
+) {
     let options = ConnectOptions::new(
         address,
         "localhost",
@@ -149,13 +164,16 @@ async fn in_a_room(
         })
         .await
         .unwrap();
+    let mut options = options;
+    if let Some(address) = rejoin_address {
+        options.server = address;
+    }
     let rejoin = Rejoin {
         options,
         invite,
         password: None,
         content: None,
-        // Far longer than any test: giving up comes from something else.
-        give_up_after: Duration::from_secs(120),
+        give_up_after: patience,
     };
     hook.say(&ToAgent::Hello {
         version: BRIDGE_VERSION,
@@ -261,4 +279,31 @@ async fn leaving_works_while_rejoining_from_the_launcher_and_from_the_game() {
         matches!(ended, Ok(BridgeEnd::Left)),
         "ended as left: {ended:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unanswered_connect_cannot_outlive_the_rejoin_deadline() {
+    // A bound UDP port that never answers makes the reconnect wait for its handshake timeout.
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let identity = ServerIdentity::self_signed(&["localhost"]).unwrap();
+    let trust = ServerTrust::Pinned(identity.leaf().clone());
+    let (server, address) =
+        TestServer::start(&config("127.0.0.1:0".parse().unwrap(), identity)).await;
+    let (session, _controls, status) = in_a_room_with_patience(
+        address,
+        trust,
+        ScriptedHook::default(),
+        None,
+        Duration::from_millis(100),
+        Some(silent.local_addr().unwrap()),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    server.stop().await;
+    notice(&status, |n| n.contains("rejoining the room")).await;
+    let ended = tokio::time::timeout(Duration::from_secs(3), session)
+        .await
+        .expect("a connect attempt must obey the session's deadline")
+        .unwrap();
+    assert!(matches!(ended, Err(BridgeFault::Rejoin(_))), "{ended:?}");
 }

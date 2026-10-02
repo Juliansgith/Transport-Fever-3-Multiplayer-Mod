@@ -2357,10 +2357,12 @@ async fn rejoin_attempts<L: HookLink>(
                 })?;
             Ok::<_, Failed>((client, events))
         };
-        let outcome = match away(bridge, controls, attempt).await {
-            Ok(outcome) => outcome,
-            Err(gave_up) => return Err(gave_up),
-        };
+        let outcome =
+            match tokio::time::timeout_at(deadline.into(), away(bridge, controls, attempt)).await {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(gave_up)) => return Err(gave_up),
+                Err(_) => return Err(GaveUp::Failed("rejoin deadline expired".into())),
+            };
         match outcome {
             Ok(rejoined) => return Ok(rejoined),
             Err(Failed::Gone) => return Err(GaveUp::RoomGone),

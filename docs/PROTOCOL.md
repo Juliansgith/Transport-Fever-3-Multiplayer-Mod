@@ -1,8 +1,8 @@
 # Protocol
 
-Current integration: protocol **15**, bridge **21**, action schema **22**
+Current integration: protocol **15**, bridge **22**, action schema **22**
 on `dev`; the local combined line (`local/combined-dev`) keeps protocol 15
-and bridge 21 and speaks action schema **23**, its extra actions after
+and bridge 22 and speaks action schema **23**, its extra actions after
 dev's (see COVERAGE.md, "Local extras").
 This selective combination differs from both prior dev and PR #37; all
 participants and the relay must be upgraded together. Numbers in feature
@@ -100,7 +100,7 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   the room.
 - **Closing.** A room closes when its last member leaves; a lobby also
   when its last member disconnects. A running game also closes when nobody
-  has been connected to it for the server's grace period, 5 minutes by
+  has been connected to it for the server's grace period, 10 minutes by
   default (OPERATIONS.md, "Room lifetime"); until then, disconnected
   players keep their seats and can resume, and the room is left out of the
   room list. Joining a room that closed is refused as `BadInvite`, like

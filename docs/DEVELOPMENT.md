@@ -154,6 +154,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+To test in the real game, with several games in one room on one PC, see
+[GAME_TESTING.md](GAME_TESTING.md).
+
 ### Which build is this
 
 Every launcher, agent, server and hook says which build it is. The build
@@ -189,9 +192,6 @@ does not start beside the first, another build asks the first to close and
 takes its place, and an older build, or one beside a launcher too old to
 say its build, refuses with both files named. Playtests that run several
 launchers on one PC give each its own `--game-link`, and never meet.
-
-To test in the real game, with several games in one room on one PC, see
-[GAME_TESTING.md](GAME_TESTING.md).
 
 Run a local server with a throwaway certificate, then connect to it:
 
@@ -361,4 +361,3 @@ assign them, two or more games to a room, checked as they go (see
 ```sh
 cargo run --release -p tpf3mp-testkit --bin tpf3mp-regress
 ```
-

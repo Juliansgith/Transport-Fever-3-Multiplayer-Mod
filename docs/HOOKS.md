@@ -376,7 +376,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (D17): sent whenever it changes, before, during and after a room's
     game; only the newest counts (bridge version 9). Since bridge version
     10 it also carries the rules the server offers, the player's saves
-    (newest 40, by name) and the one offered first (`start_save`), where
+    (newest 40, by name; since version 22 the newest 100, the player's
+    own only: no `autosave_…` or `tpf3mp_…` copies) and the one offered
+    first (`start_save`), where
     the room's world is in this game (`world`: none, fetching with its
     bytes, loading, playing) and how the game differs from the room's.
     Since bridge version 14 it carries the page of the server's public
@@ -1001,6 +1003,25 @@ stands still meanwhile:
   well report itself in between. Then `Session::loaded(next_step)`, and
   the room's steps run on. A world not up within `LOAD_PATIENCE` (600 s)
   is held.
+- **Cleaning up.** Each game's copies carry its process id, so every game
+  played would leave a whole world behind (`tpf3mp_room_<pid>.sav`, and a
+  `tpf3mp_<pid>_<event>.sav` whose save failed or was never moved). The
+  hook removes those of games no longer running
+  (`crate::worlds::sweep`): once its save folder is resolved, after it copies a room's
+  world in, and after a save it moved out. It fails closed:
+  - only files named exactly `tpf3mp_room_<pid>.sav`,
+    `tpf3mp_<pid>_<event>.sav` or the `.jpg` beside either (decimal
+    numbers as the hook writes them, no leading zero, same case), never
+    a folder or a link: every other save, the player's, stays;
+  - never this game's own, `<pid>` its own: its `tpf3mp_room_<pid>.sav`
+    is the world it is loading or plays, replaced by the next load;
+  - never another running game's, two games on one PC sharing the
+    folder: a process the hook cannot ask about counts as running.
+
+  Nothing needs an older copy: every load, a rejoin's, a resume's or a
+  late join's, copies the world the agent fetched from the room in
+  afresh. The Multiplayer window does not offer these copies as a world
+  to start a room from.
 - **The folder** is Steam's for the account playing,
   `<Steam>/userdata/<account>/3493540/local/save`, found when first
   needed and then kept. First as Steam's API in the game names it
@@ -4013,3 +4034,11 @@ change disables one feature rather than the mod.
 
 The GUI hook exposes `copy(text)` for the room invite. The lobby uses the
 local `copy` action; clipboard errors are reported and never sent to the server.
+
+### Upgrade diagnostics
+
+Road and track modifiers log a bounded summary when handed to the room and
+again when applied in each game. The summary identifies the modifier and
+edge count without changing its payload. Track proposal tests use the Lua
+API stand-in; they do not establish native track-tool acceptance. Action
+handoff logs also include the action kind, without a wire format change.

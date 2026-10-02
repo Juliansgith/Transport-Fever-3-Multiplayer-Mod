@@ -637,7 +637,7 @@
    "actor": 0,
    "origin": "none",
    "expect": "applied",
-   "note": "Actor 0: truck 3 sent to the depot (sell on arrival crashes the game, so it is refused)",
+   "note": "Actor 0: truck 3 sent to the depot, not to be sold on arrival (that crashes the game)",
    "action": {
     "VehicleOp": {
      "vehicle": {
@@ -1316,7 +1316,7 @@
    "actor": 1,
    "origin": "none",
    "expect": "applied",
-   "note": "Actor 1: truck 3 sent to the depot (sell on arrival crashes the game, so it is refused)",
+   "note": "Actor 1: truck 3 sent to the depot, not to be sold on arrival (that crashes the game)",
    "action": {
     "VehicleOp": {
      "vehicle": {
@@ -1324,7 +1324,7 @@
      },
      "change": {
       "ToDepot": {
-       "sell": true
+       "sell": false
       }
      }
     }
@@ -1995,7 +1995,7 @@
    "actor": 2,
    "origin": "none",
    "expect": "applied",
-   "note": "Actor 2: truck 3 sent to the depot (sell on arrival crashes the game, so it is refused)",
+   "note": "Actor 2: truck 3 sent to the depot, not to be sold on arrival (that crashes the game)",
    "action": {
     "VehicleOp": {
      "vehicle": {
@@ -2003,7 +2003,7 @@
      },
      "change": {
       "ToDepot": {
-       "sell": true
+       "sell": false
       }
      }
     }

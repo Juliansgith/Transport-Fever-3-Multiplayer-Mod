@@ -234,7 +234,7 @@ What happens during the restart:
 3. Players reconnect with the same identity and resume after the last turn
    they applied. The event log continues without a gap. Lobbies that had not
    started are not kept.
-4. A restored game that nobody reconnects to within 5 minutes closes and
+4. A restored game that nobody reconnects to within 10 minutes closes and
    its log is deleted, like any running game whose players all disconnected
    (see [Room lifetime](#room-lifetime)). `--abandon-after-mins` sets both:
    raise it to keep games for players who come back another day. Such a
@@ -290,10 +290,10 @@ A room closes when nobody is left to play it:
 | nobody is connected to a running game any more (games closed, launchers gone, network down) | after the grace period, unless a player returns |
 | a game restored at start, until a player rejoins it | after the grace period |
 
-The **grace period** is 5 minutes by default (`--abandon-after-mins`,
+The **grace period** is 10 minutes by default (`--abandon-after-mins`,
 whole minutes, at least 1). It is what lets a player whose game crashed
 or whose network dropped rejoin, and what carries running games across a
-server restart; the launcher tries to rejoin for as long. A player who
+server restart; the launcher automatically retries for up to five minutes. A player who
 rejoins in time keeps the game going, and the grace starts over the next
 time everyone is gone.
 
@@ -643,7 +643,7 @@ tunnel instead, through the reverse proxy.
   (`idle_sessions_closed`).
 - One address has at most 8 open rooms (`--max-rooms-per-address`). A room
   counts until it closes, and a running game with nobody connected closes
-  after its grace period, 5 minutes by default (`rooms_abandoned`, see
+  after its grace period, 10 minutes by default (`rooms_abandoned`, see
   [Room lifetime](#room-lifetime)). Throwaway identities therefore cannot
   fill the server's rooms.
 - An address that sends 20 wrong invites or room passwords within 10

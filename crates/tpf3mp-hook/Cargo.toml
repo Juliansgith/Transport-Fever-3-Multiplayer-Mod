@@ -39,6 +39,7 @@ windows-sys = { workspace = true, features = [
 
 [target.'cfg(unix)'.dependencies]
 ctor.workspace = true
+libc.workspace = true
 
 [build-dependencies]
 tpf3mp-buildinfo.workspace = true

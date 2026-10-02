@@ -247,13 +247,15 @@ window too.
      password if it has one, and **Join** or **Cancel**. A private room is
      joined by invite, either here or through **Join a friend** on the main menu.
    - **Host a room**: a **room name** (your name's room if you leave it
-     empty); **Start from this save**, one of your saves, newest first, or
+     empty); **Start from this save**, up to 100 saves, newest named saves
+     first, followed by automatic saves (only internal room copies are
+     excluded), or
      **Create a new world...** (offered first; you can change the save in
-     the room until its game starts). The save must have TPF3-MP among
-     its mods: a save without it is refused with "This save doesn't have
-     the TPF3-MP mod enabled: load it once, turn TPF3-MP on in its mods,
-     save it, then pick it again", since the room's game cannot run in a
-     world without it. Should such a world reach a game anyway, the
+     the room until its game starts). The save must have TPF3-MP
+     among its mods: a save without it is refused with "This save doesn't
+     have the TPF3-MP mod enabled: load it once, turn TPF3-MP on in its
+     mods, save it, then pick it again", since the room's game cannot run
+     in a world without it. Should such a world reach a game anyway, the
      launcher does not load it, and both windows say why; **Players**, 2
      to 16; **How you
      play**, two pictures: **Co-op**, everyone for the room's one company,
@@ -378,7 +380,7 @@ protected folder such as Program Files.
 - **Losing the connection.** If your connection or the server drops, the
   launcher rejoins the room by itself, and your game only pauses. If you
   were away too long to catch up, the room sends you its world again.
-  The server keeps your seat for 5 minutes (its operator may set longer).
+  The server keeps your seat for 10 minutes (its operator may set longer).
   The launcher stops trying when the server says the room is gone, after
   5 minutes without getting back in, or when the connection drops again
   right after each of 5 rejoins in a row. Both windows then say **The
@@ -388,7 +390,7 @@ protected folder such as Program Files.
   launcher and in the game's Multiplayer window: it stops at once.
 - **Leaving.** **Leave room** gives up your seat. It always works: if the
   server cannot be told, you leave anyway, and the server lets the seat
-  go after its 5 minutes. The owner can also remove
+  go after its 10 minutes. The owner can also remove
   a player whose game froze; a removed player cannot come back to that
   room. If the room's game had not begun yet, your game keeps running and
   follows you into the next room you create or join: no need to restart
@@ -398,6 +400,15 @@ protected folder such as Program Files.
   and your game reloads it. A notice says so.
 - **Saving.** The room saves everyone's game together from time to time,
   which you notice as a short pause, like an autosave.
+- **Room saves in your save folder.** To load the room's world, your game
+  copies it into Transport Fever 3's save folder
+  (`<Steam>/userdata/<account>/3493540/local/save`) as
+  `tpf3mp_room_<number>.sav`, and the room's saves pass through there as
+  `tpf3mp_<number>_<number>.sav`. They are not offered as saves to start
+  a room from. Each is a whole world, so TPF3-MP removes those of games
+  that have ended, when your game starts and each time it loads a room's
+  world; the copy of a game still running stays. Your own saves are never
+  touched.
 - **Loans.** Take and pay back loans in the finance window as usual: every
   player's game books them together. The window shows your own company's
   loans and offers, up to four loans at once; the interest and repayments
