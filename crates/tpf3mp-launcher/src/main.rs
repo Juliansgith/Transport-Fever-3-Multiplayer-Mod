@@ -160,6 +160,9 @@ fn main() -> ExitCode {
         "{}",
         about::startup_line(about::exe().as_deref(), &about::Build::this(), about::BUILT)
     );
+    // The code every line of this run's diagnostics carries, which the
+    // window shows: the local log names it too, to put the two side by side.
+    info!(log_session = %diagnostics.run(), "this run's log session");
     // An update downloaded last time installs before anything connects.
     if update::at_start() {
         return ExitCode::SUCCESS;

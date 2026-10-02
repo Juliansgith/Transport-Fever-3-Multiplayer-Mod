@@ -1,6 +1,6 @@
 # Protocol
 
-Current integration: protocol **15**, bridge **22**, action schema **24**.
+Current integration: protocol **16**, bridge **23**, action schema **24**.
 This selective combination differs from both prior dev and PR #37; all
 participants and the relay must be upgraded together. Numbers in feature
 history below describe their original introduction.
@@ -557,40 +557,68 @@ server releases snapshots no restored room refers to.
 
 ## Diagnostics
 
-A client may send lines of its own log to the server, so the server's
+A client may send lines of its logs to the server, so the server's
 operator can see what went wrong for a player from the support code
 alone (the session ID, a code like an invite's that the server gives no
 two sessions while their diagnostics are kept). TPF2MP's relay kept its
-players' diagnostics the same way.
+players' diagnostics the same way. Under the approved D10 amendment
+(DECISIONS.md, not decided), the lines include the hook's and the game's
+logs and the game's error reports, and all of a launcher's run goes under
+one *log session*.
 
-- **What.** `Request::Diagnostics` carries up to 32 `DiagnosticEvent`s: the
-  client's time in milliseconds, a level (`Info`, `Warn`, `Error`), where
-  it was logged (up to 48 bytes) and the line (up to 1024 bytes). The
-  largest request fits a control frame.
+- **What.** From version 16, `Request::Telemetry` carries the launcher's
+  log session (a `LogSession`, a code in D13's format the launcher chooses
+  as it starts and keeps until it closes) and up to 32 `TelemetryLine`s:
+  the client's time in milliseconds, a level (`Info`, `Warn`, `Error`), a
+  source (`Launcher`, `Agent`, `Hook`, `Game`, `Crash`), where it was
+  logged or the file it was read from (up to 48 bytes) and the line (up
+  to 1024 bytes). The largest request fits a control frame.
+  `Request::Diagnostics`, the same lines without source or run, is still
+  taken and kept as the launcher's.
+- **Sources.** `Launcher` and `Agent` are the launcher's own log. `Hook`
+  is the in-game hook's `hook.log` and `Game` the game's `stdout.txt`,
+  each read from where it stood when the launcher started; `Crash` is the
+  text of the game's error reports (`.txt`, `.json` in its `crash_dump`
+  folder) written since, each read once for each change, its last
+  256 KiB at most. Never the game's `.dmp` minidumps, and never a file
+  whose name looks like a key, certificate or token.
 - **Redacted on both sides.** The client passes every line through
   `tpf3mp_proto::redact`, and the server does again before keeping it.
   Absolute paths keep only their last part (and not that, when it is
   digits alone, such as a Steam account's folder); IP addresses, secrets
-  after keys such as `token=`, `password:` or `invite=`, e-mail addresses
+  after keys such as `token=`, `password:` or `invite=`, values after keys
+  naming an account (`userId`, `account_id`, `steamid`), e-mail addresses
   and Steam IDs are replaced. An invite's code looks like any word, so
   clients never log one but after such a key.
-- **Kept per session.** The server appends the lines, with the player's
-  ID, to a file named by the session ID, up to 8 MiB a session, and
-  answers `Done`. It answers `DiagnosticsNotKept` when it keeps none, or
-  this session has sent all it may: the client then stops sending them on
-  this connection.
+- **Kept per session, found by run.** The server appends the lines, with
+  the player's ID and the name from their `Hello` (redacted), the run and
+  the source, to a file named by the session
+  ID, up to 64 MiB a session by default, and answers `Done`. The first
+  time a session sends lines of a run, the server notes the session in
+  that run's index, so the operator reads a whole run, over all of its
+  connections, by its code; and it gives no session a code a run has. A
+  session indexes four runs at most. The server answers
+  `DiagnosticsNotKept` when it keeps none, or this session has sent all it
+  may: the client then stops sending them on this connection.
 - **Their own budget.** Diagnostics requests take no share of a
-  connection's requests: one a second, with a burst of eight, on their
+  connection's requests: two a second, with a burst of sixteen, on their
   own. Beyond it, `RateLimited`, and the client sends the lines later.
 - **Never in a game's way.** The server hands the lines to a writer of its
   own and does not wait for it; when the writer is behind, it answers
-  `RateLimited` and the lines are sent again.
+  `RateLimited` and the lines are sent again. The client reads the files
+  on a blocking thread of its own, once a second (error reports every ten
+  seconds).
 - **The client.** The launcher records its log's lines from `info` up (and
-  other libraries' warnings and errors), sends up to four batches every
-  five seconds on each connection, and what is left as the connection
-  closes; lines waiting when a connection drops go with the next. At most
-  2000 lines wait; past that, the oldest go. The player can switch
-  diagnostics off, which also forgets the lines waiting.
+  other libraries' warnings and errors), and each file source within a
+  budget of bytes a minute (the hook's log 192 KiB, the game's 96 KiB,
+  error reports 512 KiB): when a log grows faster, its oldest unread part
+  is skipped, and the launcher's log says how much once a minute. It sends
+  up to eight batches every four seconds on each connection, and what is
+  left as the connection closes; lines waiting when a connection drops go
+  with the next. At most 10,000 lines wait; past that, the oldest go; a run
+  sends 256 MiB at most. The player can switch diagnostics off, which stops
+  every source, forgets the lines waiting, and passes over what the logs
+  gain until it is on again.
 
 ## Slow and misbehaving clients
 

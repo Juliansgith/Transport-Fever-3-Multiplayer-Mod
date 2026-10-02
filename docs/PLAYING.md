@@ -136,8 +136,8 @@ game's own **Multiplayer** button (next section).
 - **Your game**, the bar along the bottom, says where Steam has Transport
   Fever 3 and whether the TPF3-MP mod is installed (see "Installing").
   **Settings** has the server, updates and diagnostics (see "Changing the
-  server" below); the **support code** at the bottom is what to quote to
-  the server's operator.
+  server" below); the **support code** and the **log session** at the
+  bottom are what to quote to the server's operator.
 - If the game closes or crashes once it has connected, the launcher
   notices within a second: the Session log says "the game session failed:
   Transport Fever 3 closed", and you are back on the server, out of the
@@ -556,11 +556,15 @@ server.
 
 The bottom of the window shows your **support code**, six letters and
 digits like an invite's (**Copy** copies it). It names your connection in
-the server's log: quote it to the server's operator with your report. It
-lets nobody into your room, so it is safe to post. There is nothing to
-send: while you are connected, the launcher sends its log to the server
-by itself (see "Diagnostics"), so the operator finds what happened to you
-from your support code alone. The launcher also keeps its log on your machine
+the server's log: quote it to the server's operator with your report.
+Next to it, while diagnostics are on, is your **log session**, a code of
+the same kind that names this whole run of the launcher, across every
+time it connected; the game's Multiplayer window shows it too, on its
+first page and under **Server...**, with its own **Copy**. Quote both.
+Neither lets anybody into your room, so they are safe to post. There is
+nothing to send: while you are connected, the launcher sends its logs to
+the server by itself (see "Diagnostics"), so the operator finds what
+happened to you from those codes alone. The launcher also keeps its log on your machine
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
 
 **"This launcher is too old for the server"?** The server speaks a newer
@@ -583,25 +587,37 @@ launcher as before.
 
 ### Diagnostics
 
-While you are connected, the launcher sends the lines of its log to the
+While you are connected, the launcher sends the lines of its logs to the
 server you play on, so its operator can see what went wrong for you from
-your support code, without asking you for files. Before a line leaves your
-machine, paths are cut to their last part (so your user name and your
-Steam account are not in them), and IP addresses, invites, keys and
-passwords, e-mail addresses and Steam IDs are taken out; the server does
-the same again. Your game's own log and crash dumps are not sent. The
-server keeps the lines for a limited time, 30 days unless its operator
-chose otherwise.
+your support code or log session, without asking you for files (D10 and
+its amendment). The lines are:
+
+- the launcher's own log;
+- the in-game hook's log (`hook.log`) and the game's own log
+  (`stdout.txt`), from where they stood when you started the launcher;
+- the text of the game's error reports (the `.txt` and `.json` files in
+  its `crash_dump` folder) written since.
+
+Never the game's crash dumps (`.dmp`), your saves, your identity key or
+any file whose name looks like a key, certificate or token. Each source
+sends only so much a minute, so a log that runs away sends its newest
+lines and skips older ones. Before a line leaves your machine, paths are
+cut to their last part (so your user name and your Steam account are not
+in them), and IP addresses, invites, keys and passwords, account IDs,
+e-mail addresses and Steam IDs are taken out; the server does the same
+again. The server keeps the lines for a limited time, 30 days unless its
+operator chose otherwise.
 
 Set **Send diagnostics** to **Off**, in **Settings** (or untick it at the
-bottom of the browser page), to stop: the
-launcher then sends nothing more, forgets the lines it had not sent yet,
-and remembers your choice.
+bottom of the browser page), to stop: the launcher then sends nothing
+more from any of these logs, forgets the lines it had not sent yet,
+never sends what the logs gain while it is off, and remembers your
+choice. The log session is not shown while it is off.
 
 ### The game's own logs
 
-The game's own log and crash dumps are not sent. When the operator needs
-them, `tpf3mp-agent collect-logs`, run from the TPF3-MP folder, puts them
+The game's crash dumps are never sent, and the logs' older parts (from
+before you started the launcher) neither. When the operator needs them, `tpf3mp-agent collect-logs`, run from the TPF3-MP folder, puts them
 into one zip with TPF3-MP's logs: `tpf3mp-logs-<time>.zip` in your
 Downloads folder (in `TPF3-MP` when there is no Downloads folder).
 `--out <folder>` puts it elsewhere, `--since 2h` takes a shorter window,

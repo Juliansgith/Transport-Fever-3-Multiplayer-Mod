@@ -198,6 +198,7 @@ pub(crate) fn view(state: &State) -> LobbyView {
         .unwrap_or_default(),
         room_mods_more: u32::try_from(state.room_mods.len().saturating_sub(MAX_LOBBY_ROOM_MODS))
             .unwrap_or(u32::MAX),
+        log_session: Text::lossy(state.log_session.as_deref().unwrap_or_default()),
         rooms: state.rooms.as_ref().map(|list| LobbyRoomList {
             page: list.page,
             more: list.more,

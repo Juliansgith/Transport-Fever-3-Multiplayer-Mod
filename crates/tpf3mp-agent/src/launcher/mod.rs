@@ -133,6 +133,10 @@ pub struct LauncherConfig {
     /// Where lines of the player's log wait to go to the server, when the
     /// launcher sends them; `LauncherHandle` switches it.
     pub diagnostics: Option<crate::diagnostics::Recorder>,
+    /// Where the hook's and the game's logs are, whose lines go with
+    /// `diagnostics` (approved D10 amendment); `None` sends none of them.
+    /// A `TPF3MP_DATA_DIR` in `game_env` moves the hook's log there.
+    pub game_logs: Option<crate::game_logs::Places>,
     /// The hook library the game is started with: in the package, next to
     /// the launcher. `None` when the package has none.
     pub hook: Option<PathBuf>,
@@ -292,6 +296,10 @@ impl Shared {
                 player: Some(config.identity.player()),
                 installed: config.installed.clone(),
                 diagnostics: config.diagnostics.as_ref().map(|recorder| recorder.is_on()),
+                log_session: config
+                    .diagnostics
+                    .as_ref()
+                    .map(|recorder| recorder.run().to_string()),
                 start_save: config.start_save.as_deref().and_then(save_name),
                 ..View::default()
             }),
@@ -414,6 +422,31 @@ fn open_link(config: &LauncherConfig) -> Result<IdleLink<tpf3mp_ipc::Link>, Stri
     .map_err(|error| format!("cannot open the link to the game: {error}"))
 }
 
+/// Ends a task when dropped.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The hook's and the game's logs at `places`, the hook's in the folder a
+/// playtest gives its game (`TPF3MP_DATA_DIR`) when it gives one.
+fn game_log_sources(
+    config: &LauncherConfig,
+    places: crate::game_logs::Places,
+) -> crate::game_logs::Sources {
+    let hook_log = config
+        .game_env
+        .iter()
+        .find(|(name, value)| name == tpf3mp_ipc::DATA_DIR_ENV && !value.is_empty())
+        .map_or(places.hook_log, |(_, dir)| {
+            PathBuf::from(dir).join("hook.log")
+        });
+    crate::game_logs::Sources::new(hook_log, places.crash_dirs)
+}
+
 /// Carries out the page's actions, one at a time, and keeps the view.
 async fn control(
     shared: Arc<Shared>,
@@ -421,6 +454,16 @@ async fn control(
     mut actions: Actions,
     mut lobby: LobbyEnds,
 ) {
+    // The hook's and the game's logs from where they stand as the run
+    // begins, for as long as it runs.
+    let _game_logs = config
+        .diagnostics
+        .clone()
+        .zip(config.game_logs.clone())
+        .map(|(recorder, places)| {
+            crate::game_logs::start(recorder, game_log_sources(&config, places))
+        })
+        .map(AbortOnDrop);
     let mut connected: Option<Connected> = None;
     let mut session: Option<Session> = None;
     // The game last started from here, while it may still be running.

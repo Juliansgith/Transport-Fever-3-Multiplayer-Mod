@@ -370,7 +370,8 @@ nine, build 40391), `mods web/tf3mod-minimap`, the Mod Hub cache on this PC
 | **Timetables** (celmi, mod.io 6037864) | carried | its game script (`timetable/game_script/celmi_timetables.gs.lua`); its run scripts only print; commands `makeVehicleSetManualDepartureCmd`, `makeVehicleTryToDepartCmd`, `makeScriptingSendEventCmd` (game script), `makeScriptingSendEventCmd` and `makeLineUpdateCmd` (GUI); says `"cosmetic": true` | personal-safe after the measurements below, with `--personal-game-scripts`: see "Timetables" |
 | **Auto Line Namer** (mod.io 6414403) | carried | a game script renaming lines (`aln.script.lua:43`, `makeEntitySetNameCmd`, from `update` on `os.time` timers), and a rename scheme for the line manager (GUI) | personal-safe after the measurements below, with `--personal-game-scripts`: its renames go to the room as `EditLine` renames of the player's own lines. Its line manager button already works as a personal GUI mod (the game sends the rename, which the guard carries) |
 | **Automatic Signal Spacing** (mod.io 6414934) | shared | a run script with `addModifier` on signal constructions (it adds two parameters to every signal), and a game script whose `guiUpdate` builds signals (`makeWorldBuildProposalCmd`, removing and re-adding the track edges by entity id with the new signals) | must be shared, and even shared its builds are refused in a room today: see "Automatic Signal Spacing" |
-| signal_distance_1, auto_signals_1 (mod.io) | shared | run scripts with `addModifier`; auto_signals a game script building | must be shared |
+| signal_distance_1, auto_signals_1 (mod.io) | shared | run scripts with `addModifier`; auto_signals a game script building | must be shared. Signal Distance works in a room (2026-10-02). Auto Signals builds nothing yet: see "Parallel Tracks, Parallel Roads, Auto Signals" |
+| parallel_tracks_1, parallel_roads_1 (mod.io) | shared | a game script whose GUI half builds new tracks or roads beside the one drawn (`makeWorldBuildProposalCmd`), and a `construction_tool` resource adding the tool's settings | must be shared; with D27 their builds go to the room: see "Parallel Tracks, Parallel Roads, Auto Signals" |
 | Urban Games legacy packs (6, mod.io) | shared | vehicles: 189 to 449 model files each | must be shared |
 | GW Bigger Station Range, GW Buy Industries, GW HQ Growth Boost | shared | run scripts with `addModifier` | must be shared |
 | DLCs (deluxe, preorder), the campaign missions, sandbox, no costs, tycoon, no end year | shared | archives of content (`.zip`), run scripts, resource writes | must be shared |
@@ -438,6 +439,50 @@ for three reasons, and all three are needed:
    game's `guiUpdate` would send the same build. Only the game whose player
    placed the first signal may hand it to the room, as the build tools'
    clicks are (HOOKS.md, "The build tools").
+
+### Parallel Tracks, Parallel Roads, Auto Signals
+
+Three shared mods that build after the player builds, played in a room of
+two games on one PC (2026-10-02, build 40408, the save with Parallel
+Tracks, Auto Signals, Signal Distance and No Costs; runs `run-1002-205516`
+and, with D27, `run-1002-212743`).
+
+Before D27:
+
+- **Parallel Tracks.** The drawn track went to the room and was built in
+  both games. Every game whose own toolbar asked for parallels then sent
+  them, for whichever player drew (with both set to 3, both games sent 21
+  edges for P1's track); the hook stopped each at the apply (`stopped a
+  build the room cannot carry: no proposal seen`), and the mod said `build
+  failed`. Its settings are each game's own (`api.gui.fireGuiScriptEvent`
+  to its game script's GUI half), and the signal tool sets them to 0.
+- **Auto Signals.** The first signal went to the room as a `PlaceStop` and
+  stood in both games; the mod queued no job. `PlaceStop` does not carry a
+  signal's parameters, so the signal the room built has no distance, which
+  is what the mod reads (`distanceFromParams`).
+- **Signal Distance** works: it only changes resources as they load.
+- No divergence in 56 checkpoints; both games applied the same 6 actions.
+
+With D27 (`tpf3mp/modbuild.lua`, HOOKS.md "Scripts' follow-up builds"):
+
+- P1 set 3 parallels and drew a track: P1's game handed the parallels to
+  the room (`a script's follow-up build goes to the room`, a `BuildTrack`
+  of 3 edges), and both games built them. Both accounts paid the same.
+- P2 set 3 parallels as well and drew a track, P1 still at 3: P2's game
+  handed its parallels; P1's game stopped its own (`a script's follow-up of
+  another player's build: that player's game hands it to the room`). The
+  parallels were built once, in both games.
+- The parallels the room built did not set the mod off again: it knows its
+  own tracks by their middles (`OWN_TOLERANCE`).
+- In the game scripts' GUI state the stack named no mod for the call
+  (`guard.callers`): the log says `a script's follow-up build` without
+  `from parallel_tracks_1`. The rule does not depend on it.
+
+Auto Signals still needs, beyond D27: the signal's parameters carried with
+`PlaceStop`, and its spacing (edges removed and re-added with signals)
+carried as signals on existing edges ("Automatic Signal Spacing" above,
+reasons 1 and 2). Parallel Roads takes the same path as Parallel Tracks;
+it was not played.
 
 ## To measure in the game
 

@@ -7,6 +7,7 @@ pub mod bridge;
 pub mod content;
 pub mod diagnostics;
 mod follower;
+pub mod game_logs;
 pub mod launcher;
 pub mod logs;
 pub mod own_mod;

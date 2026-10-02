@@ -112,6 +112,35 @@ impl fmt::Debug for SessionId {
     }
 }
 
+/// One run of a player's launcher, as its diagnostics name it: a code like
+/// a support code (D13), chosen by the launcher when it starts and kept
+/// until it closes, across every connection it makes meanwhile, where the
+/// support code names one connection. Every diagnostics line carries it
+/// (`Request::Telemetry`), so an operator finds a whole run's lines by it
+/// (proposed D10 amendment). Like a support code it lets nobody into
+/// anything, so players may post it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LogSession(pub Code);
+
+impl LogSession {
+    /// A new one, for a launcher that starts.
+    pub fn random() -> Self {
+        Self(Code::random())
+    }
+}
+
+impl fmt::Display for LogSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Debug for LogSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
 /// A player's identity: their per-install Ed25519 public key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlayerId(pub FixedBytes<32>);

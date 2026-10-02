@@ -30,6 +30,7 @@ Flag each of these when a task asks for it:
 | A Dev track, choosing or going back to versions | Held until after launch by the owner (D20; D18, D19). *Changed:* the room moved into the game is no longer held (D17, amended 2026-09-30) | Ask the owner first |
 | Writing or changing a decision, or settling a question left open for the owner | The owner decides (AGENTS.md) | A pull request the owner approves |
 | Logging an invite code bare | D13: codes cannot be spotted in a log line | `invite=<code>`, which redaction hides |
+| Sending crash dumps, whole files, or players' logs to a server other than the one they play on | D10 (including its approved amendment): redacted lines to the server played on, over the game's connection | The game's dumps through `collect-logs`, on the player's say |
 
 ## Before release (done)
 
@@ -42,6 +43,10 @@ Flag each of these when a task asks for it:
   link.
 - [x] `tpf3mp-agent collect-logs` zips the game's own logs and crash dumps.
   The launcher's log goes to the server by itself (D10).
+  *Added (owner-approved D10 amendment, 2026-10-02):* the hook's and the
+  game's logs and the game's error reports go too, as redacted lines
+  within budgets, every line under the launcher's log session; minidumps
+  stay with `collect-logs`.
 - [x] Packaging. *Changed:* no proxy DLL and no install `.bat`. The
   packages hold the launcher, agent, hook and mod, with readable install
   scripts (D9), and the launcher injects the hook (D11).
@@ -329,7 +334,11 @@ Dev B:
   player's game sends them: forwarded, the room gets one city per player;
   dropped, the worlds differ. *Proposed (D25, for the owner):* such a mod is
   personal; the guard carries what the room carries and refuses the rest,
-  in every game alike ([MODS.md](MODS.md)).
+  in every game alike ([MODS.md](MODS.md)). *Added (owner-approved D27), for builds a shared mod sends after the player builds (Parallel
+  Tracks, Parallel Roads):* the follow-up of a player's build goes to the
+  room from that player's game alone; every other game's is stopped
+  (`tpf3mp/modbuild.lua`). Built for new streets and tracks; signals and
+  removals stay stopped (Auto Signals, [MODS.md](MODS.md)).
 - [ ] *Added (D25, proposed):* personal mods ([MODS.md](MODS.md)). Built:
   the scan (`tpf3mp-modscan`), the content check on shared mods only, the
   room's world loaded with the room's mods and the player's own, and the
@@ -386,7 +395,10 @@ Dev C:
   *Proposed* (D24, for the owner): the launcher's window opens with the
   lobby in the game, starting the game and showing where things stand,
   with its own lobby one click away; the window picks the save a room
-  starts from.
+  starts from. *Proposed revision* (D24, 2026-10-02, for the owner): every
+  lobby action in the game's Multiplayer window only; the launcher's window
+  starts the game and shows status, its lobby kept hidden as a rescue for
+  a menu the hook cannot reach.
 - [ ] *Held* (D18, D19, D20): choosing versions and tracks, and a Dev
   track of untested builds. The owner decides after launch, once `dev`
   takes reviewed pull requests only.

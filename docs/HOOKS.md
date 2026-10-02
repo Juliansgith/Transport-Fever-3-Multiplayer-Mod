@@ -392,7 +392,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     banner id of up to 32 bytes may name one; a member's portrait this game lacks is left
     out, for their default. Since bridge version 15 it carries the
     server's address (`server_address`) and the launcher's default server
-    (`server_default`), for the server setting.
+    (`server_default`), for the server setting. Since version 23 it
+    carries the launcher's log session (`log_session`, empty while
+    diagnostics are off), which the window shows with a Copy on its first
+    page and its Server page (approved D10 amendment).
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.
@@ -2044,9 +2047,13 @@ construction's window its edits:
   adds, each edge in its own kind (the street it joins is rebuilt through
   the new junction in that street's template), and the edges and nodes it
   removes. The replay builds it as the game's own scripted track builder
-  does, `nodesToRemove` included. A build that moves or removes an edge
-  with a stop or signal on it, or that places stops, signals or
-  constructions, is refused.
+  does, `nodesToRemove` included. Each new track edge gets its template's
+  distance between track centres (`StreetTemplate.trackDistance`, the
+  edge's `distance`): without it the game laid no shared ballast bed or
+  catenary with the tracks beside it, and the ground showed between them
+  (seen 2026-10-02, tracks laid side by side in a room). A build that
+  moves or removes an edge with a stop or signal on it, or that places
+  stops, signals or constructions, is refused.
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a
@@ -2141,6 +2148,55 @@ onto an existing junction ($94,231), a street onto another's middle, a
 track across open ground ($22,054), a track across a street, and a bus
 depot snapped onto a town street, clearing three town buildings
 ($825,816): identical in both games, towns included.
+
+### Scripts' follow-up builds
+
+*Proposed (D27).* A mod's game script that builds after the player builds
+(Parallel Tracks, Parallel Roads) hears the build in `onPostBuildProposal`,
+in every game, and sends its own build from its GUI half (`guiUpdate`)
+with `api.cmd.makeWorldBuildProposalCmd`. Every game that runs the mod
+sends it, from its own player's settings, for whichever player built. The
+hook counts each as a click and stops it at the apply, so none of them
+builds (seen on build 40408, 2026-10-02: Parallel Tracks' tracks for one
+player's track, sent and stopped in both games, `[parallel_tracks] ...
+build failed`, the worlds equal).
+
+The mod's game script wraps `makeWorldBuildProposalCmd` in the game
+scripts' GUI state, from its first `guiUpdate`
+(`mod/tpf3mp_1/content/scripts/tpf3mp/modbuild.lua`). hook.log: `scripts'
+builds from the game scripts' GUI state go to the room as their player's
+follow-ups`. In the room's game:
+
+- every build made through it is marked `playerInitiated`, whatever the
+  script asked (`makeWorldBuildProposalCmd`'s fourth argument): the hook
+  counts it and stops it at the apply. One the script marked `false` would
+  otherwise build in this game alone, as the hook lets builds that are not
+  player-initiated through. Where `clicks()` is nil the factory raises
+  instead (`Not in multiplayer yet: building from a script`);
+- the game script's `postUpdate` notes, after the room's builds of an
+  update, whether the last of them was this player's own
+  (`tpf3mp_native.note("tpf3mp.lastbuild", "<n> mine|other")`, the sender
+  against `status().me_id`). A script's build within `FOLLOW_FRAMES` (120)
+  of the GUI's frames after this player's build is its follow-up: its
+  SimpleProposal is read in the shape the build tools hand game scripts
+  (`nodesToAdd`, `edgesToAdd` as `addedNodes`, `addedSegments`), made the
+  street or track tool's action (`engine.captureBuild`) and kept for the
+  click its command counts, which `guiUpdate` hands the room as a tool's
+  (`handed the player's build to the room [a script's follow-up build from
+  <mod>]`);
+- any other is stopped with why: `a script's follow-up of another player's
+  build: that player's game hands it to the room`, `a script's build with
+  no build of this player's just before it`, or what it holds that is not
+  carried from a script yet (constructions, removals, stops and signals).
+
+Seen on build 40408 (2026-10-02, two games on one PC, Parallel Tracks):
+the mod's `guiUpdate` runs in the state the wrapper is on, its
+SimpleProposal reads back as lists, and the hook counts its build as one
+click. P1's parallels went to the room from P1's game alone, P2's from
+P2's alone, the other game's stopped, each built once in both games, and
+the room found no divergence ([MODS.md](MODS.md), "Parallel Tracks,
+Parallel Roads, Auto Signals"). The stack there named no mod
+(`guard.callers`), so the log says no mod's name.
 
 
 ### The road and track modifiers

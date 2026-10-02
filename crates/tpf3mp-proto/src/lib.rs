@@ -42,11 +42,12 @@ pub use control::{
     Speed, StartSave, StartView, Welcome, is_banner, is_portrait,
 };
 pub use diagnostics::{
-    DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText,
-    MAX_DIAGNOSTIC_EVENTS, redact,
+    DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText, LogSource,
+    MAX_DIAGNOSTIC_EVENTS, Telemetry, TelemetryLine, TelemetryLines, redact,
 };
 pub use ids::{
-    CODE_LEN, Code, CodeError, Invite, InviteError, PlayerId, RoomId, SessionId, Signature,
+    CODE_LEN, Code, CodeError, Invite, InviteError, LogSession, PlayerId, RoomId, SessionId,
+    Signature,
 };
 pub use snapshot::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkRequest, BulkResponse,
@@ -74,8 +75,11 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// lets the owner change or clear the world the room starts from while it
 /// is in its lobby, names that save to every member
 /// ([`Request::StartWorld`]'s `save`, [`Request::ClearStartWorld`],
-/// [`RoomView::start`]) and marks everyone not ready when it changes.
-pub const PROTOCOL_VERSION: u32 = 15;
+/// [`RoomView::start`]) and marks everyone not ready when it changes;
+/// version 16 carries each diagnostics line's source, the hook's and the
+/// game's logs among them, and the launcher's run ([`Request::Telemetry`],
+/// [`LogSession`]).
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

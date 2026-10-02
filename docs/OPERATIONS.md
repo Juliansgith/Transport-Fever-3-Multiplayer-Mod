@@ -88,6 +88,8 @@ sudo rule. It checks every argument and runs no shell:
 ssh <you>@<server> status                 # the container, health, deployed commit
 ssh <you>@<server> logs --since 2h        # --tail 200, --follow
 ssh <you>@<server> diagnostics K7QM2X     # a player's diagnostics, or all
+ssh <you>@<server> diagnostics AB2CD3 hook  # one source of a run's
+ssh <you>@<server> diagnostics --name ann   # the sessions of players named like ann
 ssh <you>@<server> metrics
 ssh <you>@<server> deploy                 # build and run main
 ssh <you>@<server> deploy 3ad6364         # an earlier commit of main
@@ -160,26 +162,49 @@ disk. The log never contains IP addresses or invites.
   memory. It holds no secrets and can be shared.
 - **The player's side, without asking:** players' launchers send the
   lines of their logs, redacted, to the server they play on (unless the
-  player switched that off). With the support code a player quotes:
+  player switched that off): the launcher's own, and under the approved
+  D10 amendment the in-game hook's `hook.log`, the game's `stdout.txt` and
+  the text of the game's error reports, never its crash dumps. Every line
+  names its source (`launcher`, `agent`, `hook`, `game`, `crash`) and the
+  player's *log session*, the code of their launcher's run, which the
+  launcher and the game's Multiplayer window show next to the support
+  code. With either code a player quotes:
 
   ```sh
-  curl http://127.0.0.1:9470/diagnostics/K7QM2X    # that session's lines
+  curl http://127.0.0.1:9470/diagnostics/K7QM2X    # a session's lines, by support code
+  curl http://127.0.0.1:9470/diagnostics/AB2CD3    # a whole run's, by log session
+  curl 'http://127.0.0.1:9470/diagnostics/AB2CD3?source=hook'   # one source's
   curl http://127.0.0.1:9470/diagnostics           # the sessions with some
+  curl 'http://127.0.0.1:9470/diagnostics?name=ann'          # whose name holds "ann", any case
+  curl 'http://127.0.0.1:9470/diagnostics?player=p-3f2a91c0d4e5b6a7'  # one player's
   ```
 
-  One JSON object a line: when the server received it, the player's time,
-  the player, level, where it was logged, and the line. Paths, addresses,
-  invites and keys are taken out on the player's machine and again here.
-  They are kept in `diagnostics` inside the data volume, 8 MiB a session
-  at most, for 30 days (`--diagnostics-days`, 0 for none) and within 1 GiB
-  in all (`--diagnostics-mib`), the oldest going first; without
-  `--data-dir`, none are kept. They are personal data of your players,
-  pseudonymous but theirs: keep the retention short, and delete a
-  player's on request (`rm` the session's file). The metrics
+  (`ssh <you>@<server> diagnostics AB2CD3 hook`, `diagnostics --name ann`
+  or `diagnostics --player p-…` on the project's server.) The list names
+  each session's player by ID and by the name their launcher gave, the
+  one the lobby shows. A session's or run's lines start with a `who` line
+  naming its sessions and their players, then one JSON object a line: when
+  the server received it, the player's time, the player and their name,
+  the run, the source, level, where it was logged (or the file it was
+  read from) and the line. **Names are not unique and can change**: two
+  players may share one, and one player may rename between runs. The
+  player ID (`p-…`) is the stable link: find a name's sessions, then
+  follow the player ID. Paths, addresses, invites, keys,
+  account IDs and e-mail addresses are taken out on the player's machine
+  and again here. At most the newest 64 MiB of one session or run come
+  back at once. They are kept in `diagnostics` inside the data volume,
+  64 MiB a session at most (`--diagnostics-session-mib`), for 30 days
+  (`--diagnostics-days`, 0 for none) and within 1 GiB in all
+  (`--diagnostics-mib`), the oldest going first; `diagnostics/runs/`
+  indexes each run's sessions. Without `--data-dir`, none are kept. They
+  are personal data of your players, named by the names they play under:
+  keep the retention short, and delete a player's on request: find their
+  sessions with `?player=p-…` and `rm` each session's file. The metrics
   `diagnostics_kept_total` and `diagnostics_dropped_total` count lines.
-- **From the player:** their support code is enough for the launcher's
-  side: its log is already here, under Diagnostics. For the game's own
-  log or crash dumps, which are never sent, ask for the zip
+- **From the player:** their support code or log session is enough for
+  the launcher's, the hook's and the game's logs: they are already here,
+  under Diagnostics. For the game's crash dumps, which are never sent, or
+  the logs from before the launcher started, ask for the zip
   `tpf3mp-agent collect-logs` writes. Its `manifest.txt` names the
   player's versions, system and support code, and lists the launcher's, the
   hook's and the game's logs it holds (see "The game's own logs" in
@@ -652,3 +677,11 @@ tunnel instead, through the reverse proxy.
   meet it; it clears by itself.
 - Rotate the invite key only deliberately: every existing invite stops
   working.
+
+The crash-report collector snapshots existing file metadata when it starts and
+when diagnostics are disabled. New reports are identified without comparing
+filesystem timestamps to the wall clock, so coarse Windows timestamps do not
+hide a new report. Each diagnostics setting change invalidates in-flight file
+reads and upload retries. After an off/on transition, the next poll discards all
+unread file content (including any new lines since re-enabling) to ensure that
+content written while off is never sent later.

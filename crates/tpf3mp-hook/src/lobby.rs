@@ -196,6 +196,9 @@ pub struct LobbyState {
     pub room_mods_more: u32,
     /// The page of public rooms last asked for.
     pub rooms: Option<LobbyRoomList>,
+    /// The launcher's run, which every line of its diagnostics carries:
+    /// shown with a Copy. Empty while diagnostics are off.
+    pub log_session: String,
 }
 
 /// What the window sends, as JSON: the tag `action` plus the fields, e.g.
@@ -511,6 +514,7 @@ impl LobbyState {
             mods: Vec::new(),
             room_mods: Vec::new(),
             room_mods_more: 0,
+            log_session: String::new(),
             rooms: None,
         }
     }
@@ -680,6 +684,7 @@ impl LobbyState {
                 })
                 .collect(),
             room_mods_more: view.room_mods_more,
+            log_session: view.log_session.as_str().to_owned(),
             rooms: view.rooms.clone(),
         }
     }
@@ -786,6 +791,8 @@ impl LobbyState {
             ));
         }
         out.push_str(&format!(" }}, room_mods_more = {}", self.room_mods_more));
+        out.push_str(", log_session = ");
+        out.push_str(&lua_str(&self.log_session));
         out.push_str(", chat = {");
         for line in &self.chat {
             out.push_str(&format!(
@@ -1183,6 +1190,7 @@ mod tests {
             }])
             .unwrap(),
             room_mods_more: 2,
+            log_session: Text::new("AB2CD3").unwrap(),
             rooms: Some(tpf3mp_bridge::LobbyRoomList {
                 page: 0,
                 more: false,
@@ -1291,6 +1299,7 @@ mod tests {
         let pack: mlua::Table = room_mods.get(1).unwrap();
         assert_eq!(pack.get::<String>("have").unwrap(), "other_version");
         assert_eq!(state.get::<u32>("room_mods_more").unwrap(), 2);
+        assert_eq!(state.get::<String>("log_session").unwrap(), "AB2CD3");
     }
 
     /// A step driver that records what the window handed it and answers

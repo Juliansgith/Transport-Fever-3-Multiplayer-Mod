@@ -65,8 +65,10 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// a room starts from on its page ([`LobbyRoom::start`]), the owner's
 /// upload of it ([`LobbyRoom::upload`]) and the owner's choice of another
 /// in the lobby ([`LobbyAction::ChooseStart`]; protocol 14); 22 lists up to
-/// 100 saves ([`MAX_LOBBY_SAVES`], 40 before), the player's own only.
-pub const BRIDGE_VERSION: u32 = 22;
+/// 100 saves ([`MAX_LOBBY_SAVES`], 40 before), the player's own only; 23
+/// the launcher's run, for the window to show ([`LobbyView::log_session`];
+/// protocol 16).
+pub const BRIDGE_VERSION: u32 = 23;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -207,6 +209,10 @@ pub struct LobbyView {
     pub room_mods: BoundedVec<LobbyRoomMod, MAX_LOBBY_ROOM_MODS>,
     /// The room's shared mods beyond those listed.
     pub room_mods_more: u32,
+    /// The launcher's run, the code every line of its diagnostics carries,
+    /// for the window to show with a Copy (proposed D10 amendment); empty
+    /// while diagnostics are off.
+    pub log_session: Text<8>,
 }
 
 /// Most portraits a [`LobbyView`] offers: room for all of
@@ -346,6 +352,7 @@ impl Default for LobbyView {
             room_mods: BoundedVec::empty(),
             room_mods_more: 0,
             rooms: None,
+            log_session: Text::lossy(""),
         }
     }
 }
@@ -791,6 +798,7 @@ mod tests {
             ])
             .unwrap(),
             room_mods_more: u32::MAX,
+            log_session: Text::new("l".repeat(8)).unwrap(),
             rooms: Some(LobbyRoomList {
                 page: u16::MAX,
                 rooms: BoundedVec::new(vec![

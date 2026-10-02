@@ -3244,6 +3244,61 @@ const ROAD: &str = "{ BuildRoad = { street = '::/street/town_small.street_templa
           structure = { Bridge = '::/bridge/stone.lua' } } }, \
     removals = {} } } }";
 
+/// Every game builds a track with its template's distance between track
+/// centres (`trackDistance`), as the track tool does: without it the game
+/// lays no shared ballast bed or catenary with the tracks beside it, and
+/// the ground shows between them (2026-10-02). A street gets none.
+#[test]
+fn a_track_the_room_ordered_has_its_templates_track_distance() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(
+        r#"
+        local get = api.res.streetTemplateRep.get
+        local find = api.res.streetTemplateRep.find
+        api.res.streetTemplateRep.find = function(name)
+            if name == '::/track/standard.street_template' then return 6 end
+            return find(name)
+        end
+        api.res.streetTemplateRep.get = function(id)
+            if id == 6 then
+                return { laneConfigs = { 'track lanes' }, streetStyle = '::/style/track.street_style',
+                         trackDistance = 5 }
+            end
+            return get(id)
+        end
+        local function across(network, template)
+            local polyline = { vertices = {
+                    { pos = { x = 200, y = 0, z = 0 }, resolve = 'New' },
+                    { pos = { x = 300, y = 0, z = 0 }, resolve = 'New' } },
+                links = { { from = 0, to = 1, tangent0 = { x = 100, y = 0, z = 0 },
+                    tangent1 = { x = 100, y = 0, z = 0 }, structure = 'Ground' } },
+                removals = {} }
+            if network == 'Track' then
+                return { BuildTrack = { track = template, catenary = true, polyline = polyline } }
+            end
+            return { BuildRoad = { street = template, bus_lane = false, tram = 'None', polyline = polyline } }
+        end
+        HOOK.batch = { across('Track', '::/track/standard.street_template'),
+                       across('Street', '::/street/country.street_template') }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let distances: Vec<String> = lua
+        .load(
+            "local out = {} \
+             for i, c in ipairs(SENT) do \
+                 out[i] = tostring(c.proposal.streetProposal.edgesToAdd[1].comp.distance) \
+             end \
+             return out",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(distances, ["5", "nil"], "{}", log(&lua));
+}
+
 #[test]
 fn the_game_script_builds_a_road_as_the_players_tool_would() {
     let (lua, _script) = engine();
@@ -3436,6 +3491,108 @@ fn street_precedence_survives_capture_and_room_replay() {
         local e = SENT[1].proposal.streetProposal.edgesToAdd[1].streetEdge
         assert(e.precedenceNode0 == 0 and e.precedenceNode1 == 2)
     "#)).exec().unwrap();
+}
+
+/// A mod's build from its game script's GUI half, as Parallel Roads sends
+/// one (a SimpleProposal): the country street 8-9 carried on from node 9 to
+/// open ground.
+const SCRIPT_BUILD: &str = "{ constructionsToAdd = {}, constructionsToRemove = {}, streetProposal = { \
+    nodesToAdd = { { entity = -1, comp = { position = { x = 50, y = 100, z = 0 } } } }, \
+    edgesToAdd = { { entity = -2, type = 0, comp = { node0 = 9, node1 = -1, type = 0, typeIndex = -1, \
+        tangent0 = { x = 0, y = 60, z = 0 }, tangent1 = { x = 0, y = 60, z = 0 }, \
+        roadTemplate = '::/street/country.street_template', roadStyle = '' } } }, \
+    edgesToRemove = {}, nodesToRemove = {}, edgeObjectsToAdd = {}, edgeObjectsToRemove = {} } }";
+
+/// A script's build in the game scripts' GUI state (tpf3mp/modbuild.lua,
+/// proposed D27) goes to the room only as the follow-up of this player's
+/// own build, and is always marked playerInitiated, so the hook stops it
+/// here; every other one is stopped with why, and outside the room's game it
+/// is left alone.
+#[test]
+fn a_scripts_build_goes_to_the_room_only_as_its_players_follow_up() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(format!(
+        "HOOK.room = true HOOK.clicks = 0 HOOK.status = {{ me_id = 'me' }} \
+         SCRIPT.guiUpdate({{}}, nil, nil) \
+         MADE = {{}} \
+         function BUILD(proposal, initiated) \
+             MADE[#MADE + 1] = api.cmd.makeWorldBuildProposalCmd(proposal, {{}}, false, initiated) \
+             HOOK.clicks = HOOK.clicks + 1 \
+             SCRIPT.guiUpdate({{}}, nil, nil) \
+         end \
+         BUILD({SCRIPT_BUILD}, false) \
+         HOOK.batch = {{ {ROAD} }} HOOK.origins = {{ 'other' }} UPDATE({{}}, STATE, 0.2) \
+         SCRIPT.guiUpdate({{}}, nil, nil) \
+         BUILD({SCRIPT_BUILD}, true) \
+         HOOK.batch = {{ {ROAD} }} HOOK.origins = {{ 'me' }} UPDATE({{}}, STATE, 0.2) \
+         SCRIPT.guiUpdate({{}}, nil, nil) \
+         BUILD({SCRIPT_BUILD}, true) \
+         local signal = {SCRIPT_BUILD} signal.streetProposal.edgeObjectsToAdd = {{ {{}} }} \
+         BUILD(signal, true) \
+         for i = 1, 130 do SCRIPT.guiUpdate({{}}, nil, nil) end \
+         BUILD({SCRIPT_BUILD}, true) \
+         HOOK.clicks = nil \
+         UNCOUNTED = select(2, pcall(api.cmd.makeWorldBuildProposalCmd, {SCRIPT_BUILD}, {{}}, false, false)) \
+         HOOK.room = false \
+         OUTSIDE = api.cmd.makeWorldBuildProposalCmd({SCRIPT_BUILD}, {{}}, false, false)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let (handed, from, to, note): (usize, String, String, String) = lua
+        .load(
+            "local p = HOOK.commands[1].BuildRoad.polyline \
+             return #HOOK.commands, p.vertices[1].pos.y .. ' ' .. tostring(p.vertices[1].resolve.Node), \
+                 p.vertices[2].pos.y .. ' ' .. tostring(p.vertices[2].resolve), \
+                 HOOK.notes['tpf3mp.lastbuild']",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(handed, 1, "only the follow-up of this player's build");
+    assert_eq!((from.as_str(), to.as_str()), ("40 Street", "100 New"));
+    assert_eq!(note, "2 mine", "two builds applied, the last this player's");
+    let initiated: Vec<bool> = lua
+        .load(
+            "local out = {} for i, c in ipairs(MADE) do out[i] = c.playerInitiated end return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        initiated, [true; 5],
+        "every build is the hook's to stop, whatever the script asked"
+    );
+    let (uncounted, outside): (String, bool) = lua
+        .load("return tostring(UNCOUNTED), OUTSIDE.playerInitiated")
+        .eval()
+        .unwrap();
+    assert_eq!(uncounted, "Not in multiplayer yet: building from a script");
+    assert!(!outside, "outside the room's game, as the script asked");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let stopped: Vec<&str> = logged
+        .iter()
+        .filter_map(|l| l.strip_prefix("stopped a build the room cannot carry: "))
+        .collect();
+    assert_eq!(
+        stopped,
+        [
+            "a script's build with no build of this player's just before it",
+            "a script's follow-up of another player's build: that player's game hands it to the room",
+            "a script's build with a stop or signal",
+            "a script's build with no build of this player's just before it",
+        ],
+        "{logged:?}"
+    );
+    assert!(
+        logged
+            .iter()
+            .any(|l| l == "handed the player's build to the room [a script's follow-up build]"),
+        "{logged:?}"
+    );
+    assert!(
+        logged.iter().any(|l| l
+            == "scripts' builds from the game scripts' GUI state go to the room as their player's follow-ups"),
+        "{logged:?}"
+    );
 }
 
 /// The street tool's build as the room orders it (metres): from node 7 onto

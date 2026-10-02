@@ -1083,6 +1083,31 @@ fn the_menus_wrapper_recipes_pass_meta_for_their_class_only() {
     assert!(checked > 0, "the Multiplayer window's meta was checked");
 }
 
+/// The launcher's log session shows on the first page with its Copy,
+/// and nothing of it while diagnostics are off.
+#[test]
+fn the_log_session_is_shown_and_copied() {
+    let lua = menu();
+    let mut view = online();
+    view.log_session = Text::new("AB2CD3").unwrap();
+    show(&lua, Some(&view));
+    open(&lua, None);
+    let shown = texts(&lua);
+    assert!(shown.contains("AB2CD3"), "{shown}");
+    click(&lua, "Copy");
+    let asked: Vec<String> = lua
+        .load(
+            "local out = {} for i, json in ipairs(SENT) do out[i] = json end SENT = {} return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(asked, [r#"{"action":"copy","text":"AB2CD3"}"#]);
+    view.log_session = Text::new("").unwrap();
+    show(&lua, Some(&view));
+    call(&lua, "tick", ());
+    assert!(!texts(&lua).contains("Log session"), "{}", texts(&lua));
+}
+
 #[test]
 fn the_first_page_leads_to_join_or_host_and_back() {
     let lua = menu();
