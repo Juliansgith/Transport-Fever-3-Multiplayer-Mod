@@ -196,6 +196,11 @@ function data()
 			parts[#parts + 1] = "getPlayer stays the game's: tpf3mp/follow.lua did not load"
 		end
 		local ranked, whyRanks = progression.follow(function() return companies.scriptState(api) end)
+		companies.followStations(api, ug_require, function()
+			if not l:room() then return end
+			local state, status = companies.scriptState(api), l:status()
+			return state and state.companies, status and status.me_id
+		end)
 		parts[#parts + 1] = ranked and "ranks are each company's" or ("ranks are the game's: " .. tostring(whyRanks))
 		local counted, whyPermits = companies.followPermits(api, ug_require, function() read() return several end)
 		parts[#parts + 1] = counted and "permits count each company's own constructions"

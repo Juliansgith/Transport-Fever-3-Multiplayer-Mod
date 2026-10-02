@@ -1,7 +1,9 @@
 -- New channels remain refused until ordinary two-game acceptance is recorded.
 -- These defaults travel with the mod fingerprint: every room member has the
 -- same settings. Fixtures may enable a channel explicitly to test its mechanics.
-local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = false }
+-- Height brushes passed local two-game acceptance on build 40408, 2026-10-02.
+-- See investigation/STATION_TERRAIN_2026-10-02.md for evidence and limits.
+local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true }
 
 function acceptance.check(action)
     local feature

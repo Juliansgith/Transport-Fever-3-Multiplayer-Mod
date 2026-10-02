@@ -1526,13 +1526,22 @@ state, which the game saves with the world:
   `isOwnedByPlayerOrNotOwned`). In the GUI state the mod wraps that test so
   it also takes a station group or station construction of a company that
   keeps its stations open; `hook.log` says `the line manager offers other
-  companies' open stations`. That the line manager and the mod share one
-  `entity_util` table (one `ug_require` cache) is INFERRED. Every game
+  companies' open stations`. The wrapper is installed in each GUI Lua
+  state, including the HUD's separate state. Two-game GUI acceptance on
+  2026-10-02 confirmed own closed stations, explicit grants and default
+  grants for another company's full bus station and roadside stop.
+  Build 40408 also reports some station clicks as TransportNetworkEdge
+  details: the HUD's `line_util.convertDetails` wrapper recovers ordinary
+  station details after checking access. Genuine edges and explicit terminal
+  selections retain their native interpretation. Only the HUD loads this
+  module, because its React builtin recipes are unavailable in the
+  game-script GUI state. Every game
   checks each stop of a new or changed line (`apply.lua`, `lineComponent`,
   `companies.mayUse`) and refuses one at a closed company's station, naming
   it. TPF2 had to patch a native station filter for this (TPF2MP's shared
-  stations); on TF3 the filter is Lua, and no native patch looks needed
-  (INFERRED: not seen in a game). A company's vehicles still use its own
+  stations); TF3's ordinary picker was exercised without a native ownership
+  patch. Native PLAYER_OWNED components are userdata; `ownerOf` reads their
+  player field instead of discarding them as non-tables. A company's vehicles still use its own
   depots, as TPF2MP left `FindPathToDepot`'s owner check alone.
 
 ### Prospecting
@@ -2270,10 +2279,12 @@ terraform applied: 18 by 17 cells from cell (-212, 455), heights 104.20 to 109.8
 ```
 
 (the numbers illustrative; a stroke cut in bands says `(part i of n)`).
-The `Terraform` action, and so terraforming, is gated: it stays refused in
-a room until `tpf3mp/acceptance.lua`'s `terraform` is turned on after a
-two-player game shows the same ground in every game (COVERAGE.md). With it
-off, the hook still reads a stroke at its click, but the GUI's sender
+The `Terraform` action is enabled in `tpf3mp/acceptance.lua` after the
+2026-10-02 local two-game validation of all five height brushes on build
+40408. Native base/surface heights matched, including after save/reload;
+see `investigation/STATION_TERRAIN_2026-10-02.md` for measurements and limits.
+The gate remains available: with it off, the hook still reads a stroke at
+its click, but the GUI's sender
 refuses the actions (`terraform awaits two-player game acceptance`), and
 so would every game's replay; nothing is armed and no carrier is filled.
 

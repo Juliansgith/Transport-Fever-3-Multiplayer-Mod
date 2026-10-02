@@ -6607,7 +6607,8 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
         )),
         "true|nil|0"
     );
-    // The line manager offers Rival's station while its stations are open.
+    // James plays for Rival: closing it to others must keep its own
+    // station selectable. The foreign-company case follows below.
     assert_eq!(
         eval(
             "local util = ug_require('/scripts/entity_util.tl') \
@@ -6616,7 +6617,7 @@ fn the_window_lets_a_head_lock_the_company_and_others_join_with_its_password() {
              for _ = 1, 20 do BAR.step() end \
              return tostring(open) .. '|' .. tostring(util.isOwnedByPlayerOrNotOwned(90))"
         ),
-        "true|false"
+        "true|true"
     );
     // With James in the first company: Rival's choice for it wins over
     // its default, either way.
@@ -7489,10 +7490,91 @@ fn a_notifications_first_sound_is_marked_in_every_game() {
     assert_eq!(event, "|Notifications|initialSound|12");
 }
 
-/// In the GUI's other Lua state (where the HUD and the line manager's
-/// depots are drawn) the GUI's company is the player's too: read from the
-/// hook (who this player is) and the game script's roster, the room's
-/// first company answered as the game answers it.
+/// Native ownership components are userdata, not Lua tables.
+#[test]
+fn native_userdata_ownership_keeps_station_and_asset_permissions() {
+    let lua = gui();
+    lua.load(
+        r#"
+        local C = ug_require('tpf3mp_1::/scripts/tpf3mp/companies.lua')
+        local owner = newproxy(true)
+        getmetatable(owner).__index = { player = 901 }
+        local api = { type = { ComponentType = { PLAYER_OWNED = 1 } },
+            engine = { getComponent = function(e) if e == 100 then return owner end end } }
+        local roster = { list = {
+            { id = 0, entity = 25, name = 'First' },
+            { id = 1, entity = 901, name = 'Rival', closed = true },
+        }, members = {} }
+        assert(C.ownerOf(api, 100) == 901)
+        assert(not C.mayTouch(roster, 25, 100, api))
+        assert(not C.mayUse(roster, 25, 100, api))
+        assert(C.mayUse(roster, 901, 100, api))
+        roster.list[2].access = { { company = 0, open = true } }
+        assert(C.mayUse(roster, 25, 100, api))
+        assert(not C.mayTouch(roster, 25, 100, api))
+    "#,
+    )
+    .exec()
+    .unwrap();
+}
+
+#[test]
+fn station_selection_recovers_native_edge_details_without_opening_foreign_assets() {
+    let lua = gui();
+    lua.load(r#"
+        local C = ug_require('tpf3mp_1::/scripts/tpf3mp/companies.lua')
+        local roster = { list = {
+            { id = 0, entity = 25, name = 'First' },
+            { id = 1, entity = 901, name = 'Rival', closed = true },
+        }, members = {} }
+        local active = true
+        local CT = { PLAYER_OWNED = 1, STATION_GROUP = 2, STATION = 3, CONSTRUCTION = 4 }
+        local api = { type = { ComponentType = CT }, engine = {
+            getComponent = function(e, kind)
+                if kind == CT.PLAYER_OWNED and (e == 100 or e == 101) then return { player = 901 } end
+                if e == 100 and kind == CT.STATION_GROUP then return { stations = {101} } end
+                if e == 101 and kind == CT.STATION then return { terminals = {} } end
+            end,
+            system = { stationGroupSystem = { getStationGroup = function(e) assert(e == 101) return 100 end } },
+        } }
+        local edge = { transportNetworkEdge = {} }
+        local terminal = { station = { stationGroup = 100, terminalIndex1 = 2 } }
+        local line = { convertDetails = function(e, details)
+            if details then return details end
+            return { station = { stationGroup = 100, station = e } }
+        end }
+        local util = { isOwnedByPlayerOrNotOwned = function() return false end }
+        local function require_(path)
+            if path == '/gui/line_vehicle_mgmt/line_util.tl' then return line end
+            return util
+        end
+        local guiLoads = 0
+        local nativeRequire = require_
+        require_ = function(path)
+            if path == '/gui/line_vehicle_mgmt/line_util.tl' then guiLoads = guiLoads + 1 end
+            return nativeRequire(path)
+        end
+        C.followStations(api, require_, function() if active then return roster, 'me' end end)
+        assert(guiLoads == 0, 'React recipes are HUD-only')
+        assert(line.convertDetails(101, edge) == edge, 'game-script GUI must not load or wrap React modules')
+        C.followStations(api, require_, function() if active then return roster, 'me' end end, true)
+        C.followStations(api, require_, function() if active then return roster, 'me' end end, true)
+        assert(line.convertDetails(101, edge) == nil, 'closed foreign station')
+        roster.list[2].access = { { company = 0, open = true } }
+        assert(line.convertDetails(101, edge).station.stationGroup == 100)
+        assert(line.convertDetails(100, edge).station.stationGroup == 100)
+        assert(line.convertDetails(101, terminal) == terminal, 'preserve chosen terminal')
+        assert(line.convertDetails(200, edge) == edge, 'preserve actual network edge')
+        assert(not C.mayTouch(roster, 25, 101, api), 'no editing permission')
+        roster.list[2].access = nil
+        assert(line.convertDetails(101, edge) == nil, 'reset follows closed default')
+        roster.members = { { player = 'me', company = 1 } }
+        assert(line.convertDetails(101, edge).station.stationGroup == 100, 'own closed station')
+        active = false
+        assert(line.convertDetails(101, edge) == edge, 'outside room unchanged')
+    "#).exec().unwrap();
+}
+
 #[test]
 fn the_huds_state_follows_the_players_company() {
     let lua = gui();
@@ -7501,7 +7583,7 @@ fn the_huds_state_follows_the_players_company() {
         r#"
         ME = string.rep("b", 64)
         ROSTER = { next = 2, list = { { id = 0, entity = 25, name = "First", color = { 1, 0, 0 } },
-                                      { id = 1, entity = 901, name = "Rival", color = { 0, 0, 1 } } },
+                                      { id = 1, entity = 901, name = "Rival", closed = true, color = { 0, 0, 1 } } },
                    members = {} }
         api = api or {}
         api.engine = { util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) },
@@ -7509,17 +7591,21 @@ fn the_huds_state_follows_the_players_company() {
                            return name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" and 77 or -1 end } },
                        getComponent = function(e, kind)
                            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+                           if (e == 100 or e == 101) and kind == 8 then return {} end
+                           if (e == 100 or e == 101 or e == 102) and kind == 9 then return { player = 901 } end
                        end }
-        api.type = { ComponentType = { GAME_SCRIPT = 7 } }
+        api.type = { ComponentType = { GAME_SCRIPT = 7, STATION_GROUP = 8, PLAYER_OWNED = 9, CONSTRUCTION = 10 } }
         HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
         CLOCK = 0
         os.clock = function() return CLOCK end
         local script = "gui/tpf3mp/gui_state.script.lua"
         assert(loadstring(mod_source(script), "@" .. script))()
         GAME_UTIL = { getActionParams = function() return {} end }
+        ENTITY_UTIL = { isOwnedByPlayerOrNotOwned = function() return false end }
         local real = ug_require
         ug_require = function(path)
             if path == "::/gui/construction/construction_react_util.tl" then return GAME_UTIL end
+            if path == "::/scripts/entity_util.tl" or path == "/scripts/entity_util.tl" then return ENTITY_UTIL end
             return real(path)
         end
         data().prepare({})
@@ -7533,6 +7619,15 @@ fn the_huds_state_follows_the_players_company() {
         .eval()
         .unwrap();
     assert_eq!(first, 25, "playing for the first company: the game's own");
+    lua.load(r#"
+        HOOK.room = true
+        assert(not ENTITY_UTIL.isOwnedByPlayerOrNotOwned(100), 'foreign closed station must be denied')
+        ROSTER.list[2].access = { { company = 0, open = true } }
+        assert(ENTITY_UTIL.isOwnedByPlayerOrNotOwned(100), 'explicit permission must reach the HUD')
+        assert(not ENTITY_UTIL.isOwnedByPlayerOrNotOwned(102), 'permission must not grant foreign assets')
+        ROSTER.list[2].access = {}
+        assert(not ENTITY_UTIL.isOwnedByPlayerOrNotOwned(100), 'reset must restore the default')
+    "#).exec().unwrap();
     lua.load(
         "ROSTER = { list = ROSTER.list, members = { { player = ME, company = 1 } } } CLOCK = 3",
     )
@@ -7543,6 +7638,7 @@ fn the_huds_state_follows_the_players_company() {
         .eval()
         .unwrap();
     assert_eq!(mine, 901, "playing for Rival: Rival");
+    lua.load("assert(ENTITY_UTIL.isOwnedByPlayerOrNotOwned(100), 'own closed station must remain selectable'); HOOK.room = false; assert(not ENTITY_UTIL.isOwnedByPlayerOrNotOwned(100), 'outside a room the original predicate must apply')").exec().unwrap();
     let logged: String = lua
         .load("return table.concat(HOOK.logged, '|')")
         .eval()
@@ -8672,7 +8768,6 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
             { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
             { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
-            { Terraform = { origin = { x = 0, y = 0 }, cell = 4, columns = 1, cells = { { target = 1, before = 0 } } } },
         }
         for _, action in ipairs(actions) do
             local sent, reason = link:command(action)
@@ -8825,10 +8920,6 @@ STROKE = { terrain = { x0 = -10, y0 = 7, width = 3, height = 2,
 #[test]
 fn a_terrain_tools_click_goes_to_the_room_as_terraform_actions() {
     let (lua, _script) = engine();
-    // Mechanics fixture only: production refuses this channel pending game acceptance.
-    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').terraform = true")
-        .exec()
-        .unwrap();
     lua.load(FAKE_STATION).exec().unwrap();
     lua.load(TERRAIN_STROKE).exec().unwrap();
     // A construction tool's preview before the click, then the raise
@@ -8868,10 +8959,6 @@ fn a_terrain_tools_click_goes_to_the_room_as_terraform_actions() {
 #[test]
 fn a_stroke_larger_than_one_action_goes_in_bands_of_whole_rows() {
     let (lua, _script) = engine();
-    // Mechanics fixture only: production refuses this channel pending game acceptance.
-    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').terraform = true")
-        .exec()
-        .unwrap();
     lua.load(TERRAIN_STROKE).exec().unwrap();
     // 100 by 50 cells: 40 rows (4,000 cells), then 10.
     lua.load(
@@ -8938,10 +9025,6 @@ const TERRAFORM: &str = "{ Terraform = { origin = { x = -40, y = 28 }, cell = 4,
 #[test]
 fn every_game_applies_a_terraform_through_the_hook_as_the_players_build() {
     let (lua, _script) = engine();
-    // Mechanics fixture only: production refuses this channel pending game acceptance.
-    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').terraform = true")
-        .exec()
-        .unwrap();
     lua.load(TERRAIN_STROKE).exec().unwrap();
     lua.load(FAKE_TERRAIN_HOOK).exec().unwrap();
     lua.load(format!(
@@ -8985,10 +9068,6 @@ fn every_game_applies_a_terraform_through_the_hook_as_the_players_build() {
 #[test]
 fn a_terraform_no_build_took_or_of_another_grid_fails_in_every_game() {
     let (lua, _script) = engine();
-    // Mechanics fixture only: production refuses this channel pending game acceptance.
-    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').terraform = true")
-        .exec()
-        .unwrap();
     lua.load(TERRAIN_STROKE).exec().unwrap();
     lua.load(FAKE_TERRAIN_HOOK).exec().unwrap();
     // The hook filled nothing.

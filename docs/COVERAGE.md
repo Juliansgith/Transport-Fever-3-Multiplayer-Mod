@@ -49,19 +49,24 @@ file is part of the installed-mod fingerprint.
 - The expanded scenario runner and notification/discard additions.
 
 Station access per company (`CompanyOp::StationAccess`, action schema 23)
-came in afterwards on its own. It extends D22, which is still proposed:
-the owner decides whether per-company access belongs in it.
+came in afterwards on its own. The owner approved this station-access
+extension to D22 on 2026-10-02. Two local games demonstrated selection,
+policy changes, ownership enforcement, pathing, passenger carriage and fares;
+see [the validation record](../investigation/STATION_TERRAIN_2026-10-02.md).
 
 Terraforming and the track upgrade tools came in afterwards on their own:
 the hook reads a terrain tool's stroke at its existing `CommandList::Add`
 detour (one more optional profile target, no new detour) and fills the
-room's carrier at its existing apply detour; the `Terraform` action stays
-refused, sending and replaying, behind `acceptance.lua`'s `terraform`
-until a two-player game shows the same ground. The track tools travel as
+room's carrier at its existing apply detour. `Terraform` is enabled after
+the 2026-10-02 two-game height-brush validation: raise, lower, smooth,
+flatten and heightmap produced matching native ground. The validation
+record distinguishes complete comparison windows from runs with missing
+probe samples; oversized replay bands still have fixture-only coverage.
+Terrain paint and asset brushes remain refused. The track tools travel as
 `BuildTrack`, as the road modifiers do, and each upgrade is logged.
 
 The existing junction gate remains off pending its own game acceptance.
-No owner decision in PLAN.md or DECISIONS.md is changed by this integration.
+The station-access decision is recorded in D22; other proposed policies remain unchanged.
 
 ## Compatibility
 

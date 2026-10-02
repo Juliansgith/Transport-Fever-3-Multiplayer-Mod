@@ -484,7 +484,8 @@ protected folder such as Program Files.
   one company it is the game's own capital, as in single player. The
   game bar's transported figures and the finance window's company value still show
   the room's first company's.
-- **Your company's head, passwords and stations** (proposed, D22). The
+- **Your company's head, passwords and stations** (D22: station access
+  approved; the other policies remain proposed). The
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows
   each company's head. The head can give the company a password: then
@@ -498,10 +499,14 @@ protected folder such as Program Files.
   **Allow** or **Deny** for each other company on its own, which wins over
   the default (**Default** puts it back). Stations start open: your lines
   may stop at another company's station, and the line manager offers it,
-  unless its head denies your company. You still cannot change or
-  remove another company's station, and your vehicles use your own
+  unless its head denies your company. Access is checked when creating or
+  changing a route; existing services keep running after access is denied.
+  You still cannot change or remove another company's station, and your vehicles use your own
   depots. The room's first company is everyone's: it has no head and no
   password. The game's company window renames your company too.
+- **Terrain.** Raise, lower, smooth, flatten and the heightmap brush share
+  their height changes through the room. Terrain paint and asset brushes
+  are still refused until their own multiplayer support is validated.
 - **Achievements.** A game with TPF3-MP active still earns achievements:
   the mod keeps them on, as the game lets a mod do. This holds even when
   the save has other mods that would switch them off.
