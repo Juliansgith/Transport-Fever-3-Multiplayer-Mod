@@ -37,7 +37,10 @@ load gating and save setup. This is not a fresh two-player game playthrough.
 Subsidies, entity renaming/vehicle recolouring and line waypoints have capture,
 schema and replay code, but `content/scripts/tpf3mp/acceptance.lua` disables
 them. Both command submission and replay refuse these channels; subsidy
-settlement is disabled too. Mechanics fixtures explicitly enable a channel
+settlement is disabled too. The construction menu's perk tools, Industry
+Greenification and the marketing campaign, came in afterwards the same
+way, behind `perks` (action schema 23): with the gate off they are refused
+as before, now naming the gate. Mechanics fixtures explicitly enable a channel
 only in their own Lua state. Enable a channel only after ordinary two-player
 acceptance demonstrates matching outcomes, ownership and money. The gate
 file is part of the installed-mod fingerprint.
@@ -55,6 +58,6 @@ No owner decision in PLAN.md or DECISIONS.md is changed by this integration.
 ## Compatibility
 
 This selected combination is distinct from both the previous `dev` and PR #37:
-protocol **15**, bridge **22**, action schema **22**. Update launcher, hook,
+protocol **15**, bridge **22**, action schema **23**. Update launcher, hook,
 mod and relay together before release. Older peers must fail version checks;
 this branch is not compatible with the currently deployed relay until upgraded.
