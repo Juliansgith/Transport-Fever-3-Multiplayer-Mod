@@ -416,6 +416,21 @@ protected folder such as Program Files.
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window
   hears it a moment after your click.
+- **Competitive rooms** (off for now, until the project decides it:
+  `own_companies` in the mod's `tpf3mp/acceptance.lua`, which every
+  player's mod must match). In a room created **Competitive**, every player
+  then gets a company of their own without clicking anything: about a
+  second after you arrive in the room's world, your game founds `<your
+  name>'s company` for you and you play for it, as if you had pressed
+  **Found a company** (the Multiplayer window says "Founding your
+  company, ..."). The host gets one too, and so does a player who joins
+  the running game later. You are its head. The room's first company, the
+  save's own, stays but nobody plays for it, so every player starts
+  alike, with a new company and no money. You can still switch companies
+  as in a co-op room. Your game founds one only while you play for the
+  first company and have never founded a company in this room, so a
+  player in a friend's company stays there. If founding fails, you stay
+  in the first company and can found one by hand.
 - **Companies.** Everyone starts in the save's own company, together. In
   the Multiplayer window you can found a company of your own, join
   another, rename or recolour yours, and dissolve it once you are its last

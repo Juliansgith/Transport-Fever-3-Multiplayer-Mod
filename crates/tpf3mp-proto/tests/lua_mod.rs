@@ -8249,3 +8249,280 @@ fn hud_answers_are_chunked_without_overwriting_unread_results() {
     .exec()
     .unwrap();
 }
+
+/// In a competitive room each player's game founds the player a company of
+/// their own, with the action "Found a company" sends, once: the room's two
+/// players end up in two companies, each its head, and a player who joins
+/// later gets one too. Not in a co-op room, nor where the launcher has not
+/// said, nor for a player who founded one before (docs/PLAYING.md,
+/// "Companies").
+#[test]
+fn in_a_competitive_room_each_players_game_founds_them_a_company() {
+    let lua = gui();
+    // Mechanics fixture only: production keeps it off pending the owner's decision.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').own_companies = true")
+        .exec()
+        .unwrap();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        JAMES, BOB, CAROL, DAN = string.rep("a", 64), string.rep("b", 64), string.rep("c", 64), string.rep("d", 64)
+        ROSTER = { next = 1,
+            list = { { id = 0, entity = 25, name = "ComradeSilver Transport", color = { 0.8, 0.16, 0.12 } } },
+            members = {} }
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = function() return 25 end }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = { GAME_SCRIPT = 7 }
+        api.type.Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end }
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+        end
+        HOOK.room = true
+        PLAYERS = { { name = "james", id = JAMES, owner = true }, { name = "bob", id = BOB } }
+        function as(me, competitive)
+            local players = {}
+            for _, p in ipairs(PLAYERS) do
+                players[#players + 1] = { name = p.name, id = p.id, owner = p.owner, connected = true, me = p.id == me }
+            end
+            HOOK.status = { room = "Rivals", invite = "K7QM2X", me_id = me, competitive = competitive, players = players }
+        end
+        BAR = mount(loadPlugin())
+        function frames(n) for _ = 1, n do BAR.step() end end
+        -- The founding actions sent so far, as "name|name".
+        function founded()
+            local out = {}
+            for _, a in ipairs(HOOK.commands) do
+                if a.CompanyOp and a.CompanyOp.Create then out[#out + 1] = a.CompanyOp.Create.name end
+            end
+            return table.concat(out, "|")
+        end
+        -- What every game does once the room orders the founding actions
+        -- sent so far (tpf3mp/companies.lua), each as its sender's.
+        C = ug_require("tpf3mp_1::/scripts/tpf3mp/companies.lua")
+        GAME = { cmd = { makeGameAddPlayerCmd = function(name) return { add = name } end },
+                 type = { Vec3f = { new = function(x, y, z) return { x, y, z } end } } }
+        APPLIED, NEXT = 0, 900
+        function order(senders)
+            for i = APPLIED + 1, #HOOK.commands do
+                local ok, why = C.run(ROSTER, senders[i], HOOK.commands[i].CompanyOp, function()
+                    NEXT = NEXT + 1 return { resultEntity = NEXT } end, GAME)
+                assert(ok, why)
+            end
+            APPLIED = #HOOK.commands
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}\n{}", log(&lua)))
+    };
+    // Co-op, or a launcher that has not said: nobody gets a company.
+    assert_eq!(
+        eval("as(JAMES, false) frames(100) as(JAMES, nil) frames(100) return founded()"),
+        ""
+    );
+    // Competitive: James's game founds his, once, however long it runs.
+    assert_eq!(
+        eval("as(JAMES, true) frames(200) return founded()"),
+        "james's company"
+    );
+    // Bob's game founds his. Every game applies both: two companies, each
+    // headed by its player, and the room's first company nobody's.
+    assert_eq!(
+        eval(
+            "as(BOB, true) frames(200) order({ JAMES, BOB }) \
+             local out = {} \
+             for _, c in ipairs(C.live(ROSTER)) do \
+                 local head = C.head(ROSTER, c.id) \
+                 out[#out + 1] = c.name .. '=' .. (head and head:sub(1, 1) or '-') \
+             end \
+             return founded() .. ' / ' .. table.concat(out, ', ') .. ' / ' \
+                 .. C.of(ROSTER, JAMES).id .. C.of(ROSTER, BOB).id"
+        ),
+        "james's company|bob's company / ComradeSilver Transport=-, \
+         james's company=a, bob's company=b / 12"
+    );
+    // Once in their companies, nothing more is sent for either.
+    assert_eq!(
+        eval(
+            "as(JAMES, true) frames(200) as(BOB, true) frames(200) return tostring(#HOOK.commands)"
+        ),
+        "2"
+    );
+    // Carol joins the running game, with a name another player has too:
+    // hers is founded, under a name of her own.
+    assert_eq!(
+        eval(
+            "PLAYERS[3] = { name = 'Bob', id = CAROL } as(CAROL, true) frames(200) \
+             order({ JAMES, BOB, CAROL }) return founded() .. ' / ' .. C.of(ROSTER, CAROL).name"
+        ),
+        "james's company|bob's company|Bob's company (cccc) / Bob's company (cccc)"
+    );
+    // Dan founded one before and dissolved it: he chose the first company,
+    // and keeps it.
+    assert_eq!(
+        eval(
+            "ROSTER.list[#ROSTER.list + 1] = { id = 9, entity = 990, name = 'Gone', color = { 0, 0, 0 }, \
+                 founder = DAN, gone = true } \
+             PLAYERS[4] = { name = 'dan', id = DAN } as(DAN, true) frames(200) \
+             return tostring(#HOOK.commands)"
+        ),
+        "3"
+    );
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains("a competitive room: founding the player's own company"),
+        "{logged}"
+    );
+}
+
+/// A player's game founds their company however the room's readings come:
+/// a launcher that says the room is competitive only later, and a roster
+/// the GUI cannot read on every reading (both seen as one of three players
+/// getting no company, 2026-10-01), delay it and no more. Each reason not
+/// to found yet is said in hook.log, once.
+#[test]
+fn a_players_game_founds_their_company_whatever_reading_lacks_something_and_says_why_once() {
+    let lua = gui();
+    // Mechanics fixture only: production keeps it off pending the owner's decision.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').own_companies = true")
+        .exec()
+        .unwrap();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        JAMES, CAT = string.rep("a", 64), string.rep("c", 64)
+        ROSTER = { next = 2,
+            list = { { id = 0, entity = 25, name = "Company", color = { 0.8, 0.16, 0.12 } },
+                     { id = 1, entity = 901, name = "james's company", color = { 0.13, 0.42, 0.85 }, founder = JAMES } },
+            members = { { player = JAMES, company = 1 } } }
+        READS, HIDE = 0, false
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = function() return 25 end }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = { GAME_SCRIPT = 7 }
+        api.type.Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end }
+        -- With HIDE, every other reading of the game script's state finds
+        -- nothing.
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then
+                READS = READS + 1
+                if HIDE and READS % 2 == 0 then return nil end
+                return { state = { companies = ROSTER } }
+            end
+        end
+        HOOK.room = true
+        -- Cat's entry is not marked as hers: her id names it.
+        HOOK.status = { room = "Rivals", me_id = CAT, players = {
+            { name = "james", id = JAMES, connected = true, owner = true },
+            { name = "cat", id = CAT, connected = true } } }
+        BAR = mount(loadPlugin())
+        function frames(n) for _ = 1, n do BAR.step() end end
+        function founded()
+            local out = {}
+            for _, a in ipairs(HOOK.commands) do
+                if a.CompanyOp and a.CompanyOp.Create then out[#out + 1] = a.CompanyOp.Create.name end
+            end
+            return table.concat(out, "|")
+        end
+        function said(line)
+            local n = 0
+            for _, l in ipairs(HOOK.logged) do if l == line then n = n + 1 end end
+            return n
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let eval = |code: &str| -> String {
+        lua.load(code)
+            .eval::<String>()
+            .unwrap_or_else(|error| panic!("{code}: {error}\n{}", log(&lua)))
+    };
+    // The launcher has not said: nothing, and hook.log says why, once.
+    assert_eq!(
+        eval(
+            "frames(200) return founded() .. '|' \
+             .. said(\"not founding the player's own company: the launcher has not said whether the room is competitive\")"
+        ),
+        "|1"
+    );
+    // It says competitive, while every other reading of the roster finds
+    // nothing: her company is founded all the same, once.
+    assert_eq!(
+        eval(
+            "HIDE = true HOOK.status.competitive = true frames(400) \
+             return founded() .. '|' \
+             .. said(\"not founding the player's own company: the room's companies are not read yet\")"
+        ),
+        "cat's company|1"
+    );
+    // In it, the game says so once and sends nothing more.
+    assert_eq!(
+        eval(
+            "HIDE = false ROSTER.list[3] = { id = 2, entity = 902, name = \"cat's company\", \
+                 color = { 0.18, 0.66, 0.27 }, founder = CAT } \
+             ROSTER.members[2] = { player = CAT, company = 2 } frames(200) \
+             return tostring(#HOOK.commands) .. '|' \
+             .. said(\"not founding the player's own company: the player plays for cat's company (#2)\")"
+        ),
+        "1|1"
+    );
+}
+
+/// Off by default: in a competitive room the player's game founds no
+/// company for them until the owner turns it on, and says why in hook.log.
+#[test]
+fn a_competitive_room_founds_no_company_while_it_is_off() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        JAMES = string.rep("a", 64)
+        ROSTER = { next = 1,
+            list = { { id = 0, entity = 25, name = "Company", color = { 0.8, 0.16, 0.12 } } },
+            members = {} }
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = function() return 25 end }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = { GAME_SCRIPT = 7 }
+        api.type.Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end }
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+        end
+        HOOK.room = true
+        HOOK.status = { room = "Rivals", me_id = JAMES, competitive = true,
+            players = { { name = "james", id = JAMES, connected = true, owner = true, me = true } } }
+        BAR = mount(loadPlugin())
+        for _ = 1, 400 do BAR.step() end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let sent: i64 = lua.load("return #HOOK.commands").eval().unwrap();
+    assert_eq!(sent, 0);
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains("not founding the player's own company: it is off"),
+        "{logged}"
+    );
+}

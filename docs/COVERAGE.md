@@ -44,10 +44,14 @@ file is part of the installed-mod fingerprint.
 
 ## Deliberately excluded
 
-- Automatic creation of competitive companies and changes to station access.
+- Changes to station access.
 - Additional native terraforming and track-upgrade hooks.
 - Alternate simulation-buffer and world-loading experiments.
 - The expanded scenario runner and notification/discard additions.
+
+Automatic companies in competitive rooms came in afterwards on their
+own, off (`acceptance.lua`, `own_companies`) until the owner decides them
+against D21.
 
 The existing junction gate remains off pending its own game acceptance.
 No owner decision in PLAN.md or DECISIONS.md is changed by this integration.

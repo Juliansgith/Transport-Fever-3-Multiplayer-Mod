@@ -437,7 +437,13 @@ function data()
 		local state = scriptState()
 		local roster = state and state.companies
 		if type(roster) ~= "table" or type(roster.list) ~= "table" then return nil, "" end
-		local out, sign = { list = {}, members = roster.members or {}, loans = roster.loans or {} }, {}
+		local out, sign = { list = {}, members = roster.members or {}, loans = roster.loans or {}, founders = {} }, {}
+		-- Who founded a company in this room, dissolved since or not: the
+		-- room founds no company for them in a competitive room
+		-- (foundOwnCompany).
+		for _, c in ipairs(roster.list) do
+			if type(c.founder) == "string" then out.founders[c.founder] = true end
+		end
 		-- The loans the game offers now (its loan script's), which another
 		-- company takes on the same terms.
 		pcall(function()
@@ -487,6 +493,9 @@ function data()
 		return out, table.concat(sign, "|")
 	end
 
+	-- Founds the player's own company in a competitive room; below.
+	local foundOwnCompany
+
 	-- Reads the room and its chat from the hook into ui(): the room every
 	-- STATUS_FRAMES frames, the chat every frame.
 	local statusFrames = 0
@@ -508,6 +517,7 @@ function data()
 				shared.companiesSign = sign
 				changed = true
 			end
+			foundOwnCompany(shared)
 		end
 		-- A new world's GUI gets the chat so far again, as old lines: they
 		-- fill the window without counting as new.
@@ -552,6 +562,85 @@ function data()
 			shared.companyNote = "Not sent: " .. tostring(ticket)
 		end
 		shared.version = shared.version + 1
+	end
+
+	-- In a competitive room each player plays for a company of their own
+	-- (docs/PLAYING.md, "Companies"): the player's game founds it for them,
+	-- with the same action "Found a company" sends, which the room orders
+	-- for every game. Only for a player who plays for the room's first
+	-- company and never founded one in this room (one who dissolved theirs,
+	-- or chose the first company again after founding, keeps that choice),
+	-- and not before OWN_SETTLE readings of the room since this world's GUI
+	-- linked, so a world still catching up has had time to apply what the
+	-- room ordered before. The readings count whatever they said: a
+	-- reading without the roster or the room's play style delays nothing
+	-- that comes later. At most once a room and player in this game. The
+	-- name is the player's, "<name>'s company", the same every time: a
+	-- second one sent while the first is still on its way is refused alike
+	-- in every game ("a company is called ... already"). In a co-op room,
+	-- where the launcher has not said, or without the roster or the
+	-- player's id, nothing is sent, and hook.log says why, once a reason;
+	-- the player can still found one with "Found a company".
+	local OWN_SETTLE = 4
+	local own = { key = nil, readings = 0, sent = {}, told = {} }
+
+	-- Says once in hook.log why this game founds no company for its player
+	-- now; returns nil.
+	local function notFounding(why)
+		if own.told[why] then return end
+		own.told[why] = true
+		link:log("not founding the player's own company: " .. why)
+	end
+
+	-- "<name>'s company", the player's name as the room lists it (by id,
+	-- else the entry marked as theirs), or the first eight hex digits of
+	-- their id where it has none; with another player of the same name in
+	-- the room, the first four hex digits of the player's id after it, so
+	-- both get one. At most 32 + 17 bytes, within a company name's 64.
+	local function ownCompanyName(status)
+		local me
+		for _, p in ipairs(status.players or {}) do
+			if p.id == status.me_id or (me == nil and p.me) then me = p end
+		end
+		local name = me and type(me.name) == "string" and me.name:gsub("^%s+", ""):gsub("%s+$", "") or ""
+		if name == "" then return status.me_id:sub(1, 8) .. "'s company" end
+		for _, p in ipairs(status.players) do
+			if p ~= me and type(p.name) == "string" and p.name:lower() == name:lower() then
+				return name .. "'s company (" .. status.me_id:sub(1, 4) .. ")"
+			end
+		end
+		return name .. "'s company"
+	end
+
+	foundOwnCompany = function(shared)
+		local status, roster = shared.status, shared.companies
+		if not (link and status) then return end
+		local me = status.me_id
+		local key = tostring(me) .. "@" .. tostring(status.invite or status.room)
+		if own.key ~= key then own.key, own.readings = key, 0 end
+		own.readings = own.readings + 1
+		if status.competitive == nil then
+			return notFounding("the launcher has not said whether the room is competitive")
+		end
+		if status.competitive ~= true then return notFounding("the room is co-op") end
+		local okGate, gate = pcall(require, "tpf3mp.acceptance")
+		if not (okGate and type(gate) == "table" and gate.own_companies == true) then
+			return notFounding("it is off (tpf3mp/acceptance.lua own_companies, pending the owner's decision on D21)")
+		end
+		if type(me) ~= "string" or me == "" then return notFounding("the room has not said who this player is") end
+		if not roster then return notFounding("the room's companies are not read yet") end
+		local playing = require("tpf3mp.companies").of(roster, me)
+		if not playing then return notFounding("the roster has no first company") end
+		if playing.id ~= 0 then
+			return notFounding("the player plays for " .. tostring(playing.name) .. " (#" .. tostring(playing.id) .. ")")
+		end
+		if roster.founders[me] then return notFounding("the player founded a company in this room before") end
+		if own.sent[key] then return end
+		if own.readings < OWN_SETTLE then return end
+		local name = ownCompanyName(status)
+		own.sent[key] = true
+		link:log("a competitive room: founding the player's own company")
+		companyOp(shared, { Create = { name = name } }, "Founding your company, " .. name)
 	end
 
 	-- The colours a company can wear: the companies' own first (a vehicle in

@@ -2789,6 +2789,37 @@ my_timetables";
         );
     }
 
+    /// The window's status says whether the room is competitive, as the
+    /// launcher's lobby says, and nothing where the lobby has no room: the
+    /// GUI founds the player's own company by it, never on a guess.
+    #[test]
+    fn the_status_says_whether_the_room_is_competitive() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        crate::lobby::reset();
+        let lua = Lua::new();
+        lua.register();
+        notice(&Notice::Room(RoomInfo {
+            name: Text::new("Rivals").unwrap(),
+            owner: player(1),
+            members: BoundedVec::new(Vec::new()).unwrap(),
+        }));
+        let competitive = || lua.run("return tostring(tpf3mp_native.status().competitive)");
+        assert_eq!(competitive(), Ok("nil".into()), "the lobby has not said");
+        let mut view = crate::lobby::tests::view();
+        view.room.as_mut().unwrap().competitive = true;
+        crate::lobby::show(view.clone());
+        assert_eq!(competitive(), Ok("true".into()));
+        view.room.as_mut().unwrap().competitive = false;
+        crate::lobby::show(view.clone());
+        assert_eq!(competitive(), Ok("false".into()));
+        view.room = None;
+        crate::lobby::show(view);
+        assert_eq!(competitive(), Ok("nil".into()), "out of the room");
+        crate::lobby::reset();
+        reset();
+    }
+
     #[test]
     fn the_player_hears_what_became_of_their_own_actions() {
         let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);

@@ -775,7 +775,10 @@ for the table (`bridge.find`). Its contract is in
   window, `{ room =, speed =, diverged =, players = { { name =,
   connected =, owner =, me = } } }`, or nil before the room's game. The
   hook keeps what the room tells it (`Room`, `Speed`, `Diverged`), and
-  forgets the divergence when a world loads (bridge version 9).
+  forgets the divergence when a world loads (bridge version 9). It also
+  carries `competitive`, whether the room is competitive as the
+  launcher's lobby last said (`LobbyRoom::competitive`), left out where it
+  has said nothing.
 - `tpf3mp_native.chat()`: in the GUI: what the room's members said since
   the last call, `{ { from =, text =, old = } }`, oldest first, 64 lines
   at most. A world's GUI starts with none of the chat so far, so after
@@ -1442,6 +1445,30 @@ state, which the game saves with the world:
   (`ShareStations`). The room's first company is everyone's: no head, no
   password, and its stations stay open. `hook.log` names why a refused
   action was refused.
+- *In a competitive room*, once the owner turns it on
+  (`tpf3mp/acceptance.lua`, `own_companies`; off until the owner decides
+  it against D21), the GUI founds the player a company of their own
+  (`tpf3mp.script.lua`, `foundOwnCompany`): the same `CompanyOp` `Create`
+  **Found a company** sends, named `<name>'s company`, sent by the
+  player's own game, so the room orders it for every game like any other
+  action (D8: the server never writes an action). Only while
+  `status().competitive` is true, the roster is read and says the player
+  plays for the room's first company, and no company of the room,
+  dissolved ones included, was founded by them; and not before four
+  readings of the room since the world's GUI linked (`OWN_SETTLE`, about a
+  second), so a world that is still catching up has applied what the room
+  ordered before. A reading that lacks the roster or the play style
+  delays it no further. At most once a room and player in this Lua state.
+  The player's name is their entry's by id in `status().players`, else
+  the first eight hex digits of their id; with another player of the same
+  name in the room, the first four hex digits of the player's id follow
+  it. The name is the same each time, so a second one sent before the
+  first arrives is refused alike in every game. Each reason not to found
+  is said once in `hook.log`: `not founding the player's own company:
+  <why>`; founding says `a competitive room: founding the player's own
+  company`. The room's log does not keep the play style (PROTOCOL.md): a
+  room restored after a server restart is co-op, and a player who joins
+  it then founds their company by hand.
 - *Passwords.* The window hands the password to `command` beside the
   action (`Join` or `Lock`), the hook sends it to the room beside the
   intent (`tpf3mp_proto::Secret`, scoped to the company), and the server
