@@ -131,6 +131,26 @@ function data()
 	-- name, logged once each, a few dozen at most: what reaches the script
 	-- when a tool's build is "no proposal seen".
 	local unhandled, unhandledCount = {}, 0
+	-- With pending builds on, a road or track build's loose ends are joined
+	-- onto the player's builds the room has not answered yet, by position
+	-- (tpf3mp/ghost.lua). False, with seen.why set, when it cannot be.
+	local function ghostJoin(l, seen)
+		local pending = l:pending()
+		if pending == nil or #pending == 0 then return true end
+		local okGhost, ghost = pcall(ug_require, MOD .. "::/scripts/tpf3mp/ghost.lua")
+		if not okGhost or type(ghost) ~= "table" then
+			seen.why = "joining onto a pending build: " .. tostring(ghost)
+			return false
+		end
+		-- join returns the action and how many ends it joined, or nil and why.
+		local ok, action, result = pcall(ghost.join, seen.action, pending)
+		if not ok or action == nil then
+			seen.why = "joining onto a pending build: " .. tostring(ok and result or action)
+			return false
+		end
+		if result > 0 then l:log("joined " .. result .. " loose end(s) onto pending builds") end
+		return true
+	end
 	local function note(l, id, name)
 		local key = tostring(id) .. " " .. tostring(name)
 		if unhandled[key] or unhandledCount >= 40 then return end
@@ -692,6 +712,9 @@ function data()
 							break
 						end
 					end
+				elseif seen and seen.action and not ghostJoin(l, seen) then
+					l:log("stopped a build the room cannot carry: " .. tostring(seen.why)
+						.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
 				elseif seen and seen.action then
 					local ok, why = l:command(seen.action)
 					if ok then

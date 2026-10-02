@@ -80,6 +80,11 @@
 --                                   -- this update, { e, ... } | nil
 --     edgewatched = function(e, text), -- optional; in its postUpdate: what
 --                                   -- it read of e (tpf3mp/lanes.lua watch)
+--     pending = function(),         -- optional; in the GUI: the player's road
+--                                   -- and track builds the room has not
+--                                   -- answered yet, { { ticket =, action = } },
+--                                   -- oldest first, or nil while pending
+--                                   -- builds are off (TPF3MP_HOOK_BUILD_GHOST)
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -342,6 +347,15 @@ function Link:edgewatch()
 	if type(self.native.edgewatch) ~= "function" then return nil end
 	local ok, list = pcall(self.native.edgewatch)
 	if ok and type(list) == "table" and #list > 0 then return list end
+	return nil
+end
+
+-- The player's pending road and track builds (tpf3mp/ghost.lua), oldest
+-- first, or nil: pending builds off, or a hook without them.
+function Link:pending()
+	if type(self.native.pending) ~= "function" then return nil end
+	local ok, list = pcall(self.native.pending)
+	if ok and type(list) == "table" then return list end
 	return nil
 end
 

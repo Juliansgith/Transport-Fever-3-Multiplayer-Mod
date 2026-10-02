@@ -810,6 +810,11 @@ for the table (`bridge.find`). Its contract is in
   text)`: in a game script's `update`, the entities the edge watch reads in
   this update, or `nil`; in its `postUpdate`, what it read of each ("The
   edge watch" below). Optional, as `built`.
+- `tpf3mp_native.pending()`: in the GUI: the player's road and track
+  builds handed to the room that it has not answered yet, `{ { ticket =,
+  action = } }`, oldest first, each action as `take()` hands it over; `nil`
+  while pending builds are off ("Pending builds" below). Optional, as
+  `built`.
 - `tpf3mp_native.mods(list)`: the mods to load a save with, given the
   save's (names, one a line): that list, then those left out and those
   added, the same way, from the room's `Begin` (`tpf3mp_bridge::mods::plan`);
@@ -2142,6 +2147,45 @@ track across open ground ($22,054), a track across a street, and a bus
 depot snapped onto a town street, clearing three town buildings
 ($825,816): identical in both games, towns included.
 
+
+### Pending builds
+
+Off unless `TPF3MP_HOOK_BUILD_GHOST=1` (`crates/tpf3mp-hook/src/ghost.rs`,
+`mod/tpf3mp_1/content/scripts/tpf3mp/ghost.lua`; the research and the
+design are in `investigation/TF3_BUILD_GHOST_2026-10-02.md`). A PROTOTYPE:
+static checks and tests only, not yet seen in the game.
+
+In a room a player's road or track appears only when the room's turn
+applies it. With the switch on, the hook keeps each road or track build the
+player hands to the room (`command`, a `BuildRoad` or `BuildTrack`) under its
+ticket until that ticket is answered (`applied` in this game, or refused),
+at most 32; leaving the room's game or loading a world drops them all. A
+pending build is never in any game's world: the hook changes nothing in the
+engine, and the room's action is still the only thing that builds.
+
+The GUI reads them with `pending()`. The game's street and track tools
+cannot snap onto a pending road (they read the simulation's own street
+system and octree, `street_util::FindSnapPointBaseEdge` `0x60c360`), so a
+road started from a pending road's end starts as a new node on open ground.
+Before the build goes to the room, the GUI joins each of its loose ends (a
+new vertex with one link) onto the pending builds by position
+(`tpf3mp/ghost.lua`), as a receiver resolves any vertex: within 1.5 m of a
+pending node it is that node (`Node`); within 2 m of a pending edge's
+centreline it splits that edge (`Split`, by its ends) at the nearest point of
+the curve, or is the end node within 2.5 m of an end. Only in the end's own
+network; a pending split or removal of a pending edge is followed. An end
+between two pending edges, or a new edge with both ends on one pending node,
+is refused ("joining onto a pending build: ..."). The room applies the
+player's builds in the order they were sent, so the joined build resolves
+onto the pending one in every game; if that one failed, the joined one
+resolves to nothing and fails in every game alike.
+
+Not built yet: showing the pending builds. The engine cannot hold a road
+the simulation ignores (both `GameState`s are simulated in turn, and a local
+entity reorders the entity ids every later entity gets); the design is to
+draw them through the game's own builder renderer without its preview
+overlay, which needs work in the game first (the investigation, "Recommended
+design").
 
 ### The road and track modifiers
 
@@ -3886,6 +3930,11 @@ nothing the game computes, so one game of a room may run them alone.
 
 The `road-entry:` digest at every checkpoint needs no switch: it is on
 while `road-entry-order` sorts.
+
+Pending builds (`TPF3MP_HOOK_BUILD_GHOST=1`, "Pending builds") are off
+unless set. They change what this player's game sends the room, never what
+any game computes from the room's actions, so one game of a room may run
+them alone.
 
 ## Release-day procedure: adding a target for a new build
 

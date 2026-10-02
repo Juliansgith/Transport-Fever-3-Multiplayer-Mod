@@ -569,6 +569,9 @@ tpf3mp_native = {
         return true
     end,
     clicks = function() return HOOK.clicks end,
+    -- The player's pending builds ({ { ticket =, action = } }), or nil while
+    -- they are off.
+    pending = function() return HOOK.pending end,
     -- The module editor's builds the hook read, by click: { proposal = t }
     -- or { why = text }, each taken once.
     built = function(n)
@@ -3417,6 +3420,79 @@ fn a_road_the_street_tool_proposed_goes_to_the_room() {
         .eval()
         .unwrap();
     assert_eq!((edges, removed.as_str()), (4, "100"));
+}
+
+/// With pending builds on, a street whose loose end lands on a road the room
+/// has not built yet goes to the room joined onto it by position; one that
+/// lands where the room cannot name it is stopped, and nothing is sent.
+#[test]
+fn a_road_built_off_a_pending_road_goes_to_the_room_joined_onto_it() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let pending = "HOOK.pending = { { ticket = 9, action = { BuildRoad = { \
+        street = '::/street/town_small.street_template', bus_lane = false, tram = 'None', \
+        polyline = { removals = {}, removed_nodes = {}, \
+            vertices = { { pos = { x = 120.6, y = 0.7, z = 12 }, resolve = 'New' }, \
+                         { pos = { x = 200, y = 0, z = 12 }, resolve = 'New' } }, \
+            links = { { from = 0, to = 1, tangent0 = { x = 80, y = 0, z = 0 }, \
+                        tangent1 = { x = 80, y = 0, z = 0 }, structure = 'Ground' } } } } } } }";
+    let handed: String = lua
+        .load(format!(
+            "HOOK.room = true HOOK.clicks = 0 {pending} \
+             SCRIPT.guiUpdate({{}}, nil, nil) \
+             SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetBuilder', 'builder.proposalCreate', {{ {STREET_PROPOSAL} }}) \
+             HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil) \
+             local v = HOOK.commands[1].BuildRoad.polyline.vertices[5] \
+             return table.concat({{ #HOOK.commands, v.resolve.Node, v.pos.x, v.pos.y }}, '|')"
+        ))
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        handed, "1|Street|120.6|0.7",
+        "the loose end is the pending road's node"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l == "joined 1 loose end(s) onto pending builds"),
+        "{logged:?}"
+    );
+
+    // Two pending roads within reach of the end: which one is a guess.
+    let (sent, logged): (usize, Vec<String>) = lua
+        .load(format!(
+            "HOOK.commands = {{}} HOOK.logged = {{}} {pending} \
+             local second = {{ ticket = 10, action = {{ BuildRoad = {{ \
+                 street = '::/street/town_small.street_template', bus_lane = false, tram = 'None', \
+                 polyline = {{ removals = {{}}, removed_nodes = {{}}, \
+                     vertices = {{ {{ pos = {{ x = 100, y = -1.8, z = 12 }}, resolve = 'New' }}, \
+                                  {{ pos = {{ x = 140, y = -1.8, z = 12 }}, resolve = 'New' }} }}, \
+                     links = {{ {{ from = 0, to = 1, tangent0 = {{ x = 40, y = 0, z = 0 }}, \
+                                 tangent1 = {{ x = 40, y = 0, z = 0 }}, structure = 'Ground' }} }} }} }} }} }} \
+             HOOK.pending[1].action.BuildRoad.polyline.vertices[1].pos = {{ x = 110, y = 1.8, z = 12 }} \
+             HOOK.pending[1].action.BuildRoad.polyline.links[1].tangent0 = {{ x = 90, y = 0, z = 0 }} \
+             HOOK.pending[1].action.BuildRoad.polyline.links[1].tangent1 = {{ x = 90, y = 0, z = 0 }} \
+             HOOK.pending[2] = second \
+             SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetBuilder', 'builder.proposalCreate', {{ {STREET_PROPOSAL} }}) \
+             HOOK.clicks = 2 SCRIPT.guiUpdate({{}}, nil, nil) \
+             return #HOOK.commands, HOOK.logged"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(sent, 0, "nothing goes to the room: {logged:?}");
+    assert!(
+        logged.iter().any(|l| l.starts_with(
+            "stopped a build the room cannot carry: joining onto a pending build: \
+             a loose end the room cannot name: it ends where two pending roads meet"
+        )),
+        "{logged:?}"
+    );
 }
 
 #[test]

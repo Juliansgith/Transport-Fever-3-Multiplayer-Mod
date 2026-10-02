@@ -48,6 +48,7 @@
         "scripts/tpf3mp/engine.lua",
         "scripts/tpf3mp/follow.lua",
         "scripts/tpf3mp/geom.lua",
+        "scripts/tpf3mp/ghost.lua",
         "scripts/tpf3mp/guard.lua",
         "scripts/tpf3mp/junctions.lua",
         "scripts/tpf3mp/hudguard.lua",
