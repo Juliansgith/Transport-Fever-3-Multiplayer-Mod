@@ -910,6 +910,9 @@ money, ran in the game script's `postUpdate`.
   companyEntity, townEntity, types, permitKey, cargoType })`, with the
   player's company, the town the registry names, and the industry types in
   the order the action carries them ("Prospecting" below);
+- `Perk`: the company script's own event, `MakeGreen` or
+  `startMarketingCampaign`, for the acting company, and for a campaign the
+  price booked to it after ("Company perks" below);
 - `Subsidy`: the subsidy script's own event, `makeScriptingSendEventCmd("",
   "Subvention", "onAccept" | "onDecline", { uid })`, once every game has
   checked the offer against its own script's state ("Subsidies" below).
@@ -1218,8 +1221,12 @@ reference of its own to either. Once linked, the GUI wraps every
     below);
   - taking a rank, the company window's `makeScriptingSendEventCmd("",
     "Companies", "applyLevel", { level })`, as an `ApplyRank` action
-    ("Company ranks" below). The company's other events (greening an
-    industry, `MakeGreen`; a marketing campaign) stay refused;
+    ("Company ranks" below);
+  - the construction menu's perk tools, `makeScriptingSendEventCmd("",
+    "Companies", "MakeGreen" | "startMarketingCampaign", …)`, as a `Perk`
+    action ("Company perks" below), refused in the sender and in every
+    game's replay until `acceptance.lua`'s `perks` is turned on after a
+    two-player game (COVERAGE.md);
   - answering a subsidy offer, the subsidy window's
     `makeScriptingSendEventCmd("", "Subvention", "onAccept" | "onDecline",
     { uid })`, as a `Subsidy` action naming the offer by its number and
@@ -1229,9 +1236,18 @@ reference of its own to either. Once linked, the GUI wraps every
     told the player in the game bar;
   - vehicles: buying (`makeVehicleBuyCmd`: the depot by its construction's
     file and position and its index among that construction's depots, an
-    airport's second hangar say; a depot no street reaches by the
-    construction that lists it; the consist part by part, as the store configured
-    it), selling, putting on a line, and the vehicle window's stop, start,
+    airport's second hangar say. A construction's depots are its
+    `depots`, then its subconstructions that are depots: an airfield's or
+    airport's hangar is its hangar module's subconstruction, which the
+    store buys at (build 40408). The construction is the one the street
+    connector names for the depot, else for the depot as a subconstruction,
+    else the one construction listing it; a depot two constructions list,
+    or one its construction does not list, is refused at the click, never
+    bought at the first depot. Every game refuses a purchase naming a depot
+    the construction does not have, saying how many it has: an airfield or
+    airport built without its hangar module has none, and a harbour never
+    has one, ships being bought at a ship depot. The consist part by part,
+    as the store configured it), selling, putting on a line, and the vehicle window's stop, start,
     to the depot (kept: one sent to be sold on arrival is refused at the
     click, as build 40408 crashes when it reaches the depot), reverse and
     depart; replacing
@@ -1595,6 +1611,38 @@ alone (`company.script.tl`, its update looks at `getPlayer()` only, in the
 engine state): a prospection of another company is kept and its permit
 used, but its outcome is never drawn (seen in the scripts; not carried yet,
 docs/PLAN.md).
+
+### Company perks
+
+The construction menu's perk tools (`gui/construction/tools/`, build
+40408) each send the company script one event, which spends the perk's
+permit for the company and hands the perk on:
+
+- **Industry Greenification** (`industry_greenify_tool.script.tl`) sends
+  `Companies` `MakeGreen` with the industry part the player picked; the
+  company script tells the emissions script to cut its emissions. The
+  guard captures it (`capture.greenify`) as `Perk::Greenify`, the industry
+  by its canonical id: the registry binds industries by their
+  constructions (`tpf3mp/registry.lua`), and every game takes that
+  construction's one industry part (`capture.industryPart`). A
+  construction with more than one industry is refused, as no id tells its
+  parts apart.
+- **Marketing campaign** (`marketing_campaign_tool.script.tl`) sends
+  `Companies` `startMarketingCampaign` with the town and the campaign's
+  terms (`durationMs`, `lineCostFactor`); the company script starts it in
+  the towns script. The tool books its price in the event's callback with
+  `makeJournalBookAssetCmd`. The guard captures the event
+  (`capture.marketing`) as `Perk::Marketing`, with the price the tool
+  charges in that year (`capture.marketingCost`, the tool's own formula);
+  every game checks the company can pay it, starts the campaign through
+  the company script and books the price itself. The tool's own booking,
+  sent from its callback, is neither sent nor refused (`guard.FOLLOWS`),
+  so the price is paid once, in every game.
+
+Both are refused for another company, an industry or town the registry
+cannot name, and, until a two-player game shows matching permits, town
+reputations, emissions and money, by `acceptance.lua`'s `perks` gate in
+the sender and in every game's replay.
 
 ### Company ranks
 
@@ -2321,6 +2369,58 @@ showing only the fields that differ, and whether the lane's text itself
 differed (a difference below the lane's rounding leaves it alike). It exits
 1 when an entry differs. `python tools/test_lane_diff.py` tests it.
 
+#### The town street field
+
+On save `twomptest`, three games diverged at step 12800 in two of four
+soaks. Traced down, every input, seed and try of town growth's street
+developer at step 12771 was alike in all three games but one: node
+261290's open pass (`TownDeveloper::Develop`, then
+`StreetDeveloper::TryCandidate`) built street 325514 at 27.03 degrees in
+two games and 19.72 in the third, from the same node and so the same
+position-seeded turn. The turn is not where they part. After it the open
+pass bends the street's end by the town's street field (`TryCandidate`,
+`0x967dc8..0x967ebc`, when the town has one):
+
+- `StreetField::At` (`0x2b76a90`, our name; `rcx` the field, `r8` the
+  street's end) answers the field's two axes there: a sum over the field's
+  sources (16 bytes each, `[field]..[field+8]`) of each source's axis,
+  weighted by `exp(-d/100)` within the field's radius (`0x2b769a0`), and the
+  axis at right angles to it. `0x2b76820` then snaps the street's direction
+  to whichever axis lies within its angle, or leaves it.
+- `At` caches its answer in a `std::map` at `field+0x18`, keyed by the
+  point's 50 m cell (`round(x/50 + 0.5)`, likewise `y`), and answers any
+  later point in that cell from the cache: the answer computed at the
+  first point that asked there, not at this one.
+- The field hangs off the town developer's context (`GameState+0x200`,
+  `[[ctx+0x1f0]+8]+0x30`, read in `0x95a080`), one per `GameState`, and no
+  lane reads the cache. Which points asked in a cell earlier, in this game
+  and on whichever buffer ran those updates, decides the answer, and with
+  it whether the street snaps.
+
+**The fix** (`town-field-cache`, `crates/tpf3mp-hook/src/townfield.rs`; on
+unless `TPF3MP_HOOK_TOWN_FIELD_CACHE=0`) splices `At`'s lookup at its end
+test (`0x2b76b4a`, `cmp byte [r9+0x19], 0`, 5 bytes stolen; the only branch
+to it is the lookup loop's `jne` at `0x2b76b1c`, to its first byte) and
+points `r9`, the node found, at the map's head (`r10`, whose nil flag is
+set). Every call then takes the miss path (`0x2b76b86`): the answer is
+computed at the point asked, from the sources, and the engine's own insert
+(`0x2b76660`) runs as before. The answer is a function of the point and the
+sources alone. A head whose nil flag does not read leaves that lookup to
+the game, said once in `hook.log`; a panic switches the fix off. Before
+splicing, the site must lie at `At+0xba` and its `jne` reach `At+0xf6`; the
+static proof checks that the open pass calls `At` (`0x967e0e`) and that the
+miss path inserts through `0x2b76660`. `hook.log` says
+
+```
+order fix town-field-cache: installed (at 0x..., the town street field is computed at every point asked, never answered from its per-cell cache)
+order fix town-field-cache: alive, calls=<n> cache-entries-passed=<n> refused=<n>
+```
+
+the second at the first call and every 4,096th; `cache-entries-passed`
+counts the lookups that found a cached answer and were made to compute
+instead. Every game of a room must run it alike: a game with it off builds
+some town streets at other angles than one with it on.
+
 ### Seeds, as built
 
 Ported onto dev from `feat/steam-hook-on-dev` (971c48c, as merged in
@@ -2616,6 +2716,7 @@ on hand-written functions in the test binary.
 | 3, road edge entries | `road-entry-order` | `EdgeUseManager::Add` (`0x255e940`), `AddRange` (`0x255cc70`) | keeps each edge's entries in entity order after every append (kill switch `TPF3MP_HOOK_ROAD_ENTRY_ORDER=0`) |
 | 4, vehicles at a stop | `vehicles-at-stop-order` | `ecs::SimEntityAtTerminalSystem::Update/vehicles at stop` (`0xb0e35c`) | sorts the vehicles at a line stop by entity id before the boarding loop (kill switch `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER=0`) |
 | 5, platform choice | `platform-order` | `ecs::TransportVehicleSystem::Update2/visit` (`0xb8bccb`), `FindNextFreeTerminal/candidate sort` (`0xb85430`) | asks the vehicles for a free platform in entity order, and puts the candidate terminals in one order before their cost sort (kill switch `TPF3MP_HOOK_PLATFORM_ORDER=0`) |
+| (soak 4 of 2026-10-02), town street angles | `town-field-cache` | `StreetField::At/cache found` (`0x2b76b4a`) | the town street field is computed at every point asked, not answered from its per-50-m-cell cache ("The town street field"; kill switch `TPF3MP_HOOK_TOWN_FIELD_CACHE=0`) |
 
 **The mid-function splice** (`tpf3mp_hookcore::detour::Splice`) is what
 the two fixes hook with. A whole-function detour cannot reach a point in

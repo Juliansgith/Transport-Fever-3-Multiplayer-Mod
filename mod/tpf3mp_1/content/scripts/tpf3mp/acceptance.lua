@@ -1,11 +1,14 @@
 -- New channels remain refused until ordinary two-game acceptance is recorded.
 -- These defaults travel with the mod fingerprint: every room member has the
 -- same settings. Fixtures may enable a channel explicitly to test its mechanics.
-local acceptance = { subsidies = false, rename = false, waypoints = false }
+local acceptance = { subsidies = false, rename = false, waypoints = false, perks = false }
 
 function acceptance.check(action)
     local feature
     if action.Subsidy then feature = "subsidies" end
+    -- The construction menu's perk tools: Industry Greenification and the
+    -- marketing campaign (action::PerkOp).
+    if action.Perk then feature = "perks" end
     if action.Rename or (action.VehicleOp and type(action.VehicleOp.change) == "table"
         and action.VehicleOp.change.Recolor) then feature = "rename" end
     local line = action.CreateLine and action.CreateLine.line

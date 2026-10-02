@@ -94,6 +94,9 @@ const TARGETS: &[(&str, u64)] = &[
         0xf41770,
     ),
     ("TownDevelopAt::Apply", 0x9dedf0),
+    // The town street field's cache fix (crates/tpf3mp-hook/src/townfield.rs).
+    ("StreetField::At", 0x2b76a90),
+    ("StreetField::At/cache found", 0x2b76b4a),
     ("lua_getfield", 0x2fbdb90),
     ("lua_loadfile", 0x2fa1d50),
     ("lua_cached_loadfile", 0x2fa8130),
@@ -173,6 +176,15 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
         &text_bytes[at(0x255ea6d)..at(0x255ea6d) + 5],
         &[0x48, 0x83, 0x41, 0x08, 0x14]
     );
+    // The field fix: the open pass asks StreetField::At for the street's
+    // end; At's found test jumps to its miss path, which computes the
+    // answer and inserts it with 0x2b76660; the only branch to the site is
+    // the lookup loop's.
+    assert_eq!(callee(0x967e0e), 0x2b76a90);
+    assert_eq!(callee(0x2b76c6d), 0x2b76660);
+    assert_eq!(&text_bytes[at(0x2b76b4f)..at(0x2b76b4f) + 2], &[0x75, 0x35]);
+    assert_eq!(0x2b76b51 + 0x35, 0x2b76b86);
+    assert_eq!(&text_bytes[at(0x2b76b1c)..at(0x2b76b1c) + 2], &[0x75, 0x2C]);
     // The land-vehicle shuffle's seed is the tickCount getter's answer.
     assert_eq!(callee(0xac1b23), 0x2a95c0);
     // The main menu's m_game test reads CMenuUI+0x6b0, the field StartGame

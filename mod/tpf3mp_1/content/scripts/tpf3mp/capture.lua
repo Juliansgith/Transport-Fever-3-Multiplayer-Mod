@@ -459,7 +459,7 @@ end
 --                                               (tpf3mp/registry.lua)
 --   ctx.depot(e) -> { file =, at = { x, y, z } } of the depot's
 --                   construction, and the depot's index among its
---                   depots from 0 (capture.depotRef); or nil
+--                   depots from 0 (capture.depotRef); or nil, nil, why
 --   ctx.model(id) -> a vehicle model's file name, or nil
 --   ctx.parts(e) -> a vehicle's parts, front to back, each
 --                   { model = modelId, purchased = purchaseTime }, or nil
@@ -512,56 +512,112 @@ local function consistPart(ctx, tvp)
 	}
 end
 
+-- A construction's depots, in the order every game lists them: its
+-- CONSTRUCTION component's `depots`, then each of its subconstructions that
+-- is itself a depot (a VEHICLE_DEPOT) and not listed yet. In build 40408 a
+-- depot is its construction's subconstruction: a road, rail or ship depot's
+-- own (depots/rail/rail_depot.script.lua, `subconstructions = { depot }`),
+-- and an airfield's or airport's hangar module's
+-- (stations/air/airfield/af_hangar.module.lua and
+-- airport/ap_hangar.module.lua: a subconstruction with a `depot`); the
+-- game's store buys at that entity (gui/line_vehicle_mgmt/
+-- vehicle_react_util.tl, makeVehicleBuyCmd(player, depotEntity, config)),
+-- and the construction window finds it among `subconstructions`
+-- (gui/entity_window/make_entity_window.tl). An airfield or airport built
+-- without a hangar module has no depot at all, and a harbour never has one:
+-- ships are bought at a ship depot. Read from the construction alone, the
+-- same in every game. `comp` is the construction's CONSTRUCTION component.
+function capture.depotsOf(api, comp)
+	local out, seen = {}, {}
+	local function add(e)
+		if type(e) == "number" and e >= 0 and not seen[e] then
+			seen[e] = true
+			out[#out + 1] = e
+		end
+	end
+	local depots = get(comp, "depots")
+	for k = 1, (length(depots) or 0) do add(get(depots, k)) end
+	local ok, VEHICLE_DEPOT = pcall(function() return api.type.ComponentType.VEHICLE_DEPOT end)
+	if ok and VEHICLE_DEPOT ~= nil then
+		local subs = get(comp, "subconstructions")
+		for k = 1, (length(subs) or 0) do
+			local e = get(subs, k)
+			if type(e) == "number" and not seen[e] then
+				local found, d = pcall(api.engine.getComponent, e, VEHICLE_DEPOT)
+				if found and d ~= nil then add(e) end
+			end
+		end
+	end
+	return out
+end
+
 -- A depot as actions name one (action::ConstructionRef): its construction's
--- file and place. The street connector names the construction of a depot a
--- street reaches; a ship depot or an aircraft hangar may have none
--- (INFERRED, not seen on build 40408), so failing that, the construction
--- whose CONSTRUCTION component lists the depot among its `depots`, the
--- lowest entity on a tie. Returns { file =, at = { x, y, z } } and the
--- depot's index among the construction's depots, from 0; or nil.
+-- file and place, and the depot's index among that construction's depots
+-- (capture.depotsOf), from 0. The construction is the one the street
+-- connector names for the depot, else the one it names for the depot as a
+-- subconstruction (an airfield's hangar: no street reaches it), else the one
+-- construction whose depots list it. Returns { file =, at = { x, y, z } }
+-- and the index; or nil, nil and why, failing closed: a depot no
+-- construction lists, one two constructions list, or one its construction
+-- does not list is never guessed at (the first depot used to be).
 function capture.depotRef(api, depot)
 	local ok, CONSTRUCTION = pcall(function() return api.type.ComponentType.CONSTRUCTION end)
-	if not ok or CONSTRUCTION == nil then return nil end
+	if not ok or CONSTRUCTION == nil then return nil, nil, "no construction component to read" end
+	local function constructionFor(kind)
+		local con
+		pcall(function()
+			local e = api.engine.system.streetConnectorSystem[kind](depot)
+			if type(e) == "number" and e >= 0 then con = e end
+		end)
+		return con
+	end
 	local c
-	pcall(function()
-		local con = api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(depot)
-		if type(con) == "number" and con >= 0 then c = api.engine.getComponent(con, CONSTRUCTION) end
-	end)
-	if c == nil then
+	local con = constructionFor("getConstructionEntityForDepot")
+		or constructionFor("getConstructionEntityForSubconstruction")
+	if con ~= nil then
+		pcall(function() c = api.engine.getComponent(con, CONSTRUCTION) end)
+	else
+		local listing = {}
 		pcall(function()
 			local list = api.engine.getEntitiesWithComponent(CONSTRUCTION)
-			local best
 			for i = 1, #list do
 				local e = list[i]
 				local comp = api.engine.getComponent(e, CONSTRUCTION)
-				local depots = comp and comp.depots
-				for k = 1, (depots and #depots or 0) do
-					if depots[k] == depot and (best == nil or e < best) then best, c = e, comp end
+				if comp ~= nil then
+					for _, d in ipairs(capture.depotsOf(api, comp)) do
+						if d == depot then listing[#listing + 1] = comp break end
+					end
 				end
 			end
 		end)
+		if #listing > 1 then return nil, nil, "a depot " .. #listing .. " constructions list" end
+		c = listing[1]
 	end
-	if c == nil then return nil end
+	if c == nil then return nil, nil, "a depot no construction lists" end
 	local t = get(c, "transf")
 	local file, x, y, z = get(c, "fileName"), get(t, 13), get(t, 14), get(t, 15)
 	if type(file) ~= "string" or file == "" or type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
-		return nil
+		return nil, nil, "a depot whose construction it cannot read"
 	end
-	-- Which of its depots (an airport's second hangar): the first that is
-	-- this one, else the first, as before the index was carried.
-	local index, depots = 0, get(c, "depots")
-	for k = 1, (length(depots) or 0) do
-		if get(depots, k) == depot then index = k - 1 break end
+	-- Which of its depots (an airport's second hangar).
+	for k, d in ipairs(capture.depotsOf(api, c)) do
+		if d == depot then return { file = file, at = { x = x, y = y, z = z } }, k - 1 end
 	end
-	return { file = file, at = { x = x, y = y, z = z } }, index
+	return nil, nil, "a depot " .. file .. " does not list among its depots"
 end
 
 -- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
 function capture.vehicleBuy(ctx, _player, depot, config)
-	local ref, index = ctx.depot(depot)
+	local ref, index, why = ctx.depot(depot)
+	if ref == nil then
+		error("a depot the room cannot name" .. (why and (": " .. tostring(why)) or ""), 0)
+	end
+	if type(index) ~= "number" or index < 0 or index > 255 then
+		error("a depot the room cannot name: its construction has more than 256 depots", 0)
+	end
 	return { BuyVehicle = {
-		depot = named("a depot the room cannot name", ref),
-		depot_index = index or 0,
+		depot = ref,
+		depot_index = index,
 		consist = each(get(config, "vehicles"), function(tvp) return consistPart(ctx, tvp) end),
 		groups = each(get(config, "vehicleGroups"), function(n) return n end),
 		multiple_units = each(get(config, "muFileNames"), function(name) return name end),
@@ -777,6 +833,112 @@ function capture.prospect(ctx, param)
 		industries = industries,
 		permit = permit,
 	} }
+end
+
+-- ------------------------------------------------------------ company perks
+--
+-- The construction menu's perk tools (gui/construction/tools/, build
+-- 40408): each picks a town or an industry and sends the company script an
+-- event, which spends the perk's permit for the player's company and hands
+-- the perk on (game_mechanics/company/company.script.tl, handleEvent).
+
+-- The construction an industry the player picked stands in, as the game's
+-- industry window finds it (gui/entity_window/industry/industry.tl), and
+-- tpf3mp/registry.lua names industries by: a part the game places in no
+-- construction stands for itself. Returns the construction, or nil.
+function capture.industryConstruction(part)
+	local ok, con = pcall(function()
+		return api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(part)
+	end)
+	if not ok or type(con) ~= "number" or con < 0 then con = part end
+	return con
+end
+
+-- The industry part of construction `con` a perk acts on: its one industry,
+-- or the construction itself where it is one. nil where it has none, or
+-- more than one, which no id the room carries tells apart. Every game finds
+-- it so (tpf3mp/apply.lua, HANDLERS.Perk).
+function capture.industryPart(con)
+	local CT = api.type.ComponentType
+	local ok, c = pcall(function() return api.engine.getComponent(con, CT.CONSTRUCTION) end)
+	local parts = ok and c and get(c, "industries") or nil
+	local n = length(parts) or 0
+	if n == 1 then return get(parts, 1) end
+	if n == 0 then
+		local isOne, industry = pcall(function() return api.engine.getComponent(con, CT.INDUSTRY) end)
+		if isOne and industry ~= nil then return con end
+	end
+	return nil
+end
+
+local function permitOf(param)
+	local permit = get(param, "permitKey")
+	if permit ~= nil and (type(permit) ~= "string" or permit == "") then error("a permit it cannot read", 0) end
+	return permit
+end
+
+local function ownCompany(ctx, param, what)
+	local player = ctx.player and ctx.player()
+	if player == nil or get(param, "companyEntity") ~= player then
+		error(what .. " for another company", 0)
+	end
+end
+
+-- Industry Greenification (industry_greenify_tool.script.tl): the event
+-- `Companies` `MakeGreen` with the player's company, the industry picked
+-- and the permit, the industry by its id (action::IndustryId).
+function capture.greenify(ctx, param)
+	if type(param) ~= "table" then error("a greenification it cannot read", 0) end
+	ownCompany(ctx, param, "greenifying")
+	local part = get(param, "constructionEntity")
+	if type(part) ~= "number" then error("greenifying no industry", 0) end
+	local con = capture.industryConstruction(part)
+	if capture.industryPart(con) ~= part then error("an industry the room cannot name", 0) end
+	local industry = ctx.industry and ctx.industry(con) or nil
+	return { Perk = { Greenify = {
+		industry = named("an industry the room cannot name", industry),
+		permit = permitOf(param),
+	} } }
+end
+
+-- What the marketing tool charges for a campaign in `year`: the tool's own
+-- price (marketing_campaign_tool.script.tl, GetMarketingCost, build 40408),
+-- with the game's math helpers (scripts/mathutil.lua: round, mapClamp)
+-- written out. The tool books it once the campaign started; the room's
+-- action carries it, so every game books the same sum.
+capture.MARKETING_COST = 10000000
+function capture.marketingCost(year)
+	local function round(x) return math.floor(x + .5) end
+	local lo, hi = math.log(0.4) / math.log(2), math.log(2.5) / math.log(2)
+	local mapped = lo + (hi - lo) * ((year - 1900) / (2020 - 1900))
+	if mapped < lo then mapped = lo elseif mapped > hi then mapped = hi end
+	local rounding = round(capture.MARKETING_COST / 10)
+	return round(capture.MARKETING_COST * math.pow(2, mapped) / rounding) * rounding
+end
+
+-- A marketing campaign (marketing_campaign_tool.script.tl): the event
+-- `Companies` `startMarketingCampaign` with the player's company, the town
+-- picked, the campaign's terms (the tool's town_marketing metadata) and the
+-- permit; and the price the tool books after it (capture.marketingCost).
+function capture.marketing(ctx, param)
+	if type(param) ~= "table" then error("a marketing campaign it cannot read", 0) end
+	ownCompany(ctx, param, "marketing")
+	local terms = get(param, "marketingParams")
+	local duration, factor = get(terms, "durationMs"), get(terms, "lineCostFactor")
+	if type(duration) ~= "number" or duration ~= math.floor(duration) or duration < 0
+		or type(factor) ~= "number" then
+		error("a campaign whose terms it cannot read", 0)
+	end
+	local ok, year = pcall(function() return api.engine.util.getYear() end)
+	if not ok or type(year) ~= "number" then error("a campaign it cannot price", 0) end
+	local town = ctx.town and ctx.town(get(param, "townEntity")) or nil
+	return { Perk = { Marketing = {
+		town = named("a town the room cannot name", town),
+		duration_ms = duration,
+		line_cost_factor = factor,
+		permit = permitOf(param),
+		cost = capture.marketingCost(year),
+	} } }
 end
 
 -- Answering a subsidy offer: the subsidy window's Accept or Decline

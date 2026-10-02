@@ -1017,7 +1017,7 @@ fn in_the_rooms_game_the_gui_refuses_what_the_room_cannot_carry() {
     assert!(
         logged.contains(
             &"refused the player's makeVehicleBuyCmd in the room's game (1 so far): \
-               a depot the room cannot name"
+               a depot the room cannot name: no construction component to read"
                 .to_owned()
         ),
         "{logged:?}"
@@ -3473,7 +3473,7 @@ fn a_bought_vehicle_goes_to_the_room_and_the_store_hears_which_it_is() {
                  if kind == 7 and e == 77 then return { state = { registry = { \
                      vehicles = { next = 4, bound = { { 3, 500 } } }, \
                      lines = { next = 2, bound = { { 1, 600 } } }, groups = { next = 0, bound = {} } } } } end \
-                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', \
+                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', depots = { 202 }, \
                      transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end \
              end, \
              system = { \
@@ -3631,7 +3631,157 @@ fn every_game_buys_at_the_constructions_depot_the_store_bought_at() {
         .unwrap();
     assert_eq!(depot, 203);
     assert!(!ok);
-    assert_eq!(why, "the construction there has no depot 3");
+    assert_eq!(
+        why, "the depot/bus_depot.con there has 2 depot(s), and no depot 3",
+        "never another of its depots"
+    );
+}
+
+/// An airfield's or airport's hangar is a subconstruction of it with a
+/// depot (build 40408, stations/air/airfield/af_hangar.module.lua), which
+/// the store buys at: every game buys the plane at the hangar its
+/// construction lists among its subconstructions, by its index there, when
+/// `depots` does not list it. An airfield built without its hangar module has
+/// no depot, and the purchase is refused in every game, saying so.
+#[test]
+fn every_game_buys_a_plane_at_the_airfields_hangar_and_refuses_one_without() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(format!(
+        "local CT = api.type.ComponentType CT.VEHICLE_DEPOT = 12 \
+         local base = api.engine.getComponent \
+         local AIRFIELDS = {{ \
+             [211] = {{ fileName = '::/stations/air/airfield.con', depots = {{}}, \
+                        subconstructions = {{ 710, 711, 712 }}, \
+                        transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 900,50,3,1 }} }}, \
+             [221] = {{ fileName = '::/stations/air/airfield.con', depots = {{}}, subconstructions = {{ 720 }}, \
+                        transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 1900,50,3,1 }} }} }} \
+         api.engine.getComponent = function(e, kind) \
+             if kind == CT.CONSTRUCTION and AIRFIELDS[e] then return AIRFIELDS[e] end \
+             if kind == CT.VEHICLE_DEPOT then \
+                 if e == 711 or e == 712 then return {{ carrier = 'AIR' }} end \
+                 return nil \
+             end \
+             return base(e, kind) \
+         end \
+         local list = api.engine.getEntitiesWithComponent \
+         api.engine.getEntitiesWithComponent = function(kind) \
+             if kind == CT.CONSTRUCTION then return {{ 201, 211, 221 }} end \
+             return list(kind) \
+         end \
+         HOOK.room = true UPDATE({{}}, STATE, 0.2) \
+         local function plane(x, index) \
+             local buy = {BUY_BUS} \
+             buy.BuyVehicle.depot = {{ file = '::/stations/air/airfield.con', at = {{ x = x, y = 50, z = 3 }} }} \
+             buy.BuyVehicle.depot_index = index \
+             return buy \
+         end \
+         HOOK.batch = {{ plane(900, 0), plane(900, 1), plane(900, 2), plane(1900, 0) }} \
+         UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let bought: String = lua
+        .load(
+            "local out = {} \
+             for _, s in ipairs(SENT) do if s.buy then out[#out + 1] = s.buy.depot end end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(bought, "711 712", "the first and the second hangar");
+    let (ok, why, bare, bare_why): (bool, String, bool, String) = lua
+        .load(
+            "return HOOK.applied[3].ok, HOOK.applied[3].why, HOOK.applied[4].ok, HOOK.applied[4].why",
+        )
+        .eval()
+        .unwrap();
+    assert!(!ok);
+    assert_eq!(
+        why,
+        "the ::/stations/air/airfield.con there has 2 depot(s), and no depot 3"
+    );
+    assert!(!bare);
+    assert_eq!(
+        bare_why,
+        "the ::/stations/air/airfield.con there has no depot: an airfield or airport has one only \
+         with a hangar module, and a harbour never has one (ships are bought at a ship depot)"
+    );
+}
+
+/// The player's plane, bought at an airfield's hangar: the street connector
+/// names no construction for the hangar, the subconstruction lookup names
+/// the airfield, and the purchase names the airfield and the hangar's index
+/// among its depots (`depots`, then the subconstructions that are depots).
+/// Failing closed: a depot two constructions list, and one whose
+/// construction does not list it, are refused at the click, never bought
+/// at the construction's first depot.
+#[test]
+fn a_plane_bought_at_an_airfields_hangar_names_the_airfield_and_the_hangar() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        "api.type = { ComponentType = { GAME_SCRIPT = 7, CONSTRUCTION = 2, VEHICLE_DEPOT = 12 } } \
+         COMPONENTS = { \
+             [201] = { fileName = 'depot/bus_depot.con', depots = { 202 }, \
+                       transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } }, \
+             [211] = { fileName = '::/stations/air/airfield.con', depots = {}, \
+                       subconstructions = { 710, 711, 712 }, \
+                       transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 900,50,3,1 } }, \
+             [231] = { fileName = 'a.con', depots = { 730 }, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 1,1,1,1 } }, \
+             [232] = { fileName = 'b.con', depots = { 730 }, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 2,2,2,1 } } } \
+         api.engine = { \
+             getComponent = function(e, kind) \
+                 if kind == 7 and e == 77 then return { state = { registry = {} } } end \
+                 if kind == 2 then return COMPONENTS[e] end \
+                 if kind == 12 and (e == 711 or e == 712 or e == 202 or e == 730 or e == 740) then return {} end \
+             end, \
+             getEntitiesWithComponent = function(kind) if kind == 2 then return { 201, 211, 231, 232 } end return {} end, \
+             system = { \
+                 gameScriptSystem = { getEntityForGameScript = function(name) \
+                     if name == 'tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs' then return 77 end return -1 end }, \
+                 streetConnectorSystem = { \
+                     getConstructionEntityForDepot = function(d) \
+                         if d == 202 or d == 740 then return 201 end return -1 end, \
+                     getConstructionEntityForSubconstruction = function(e) \
+                         if e >= 710 and e <= 712 then return 211 end return -1 end, \
+                 }, \
+             }, \
+         } \
+         api.res = { modelRep = { getName = function(id) if id == 51 then return 'vehicle/plane/f13.mdl' end end } } \
+         M = mount(loadPlugin()) M.step() HOOK.room = true \
+         CONFIG = { vehicles = { { part = { modelId = 51, reversed = false, compartment2loadConfig = {}, \
+             color = { x = 0, y = 0, z = 1 } } } }, vehicleGroups = { 1 }, muFileNames = { '' } } \
+         for _, depot in ipairs({ 712, 711, 730, 740 }) do \
+             api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(25, depot, CONFIG)) \
+         end \
+         M.step()",
+    )
+    .exec()
+    .unwrap();
+    let handed: String = lua
+        .load(
+            "local out = {} \
+             for _, a in ipairs(HOOK.commands) do \
+                 local b = a.BuyVehicle \
+                 out[#out + 1] = b.depot.file .. '|' .. b.depot.at.x .. '|' .. b.depot_index \
+             end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        handed, "::/stations/air/airfield.con|900|1 ::/stations/air/airfield.con|900|0",
+        "the second hangar, then the first; nothing else"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for why in [
+        "a depot the room cannot name: a depot 2 constructions list",
+        "a depot the room cannot name: a depot depot/bus_depot.con does not list among its depots",
+    ] {
+        assert!(logged.iter().any(|l| l.contains(why)), "{why}: {logged:?}");
+    }
 }
 
 /// Renaming in an entity window's title, and recolouring a vehicle: a
@@ -3810,7 +3960,7 @@ fn a_vehicle_bought_onto_a_line_is_put_on_it_once_the_room_can_name_it() {
              getComponent = function(e, kind) \
                  if kind == 7 and e == 77 then return { state = { registry = { vehicles = VEHICLES, \
                      lines = { next = 2, bound = { { 1, 600 } } }, groups = { next = 0, bound = {} } } } } end \
-                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', \
+                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', depots = { 202 }, \
                      transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end \
              end, \
              system = { \
@@ -3873,7 +4023,7 @@ fn vehicles_bought_onto_a_line_in_a_burst_all_get_the_line() {
              getComponent = function(e, kind) \
                  if kind == 7 and e == 77 then return { state = { registry = { vehicles = VEHICLES, \
                      lines = { next = 2, bound = { { 1, 600 } } }, groups = { next = 0, bound = {} } } } } end \
-                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', \
+                 if kind == 2 and e == 201 then return { fileName = 'depot/bus_depot.con', depots = { 202 }, \
                      transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 600,10,2,1 } } end \
              end, \
              system = { \
@@ -5711,8 +5861,8 @@ fn a_prospection_goes_to_the_room_by_its_towns_id_and_its_types_in_order() {
             "{why}: {logged:?}"
         );
     }
-    // Taking a rank goes to the room too (tpf3mp/progression.lua); the
-    // company's other events stay refused.
+    // Taking a rank goes to the room too (tpf3mp/progression.lua); a perk
+    // the capture cannot read stays refused.
     lua.load(
         "api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'applyLevel', { level = 2 }))          api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'applyLevel', { level = 2.5 }))          api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', 'MakeGreen', {}))",
     )
@@ -8603,6 +8753,234 @@ fn every_game_gives_a_subsidy_to_the_first_company_to_accept_it() {
     assert_eq!(founded, "Rival");
 }
 
+/// The construction menu's perk tools, Industry Greenification and the
+/// marketing campaign, as they send the company script their events
+/// (`industry_greenify_tool.script.tl`, `marketing_campaign_tool.script.tl`).
+const MAKE_GREEN: &str = "{ companyEntity = 25, constructionEntity = 931, \
+    permitKey = 'ECO_INDUSTRY' }";
+const MARKETING: &str = "{ townEntity = 7, companyEntity = 25, \
+    marketingParams = { durationMs = 1095000, lineCostFactor = 0.5 }, \
+    permitKey = '::/game_mechanics/company/permitKeys/marketing.res' }";
+
+/// Both perk tools were refused in a room ("the Companies script's MakeGreen
+/// event"): they go to the room, the industry by its id and the town by
+/// its, with the campaign's price, and the tool's own booking of that price
+/// after it is neither sent nor refused, since every game books it.
+#[test]
+fn the_perk_tools_go_to_the_room_by_industry_and_town() {
+    let lua = gui();
+    // Mechanics fixture only: production refuses this channel pending game acceptance.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').perks = true")
+        .exec()
+        .unwrap();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    // Town 7 is town-3; the coal mine, construction 930 with its industry
+    // part 931, is industry-2. Construction 940 has two industries.
+    lua.load(
+        "api.cmd.makeJournalBookAssetCmd = function(player, entry, at) \
+             return { kind = 'journal', player = player, amount = entry.amount } end \
+         api.type = { ComponentType = { GAME_SCRIPT = 7, CONSTRUCTION = 2, INDUSTRY = 13 } } \
+         api.engine = { \
+             util = { getPlayer = function() return 25 end, getYear = function() return 1960 end }, \
+             getComponent = function(e, kind) \
+                 if kind == 7 and e == 77 then return { state = { registry = { \
+                     vehicles = { next = 0, bound = {} }, lines = { next = 0, bound = {} }, \
+                     groups = { next = 0, bound = {} }, towns = { next = 4, bound = { { 3, 7 } } }, \
+                     industries = { next = 3, bound = { { 2, 930 }, { 1, 940 } } } } } } end \
+                 if kind == 2 and e == 930 then return { industries = { 931 } } end \
+                 if kind == 2 and e == 940 then return { industries = { 941, 942 } } end \
+             end, \
+             system = { \
+                 gameScriptSystem = { getEntityForGameScript = function(name) \
+                     if name == 'tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs' then return 77 end return -1 end }, \
+                 streetConnectorSystem = { getConstructionEntityForSubconstruction = function(part) \
+                     if part == 931 then return 930 end \
+                     if part == 941 then return 940 end \
+                     return -1 end }, \
+             }, \
+         } \
+         M = mount(loadPlugin()) M.step() HOOK.room = true",
+    )
+    .exec()
+    .unwrap();
+    lua.load(format!(
+        "local function ev(name, p, cb) \
+             api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', name, p), cb) end \
+         ev('MakeGreen', {MAKE_GREEN}) \
+         ev('startMarketingCampaign', {MARKETING}, function() \
+             UNLOCKED = true \
+             api.cmd.sendCommand(api.cmd.makeJournalBookAssetCmd(25, {{ amount = -10000000 }}, nil)) \
+         end) \
+         M.step()"
+    ))
+    .exec()
+    .unwrap();
+    let (sent, handed): (usize, usize) = lua.load("return #SENT, #HOOK.commands").eval().unwrap();
+    assert_eq!(
+        (sent, handed),
+        (0, 2),
+        "not run here: the room orders both for every game"
+    );
+    let perks: String = lua
+        .load(
+            "local g = HOOK.commands[1].Perk.Greenify local m = HOOK.commands[2].Perk.Marketing \
+             return table.concat({ g.industry, g.permit, m.town, m.duration_ms, m.line_cost_factor, \
+                 m.permit, string.format('%d', m.cost) }, '|')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        perks,
+        "2|ECO_INDUSTRY|3|1095000|0.5|::/game_mechanics/company/permitKeys/marketing.res|10000000"
+    );
+    // This game ran the campaign: the tool hears so, gives back its
+    // permits, and its own booking of the price goes nowhere.
+    lua.load("HOOK.results = { { ticket = 2, ok = true } } M.step()")
+        .exec()
+        .unwrap();
+    let (unlocked, sent): (bool, usize) =
+        lua.load("return UNLOCKED == true, #SENT").eval().unwrap();
+    assert!(unlocked);
+    assert_eq!(sent, 0, "the room's action books the price, not the tool");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        !logged.iter().any(|l| l.contains("makeJournalBookAssetCmd")),
+        "{logged:?}"
+    );
+    // A booking outside the tool's callback is still refused.
+    lua.load(
+        "api.cmd.sendCommand(api.cmd.makeJournalBookAssetCmd(25, { amount = -1 }, nil)) M.step()",
+    )
+    .exec()
+    .unwrap();
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(|l| l.contains("makeJournalBookAssetCmd")),
+        "{logged:?}"
+    );
+
+    // Another company's perk, an industry the room cannot tell from the
+    // other of its construction, and a town it cannot name are refused.
+    lua.load(format!(
+        "local function ev(name, p) \
+             api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Companies', name, p)) end \
+         local a = {MAKE_GREEN} a.companyEntity = 26 ev('MakeGreen', a) \
+         local b = {MAKE_GREEN} b.constructionEntity = 941 ev('MakeGreen', b) \
+         local c = {MARKETING} c.townEntity = 8 ev('startMarketingCampaign', c) \
+         M.step()"
+    ))
+    .exec()
+    .unwrap();
+    let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
+    assert_eq!(handed, 2);
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for why in [
+        "greenifying for another company",
+        "an industry the room cannot name",
+        "a town the room cannot name",
+    ] {
+        assert!(
+            logged
+                .iter()
+                .any(|l| l.contains("makeScriptingSendEventCmd") && l.ends_with(why)),
+            "{why}: {logged:?}"
+        );
+    }
+}
+
+/// The marketing tool's price, as the game's tool computes it.
+#[test]
+fn a_marketing_campaign_costs_what_the_tool_charges() {
+    let lua = gui();
+    let costs: Vec<i64> = lua
+        .load(
+            "local c = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             return { c.marketingCost(1850), c.marketingCost(1900), c.marketingCost(1960), \
+                 c.marketingCost(2020), c.marketingCost(2050) }",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        costs,
+        [4_000_000, 4_000_000, 10_000_000, 25_000_000, 25_000_000]
+    );
+}
+
+/// Every game uses a perk through the company script's own event, for the
+/// acting company, and books a campaign's price to it, as the tool does;
+/// one the company cannot pay for is refused in every game.
+#[test]
+fn every_game_uses_a_perk_through_the_company_scripts_own_event() {
+    let (lua, _script) = engine();
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').perks = true")
+        .exec()
+        .unwrap();
+    lua.load(FAKE_TOWNS).exec().unwrap();
+    lua.load(
+        "CONS[930].industries = { 931 } \
+         BALANCE = 50000000 \
+         api.engine.util.finance = { getPlayersBalance = function(p) return BALANCE end } \
+         api.type.JournalEntry = { new = function() return { category = {} } end, Type = { OTHER = 7 } } \
+         api.cmd.makeJournalBookAssetCmd = function(player, entry, at) \
+             return { journal = { player = player, amount = entry.amount, kind = entry.category.type, \
+                 time = entry.time } } end",
+    )
+    .exec()
+    .unwrap();
+    // The first update binds town 5 as town-0, 7 as town-1, and the coal
+    // mine's construction 930 as industry-0.
+    lua.load(
+        "HOOK.room = true UPDATE({}, STATE, 0.2) \
+         local m = { town = 1, duration_ms = 1095000, line_cost_factor = 0.5, permit = 'm.res', cost = 10000000 } \
+         HOOK.batch = { { Perk = { Greenify = { industry = 0, permit = 'ECO_INDUSTRY' } } }, \
+             { Perk = { Marketing = m } }, { Perk = { Greenify = { industry = 5 } } } } \
+         UPDATE({}, STATE, 0.2) \
+         BALANCE = 9999999 \
+         HOOK.batch = { { Perk = { Marketing = m } } } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let sent: String = lua
+        .load(
+            "local out = {} for _, c in ipairs(SENT) do \
+                 if c.event then \
+                     local p = c.event.param \
+                     out[#out + 1] = table.concat({ c.event.id, c.event.name, p.companyEntity, \
+                         tostring(p.constructionEntity or p.townEntity), tostring(p.permitKey), \
+                         tostring(p.marketingParams and p.marketingParams.durationMs), \
+                         tostring(p.marketingParams and p.marketingParams.lineCostFactor) }, ':') \
+                 elseif c.journal then \
+                     local j = c.journal \
+                     out[#out + 1] = table.concat({ 'journal', j.player, string.format('%d', j.amount), \
+                         j.kind, j.time }, ':') \
+                 end end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        sent,
+        "Companies:MakeGreen:25:931:ECO_INDUSTRY:nil:nil \
+         Companies:startMarketingCampaign:25:7:m.res:1095000:0.5 \
+         journal:25:-10000000:7:-1"
+    );
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = tostring(a.ok) .. ':' .. tostring(a.why) end \
+             return table.concat(out, ' ')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        applied,
+        "true:nil true:nil false:no industries 5 in this world \
+         false:not enough money for the campaign"
+    );
+}
+
 /// Both the sender and replay refuse new channels with production defaults.
 #[test]
 fn unaccepted_ports_cannot_be_sent_or_replayed() {
@@ -8618,6 +8996,8 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
             { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
             { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
+            { Perk = { Greenify = { industry = 0 } } },
+            { Perk = { Marketing = { town = 0, duration_ms = 1, line_cost_factor = 0.5, cost = 1 } } },
         }
         for _, action in ipairs(actions) do
             local sent, reason = link:command(action)
