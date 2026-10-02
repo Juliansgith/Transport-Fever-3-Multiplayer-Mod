@@ -207,3 +207,26 @@ states.
   re-installs on the current api whenever it is not there, from the
   ownership tests, and answers from the hook's company note where the
   roster cannot be read. Its log lines say which state answered what.
+
+### The map's markers and overlays (2026-10-02)
+
+Game test of bd3c695: the line manager followed the company, but the map's
+station icons showed company #0's stations and not #1's (372631), and a
+line company #1 made showed in the line manager but not on the map.
+
+- **seen** No helper decides "the local player's": every native reader
+  calls the GUI's `IGameStateProvider` (`[rax+8]`) and reads `+0x20c`
+  inline. tpfre found 79 reads of `[reg+0x20c]`; the UI ones are
+  `HudIconManager::PreemptiveOctreeTraversal` (0x67b7d5), `StationViewer`
+  (0x83a602), the selector (0x839cd3, `ViewCreator::vf1` 0x86711c), the
+  catchment overlay (0x8765ee, 0x876f28, 0x8770b4, 0x8770ef, 0x877b39), the
+  layer colours (0x87b83a, 0x87b913, 0x87b9e9, 0x883075, 0x885c82), two
+  React components (0x29f6894, 0x289e10f), plus the tools' (toolplayer.rs)
+  and a few the debug panel, notifications and the asset manipulator make.
+  The others are the simulation's (`CGame::RunGameSimLoop`, `GameState`
+  load and replication, `DataLogger`), the construction apply, and the
+  scripting bindings (`0x24f…`), which game scripts call too.
+- Each UI read is spliced (guiplayer.rs). INFERRED: that the map's line
+  overlay is the layer colours' (`LayerManagerColorMap`, the line layer's
+  colour function); if a line still does not show, the next place is a
+  reader this list does not have.

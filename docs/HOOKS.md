@@ -2087,6 +2087,47 @@ then at each power of two (`... was set back to player 214443; the company
 hands the player to (`sub_59b890`, `sub_5a2480` and the rest), which build
 nothing a company owns.
 
+**The views' player** (`crates/tpf3mp-hook/src/guiplayer.rs`), on unless
+`TPF3MP_HOOK_GUI_COMPANY=0`. With the windows following the company (bd3c695),
+the map still showed the first company's station icons and lines and not
+the player's company's: those are drawn natively, and each decides "the
+player's own" by asking the GUI's `IGameStateProvider` for the `GameState`
+and reading its player (`+0x20c`) inline. There is no shared helper to
+hook, and that `GameState` is one of the simulation's two buffers (the
+probe), so its player is never written. Each read in a UI function is
+spliced instead (`Splice`), right after it: in a room, the register that
+holds the save's player gets the company the GUI notes
+(`note("tpf3mp.company")`). Two reads compare the player with an owner at
+once (`mov eax,[player]; cmp [reg],eax`); those splices take the read and
+the compare, and point the owner's pointer at a copy of the save's player
+where the owner is the company, and at no one's where it is the save's
+player, the register being dead after on both paths. The sites:
+
+| what it draws or picks | function | splices |
+|---|---|---|
+| the icons above the map's stations | `UI::HudIconManager::PreemptiveOctreeTraversal` (`0x67b610`) | `0x67b7db` |
+| the station viewer | `UI::StationViewer::vf4` (`0x83a570`) | `0x83a608` |
+| what the selector picks, and its filter | `sub_839c50` (from `UI::CSelector`), `UI::ViewCreator::vf1` (from `CreateSelectorFilter`) | `0x839cd9`, `0x86712a` |
+| the catchment overlay | `UI::layers::CatchmentAreaHelper` (`sub_8764c0`, `sub_8779c0`) | `0x8765f5`, `0x876f36`, `0x8770ba`, `0x8770fd`, `0x877b39` (owner test) |
+| the map layers' colours: lines and stations | `LayerManagerColorMap` (`sub_87b7f0`), `UI::layers::LayerManager` (`0x883020`, `sub_885b10`) | `0x87b840`, `0x87b919`, `0x87b9ef`, `0x88307b`, `0x885c82` (owner test) |
+| two React components | `RendererComponentDelegate` (`sub_29f66d0`), `RailroadCrossingComp` (`sub_289e060`) | `0x29f689a`, `0x289e116` |
+
+Each splice takes whole instructions with no branch, call or RIP-relative
+operand, and no jump of the function lands inside it (tpfre). The
+profile's targets give each with a unique signature, checked again before
+it is spliced. What a site answers is read from two atomics the menu's
+frame refreshes from the notes, so a site on a worker thread (the HUD's
+octree traversal) reads no lock. Outside a room, for the room's first
+company, or while either note is missing, every read answers as the
+game's. Not covered: the scripting bindings that read the same player
+(`sub_24d6f40` and the others under `0x24f…`), which the game scripts call
+too; the GUI's Lua answers those (`tpf3mp/follow.lua`). hook.log:
+
+```
+view-company: 16 of 16 of the views' player reads see the player's company in a room (TPF3MP_HOOK_GUI_COMPANY=0 turns it off)
+view-company: the icons above the map's stations see the player's company 372631 (view: HudIconManager::PreemptiveOctreeTraversal/player)
+```
+
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and
 `getCompaniesValue()` take no company and answer for the engine's local

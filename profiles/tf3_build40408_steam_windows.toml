@@ -1303,3 +1303,141 @@ signature = "48 89 5C 24 08 57 48 83 EC 30 48 8D 99 A8 00 00 00 4C 8B C2 48 8B F
 offset = 0
 prologue = "48 89 5C 24 08 57 48 83 EC 30 48 8D 99 A8 00 00 00"
 required = false
+
+# The views' player (crates/tpf3mp-hook/src/guiplayer.rs; docs/HOOKS.md,
+# "The views' player"), off with TPF3MP_HOOK_GUI_COMPANY=0. Each site reads
+# the player of the GameState the GUI's IGameStateProvider gives (+0x20c,
+# one of the simulation's buffers, never written) in a UI function, and is
+# spliced at the target: after the read, the register holding the player
+# becomes the player's company in a room; at an owner test, the owner's
+# pointer is pointed at a copy. Every target's splice takes whole
+# instructions no branch lands inside, with no branch, call or RIP-relative
+# operand (tpfre, every jump target of the function checked).
+
+# UI::HudIconManager::PreemptiveOctreeTraversal (hudiconmanager.cpp), via PreparePreemptiveOctreeTraversalFn's lambda 0x680850; eax = player, stored in the traversal's context (function 0x67b610, splice 0x67b7db).
+[[target]]
+name = "view: HudIconManager::PreemptiveOctreeTraversal/player"
+signature = "8B 80 0C 02 00 00 4C 89 75 B8 48 89 5D C0"
+offset = 6
+prologue = "4C 89 75 B8 48 89 5D C0"
+required = false
+
+# UI::StationViewer::vf4; ebx = player (function 0x83a570, splice 0x83a608).
+[[target]]
+name = "view: StationViewer::vf4/player"
+signature = "8B 98 0C 02 00 00 48 8B 46 10 4C 8D 70 78"
+offset = 6
+prologue = "48 8B 46 10 4C 8D 70 78"
+required = false
+
+# sub_839c50 from sub_557b90 from UI::CSelector (vf2@8, vf5@8); ebx = player (function 0x839c50, splice 0x839cd9).
+[[target]]
+name = "view: CSelector pick/player"
+signature = "8B 98 0C 02 00 00 48 8B 47 10 4C 8D 70 78"
+offset = 6
+prologue = "48 8B 47 10 4C 8D 70 78"
+required = false
+
+# UI::ViewCreator::vf1, from UI::CreateSelectorFilter; ebx = player, looked up as a Player (function 0x867030, splice 0x86712a).
+[[target]]
+name = "view: ViewCreator::vf1/player"
+signature = "41 8B 9D 0C 02 00 00 48 8D 05 F6 CB 48 03 48 8D 55 38 48 89 45 38"
+offset = 14
+prologue = "48 8D 55 38 48 89 45 38"
+required = false
+
+# sub_8764c0, from UI::layers::CatchmentAreaHelper's ctor lambda 0x878400; r8d = player (function 0x8764c0, splice 0x8765f5).
+[[target]]
+name = "view: CatchmentAreaHelper/player 1"
+signature = "44 8B 80 0C 02 00 00 48 8B 5D 90 48 8B 53 10"
+offset = 7
+prologue = "48 8B 5D 90 48 8B 53 10"
+required = false
+
+# sub_8764c0; ebx = player, kept across the call to sub_867550 (function 0x8764c0, splice 0x876f36).
+[[target]]
+name = "view: CatchmentAreaHelper/player 2"
+signature = "8B 98 0C 02 00 00 49 8B CC E8 1A 06 FF FF 40 88 7C 24 20"
+offset = 14
+prologue = "40 88 7C 24 20"
+required = false
+
+# sub_8764c0; ebx = player (function 0x8764c0, splice 0x8770ba).
+[[target]]
+name = "view: CatchmentAreaHelper/player 3"
+signature = "8B 98 0C 02 00 00 4D 8D 77 10 49 8B CE"
+offset = 6
+prologue = "4D 8D 77 10 49 8B CE"
+required = false
+
+# sub_8764c0; ebx = player, kept across the call to sub_867550 (function 0x8764c0, splice 0x8770fd).
+[[target]]
+name = "view: CatchmentAreaHelper/player 4"
+signature = "8B 98 0C 02 00 00 49 8B CE E8 53 04 FF FF C6 44 24 20 00"
+offset = 14
+prologue = "C6 44 24 20 00"
+required = false
+
+# sub_8779c0 from sub_8764c0; mov eax,[player]; cmp [rbx],eax: rbx the owner, dead after (overwritten at 0x877b73; the jne lands in the epilogue 0x877e01) (function 0x8779c0, splice 0x877b39).
+[[target]]
+name = "view: CatchmentAreaHelper/owner test"
+signature = "8B 80 0C 02 00 00 39 03"
+offset = 0
+prologue = "8B 80 0C 02 00 00 39 03"
+required = false
+
+# sub_87b7f0 from sub_882250 (LayerManagerColorMap) from UI::CGameUI::vf50; eax = player (function 0x87b7f0, splice 0x87b840).
+[[target]]
+name = "view: LayerManagerColorMap/player 1"
+signature = "8B 80 0C 02 00 00 49 8B 10 49 8B 48 10"
+offset = 6
+prologue = "49 8B 10 49 8B 48 10"
+required = false
+
+# sub_87b7f0; ebx = player (function 0x87b7f0, splice 0x87b919).
+[[target]]
+name = "view: LayerManagerColorMap/player 2"
+signature = "11 FF 52 08 48 8B 4B 08 8B 98 0C 02 00 00 48 8B 79 38 48 8B 71 30"
+offset = 14
+prologue = "48 8B 79 38 48 8B 71 30"
+required = false
+
+# sub_87b7f0; ebx = player (function 0x87b7f0, splice 0x87b9ef).
+[[target]]
+name = "view: LayerManagerColorMap/player 3"
+signature = "11 FF 52 08 48 8B 4B 10 8B 98 0C 02 00 00 48 8B 79 38 48 8B 71 30"
+offset = 14
+prologue = "48 8B 79 38 48 8B 71 30"
+required = false
+
+# a lambda of UI::layers::LayerManager; eax = player (function 0x883020, splice 0x88307b).
+[[target]]
+name = "view: LayerManager colour lambda/player"
+signature = "8B 80 0C 02 00 00 48 8B 51 10 4C 8B 09"
+offset = 6
+prologue = "48 8B 51 10 4C 8B 09"
+required = false
+
+# sub_885b10, from LayerManager::SetColorFunction's lambda_2 (0x8830e0); mov eax,[player]; cmp [rdx],eax: rdx the owner, dead after (overwritten at 0x885cab; the jne lands in the epilogue 0x885f0c) (function 0x885b10, splice 0x885c82).
+[[target]]
+name = "view: LayerManager colour/owner test"
+signature = "8B 85 0C 02 00 00 39 02"
+offset = 0
+prologue = "8B 85 0C 02 00 00 39 02"
+required = false
+
+# sub_29f66d0, a UI::react params::RendererComponentDelegate builtin; ebx = player (function 0x29f66d0, splice 0x29f689a).
+[[target]]
+name = "view: react RendererComponentDelegate/player"
+signature = "8B 98 0C 02 00 00 49 8B 07 49 8B CF"
+offset = 6
+prologue = "49 8B 07 49 8B CF"
+required = false
+
+# sub_289e060, a UI::react params::RailroadCrossingComp builtin; r14d = player (function 0x289e060, splice 0x289e116).
+[[target]]
+name = "view: react RailroadCrossingComp/player"
+signature = "44 8B B0 0C 02 00 00 48 8B 03 48 8B 08"
+offset = 7
+prologue = "48 8B 03 48 8B 08"
+required = false

@@ -240,6 +240,8 @@ fn menu_seen(menu: usize) -> MenuFrame {
         ));
     }
     // The engine's player, read only, when asked (crate::probe).
+    // What the views' player reads answer until the next frame.
+    crate::guiplayer::refresh();
     lines.extend(crate::probe::frame(menu, now_ms));
     // No load may run, nor a frame inside another (dev's gate): the
     // menu's Lua only then.
@@ -1037,6 +1039,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     }
     log_line(&crate::townfield::install(&absolute));
     for line in crate::toolplayer::install(&absolute) {
+        log_line(&line);
+    }
+    for line in crate::guiplayer::install(&absolute) {
         log_line(&line);
     }
     for line in crate::persons::install(&absolute) {

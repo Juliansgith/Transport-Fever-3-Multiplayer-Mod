@@ -40,6 +40,7 @@ pub mod clipboard;
 pub mod cmdkinds;
 pub mod copycheck;
 pub mod edgewatch;
+pub mod guiplayer;
 pub mod image;
 mod install;
 pub mod junctions;
