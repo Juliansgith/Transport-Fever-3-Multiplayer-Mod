@@ -39,7 +39,7 @@ The shape tells the tool apart (measured unless noted):
 | stop or signal bulldoze | the edge removed and re-added without the object |
 | construction bulldoze | `toRemove` populated, nothing added |
 | road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408) |
-| tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file: the group rebuilt without the assets removed (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408) |
+| tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file, its desc `autoRemovable`: the group rebuilt without the assets removed, thin instances then full ones (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408); nothing added when the last assets of a group go |
 | terraform | no nodes or segments; a `Grid<{height, base}>` of 4 m cells |
 | paint | no nodes or segments; the material index grid and its mask |
 | asset brush | `toAdd` records of an asset-group type whose per-asset data is a vector of `{model path, matrix}` (decompiled); its commit clears `old2new` first |

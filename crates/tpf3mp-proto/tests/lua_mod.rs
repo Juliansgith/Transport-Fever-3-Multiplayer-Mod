@@ -5779,30 +5779,57 @@ fn a_bulldoze_the_room_cannot_name_is_refused() {
 }
 
 /// Trees over FAKE_NETWORK and FAKE_TOWN: asset group 7000 of four firs
-/// (thin instances), 7001 of two firs elsewhere; the game's model files and
-/// octree, and the full proposal's types as a game script makes them.
-/// `TOOL(removed)` is the asset bulldozer's proposal taking the firs at the
-/// given indices out of 7000, as build 13090a8 showed it: the group in
-/// `toRemove`, and one construction of no file at the origin whose models
-/// are the firs kept, each its file and world matrix.
+/// (thin instances), 7001 of two firs elsewhere, 7002 of a fir and a
+/// boulder (a full instance, with its own matrix), 7003 of one boulder and
+/// 7004 of one fir; the game's model files and octree, and the full
+/// proposal's types as TF3 (build 40408) binds them: a
+/// `Proposal.ConstructionEntity` whose `fileName` only reads (the desc's),
+/// whose `desc` and `construction` (a `ConstructionResult`) are written
+/// back whole. `TOOL(removed, group)` is the asset bulldozer's proposal
+/// taking the assets at the given indices (thin ones first, then full ones)
+/// out of `group` (7000 by default), as UI::AssetBulldozerAction builds it:
+/// the group in `toRemove`, and, unless every asset went, one construction
+/// entity at the origin, its desc autoRemovable, whose models are the assets
+/// kept, thin then full, each its file and world matrix.
 const FAKE_TREES: &str = r#"
-api.res.modelRep = { getName = function(id) if id == 41 then return 'assets/trees/fir.mdl' end end }
+local FILES = { [41] = 'assets/trees/fir.mdl', [42] = 'assets/rocks/boulder.mdl' }
+api.res.modelRep = { getName = function(id) return FILES[id] end }
 api.type.Vec2f = { new = function(x, y) return { x = x, y = y } end }
+local READ_ONLY = { fileName = true, params = true, hasCargoPlatform = true }
 api.type.Proposal = {
     new = function() return { kind = 'Proposal' } end,
     TransformedModel = { new = function() return {} end },
     Subconstruction = { new = function() return {} end },
-    ConstructionEntity = { new = function() return { construction = {} } end },
+    ConstructionEntity = { new = function()
+        local fields = { desc = { fileName = '', autoRemovable = false }, construction = {}, playerEntity = -1 }
+        return setmetatable({}, {
+            __index = function(_, k)
+                if k == 'fileName' then return fields.desc.fileName end
+                return fields[k]
+            end,
+            __newindex = function(_, k, v)
+                if READ_ONLY[k] then error("no writable member '" .. k .. "'") end
+                fields[k] = v
+            end,
+        })
+    end },
 }
 local function fir(x, y, rot) return { modelId = 41, pos = { x = x, y = y, z = 3 }, rot = rot, scale = 1.25 } end
+local function boulder(x, y)
+    return { modelId = 42, transf = { 0, 2, 0, 0, -2, 0, 0, 0, 0, 0, 2, 0, x, y, 2, 1 } }
+end
 GROUPS = {
     [7000] = { fir(10, 20, 0), fir(14, 21, 0.5), fir(18, 19, 1), fir(22, 20, 2) },
     [7001] = { fir(400, 20, 0), fir(404, 20, 0) },
+    [7002] = { fir(600, 50, 0.25) },
+    [7003] = {},
+    [7004] = { fir(800, 70, 1.5) },
 }
+FULL = { [7002] = { boulder(602, 50) }, [7003] = { boulder(700, 60) } }
 local get = api.engine.getComponent
 api.engine.getComponent = function(e, kind)
     if kind == 30 and GROUPS[e] then return {} end
-    if kind == 31 and GROUPS[e] then return { fatInstances = {}, thinInstances = GROUPS[e] } end
+    if kind == 31 and GROUPS[e] then return { fatInstances = FULL[e] or {}, thinInstances = GROUPS[e] } end
     return get(e, kind)
 end
 api.engine.util.octree = { findEntitiesInCircle = function(at, r, kind)
@@ -5812,20 +5839,32 @@ api.engine.util.octree = { findEntitiesInCircle = function(at, r, kind)
     return out
 end }
 tpf3mp_native.trees = function() return HOOK.trees == true end
-function TOOL(removed)
+function TOOL(removed, group)
+    group = group or 7000
     local engine = ug_require('tpf3mp_1::/scripts/tpf3mp/engine.lua')
-    local gone, models = {}, {}
+    local gone, models, n = {}, {}, 0
     for _, i in ipairs(removed) do gone[i] = true end
-    for i, t in ipairs(GROUPS[7000]) do
-        if not gone[i] then
-            models[#models + 1] = { id = '::/assets/trees/fir.mdl', tag = 0, thin = false,
+    for _, t in ipairs(GROUPS[group]) do
+        n = n + 1
+        if not gone[n] then
+            models[#models + 1] = { id = '::/' .. FILES[t.modelId], tag = '', thin = false,
                 transf = engine.assetMatrix({ x = t.pos.x, y = t.pos.y, z = t.pos.z, rot = t.rot,
                     scale = t.scale }, false) }
         end
     end
-    return { toRemove = { 7000 }, toAdd = { { fileName = '', playerEntity = -1,
-        transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
-        construction = { frozenNodes = {}, frozenEdges = {}, subconstructions = { { models = models } } } } },
+    for _, f in ipairs(FULL[group] or {}) do
+        n = n + 1
+        if not gone[n] then
+            models[#models + 1] = { id = '::/' .. FILES[f.modelId], tag = '', thin = false, transf = f.transf }
+        end
+    end
+    local toAdd = {}
+    if #models > 0 then
+        toAdd[1] = { fileName = '', playerEntity = -1, desc = { fileName = '', autoRemovable = true },
+            transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
+            construction = { subconstructions = { { models = models } } } }
+    end
+    return { toRemove = { group }, toAdd = toAdd,
         proposal = { addedNodes = {}, addedSegments = {}, removedNodes = {}, removedSegments = {},
             edgeObjectsToAdd = {} } }
 end
@@ -5899,11 +5938,12 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
          local m = models[2].transf \
          return table.concat({ table.concat(out, ','), s.proposal.kind, s.proposal.toRemove[1], #models, \
              models[1].id, ce.fileName, ce.playerEntity, s.context.player, tostring(s.playerInitiated), \
-             string.format('%.4f,%.4f,%.1f,%.1f', m[1][1], m[1][2], m[4][1], m[4][2]) }, '|')",
+             string.format('%.4f,%.4f,%.1f,%.1f', m[1][1], m[1][2], m[4][1], m[4][2]), \
+             tostring(ce.desc.autoRemovable) }, '|')",
     );
     assert_eq!(
         rebuilt,
-        "true|Proposal|7000|3|::/assets/trees/fir.mdl||-1|901|true|0.6754,1.0518,18.0,19.0"
+        "true|Proposal|7000|3|::/assets/trees/fir.mdl||-1|901|true|0.6754,1.0518,18.0,19.0|true"
     );
     let logged = eval("return table.concat(HOOK.logged, '|')");
     assert!(
@@ -5931,6 +5971,134 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
             "local a = HOOK.applied[1] return tostring(a.ok) .. ':' .. tostring(a.why) .. ':' .. #SENT"
         ),
         "false:no asset group of 4 assets with those trees here:0"
+    );
+}
+
+/// Rocks and whole groups bulldozed through the room, behind
+/// TPF3MP_TREE_BULLDOZE=1: a boulder (a full model instance) taken out of a
+/// group with a fir, the group rebuilt with the fir alone; the fir taken
+/// instead, the group rebuilt with the boulder at its own matrix; a group of
+/// one boulder, or of one fir, removed whole with nothing rebuilt, as the
+/// tool does. Every game logs the group and what stands after. Two assets
+/// of one model at one place are refused, as is a tool that moves a full
+/// instance: the room could not say which went, or would build it elsewhere.
+#[test]
+fn rocks_and_whole_asset_groups_bulldozed_go_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    lua.load(FAKE_TREES).exec().unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code).eval::<String>().unwrap_or_else(|error| {
+            panic!(
+                "{code}: {error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        })
+    };
+    lua.load(
+        "HOOK.trees = true A = string.rep('a', 64) \
+         CAPTURE = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         function CARRY(removed, group) \
+             local action, why = CAPTURE.bulldoze(TOOL(removed, group)) \
+             if action == nil then return nil, why end \
+             SENT = {} HOOK.applied = {} HOOK.logged = {} \
+             HOOK.batch = { action } HOOK.origins = { A } UPDATE({}, STATE, 0.2) \
+             return action \
+         end \
+         function SAID(action) \
+             local a = action.Bulldoze.Assets local r = a.removed[1] \
+             return table.concat({ a.first.model, a.first.at.x, a.first.at.y, a.count, #a.removed, r.model, \
+                 r.at.x, r.at.y, r.at.z, tostring(schema_check(action)) }, '|') \
+         end \
+         function BUILT() \
+             local out = {} for _, a in ipairs(HOOK.applied) do \
+                 out[#out + 1] = tostring(a.ok) .. (a.why and (':' .. a.why) or '') end \
+             local p = SENT[1].proposal local ce = p.toAdd and p.toAdd[1] \
+             local models = ce and ce.construction.subconstructions[1].models or {} \
+             local t = models[1] and models[1].transf \
+             return table.concat({ table.concat(out, ','), p.toRemove[1], ce and 1 or 0, #models, \
+                 models[1] and models[1].id or '-', \
+                 t and string.format('%.3f,%.3f,%.1f,%.1f,%.1f', t[1][1], t[1][2], t[4][1], t[4][2], t[4][3]) \
+                     or '-', ce and tostring(ce.desc.autoRemovable) or '-' }, '|') \
+         end",
+    )
+    .exec()
+    .unwrap();
+    // The boulder out of 7002: the fir stays, rebuilt alone.
+    assert_eq!(
+        eval("return SAID(CARRY({ 2 }, 7002))"),
+        "::/assets/trees/fir.mdl|600|50|2|1|::/assets/rocks/boulder.mdl|602|50|2|true"
+    );
+    assert_eq!(
+        eval("return BUILT()"),
+        "true|7002|1|1|::/assets/trees/fir.mdl|1.211,0.309,600.0,50.0,3.0|true"
+    );
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains(
+            "trees: asset group 7002 of 2 assets, 1 removed (::/assets/rocks/boulder.mdl at 602.00,50.00), \
+             rebuilt with 1"
+        ),
+        "{logged}"
+    );
+    // The fir out of 7002 instead: the boulder stays, at its own matrix.
+    assert_eq!(
+        eval("return SAID(CARRY({ 1 }, 7002))"),
+        "::/assets/trees/fir.mdl|600|50|2|1|::/assets/trees/fir.mdl|600|50|3|true"
+    );
+    assert_eq!(
+        eval("return BUILT()"),
+        "true|7002|1|1|::/assets/rocks/boulder.mdl|0.000,2.000,602.0,50.0,2.0|true"
+    );
+    // A group of one boulder: removed whole, nothing rebuilt.
+    assert_eq!(
+        eval("return SAID(CARRY({ 1 }, 7003))"),
+        "::/assets/rocks/boulder.mdl|700|60|1|1|::/assets/rocks/boulder.mdl|700|60|2|true"
+    );
+    assert_eq!(eval("return BUILT()"), "true|7003|0|0|-|-|-");
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains(
+            "trees: asset group 7003 of 1 assets, 1 removed (::/assets/rocks/boulder.mdl at 700.00,60.00), \
+             rebuilt with 0"
+        ),
+        "{logged}"
+    );
+    assert!(
+        logged.contains(
+            "trees: after the rebuild 1 group(s) hold the first tree removed, of 1 assets"
+        ),
+        "{logged}"
+    );
+    // A group of one fir: the same.
+    assert_eq!(
+        eval("return SAID(CARRY({ 1 }, 7004))"),
+        "::/assets/trees/fir.mdl|800|70|1|1|::/assets/trees/fir.mdl|800|70|3|true"
+    );
+    assert_eq!(eval("return BUILT()"), "true|7004|0|0|-|-|-");
+    // Without the flag, a whole group's removal stays refused.
+    assert_eq!(
+        eval("HOOK.trees = false local _, why = CARRY({ 1 }, 7004) HOOK.trees = true return why"),
+        "removing trees or other assets (asset group 7004), which the room does not carry yet"
+    );
+    // Two firs of one model at one place, one taken: refused at the click.
+    assert_eq!(
+        eval(
+            "GROUPS[7005] = { GROUPS[7004][1], { modelId = 41, pos = { x = 800, y = 70, z = 3 }, rot = 0, \
+                 scale = 1 } } \
+             local _, why = CARRY({ 2 }, 7005) GROUPS[7005] = nil return why"
+        ),
+        "two assets of ::/assets/trees/fir.mdl at 800.000, 70.000, 3.000: which one went is not clear"
+    );
+    // A tool that moves the boulder it keeps: refused.
+    assert_eq!(
+        eval(
+            "local p = TOOL({ 1 }, 7002) p.toAdd[1].construction.subconstructions[1].models[1].transf = \
+                 { 0, 2, 0, 0, -2, 0, 0, 0, 0, 0, 3, 0, 602, 50, 2, 1 } \
+             local _, why = CAPTURE.bulldoze(p) return why"
+        ),
+        "the tool moves the full instance ::/assets/rocks/boulder.mdl (element 11: 3, not 2)"
     );
 }
 

@@ -18,8 +18,8 @@ use mlua::{Lua, Table, Value};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
-        Action, EdgeEnds, EdgeKind, EdgeRef, Link, Network, NodeRef, Polyline, Pos, Resolve,
-        RoadBuild, Structure, Tangent, TrackBuild, Tram, Vertex,
+        Action, AssetRef, AssetRemoval, Bulldoze, EdgeEnds, EdgeKind, EdgeRef, Link, Network,
+        NodeRef, Polyline, Pos, Resolve, RoadBuild, Structure, Tangent, TrackBuild, Tram, Vertex,
     },
     lua::{LuaValue, action_from_lua},
 };
@@ -727,4 +727,142 @@ fn a_road_through_a_town_house_is_carried_and_through_a_station_is_not() {
     )
     .unwrap_err();
     assert!(why.contains("removes a construction"), "{why}");
+}
+
+/// Runs the asset bulldozer's capture (`engine.captureAssets`) over three
+/// asset groups as build 40408 holds them, and returns the action table,
+/// or why it was refused. 50 holds four firs as thin instances; 51 a fir
+/// and a boulder, a full instance with its own matrix; 52 one boulder.
+/// `TOOL(group, removed)` makes the tool's proposal as
+/// UI::AssetBulldozerAction does: the group removed and, unless every asset
+/// went, one construction entity at the origin whose models are the assets
+/// kept, thin ones then full ones, each its file and world matrix.
+fn capture_assets(call: &str) -> Result<LuaValue, String> {
+    let lua = Lua::new();
+    let preload: Table = lua
+        .globals()
+        .get::<Table>("package")
+        .unwrap()
+        .get("preload")
+        .unwrap();
+    for (name, source) in MODULES {
+        let chunk = lua.load(source).into_function().unwrap();
+        preload.set(format!("tpf3mp.{name}"), chunk).unwrap();
+    }
+    let (action, why): (Value, Option<String>) = lua
+        .load(format!(
+            "local FILES = {{ [41] = 'assets/trees/fir.mdl', [42] = 'assets/rocks/boulder.mdl' }}
+             local function fir(x, y, rot)
+                 return {{ modelId = 41, pos = {{ x = x, y = y, z = 3 }}, rot = rot, scale = 1.25 }}
+             end
+             local function boulder(x, y)
+                 return {{ modelId = 42, transf = {{ 0, 2, 0, 0, -2, 0, 0, 0, 0, 0, 2, 0, x, y, 2, 1 }} }}
+             end
+             local THIN = {{ [50] = {{ fir(10, 20, 0), fir(14, 21, 0.5), fir(18, 19, 1), fir(22, 20, 2) }},
+                             [51] = {{ fir(600, 50, 0.25) }}, [52] = {{}} }}
+             local FULL = {{ [51] = {{ boulder(602, 50) }}, [52] = {{ boulder(700, 60) }} }}
+             api = {{
+                 type = {{ ComponentType = {{ ASSET_GROUP = 30, MODEL_INSTANCE_LIST = 31 }} }},
+                 res = {{ modelRep = {{ getName = function(id) return FILES[id] end }} }},
+                 engine = {{ getComponent = function(e, kind)
+                     if kind == 30 and THIN[e] then return {{}} end
+                     if kind == 31 and THIN[e] then
+                         return {{ thinInstances = THIN[e], fatInstances = FULL[e] or {{}} }}
+                     end
+                 end }},
+             }}
+             local engine = require('tpf3mp.engine')
+             function TOOL(group, removed)
+                 local gone, models, n = {{}}, {{}}, 0
+                 for _, i in ipairs(removed) do gone[i] = true end
+                 for _, t in ipairs(THIN[group]) do
+                     n = n + 1
+                     if not gone[n] then
+                         models[#models + 1] = {{ id = '::/' .. FILES[t.modelId], thin = false,
+                             transf = engine.assetMatrix({{ x = t.pos.x, y = t.pos.y, z = t.pos.z,
+                                 rot = t.rot, scale = t.scale }}, false) }}
+                     end
+                 end
+                 for _, f in ipairs(FULL[group] or {{}}) do
+                     n = n + 1
+                     if not gone[n] then
+                         models[#models + 1] = {{ id = '::/' .. FILES[f.modelId], thin = false, transf = f.transf }}
+                     end
+                 end
+                 local toAdd = {{}}
+                 if #models > 0 then
+                     toAdd[1] = {{ fileName = '', playerEntity = -1,
+                         transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }},
+                         construction = {{ subconstructions = {{ {{ models = models }} }} }} }}
+                 end
+                 return {{ toRemove = {{ group }}, toAdd = toAdd,
+                     proposal = {{ addedNodes = {{}}, addedSegments = {{}}, removedNodes = {{}},
+                         removedSegments = {{}} }} }}
+             end
+             return {call}"
+        ))
+        .eval()
+        .map_err(|error| error.to_string())?;
+    match (action, why) {
+        (Value::Nil, why) => Err(why.unwrap_or_default()),
+        (action, _) => Ok(tree(&action)),
+    }
+}
+
+fn asset(model: &str, x: i32, y: i32, z: i32) -> AssetRef {
+    AssetRef {
+        model: text(model),
+        at: pos(x, y, z),
+    }
+}
+
+/// The three shapes the asset bulldozer makes decode as the schema says,
+/// in millimetres: a fir taken out of a group of thin instances, the rest
+/// rebuilt; a boulder (a full instance) taken out of a group with a fir;
+/// a group of one boulder taken whole, nothing rebuilt.
+#[test]
+fn an_asset_bulldoze_decodes_as_the_schema_says() {
+    const FIR: &str = "::/assets/trees/fir.mdl";
+    const BOULDER: &str = "::/assets/rocks/boulder.mdl";
+    let removal = |call: &str| match decode(capture_assets(call).unwrap()) {
+        Action::Bulldoze(Bulldoze::Assets(removal)) => removal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        removal("engine.captureAssets(TOOL(50, { 2 }))"),
+        AssetRemoval {
+            first: asset(FIR, 10_000, 20_000, 3_000),
+            count: 4,
+            removed: list(vec![asset(FIR, 14_000, 21_000, 3_000)]),
+            mirrored: false,
+            owned: false,
+        }
+    );
+    assert_eq!(
+        removal("engine.captureAssets(TOOL(51, { 2 }))"),
+        AssetRemoval {
+            first: asset(FIR, 600_000, 50_000, 3_000),
+            count: 2,
+            removed: list(vec![asset(BOULDER, 602_000, 50_000, 2_000)]),
+            mirrored: false,
+            owned: false,
+        }
+    );
+    assert_eq!(
+        removal("engine.captureAssets(TOOL(52, { 1 }))"),
+        AssetRemoval {
+            first: asset(BOULDER, 700_000, 60_000, 2_000),
+            count: 1,
+            removed: list(vec![asset(BOULDER, 700_000, 60_000, 2_000)]),
+            mirrored: false,
+            owned: false,
+        }
+    );
+    // A proposal that also changes streets is no asset bulldoze.
+    let why = capture_assets(
+        "engine.captureAssets((function() local p = TOOL(52, { 1 }) \
+             p.proposal.removedSegments = { { entity = 100 } } return p end)())",
+    )
+    .unwrap_err();
+    assert_eq!(why, "an asset bulldoze that changes streets too");
 }

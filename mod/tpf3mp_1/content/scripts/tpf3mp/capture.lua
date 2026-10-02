@@ -504,8 +504,9 @@ end
 -- (capture.construction), or refused. One that removes something that is no
 -- construction and adds a construction of no file is the asset
 -- bulldozer's (trees and other assets: their group rebuilt without the ones
--- removed), refused with what it removes (tpf3mp/engine.lua,
--- notConstruction).
+-- removed), as is one that removes an asset group alone (its last assets
+-- taken): carried behind TPF3MP_TREE_BULLDOZE=1 (engine.captureAssets),
+-- else refused with what it removes (tpf3mp/engine.lua, notConstruction).
 function capture.bulldoze(proposal)
 	local toRemove = get(proposal, "toRemove")
 	if (length(get(proposal, "toAdd")) or 0) > 0 and (length(toRemove) or 0) > 0 then
@@ -523,6 +524,13 @@ function capture.bulldoze(proposal)
 			if (length(get(c, "townBuildings")) or 0) == 0 then return capture.construction(proposal) end
 		end
 		return nil, "a bulldozer proposal that builds"
+	end
+	-- The last assets of a group taken: the asset bulldozer removes the
+	-- group and adds nothing (CreateProposalAddAsset with no model kept).
+	if (length(get(proposal, "toAdd")) or 0) == 0 and (length(toRemove) or 0) == 1 then
+		local engine = module("engine")
+		local okA, asset = pcall(api.engine.getComponent, get(toRemove, 1), api.type.ComponentType.ASSET_GROUP)
+		if okA and asset ~= nil and engine.treesOn() then return engine.captureAssets(proposal) end
 	end
 	return module("engine").bulldoze(proposal)
 end

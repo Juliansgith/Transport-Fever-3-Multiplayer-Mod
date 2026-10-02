@@ -2304,14 +2304,37 @@ terrain tools through the hook, and a construction's window its edits:
   that proposal travels as a `Bulldoze::Assets`: the group by its first
   asset and how many it holds, the assets taken out by model and position,
   and which way the tool turned them (read off its matrices; a rebuilt
-  group that holds any asset the group did not, or turns one otherwise,
-  is refused). Every game finds the one group of that size holding them
-  all, builds a full proposal (`api.type.Proposal`) removing it and adding
-  its own copy less those assets as `TransformedModel`s (`::/` file,
-  matrix from the thin instance's position, turn and scale), sends it as
+  group that holds any asset the group did not, turns a thin one
+  otherwise or moves a full one, or a removed asset with another of its
+  model at its place, is refused). The tool's own shape, decompiled on
+  build 40408 (`UI::AssetBulldozerAction`,
+  `construction_builder_util::CreateProposalAddAsset`): the group in
+  `toRemove` and, unless every asset of it went, one
+  `Proposal.ConstructionEntity` at the origin whose desc is
+  `autoRemovable` and whose one subconstruction's `models` are the assets
+  kept, the thin instances first (matrix from position, turn and scale),
+  then the full ones (their own matrix), none `thin`. When the last
+  assets of a group go (a lone tree or rock), nothing is added. TF3 binds
+  these types otherwise than TF2 and its own tealdef say:
+  `Proposal.ConstructionEntity` has `desc`, `construction`, `transf`,
+  `frozenNodes`, `segmentsBefore`, `name`, `playerEntity` and
+  `setAsHeadquarterHack` as data, and `fileName`, `params` and
+  `hasCargoPlatform` read-only (writing `fileName` raises "no writable
+  member"); its `construction` is a `Proposal.ConstructionResult`
+  (`subconstructions`, `metadata`, `cost`, `maintenanceCost`,
+  `maintenanceCarrier`, `streetTerminal`, `params`), not the
+  `Construction` component; a `Proposal.Subconstruction` has `models`,
+  `station`, `depot`, `industry`, `metadata`, `laneLists` and
+  `colliders`; a `Proposal.TransformedModel` `id`, `tag`, `transf` and
+  `thin` (the binding's registration, `RegisterUsertypesTransport`). The
+  tool also gives its subconstruction one empty terrain alignment list,
+  which no binding reaches; it aligns no terrain. Every game finds the
+  one group of that size holding them all, builds the same full proposal
+  (`api.type.Proposal`) from its own copy less those assets, sends it as
   the player's company's build, and logs the group, its assets before,
-  and the group holding the first asset kept after (`trees:` lines). Not
-  yet tried in the game: the flag keeps it to trials. A stop it
+  and the group holding the first asset kept (or, with none kept, the
+  first removed) after (`trees:` lines). The flag keeps it to trials. A
+  stop it
   removes is carried as the stop tool's builds are (below): its edge
   rebuilt without it, the stop named by its edge, where it stands and its
   construction (the `EDGE_OBJECT` component's `transf` and
