@@ -1122,3 +1122,77 @@ signature = "49 8D 8D D8 00 00 00 4D 8B 0C 24 49 8B 41 08 48 89 44 24 20 4D 8B 0
 offset = 0
 prologue = "49 8D 8D D8 00 00 00 4D 8B 0C 24 49 8B 41 08 48 89 44 24 20 4D 8B 09 4D 8B 85 F8 00 00 00 48 8D 55 87 E8"
 required = false
+
+# The tools' player (crates/tpf3mp-hook/src/toolplayer.rs; docs/HOOKS.md,
+# "The tools' player"), off with TPF3MP_HOOK_TOOL_COMPANY=0. UI::CGameUI's
+# constructor (0x647860) reads the save's player once ([rbp-0x50], 0x648ace)
+# and hands a copy to each tool it builds. In a room the hook writes the
+# player's company into three tools' copies at the start of each tool's
+# Step, on the main thread. Every field is a UI object's, read by its own
+# class's code only (tpfre, every dword read of the offset in the class's
+# code range, and the vtable's only users being the constructor and
+# destructor):
+# - UI::StreetBuilder (street and track builder, both built by CGameUI,
+#   "action.streetbuilder.street"/".track") +0xc0: stored by the ctor
+#   0x56a740 only; read by 0x56fc80 (CreateProposalAndUpdate's pool lambda),
+#   0x5755b0, CreateProposalAndUpdate 0x577ed0 (x2), 0x580900, Step 0x585e50
+#   (x2, the snap at 0x586b4e), 0x589980 and the ctor's lambda 0x58caf0.
+# - UI::TrackModifier (road and track modifiers) +0xa0: stored by the ctor
+#   0x5b41b0 only; read by Step 0x5bc120, Build 0x5bf880 (x2), vf5 0x5cbf80
+#   (x2, the snap at 0x5cca24) and the ctor's lambda 0x5cf120.
+# - UI::Bulldozer's BulldozerFilter (vtable 0x36aef70, made only in the
+#   ctor 0x4c49a0, kept at +0xc0): its player list at +0x10, set once by the
+#   ctor to { the bulldozer's player } (0x4c4f33..0x4c4fb7) and copied only
+#   by BulldozerFilter::vf1 0x4d5070 into each action's query, which
+#   sub_5f7db0 checks owners against.
+
+# UI::StreetBuilder::Step (vf5).
+[[target]]
+name = "UI::StreetBuilder::Step"
+signature = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 C0 CB FF FF"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
+required = false
+
+# The street builder ctor's player store: mov eax,[rbp+0x128]; mov
+# [rsi+0xc0],eax (the field's offset read from the code).
+[[target]]
+name = "UI::StreetBuilder ctor/player store"
+signature = "48 8B 85 10 01 00 00 48 89 86 B0 00 00 00 48 8B 85 18 01 00 00 48 89 86 B8 00 00 00 8B 85 28 01 00 00 89 86 C0 00 00 00"
+offset = 0
+prologue = "48 8B 85 10 01 00 00"
+required = false
+
+# UI::TrackModifier::Step (vf5).
+[[target]]
+name = "UI::TrackModifier::Step"
+signature = "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 50 CC FF FF"
+offset = 0
+prologue = "48 89 5C 24 20 55 56 57 41 54 41 55 41 56"
+required = false
+
+# The track modifier ctor's player store: mov eax,[rbp+0x330]; mov
+# [r14+0xa0],eax.
+[[target]]
+name = "UI::TrackModifier ctor/player store"
+signature = "48 8B 85 20 03 00 00 49 89 86 98 00 00 00 8B 85 30 03 00 00 41 89 86 A0 00 00 00"
+offset = 0
+prologue = "48 8B 85 20 03 00 00"
+required = false
+
+# UI::Bulldozer::Step (vf5).
+[[target]]
+name = "UI::Bulldozer::Step"
+signature = "48 8B C4 48 89 58 20 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 28 F1 FF FF"
+offset = 0
+prologue = "48 8B C4 48 89 58 20 55 56 57 41 54 41 55"
+required = false
+
+# The bulldozer ctor's BulldozerFilter: lea rax,[vtable]; its fields
+# (players at +0x10..+0x20); mov [r14+0xc0],rbx.
+[[target]]
+name = "UI::Bulldozer ctor/filter"
+signature = "48 8D 05 ?? ?? ?? ?? 48 89 03 48 89 73 08 48 89 7B 10 48 89 7B 18 48 89 7B 20 66 C7 43 28 00 00 EB 03 48 8B DF 48 89 5D D8 49 89 9E C0 00 00 00"
+offset = 0
+prologue = "48 8D 05"
+required = false

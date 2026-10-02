@@ -153,9 +153,10 @@ end
 -- playing for the room's first, which is the save's own player anyway.
 -- The note (tpf3mp_native.note) that tells the hook the player entity of the
 -- company this player plays for, "" for none (the room's first company, or
--- outside the room). Only the hook's opt-in probe of the native tools'
--- ownership checks reads it (crates/tpf3mp-hook/src/probe.rs,
--- TPF3MP_PROBE_PLAYER=1); nothing the simulation does depends on it.
+-- outside the room). The hook writes it into the GUI's native tools' own
+-- player (crates/tpf3mp-hook/src/toolplayer.rs), so they take the company's
+-- roads and constructions for the player's own, and its probe names it
+-- (probe.rs); nothing the simulation does depends on it.
 follow.COMPANY_NOTE = "tpf3mp.company"
 
 -- Notes `entity` (or none) under COMPANY_NOTE through `link` when it is not

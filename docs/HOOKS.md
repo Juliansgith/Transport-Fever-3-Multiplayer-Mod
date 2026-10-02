@@ -1906,8 +1906,9 @@ company the player plays for, so a company's own stops and stations are
 another player's to them (no snapping), and the HQ's Configure opens the
 native module builder under the same player (its button shows for every
 headquarters: `perk.tl` gates it on `isHeadquarters` alone, and its click
-on `entity_util.isOwnedByPlayer`, which the mod answers). Not solved yet:
-see the investigation of the engine's player in
+on `entity_util.isOwnedByPlayer`, which the mod answers). The street,
+track and modifier tools and the bulldozer now act as the company ("The
+tools' player" below); the other tools not yet: see the investigation of the engine's player in
 [investigation/TF3_LOCAL_PLAYER_2026-10-01.md](../investigation/TF3_LOCAL_PLAYER_2026-10-01.md).
 
 **The probe of the engine's player** (`crates/tpf3mp-hook/src/probe.rs`),
@@ -1968,6 +1969,53 @@ probe: a native tool took entity 380001 for another player's: the tool acts as p
 A line like that one, for a road the room built for the player's own
 company, is the street tool refusing to snap into it; rva 0x5fc027 is the
 street builder's snap.
+
+**The tools' player** (`crates/tpf3mp-hook/src/toolplayer.rs`), on unless
+`TPF3MP_HOOK_TOOL_COMPANY=0`. `UI::CGameUI`'s constructor reads the save's
+player once and hands each native tool a copy; the room builds roads,
+tracks and constructions as the acting company's (`PlayerOwned`), so for a
+player of any company but the room's first the tools took the company's
+own edges for another player's: the street tool snapped only to their ends
+(`sub_610ea0` from its snap marks another player's edge fixed), the
+bulldozer would not offer them, and the tram track tool would not join the
+company's rail. In a room, at the start of each tool's `Step`, on the main
+thread, the hook writes the company the GUI notes
+(`note("tpf3mp.company")`, `tpf3mp/follow.lua`) into three tools' copies:
+
+| tool | field | its `Step` |
+|---|---|---|
+| `UI::StreetBuilder` (the street and the track builder) | `+0xc0` | `0x585e50` |
+| `UI::TrackModifier` (tram track, bus lane, electrification and the other modifiers) | `+0xa0` | `0x5cbf80` |
+| `UI::Bulldozer` (every bulldozer action) | the one player of its `BulldozerFilter` (`[[+0xc0]+0x10]`) | `0x4d6340` |
+
+Each field's offset is read from its constructor's code (profile targets
+`... ctor/player store`, `UI::Bulldozer ctor/filter`, which also gives the
+filter's vtable, checked before every write, and its one-player list);
+code that is not exactly the expected shape leaves that tool alone. Each is a UI
+object's field read only by its own class's code (the profile lists every
+reader), so nothing the simulation runs sees it. A field is written only
+where it holds the save's player (`note("tpf3mp.player")`) or the company
+this wrote; any other value is left and said once. Outside a room, for the
+room's first company, or when either note is missing, the game's value
+stays, and one this wrote goes back. The builds go through the room as
+before: capture reads a proposal's ownership as owned or not, the room
+builds for the acting company, and every game refuses an edit of another
+company's edge (`companies.mayTouch`). So the tools now also refuse a split
+or bulldoze of another company's road (the room's first company's
+included), as the room does. hook.log:
+
+```
+tool-company: the street and track builder acts as the player's company in a room (UI::StreetBuilder::Step at 0x...; TPF3MP_HOOK_TOOL_COMPANY=0 turns it off)
+tool-company: the street and track builder at 0x... acts as the player's company 372363 (was player 214443)
+tool-company: the street and track builder at 0x... acts as the save's player 214443 again
+```
+
+Not covered: the construction builder (stations, depots: snapping onto a
+company's own station), the stop and signal builder
+(`UI::StreetTerminalBuilder`), the module builder and the other tools
+`CGameUI` hands the player to (`sub_50b3b0`, `sub_5906e0`, `sub_540390`,
+`sub_59b890`, `sub_5a2480`); and the bulldozer's own player (`+0x28`),
+which only seeds the filter.
 
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and

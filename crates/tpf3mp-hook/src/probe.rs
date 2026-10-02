@@ -681,7 +681,10 @@ fn flush_other_owned(now_ms: u64) -> Vec<String> {
     if OWNER_ORIGINAL.load(Ordering::Acquire) == 0 {
         return Vec::new();
     }
-    NOTED_COMPANY.store(noted_entity("tpf3mp.company"), Ordering::Relaxed);
+    NOTED_COMPANY.store(
+        noted_entity(crate::toolplayer::COMPANY_NOTE),
+        Ordering::Relaxed,
+    );
     NOTED_SAVE_PLAYER.store(noted_entity("tpf3mp.player"), Ordering::Relaxed);
     let last = OWNER_FLUSHED_MS.load(Ordering::Relaxed);
     if now_ms.saturating_sub(last) < EVERY_MS {

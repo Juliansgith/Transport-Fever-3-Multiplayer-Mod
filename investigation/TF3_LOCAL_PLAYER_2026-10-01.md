@@ -106,16 +106,30 @@ with `tools/tpfre` on build 40408:
   snapped to at its nodes. The save's roads are the save's player's or a
   town's (no owner), which the test lets through.
 
-Not changed yet: the fix needs a decision. The tools could act as the
-player's company (write the company into each tool's own player, GUI
-objects only: the street builder's `+0xc0`, the bulldozer's players list),
-which the room then checks as it does now (`companies.mayTouch` refuses
-another company's edges in every game); or the room could leave road and
-track edges the save's player's, which moves every company's road upkeep
-and ownership to the room's first company. `sub_610ea0` itself is no place
-to change the answer: `construction_builder_util` (`MakeProposalRemove`,
-`CreateProposalReplace`, `MakeStreetProposal`) reaches it too, and the
-simulation calls those.
+Chosen (2026-10-02): the tools act as the player's company, GUI objects
+only (`crates/tpf3mp-hook/src/toolplayer.rs`; docs/HOOKS.md, "The tools'
+player"). `sub_610ea0` itself stays as it is: `construction_builder_util`
+(`MakeProposalRemove`, `CreateProposalReplace`, `MakeStreetProposal`)
+reaches it too, and the simulation calls those.
+
+- **seen** `UI::CGameUI::CGameUI` (0x647860) reads the player once
+  (`[rbp-0x50]` from `+0x20c` of the object `sub_8692e0` returns, 0x648ace)
+  and hands it to the street builder (0x649bd0, and the track builder,
+  the same class, 0x64a058), the track modifier (0x64a2f5) and the other
+  tools.
+- **seen** The fields and their readers, each the class's own code:
+  `UI::StreetBuilder+0xc0` (stored only by its ctor 0x56a816; read by
+  0x56fc80, 0x5755b0, `CreateProposalAndUpdate` 0x577ed0, 0x580900, `Step`
+  0x585e50, 0x589980, 0x58caf0); `UI::TrackModifier+0xa0` (stored only by
+  its ctor 0x5b424c; read by `Step` 0x5bc120, `Build` 0x5bf880, vf5
+  0x5cbf80, 0x5cf120; the snap gets it at 0x5cca24 through 0x5c3030,
+  0x5d40b0, 0x25ef830, 0x60d410, 0x5fe0b0 to `sub_610ea0` at 0x5fe1d0);
+  `UI::Bulldozer`'s `BulldozerFilter` (made only at 0x4c4c32, kept at
+  `+0xc0`), whose player list at `+0x10` the ctor sets to the bulldozer's
+  player (0x4c4f33..0x4c4fb7) and only `BulldozerFilter::vf1` (0x4d5070)
+  copies into each action's query. Found with `tools/tpfre`: every dword
+  read of each offset over the class's code range, and the vtables'
+  only users (ctor, dtor).
 
 To see it in one try: `TPF3MP_PROBE_PLAYER=1` logs each entity the test
 takes for another player's, with the tool's player and whose the entity

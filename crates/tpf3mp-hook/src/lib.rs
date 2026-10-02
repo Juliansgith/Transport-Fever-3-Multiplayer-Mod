@@ -61,6 +61,7 @@ pub mod step;
 pub mod streettrace;
 pub mod terrain;
 pub mod ticks;
+pub mod toolplayer;
 pub mod townfield;
 pub mod towntrace;
 pub mod worlds;

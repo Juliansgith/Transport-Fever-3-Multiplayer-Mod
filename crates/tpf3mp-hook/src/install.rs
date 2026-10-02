@@ -1036,6 +1036,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         log_line(&outcome.to_string());
     }
     log_line(&crate::townfield::install(&absolute));
+    for line in crate::toolplayer::install(&absolute) {
+        log_line(&line);
+    }
     for line in crate::persons::install(&absolute) {
         log_line(&line);
     }

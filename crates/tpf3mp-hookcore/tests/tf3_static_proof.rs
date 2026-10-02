@@ -136,6 +136,13 @@ const TARGETS: &[(&str, u64)] = &[
     ("probe: engine GameState getter", 0x11ffd0),
     ("probe: ProposalStreetGraph::GetPlayerOwnedPtr", 0xa46cd0),
     ("probe: street_util IsOwnedByOtherPlayer", 0x610ea0),
+    // The tools' player (crates/tpf3mp-hook/src/toolplayer.rs).
+    ("UI::StreetBuilder::Step", 0x585e50),
+    ("UI::StreetBuilder ctor/player store", 0x56a7f4),
+    ("UI::TrackModifier::Step", 0x5cbf80),
+    ("UI::TrackModifier ctor/player store", 0x5b4238),
+    ("UI::Bulldozer::Step", 0x4d6340),
+    ("UI::Bulldozer ctor/filter", 0x4c4c32),
     ("lua_cached_loadfile", 0x2fa8130),
     // The person-order fixes (crates/tpf3mp-hook/src/persons.rs).
     ("destination_util::GetTargetsByLandUse/candidates", 0x8e3d65),
