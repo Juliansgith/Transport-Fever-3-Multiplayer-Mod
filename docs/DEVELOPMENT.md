@@ -129,11 +129,11 @@ TPF3's commands, and the release-day measurements in
 | `crates/tpf3mp-hook` | The library the launcher loads into the game it starts. |
 | `crates/tpf3mp-launch` | Starts the game with the hook in that one process. |
 | `crates/tpf3mp-modscan` | Sorts mods into personal, carried and shared, with the reasons, and finds the mods a player has installed ([MODS.md](MODS.md)). |
-| `crates/tpf3mp-bigmap` | Big maps, prototype: the size ladder, the ceilings a size hits, the terms a room shares, which features a build can run ([BIGMAPS.md](BIGMAPS.md)). |
+| `crates/tpf3mp-bigmap` | Big maps: the size ladder, the ceilings a size hits, the terms a room shares, which features a build can run, the New Game page copy's builder and the stage 0 log reader ([BIGMAPS.md](BIGMAPS.md)). |
 | `crates/tpf3mp-testkit` | Toy game, bots, network emulator, load tester, regression harness. |
 | `crates/tpf3mp-buildinfo` | The build scripts' helper: the commit, build time and build number built into the binaries, and their Windows version resource ("Which build is this"). |
 | `mod/tpf3mp_1` | The game-side Lua mod, in Transport Fever 3's layout: captures builds as actions for the hook, linked to it by `tpf3mp/bridge.lua`. |
-| `mod/tpf3mp_bigmap_1` | Big maps' New Game side, prototype: the added size rows. Registers nothing with the game yet. |
+| `mod/tpf3mp_bigmap_1` | Big maps, stage 1: four sizes past Gigantomaniac in the New Game size list, through a copy of the game's New Game page the hook serves. Not packaged: installed by hand next to `tpf3mp_1` ([BIGMAPS.md](BIGMAPS.md)). |
 | `profiles/` | The hook's per-build signature profiles, built into the hook (Transport Fever 3 Steam build 40408, Windows). |
 | `packaging/` | The install scripts and their tests, and the macOS bundle's files. |
 | `tools/` | Release-day reverse-engineering and determinism probes. |

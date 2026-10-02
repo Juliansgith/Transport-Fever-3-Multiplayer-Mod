@@ -35,6 +35,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Registry",
+    # The machine's memory, for the big-map page's sizes (menu_entry.rs).
+    "Win32_System_SystemInformation",
 ] }
 
 [target.'cfg(unix)'.dependencies]

@@ -1,0 +1,32 @@
+# Big maps for Transport Fever 3, stage 1 (investigation/TF3_BIGMAPS_PORT_2026-10-01.md,
+# section 4): sizes past the game's own Gigantomaniac (112 x 112 tiles) that
+# stay inside every wall stock TF3 has, so no native patch is needed and the
+# world is safe in any game, with or without big maps:
+#
+# - no axis longer than stock TF3's own longest, 250 tiles (Gigantomaniac
+#   1:5), so the octree root (32,768 m either side at depth 10) keeps the
+#   768 m margin stock maps have;
+# - the street raster's (256 x + 1)(256 y + 1) one-metre cells below 2^31.
+#
+# The mod's ladder (mod/tpf3mp_bigmap_1/content/scripts/tpf3mp_bigmap/ladder.lua)
+# is generated from this file:
+#
+#   cargo run -p tpf3mp-bigmap -- --config crates/tpf3mp-bigmap/tpf3mp_bigmap.stage1.toml lua
+#
+# Labels give the square's real edge (256 m tiles); the ratio dropdown shapes
+# each row as it shapes the game's own, keeping about the square's area.
+
+[sizes]
+add_rows = true
+max_tiles = 250
+rows = [
+    { label = "Big 32.8 km", tiles = 128 },
+    { label = "Big 36.9 km", tiles = 144 },
+    { label = "Big 41.0 km", tiles = 160 },
+    { label = "Big 45.1 km", tiles = 176 },
+]
+
+# No native patch at stage 1: the game's own octree depth and street raster.
+[limits]
+octree_depth = 0
+street_raster = false

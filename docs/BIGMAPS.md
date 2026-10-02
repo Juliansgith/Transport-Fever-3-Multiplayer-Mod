@@ -328,30 +328,145 @@ Disabled" removes both timers, and closures still happen.
 6. Whether town and industry placement and runtime founding are on one path,
    and whether it reads anything but the seed and the terrain.
 
-## The TF3 prototype
+## Big maps on TF3
 
-`crates/tpf3mp-bigmap` and `mod/tpf3mp_bigmap_1` carry Big Maps'
-features over as far as they can go before anyone has read TF3's
-executable. Whether the project ships big maps, and which of them, is
-the owner's to decide (PLAN.md, "Big maps"); this is what it would be
-built on. Every number in it is TPF2 build 35924's, labelled measured or
-derived (`WorldModel::TPF2_BUILD_35924`), until TF3's are measured.
+[investigation/TF3_BIGMAPS_PORT_2026-10-01.md](../investigation/TF3_BIGMAPS_PORT_2026-10-01.md)
+answers "Measure these first" from TF3 build 40408's executable and
+scripts, and lays out the port in stages. In short: TF3 kept TPF2's native
+walls nearly byte for byte (the octree root's two tiers, the street
+raster's 32-bit multiply, the placement score's int32 squares), but its
+size limit is in Lua, `getNumTiles` in the New Game page, and its stock
+sizes already reach Gigantomaniac, 112 by 112 tiles or 50 by 250 at 1:5.
+The first wall a bigger map meets is memory: one log shows the terrain
+toolkit at 49 maps and 10,074 MB for a 56 by 224 map, about 12 MB per km²,
+three to five times TPF2's.
+
+Whether the project ships big maps is the owner's to decide (PLAN.md, "Big
+maps"). Stages 0 and 1 are built so far; neither changes a stock-sized
+game, and the mod is not packaged with TPF3-MP.
+
+### Stage 0: measuring TF3
+
+On the stock game, with no patch, by a person or the rig (automation never
+starts the game). For each climate, generate Gigantomaniac at 1:1 and at
+1:5, then:
+
+1. Read the game log (`stdout.txt`, or the newest
+   `userdata/<id>/3493540/local/crash_dump/*.txt`) with
+   `cargo run -p tpf3mp-bigmap -- measure <log> [--tiles 112x112]`. It
+   prints the terrain toolkit's maps and MB with the pipeline time, checks
+   the memory law `(64x+1)(64y+1) * maps * 4 / 10^6` against the size
+   (given, or found among the game's own sizes), gives MB per km², and lists
+   the stage times (`Place assets`, `Create Industries`, `InitGame`,
+   `Enter Game Asynchronously`, `Init game took`) and each save's size and
+   time. Do not commit the logs.
+2. Read the game's private bytes at the end of generation, after entering
+   the world, and after loading the save:
+   `(Get-Process TransportFever3).PrivateMemorySize64 / 1MB` in
+   PowerShell, or `VmRSS` in `/proc/<pid>/status` under Proton on
+   strelka, whose memory leaves room for the large runs. The peak during
+   generation, against the toolkit's MB, says whether all its maps are
+   alive at once, as on TPF2.
+3. Save, and note the save's size and how long it took.
+
+Record each run here:
+
+| climate | size | maps | toolkit MB | MB/km² | pipeline | peak private | after entry | after load | save | evidence |
+|---|---|---|---|---|---|---|---|---|---|---|
+| subarctic | 56 x 224 (derived from the law) | 49 | 10,074 | 12.25 | 19.4 s | | | | | one log, 2026-09-30 |
+
+Until this table is filled, `WorldModel::TF3_BUILD_40408` charges 12.25 MB
+per km² (that one log) and assumes TPF2's 4 GB for the game's own use.
+
+### Stage 1: sizes up to 176 tiles, no native patch
+
+`mod/tpf3mp_bigmap_1` adds four rows to the New Game size dropdown, after
+the game's own:
+
+| row | square | km² | each ratio, 1:1 to 1:5, in tiles | expected peak |
+|---|---|---|---|---|
+| Big 32.8 km | 128 x 128 | 1,074 | 128², 90 x 180, 74 x 222, 64 x 250, 58 x 250 | 17 GB |
+| Big 36.9 km | 144 x 144 | 1,359 | 144², 102 x 204, 84 x 250, 72 x 250, 64 x 250 | 21 GB |
+| Big 41.0 km | 160 x 160 | 1,678 | 160², 114 x 228, 92 x 250, 80 x 250, 72 x 250 | 25 GB |
+| Big 45.1 km | 176 x 176 | 2,030 | 176², 124 x 248, 102 x 250, 88 x 250, 78 x 250 | 29 GB |
+
+Each shape stays inside every wall stock TF3 has, so nothing native is
+patched and the world is safe to load in any game, with or without big
+maps, in a room or not: no axis is longer than stock's own 250 tiles (the
+octree root keeps the 768 m margin stock maps have), and the street
+raster's one-metre cells stay below 2^31 (180 tiles square is that wall).
+A ratio keeps about the square's area until the long side reaches 250
+tiles, which then caps it. `crates/tpf3mp-bigmap/tpf3mp_bigmap.stage1.toml`
+holds these rows; the mod's `ladder.lua` is generated from it (`cargo run
+-p tpf3mp-bigmap -- --config crates/tpf3mp-bigmap/tpf3mp_bigmap.stage1.toml
+lua`), and a test fails if either changed without the other.
+
+**How.** The New Game page is the game's script
+`gui/menu/new_game_or_map_settings_page.tl`, and a mod cannot replace a
+menu file, so the hook's loader redirect, which already serves the main
+page ([LOBBY.md](LOBBY.md), "How it works"), serves the mod's copy of it.
+The copy is the game's file plus five marked blocks (LOBBY.md, "The mod's
+copies"); `cargo run -p tpf3mp-bigmap -- page <the game's file>` makes it.
+Its logic is plain Lua in the mod (`scripts/tpf3mp_bigmap/menu.lua`):
+
+- The size dropdown lists the game's rows, then the added ones. Picking an
+  added row sets the game's `map.size` to its largest size (Gigantomaniac
+  with experimental sizes, Very Large without) and keeps the pick in the
+  page. Every reader of `map.size`, the save included, sees a value the
+  game knows; the save's real size is its terrain's. A save of an added
+  size therefore shows as Gigantomaniac in the load page, with the same
+  "not supported" mark the game gives stock Gigantomaniac saves.
+- `getNumTiles` answers an added row from the ladder, at the ratio picked,
+  short side first as the game's own shapes are; the preview and Start
+  Game use it as they use the game's sizes.
+- A row is offered only if its expected generation peak (the ladder's
+  `peakMb`: 12.25 MB per km² plus 4 GB) fits the machine's physical
+  memory, which the hook reports. A line under the dropdown says which
+  rows are hidden and why. With the memory unknown, no row is offered.
+- If the mod's scripts do not load, the page offers the game's sizes only;
+  if the copy does not load, the hook serves the game's file.
+
+**Installing.** The mod is not part of the TPF3-MP package. Copy
+`mod/tpf3mp_bigmap_1` next to `tpf3mp_1` in the game's mods folder, and
+start the game from the launcher, so that the hook serves the page. A game
+without the mod, or started by Steam, has the stock sizes. Only the
+machine that creates a world needs it: a room's other games load the
+world from its save, and stage 1's worlds need nothing from them.
+
+**Still to test in the game**, by a person:
+
+- the page loads from the mod (`[tpf3mp] big maps: ... is served from
+  tpf3mp_bigmap_1::/...` and `... is in effect` in the game log) and the
+  game's Teal accepts the copy;
+- whether the mod has to be active for the game to find its files at the
+  menu, as LOBBY.md says `tpf3mp_1` must be;
+- the four rows show (or are hidden with the reason on a smaller
+  machine), and picking one regenerates the preview at its size;
+- generate 128² and 176², and one 1:5 (58 x 250); watch the log for
+  `Duplicate base nodes`, and fill in stage 0's table for each;
+- a room of two games (Sandboxie) on a 176² world through the scenario
+  runner (`tools/scenarios/roads.json`, `rail.json`), the checkpoints
+  agreeing.
+
+### The rest of the prototype
+
+`crates/tpf3mp-bigmap` also carries the rest of Big Maps' features, as far
+as they go before their TF3 sites are patched (stages 2 to 4 of the
+investigation):
 
 | Big Maps on TPF2 | the prototype |
 |---|---|
-| The added size rows, 32 to 128 km, labelled in the page's own km, with the ratio dropdown shaping each (`add_size_rows`) | `ladder`: the rows and their 1:k shapes. The mod's `ladder.lua` is generated from the settings, and `menu.lua` answers a pick the way the TPF2 detour answered `GetNumTilesNew`: stock rows to the game, added rows by position. On TF3 the New Game menu may be script, in which case the mod adds the rows itself and the ratio labels, which TPF2 could not change, can say what they do. The mod registers nothing until that recipe is known. |
-| The street raster's 32-bit wall past 180 tiles (`street_raster`, `cell_budget_millions`) | `ceilings`: the cell count at the stock cell, and the cell the budget needs. |
-| The octree root's 32,768 m wall past 256 tiles (`octree`, `octree_depth` 11 to 13) | `ceilings`: the map's half-extent against the root at the depth in use. |
+| The added size rows (`add_size_rows`) | `ladder`: the rows and their 1:k shapes; on TF3, the mod's page copy above (`page`, `mod_data`). |
+| The street raster's 32-bit wall past 180 tiles (`street_raster`, `cell_budget_millions`) | `ceilings`: the cell count at the stock cell, and the cell the budget needs. TF3's site: `sub_8cea50`. |
+| The octree root's 32,768 m wall past 256 tiles (`octree`, `octree_depth` 11 to 13) | `ceilings`: the map's half-extent against the root at the depth in use. TF3's sites: `0x244b8b` and `0x20267d`. |
 | The heightmap's 32-bit pixel count (derived, about 722 tiles) | `ceilings`: refused, since no setting passes it. |
-| The memory law, 2.5 MB per km² plus the game | `ceilings`: the expected peak for every size, before it is generated. |
+| The memory law | `ceilings` and `world`: the expected peak for every size, before it is generated; `measure` checks it against a log. |
 | Density levels, placement attempts | `config` and `features`: settings that change the simulation. |
-| Byte-verified sites, each feature off with a log line when its sites are missing | `features`: each feature names the profile targets it needs (roles such as `bigmap::octree_root`, TF3's functions to be found). In a room, a missing feature that changes the simulation refuses the room instead of degrading. |
+| Byte-verified sites, each feature off with a log line when its sites are missing | `features`: each feature names the profile targets it needs. In a room, a missing feature that changes the simulation refuses the room instead of degrading. |
 | "Every peer needs the same `octree_depth`" | `terms`: the size, octree depth, street cell, placement budget and density levels, with a fingerprint the room compares, and the names of what differs. |
 | The minimap | [MINIMAP.md](MINIMAP.md): a script mod on TF3. |
-| Terrain cache compression, dedup, lazy zeroing, the SSE2 terrain paths, generator buffers, faster saves | Not in the prototype: each rests on a TPF2 structure that has to be found in TF3 first ("Measure these first on TPF3" above). |
+| Terrain cache compression, dedup, lazy zeroing, the SSE2 terrain paths, generator buffers, faster saves | Not in the prototype: each rests on a TPF2 structure still to be found in TF3. |
 
 `cargo run -p tpf3mp-bigmap -- ladder` prints the ladder under a settings
-file (`--config`, the example is `crates/tpf3mp-bigmap/tpf3mp_bigmap.example.toml`,
-Big Maps' own settings), and `check 320x320` what one size costs and
-needs. `lua` regenerates the mod's `ladder.lua`; a test fails if it was
-edited or the settings changed without it.
+file (`--config`; `--world tpf2` for TPF2's numbers), `check 320x320` what
+one size costs and needs, and `lua` the mod's `ladder.lua`.

@@ -1,6 +1,8 @@
-//! Big maps for Transport Fever 3: a prototype of silver2127's Big Maps for
-//! TPF2 (the `bigmap/` plugin of TpF2 Multiplayer), in the parts that can be
-//! built and tested before anyone has read TF3's executable.
+//! Big maps for Transport Fever 3, after silver2127's Big Maps for TPF2
+//! (tpf2-bigmap, also the `bigmap/` plugin of TpF2 Multiplayer): its
+//! design and its measurements, carried to TF3 stage by stage
+//! (investigation/TF3_BIGMAPS_PORT_2026-10-01.md, section 4). No code is
+//! taken from it.
 //!
 //! Big Maps gives the New Game menu sizes past the game's own, up to 128 km
 //! a side, and gets the engine past the ceilings such sizes hit. On TPF2
@@ -13,9 +15,11 @@
 //!
 //! What this crate holds, all pure and host-independent:
 //!
-//! - [`world`]: the engine facts a size depends on, each with its evidence.
-//!   Only TPF2 build 35924's are known; TF3's are measured on release day,
-//!   and nothing here assumes they are the same.
+//! - [`world`]: the engine facts a size depends on, each with its evidence:
+//!   TPF2 build 35924's from Big Maps' measurements, TF3 build 40408's from
+//!   its executable, its scripts and one log
+//!   (investigation/TF3_BIGMAPS_PORT_2026-10-01.md).
+//! - [`stock`]: TF3's own sizes and the walls stock TF3 stays inside.
 //! - [`ladder`]: the added map sizes and the shapes the ratio dropdown gives
 //!   each one.
 //! - [`ceilings`]: what a size costs and which ceilings it hits, so a size
@@ -29,14 +33,22 @@
 //!   left off with a reason.
 //! - [`mod_data`]: the ladder as the data file of the mod,
 //!   `mod/tpf3mp_bigmap_1`, which holds the menu's side.
+//! - [`page`]: the mod's copy of TF3's New Game settings page, the game's
+//!   file plus marked blocks (stage 1).
+//! - [`measure`]: what a game log says about generating, entering and
+//!   saving a map (stage 0).
 //!
-//! The native patches themselves wait for TF3's executable (docs/DAY_ONE.md);
-//! the crate names what each one needs, and the hook fills it in.
+//! Stage 1 needs no native patch: its sizes stay inside every wall stock
+//! TF3 has. The native patches of the later stages are named in
+//! [`features`]; the hook fills them in.
 
 pub mod ceilings;
 pub mod config;
 pub mod features;
 pub mod ladder;
+pub mod measure;
 pub mod mod_data;
+pub mod page;
+pub mod stock;
 pub mod terms;
 pub mod world;

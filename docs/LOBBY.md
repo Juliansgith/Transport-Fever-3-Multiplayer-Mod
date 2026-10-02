@@ -35,10 +35,16 @@ into the suspended game before any of its code runs (D11), detours that body
 2. The first time a Lua state is seen, the hook runs a short Lua chunk in it
    through `lua_load` and `lua_pcallk`. The chunk wraps
    `resolveutil.loadfile`: a request for the game's `gui/menu/main_page.tl`
-   is answered with the mod's `tpf3mp_1::/gui/menu/main_page.tl`; every
-   other request passes through. The original resolved path stays the
-   module's cache key, so the rest of the menu sees the same `MainPage`
-   value it always did.
+   is answered with the mod's `tpf3mp_1::/gui/menu/main_page.tl`, and one
+   for `gui/menu/new_game_or_map_settings_page.tl` with big maps' copy,
+   `tpf3mp_bigmap_1::/gui/menu/new_game_or_map_settings_page.tl`
+   ([BIGMAPS.md](BIGMAPS.md), "Stage 1"); every other request passes
+   through. A copy that does not load (the big-map mod is not installed,
+   say) falls back to the game's file. The original resolved path stays
+   the module's cache key, so the rest of the menu sees the same value it
+   always did. The chunk also leaves the machine's physical memory in
+   `resolveutil.__tpf3mp_ram_mb`, which the big-map page holds its sizes
+   against.
 3. The mod's `main_page.tl` is the game's file with marked `TPF3-MP:`
    additions (below), and a `Tpf3mpLobbyWindow` opened through the menu's
    own window container (as the Deluxe Edition window is).
@@ -269,6 +275,15 @@ made absolute (`::/...`), because a leading-slash path is resolved against
 the requiring file's root, which for the mod's copy is `tpf3mp_1::/`. On a
 game patch, take the new game file and re-apply the marked blocks. The copy
 is listed in `_content.json` like any other file of the mod.
+
+`mod/tpf3mp_bigmap_1/content/gui/menu/new_game_or_map_settings_page.tl`,
+big maps' copy of the New Game settings page, is made the same way but
+stricter: each change is a block from `-- TPF3-MP begin:` to
+`-- TPF3-MP end`, the game's lines it replaces kept under `-- TPF3-MP was:`
+as comments, and a test (`crates/tpf3mp-bigmap/tests/mod_lua.rs`) takes
+the blocks out and holds what is left to the SHA-256 of build 40408's
+file. On a game patch, `cargo run -p tpf3mp-bigmap -- page <the game's
+file>` re-applies the blocks.
 
 ## Trying it
 

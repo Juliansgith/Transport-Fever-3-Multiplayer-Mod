@@ -2,17 +2,22 @@
 //!
 //! Every number carries its evidence, as docs/BIGMAPS.md asks: measured in a
 //! running game or its own log, or derived from decompiled code and not yet
-//! seen live. Only TPF2 build 35924 is known. TF3 gets a model of its own
-//! once its numbers are measured (docs/BIGMAPS.md, "Measure these first on
-//! TPF3"); until then nothing may assume TPF2's hold for it.
+//! seen live, or assumed, carried over without evidence for this build.
+//! TPF2 build 35924's are silver2127's Big Maps measurements. TF3 build
+//! 40408's are read from its executable and scripts
+//! (investigation/TF3_BIGMAPS_PORT_2026-10-01.md) and one game log; stage 0
+//! of that plan measures them in the game (docs/BIGMAPS.md, "Stage 0").
 
 /// How a number is known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Evidence {
     /// Read from a running game, a process or the game's own log.
     Measured,
-    /// Computed from decompiled code; not yet observed live.
+    /// Computed from decompiled code, scripts or another measurement; not
+    /// yet observed live.
     Derived,
+    /// Carried over from another build without evidence for this one.
+    Assumed,
 }
 
 /// A number and how it is known.
@@ -37,6 +42,14 @@ impl<T: Copy> Fact<T> {
         Self {
             value,
             evidence: Evidence::Derived,
+            source,
+        }
+    }
+
+    pub const fn assumed(value: T, source: &'static str) -> Self {
+        Self {
+            value,
+            evidence: Evidence::Assumed,
             source,
         }
     }
@@ -96,6 +109,42 @@ impl WorldModel {
             "\"Terrain toolkit used 10 maps and ... MB\" at 604, 3,288 and 6,711 km²",
         ),
         game_base_mb: Fact::measured(4096, "the game's own use, about 4 GB"),
+    };
+
+    /// Transport Fever 3 build 40408, from its executable and scripts
+    /// (investigation/TF3_BIGMAPS_PORT_2026-10-01.md) and one game log.
+    /// Nothing here is measured in a running game yet: stage 0 does that.
+    pub const TF3_BUILD_40408: Self = Self {
+        name: "Transport Fever 3 build 40408",
+        tile_m: Fact::derived(
+            256,
+            "new_game_or_map_settings_page.tl: 64 cells of 4 m per tile",
+        ),
+        label_m_per_tile: Fact::derived(
+            256,
+            "the page names its sizes (Tiny to Gigantomaniac), so added rows give the real km",
+        ),
+        samples_per_tile: Fact::derived(64, "the page's heightmap: (tiles * 64 + 1) a side"),
+        street_cell_m: Fact::derived(
+            1,
+            "the Obstacle raster at rva 0x8cea50, cell [0x3676644] = 1.0 m",
+        ),
+        octree_base_half_m: Fact::derived(
+            16_384,
+            "the OctreeSystem constructor's 16384.0f at depth 9 (call at 0x1f045a)",
+        ),
+        octree_base_depth: 9,
+        octree_stock_depth: 10,
+        octree_small_tiles: 128,
+        stock_max_tiles: Fact::derived(
+            112,
+            "getNumTiles: Gigantomaniac 1:1 is 112 x 112; its longest axis is 250 (1:5)",
+        ),
+        generation_mb_per_km2: Fact::derived(
+            12.25,
+            "\"Terrain toolkit used 49 maps and 10074 MB\" for a 56 x 224 subarctic map: 49 maps of 4 B per 16 m² sample",
+        ),
+        game_base_mb: Fact::assumed(4096, "TPF2's measured own use; TF3's is not measured"),
     };
 
     /// The octree root's half-extent at `depth`, in metres.
@@ -163,6 +212,25 @@ mod tests {
         assert_eq!(TPF2.stock_octree_depth(96, 96), 9);
         assert_eq!(TPF2.stock_octree_depth(128, 64), 9);
         assert_eq!(TPF2.stock_octree_depth(224, 224), 10);
+    }
+
+    #[test]
+    fn tf3_keeps_tpf2s_octree_tiers() {
+        const TF3: WorldModel = WorldModel::TF3_BUILD_40408;
+        assert_eq!(TF3.stock_octree_depth(112, 112), 9);
+        assert_eq!(TF3.stock_octree_depth(50, 250), 10);
+        assert_eq!(TF3.octree_half_m(10), 32_768);
+        // Stock TF3's longest axis stays 768 m inside the root per side.
+        assert_eq!(TF3.octree_half_m(10) - TF3.edge_m(250) / 2, 768);
+    }
+
+    #[test]
+    fn tf3s_memory_law_reproduces_the_logged_line() {
+        // (64*56+1)*(64*224+1) samples, 49 maps of 4 bytes: 10,074 MB.
+        const TF3: WorldModel = WorldModel::TF3_BUILD_40408;
+        let mb = TF3.area_km2(56, 224) * TF3.generation_mb_per_km2.value;
+        assert!((mb - 10_074.0).abs() < 25.0, "{mb}");
+        assert_eq!(TF3.game_base_mb.evidence, Evidence::Assumed);
     }
 
     #[test]

@@ -51,12 +51,21 @@ use crate::lobby;
 
 /// The Lua run once in each of the game's Lua states, the first time the
 /// loader runs there. It wraps `resolveutil.loadfile` (the function
-/// `base/init.lua` calls for every `ug_require`) so that the game's
-/// `gui/menu/main_page.tl` is served from the mod's copy. The mod's own copy
-/// is never redirected, so the wrap cannot loop, and the original resolved
-/// path stays the module's cache key, so the rest of the menu sees the same
-/// `MainPage` value it always did. Requests to the hook pass straight
-/// through to the original, where the detour answers them.
+/// `base/init.lua` calls for every `ug_require`) so that two of the game's
+/// menu pages are served from a mod's copy:
+///
+/// - `gui/menu/main_page.tl` from `tpf3mp_1` (the Multiplayer entry);
+/// - `gui/menu/new_game_or_map_settings_page.tl` from `tpf3mp_bigmap_1`
+///   (big maps' size rows, docs/BIGMAPS.md "Stage 1"). That mod is not
+///   shipped with TPF3-MP; without it the page is the game's own.
+///
+/// A path already in one of these mods is never redirected, so the wrap
+/// cannot loop; a copy that does not load falls back to the game's file;
+/// and the original resolved path stays the module's cache key, so the rest
+/// of the menu sees the same value it always did. Requests to the hook pass
+/// straight through to the original, where the detour answers them. The
+/// chunk is preceded by `local __tpf3mp_ram_mb = <MB or nil>` ([`patch`]):
+/// the machine's memory, which the big-map page holds its sizes against.
 const PATCH: &str = r#"
 local ru = resolveutil
 if type(ru) ~= "table" then
@@ -65,20 +74,49 @@ if type(ru) ~= "table" then
 end
 if ru.__tpf3mp_menu then return end
 ru.__tpf3mp_menu = true
+ru.__tpf3mp_ram_mb = __tpf3mp_ram_mb
+local copies = {
+	{ "gui/menu/main_page%.tl$", "tpf3mp_1::/gui/menu/main_page.tl", "main menu" },
+	{ "gui/menu/new_game_or_map_settings_page%.tl$", "tpf3mp_bigmap_1::/gui/menu/new_game_or_map_settings_page.tl", "big maps" },
+}
 local orig = ru.loadfile
 ru.loadfile = function(path, ...)
-	if type(path) == "string" and path:find("gui/menu/main_page%.tl$") and not path:find("^tpf3mp_1::") then
-		local ok, chunk, err = pcall(orig, "tpf3mp_1::/gui/menu/main_page.tl", ...)
-		if ok and chunk then
-			pcall(debugPrint, "[tpf3mp] main menu: " .. path .. " is served from tpf3mp_1::/gui/menu/main_page.tl")
-			return chunk, err
+	if type(path) == "string" and not path:find("^tpf3mp_1::") and not path:find("^tpf3mp_bigmap_1::") then
+		for _, copy in ipairs(copies) do
+			if path:find(copy[1]) then
+				local ok, chunk, err = pcall(orig, copy[2], ...)
+				if ok and chunk then
+					pcall(debugPrint, "[tpf3mp] " .. copy[3] .. ": " .. path .. " is served from " .. copy[2])
+					return chunk, err
+				end
+				pcall(debugPrint, "[tpf3mp] " .. copy[3] .. ": " .. copy[2] .. " is not loadable (" .. tostring(ok and err or chunk) .. "); the page stays the game's")
+				break
+			end
 		end
-		pcall(debugPrint, "[tpf3mp] main menu: the mod's main_page.tl is not loadable (" .. tostring(ok and err or chunk) .. "); the menu stays the game's")
 	end
 	return orig(path, ...)
 end
 pcall(debugPrint, "[tpf3mp] main menu: resolveutil.loadfile is wrapped")
 "#;
+
+/// [`PATCH`] with the machine's memory in MB, if known, in front.
+fn patch(ram_mb: Option<u64>) -> String {
+    let ram = ram_mb.map_or_else(|| "nil".to_owned(), |mb| mb.to_string());
+    format!("local __tpf3mp_ram_mb = {ram}\n{PATCH}")
+}
+
+/// The machine's physical memory in MB (MiB), or `None` if Windows does not
+/// say.
+fn physical_memory_mb() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // SAFETY: MEMORYSTATUSEX is plain data; dwLength is set as the call
+    // requires, and the struct lives across the call.
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: a valid, initialised out-parameter.
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    (ok != 0 && status.ullTotalPhys > 0).then_some(status.ullTotalPhys / (1024 * 1024))
+}
 
 // Construction workers can load industryutil as their very first file.
 // Intercept at the native boundary: a Lua wrapper installed during that
@@ -418,13 +456,14 @@ fn patch_once(state: *mut c_void) {
             std::mem::transmute::<usize, LuaSettop>(settop),
         )
     };
+    let text = patch(physical_memory_mb());
     let mut chunk = Chunk {
-        ptr: PATCH.as_ptr(),
-        len: PATCH.len(),
+        ptr: text.as_ptr(),
+        len: text.len(),
         done: false,
     };
-    // SAFETY: a live lua_State on its own thread, a reader over a static
-    // buffer, and NUL-terminated chunk name and mode.
+    // SAFETY: a live lua_State on its own thread, a reader over a buffer
+    // that outlives the call, and NUL-terminated chunk name and mode.
     let status = unsafe {
         load(
             state,
@@ -795,19 +834,88 @@ mod tests {
         assert_eq!(size, 0);
     }
 
+    /// Runs the patch in a Lua whose loader records what it was asked for
+    /// and has no file for the paths in `missing`.
+    fn patched_lua(ram_mb: Option<u64>, missing: &[&str]) -> mlua::Lua {
+        let lua = mlua::Lua::new();
+        let missing = lua.create_sequence_from(missing.iter().copied()).unwrap();
+        lua.globals().set("missing", missing).unwrap();
+        lua.load(
+            r#"
+            debugPrint = function() end
+            asked = {}
+            resolveutil = { loadfile = function(path)
+                asked[#asked + 1] = path
+                for _, m in ipairs(missing) do
+                    if m == path then return nil, "no such file" end
+                end
+                return function() return path end
+            end }
+        "#,
+        )
+        .exec()
+        .unwrap();
+        lua.load(patch(ram_mb)).exec().unwrap();
+        // A second run in the same state must not wrap twice.
+        lua.load(patch(ram_mb)).exec().unwrap();
+        lua
+    }
+
+    /// What loading `path` through the wrapped loader gives, and every path
+    /// the original loader was asked for on the way.
+    fn load_through(lua: &mlua::Lua, path: &str) -> (String, Vec<String>) {
+        lua.load("asked = {}").exec().unwrap();
+        let chunk: mlua::Function = lua
+            .load(format!("return resolveutil.loadfile({path:?})"))
+            .eval()
+            .unwrap();
+        let served: String = chunk.call(()).unwrap();
+        let asked: mlua::Table = lua.globals().get("asked").unwrap();
+        let asked = asked.sequence_values().map(Result::unwrap).collect();
+        (served, asked)
+    }
+
     #[test]
-    fn the_patch_redirects_only_the_games_main_page() {
-        assert!(PATCH.contains(r#"path:find("gui/menu/main_page%.tl$")"#));
-        assert!(PATCH.contains(r#"not path:find("^tpf3mp_1::")"#));
-        assert!(PATCH.contains(r#"pcall(orig, "tpf3mp_1::/gui/menu/main_page.tl", ...)"#));
-        assert!(
-            PATCH.contains("the menu stays the game's"),
-            "a missing mod copy must fall back"
+    fn the_patch_serves_the_mods_copies_of_two_menu_pages() {
+        const MAIN: &str = "tpf3mp_1::/gui/menu/main_page.tl";
+        const NEW_GAME: &str = "tpf3mp_bigmap_1::/gui/menu/new_game_or_map_settings_page.tl";
+        let lua = patched_lua(Some(32_768), &[]);
+        assert_eq!(
+            load_through(&lua, "::/gui/menu/main_page.tl"),
+            (MAIN.to_owned(), vec![MAIN.to_owned()])
         );
-        assert!(
-            PATCH.contains("ru.__tpf3mp_menu"),
-            "the wrap must be idempotent"
+        assert_eq!(
+            load_through(&lua, "gui/menu/new_game_or_map_settings_page.tl").0,
+            NEW_GAME
         );
+        // The copies themselves, and every other file, pass through.
+        for path in [MAIN, NEW_GAME, "::/gui/menu/new_game_react_util.tl"] {
+            assert_eq!(
+                load_through(&lua, path),
+                (path.to_owned(), vec![path.to_owned()])
+            );
+        }
+        let ram: u64 = lua
+            .load("return resolveutil.__tpf3mp_ram_mb")
+            .eval()
+            .unwrap();
+        assert_eq!(ram, 32_768);
+    }
+
+    #[test]
+    fn without_the_big_map_mod_the_page_is_the_games() {
+        const NEW_GAME: &str = "tpf3mp_bigmap_1::/gui/menu/new_game_or_map_settings_page.tl";
+        let lua = patched_lua(None, &[NEW_GAME]);
+        let game = "::/gui/menu/new_game_or_map_settings_page.tl";
+        assert_eq!(
+            load_through(&lua, game),
+            (game.to_owned(), vec![NEW_GAME.to_owned(), game.to_owned()])
+        );
+        let ram: mlua::Value = lua
+            .load("return resolveutil.__tpf3mp_ram_mb")
+            .eval()
+            .unwrap();
+        assert!(ram.is_nil(), "no memory known, none claimed");
     }
 
     #[test]

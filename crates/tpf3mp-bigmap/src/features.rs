@@ -39,11 +39,12 @@ pub struct Feature {
 pub const FEATURES: [Feature; 6] = [
     Feature {
         // TPF2: UI::GetNumTilesNew (MenuUI.cpp:264) and the size dropdown's
-        // fill. If TF3's New Game menu is a script recipe, this moves to the
-        // mod (mod/tpf3mp_bigmap_1) and needs no target.
+        // fill. TF3's New Game page is a script: the mod's copy of it
+        // (mod/tpf3mp_bigmap_1, crate::page), served by the hook's loader
+        // redirect, adds the rows, so no native target.
         name: "size_rows",
         effect: Effect::Ui,
-        targets: &["bigmap::tile_count", "bigmap::size_list"],
+        targets: &[],
         wanted: |config| config.sizes.add_rows,
     },
     Feature {
@@ -143,7 +144,16 @@ impl Plan {
 /// `resolved` answers yes for: with the hook, `|name|
 /// profile.get(name).is_some()` on its `ResolvedProfile`.
 pub fn plan(config: &Config, resolved: impl Fn(&str) -> bool) -> Plan {
-    let features = FEATURES
+    plan_features(&FEATURES, config, resolved)
+}
+
+/// [`plan`] over `features` instead of [`FEATURES`].
+pub fn plan_features(
+    features: &[Feature],
+    config: &Config,
+    resolved: impl Fn(&str) -> bool,
+) -> Plan {
+    let features = features
         .iter()
         .map(|feature| {
             let state = if !(feature.wanted)(config) {
@@ -184,13 +194,29 @@ mod tests {
 
     #[test]
     fn a_missing_screen_feature_degrades() {
+        // A screen feature with native sites, as size_rows was on TPF2.
+        const NATIVE_ROWS: Feature = Feature {
+            name: "native_rows",
+            effect: Effect::Ui,
+            targets: &["bigmap::tile_count", "bigmap::size_list"],
+            wanted: |config| config.sizes.add_rows,
+        };
         let settings = config("[sizes]\nadd_rows = true\n[ui]\nminimap = true");
-        let plan = plan(&settings, |target| target == "bigmap::tile_count");
+        let native = plan_features(&[NATIVE_ROWS], &settings, |target| {
+            target == "bigmap::tile_count"
+        });
         assert_eq!(
-            plan.state("size_rows"),
+            native.state("native_rows"),
             Some(&State::Degraded {
                 missing: vec!["bigmap::size_list"]
             })
+        );
+        assert_eq!(native.refusal(), None);
+        let plan = plan(&settings, |_| false);
+        assert_eq!(
+            plan.state("size_rows"),
+            Some(&State::On),
+            "TF3's rows are the mod's page: no native site"
         );
         assert_eq!(
             plan.state("minimap"),
