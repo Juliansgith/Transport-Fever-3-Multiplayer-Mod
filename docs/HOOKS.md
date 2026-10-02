@@ -1220,6 +1220,16 @@ reference of its own to either. Once linked, the GUI wraps every
     "Companies", "applyLevel", { level })`, as an `ApplyRank` action
     ("Company ranks" below). The company's other events (greening an
     industry, `MakeGreen`; a marketing campaign) stay refused;
+  - a town building's Historic Preservation checkbox
+    (`makeTownBuildingSetBlockedDevelopmentCmd`, the town building window's
+    `HistoricBuildingCard`), as a `Preserve` action: the construction the
+    building stands in, by its file and position, and the building's index
+    in that construction's town buildings (`capture.townBuildingOf`: the
+    construction the game names for it, else the one whose list has it;
+    INFERRED that the window's entity is the listed one). Every game sets
+    the building at that index through the same command. Refused in the
+    sender and in every game's replay until `acceptance.lua`'s
+    `preservation` is turned on after a two-player game (COVERAGE.md);
   - answering a subsidy offer, the subsidy window's
     `makeScriptingSendEventCmd("", "Subvention", "onAccept" | "onDecline",
     { uid })`, as a `Subsidy` action naming the offer by its number and

@@ -1472,6 +1472,22 @@ function HANDLERS.Prospect(p, ctx)
 	}))
 end
 
+-- A town building's Historic Preservation (action::Preservation), as its
+-- window sets it (gui/entity_window/town_building/town_building.tl): the
+-- town building at that place in the construction's list. Town buildings
+-- are the town's: any company may, as in single player.
+function HANDLERS.Preserve(p)
+	local con, c = constructionAt(p.building)
+	local list = c and c.townBuildings
+	local building = list and list[p.index + 1]
+	if type(building) ~= "number" then
+		error("no town building " .. tostring(p.index) .. " in the " .. tostring(p.building.file), 0)
+	end
+	log((p.preserved and "preserving " or "no longer preserving ") .. tostring(building) .. " of "
+		.. tostring(con) .. " " .. tostring(p.building.file))
+	return run(api.cmd.makeTownBuildingSetBlockedDevelopmentCmd(building, p.preserved == true))
+end
+
 -- The room's companies (tpf3mp/companies.lua): the acting player founds,
 -- joins, renames, recolours or dissolves one, and its head locks it, sends a
 -- player out or shares its stations, in `ctx.roster`; `ctx.seal` is the

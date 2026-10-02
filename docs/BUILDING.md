@@ -458,7 +458,8 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (**22**). This integration combines the existing
+`ACTION_SCHEMA_VERSION` (**23**; 22 had no Historic Preservation
+(`Preserve`)). This integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
 The Lua mod builds an action from a captured
@@ -508,6 +509,7 @@ appended.
 | `NotificationSeen` | a notification's popup played its first sound: every game's Notifications script marks it (its `initialSound` event), so no game plays it again |
 | `Prospect` | prospecting near a town: the town, the cargo, the industry types that may be found in the originator's menu's order, and the company permit it uses. The outcome is not in it: every game's company script draws it from the game time, months later, alike ([investigation](../investigation/TPF3_PROSPECTING_2026-09-30.md)) |
 | `ApplyRank` | a company rank to take, as the company window sends the game's growth script (`applyLevel`); the acting player's company takes it ([HOOKS.md](HOOKS.md), "Company ranks") |
+| `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Gated off (`acceptance.lua`, `preservation`) |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:

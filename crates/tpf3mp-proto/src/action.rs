@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 22;
+pub const ACTION_SCHEMA_VERSION: u32 = 23;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -1036,6 +1036,20 @@ pub enum Renamed {
     Construction(ConstructionRef),
 }
 
+/// A town building's Historic Preservation checkbox
+/// (`makeTownBuildingSetBlockedDevelopmentCmd`,
+/// `gui/entity_window/town_building/town_building.tl`): the building keeps
+/// its look but still levels up. Appended under schema version 23.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preservation {
+    /// The construction the town building stands in, by its file and place.
+    pub building: ConstructionRef,
+    /// Which of that construction's town buildings, from 0.
+    pub index: u8,
+    /// Preserved (true), or free to change again (false).
+    pub preserved: bool,
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -1085,6 +1099,9 @@ pub enum Action {
         what: Renamed,
         name: ObjectName,
     },
+    /// A town building's Historic Preservation (`Preservation`). Appended
+    /// under schema version 23: the variants before it keep their bytes.
+    Preserve(Preservation),
 }
 
 #[derive(Debug, Error)]
@@ -1127,6 +1144,7 @@ impl Action {
             Action::EditJunctions(_) => "EditJunctions",
             Action::Subsidy(_) => "Subsidy",
             Action::Rename { .. } => "Rename",
+            Action::Preserve(_) => "Preserve",
         }
     }
 
@@ -1308,7 +1326,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                22, // schema version
+                23, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1351,7 +1369,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                23, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1386,7 +1404,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                23, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1404,7 +1422,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                23, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1419,7 +1437,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                23, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1430,7 +1448,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                23, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1442,7 +1460,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                23, // schema version
                 19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1470,9 +1488,23 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [22, 11]);
+            assert_eq!(payload.as_bytes()[..2], [23, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
+        // Appended under schema version 23: Historic Preservation takes the
+        // next tag.
+        let preserve = Action::Preserve(Preservation {
+            building: ConstructionRef {
+                file: Text::new("b").unwrap(),
+                at: pos(1, 0, 0),
+            },
+            index: 0,
+            preserved: true,
+        });
+        assert_eq!(
+            preserve.to_payload().unwrap().as_bytes(),
+            [23, 21, 1, b'b', 2, 0, 0, 0, 1]
+        );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
             change: VehicleChange::ManualDeparture(true),
@@ -1480,7 +1512,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                22, // schema version
+                23, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

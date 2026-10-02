@@ -610,6 +610,9 @@ impl State {
             Action::Subsidy(_) => Ok(()),
             // A name: the model keeps no names.
             Action::Rename { .. } => Ok(()),
+            // A town building's preservation: the model keeps no towns'
+            // buildings.
+            Action::Preserve(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }

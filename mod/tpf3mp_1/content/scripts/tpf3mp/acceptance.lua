@@ -1,11 +1,13 @@
 -- New channels remain refused until ordinary two-game acceptance is recorded.
 -- These defaults travel with the mod fingerprint: every room member has the
 -- same settings. Fixtures may enable a channel explicitly to test its mechanics.
-local acceptance = { subsidies = false, rename = false, waypoints = false }
+local acceptance = { subsidies = false, rename = false, waypoints = false, preservation = false }
 
 function acceptance.check(action)
     local feature
     if action.Subsidy then feature = "subsidies" end
+    -- A town building's Historic Preservation (action::Preservation).
+    if action.Preserve then feature = "preservation" end
     if action.Rename or (action.VehicleOp and type(action.VehicleOp.change) == "table"
         and action.VehicleOp.change.Recolor) then feature = "rename" end
     local line = action.CreateLine and action.CreateLine.line

@@ -115,6 +115,8 @@ guard.CARRY = {
 	makeLineDestroyCmd = by("lineDestroy"),
 	makeEntitySetNameCmd = by("setName"),
 	makeEntitySetColorCmd = by("setColor"),
+	-- A town building's Historic Preservation checkbox.
+	makeTownBuildingSetBlockedDevelopmentCmd = by("preserve"),
 	-- A construction's parameters changed in its window: an edit of that
 	-- construction, which every game replaces alike. Other builds a window
 	-- sends stay refused.
@@ -167,6 +169,7 @@ guard.WHAT = {
 	makeWorldBuildProposalCmd = "building from this window",
 	makeEntitySetNameCmd = "renaming",
 	makeEntitySetColorCmd = "changing colours",
+	makeTownBuildingSetBlockedDevelopmentCmd = "historic preservation",
 	makeGameSetCalendarSpeedCmd = "changing the calendar speed",
 }
 

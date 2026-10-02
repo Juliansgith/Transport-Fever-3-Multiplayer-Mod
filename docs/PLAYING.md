@@ -403,7 +403,8 @@ protected folder such as Program Files.
   touched.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
-- **Subsidies, entity renaming, vehicle recolouring and line waypoints.**
+- **Subsidies, entity renaming, vehicle recolouring, line waypoints and
+  a town building's Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).
