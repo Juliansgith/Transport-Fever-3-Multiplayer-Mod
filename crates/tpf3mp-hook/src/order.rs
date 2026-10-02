@@ -1837,6 +1837,9 @@ pub mod claims {
     /// A comma-separated list of entity ids whose claim-loop state is
     /// logged every update.
     pub const ENTITIES_ENV: &str = "TPF3MP_HOOK_WATCH_ENTITIES";
+    /// `from-to` (room steps, both included): the listed entities are
+    /// watched in those steps only; unset, in every step.
+    pub const ENTITIES_STEPS_ENV: &str = "TPF3MP_HOOK_WATCH_ENTITIES_STEPS";
     pub const HEAD_SITE: &str = "ecs::LandVehicleMoveSystem::Update2/claim head";
     pub const HEAD_EXPECTED: [u8; 7] = [
         0x8B, 0x73, 0x44, // mov esi, [rbx+0x44]
@@ -1860,6 +1863,7 @@ pub mod claims {
     const CLAIMED: u64 = 0x68;
 
     static WATCHED: OnceLock<HashSet<i32>> = OnceLock::new();
+    static WATCHED_STEPS: OnceLock<Option<(u64, u64)>> = OnceLock::new();
     static BROKEN: AtomicBool = AtomicBool::new(false);
 
     /// The entity ids `value` lists (commas or spaces between them); what
@@ -1872,9 +1876,39 @@ pub mod claims {
             .collect()
     }
 
-    /// Whether `TPF3MP_HOOK_WATCH_ENTITIES` lists `entity`.
+    /// Whether `TPF3MP_HOOK_WATCH_ENTITIES` lists `entity`, in a step
+    /// `TPF3MP_HOOK_WATCH_ENTITIES_STEPS` covers.
     pub fn watched(entity: i32) -> bool {
         WATCHED.get().is_some_and(|w| w.contains(&entity))
+            && covers(
+                WATCHED_STEPS.get().copied().flatten(),
+                crate::seeds::current_step(),
+            )
+    }
+
+    /// Whether the window `steps` (`None`: every step) covers `step`, the
+    /// room's step of the update running (`None` outside one: covered only
+    /// without a window).
+    pub fn covers(steps: Option<(u64, u64)>, step: Option<u64>) -> bool {
+        match steps {
+            None => true,
+            Some((from, to)) => step.is_some_and(|s| (from..=to).contains(&s)),
+        }
+    }
+
+    /// [`ENTITIES_STEPS_ENV`]'s value: the window, or why it is refused
+    /// (then every step is watched, as before the window existed).
+    pub fn parse_steps(value: Option<&str>) -> Result<Option<(u64, u64)>, String> {
+        match value.map(str::trim).filter(|v| !v.is_empty()) {
+            None => Ok(None),
+            Some(value) => crate::lanedump::parse_step_range(value)
+                .map(Some)
+                .ok_or_else(|| {
+                    format!(
+                        "{ENTITIES_STEPS_ENV}={value} is not a step range such as 25850-25960; the entities are watched in every step"
+                    )
+                }),
+        }
     }
 
     /// The head line: the component's bytes from `+0x18` as little-endian
@@ -1914,6 +1948,12 @@ pub mod claims {
         let watched = parse_entities(std::env::var(ENTITIES_ENV).ok().as_deref());
         let listed = watched.len();
         let _ = WATCHED.set(watched);
+        let (steps, steps_refused) =
+            match parse_steps(std::env::var(ENTITIES_STEPS_ENV).ok().as_deref()) {
+                Ok(steps) => (steps, None),
+                Err(why) => (None, Some(why)),
+            };
+        let _ = WATCHED_STEPS.set(steps);
         let mut outcomes = vec![splice_one(
             resolved,
             DECISION_SITE,
@@ -1929,8 +1969,21 @@ pub mod claims {
                 &HEAD_EXPECTED,
                 HEAD_STEAL,
                 head_hook,
-                &format!("the claim loop's view of {listed} entities from {ENTITIES_ENV} is logged every update (logging only)"),
+                &format!(
+                    "the claim loop's view of {listed} entities from {ENTITIES_ENV} is logged every update{} (logging only)",
+                    match steps {
+                        Some((from, to)) => format!(" of steps {from} to {to}"),
+                        None => String::new(),
+                    }
+                ),
             ));
+        }
+        if let Some(why) = steps_refused {
+            outcomes.push(Outcome {
+                fix: FIX,
+                installed: false,
+                reason: why,
+            });
         }
         outcomes
     }
@@ -3374,7 +3427,57 @@ pub mod road {
         format!("order fix {FIX}: in-step appends={appends} reordered={reorders}")
     }
 
-    fn sorted(probe: &mut Probe, data: u64, edge_ids: impl Iterator<Item = u64>) {
+    /// An edge id's meaningful bytes: entity, index, direction.
+    fn edge_key(probe: &mut Probe, edge_id: u64) -> Option<crate::roadtrace::EdgeKey> {
+        Some((
+            probe.read(edge_id)?,
+            probe.read(edge_id.checked_add(4)?)?,
+            probe.read(edge_id.checked_add(8)?)?,
+        ))
+    }
+
+    /// The entries of the edge `edge_id` names, as the road entry trace
+    /// lists them: entity, component, back, front.
+    fn listed(probe: &mut Probe, data: u64, edge_id: u64) -> Option<Vec<crate::roadtrace::Listed>> {
+        let vector = entries_of(probe, data, edge_id).ok()?;
+        let begin: u64 = probe.read(vector)?;
+        let end: u64 = probe.read(vector.checked_add(8)?)?;
+        if end < begin
+            || !(end - begin).is_multiple_of(ENTRY_LEN)
+            || end - begin > MAX_ENTRIES * ENTRY_LEN
+        {
+            return None;
+        }
+        (0..(end - begin) / ENTRY_LEN)
+            .map(|i| {
+                let at = begin + i * ENTRY_LEN;
+                Some((
+                    probe.read::<i32>(at)?,
+                    probe.read::<i32>(at + 4)?,
+                    probe.read::<f32>(at + 8)?,
+                    probe.read::<f32>(at + 12)?,
+                ))
+            })
+            .collect()
+    }
+
+    /// What was appended, for the road entry trace (`crate::roadtrace`):
+    /// everything but its edges, which [`sorted`] reads.
+    struct Appended {
+        kind: crate::roadtrace::Kind,
+        entity: i32,
+        component: i32,
+        current: Option<i32>,
+        range: Option<(i32, i32)>,
+        bounds: u64,
+    }
+
+    fn sorted(
+        probe: &mut Probe,
+        data: u64,
+        appended: Appended,
+        edge_ids: impl Iterator<Item = u64>,
+    ) {
         guarded(FIX, &BROKEN, || {
             let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
             let on_step = in_step();
@@ -3384,9 +3487,12 @@ pub mod road {
                 (&OTHER_CALLS, &OTHER_REORDERS)
             };
             let here = calls.fetch_add(1, Ordering::Relaxed) + 1;
-            for edge_id in edge_ids {
+            let edge_ids: Vec<u64> = edge_ids.collect();
+            let mut reordered_now = 0;
+            for &edge_id in &edge_ids {
                 match sort_edge(probe, data, edge_id) {
                     Ok(Sorted::Reordered) => {
+                        reordered_now += 1;
                         reorders_here.fetch_add(1, Ordering::Relaxed);
                         let reorders = REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
                         if reorders <= 3 {
@@ -3398,6 +3504,31 @@ pub mod road {
                     Ok(Sorted::Unchanged) => {}
                     Err(why) => REFUSALS.note(FIX, why),
                 }
+            }
+            if on_step {
+                // The road entry trace (logging only): the simulation's own
+                // appends, which two agreeing games make alike.
+                let step = crate::seeds::current_step();
+                let append = crate::roadtrace::Append {
+                    kind: appended.kind,
+                    entity: appended.entity,
+                    component: appended.component,
+                    current: appended.current,
+                    range: appended.range,
+                    bounds: appended.bounds,
+                    edges: edge_ids
+                        .iter()
+                        .filter_map(|&id| edge_key(probe, id))
+                        .collect(),
+                };
+                let entries: Option<Vec<_>> =
+                    crate::roadtrace::wants_entries(appended.entity, step).then(|| {
+                        edge_ids
+                            .iter()
+                            .filter_map(|&id| Some((edge_key(probe, id)?, listed(probe, data, id))))
+                            .collect()
+                    });
+                crate::roadtrace::note(step, &append, reordered_now, entries.as_deref());
             }
             if on_step && here.is_multiple_of(1 << 16) {
                 log::line(&step_line(here, reorders_here.load(Ordering::Relaxed)));
@@ -3452,7 +3583,19 @@ pub mod road {
                 .checked_add(MANAGER_DATA)
                 .and_then(|at| probe.read::<u64>(at))
             {
-                Some(data) => sorted(&mut probe, data, std::iter::once(edge_id as u64)),
+                Some(data) => sorted(
+                    &mut probe,
+                    data,
+                    Appended {
+                        kind: crate::roadtrace::Kind::Person,
+                        entity: entity as u32 as i32,
+                        component: component as u32 as i32,
+                        current: None,
+                        range: None,
+                        bounds: bounds as u64,
+                    },
+                    std::iter::once(edge_id as u64),
+                ),
                 None => REFUSALS.note(FIX, "the manager's data is unreadable"),
             }
         }
@@ -3515,7 +3658,19 @@ pub mod road {
                     from as u32 as i32,
                     to as u32 as i32,
                 ) {
-                    Ok(edges) => sorted(&mut probe, data, edges),
+                    Ok(edges) => sorted(
+                        &mut probe,
+                        data,
+                        Appended {
+                            kind: crate::roadtrace::Kind::Vehicle,
+                            entity: entity as u32 as i32,
+                            component: component as u32 as i32,
+                            current: Some(current as u32 as i32),
+                            range: Some((from as u32 as i32, to as u32 as i32)),
+                            bounds: bounds as u64,
+                        },
+                        edges,
+                    ),
                     Err(why) => REFUSALS.note(FIX, why),
                 }
             }
@@ -4280,6 +4435,27 @@ mod tests {
         assert_eq!(
             claims::decision_line(3201, 217708, true, 9, 8),
             "claim: step 3201 vehicle 217708 terminal decision 1 (claimed to 9, decided at 8)"
+        );
+    }
+
+    #[test]
+    fn the_watched_entities_window_bounds_their_lines() {
+        assert_eq!(claims::parse_steps(None), Ok(None));
+        assert_eq!(claims::parse_steps(Some(" ")), Ok(None));
+        assert_eq!(
+            claims::parse_steps(Some("25850-25960")),
+            Ok(Some((25850, 25960)))
+        );
+        let refused = claims::parse_steps(Some("25960-25850")).unwrap_err();
+        assert!(refused.contains("watched in every step"), "{refused}");
+        assert!(claims::covers(None, None));
+        assert!(claims::covers(None, Some(7)));
+        let window = Some((25850, 25960));
+        assert!(claims::covers(window, Some(25850)) && claims::covers(window, Some(25960)));
+        assert!(!claims::covers(window, Some(25849)) && !claims::covers(window, Some(25961)));
+        assert!(
+            !claims::covers(window, None),
+            "outside an update, a window watches nothing"
         );
     }
 

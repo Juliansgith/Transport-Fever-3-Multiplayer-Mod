@@ -538,6 +538,11 @@ fn log_counters(first: u64, updates: u32, checkpoint: bool) {
     if checkpoint || before.saturating_add(1) != first {
         let counters = crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire));
         log_line(&crate::ticks::checkpoint_line(last, counters));
+        // The road entry trace's digest of the in-step appends since the
+        // last checkpoint (docs/HOOKS.md, "The road entry trace").
+        if let Some(line) = crate::roadtrace::take_checkpoint(last) {
+            log_line(&line);
+        }
     }
 }
 
@@ -1024,6 +1029,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     crate::seeds::install(&absolute);
     log_line(&crate::ticks::install(&absolute));
     log_line(&crate::probe::install(&absolute));
+    for line in crate::roadtrace::configure_from_env() {
+        log_line(&line);
+    }
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
     }
