@@ -1060,6 +1060,7 @@ impl State {
                     self.edges.remove(&key);
                 }
             }
+            Bulldoze::Assets(_) => refuse!("no asset group there"),
             Bulldoze::Construction(reference) => {
                 let key = self.find_construction(reference)?;
                 let construction = &self.constructions[&key];

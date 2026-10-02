@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 24;
+pub const ACTION_SCHEMA_VERSION: u32 = 25;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -52,6 +52,8 @@ pub const MAX_PHASES: usize = 64;
 pub const MAX_EDGES: usize = 256;
 /// Most town buildings one bulldoze of streets removes with them.
 pub const MAX_BUILDINGS: usize = 64;
+/// Most assets removed by one action.
+pub const MAX_ASSETS: usize = 64;
 /// Most parameters of one construction, nested modules counted one by one.
 pub const MAX_PARAMS: usize = 1024;
 /// Most vehicle models in one consist.
@@ -513,6 +515,35 @@ pub enum Bulldoze {
         at: Pos,
         model: ResName,
     },
+    /// Trees and other assets taken out of their asset group, which every
+    /// game builds again from its own copy without them (schema 25).
+    Assets(AssetRemoval),
+}
+
+/// One asset of an asset group: its model's file and where it stands,
+/// matched within 5 mm.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AssetRef {
+    pub model: ResName,
+    pub at: Pos,
+}
+
+/// The asset bulldozer's removal: the group, named by its first asset and
+/// how many it holds, and the assets taken out of it. Every game finds the
+/// group that holds exactly that many assets, the first one and every one
+/// removed among them, and builds it again from its own copy without them;
+/// any other group refuses it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetRemoval {
+    pub first: AssetRef,
+    pub count: u32,
+    pub removed: BoundedVec<AssetRef, MAX_ASSETS>,
+    /// Each asset's turn goes the other way round in the game's matrix
+    /// than `[cos, sin; -sin, cos]` (which way the tool built them, read
+    /// off its proposal).
+    pub mirrored: bool,
+    /// Whether the tool's rebuilt group was owned by the player.
+    pub owned: bool,
 }
 
 /// Where a construction stands: the game's 4x4 matrix as its rotation and
@@ -827,6 +858,13 @@ pub struct PlaceStop {
     /// A one-way signal (the signal tool's "oneWay").
     #[serde(default)]
     pub one_way: bool,
+    /// The name the originator's tool gave the stop
+    /// (`street_util::MakeEdgeObjectName`: a street name from the town's
+    /// name list, else "Stop #n"), which every game builds it with. None
+    /// where the tool gave none the schema can carry: every game then names
+    /// it by the mod's own rule.
+    #[serde(default)]
+    pub name: Option<ObjectName>,
 }
 
 /// What an edge object placed with the stop and signal tool is (TF3's
@@ -1398,7 +1436,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                24, // schema version
+                25, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1441,7 +1479,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                25, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1476,7 +1514,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                25, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1494,7 +1532,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                25, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1509,7 +1547,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                25, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1520,7 +1558,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                25, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1532,7 +1570,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                25, // schema version
                 19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1569,7 +1607,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [24, 11]);
+            assert_eq!(payload.as_bytes()[..2], [25, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         // Appended under schema version 24: the perk tools take the next tag.
@@ -1577,7 +1615,7 @@ mod tests {
             industry: IndustryId(5),
             permit: None,
         });
-        assert_eq!(green.to_payload().unwrap().as_bytes(), [24, 21, 0, 5, 0]);
+        assert_eq!(green.to_payload().unwrap().as_bytes(), [25, 21, 0, 5, 0]);
         // Appended under schema version 24: Historic Preservation takes the
         // next tag.
         let preserve = Action::Preserve(Preservation {
@@ -1590,7 +1628,7 @@ mod tests {
         });
         assert_eq!(
             preserve.to_payload().unwrap().as_bytes(),
-            [24, 22, 1, b'b', 2, 0, 0, 0, 1]
+            [25, 22, 1, b'b', 2, 0, 0, 0, 1]
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
@@ -1599,7 +1637,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                25, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

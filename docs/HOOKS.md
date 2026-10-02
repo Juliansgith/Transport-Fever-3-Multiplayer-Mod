@@ -1502,6 +1502,65 @@ state, which the game saves with the world:
   (`status().me_id`) and the game script's roster every 2 seconds
   (`hook.log`: `the GUI's company follows the player's in the HUD's
   state`).
+
+  Seen again on 2026-10-02 (build 9ad8837, competitive room): with every
+  state saying it followed, the line manager showed the first company's
+  stations, not Rival's own, and Rival's stops were "another company's".
+  Every one of those views decides "mine" in Lua at call time
+  (`scripts/entity_util.tl`'s `isOwnedByPlayer` and
+  `isOwnedByPlayerOrNotOwned`, and `getLinesForPlayer(getPlayer())`,
+  `requireOwnedByPlayer = getPlayer()` in `line_vehicle_mgmt/manager_window.tl`,
+  `station_group.tl`, the vehicle and depot lists, the finance window's
+  `getPlayersBalance(getPlayer())`), so the state's getPlayer was the
+  game's own when they ran. No native player stands behind them that the
+  hook could write instead: the GUI's `GameState` (`CGame+0x1e0`, where
+  getPlayer's answer and the bulldozer's list come from, `+0x20c`) is one
+  of the simulation's two buffers (the probe, SEEN: `the GUI's is buffer
+  [0]`, then `[1]`), so writing it would change the simulation.
+  INFERRED: the state's api was made anew after the mod's script ran (a
+  React root reloading its interfaces), and the install, once per Lua
+  state (`package.loaded["tpf3mp.followed"]`), never came back. Now
+  `follow.ensure` puts the company in front of the current api's getPlayer
+  whenever it is not there, and the
+  game's two ownership tests in each state's `entity_util` call it before
+  they answer, so the first window that asks after a new api gets the
+  company. Where a state cannot read the roster, the company the
+  Multiplayer plugin's state notes for the hook (`tpf3mp.company`, which
+  the native tools already act on) answers (`follow.noteSource`). Each
+  state says what its getPlayer answers, and when it had to put the
+  company back:
+
+  ```
+  the GUI's getPlayer answers the player's company 372630 (the HUD's state)
+  the GUI's getPlayer was the game's own again (a new api in this state); it follows the player's company again (the HUD's state)
+  ```
+
+  No state saying it answers the company while a window still shows the
+  first company's things would mean a Lua state the mod's scripts never
+  run in.
+- *In a competitive room* the GUI founds the player a company of their
+  own (`tpf3mp.script.lua`, `foundOwnCompany`): the same `CompanyOp`
+  `Create` **Found** sends, named `<name>'s company`, sent by the
+  player's own game, so the room orders it for every game like any other
+  action (D8: the server never writes an action). Only while
+  `status().competitive` is true, the roster is read and says the player
+  plays for the room's first company, and no company of the room, dissolved
+  ones included, was founded by them; and not before four readings of the
+  room since the world's GUI linked (`OWN_SETTLE`, about a second), so a
+  world that is still catching up has applied what the room ordered
+  before. A reading that lacks the roster or the play style delays it no
+  further: the readings need not agree in a row. At most once a room and
+  player in this Lua state. Each reason not to found is said once in
+  `hook.log`: `not founding the player's own company: <why>` (the
+  launcher has not said whether the room is competitive, the room is
+  co-op, the room's companies are not read yet, the player plays for
+  <company>, the player founded a company in this room before, ...).
+  The player's name is their entry's by id in `status().players`, else
+  the first eight hex digits of their id. The name is the same each
+  time, so a second one sent before the first arrives is refused alike in
+  every game; with another player of the same name in the room, the first
+  four hex digits of the player's id follow it. `hook.log`: `a competitive
+  room: founding the player's own company`.
 - *The Multiplayer window* lists the companies with their money and
   players, the one the player plays for first with its colour to choose
   (the game's colour chooser, `ColorChooserButton`, with the companies'
@@ -1856,9 +1915,288 @@ company the player plays for, so a company's own stops and stations are
 another player's to them (no snapping), and the HQ's Configure opens the
 native module builder under the same player (its button shows for every
 headquarters: `perk.tl` gates it on `isHeadquarters` alone, and its click
-on `entity_util.isOwnedByPlayer`, which the mod answers). Not solved yet:
-see the investigation of the engine's player in
+on `entity_util.isOwnedByPlayer`, which the mod answers). The street,
+track and modifier tools and the bulldozer now act as the company ("The
+tools' player" below); the other tools not yet: see the investigation of the engine's player in
 [investigation/TF3_LOCAL_PLAYER_2026-10-01.md](../investigation/TF3_LOCAL_PLAYER_2026-10-01.md).
+
+**The probe of the engine's player** (`crates/tpf3mp-hook/src/probe.rs`),
+off unless the game's environment has `TPF3MP_PROBE_PLAYER=1`. Read only:
+it takes field offsets from two optional profile targets (`probe: GUI
+GameState getter`, `probe: engine GameState getter`), checks every pointer
+readable before it reads it, and writes nothing. In `CMenuUI::DoStep`'s
+detour, after the game's frame, for five frames whenever `m_game` changes
+and then every 3 s, `hook.log` says:
+
+```
+probe: reading the engine's player, read only: the GUI's GameState at [[menu+0x6b0]+0x1e0], the engine's at [[game+0x1f0]+0x78+8*i], i at +0x98; 8192 bytes of each scanned every 3 s
+probe: at the menu, no CGame (m_game is 0)
+probe: CGame 0x...: GUI GameState [+0x1e0] 0x...; engine buffers [+0x1f0] 0x...: [0] 0x..., [1] 0x..., i 0; the GUI's is neither buffer
+probe: player 118368 in GUI 0x...: +0x40q +0x1a0d
+probe: player 118368 in engine [0] 0x...: +0x40q
+probe: player 118368 in engine [1] 0x...: none
+```
+
+The player is the save's, as the mod's game script notes it once linked
+(`note("tpf3mp.player")`); until then `probe: the save's player is not known
+yet`. Without the variable: `probe: the engine's player is not probed`.
+
+With the same variable it also counts who asks the proposal street graph
+for an entity's owner (`probe: ProposalStreetGraph::GetPlayerOwnedPtr`,
+rva 0xa46cd0): a pass-through detour that always calls the original and
+returns its answer, counting each caller's return address in a fixed table
+of 64 rows by side (inside `GameSim::Step`, on a simulation pool thread,
+or on the main thread outside the step: the GUI and its tools), with no
+lock and no allocation. Every 3 s, from the menu's frame:
+
+```
+probe: counting the callers of probe: ProposalStreetGraph::GetPlayerOwnedPtr at 0x...; its answer unchanged; flushed every 3 s
+probe: owner read from rva 0x...: in the step 0, sim pool 0, GUI 412
+probe: owner reads: none in 3 s
+```
+
+A caller counted under GUI only is a tool's or the GUI's own; one under
+the step or the pool is the simulation's.
+
+With the same variable it also logs what the native tools' ownership test
+takes for another player's (`probe: street_util IsOwnedByOtherPlayer`, rva
+0x610ea0; investigation/TF3_LOCAL_PLAYER_2026-10-01.md, "Why the street
+tool will not split a road the room built"): a pass-through detour that
+always returns the original's answer. When it answers true it counts the
+entity, under the tool's player, in a fixed table of 64 rows (no lock, no
+allocation), and the first time asks the original again with the company
+this player plays for (the GUI's `note("tpf3mp.company")`,
+`tpf3mp/follow.lua`) and with the save's player (`note("tpf3mp.player")`)
+to say whose the entity is. Every 3 s, from the menu's frame, nothing when
+nothing was answered:
+
+```
+probe: logging what probe: street_util IsOwnedByOtherPlayer at 0x... takes for another player's, its answer unchanged; flushed every 3 s
+probe: a native tool took entity 380001 for another player's: the tool acts as player 214443, the entity is owned by this player's company 372363; 41 time(s), first from rva 0x5fc027
+```
+
+A line like that one, for a road the room built for the player's own
+company, is the street tool refusing to snap into it; rva 0x5fc027 is the
+street builder's snap.
+
+With the same variable it also logs the street bulldozer's answers: its
+edge test (`probe: StreetBulldozerAction edge test`, rva 0x5f2a00, a lambda
+of `UI::StreetBulldozerAction::vf2`) and the owner test every bulldozer
+action calls (`probe: bulldozer owner test`, `sub_5f7db0`), each with the
+entity, the owner list it had and the answer, merged by equal answers,
+merged by equal answers and callers (the return address, as an RVA), every 3 s:
+
+```
+probe: the street bulldozer's edge test on entity 380001: refused with owner list [214443]; 4 time(s), from rva 0x5f2f4b
+probe: the bulldozer's owner test on entity 380001: allowed with owner list [372363]; 4 time(s), from rva 0x5f2ae6
+```
+
+An edge refused by the edge test with the company in its list, and no
+owner-test line for it, was refused before ownership (a construction's
+edge, another network, the underground mode).
+
+**The tools' player** (`crates/tpf3mp-hook/src/toolplayer.rs`), on unless
+`TPF3MP_HOOK_TOOL_COMPANY=0`. `UI::CGameUI`'s constructor reads the save's
+player once and hands each native tool a copy; the room builds roads,
+tracks and constructions as the acting company's (`PlayerOwned`), so for a
+player of any company but the room's first the tools took the company's
+own edges for another player's: the street tool snapped only to their ends
+(`sub_610ea0` from its snap marks another player's edge fixed), the
+bulldozer would not offer them, and the tram track tool would not join the
+company's rail. In a room, at the start of each tool's `Step`, on the main
+thread, the hook writes the company the GUI notes
+(`note("tpf3mp.company")`, `tpf3mp/follow.lua`) into three tools' copies:
+
+| tool | field | its `Step` |
+|---|---|---|
+| `UI::StreetBuilder` (the street and the track builder) | `+0xc0` | `0x585e50` |
+| `UI::TrackModifier` (tram track, bus lane, electrification and the other modifiers) | `+0xa0` | `0x5cbf80` |
+| `UI::ConstructionBuilder` (stations, depots, every construction the menu places) | `+0xa0` | `0x51cd60` |
+| `UI::StreetTerminalBuilder` (the stop builder, and the signal and waypoint builder, a second instance) | `+0xa0` | `0x595f30` |
+| `UI::ModuleBuilder` (a station's modules) | `+0xa8` | `0x545b50` |
+| `UI::Bulldozer` (every bulldozer action) | its own player (`+0x28`), its owner list (`+0xa8`, the one player every query it makes is built from) and the one player of its `BulldozerFilter`'s copy (`[[+0xc0]+0x10]`) | `0x4d6340`, and its list setter `0x4d6220` |
+
+Each field's offset is read from its constructor's code (profile targets
+`... ctor/player store`, `UI::Bulldozer ctor/filter`, which also gives the
+filter's vtable, checked before every write, and its one-player list);
+code that is not exactly the expected shape leaves that tool alone. Each is a UI
+object's field read only by its own class's code (the profile lists every
+reader), so nothing the simulation runs sees it. A field is written only
+where it holds the save's player (`note("tpf3mp.player")`) or the company
+this wrote; any other value is left and said once. Outside a room, for the
+room's first company, or when either note is missing, the game's value
+stays, and one this wrote goes back. The builds go through the room as
+before: capture reads a proposal's ownership as owned or not, the room
+builds for the acting company, and every game refuses an edit of another
+company's edge (`companies.mayTouch`). So the tools now also refuse a split
+or bulldoze of another company's road (the room's first company's
+included), as the room does. hook.log:
+
+```
+tool-company: the street and track builder acts as the player's company in a room (UI::StreetBuilder::Step at 0x...; TPF3MP_HOOK_TOOL_COMPANY=0 turns it off)
+tool-company: the street and track builder at 0x... acts as the player's company 372363 (was player 214443)
+tool-company: the street and track builder at 0x... acts as the save's player 214443 again
+```
+
+In the first game test (2026-10-02, build aaa331c) the street tool split
+the company's road mid-span; stations and stops were still refused before
+capture (the construction and stop builders kept the save's player), and so
+was bulldozing the company's road: the filter's player was written, but
+the bulldozer's own player (`+0x28`), which its proposals are made for
+(`Step` 0x4d687e, 0x4d46b0, 0x4d2b70, its lambda 0x4d2650), was not. Both
+are written now. The second test (95127b2) showed the bulldozer's edge
+test allowing the company's road with the company in its list and refusing
+it with the save's player in its list, from the same frames: the menu's
+step (`CMenuUI::DoStep`'s lambda through `sub_6a1410`) sets the bulldozer's
+owner list (`+0xa8`, and the filter's copy) again to the GUI's player
+(`[[game+0x1e0]+0x20c]`, the save's) through `sub_4d6220`, between the
+tool's frames, and the click's query is built from that list. So the
+setter is detoured too (`UI::Bulldozer set owner list`): the game's own
+assignment, then the bulldozer's fields brought to the company at once. An
+empty list (the setter's other case, which lets every owner through) is
+left alone. A field the game set back and this wrote again is said once,
+then at each power of two (`... was set back to player 214443; the company
+372630 written again (N time(s) so far, all tools)`). Not covered: the town, terrain and other tools CGameUI
+hands the player to (`sub_59b890`, `sub_5a2480` and the rest), which build
+nothing a company owns.
+
+**The views' player** (`crates/tpf3mp-hook/src/guiplayer.rs`), on unless
+`TPF3MP_HOOK_GUI_COMPANY=0`. With the windows following the company (bd3c695),
+the map still showed the first company's station icons and lines and not
+the player's company's: those are drawn natively, and each decides "the
+player's own" by asking the GUI's `IGameStateProvider` for the `GameState`
+and reading its player (`+0x20c`) inline. There is no shared helper to
+hook, and that `GameState` is one of the simulation's two buffers (the
+probe), so its player is never written. Each read in a UI function is
+spliced instead (`Splice`), right after it: in a room, the register that
+holds the save's player gets the company the GUI notes
+(`note("tpf3mp.company")`). Two reads compare the player with an owner at
+once (`mov eax,[player]; cmp [reg],eax`); those splices take the read and
+the compare, and point the owner's pointer at a copy of the save's player
+where the owner is the company, and at no one's where it is the save's
+player, the register being dead after on both paths. The sites:
+
+| what it draws or picks | function | splices |
+|---|---|---|
+| the icons above the map's stations | `UI::HudIconManager::PreemptiveOctreeTraversal` (`0x67b610`) | `0x67b7db` |
+| the station viewer | `UI::StationViewer::vf4` (`0x83a570`) | `0x83a608` |
+| what the selector picks, and its filter | `sub_839c50` (from `UI::CSelector`), `UI::ViewCreator::vf1` (from `CreateSelectorFilter`) | `0x839cd9`, `0x86712a` |
+| the catchment overlay | `UI::layers::CatchmentAreaHelper` (`sub_8764c0`, `sub_8779c0`) | `0x8765f5`, `0x876f36`, `0x8770ba`, `0x8770fd`, `0x877b39` (owner test) |
+| the map layers' colours: lines and stations | `LayerManagerColorMap` (`sub_87b7f0`), `UI::layers::LayerManager` (`0x883020`, `sub_885b10`) | `0x87b840`, `0x87b919`, `0x87b9ef`, `0x88307b`, `0x885c82` (owner test) |
+| two React components | `RendererComponentDelegate` (`sub_29f66d0`), `RailroadCrossingComp` (`sub_289e060`) | `0x29f689a`, `0x289e116` |
+
+Each splice takes whole instructions with no branch, call or RIP-relative
+operand, and no jump of the function lands inside it (tpfre). The
+profile's targets give each with a unique signature, checked again before
+it is spliced. What a site answers is read from two atomics the menu's
+frame refreshes from the notes, so a site on a worker thread (the HUD's
+octree traversal) reads no lock. Outside a room, for the room's first
+company, or while either note is missing, every read answers as the
+game's. Not covered: the scripting bindings that read the same player
+(`sub_24d6f40` and the others under `0x24f…`), which the game scripts call
+too; the GUI's Lua answers those (`tpf3mp/follow.lua`). hook.log:
+
+```
+view-company: 16 of 16 of the views' player reads see the player's company in a room (TPF3MP_HOOK_GUI_COMPANY=0 turns it off)
+view-company: the icons above the map's stations see the player's company 372631 (view: HudIconManager::PreemptiveOctreeTraversal/player)
+```
+
+**The map with every company** (2026-10-02, after eba8614). A room's map
+shows every company's icons and lines, not only the player's own: the
+game's own rule shows only the GUI player's, which was the save's player,
+and after the views took the company it was the company's alone. Two of
+the views' tests are widened, display only, with
+`TPF3MP_HOOK_GUI_ALL_COMPANIES=0` to keep them to the player's own:
+
+- the HUD's icon pass (`sub_674430`, a lambda of
+  `HudIconManager::PreemptiveOctreeTraversal`), which skips an entity whose
+  `PlayerOwned` owner is not the pass's player (`lea rdx,[rax+rcx*4]; test
+  rdx,rdx; je; cmp [rdx],r12d; jne`), spliced at the `lea`: for an owner
+  that is a company of the room, the pointer is formed at a copy of the
+  pass's player, so the icon of every company's station, vehicle and line
+  shows. An entity no one owns passes as the game's;
+- the map layers' colour test (`sub_885b10`, `view: LayerManager
+  colour/owner test`): a line or station of any company of the room takes
+  its own colour (its `Color` component) as the player's do.
+
+The room's companies are the GUI's note `tpf3mp.companies` (their player
+entities, comma separated, `tpf3mp/follow.lua`, `noteCompanies`), read
+with the company once a frame into atomics. Each entity keeps its own
+colour: a line its own (each new line its own colour), a vehicle
+the company's paint (`companies.paintVehicle`). INFERRED, not seen: that
+the station icons' colour is per entity too; where they are one colour for
+every company, a per-company tint needs the renderer's colour read found.
+What a player may select, edit or plan stays their own company's: the
+selector, the station viewer and the catchment overlay keep the company
+alone.
+
+**The GUI's Lua getPlayer, natively.** The map's line overlay is a React
+`LineViewer` whose lines a Lua state lists (`params::LineViewer`,
+`LineVisualization`); a GUI state whose api was made anew (the React roots
+reload their interfaces, `ScriptComponentRoot::ReloadInterfaces`) kept the
+game's getPlayer until a window asked an ownership test. So getPlayer's own
+binding answers the company in a room, in every GUI Lua state: its closure
+(`sub_24ed220`, registered as `getPlayer` by `SetupUtilInterface`) reads
+the player of the `GameState` its state's getter gives and pushes it
+(`call sub_2fbe300`, the Lua integer push); that call is redirected
+(`view: getPlayer binding/push`). The closure's getter is a `std::function`
+(`+0x38`); where its call (vtable slot 2) is one of the GUI's getters,
+`CMenuUI::SwitchToGameUI`'s or `ScriptComponentRoot::ReloadInterfaces`'s
+(both `mov rax,[...+0x1e0]`, the GUI's slot), the answer is the company; the
+game scripts' states, whose getter reads the engine's buffers (`+0x1f0`),
+keep the game's. The getter is told by its code's shape, checked at every
+call. hook.log: `view-company: the GUI's Lua getPlayer answers the player's
+company 372426 natively (view: getPlayer binding/push)`.
+
+**The map's lines, probed.** After 55f81ed the player's own line was still
+not drawn on the map. Every line the game draws over the map is a React
+`LineViewer` (`gui/main/builtin.lua`; the native `UI::LineViewer`,
+`game/ui/util/lineviewer.cpp`) handed `showLines`, LineVisualizations by
+line entity, by a window: the line manager (its map mode hands it
+`getLinesForPlayer(getPlayer())`, `manager_window.tl` 427), the line,
+station, vehicle and town windows, the statistics. The native viewer has
+no owner test (tpfre: its functions read only the `Line` component); it
+draws what it is handed. So with `TPF3MP_PROBE_PLAYER=1` each GUI state
+says what every `LineViewer` is handed and what
+`lineSystem.getLinesForPlayer` answers, each line with its owner, once per
+answer and 40 lines at most (the hook notes `tpf3mp.probe` for the GUI's
+Lua, `follow.watchLines`); what is drawn never changes:
+
+```
+probe: getLinesForPlayer(372553) answers 1 line(s): 373300 (owned by 372553) (the HUD's state)
+probe: a line viewer is handed 1 line(s) to draw: 373300 (owned by 372553) (the HUD's state)
+```
+
+A company's line in that list but not drawn is the viewer's path (the
+line's own route through its stops); one missing from it is the list's.
+
+The 3d91e83 try (p0, company #2, 372671): the company's line 338852 was
+listed by `getLinesForPlayer(372671)` and handed to a viewer, owned by
+372671, and still not drawn. The viewer draws from the simulation's
+per-line data (`ecs::LineSystem::GetData`, `sub_ad2050`, its `line2data`),
+and draws nothing unless that data's revision (`+0x18`) and its per-stop
+segment count match the line's own (`sub_7f01d0`, 0x7f03e7 and 0x7f0444);
+nothing in its call tree reads a player (tpfre: no `+0x20c` read, no
+`PlayerOwned`, to depth 3 from `LineViewer::vf1`, `vf4` and `sub_7f53c0`).
+So the probe also says, for every line a viewer is handed (the first
+company's as well, to compare): each stop's station group, station and
+terminal as the line names them, whether that station and terminal exist,
+their owners, whether the line system lists the line at that terminal, and
+the engine's own verdict (`lineSystem.getProblemLines`,
+`util.line.getLineProblems`, `getDetailedLineProblems`; the values below
+illustrative, not seen):
+
+```
+probe: line to draw: line 338852 owned by 372671; 3 stop(s); stop 1: group 373231 station 0 terminal 1, group of 2 station(s) owned by 372671, station 180929 owned by 372671 with 1 terminal(s), no terminal 1, not listed at the terminal; ...; line system problem 3
+```
+
+**A purchase's depot**, in hook.log when the store buys (the GUI's
+capture, `capture.depotText`): `the store buys at depot entity 5001 (owned
+by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7,
+-8829.4, 7.2)`, or why the room cannot name it. Opened from a line, the
+store asks the engine for the line's depot
+(`api.engine.util.vehicle.findBestDepotForLine`, `line_util.tl`), which
+takes no player from Lua; the line says which depot it chose and whose.
 
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and
@@ -2075,7 +2413,48 @@ construction's window its edits:
   and other assets: the asset group removed and rebuilt without them as
   a construction of no file) and anything else that is no construction
   are refused, naming what was hit (an asset group, or the components
-  the entity has). A stop it
+  the entity has). The log line of such a refusal also says what the
+  rebuilt group holds (its desc's type, its models, the thin ones, and
+  the first one's model and place) and what the group removed holds
+  (full and thin instances): what a replay of it would have to build.
+  On build 13090a8 the rebuilt group read as plain models: each a model's
+  file (`::/assets/...`) and its world matrix, none thin, one construction
+  of no file and no desc type, for a group of thin instances. With
+  `TPF3MP_TREE_BULLDOZE=1` in the player's game (the hook's `trees()`),
+  that proposal travels as a `Bulldoze::Assets`: the group by its first
+  asset and how many it holds, the assets taken out by model and position,
+  and which way the tool turned them (read off its matrices; a rebuilt
+  group that holds any asset the group did not, turns a thin one
+  otherwise or moves a full one, or a removed asset with another of its
+  model at its place, is refused). The tool's own shape, decompiled on
+  build 40408 (`UI::AssetBulldozerAction`,
+  `construction_builder_util::CreateProposalAddAsset`): the group in
+  `toRemove` and, unless every asset of it went, one
+  `Proposal.ConstructionEntity` at the origin whose desc is
+  `autoRemovable` and whose one subconstruction's `models` are the assets
+  kept, the thin instances first (matrix from position, turn and scale),
+  then the full ones (their own matrix), none `thin`. When the last
+  assets of a group go (a lone tree or rock), nothing is added. TF3 binds
+  these types otherwise than TF2 and its own tealdef say:
+  `Proposal.ConstructionEntity` has `desc`, `construction`, `transf`,
+  `frozenNodes`, `segmentsBefore`, `name`, `playerEntity` and
+  `setAsHeadquarterHack` as data, and `fileName`, `params` and
+  `hasCargoPlatform` read-only (writing `fileName` raises "no writable
+  member"); its `construction` is a `Proposal.ConstructionResult`
+  (`subconstructions`, `metadata`, `cost`, `maintenanceCost`,
+  `maintenanceCarrier`, `streetTerminal`, `params`), not the
+  `Construction` component; a `Proposal.Subconstruction` has `models`,
+  `station`, `depot`, `industry`, `metadata`, `laneLists` and
+  `colliders`; a `Proposal.TransformedModel` `id`, `tag`, `transf` and
+  `thin` (the binding's registration, `RegisterUsertypesTransport`). The
+  tool also gives its subconstruction one empty terrain alignment list,
+  which no binding reaches; it aligns no terrain. Every game finds the
+  one group of that size holding them all, builds the same full proposal
+  (`api.type.Proposal`) from its own copy less those assets, sends it as
+  the player's company's build, and logs the group, its assets before,
+  and the group holding the first asset kept (or, with none kept, the
+  first removed) after (`trees:` lines). The flag keeps it to trials. A
+  stop it
   removes is carried as the stop tool's builds are (below): its edge
   rebuilt without it, the stop named by its edge, where it stands and its
   construction (the `EDGE_OBJECT` component's `transf` and
@@ -2117,7 +2496,55 @@ construction's window its edits:
   the model, the player), named in the edge's objects as `{ -1, side }`,
   the lane configurations at the edge's ends removed as for any edge a
   replay removes; then the game's verdict, and the build as the player's
-  own (`ignoreErrors`, `playerInitiated`), paid by the player. A receiver
+  own (`ignoreErrors`, `playerInitiated`), paid by the player. The
+  rebuilt edge keeps its own `PlayerOwned` (a company's road stays the
+  company's). Once built, the stop is settled as the acting company's
+  (2026-10-02: a company's stops came out another company's, and its
+  player could not open them, nor see its station icon): each new
+  object on the edge, which for a street stop is its station itself
+  (`EDGE_OBJECT` and `STATION`, `mission/name_util.tl`), its station
+  group (`stationGroupSystem.getStationGroup` of the object), and for a
+  stop built as a construction that construction and its stations, are
+  handed over with `makeEntitySetPlayerCmd` where anyone else owns them,
+  as the game's own missions hand a stop over
+  (`transfer_ownership_util.tl`); the windows, the icons and the line
+  manager ask the station group's owner (`station_group.tl`). A group
+  that also holds another stop's station is left as it is. hook.log says
+  what each new object is and which group holds it (`the new <stop>: 600
+  a station in group 610 (owner nil); ...`), and each one handed over
+  with its owner before (`the new <stop> made the acting company's`). The
+  stop is named as the game's tool named it. Build 40408's stop tool
+  (`UI::StreetTerminalBuilder`, through `street_util::MakeEdgeObjectName`
+  in `construction_util_terminal.cpp`, `sub_2647e60`) gives a new stop
+  the name a station already there has, else the first street name of the
+  town's name list (the `streetNamesScript` of `names/*.names.lua`) that
+  no station has yet, else `Stop #n` with the first free n
+  (`sub_25d5a80`); signals and waypoints get `{townName} Signal #n` and
+  `Waypoint #n` (`sub_25d4540`). The choice reads the originator's world
+  and runs the name script, so it is made once: the capture reads it
+  from the proposal's edge object (`Proposal.EdgeObject.name`, which the
+  game binds for scripts), `PlaceStop::name` carries it (schema 25), and
+  every game builds the stop with it. A name longer than the schema's 64
+  bytes is left out. Where none is carried, or with
+  `apply.NATIVE_STOP_NAMES` false (the kill switch), the stop's edge
+  objects carry `Stop` (never empty: a script build with an empty name
+  leaves the stop with no `NAME` and no owner, docs/BUILDING.md), and once
+  built its own group and stations are named after the town the game
+  counts the stop in (`stationSystem.getTown`), with a number after it
+  where another station group of that town has that name (`Didcot`,
+  `Didcot 2`), the same in every game. A construction (a station, depot,
+  airport, harbour or truck station) is named natively the same way at
+  the originator, by `UI::ConstructionBuilder`'s
+  `CreateProposalAddConstruction` (`sub_a34a50`: `{townName}
+  {constructionName}`, or for a station `sub_25d4800`: `{townName}
+  Station`, a direction from the town centre, or one of nine suffixes,
+  `Annex` to `Upper`, in an order shuffled by a hash of the position, no
+  RNG, then `{stationName} #{number}`), and `BuildConstruction::name`
+  already carries that name to every game.
+  A construction the room builds (a station, an airport, a harbour) names
+  its own stations' group by the name the tool gave the construction
+  where the game left it unnamed (`named station group N "..."` in
+  hook.log). A receiver
   whose edge runs the other way flips `left`; a side already taken is
   refused (two stops on one side is a fatal assert in the game's lane
   creation on TPF2). Refused: a stop dropped where one stood (the game
@@ -4225,3 +4652,22 @@ again when applied in each game. The summary identifies the modifier and
 edge count without changing its payload. Track proposal tests use the Lua
 API stand-in; they do not establish native track-tool acceptance. Action
 handoff logs also include the action kind, without a wire format change.
+
+## Company tool integration (2026-10-03)
+
+The newer company tool, stop ownership/naming, station junction and asset
+bulldozer changes from `local/combined-dev` through `34a2edf` are ported onto
+current dev. The snapshot exporter and duplicate contributor guidelines
+were already present. Existing loading behavior, automatic-company policy,
+HUD callback bounds and acceptance gates are retained. The older branch's
+finance-window wrapper is not added: it depends on a separate loan-table
+implementation that is absent here.
+
+The first company also gets the map's all-companies display; its selection
+and editing checks still use its own player. The line-viewer probe diagnoses
+unrendered route data and does not fix it. Tree/rock bulldozing remains opt-in
+with `TPF3MP_TREE_BULLDOZE=1`; brushes remain refused. Action schema 25 adds
+`PlaceStop::name` and `Bulldoze::Assets` to dev's existing schema 24, without
+renumbering its perk or preservation actions. Native playtest observations
+above are the contributor's evidence; this integration has no new live-game
+acceptance run.

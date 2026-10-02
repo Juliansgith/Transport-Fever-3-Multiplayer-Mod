@@ -191,6 +191,8 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
             "menu: the world closed (CMenuUI::m_game cleared); the {forgotten} Lua state(s) its GUI was given are never used by the main menu"
         ));
     }
+    crate::guiplayer::refresh();
+    lines.extend(crate::probe::frame(menu, frame.now_ms));
     // Once per change; a load's task coming and going is one wait.
     let waiting = |seen: Option<Seen>| matches!(seen, Some(Seen::Loading | Seen::Closing));
     if sight.logged != Some(seen) && !(waiting(sight.logged) && waiting(Some(seen))) {
@@ -798,6 +800,13 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         log_line(&outcome.to_string());
     }
     log_line(&crate::townfield::install(&absolute));
+    log_line(&crate::probe::install(&absolute));
+    for line in crate::toolplayer::install(&absolute) {
+        log_line(&line);
+    }
+    for line in crate::guiplayer::install(&absolute) {
+        log_line(&line);
+    }
     for line in crate::persons::install(&absolute) {
         log_line(&line);
     }
