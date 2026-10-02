@@ -21,6 +21,9 @@ pub const AUTH_EXPORTER_LABEL: &[u8] = b"EXPORTER-tpf3mp-auth";
 pub const MAX_ROOM_MEMBERS: u8 = 64;
 /// Largest number of lanes in one [`GameMessage::Checkpoint`].
 pub const MAX_CHECKPOINT_LANES: usize = 32;
+/// Largest payload of a [`GameMessage::Preview`]: a long road's or a
+/// station's build fits; anything larger is not shown.
+pub const MAX_PREVIEW: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMessage {
@@ -68,6 +71,14 @@ pub enum ServerMessage {
     /// A message from the server's operator to everyone connected, such as
     /// a restart coming.
     Notice(ChatText),
+    // Last, so the earlier variants keep their tags on the wire.
+    /// What another member's build tool shows now ([`GameMessage::Preview`]),
+    /// relayed as it came; `None` once it shows nothing. Advisory: never
+    /// part of the room's world or log.
+    Preview {
+        from: PlayerId,
+        preview: Option<Payload>,
+    },
 }
 
 /// One chat message: a line of text, no longer than a short paragraph.
@@ -590,6 +601,13 @@ pub enum GameMessage {
     /// plays or has none coming. At most about two a second; the room keeps
     /// no more of them, and logs none.
     Loading(Option<LoadingStage>),
+    /// What this player's build tool shows now, for the other members to
+    /// see in their games: the action it would build, encoded as an
+    /// intent's payload, at most [`MAX_PREVIEW`] bytes; `None` once it shows
+    /// nothing. Advisory: the room relays it to the other members of a
+    /// running game and keeps, orders and logs none. Sent again every few
+    /// seconds while it shows, so a receiver forgets one that stops coming.
+    Preview(Option<Payload>),
 }
 
 /// A password a player typed for an intent: a company's, to join it or to

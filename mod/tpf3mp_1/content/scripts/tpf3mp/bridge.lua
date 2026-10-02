@@ -80,6 +80,15 @@
 --                                   -- this update, { e, ... } | nil
 --     edgewatched = function(e, text), -- optional; in its postUpdate: what
 --                                   -- it read of e (tpf3mp/lanes.lua watch)
+--     preview = function(action),   -- optional; in the GUI: what the
+--                                   -- player's build tool shows now, the
+--                                   -- action it would build, or nil once it
+--                                   -- shows nothing, for the room's other
+--                                   -- members -> true | false, why
+--     previews = function(),        -- optional; in the GUI: what the other
+--                                   -- members' tools show that changed since
+--                                   -- the last call, { { from =, action = } },
+--                                   -- no action for one that shows nothing
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -343,6 +352,31 @@ function Link:edgewatch()
 	local ok, list = pcall(self.native.edgewatch)
 	if ok and type(list) == "table" and #list > 0 then return list end
 	return nil
+end
+
+-- In the GUI: the player's build tool shows `action` now (an action table,
+-- as command takes one), or nothing (nil), for the room's other members to
+-- see (docs/HOOKS.md, "Build previews"). Never applied anywhere. Returns
+-- true, or nil and why; nil from a hook without `preview` (it is optional:
+-- the other members then see nothing).
+function Link:preview(action)
+	if type(self.native.preview) ~= "function" then return nil, "this hook shows no previews" end
+	if action ~= nil and type(action) ~= "table" then return nil, "a preview is an action table" end
+	local ok, shown, why = pcall(self.native.preview, action)
+	if not ok then return nil, "the hook refused: " .. tostring(shown) end
+	if shown ~= true then return nil, tostring(why or "the hook did not take it") end
+	return true
+end
+
+-- In the GUI: what the other members' build tools show that changed since
+-- the last call, { { from =, action = } }, `from` a player id (64 hex
+-- digits), no `action` for one that shows nothing now; {} from a hook
+-- without `previews`.
+function Link:previews()
+	if type(self.native.previews) ~= "function" then return {} end
+	local ok, changes = pcall(self.native.previews)
+	if not ok or type(changes) ~= "table" then return {} end
+	return changes
 end
 
 -- Hands the hook what the edge watch read of `entity`.

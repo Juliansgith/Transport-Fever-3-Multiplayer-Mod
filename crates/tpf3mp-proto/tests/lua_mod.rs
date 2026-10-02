@@ -598,6 +598,22 @@ tpf3mp_native = {
         HOOK.said[#HOOK.said + 1] = text
         return true
     end,
+    -- The player's previews, 'none' for nothing shown; and the other
+    -- members' changes the test puts in HOOK.incoming, each taken once.
+    preview = function(action)
+        if action ~= nil then
+            local ok, why = schema_check(action)
+            if not ok then return ok, why end
+        end
+        HOOK.previewed = HOOK.previewed or {}
+        HOOK.previewed[#HOOK.previewed + 1] = action or 'none'
+        return true
+    end,
+    previews = function()
+        local changes = HOOK.incoming or {}
+        HOOK.incoming = {}
+        return changes
+    end,
     -- A lane dump the hook asks for ({ step =, lanes = }), once; the
     -- entries go to HOOK.dumped as the hook writes them to its log.
     dump = function()
@@ -2553,6 +2569,129 @@ fn a_station_edit_a_click_saw_goes_to_the_room_and_unhandled_events_are_logged()
         "an event the mod does not handle: id moduleThing, name builder.proposalCreate"
     );
     assert!(!logged.iter().any(|l| l.contains("elsewhere")));
+}
+
+/// What the fake hook was handed as the player's previews: each one's
+/// action kind, or "none".
+fn previewed(lua: &Lua) -> Vec<String> {
+    lua.load(
+        "local out = {} \
+         for i, p in ipairs(HOOK.previewed or {}) do \
+             out[i] = p == 'none' and 'none' or next(p) \
+         end \
+         return out",
+    )
+    .eval()
+    .unwrap()
+}
+
+#[test]
+fn the_players_build_preview_goes_to_the_room_until_the_tool_shows_nothing() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    lua.load(format!(
+        "HOOK.room = true HOOK.clicks = 0 \
+         SCRIPT.guiUpdate({{}}, nil, nil) \
+         SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', \
+             {{ {CONSTRUCTION_PROPOSAL} }})"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction"]);
+    // The bulldozer's removals show nothing new: what showed is hidden.
+    lua.load(
+        "SCRIPT.guiHandleEvent({}, nil, nil, '', 'bulldozer', 'builder.proposalCreate', \
+             { { proposal = { addedNodes = {}, addedSegments = {}, removedNodes = {}, \
+                 removedSegments = {}, edgeObjectsToAdd = {} }, toRemove = {}, toAdd = {} } })",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction", "none"]);
+    // Shown again, then clicked: the room orders the build, and the preview
+    // goes.
+    lua.load(format!(
+        "SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', \
+             {{ {CONSTRUCTION_PROPOSAL} }}) \
+         HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        previewed(&lua),
+        ["BuildConstruction", "none", "BuildConstruction", "none"]
+    );
+    let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
+    assert_eq!(
+        handed, 1,
+        "the click's build, and no preview, went to the room"
+    );
+}
+
+#[test]
+fn a_preview_hides_once_its_tool_is_no_longer_active() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    lua.load(format!(
+        "ACTIVE = {{ 'constructionBuilder' }} \
+         api.gui = {{ contextHelper = {{ getIdsOfActiveTool = function() return ACTIVE end }} }} \
+         HOOK.room = true HOOK.clicks = 0 \
+         SCRIPT.guiUpdate({{}}, nil, nil) \
+         SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', \
+             {{ {CONSTRUCTION_PROPOSAL} }}) \
+         SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction"], "still active");
+    // The player closed the tool; the next look at the list, a quarter of a
+    // second on, hides it.
+    lua.load(
+        "ACTIVE = {} \
+         local t0 = os.clock() \
+         while os.clock() - t0 < 0.3 do end \
+         SCRIPT.guiUpdate({}, nil, nil)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction", "none"]);
+}
+
+#[test]
+fn the_other_members_previews_reach_the_renderer_and_the_log_says_the_first() {
+    let (lua, _script) = engine();
+    lua.load(
+        "HOOK.room = true \
+         RENDERED = {} \
+         local previews = ug_require('tpf3mp_1::/scripts/tpf3mp/previews.lua') \
+         previews.render = function(from, action) \
+             RENDERED[#RENDERED + 1] = from:sub(1, 2) .. ' ' .. (action and next(action) or 'none') \
+         end \
+         HOOK.incoming = { { from = string.rep('ab', 32), action = { BuildTrack = {} } } } \
+         SCRIPT.guiUpdate({}, nil, nil) \
+         HOOK.incoming = { { from = string.rep('ab', 32), action = { BuildTrack = {} } }, \
+                           { from = string.rep('cd', 32) } } \
+         SCRIPT.guiUpdate({}, nil, nil) \
+         HOOK.incoming = { { from = string.rep('ab', 32) } } \
+         SCRIPT.guiUpdate({}, nil, nil) \
+         previews.render = nil",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let rendered: Vec<String> = lua.load("return RENDERED").eval().unwrap();
+    assert_eq!(
+        rendered,
+        ["ab BuildTrack", "ab BuildTrack", "cd none", "ab none"]
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let arrived: Vec<&String> = logged
+        .iter()
+        .filter(|l| l.starts_with("another member's build preview arrived"))
+        .collect();
+    assert_eq!(
+        arrived,
+        ["another member's build preview arrived: BuildTrack from abababababababab"],
+        "once a member"
+    );
 }
 
 #[test]

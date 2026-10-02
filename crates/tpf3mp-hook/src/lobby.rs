@@ -1329,6 +1329,7 @@ mod tests {
         }
         fn chosen_speed(&mut self, _speedup: u64) {}
         fn say(&mut self, _text: tpf3mp_proto::ChatText) {}
+        fn preview(&mut self, _preview: Option<tpf3mp_proto::Payload>) {}
         fn on_menu(&mut self) {}
         fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
             self.heard.extend(actions);

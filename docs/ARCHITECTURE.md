@@ -239,8 +239,12 @@ connection carries:
 | turn stream | sealed turns, server to client |
 | bulk streams | snapshots, so a 100 MB+ transfer never delays turns |
 
-QUIC datagrams are reserved for advisory traffic such as cursors and build
-previews, which nothing sends yet; the server accepts none.
+QUIC datagrams are reserved for advisory traffic such as cursors, which
+nothing sends yet; the server accepts none. Build previews, also advisory,
+go on the control stream instead (protocol 17): a road's or a station's
+action is several kilobytes, more than one datagram carries, and the
+server writes them only when nothing else waits, from a queue it drops
+rather than lets a slow client fall behind on.
 
 **Fallback:** for networks that block UDP, the same QUIC connection runs
 through a WebSocket over TLS on TCP 443, one datagram per message, usually

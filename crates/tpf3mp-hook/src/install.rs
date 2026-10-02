@@ -483,6 +483,9 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         for text in lua::take_said() {
             driver.say(text);
         }
+        if let Some(preview) = crate::previews::take_out(Instant::now()) {
+            driver.preview(preview);
+        }
         // The main menu's Multiplayer window, whose lobby the step just read.
         crate::lobby::exchange(driver.as_mut());
         IN_ROOM.store(driver.in_room(), Ordering::Release);

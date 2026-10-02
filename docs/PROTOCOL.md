@@ -381,6 +381,20 @@ These travel on the control stream.
   fetch at most every 400 ms (the agent sends at most two a second), and a
   percent over 100 shows as 100. It shares the progress messages' rate
   limit, and neither the room nor the server log keeps it.
+- **`Preview`** (protocol 17): what the player's build tool shows now,
+  for the other members to see in their games ([HOOKS.md](HOOKS.md),
+  "Build previews"): the action its proposal would build, encoded as an
+  intent's payload, at most 16 KiB (`MAX_PREVIEW`), or `None` once it
+  shows nothing. Advisory: the room orders, keeps and logs none of it. It
+  relays it as `ServerMessage::Preview { from, preview }` to every other
+  member of a running game that is connected, never to the sender, and
+  ignores it in the lobby, from a non-member, and over 16 KiB. A client
+  sends one at most five times a second, and the one that still shows
+  again every two seconds; a receiver forgets one not heard of again for
+  six seconds. The server writes previews to a client's control stream
+  only when nothing else waits for it, from a queue of their own (64
+  messages) that drops the newest when full: a slow client misses
+  previews and is never disconnected for them.
 - **`Progress`**: the last step the client executed. It drives pacing.
 - **`Checkpoint`**: per-lane digests at every checkpoint step (a room
   setting). The server compares members' digests, as described in
@@ -653,8 +667,9 @@ one *log session*.
     `RateLimited`.
   - Game messages, per connection and per kind: progress reports 200 per
     second with a burst of 400 (excess ones are dropped), intents 40 per
-    second with a burst of 80. Checkpoints are not limited here: the room
-    ignores reports for closed rounds.
+    second with a burst of 80, build previews 5 per second with a burst of
+    10 (excess ones are dropped). Checkpoints are not limited here: the
+    room ignores reports for closed rounds.
   - Requests that change nothing, such as setting ready twice, do not send
     everyone the room again.
 - **Password guessing.** A room takes 10 wrong passwords per minute from

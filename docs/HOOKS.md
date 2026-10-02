@@ -399,6 +399,12 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.
+  - `Preview { from, preview }`: what another member's build tool shows
+    now, an action's payload, or `None` once it shows nothing (bridge
+    version 23; "Build previews" below). Sent only while the game plays the
+    room's world, and only the latest of each member: one still waiting in
+    the agent's queue is replaced. The gate drops one that arrives while a
+    world loads.
 - **From the hook (`ToAgent`):**
   - `Hello`: always first, with the game build.
   - `Loaded { next_step }`: the ordered world is loaded.
@@ -458,6 +464,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     lobby's room carries the save it starts from and the owner's upload
     of it.
   - `Log`: a line for the agent's log.
+  - `Preview { preview }`: what the player's build tool shows now, for the
+    other members, or `None` once it shows nothing (`Session::preview`;
+    bridge version 23). The agent sends it on in the room's game only, and
+    not one over `MAX_PREVIEW`.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
   gate hands over, so an event for step `s` is applied after step `s - 1`
@@ -822,6 +832,9 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.personal()`: this player's personal mods, names one a
   line, or `nil`: the guards tell a personal mod's commands by it
   ("The player's commands" below). Optional.
+- `tpf3mp_native.preview(action)` and `tpf3mp_native.previews()`: in the
+  GUI, what the player's build tool shows, for the other members, and what
+  theirs show ("Build previews" below). Optional.
 
 The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
@@ -2766,6 +2779,63 @@ and malformed memory. These tests do not launch the game and do not
 complete the playtest above. AGENTS.md currently prohibits automated game
 launches/modifications; a human must run this check or explicitly override
 that restriction before an agent runs it.
+
+### Build previews
+
+What a player's build tool shows before the click, the road, track,
+station or building it would build, the other members see in their own
+games while it shows. Advisory: a preview is never applied, ordered,
+logged by the room or saved, and nothing of it reaches the world.
+Ported from TpF2 Multiplayer's shared build previews (`mp/previews.lua`
+and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
+
+- **What is shown.** The action the tool's proposal would build, as the
+  capture makes it for the click (`tpf3mp/capture.lua`): the room's own
+  action schema, in millimetres and resource names (D8), so no engine id
+  travels. Only the tools that build something new: constructions
+  (stations, depots, buildings, a station's edit), streets, tracks and
+  stops (`tpf3mp/previews.lua`, `SHOWN`). Not the bulldozer, the
+  modifiers or the junction tools; not the module editor or the terrain
+  tools, which tell game scripts nothing of their proposals.
+- **Out.** The game script's GUI half (`guiHandleEvent`) hands each such
+  proposal's action to `tpf3mp_native.preview(action)`, and `nil` when the
+  tool shows nothing: an empty proposal, one the room cannot carry, one of
+  a tool not shown, a click (the room then orders the real build), or the
+  tool no longer among the game's active tools
+  (`api.gui.contextHelper.getIdsOfActiveTool()`, looked at four times a
+  second; where the list does not name the tool that showed it, the log
+  says so once, and the preview hides on its next proposal or click only).
+  The hook converts it with the schema, refuses one over
+  `tpf3mp_proto::MAX_PREVIEW` (16 KiB) and keeps the latest
+  (`crate::previews`); the step driver sends it (`Session::preview`) at
+  most five times a second, and again every two seconds while it shows,
+  in the room's game only.
+- **The room.** The server relays it (`GameMessage::Preview`,
+  `ServerMessage::Preview`, protocol 17) to the other members of the
+  running game, on the control stream, in a queue of its own behind
+  everything else and dropped when full (PROTOCOL.md, "Game messages from
+  the client"). Not over QUIC datagrams: a road's or a station's action is
+  several kilobytes, more than one datagram carries.
+- **In.** The hook keeps each member's latest (`crate::previews`); one not
+  heard of again for six seconds is gone. `tpf3mp_native.previews()` gives
+  the GUI what changed, `{ { from =, action = } }`, without `action` for
+  one gone, and the room's end clears them all. `tpf3mp/previews.lua`
+  hands each change to its renderer, `previews.render(from, action)`, and
+  says each member's first in the log ("another member's build preview
+  arrived: ...").
+- **Showing them.** The renderer draws a member's preview as the game draws
+  its own tool's, in 3D with the blue or red of a build the game would take
+  or refuse, from the proposal the action makes in this game (the same
+  proposal `tpf3mp/apply.lua` would build, never sent). Either the game's
+  own `builtin.ProposalViewer`, which the bridge and tunnel window uses to
+  show a proposal no tool made, if it can show one for each member beside
+  the player's own tool; or else, as TpF2 Multiplayer did, a
+  `UI::BuilderRenderer` of the hook's for each member, filled through
+  `builder_renderer_util::AddToRenderer` and added to the main renderer
+  component, with the build's targets in the profile: a build without them
+  shows nothing, never a part of a preview
+  (investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md). Not built yet: until
+  it is, previews are only kept and logged.
 
 ### Terraforming
 

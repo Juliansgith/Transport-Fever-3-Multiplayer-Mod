@@ -36,10 +36,10 @@ pub use content::{
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
     ContentFingerprint, CreateRoom, GameMessage, Hello, IntentRejection, JoinRoom, LaneDigest,
-    ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_ROOM_MEMBERS, MemberView, PORTRAITS,
-    ROOMS_PER_PAGE, Reject, RejectReason, Request, RequestError, Response, Resume, RoomListing,
-    RoomPage, RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage,
-    Speed, StartSave, StartView, Welcome, is_banner, is_portrait,
+    ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_PREVIEW, MAX_ROOM_MEMBERS, MemberView,
+    PORTRAITS, ROOMS_PER_PAGE, Reject, RejectReason, Request, RequestError, Response, Resume,
+    RoomListing, RoomPage, RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret,
+    ServerMessage, Speed, StartSave, StartView, Welcome, is_banner, is_portrait,
 };
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText, LogSource,
@@ -78,8 +78,10 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// [`RoomView::start`]) and marks everyone not ready when it changes;
 /// version 16 carries each diagnostics line's source, the hook's and the
 /// game's logs among them, and the launcher's run ([`Request::Telemetry`],
-/// [`LogSession`]).
-pub const PROTOCOL_VERSION: u32 = 16;
+/// [`LogSession`]); version 17 relays what each player's build tool shows
+/// to the other members ([`GameMessage::Preview`],
+/// [`ServerMessage::Preview`]).
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
