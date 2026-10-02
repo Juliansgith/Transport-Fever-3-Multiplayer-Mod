@@ -51,6 +51,7 @@ pub mod perf;
 mod platform;
 pub mod seeds;
 pub mod step;
+pub mod streettrace;
 pub mod ticks;
 pub mod towntrace;
 pub mod worlds;

@@ -2450,7 +2450,12 @@ apply: step <s>|after <s> update <n> from +<rva> (<path>) kind <k> result <r> en
   function (`0x268ed0`), a tail jump into `One`, so those lines name the
   site that called that function.
 - `kind`: the payload's variant index, the byte at `payload+0x9b8` that
-  `One` hands the dispatcher (`0x9d7350`).
+  `One` hands the dispatcher (`0x9d7350`), which switches on `kind + 1`
+  (its jump table at `0x9d8bbc`; entry 0 is the empty variant). The kinds
+  the round of 2026-10-02 saw, named by each case's scope string: 9
+  `EntitySetEmissions`, 16 `GameSetCloudCoverage`, 17 `GameSetSpeed`, 23
+  `LogBookValue`, 27 `ScriptingSendEvent`, 40 `TownUpdateSize` (the
+  applier `0x9dfb10` the town trace splices), 52 `WorldBuildProposal`.
 - `result`: the byte `One` leaves at `Command+0x30`.
 - `entities`: the command's entity list (`Command+8`, 16-byte entries, the
   id in the first four bytes), its length and up to 8 ids, before and after
@@ -2491,6 +2496,103 @@ TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=12700-12850
 
 then, from each game's `hook.log`, `grep -E '^\[[0-9]+\] (edge watch|apply):'`
 and compare the games line by line by `step` and `update`.
+
+`GameSetSpeed` (kind 17) writes the `GameSpeed` component's speed on the
+game's entity (`0xbacc90`, `+4`) and nothing else. In the third round only
+the host applied it, 1,654 times from the `queue` path between steps 12700
+and 12850 (about eleven an update), each with no entities and result 1;
+the guests none. The simulation does not read that speed in the room's
+game: `GameSim::Step` asks it through `CGameTime::GetSpeed`, which the step
+gate redirects, and the other readers are `CGame::Sync`, the UI, the
+camera, the rail vehicles' sounds and their transformators. So it changes
+no lane; it does leave the host's saved `GameSpeed` unlike the guests'.
+
+#### The street trace
+
+`TPF3MP_HOOK_STREET_TRACE=1` (or `on`; off unless set; logging only,
+`crates/tpf3mp-hook/src/streettrace.rs`), with
+`TPF3MP_HOOK_STREET_TRACE_STEPS=<from>-<to>` (both included; unset, every
+step) and `TPF3MP_HOOK_STREET_TRACE_BOX=x0,y0,x1,y1` (the tried node's x
+and y, metres; unset, anywhere). The rounds of 2026-10-02 found the street
+the edge watch watches (325514, the id reused) built new at step 12771
+(update 105104) by town 214465's `TownUpdateSize`, from node 261290 out of a
+straight street through it, 88 m long in every game, but at a right angle
+to that street in some games ((-2360.9, -20680.5)) and 7.3 degrees off in
+the others ((-2356.4, -20690.8)), with the update's inputs, the developer's
+generator after it and every lane before it alike.
+
+What decides the angle, read with `tools/tpfre`:
+
+- `TownDeveloper::Develop` (`0x8dc240`) calls the street step (`0x967720`,
+  our name) until it builds nothing. The step lists the town's street
+  nodes (an octree query, `0x965fa0`, sorted by distance to the town's
+  centre with `std::sort`, `0x964930`), and tries each with
+  `StreetDeveloper::TryCandidate` (`0x967920`, our name) in two passes:
+  **block**, then **open**. The first street built ends the step.
+- `TryCandidate` expands the node into directions (`Expand`, `0x968130`:
+  along and at right angles to each street at the node, 88 m, the two
+  right angles in an order a `minstd_rand` seeded from the node's position
+  picks). The block pass takes a direction only if it points into a closed
+  street loop around the node (`StreetLoopFactory::Extract`, `0x8d9180`, at
+  most 50 streets a loop, cached per step), and builds it exactly; the open
+  pass takes only the others, turned by a random angle from the same
+  position-seeded generator (`0x967d23`). Neither pass draws from the
+  developer's generator, so `gen-after` cannot see this choice.
+- So the right-angle street is the block pass's, and the turned one the
+  open pass's: where the street came out turned, the block pass refused the
+  node's right-angle direction, or never reached it.
+
+Every refusal goes into a `std::set` (`0x963320`; key: the node, its
+streets, the pass, its loops, the direction's index) from one of six slots
+of `TryCandidate`'s frame, and the slot names the reason. The trace logs,
+for the tries its filter covers:
+
+```
+street: step <s> try <k> node <e> at <x>,<y> pass block|open -> built dir <dx>,<dy> end <x>,<y>
+street: step <s> try <k> node <e> at <x>,<y> pass block|open -> no
+street: step <s> try <k> reject node <e> edges <n> loops <n> dir <i> pass block|open reason <reason>
+street: step <s> try <k> proposal errors <bytes>/<bytes> [<hex>] [<hex>]
+```
+
+| reason | refused by |
+|---|---|
+| `branches` | `0x966470` (the branches' angles, `CheckBranchesRec`) |
+| `not-in-block` | the block pass: the direction leaves every closed loop |
+| `in-block` | the open pass: the direction enters a closed loop |
+| `off-map` | `0x388e60`: the end is off the terrain |
+| `snapped` | `0x9689c0`, for an end the block pass snapped to a street |
+| `build` | `0x9692c0`: water at the end, the proposal's checks (`0x2638c00`, `0x2639860`) or its errors |
+
+`try <k>` numbers the tries within a step, so two games' lines pair up by
+step and number; the first line that differs is the decision that split.
+A `proposal` line (from a splice in `0x9657c0` right after
+`CreateProposalData`, `0xa1fd10`) gives the proposal's two error vectors'
+lengths in bytes and first 32 bytes: both empty builds the street. A
+`build` refusal without a `proposal` line before it failed before the
+proposal was made. Differing `loops` say the street loops around the node
+were found differently; a `build` refusal in one game only, with errors,
+says the proposal's collision or terrain checks answered differently,
+which points at the thread pool's collision jobs
+(`street_util::CheckCollision`'s `ThreadPool::LoopImpl`, `0x2631ba0`).
+
+Before splicing, the try's return site must lie at `TryCandidate+0x7bc`,
+`TryCandidate`'s three calls of the reject function must reach it, and
+each site's bytes must be the expected ones (the profile states them; the
+static proof checks the call chain from `Develop` to every site); otherwise
+nothing is spliced and `hook.log` says why. A panic switches the trace off.
+
+For the next round, with the town trace and the edge watch as before; no
+box, so every try of the developments around the split is logged (an
+order of tries that differs elsewhere in the town shows too):
+
+```
+TPF3MP_HOOK_TOWN_TRACE=1
+TPF3MP_HOOK_STREET_TRACE=1
+TPF3MP_HOOK_STREET_TRACE_STEPS=12740-12775
+```
+
+then `grep -E '^\[[0-9]+\] (street|town):'` in each game's `hook.log` and
+compare by step and try number.
 
 ### Seeds, as built
 
@@ -3126,6 +3228,7 @@ so one game may run them alone):
 | switch | turns on |
 |---|---|
 | `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump ("The town trace") |
+| `TPF3MP_HOOK_STREET_TRACE` (`1` or `on`; narrowed by `TPF3MP_HOOK_STREET_TRACE_STEPS` and `TPF3MP_HOOK_STREET_TRACE_BOX`) | the `street:` lines ("The street trace") |
 
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
