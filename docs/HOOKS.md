@@ -2612,6 +2612,104 @@ TPF3MP_HOOK_STREET_TRACE_STEPS=12740-12775
 then `grep -E '^\[[0-9]+\] (street|town):'` in each game's `hook.log` and
 compare by step and try number.
 
+#### The road entry trace
+
+Soak 7 of 2026-10-02 on `twomptest` (three games, no input, `51e1e4d`, each
+with `TPF3MP_HOOK_LANE_DUMP=4`): cat's game alone said `Diverged { step:
+25950, lanes: [3] }`, the economy equal at every checkpoint to the end.
+At step 26000 one horse bus, vehicle-11 (entity 198452, line-10, en route to
+stop 2, a road vehicle: never in the land claim loop, whose six contenders
+are the save's trains), was 9.83 m along its path edge in cat's game and
+10.45 m in the others', at the same 4.276 m/s; at 26050 53.25 against 54.12
+m, and a second bus, vehicle-40 (282046, line-12), which stood at stop 5 in
+every game at 26000, 28.00 m from it against 30.83 m at 4.722 m/s. At 200 ms
+an update (`GAME_TIME` 10,000 ms per 50 steps) the first lag is about 0.15 s,
+less than an update: the bus was held back for part of one (braking behind
+something, or its stop time ended later), not started a whole update late;
+the second left its stop about 0.6 s, three updates, later. Every order fix
+said `refused=0` throughout; the land-vehicle samples and the `ticks:`
+lines were equal in all three games. The `vehicles-at-stop-order` count of
+lists it reordered differs from cat's second `alive` line on (65,536 calls
+in), with no split for 25,000 steps: those lists' engine order is each
+buffer's history, which the fix sorts away, so that count is not one games
+must agree on. The road fix's in-step milestone line is: it was equal in
+all three games for 77 milestones and differed in cat's at the one reached
+near step 25850 (`in-step appends=5111808 reordered=1383817`, the others
+`1383824`), while every vehicle's place still agreed to the centimetre at
+the checkpoint of step 25900. So the simulation's own appends to
+`EdgeUseManager`'s edge lists went another way somewhere in steps
+25520..25850, before any vehicle's place did. (Earlier rounds' logs show
+the same: the step-3300 splits' games parted at the milestone near step
+3300. Soak 6's lane-4 split at step 36400 shows no such difference through
+the milestones after it.)
+
+A milestone comes every 65,536 appends, about 330 steps. The trace
+(`crates/tpf3mp-hook/src/roadtrace.rs`, logging only, on the road fix's two
+detours, so nothing new is hooked) narrows it:
+
+- **At every checkpoint**, always while the fix sorts, after the `ticks:`
+  line, the appends inside the game's step since the last checkpoint line:
+
+  ```
+  road-entry: step <s>: in-step appends=<n> persons=<n> vehicles=<n> reordered=<n> set=<fnv64> sequence=<fnv64>
+  ```
+
+  `persons` are `Add`'s (`PersonMoveSystem`), `vehicles` `AddRange`'s
+  (`LandVehicleMoveSystem`). Each append is hashed over its kind, entity,
+  component, current path index, range, `{back, front}` bits and each
+  edge's entity, index and direction byte; `set` sums the hashes (equal
+  whatever their order), `sequence` chains them in order. Two games' lines
+  for one step must be equal; the first that differs bounds the first
+  append that differs to 50 steps, and `set` against `sequence` says
+  whether different appends were made or the same ones in another order.
+  The first line after a load also holds the load's own appends.
+- **In a window**, `TPF3MP_HOOK_ROAD_ENTRY_TRACE=<from>-<to>` (room steps,
+  both included), one line per append inside the step:
+
+  ```
+  road: step <s> #<k> person|vehicle <entity> comp <c> cur <i>|- range <from>..<to>|- bounds <back>,<front> edges <n> <entity>/<index>/<dir>,... reordered <n>[ on <edge>: <count> <entity>:<component>:<back>:<front> ...]
+  ```
+
+  `#k` numbers the appends of a step, so two games' lines pair by step and
+  number; at most 8 edges are listed (`+n` more). `step` is the room's step
+  of the update running; an append made before an update's systems run
+  (applying a command) carries the step before, or `-` at a batch's first
+  update. About 200 appends a step on `twomptest`.
+- **A recorder**, `TPF3MP_HOOK_ROAD_ENTRY_RECORD=<n>` (1 to 4000 steps):
+  the same lines for the last `n` steps are kept in memory and written when
+  the game takes a lane dump asked for in the room's chat (every game hears
+  the ask a diverged game makes, itself included), after a line
+  `road-entry record: <n> in-step append(s) of steps <a> to <b> (...)`. A
+  split no one can predict then leaves the appends before it in every
+  game's log. A game with `TPF3MP_HOOK_LANE_DUMP=off` takes no ask and
+  writes nothing.
+- For the entities `TPF3MP_HOOK_WATCH_ENTITIES` lists (comma-separated
+  entity ids), a traced or
+  recorded append also lists, for each edge it touched, the edge's entries
+  after the sort (`on <edge>:`, at most 16): the vehicles and persons ahead
+  of and behind a watched vehicle, and their places.
+
+hook.log says what it read at start-up (`road-entry trace: ...`).
+
+For the round after soak 7, in every game:
+
+```
+TPF3MP_HOOK_LANE_DUMP=3,4
+TPF3MP_HOOK_ROAD_ENTRY_RECORD=600
+TPF3MP_HOOK_ROAD_ENTRY_TRACE=25500-25960
+TPF3MP_HOOK_WATCH_ENTITIES=198452,282046
+```
+
+Runs of this save are repeatable: bob's soak-6 milestones and every game's
+soak-7 milestones are equal through step 25500. If cat's game splits at
+the same place, the window holds it; if elsewhere, the checkpoint lines
+name the 50 steps and the recorder holds them. Then
+`grep -E '^\[[0-9]+\] road-entry: ' hook.log` in each game, and from the
+first step whose line differs, `grep -E '^\[[0-9]+\] road: step <s> '`,
+compared by step and number: the first append that differs names the
+person or vehicle, its edges and range, and with the watched vehicles'
+`on` lists what held the bus back.
+
 ### Seeds, as built
 
 Ported onto dev from `feat/steam-hook-on-dev` (971c48c, as merged in
