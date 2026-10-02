@@ -376,7 +376,8 @@ protected folder such as Program Files.
   which you notice as a short pause, like an autosave.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
-- **Subsidies, entity renaming, vehicle recolouring and line waypoints.**
+- **Subsidies, entity renaming, vehicle recolouring, line waypoints, and
+  the perk tools (Industry Greenification, marketing campaigns).**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).
@@ -384,8 +385,7 @@ protected folder such as Program Files.
   construction menu as usual: every player's game starts the prospection
   together, a moment after your click, and uses your company's permit.
   When it ends, months later, every game finds the same industry at the
-  same place, or nothing, and says so in the same notification. Greening
-  an industry and marketing campaigns are not in multiplayer yet.
+  same place, or nothing, and says so in the same notification.
 - **Company ranks.** Take a new rank in the company window as usual: every
   player's game takes it together, a moment after your click. With one
   company in the room the rank grows as in single player. With more (a

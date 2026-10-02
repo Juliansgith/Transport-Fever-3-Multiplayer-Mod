@@ -766,6 +766,112 @@ function capture.prospect(ctx, param)
 	} }
 end
 
+-- ------------------------------------------------------------ company perks
+--
+-- The construction menu's perk tools (gui/construction/tools/, build
+-- 40408): each picks a town or an industry and sends the company script an
+-- event, which spends the perk's permit for the player's company and hands
+-- the perk on (game_mechanics/company/company.script.tl, handleEvent).
+
+-- The construction an industry the player picked stands in, as the game's
+-- industry window finds it (gui/entity_window/industry/industry.tl), and
+-- tpf3mp/registry.lua names industries by: a part the game places in no
+-- construction stands for itself. Returns the construction, or nil.
+function capture.industryConstruction(part)
+	local ok, con = pcall(function()
+		return api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(part)
+	end)
+	if not ok or type(con) ~= "number" or con < 0 then con = part end
+	return con
+end
+
+-- The industry part of construction `con` a perk acts on: its one industry,
+-- or the construction itself where it is one. nil where it has none, or
+-- more than one, which no id the room carries tells apart. Every game finds
+-- it so (tpf3mp/apply.lua, HANDLERS.Perk).
+function capture.industryPart(con)
+	local CT = api.type.ComponentType
+	local ok, c = pcall(function() return api.engine.getComponent(con, CT.CONSTRUCTION) end)
+	local parts = ok and c and get(c, "industries") or nil
+	local n = length(parts) or 0
+	if n == 1 then return get(parts, 1) end
+	if n == 0 then
+		local isOne, industry = pcall(function() return api.engine.getComponent(con, CT.INDUSTRY) end)
+		if isOne and industry ~= nil then return con end
+	end
+	return nil
+end
+
+local function permitOf(param)
+	local permit = get(param, "permitKey")
+	if permit ~= nil and (type(permit) ~= "string" or permit == "") then error("a permit it cannot read", 0) end
+	return permit
+end
+
+local function ownCompany(ctx, param, what)
+	local player = ctx.player and ctx.player()
+	if player == nil or get(param, "companyEntity") ~= player then
+		error(what .. " for another company", 0)
+	end
+end
+
+-- Industry Greenification (industry_greenify_tool.script.tl): the event
+-- `Companies` `MakeGreen` with the player's company, the industry picked
+-- and the permit, the industry by its id (action::IndustryId).
+function capture.greenify(ctx, param)
+	if type(param) ~= "table" then error("a greenification it cannot read", 0) end
+	ownCompany(ctx, param, "greenifying")
+	local part = get(param, "constructionEntity")
+	if type(part) ~= "number" then error("greenifying no industry", 0) end
+	local con = capture.industryConstruction(part)
+	if capture.industryPart(con) ~= part then error("an industry the room cannot name", 0) end
+	local industry = ctx.industry and ctx.industry(con) or nil
+	return { Perk = { Greenify = {
+		industry = named("an industry the room cannot name", industry),
+		permit = permitOf(param),
+	} } }
+end
+
+-- What the marketing tool charges for a campaign in `year`: the tool's own
+-- price (marketing_campaign_tool.script.tl, GetMarketingCost, build 40408),
+-- with the game's math helpers (scripts/mathutil.lua: round, mapClamp)
+-- written out. The tool books it once the campaign started; the room's
+-- action carries it, so every game books the same sum.
+capture.MARKETING_COST = 10000000
+function capture.marketingCost(year)
+	local function round(x) return math.floor(x + .5) end
+	local lo, hi = math.log(0.4) / math.log(2), math.log(2.5) / math.log(2)
+	local mapped = lo + (hi - lo) * ((year - 1900) / (2020 - 1900))
+	if mapped < lo then mapped = lo elseif mapped > hi then mapped = hi end
+	local rounding = round(capture.MARKETING_COST / 10)
+	return round(capture.MARKETING_COST * math.pow(2, mapped) / rounding) * rounding
+end
+
+-- A marketing campaign (marketing_campaign_tool.script.tl): the event
+-- `Companies` `startMarketingCampaign` with the player's company, the town
+-- picked, the campaign's terms (the tool's town_marketing metadata) and the
+-- permit; and the price the tool books after it (capture.marketingCost).
+function capture.marketing(ctx, param)
+	if type(param) ~= "table" then error("a marketing campaign it cannot read", 0) end
+	ownCompany(ctx, param, "marketing")
+	local terms = get(param, "marketingParams")
+	local duration, factor = get(terms, "durationMs"), get(terms, "lineCostFactor")
+	if type(duration) ~= "number" or duration ~= math.floor(duration) or duration < 0
+		or type(factor) ~= "number" then
+		error("a campaign whose terms it cannot read", 0)
+	end
+	local ok, year = pcall(function() return api.engine.util.getYear() end)
+	if not ok or type(year) ~= "number" then error("a campaign it cannot price", 0) end
+	local town = ctx.town and ctx.town(get(param, "townEntity")) or nil
+	return { Perk = { Marketing = {
+		town = named("a town the room cannot name", town),
+		duration_ms = duration,
+		line_cost_factor = factor,
+		permit = permitOf(param),
+		cost = capture.marketingCost(year),
+	} } }
+end
+
 -- Answering a subsidy offer: the subsidy window's Accept or Decline
 -- (game_mechanics/subventions/subventions_gui.tl sends the subsidy script
 -- `onAccept` or `onDecline` with { uid }), as the offer by its number and
