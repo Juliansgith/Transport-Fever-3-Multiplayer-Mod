@@ -994,6 +994,35 @@ Rejected:
   Multiplayer window has the room, and a copy of the pause menu is one
   more game file to carry over on every patch.
 
+**Revised proposal (2026-10-02, not decided; for the owner).** A player
+(silver2127) asked on 2026-10-02 to "move all lobby management stuff to the
+mp menu as that is working pretty well now", after rooms were created,
+joined, readied and started from the game's Multiplayer window in several
+real-game playtests (two and three games a room, competitive and co-op).
+This revision replaces the second and third points above and reverses the
+first rejected option:
+
+- **Every lobby action lives in the game's Multiplayer window only.**
+  Connecting and choosing the server, creating and joining rooms (the
+  start save, rules, password, public listing), the players and their
+  ready marks, chat, companies, the owner's start, leaving and kicking.
+- **The launcher's window has no lobby.** It starts Transport Fever 3 with
+  the hook (D11 stays), holds the connection, and shows read-only where
+  things stand: the server, the room's name and players, the support code
+  and log session, the session log, updates and settings.
+- **A rescue, not a second lobby.** The launcher's lobby (the page's
+  `view::present`) stays in the build but hidden. It shows by itself only
+  when the hook reports that it cannot reach the game's menu (a game
+  update moved it), and from a "Lobby in this window" switch in Settings,
+  off by default. So the risk the rejected option named, players unable
+  to play until TPF3-MP catches up with a game patch, stays covered.
+- **The browser page (`--browser`) and the auto-room flags keep the whole
+  lobby**, for tests and headless use; the launcher's backend keeps every
+  lobby action.
+
+The rejected option "Removing the lobby from the launcher" is reversed in
+part: its window loses the lobby, but the backend and the rescue keep it.
+
 ## D25 (2026-09-30, *proposed*): players may differ in personal mods
 
 *Proposed, for the owner (Juliansgith) to approve or refuse. Nothing here is

@@ -396,7 +396,10 @@ Dev C:
   *Proposed* (D24, for the owner): the launcher's window opens with the
   lobby in the game, starting the game and showing where things stand,
   with its own lobby one click away; the window picks the save a room
-  starts from.
+  starts from. *Proposed revision* (D24, 2026-10-02, for the owner): every
+  lobby action in the game's Multiplayer window only; the launcher's window
+  starts the game and shows status, its lobby kept hidden as a rescue for
+  a menu the hook cannot reach.
 - [ ] *Held* (D18, D19, D20): choosing versions and tracks, and a Dev
   track of untested builds. The owner decides after launch, once `dev`
   takes reviewed pull requests only.
