@@ -875,6 +875,53 @@ offset = 0x16
 prologue = "4C 8D 9C 24 B0 00 00 00"
 required = false
 
+# The street trace (crates/tpf3mp-hook/src/streettrace.rs; HOOKS.md, "The
+# street trace"; logging only). TownDeveloper::Develop's street step (0x967720)
+# tries each street node with StreetDeveloper::TryCandidate (our name; rcx the
+# candidate: node +0, x +4, y +8; dl 1 in the block pass, 0 in the open pass).
+# Spliced at its entry (`mov rax,rsp; mov [rax+0x10],rbx`, 7 bytes stolen; it
+# is straight-line there) and at its epilogue past the cookie check (0x9680dc,
+# `lea r11,[rsp+0x960]`, 8 bytes stolen; al the result, rbp its frame), which
+# both ways out reach; nothing branches into either's stolen bytes past the
+# first. 0x967920
+[[target]]
+name = "StreetDeveloper::TryCandidate"
+signature = "48 8B C4 48 89 58 10 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 68 F7 FF FF 48 81 EC 60 09 00 00"
+offset = 0
+prologue = "48 8B C4 48 89 58 10"
+required = false
+
+[[target]]
+name = "StreetDeveloper::TryCandidate/return"
+signature = "48 8B 8D C0 07 00 00 48 33 CC E8 ?? ?? ?? ?? 4C 8D 9C 24 60 09 00 00 49 8B 5B 48"
+offset = 0xf
+prologue = "4C 8D 9C 24 60 09 00 00"
+required = false
+
+# TryCandidate's refusals go into a std::set (this insert: rcx the set, rdx the
+# result slot, one of six in TryCandidate's frame by the reason, r8 the 20-byte
+# key: node, its streets, the pass, its loops, the direction's index). Called
+# from TryCandidate only (0x967bd5, 0x967c5f, 0x968035). Spliced at its entry
+# (`mov [rsp+8],rbx`, 5 bytes stolen). 0x963320
+[[target]]
+name = "StreetDeveloper::Reject"
+signature = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 50 49 8B D8 48 8B FA 48 8B F1 48 8B 29 48 8B 45 08 48 89 44 24 30"
+offset = 0
+prologue = "48 89 5C 24 08"
+required = false
+
+# The street's build (0x9657c0, reached from TryCandidate through 0x9692c0)
+# right after CreateProposalData (0xa1fd10, called at 0x9659e7): the proposal's
+# two error vectors at [rbp+0x998] and [rbp+0x9b0], both empty to build.
+# Spliced at 0x9659ed (`mov rax,[rbp+0x9a0]`, 7 bytes stolen); nothing branches
+# into its stolen bytes past the first.
+[[target]]
+name = "StreetDeveloper::BuildStreet/errors"
+signature = "4C 8D 8D C0 00 00 00 45 33 C0 48 8B D3 48 8D 8D 20 04 00 00 E8 ?? ?? ?? ?? 90 48 8B 85 A0 09 00 00 48 39 85 98 09 00 00 0F 85"
+offset = 0x1a
+prologue = "48 8B 85 A0 09 00 00"
+required = false
+
 # Junction layout anchors from the Lua binding registration code. Read-only:
 # these instructions establish the field offsets used by junctions.rs.
 [[target]]

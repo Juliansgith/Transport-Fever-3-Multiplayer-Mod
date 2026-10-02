@@ -1035,6 +1035,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     for line in crate::edgewatch::install(&absolute, base as u64) {
         log_line(&line);
     }
+    for line in crate::streettrace::install(&absolute) {
+        log_line(&line);
+    }
     Ok(step_rva)
 }
 
