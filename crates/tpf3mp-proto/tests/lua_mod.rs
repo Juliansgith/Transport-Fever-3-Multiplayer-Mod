@@ -9065,8 +9065,9 @@ fn the_map_line_probe_says_what_the_line_viewer_draws() {
                            end
                            if kind == 11 and e == 800 then return { stations = { 900 } } end
                            if kind == 12 and e == 900 then return { terminals = { {}, {} } } end
+                           if kind == 13 and e == 700 then return { color = { x = 0.5, y = 0.25, z = 1 } } end
                        end }
-        api.type = { ComponentType = { GAME_SCRIPT = 7, PLAYER_OWNED = 9, LINE = 10, STATION_GROUP = 11, STATION = 12 } }
+        api.type = { ComponentType = { GAME_SCRIPT = 7, PLAYER_OWNED = 9, LINE = 10, STATION_GROUP = 11, STATION = 12, COLOR = 13 } }
         DRAWN = {}
         local builtin = ug_require("::/gui/main/builtin.lua")
         builtin.LineViewer = function(params) DRAWN[#DRAWN + 1] = params return {} end
@@ -9087,7 +9088,7 @@ fn the_map_line_probe_says_what_the_line_viewer_draws() {
     )
     .exec()
     .unwrap();
-    let draw = "local lines = api.engine.system.lineSystem.getLinesForPlayer(api.engine.util.getPlayer())                 ug_require('::/gui/main/builtin.lua').LineViewer({ showLines = { { entity = lines[1] } } })                 return #DRAWN";
+    let draw = "local lines = api.engine.system.lineSystem.getLinesForPlayer(api.engine.util.getPlayer())                 ug_require('::/gui/main/builtin.lua').LineViewer({ showLines = { { entity = lines[1], transparency = 0.5 } } })                 return #DRAWN";
     // The probe off: drawn, nothing said.
     let drawn: i64 = lua.load(draw).eval().unwrap();
     assert_eq!(drawn, 1, "the game's LineViewer still draws");
@@ -9127,7 +9128,7 @@ fn the_map_line_probe_says_what_the_line_viewer_draws() {
     // Each line's stops and the engine's verdict on it.
     assert!(
         logged.contains(
-            "probe: line to draw: line 700 owned by 901; 2 stop(s); stop 1: group 800 station 0 terminal 1, group of 1 station(s) owned by nil, station 900 owned by nil with 2 terminal(s), listed at the terminal; stop 2: group 800 station 1 terminal 0, group of 1 station(s) owned by nil, no station 1 in the group; line system problem 3 (the HUD's state)"
+            "probe: line to draw: line 700 owned by 901; colour 0.500 0.250 1.000; 2 stop(s); stop 1: group 800 station 0 terminal 1, group of 1 station(s) owned by nil, station 900 owned by nil with 2 terminal(s), listed at the terminal; stop 2: group 800 station 1 terminal 0, group of 1 station(s) owned by nil, no station 1 in the group; line system problem 3; handed at transparency 0.5 (the HUD's state)"
         ),
         "{logged}"
     );
