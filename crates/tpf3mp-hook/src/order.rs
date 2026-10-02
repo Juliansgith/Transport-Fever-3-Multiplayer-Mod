@@ -2326,6 +2326,25 @@ pub mod path_ties {
         let _ = this;
         let list: Vec<&[u8]> = indices.iter().map(|&i| seg(i)).collect();
         log::line(&batch_line(step, in_step(), first, &list));
+        // The search's first segments, in the order it made them: its
+        // seeds (the start edges and their costs) lead the vector.
+        let made = segments.len() / SEGMENT_LEN;
+        let seeds: Vec<&[u8]> = (0..made.min(SEEDS_SAID)).map(|i| seg(i as i32)).collect();
+        log::line(&seeds_line(step, first, made, &seeds));
+    }
+
+    /// How many of a watched search's first segments are said.
+    pub const SEEDS_SAID: usize = 16;
+
+    /// The seeds line: the search's first segments in the order it made
+    /// them, as the batch line says segments, and how many it has made.
+    pub fn seeds_line(step: u64, search: u64, made: usize, segments: &[&[u8]]) -> String {
+        let batch = batch_line(step, true, search, segments);
+        let listed = batch
+            .split_once(" n=")
+            .and_then(|(_, rest)| rest.split_once(": "))
+            .map_or("", |(_, rest)| rest);
+        format!("pathseeds: step {step} search {search:x} made={made}: {listed}")
     }
     static REFUSED: AtomicU64 = AtomicU64::new(0);
 
@@ -3932,6 +3951,18 @@ mod tests {
         assert_eq!(
             path_ties::batch_line(3200, true, 0xab, &[&seg]),
             "pathsort: step 3200 step-thread search ab n=1: 362201/10/1:3f800000+00000000"
+        );
+    }
+
+    #[test]
+    fn the_seeds_line_lists_the_first_segments_made() {
+        let mut seg = [0u8; path_ties::SEGMENT_LEN];
+        seg[..4].copy_from_slice(&362_201i32.to_le_bytes());
+        seg[4..8].copy_from_slice(&4i32.to_le_bytes());
+        seg[8] = 1;
+        assert_eq!(
+            path_ties::seeds_line(3199, 0xab, 40, &[&seg]),
+            "pathseeds: step 3199 search ab made=40: 362201/4/1:00000000+00000000"
         );
     }
 

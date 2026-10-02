@@ -3440,6 +3440,27 @@ it was rebuilt in another order. A construction's network is built by
 named by its assert; a map `node2index2position` among its locals),
 INFERRED to be where the order comes from.
 
+The round after (`9c66b67`) disproved that: 362201's 17 edges were
+identical, in fingerprints and order, in all three games at every step
+through 3199, only the lanes vehicles were on changing (and alike).
+From 3200 they differ, as the routes write their claims into them. So
+the costs under other indices are distances from other start lanes: the
+route search starts from another lane in each game. The vehicles'
+searches are `vehicle_util::common::FindPathUnified` (asserts
+`!startPath.empty() || !startAlternatives.empty()`; `0x266c2f0` and
+`0x266c820`) and `FindPathToStop2` (`0x2671930`, with
+`alternativeNodes`, `primaryNodes` and an `unordered_map/set`), each
+running a `PrioritySearch`. With the search watcher on, each batch line is
+followed by the search's first 16 segments in the order it made them, its
+seeds leading:
+
+```
+pathseeds: step <s> search <id> made=<n>: <entity>/<index>/<dir>:<bits>+<bits> ...
+```
+
+Two games' seeds for the same search say whether the start set, its
+costs or its order differ.
+
 **The engine-copy checker** (`crate::copycheck`; read only, off unless
 `TPF3MP_PROBE_ENGINE_COPY` is `1` or `on`, or a number n for every n-th
 change of engine). It asks which other fields the copy leaves behind. The
