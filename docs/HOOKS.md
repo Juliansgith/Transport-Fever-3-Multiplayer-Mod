@@ -2646,13 +2646,31 @@ and nothing more.
   | 0 network | `p0`, `p1` (the edge's ends, `x,y,z`, read from the game's `Vec3f` userdata), `template` |
   | 1 constructions | `file`, `x`, `y`, `z` |
   | 2 lines | `stops`, then `stop<i>=<group>/<station>/<terminal>` |
-  | 3 vehicles | `state`, `stop` (index), `line`, `edge`, `pos`, `speed` (`MOVE_PATH.dyn`) |
-  | 4 economy | `balance` |
+  | 3 vehicles | `state`, `stop` (index), `line`, `edge`, `pos`, `speed` (`MOVE_PATH.dyn`); dump only: `arrival`, `arrival_locked`, `load` (`loadState`), `pending` (`unloadPendingIncome.amount`), `free` (`lineStop2cargo2available`: free capacity per cargo type, stops apart by `\|`), the path fields |
+  | 4 economy | `balance`; dump only: `loan`, `time` (`GAME_TIME`), `income` (`finance.calcIncomeSince(0)`), `last_income` (`finance.getLastIncomeTime`), the finance window's table (`finance.computeFinanceTable`, four periods: `transport<carrier>.<kind>`, `investment<kind>`, `other<kind>`, `loan`, `interest`, `total`, ..., sorted), and one entry per vehicle and per line, `takings=` (`finance.calculateBalance({e}, 0, now, true)`: its income and maintenance since the game began, as the game's vehicle and line windows sum them) |
   | 5 towns | `buildings`, `size` (the three size factors), `experience`, `level` (the town growth script's state) |
   | 6 people | `count` |
 
   A vehicle's line, a line's stops and their station groups are read for
-  the dump only; the lanes hash what the table above says.
+  the dump only; the lanes hash what the table above says. A finance read
+  the engine refuses dumps as `nil`, the finance table as `err`; the
+  balance is dumped all the same.
+
+  Why lane 4 names vehicles: in the round of 2026-10-02 on `twomptest`
+  (three games, no input, `136d775`), cat's game alone said `Diverged {
+  step: 36400, lanes: [4] }` after 36,350 steps in step. The other lanes,
+  vehicles and people among them, agreed. Its balance was 310 above the
+  others' at steps 36450 and 36500 alike (37969976 against 37969666;
+  37992005 against 37991695): one booking of 310 between the checkpoints
+  after steps 36350 and 36400, the balance alike before and after it. The
+  vehicles lane hashes where the vehicles are, not what they carry, and
+  income is the game's `cargo_income.script.lua` over the distance a
+  unit or passenger travelled; maintenance is booked per vehicle and
+  construction too. The balance alone could not say whose booking split;
+  each vehicle's and line's `takings` can. Every checkpoint's
+  (`TPF3MP_HOOK_LANE_DUMP=4`) names the first checkpoint and the vehicle
+  and line whose takings differ, and its `free` and `pending` (lane 3)
+  what it carried.
 
 After a divergence, gather each game's `hook.log` (a second player in a
 Sandboxie box has its own under the box's copy of the data folder) and run:
