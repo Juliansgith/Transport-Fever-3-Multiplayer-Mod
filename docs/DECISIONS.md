@@ -231,6 +231,10 @@ tested on all three platforms.
 
 ## D10 (2026-09-27): players' diagnostics go to the server by themselves
 
+*A proposed amendment below, not decided, adds the hook's and the game's
+logs and the game's error reports to what goes, under one log session
+code for a launcher's run.*
+
 The launcher sends the lines of its log, redacted, to the server the player
 plays on, which keeps them by session: the operator reads what went wrong
 for a player from the support ID alone, as TPF2MP's relay let its operator
@@ -266,6 +270,84 @@ own log and crash dumps, which are never sent, come from `tpf3mp-agent
 collect-logs` when an operator asks for them. The page's
 `/api/collect-logs`, a way for the page to make the launcher write files,
 is gone with the button.
+
+### D10 amendment (PROPOSED amendment, not decided, 2026-10-02): the hook's and the game's logs go too
+
+**Proposed, for the owner (Juliansgith) to approve or refuse in the pull
+request. D10 above stays in force until then.**
+
+A contributor, silver2127, asked for all of a player's logs to reach the
+server with one code naming them, and asked for D10 to change for it.
+Today an operator sees the launcher's side of a failure and must ask the
+player for the zip `tpf3mp-agent collect-logs` writes to see the hook's
+and the game's, which, as D10 says of files, comes late and often not at
+all. Most failures in the real game show only there.
+
+- **What changes: the content, not the destination.** The launcher's
+  diagnostics still go to the one server the player plays on, over the
+  game's connection, as D10 has them. Besides the launcher's and the
+  agent's lines, they now carry the in-game hook's `hook.log` and the
+  game's own `stdout.txt`, each read from where it stood when the
+  launcher started, and the text of the game's error reports (the `.txt`
+  and `.json` files in its `crash_dump` folder) as they appear. Every line
+  says its source (`launcher`, `agent`, `hook`, `game`, `crash`).
+- **One code for a launcher's run.** Each line carries a *log session*: a
+  code like a support code (D13's generator and format), chosen when the
+  launcher starts and kept until it closes. The support code names one
+  connection and changes with every reconnection; the log session names
+  the whole run, so the operator reads all of it with one code, by source
+  if they like (`diagnostics <code> hook`). The launcher's window, its
+  page and the game's Multiplayer window show it, with Copy, while
+  diagnostics are on. Like a support code it lets nobody into anything.
+- **Why.** The failures that matter now happen in the game, after the
+  launcher's part went well; the operator should see them from one code
+  the player posts, as D10 meant for the launcher's.
+
+What keeps it safe:
+
+- **Lines, never files.** Text read line by line and sent as D10's lines
+  are, each cut to 1 KiB. Never the game's `.dmp` minidumps, which are
+  large, binary and hold memory nobody can redact; never a file whose
+  name looks like a key, certificate or token; never the saves, the
+  identity key or `launcher.json`. `collect-logs` stays for the dumps, on
+  the player's say.
+- **Redacted on both sides, with D10's rules and one more.** Paths, IP
+  addresses, invites, keys and passwords, e-mail addresses and Steam IDs
+  are taken out by `tpf3mp_proto::redact` before a line leaves and again
+  on the server; the game's error reports name the Steam account as
+  `"userId"`, so values after keys naming an account (`userId`,
+  `account_id`, `steamid`, …) go too.
+- **Bounded at every step.** On the player's machine each source has a
+  budget of bytes a minute (the hook's log 192 KiB, the game's 96 KiB,
+  error reports 512 KiB); a log that grows faster loses its oldest unread
+  part, and the launcher's log says how much. At most 10,000 lines wait,
+  the oldest going first, and a run sends 256 MiB at most. Files are read
+  on a thread of their own, never the game's or a connection's. On the
+  server the diagnostics budget is two requests a second with a burst of
+  sixteen (one and eight before), on its own as before; a session keeps
+  64 MiB at most (`--diagnostics-session-mib`, 8 before), all sessions
+  within `--diagnostics-mib`, for `--diagnostics-days`, the oldest going
+  first; the writer still never makes a connection wait.
+- **The switch stops all of it.** **Send diagnostics** Off stops every
+  source and forgets what waited; what the logs gain meanwhile is passed
+  over, never sent later. The choice is remembered, as before.
+
+This reverses D10's rejection of **whole log files** in part: the hook's
+and the game's logs now go, as redacted lines within budgets rather than
+as files, while crash dumps stay rejected. The rejection of **an HTTP
+upload**, a second way in, stands: nothing here opens another service,
+port or credential. It changes the protocol (version 16: each line's
+source and the log session, `Request::Telemetry`) and the link to the
+game (version 23: the window shows the log session).
+
+Rejected:
+
+- **Reusing the support code for every line.** It names a connection,
+  and a launcher makes several in a run (reconnections, server changes);
+  a run's logs would be split over codes the player never saw.
+- **Sending to more servers than the one played on** (dev servers listed
+  in the build or the settings), as first asked: a second destination for
+  players' logs, held by the user for now.
 
 ## D11 (2026-09-27): the hook runs only in a game the launcher starts
 
