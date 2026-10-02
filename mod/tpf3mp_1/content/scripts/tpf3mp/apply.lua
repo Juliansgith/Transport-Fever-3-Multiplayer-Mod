@@ -1107,6 +1107,18 @@ local function rebuildWith(e, network, objects)
 	s.comp = api.engine.getComponent(e.id, api.type.ComponentType.BASE_EDGE)
 	s.type = network == "Track" and 1 or 0
 	s.comp.objects = objects
+	-- The edge keeps its owner: its PlayerOwned is a component of its own,
+	-- which the edge's BASE_EDGE does not carry, and without it the rebuilt
+	-- edge would be no one's (a company's road everyone's).
+	local owner = require_companies().ownerOf(api, e.id)
+	if owner ~= nil then
+		local ok = pcall(function() s.playerOwned.player = owner end)
+		if not ok then
+			local owned = api.type.PlayerOwned.new()
+			owned.player = owner
+			s.playerOwned = owned
+		end
+	end
 	proposal.streetProposal.edgesToAdd = { s }
 	proposal.streetProposal.edgesToRemove = { e.id }
 	local configs = {}
@@ -1117,6 +1129,76 @@ local function rebuildWith(e, network, objects)
 	end
 	if #configs > 0 then proposal.streetProposal.nodeConfigsToRemove = configs end
 	return proposal
+end
+
+-- A stop the room placed is the acting company's, the same in every game
+-- (2026-10-02: a company's stops came out another company's, and its
+-- player could not open them). The stop's edge object is named for it
+-- (`playerEntity`), but what the game's windows ask is the owner of the
+-- stop's station group (gui/entity_window/station_group.tl), and the
+-- stop's construction and station are made by the engine, not named in the
+-- proposal. So, once built, each new object on the edge, its construction,
+-- the construction's stations and their station groups are given to the
+-- acting company where they are anyone else's, as the game's own missions
+-- hand a stop over (transfer_ownership_util.tl, makeEntitySetPlayerCmd).
+-- A station group that holds a station of another stop is left as it is:
+-- it is not this stop's to give. `kept` are the edge's objects as the
+-- proposal listed them, the new ones negative.
+local function settleStop(ref, kept, model)
+	local ok, e = pcall(stopEdge, ref)
+	if not ok then
+		log("the new " .. tostring(model) .. ": its edge cannot be found again to settle its owner")
+		return
+	end
+	local had = {}
+	for _, o in ipairs(kept) do
+		if o[1] >= 0 then had[o[1]] = true end
+	end
+	local me = company()
+	local companies = require_companies()
+	local C = api.type.ComponentType
+	local seen, fixed = {}, {}
+	local function give(entity, what)
+		if type(entity) ~= "number" or entity < 0 or seen[entity] then return end
+		seen[entity] = true
+		local owner = companies.ownerOf(api, entity)
+		if owner == me then return end
+		-- The stop stands either way: a refusal is logged, not the action's.
+		local sent, why = pcall(function() send(api.cmd.makeEntitySetPlayerCmd(entity, me)) end)
+		fixed[#fixed + 1] = what .. " " .. entity .. " (was " .. tostring(owner) .. ")"
+			.. (sent and "" or (": refused, " .. tostring(why)))
+	end
+	for _, o in ipairs(e.comp.objects or {}) do
+		local object = o[1]
+		if not had[object] then
+			give(object, "stop")
+			local con = -1
+			pcall(function() con = api.engine.util.construction.getConstructionEntity(object) end)
+			if type(con) == "number" and con >= 0 then
+				give(con, "construction")
+				local c = api.engine.getComponent(con, C.CONSTRUCTION)
+				local stations = {}
+				for _, s in ipairs(c and c.stations or {}) do stations[#stations + 1] = s end
+				local mine = {}
+				for _, s in ipairs(stations) do mine[s] = true end
+				for _, s in ipairs(stations) do
+					give(s, "station")
+					local group = -1
+					pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(s) end)
+					local g = type(group) == "number" and group >= 0 and api.engine.getComponent(group, C.STATION_GROUP)
+					local alone = g ~= nil and g ~= false
+					for _, other in ipairs(g and g.stations or {}) do
+						if not mine[other] then alone = false end
+					end
+					if alone then give(group, "station group") end
+				end
+			end
+		end
+	end
+	if #fixed > 0 then
+		log("the new " .. tostring(model) .. " made the acting company's (" .. tostring(me) .. "): "
+			.. table.concat(fixed, ", "))
+	end
 end
 
 -- How near its edge's centreline a stop's place is: the originator's own
@@ -1180,7 +1262,9 @@ function HANDLERS.PlaceStop(stop)
 	-- Paid by the player, as the tool builds.
 	local context = api.type.Context.new()
 	context.player = company()
-	return buildProposal(proposal, context)
+	local built = buildProposal(proposal, context)
+	settleStop(stop.edge, objects, stop.model)
+	return built
 end
 
 -- A stop the bulldozer removes: the object of that construction on the

@@ -2317,7 +2317,18 @@ terrain tools through the hook, and a construction's window its edits:
   the model, the player), named in the edge's objects as `{ -1, side }`,
   the lane configurations at the edge's ends removed as for any edge a
   replay removes; then the game's verdict, and the build as the player's
-  own (`ignoreErrors`, `playerInitiated`), paid by the player. A receiver
+  own (`ignoreErrors`, `playerInitiated`), paid by the player. The
+  rebuilt edge keeps its own `PlayerOwned` (a company's road stays the
+  company's). Once built, the stop is settled as the acting company's
+  (2026-10-02: a company's stops came out another company's, and its
+  player could not open them): each new object on the edge, its
+  construction (`api.engine.util.construction.getConstructionEntity`),
+  the construction's stations and the station groups that hold only
+  those stations, where anyone else owns them, are handed over with
+  `makeEntitySetPlayerCmd`, as the game's own missions hand a stop over
+  (`transfer_ownership_util.tl`); the windows ask the station group's
+  owner (`station_group.tl`). hook.log names each one handed over and
+  its owner before (`the new <stop> made the acting company's`). A receiver
   whose edge runs the other way flips `left`; a side already taken is
   refused (two stops on one side is a fatal assert in the game's lane
   creation on TPF2). Refused: a stop dropped where one stood (the game
