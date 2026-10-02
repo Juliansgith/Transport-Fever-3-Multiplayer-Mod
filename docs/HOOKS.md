@@ -2464,8 +2464,25 @@ construction's window its edits:
 - **The stop tool** (`streetTerminalBuilder`): a stop on a street. The
   tool queues a `WorldBuildProposal` (command 52 from
   `UI::StreetTerminalBuilder`, found statically), which the hook's gate
-  stops like the others. Its proposal has the shape the game's own mission
-  scripts check a stop by (`checkStop`,
+  stops like the others. The tool waits for each click's answer before it
+  takes another (build 40408, read with tpfre: `MousePressed` 0x594f50
+  returns at once while its busy byte `+0x2c8` is set, sets it before it
+  queues the click, and only the command's callback clears it, once the
+  simulation applied the command; `Step` shows no preview meanwhile). In
+  a room that answer is the refused apply, and the stop comes later from
+  the room, so a row of stops clicked quickly lost every click after the
+  first (2026-10-02). So in the room's game the add's detour finds the tool
+  from the click's own callback before `Add` (a `std::function` on
+  `MousePressed`'s stack whose impl pointer, `+0x38`, is itself, the tool
+  at `+8`) and clears the byte once the click is queued, where it reads 1
+  as `MousePressed` set it (`crates/tpf3mp-hook/src/stoptool.rs`, profile
+  targets `StreetTerminalBuilder::MousePressed/Add call` and `/busy set`,
+  whose signature holds the offset). Each click is then its own
+  `PlaceStop`, handed on in click order; the late callback, with the
+  refused build's empty result, clears the byte again. Without the
+  targets, or on anything that does not read so, the tool waits as the
+  game has it, and hook.log says why once (`stop tool: ...`). Its
+  proposal has the shape the game's own mission scripts check a stop by (`checkStop`,
   `mission_task_build_construction_util.tl`): one edge removed and the same
   edge added again between the same nodes, whose `objects` list its stops
   as `{ entity, EdgeObjectType }`, as many as `edgeObjectsToAdd`. The new

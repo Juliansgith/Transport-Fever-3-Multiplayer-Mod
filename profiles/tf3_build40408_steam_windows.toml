@@ -148,6 +148,37 @@ offset = 18
 prologue = "E8"
 required = false
 
+# UI::StreetTerminalBuilder::MousePressed's call of CommandList::Add
+# (0x5954e8, in 0x594f50, whose lambda's RTTI names
+# "UI::StreetTerminalBuilder::MousePressed(UI::CRendererComponent *)"):
+# `lea rcx,[rbp+0x58]; mov [rsp+0x20],rcx; lea r9,[rbp+0x68]; mov r8,rax;
+# lea rdx,[rbp-0x80]; mov rcx,rbx; call Add`, then the Connection's dtor and
+# `mov byte [rsi+0x13d],0`. The stop tool's click (the stop builder, and the
+# signal and waypoint builder); Add returns to this + 5 (0x5954ed). Its
+# callback is the std::function at rbp+0x68 (impl pointer at +0x38 to
+# itself, the tool at +8). The hook frees the tool's busy byte there in a
+# room (crates/tpf3mp-hook/src/stoptool.rs; found with tpfre on this build:
+# one match). Without it the tool waits for each click's answer.
+[[target]]
+name = "StreetTerminalBuilder::MousePressed/Add call"
+signature = "48 8D 4D 58 48 89 4C 24 20 4C 8D 4D 68 4C 8B C0 48 8D 55 80 48 8B CB E8 ?? ?? ?? ?? 48 8D 4D 80 E8 ?? ?? ?? ?? C6 86 3D 01 00 00 00"
+offset = 23
+prologue = "E8"
+required = false
+
+# UI::StreetTerminalBuilder::MousePressed setting its busy byte before it
+# queues the click (0x595305, `mov byte [rsi+0x2c8],1`; the click returns at
+# once while it is set, 0x594f95, and only the command's callback clears it,
+# 0x59777d). The signature holds the offset 0x2c8 crates/tpf3mp-hook/src/
+# stoptool.rs writes: a build that moved it does not resolve, and the tool
+# waits as the game has it. One match on this build (tpfre).
+[[target]]
+name = "StreetTerminalBuilder::MousePressed/busy set"
+signature = "C6 86 C8 02 00 00 01 48 8B 9E 98 00 00 00 48 8D 45 58"
+offset = 0
+prologue = "C6 86 C8 02 00 00 01"
+required = false
+
 # UI::ProposalAction::DoApply's call of CommandList::Add (0x549be5, in
 # 0x549ac0, whose lambda's RTTI names "UI::ProposalAction::DoApply(bool,
 # bool)"): `lea r9,[rsp+0x70]; mov r8,rax; lea rdx,[rsp+0x4e0]; mov rcx,rdi;

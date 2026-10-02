@@ -55,6 +55,7 @@ pub mod probe;
 pub mod roadtrace;
 pub mod seeds;
 pub mod step;
+pub mod stoptool;
 pub mod streettrace;
 pub mod terrain;
 pub mod ticks;
