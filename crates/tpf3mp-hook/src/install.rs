@@ -1027,6 +1027,7 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
     }
+    log_line(&crate::townfield::install(&absolute));
     log_line(&crate::copycheck::install(base));
     log_line(&crate::netwatch::install(base));
     for line in crate::towntrace::install(&absolute, base as u64) {

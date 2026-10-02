@@ -2928,6 +2928,56 @@ TPF3MP_HOOK_STREET_TRACE_STEPS=12740-12775
 then `grep -E '^\[[0-9]+\] (street|town):'` in each game's `hook.log` and
 compare by step and try number.
 
+#### The town street field
+
+Soak 4 of 2026-10-02, with the street trace on, split again (one game of
+three), and every `street:` line was alike but one: step 12771, try 12,
+node 261290's open pass built at 27.03 degrees in two games and 19.72 in
+the third, with the same node and so the same position-seeded turn. The
+turn is not where they part. After it the open pass bends the street's end
+by the town's street field (`TryCandidate`, `0x967dc8..0x967ebc`, when the
+town has one):
+
+- `StreetField::At` (`0x2b76a90`, our name; `rcx` the field, `r8` the
+  street's end) answers the field's two axes there: a sum over the field's
+  sources (16 bytes each, `[field]..[field+8]`) of each source's axis,
+  weighted by `exp(-d/100)` within the field's radius (`0x2b769a0`), and the
+  axis at right angles to it. `0x2b76820` then snaps the street's direction
+  to whichever axis lies within its angle, or leaves it.
+- `At` caches its answer in a `std::map` at `field+0x18`, keyed by the
+  point's 50 m cell (`round(x/50 + 0.5)`, likewise `y`), and answers any
+  later point in that cell from the cache: the answer computed at the
+  first point that asked there, not at this one.
+- The field hangs off the town developer's context (`GameState+0x200`,
+  `[[ctx+0x1f0]+8]+0x30`, read in `0x95a080`), one per `GameState`, and no
+  lane reads the cache. Which points asked in a cell earlier, in this game
+  and on whichever buffer ran those updates, decides the answer, and with
+  it whether the street snaps.
+
+**The fix** (`town-field-cache`, `crates/tpf3mp-hook/src/townfield.rs`; on
+unless `TPF3MP_HOOK_TOWN_FIELD_CACHE=0`) splices `At`'s lookup at its end
+test (`0x2b76b4a`, `cmp byte [r9+0x19], 0`, 5 bytes stolen; the only branch
+to it is the lookup loop's `jne` at `0x2b76b1c`, to its first byte) and
+points `r9`, the node found, at the map's head (`r10`, whose nil flag is
+set). Every call then takes the miss path (`0x2b76b86`): the answer is
+computed at the point asked, from the sources, and the engine's own insert
+(`0x2b76660`) runs as before. The answer is a function of the point and the
+sources alone. A head whose nil flag does not read leaves that lookup to
+the game, said once in `hook.log`; a panic switches the fix off. Before
+splicing, the site must lie at `At+0xba` and its `jne` reach `At+0xf6`; the
+static proof checks that the open pass calls `At` (`0x967e0e`) and that the
+miss path inserts through `0x2b76660`. `hook.log` says
+
+```
+order fix town-field-cache: installed (at 0x..., the town street field is computed at every point asked, never answered from its per-cell cache)
+order fix town-field-cache: alive, calls=<n> cache-entries-passed=<n> refused=<n>
+```
+
+the second at the first call and every 4,096th; `cache-entries-passed`
+counts the lookups that found a cached answer and were made to compute
+instead. Every game of a room must run it alike: a game with it off builds
+some town streets at other angles than one with it on.
+
 ### Seeds, as built
 
 Ported onto dev from `feat/steam-hook-on-dev` (971c48c, as merged in
@@ -3223,6 +3273,7 @@ on hand-written functions in the test binary.
 | 3, road edge entries | `road-entry-order` | `EdgeUseManager::Add` (`0x255e940`), `AddRange` (`0x255cc70`) | keeps each edge's entries in entity order after every append (kill switch `TPF3MP_HOOK_ROAD_ENTRY_ORDER=0`) |
 | 4, vehicles at a stop | `vehicles-at-stop-order` | `ecs::SimEntityAtTerminalSystem::Update/vehicles at stop` (`0xb0e35c`) | sorts the vehicles at a line stop by entity id before the boarding loop (kill switch `TPF3MP_HOOK_VEHICLES_AT_STOP_ORDER=0`) |
 | 5, platform choice | `platform-order` | `ecs::TransportVehicleSystem::Update2/visit` (`0xb8bccb`), `FindNextFreeTerminal/candidate sort` (`0xb85430`) | asks the vehicles for a free platform in entity order, and puts the candidate terminals in one order before their cost sort (kill switch `TPF3MP_HOOK_PLATFORM_ORDER=0`) |
+| (soak 4 of 2026-10-02), town street angles | `town-field-cache` | `StreetField::At/cache found` (`0x2b76b4a`) | the town street field is computed at every point asked, not answered from its per-50-m-cell cache ("The town street field"; kill switch `TPF3MP_HOOK_TOWN_FIELD_CACHE=0`) |
 
 **The mid-function splice** (`tpf3mp_hookcore::detour::Splice`) is what
 the two fixes hook with. A whole-function detour cannot reach a point in
