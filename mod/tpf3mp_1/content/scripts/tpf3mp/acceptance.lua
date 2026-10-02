@@ -3,7 +3,9 @@
 -- same settings. Fixtures may enable a channel explicitly to test its mechanics.
 -- Height brushes passed local two-game acceptance on build 40408, 2026-10-02.
 -- See investigation/STATION_TERRAIN_2026-10-02.md for evidence and limits.
-local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true }
+-- Bridge/tunnel window rebuilds use ordinary road/track actions and are
+-- gated at capture.windowBuild until their own two-game acceptance.
+local acceptance = { subsidies = false, rename = false, waypoints = false, terraform = true, bridges = false }
 
 function acceptance.check(action)
     local feature

@@ -31,7 +31,14 @@ macro_rules! modules {
 }
 
 /// Every module of the mod, as `require "tpf3mp.<name>"` finds it.
-const MODULES: [(&str, &str); 4] = modules!("geom", "roads", "junctions", "engine");
+const MODULES: [(&str, &str); 6] = modules!(
+    "geom",
+    "roads",
+    "junctions",
+    "engine",
+    "acceptance",
+    "capture"
+);
 
 const TEST: &str = include_str!("lua/road_capture.lua");
 
@@ -728,4 +735,85 @@ fn an_upgrade_is_said_in_one_line_and_another_build_is_not_an_upgrade() {
         "roads.upgradeSummary(engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street'))",
     );
     assert_eq!(other, Err(String::new()));
+}
+
+/// The bridge and tunnel window's type change (`bridge_and_tunnel.tl`,
+/// `createBridgeOrTunnelProposal`), as the window sends it: the track
+/// 30-31 rebuilt in place between the same nodes as a stone bridge
+/// (INFERRED from the API's proposal shape, not yet seen in the game).
+const BRIDGE_WINDOW_PROPOSAL: &str = "{
+    addedNodes = {},
+    addedSegments = {
+        { entity = -1, type = 1, comp = { node0 = 30, node1 = 31, tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0),
+          type = 1, typeIndex = 3, roadTemplate = 'track/standard.track_template', roadStyle = '',
+          objects = {} } },
+    },
+    removedSegments = { { entity = 110, type = 1, comp = { node0 = 30, node1 = 31, objects = {} } } },
+    removedNodes = {},
+}";
+
+fn window_build(street: &str, gate: bool) -> Result<LuaValue, String> {
+    capture_with(
+        street,
+        &format!(
+            "(function() require('tpf3mp.acceptance').bridges = {gate} \
+             return require('tpf3mp.capture').windowBuild(nil, {{ toAdd = {{}}, toRemove = {{}}, proposal = street }}) end)()"
+        ),
+    )
+}
+
+/// A bridge's type changed in its window was refused in a room ("building
+/// from this window"): an in-place rebuild of edges travels as the track
+/// modifiers' does, once its gate is on; until then it says it waits for
+/// acceptance. A window build that adds or removes nodes is no in-place
+/// rebuild and stays refused.
+#[test]
+fn a_bridge_window_rebuild_travels_as_the_track_it_rebuilds() {
+    let why = window_build(BRIDGE_WINDOW_PROPOSAL, false).unwrap_err();
+    assert!(why.contains("awaits two-player game acceptance"), "{why}");
+
+    let action = decode(window_build(BRIDGE_WINDOW_PROPOSAL, true).unwrap());
+    let Action::BuildTrack(track) = action else {
+        panic!("{action:?}")
+    };
+    assert_eq!(track.track.as_str(), "track/standard.track_template");
+    assert_eq!(track.polyline.links.len(), 1);
+    assert_eq!(
+        track.polyline.links[0].structure,
+        Structure::Bridge(text("bridge/stone.lua"))
+    );
+    assert_eq!(track.polyline.removals.len(), 1);
+    assert_eq!(track.polyline.removals[0].network, Network::Track);
+    assert!(track.polyline.removed_nodes.is_empty());
+
+    // Rebuilt the other way round: still in place.
+    let reversed = BRIDGE_WINDOW_PROPOSAL.replace(
+        "node0 = 30, node1 = 31, tangent0",
+        "node0 = 31, node1 = 30, tangent0",
+    );
+    assert!(window_build(&reversed, true).is_ok());
+    // A road modifier's rebuild through a new node is not the window's.
+    let moved = modify_proposal("{ { 555, 0 } }", "{}");
+    let why = window_build(&moved, true).unwrap_err();
+    assert!(!why.contains("acceptance"), "{why}");
+    // A bridge that keeps the signal on it, and one that drops it.
+    let signal = BRIDGE_WINDOW_PROPOSAL
+        .replace(
+            "objects = {} } },\n    },",
+            "objects = { { 556, 2 } } } },\n    },",
+        )
+        .replace(
+            "node1 = 31, objects = {}",
+            "node1 = 31, objects = { { 556, 2 } }",
+        );
+    assert!(window_build(&signal, true).is_ok());
+    let dropped = BRIDGE_WINDOW_PROPOSAL.replace(
+        "node1 = 31, objects = {}",
+        "node1 = 31, objects = { { 556, 2 } }",
+    );
+    let why = window_build(&dropped, true).unwrap_err();
+    assert!(
+        why.contains("removes an edge with a stop or signal"),
+        "{why}"
+    );
 }

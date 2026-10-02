@@ -1931,7 +1931,19 @@ construction's window its edits:
     nil, false, true)`, `gui/construction/construction.tl`,
     `gui/entity_window/entity_window_util.tl`). The guard carries such a
     command as the same edit (`guard.CARRY.makeWorldBuildProposalCmd`,
-    `capture.windowBuild`); any other build a window sends stays refused
+    `capture.windowBuild`). A window's build that only rebuilds edges in
+    place (no construction, no node added or removed, every new edge
+    between the ends of one it replaces), as the bridge and tunnel window's
+    type change makes one (`gui/entity_window/bridge_and_tunnel.tl`,
+    `createBridgeOrTunnelProposal`), is read as the road and track
+    modifiers' rebuild is (`capture.inPlace`, `capture.modify`) and travels
+    as a `BuildRoad` or `BuildTrack`, its edges' bridge or tunnel type
+    included; a stop or signal on those edges must be kept in place, as
+    for the modifiers. It is refused, saying it awaits two-player game
+    acceptance, until `acceptance.lua`'s `bridges` is on: it travels as an
+    ordinary build, so the gate is at the capture. INFERRED: the window's
+    proposal has the shape the API declares (`Proposal`, `StreetProposal`),
+    not yet seen in the game. Any other build a window sends stays refused
     ("building from this window");
   - a bulldozer proposal that removes a construction of the player's and
     adds one (a module removed, if the module bulldozer reaches game
