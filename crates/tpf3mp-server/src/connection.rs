@@ -694,7 +694,8 @@ impl Client {
             .diagnostics
             .as_ref()
             .ok_or(RequestError::DiagnosticsNotKept)?;
-        match diagnostics.submit(self.session, self.player, self.diagnostics_kept, batch) {
+        let who = crate::diagnostics::Who::new(self.player, self.hello.name.as_str());
+        match diagnostics.submit(self.session, &who, self.diagnostics_kept, batch) {
             Ok(bytes) => {
                 self.diagnostics_kept += bytes;
                 Ok(Response::Done)
@@ -722,9 +723,10 @@ impl Client {
         if first && self.runs.len() >= MAX_RUNS {
             return Err(RequestError::DiagnosticsNotKept);
         }
+        let who = crate::diagnostics::Who::new(self.player, self.hello.name.as_str());
         match diagnostics.submit_telemetry(
             self.session,
-            self.player,
+            &who,
             telemetry.run,
             first,
             self.diagnostics_kept,

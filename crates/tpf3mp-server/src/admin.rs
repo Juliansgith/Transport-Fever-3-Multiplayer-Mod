@@ -108,9 +108,11 @@ async fn answer(mut stream: TcpStream, stats: &ServerStats) -> std::io::Result<(
     stream.shutdown().await
 }
 
-/// `/diagnostics`, the sessions and runs with diagnostics, the latest
-/// first; or `/diagnostics/<code>`, one session's or run's, one JSON object
-/// a line, and `/diagnostics/<code>?source=hook` one source's of them.
+/// `/diagnostics`, the sessions with diagnostics, the latest first, each
+/// with its player's ID and name (`?name=ann` keeps those whose name holds
+/// it, in any case; `?player=p-…` one player's); or `/diagnostics/<code>`,
+/// one session's or run's, one JSON object a line, headed by a line saying
+/// who it is, and `/diagnostics/<code>?source=hook` one source's of them.
 fn diagnostics(request_line: &[u8], stats: &ServerStats) -> (&'static str, &'static str, String) {
     let not_found = || ("404 Not Found", "text/plain", "not found\n".to_owned());
     let failed = |error: std::io::Error| {
@@ -129,25 +131,45 @@ fn diagnostics(request_line: &[u8], stats: &ServerStats) -> (&'static str, &'sta
     else {
         return not_found();
     };
-    match path {
-        "" | "/" => match stats.diagnostics() {
-            None => (
-                "404 Not Found",
-                "text/plain",
-                "this server keeps no diagnostics: see --diagnostics-days\n".to_owned(),
-            ),
-            Some(Err(error)) => failed(error),
-            Some(Ok(entries)) => match serde_json::to_string_pretty(&entries) {
-                Ok(json) => ("200 OK", "application/json", json + "\n"),
-                Err(error) => failed(std::io::Error::other(error)),
-            },
-        },
-        session => {
+    let (bare, query) = path.split_once('?').unwrap_or((path, ""));
+    match bare {
+        "" | "/" => {
+            let (mut by_name, mut by_player) = (None, None);
+            for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+                match pair.split_once('=') {
+                    Some(("name", value)) => by_name = Some(decode(value).to_lowercase()),
+                    Some(("player", value)) => by_player = Some(decode(value)),
+                    _ => return not_found(),
+                }
+            }
+            match stats.diagnostics() {
+                None => (
+                    "404 Not Found",
+                    "text/plain",
+                    "this server keeps no diagnostics: see --diagnostics-days\n".to_owned(),
+                ),
+                Some(Err(error)) => failed(error),
+                Some(Ok(mut entries)) => {
+                    entries.retain(|entry| {
+                        by_name.as_deref().is_none_or(|wanted| {
+                            entry
+                                .name
+                                .as_deref()
+                                .is_some_and(|name| name.to_lowercase().contains(wanted))
+                        }) && by_player
+                            .as_deref()
+                            .is_none_or(|wanted| entry.player.as_deref() == Some(wanted))
+                    });
+                    match serde_json::to_string_pretty(&entries) {
+                        Ok(json) => ("200 OK", "application/json", json + "\n"),
+                        Err(error) => failed(std::io::Error::other(error)),
+                    }
+                }
+            }
+        }
+        code => {
             // `/diagnostics/<code>?source=hook`: one source's lines.
-            let (code, query) = session
-                .trim_start_matches('/')
-                .split_once('?')
-                .unwrap_or((session.trim_start_matches('/'), ""));
+            let code = code.trim_start_matches('/');
             let source = match query {
                 "" => None,
                 query => match query
@@ -158,17 +180,50 @@ fn diagnostics(request_line: &[u8], stats: &ServerStats) -> (&'static str, &'sta
                     None => return not_found(),
                 },
             };
+            let summary = match stats.diagnostics_summary(code) {
+                Ok(Some(summary)) => summary,
+                Ok(None) => return not_found(),
+                Err(error) => return failed(error),
+            };
             match stats.diagnostics_of(code, source) {
-                Ok(Some(lines)) => (
-                    "200 OK",
-                    "application/x-ndjson",
-                    String::from_utf8_lossy(&lines).into_owned(),
-                ),
+                Ok(Some(lines)) => {
+                    // First, who it is: the session's player, or each of the
+                    // run's sessions and theirs.
+                    let mut body = serde_json::json!({ "who": summary }).to_string();
+                    body.push('\n');
+                    body.push_str(&String::from_utf8_lossy(&lines));
+                    ("200 OK", "application/x-ndjson", body)
+                }
                 Ok(None) => not_found(),
                 Err(error) => failed(error),
             }
         }
     }
+}
+
+/// `text` with `+` and `%XX` decoded, as a query's value comes.
+fn decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => out.push(b' '),
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        index += 2;
+                    }
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            byte => out.push(byte),
+        }
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The request's body as UTF-8, read to its `Content-Length`, of at most a

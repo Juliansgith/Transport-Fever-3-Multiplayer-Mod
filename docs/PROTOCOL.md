@@ -591,7 +591,8 @@ one *log session*.
   and Steam IDs are replaced. An invite's code looks like any word, so
   clients never log one but after such a key.
 - **Kept per session, found by run.** The server appends the lines, with
-  the player's ID, the run and the source, to a file named by the session
+  the player's ID and the name from their `Hello` (redacted), the run and
+  the source, to a file named by the session
   ID, up to 64 MiB a session by default, and answers `Done`. The first
   time a session sends lines of a run, the server notes the session in
   that run's index, so the operator reads a whole run, over all of its

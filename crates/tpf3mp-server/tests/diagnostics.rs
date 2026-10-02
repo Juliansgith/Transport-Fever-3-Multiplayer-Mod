@@ -89,9 +89,24 @@ async fn a_players_lines_reach_the_server_under_their_session() {
     let (status, listed) = get(admin, "/diagnostics").await;
     assert_eq!(status, 200);
     assert!(listed.contains(&session), "{listed}");
+    // Each session names its player, by ID and by the name the lobby shows.
+    assert!(listed.contains(r#""name": "ann""#), "{listed}");
+    assert!(listed.contains(r#""player": "p-"#), "{listed}");
+    // Found by name, in any case, and by nothing else.
+    let (status, found) = get(admin, "/diagnostics?name=ANN").await;
+    assert_eq!(status, 200);
+    assert!(found.contains(&session), "{found}");
+    let (_, none) = get(admin, "/diagnostics?name=bob").await;
+    assert!(!none.contains(&session), "{none}");
+    assert_eq!(get(admin, "/diagnostics?nope=1").await.0, 404);
     let (status, body) = get(admin, &format!("/diagnostics/{session}")).await;
     assert_eq!(status, 200);
-    assert_eq!(body, lines);
+    // First who it is, then the lines.
+    let (who, rest) = body.split_once('\n').unwrap();
+    assert!(who.starts_with(r#"{"who":"#), "{who}");
+    assert!(who.contains(r#""kind":"session""#), "{who}");
+    assert!(who.contains(r#""name":"ann""#), "{who}");
+    assert_eq!(rest, lines);
     assert_eq!(get(admin, "/diagnostics/../../etc/passwd").await.0, 404);
     let other = if session == "AB2CD3" {
         "EF4GH5"
@@ -167,7 +182,16 @@ async fn the_hooks_and_the_games_logs_reach_the_server_by_source() {
     ] {
         let (status, body) = get(admin, &format!("/diagnostics/{run}?source={source}")).await;
         assert_eq!(status, 200);
-        assert_eq!(body.lines().count(), 1, "{source}: {body}");
+        assert_eq!(
+            body.lines().count(),
+            2,
+            "who, then one line: {source}: {body}"
+        );
+        assert!(body.starts_with(r#"{"who":{"code":""#), "{body}");
+        assert!(
+            body.lines().next().unwrap().contains(r#""kind":"run""#),
+            "{body}"
+        );
         assert!(body.contains(&format!(r#""target":"{file}""#)), "{body}");
     }
     assert_eq!(

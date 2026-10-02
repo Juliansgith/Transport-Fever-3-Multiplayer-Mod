@@ -299,6 +299,15 @@ all. Most failures in the real game show only there.
   if they like (`diagnostics <code> hook`). The launcher's window, its
   page and the game's Multiplayer window show it, with Copy, while
   diagnostics are on. Like a support code it lets nobody into anything.
+- **Sessions are labelled with the player.** The server already knows
+  each session's player ID (`p-…`) and the name the launcher gave in its
+  handshake, the one the lobby shows; it now keeps both with every line
+  and in a run's index, lists them with each session, heads
+  `diagnostics <code>` with them, and finds a player's sessions by name
+  (`diagnostics --name <name>`) or ID (`--player`). The client sends
+  nothing more for it. Names are not unique and can change: the player ID
+  is the stable link between a player's sessions. The name is redacted
+  like a line.
 - **Why.** The failures that matter now happen in the game, after the
   launcher's part went well; the operator should see them from one code
   the player posts, as D10 meant for the launcher's.

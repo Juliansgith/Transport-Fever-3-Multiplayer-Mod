@@ -12,6 +12,9 @@
 #                                 session's (support code) or launcher run's
 #                                 (log session), of one source if given:
 #                                 launcher, agent, hook, game or crash
+#   diagnostics --name <name> | --player <p-id>
+#                                 the sessions of players whose name holds
+#                                 <name> (any case), or of one player
 #   metrics                       the server's Prometheus metrics
 #   deploy [<commit>]             build and run main, or an earlier commit
 #                                 of main, from the project's repository
@@ -37,7 +40,7 @@ compose() {
 }
 
 usage() {
-  sed -n '7,17p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '7,20p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 command=${1:-help}
@@ -81,6 +84,27 @@ case "$command" in
     compose logs --no-color --timestamps $args tpf3mp-server
     ;;
   diagnostics)
+    case ${1:-} in
+      --name | --player)
+        # One line only: grep alone would pass a line of many.
+        [ $# -eq 2 ] && [ "$(printf '%s' "$2" | wc -l)" -eq 0 ] || die "diagnostics $1 takes one value, on one line"
+        ;;
+    esac
+    case ${1:-} in
+      --name)
+        # Letters, digits, spaces and . _ - only, up to 32; spaces travel
+        # as +, and nothing else reaches the URL.
+        printf '%s' "$2" | grep -Eqx '[A-Za-z0-9 ._-]{1,32}' || die "a name to look for is up to 32 letters, digits, spaces, dots, dashes or underscores"
+        name=$(printf '%s' "$2" | tr ' ' '+')
+        curl -fsS --max-time 20 "$ADMIN/diagnostics?name=$name"
+        exit
+        ;;
+      --player)
+        printf '%s' "$2" | grep -Eqx 'p-[0-9a-f]{16}' || die "a player ID is p- and 16 hexadecimal digits, such as p-3f2a91c0d4e5b6a7"
+        curl -fsS --max-time 20 "$ADMIN/diagnostics?player=$2"
+        exit
+        ;;
+    esac
     case $# in
       0) curl -fsS --max-time 20 "$ADMIN/diagnostics" ;;
       1 | 2)

@@ -196,6 +196,13 @@ jobs:
           refused diagnostics K7QM2X 'hook&source=game'
           refused diagnostics K7QM2X hook extra
           refused diagnostics K7QM2X dmp
+          refused diagnostics --name
+          refused diagnostics --name 'ann&player=x'
+          refused diagnostics --name 'a;id'
+          refused diagnostics --name "$(printf 'x\nann')"
+          refused diagnostics --name ann extra
+          refused diagnostics --player p-12
+          refused diagnostics --player "$(printf 'p-3f2a91c0d4e5b6a7\nx')"
           refused diagnostics K7QM2
           refused diagnostics K7QM2XA
           refused diagnostics 'K7QM2X/../../metrics'

@@ -34,7 +34,7 @@ pub use crate::{
     admin::serve_admin,
     diagnostics::{
         DiagnosticsConfig, Entry as DiagnosticsEntry, READ_LIMIT as DIAGNOSTICS_READ_LIMIT,
-        SESSION_QUOTA,
+        SESSION_QUOTA, SessionOf as DiagnosticsSession, Summary as DiagnosticsSummary,
     },
     ruleset::{AcceptAll, NATIVE, RulesChoice, RulesMenu, Ruleset, RulesetFactory},
     snapshots::SnapshotConfig,
@@ -470,6 +470,15 @@ impl ServerStats {
     /// `None` when it keeps none.
     pub fn diagnostics(&self) -> Option<io::Result<Vec<DiagnosticsEntry>>> {
         self.shared.diagnostics.as_ref().map(Diagnostics::list)
+    }
+
+    /// Who the session or run `code` is: its sessions and their players,
+    /// by ID and name. `None` when the server keeps none or has none for it.
+    pub fn diagnostics_summary(&self, code: &str) -> io::Result<Option<DiagnosticsSummary>> {
+        match &self.shared.diagnostics {
+            Some(diagnostics) => diagnostics.summary(code),
+            None => Ok(None),
+        }
     }
 
     /// One session's diagnostics, one JSON object a line; `None` when the
