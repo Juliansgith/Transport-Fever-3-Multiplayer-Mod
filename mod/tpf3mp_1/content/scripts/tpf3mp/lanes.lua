@@ -240,6 +240,25 @@ readers[lanes.LINES] = function(api, emit, ids)
 	return summary(rows)
 end
 
+-- A vehicle's free capacity by line stop and cargo type
+-- (TransportVehicle.lineStop2cargo2available) as `a/b|c/d`, stops apart:
+-- what it has room for, so what it carries. For a dump only.
+local function freeCapacity(byStop)
+	if byStop == nil then return "nil" end
+	local ok, text = pcall(function()
+		local out = {}
+		for i = 1, #byStop do
+			local cargo = byStop[i]
+			local values = {}
+			for j = 1, #cargo do values[#values + 1] = full(cargo[j]) end
+			out[#out + 1] = table.concat(values, "/")
+		end
+		return table.concat(out, "|")
+	end)
+	if ok then return text end
+	return "err"
+end
+
 readers[lanes.VEHICLES] = function(api, emit, ids)
 	local rows = {}
 	for _, e in ipairs(entities(api, "TRANSPORT_VEHICLE")) do
@@ -283,18 +302,114 @@ readers[lanes.VEHICLES] = function(api, emit, ids)
 				.. " edge=" .. full(pos and pos.edgeIndex) .. " pos=" .. full(pos and pos.pos)
 				.. " speed=" .. full(d and d.speed)
 				.. " arrival=" .. full(get(arrival, "station")) .. "/" .. full(get(arrival, "terminal"))
-					.. " arrival_locked=" .. tostring(get(v, "arrivalStationTerminalLocked")) .. detail)
+					.. " arrival_locked=" .. tostring(get(v, "arrivalStationTerminalLocked"))
+				.. " load=" .. full(get(v, "loadState")) .. " pending=" .. full(get(get(v, "unloadPendingIncome"), "amount"))
+				.. " free=" .. freeCapacity(get(v, "lineStop2cargo2available")) .. detail)
 		end
 	end
 	return summary(rows)
 end
 
-readers[lanes.ECONOMY] = function(api, emit)
+-- A list of numbers as `a/b/c`, read by index (a table or the game's
+-- userdata); nil when it does not read.
+local function numbers(v)
+	if v == nil then return nil end
+	local ok, text = pcall(function()
+		local out = {}
+		for i = 1, #v do out[#out + 1] = full(v[i]) end
+		return table.concat(out, "/")
+	end)
+	if ok then return text end
+	return nil
+end
+
+-- The finance window's table for the player (computeFinanceTable, the
+-- window's own config: four periods), flattened to `key=v/v/v/v` words:
+-- transport income per carrier and kind, investments, other entries,
+-- loan, interest and totals. Each value a period's column, so the category
+-- an amount was booked under shows. For a dump only; "err" when the engine
+-- has no such table.
+local function financeTable(api, player)
+	local ok, text = pcall(function()
+		local finance = api.engine.util.finance
+		local config = api.type.ChartConfig.new()
+		config.count = 4
+		local data = finance.computeFinanceTable(player, config)
+		local words = {}
+		local function add(key, values)
+			words[#words + 1] = key .. "=" .. (numbers(values) or "nil")
+		end
+		data:foreach_carrier(function(carrier)
+			data:foreach_transport(function(kind, values)
+				add("transport" .. tostring(carrier) .. "." .. tostring(kind), values)
+			end, carrier)
+		end)
+		data:foreach_investment(function(kind, values) add("investment" .. tostring(kind), values) end)
+		data:foreach_other(function(kind, values) add("other" .. tostring(kind), values) end)
+		for _, key in ipairs({ "loan", "interest", "loanBorrowing", "loanRepayment", "total", "balance" }) do
+			add(key, get(data, key))
+		end
+		-- The engine's maps list in their own order: sorted, two games'
+		-- equal tables read alike.
+		table.sort(words)
+		return table.concat(words, " ")
+	end)
+	if ok and type(text) == "string" then return text end
+	return "err"
+end
+
+-- What each vehicle and each line earned and cost (income and maintenance:
+-- calculateBalance(..., true), as the game's vehicle and line windows read
+-- it), from the game's start to now. A dump of the economy lane emits one
+-- entry per vehicle and line with it, so two games' dumps name the vehicle
+-- whose takings split (docs/HOOKS.md, "Lane dumps"). For a dump only.
+local function takings(api)
+	local ok, finance, now = pcall(function()
+		local time = component(api, api.engine.util.getWorld(), "GAME_TIME")
+		return api.engine.util.finance, time and time.gameTime
+	end)
+	if not ok or finance == nil or now == nil then
+		return function() return "nil" end
+	end
+	return function(e)
+		local read, value = pcall(function() return finance.calculateBalance({ e }, 0, now, true) end)
+		if read then return full(value) end
+		return "err"
+	end
+end
+
+readers[lanes.ECONOMY] = function(api, emit, ids)
 	local player = api.engine.util.getPlayer()
 	local account = component(api, player, "ACCOUNT")
 	local balance = account and account.balance
 	local text = tostring(player) .. ":" .. (balance ~= nil and string.format("%d", balance) or "?")
-	if emit then emit("player", player, text, "balance=" .. full(balance)) end
+	if emit then
+		-- Dump only: the loan, the player's income as the engine sums it,
+		-- the time of its last income and the finance table; then each
+		-- vehicle's and line's takings. None of it is hashed.
+		local function read(f)
+			local found, v = pcall(f)
+			return found and full(v) or "nil"
+		end
+		local finance = get(api.engine.util, "finance")
+		emit("player", player, text, "balance=" .. full(balance) .. " loan=" .. full(get(account, "loan"))
+			.. " time=" .. read(function() return component(api, api.engine.util.getWorld(), "GAME_TIME").gameTime end)
+			.. " income=" .. read(function() return finance.calcIncomeSince(0, player) end)
+			.. " last_income=" .. read(function() return finance.getLastIncomeTime(player) end)
+			.. " " .. financeTable(api, player))
+		local taken = takings(api)
+		for _, e in ipairs(entities(api, "TRANSPORT_VEHICLE")) do
+			local v = component(api, e, "TRANSPORT_VEHICLE")
+			emit("vehicles", e, "takings:" .. tostring(e), "takings=" .. taken(e)
+				.. " line=" .. ids("lines", get(v, "line"), "line"))
+		end
+		local lines = {}
+		pcall(function() for _, l in pairs(api.engine.system.lineSystem.getLines()) do lines[#lines + 1] = l end end)
+		table.sort(lines)
+		for _, l in ipairs(lines) do
+			emit("lines", l, "takings:" .. tostring(l), "takings=" .. taken(l))
+		end
+	end
 	return text
 end
 

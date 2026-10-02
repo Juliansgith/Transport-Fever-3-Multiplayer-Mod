@@ -1728,10 +1728,10 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
         vehicles,
         [
             "lane 3 step 300 vehicle-0 state=1 stop=0 line=nil edge=3 pos=10.199999999999999 speed=5 \
-             arrival=nil/nil arrival_locked=nil \
+             arrival=nil/nil arrival_locked=nil load=nil pending=nil free=nil \
              entity=401 row=1:0:3@10.20 v5.00",
             "lane 3 step 300 vehicle-1 state=2 stop=1 line=nil edge=0 pos=0 speed=0 \
-             arrival=nil/nil arrival_locked=nil entity=402 \
+             arrival=nil/nil arrival_locked=nil load=nil pending=nil free=nil entity=402 \
              row=2:1:0@0.00 v0.00",
             &format!("lane 3 step 300 summary {}", read_lanes(&a)[3].1),
         ],
@@ -1977,6 +1977,100 @@ fn terminal_choices_and_locks_are_dumped_without_changing_the_vehicle_digest() {
         differences[0]
             .1
             .contains(" arrival=0/2 arrival_locked=true ")
+    );
+}
+
+/// The engine's finance reads, as the game script sees them: each vehicle's
+/// and line's takings from the journal, the player's income and the
+/// finance window's table.
+const FAKE_FINANCE: &str = r#"
+api.type.ComponentType.GAME_TIME = 10
+WORLD[10] = { [1] = { gameTime = 5000 } }
+WORLD[4][401].line = 301
+WORLD[4][401].loadState = 3
+WORLD[4][401].unloadPendingIncome = { amount = 77 }
+WORLD[4][401].lineStop2cargo2available = { { 40, 0 }, { 38, 2 } }
+TAKINGS = { [401] = 1200, [402] = -300, [301] = 900 }
+CALLS = {}
+api.engine.util.getWorld = function() return 1 end
+api.engine.util.finance = {
+    calculateBalance = function(list, from, to, incomeOnly)
+        CALLS[#CALLS + 1] = from .. '-' .. to .. ':' .. tostring(incomeOnly)
+        return TAKINGS[list[1]]
+    end,
+    calcIncomeSince = function(time, player) return 4321 end,
+    getLastIncomeTime = function(player) return 4990 end,
+    computeFinanceTable = function(player, config)
+        local data = { total = { 1, 2, 3, config.count }, loan = { 0, 0, 0, 0 } }
+        -- The engine's own map order: the dump sorts it.
+        function data:foreach_carrier(f) f(2) f(0) end
+        function data:foreach_transport(f, carrier) f(1, { carrier * 10, 5 }) end
+        function data:foreach_investment(f) f(4, { -8 }) end
+        function data:foreach_other(f) end
+        return data
+    end,
+}
+api.type.ChartConfig = { new = function() return {} end }
+"#;
+
+#[test]
+fn an_economy_dump_names_each_vehicles_and_lines_takings_without_changing_the_digest() {
+    let a = dumping_game(false);
+    let before = read_lanes(&a);
+    a.load(FAKE_FINANCE).exec().unwrap();
+    assert_eq!(read_lanes(&a)[4], before[4], "the balance alone is hashed");
+    let dump = dump_at_checkpoint(&a, 400, "4");
+    let economy: Vec<&str> = dump
+        .iter()
+        .filter(|l| l.starts_with("lane 4 step 400 "))
+        .map(String::as_str)
+        .collect();
+    let summary = format!("lane 4 step 400 summary {}", before[4].1);
+    assert_eq!(
+        economy,
+        [
+            "lane 4 step 400 line-0 takings=900 entity=301 row=takings:301",
+            "lane 4 step 400 player balance=1234567 loan=nil time=5000 income=4321 \
+             last_income=4990 balance=nil interest=nil investment4=-8 loan=0/0/0/0 \
+             loanBorrowing=nil loanRepayment=nil total=1/2/3/4 transport0.1=0/5 \
+             transport2.1=20/5 entity=25 row=25:1234567",
+            "lane 4 step 400 vehicle-0 takings=1200 line=line-0 entity=401 row=takings:401",
+            "lane 4 step 400 vehicle-1 takings=-300 line=nil entity=402 row=takings:402",
+            summary.as_str(),
+        ],
+        "each line's and vehicle's takings by its id, the balance with the finance table sorted"
+    );
+    let calls: Vec<String> = a.load("return CALLS").eval().unwrap();
+    assert_eq!(
+        calls, ["0-5000:true"; 3],
+        "from the game's start to now, income and maintenance, as the game's windows read it"
+    );
+
+    // The vehicles' dump carries what they have room for and the income
+    // pending; their digest does not.
+    let b = dumping_game(false);
+    assert_eq!(read_lanes(&a)[3], read_lanes(&b)[3]);
+    let vehicles = dump_at_checkpoint(&a, 450, "3");
+    assert!(
+        vehicles
+            .iter()
+            .any(|l| l.contains(" load=3 pending=77 free=40/0|38/2 ")),
+        "{vehicles:#?}"
+    );
+
+    // A world without the finance reads still dumps its balance.
+    let plain = dump_at_checkpoint(&b, 400, "4");
+    assert!(
+        plain.iter().any(|l| l.starts_with(
+            "lane 4 step 400 player balance=1234567 loan=nil time=nil income=nil last_income=nil err "
+        )),
+        "{plain:#?}"
+    );
+    assert!(
+        plain
+            .iter()
+            .any(|l| l.starts_with("lane 4 step 400 vehicle-0 takings=nil ")),
+        "{plain:#?}"
     );
 }
 
