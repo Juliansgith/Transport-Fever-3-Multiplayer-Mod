@@ -390,7 +390,11 @@ static IN_ROOM: AtomicBool = AtomicBool::new(false);
 /// The step gate says whether the room's game runs (held included: the
 /// world then stands still, and a command would still change it).
 pub fn set_in_room(in_room: bool) {
-    IN_ROOM.store(in_room, Ordering::Release);
+    let was = IN_ROOM.swap(in_room, Ordering::AcqRel);
+    if was && !in_room {
+        // No room, no pending builds (crate::ghost).
+        crate::ghost::clear();
+    }
 }
 
 /// Whether the room's game runs.
@@ -416,6 +420,7 @@ pub fn refused(ticket: u64, why: &str) {
 }
 
 fn answer(answer: Answer) {
+    crate::ghost::answered(answer.ticket);
     let mut shared = shared();
     if shared.answers.len() >= MAX_ANSWERS {
         shared.answers.pop_front();
@@ -705,6 +710,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"note", native_note),
                 (b"edgewatch", native_edgewatch),
                 (b"edgewatched", native_edgewatched),
+                (b"pending", native_pending),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -883,16 +889,22 @@ unsafe extern "C-unwind" fn native_command(l: State) -> c_int {
     .unwrap_or_else(|_| Err("the hook failed reading the action".into()));
     // SAFETY: as above.
     unsafe { (api.settop)(l, top) };
-    let queued = read.and_then(|(payload, secret)| {
-        let mut shared = shared();
-        if shared.commands.len() >= MAX_WAITING {
-            return Err(format!(
-                "{MAX_WAITING} actions are already waiting for the room"
-            ));
-        }
-        let ticket = shared.next_ticket;
-        shared.next_ticket += 1;
-        shared.commands.push_back((ticket, payload, secret));
+    let queued = read.and_then(|(payload, secret, action)| {
+        let ticket = {
+            let mut shared = shared();
+            if shared.commands.len() >= MAX_WAITING {
+                return Err(format!(
+                    "{MAX_WAITING} actions are already waiting for the room"
+                ));
+            }
+            let ticket = shared.next_ticket;
+            shared.next_ticket += 1;
+            shared.commands.push_back((ticket, payload, secret));
+            ticket
+        };
+        // A road or track build is pending until its ticket is answered
+        // (crate::ghost, off unless asked for).
+        crate::ghost::added(ticket, &action);
         Ok(ticket)
     });
     // SAFETY: as above; a C function's call has room for its results.
@@ -916,7 +928,10 @@ unsafe extern "C-unwind" fn native_command(l: State) -> c_int {
 /// # Safety
 ///
 /// Lua's own state, on its thread.
-unsafe fn command_from(api: &LuaApi, l: State) -> Result<(Payload, Option<Secret>), String> {
+unsafe fn command_from(
+    api: &LuaApi,
+    l: State,
+) -> Result<(Payload, Option<Secret>, Action), String> {
     // SAFETY: the caller's.
     unsafe {
         if (api.gettop)(l) < 1 || (api.type_of)(l, 1) != TTABLE {
@@ -930,7 +945,7 @@ unsafe fn command_from(api: &LuaApi, l: State) -> Result<(Payload, Option<Secret
             .map(|password| secret_for(&action, password))
             .transpose()?;
         let payload = action.to_payload().map_err(|error| error.to_string())?;
-        Ok((payload, secret))
+        Ok((payload, secret, action))
     }
 }
 
@@ -1144,6 +1159,8 @@ unsafe extern "C-unwind" fn native_saved(l: State) -> c_int {
 unsafe extern "C-unwind" fn native_world(_l: State) -> c_int {
     // A new world: nothing cached about the last one's memory holds.
     crate::image::invalidate();
+    // Nor does any pending build: the room's world is what it loaded.
+    crate::ghost::clear();
     let mut shared = shared();
     shared.worlds += 1;
     // A world loaded: the room's, after a divergence.
@@ -1894,6 +1911,36 @@ unsafe extern "C-unwind" fn native_results(l: State) -> c_int {
     let pushed = std::panic::catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: as above.
         unsafe { push(api, l, &list, 0) }
+    }));
+    if matches!(pushed, Ok(Ok(()))) {
+        return 1;
+    }
+    // SAFETY: as above.
+    unsafe {
+        (api.settop)(l, top);
+        (api.pushnil)(l);
+    }
+    1
+}
+
+/// `pending()`: the player's road and track builds the room has not
+/// answered yet, `{ { ticket =, action = }, ... }`, oldest first; `nil`
+/// while pending builds are off ([`crate::ghost`]).
+unsafe extern "C-unwind" fn native_pending(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let list = crate::ghost::to_lua();
+    // SAFETY: Lua calls this with its own state, on its thread.
+    let top = unsafe { (api.gettop)(l) };
+    let pushed = std::panic::catch_unwind(AssertUnwindSafe(|| match &list {
+        // SAFETY: as above.
+        Some(list) => unsafe { push(api, l, list, 0) },
+        None => {
+            // SAFETY: as above.
+            unsafe { (api.pushnil)(l) };
+            Ok(())
+        }
     }));
     if matches!(pushed, Ok(Ok(()))) {
         return 1;
@@ -2718,9 +2765,10 @@ my_timetables";
                  type(tpf3mp_native.clicks), type(tpf3mp_native.built), \
                  type(tpf3mp_native.replaying), \
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
-                 type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note)"
+                 type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note), \
+                 type(tpf3mp_native.pending)"
             ),
-            Ok("12|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("12|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -3042,6 +3090,70 @@ my_timetables";
             Ok("41:true:901:nil 42:false:nil:the room refused it: NotAllowed|0".into()),
             "only the player's own, once each"
         );
+    }
+
+    const ROAD_TABLE: &str = "{ BuildRoad = { street = '::/street/town_small.street_template', \
+        bus_lane = false, tram = 'None', polyline = { \
+        vertices = { { pos = { x = 0, y = 0, z = 0 }, resolve = 'New' }, \
+                     { pos = { x = 50, y = 0, z = 0 }, resolve = 'New' } }, \
+        links = { { from = 0, to = 1, tangent0 = { x = 50, y = 0, z = 0 }, \
+                    tangent1 = { x = 50, y = 0, z = 0 }, structure = 'Ground' } }, \
+        removals = {}, removed_nodes = {} } } }";
+
+    /// With pending builds on, a road handed to the room is pending until
+    /// its ticket is answered, and the GUI reads it with `pending()`; other
+    /// actions have none; off, `pending()` is nil.
+    #[test]
+    fn a_road_handed_to_the_room_is_pending_until_answered() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        crate::ghost::clear();
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(lua.run("return tpf3mp_native.pending()"), Ok("nil".into()));
+
+        // SAFETY: the tests that read the switch hold SERIAL.
+        unsafe { std::env::set_var(crate::ghost::ENV, "1") };
+        assert!(crate::ghost::configure_from_env());
+        let road = lua
+            .run(&format!("return tpf3mp_native.command({ROAD_TABLE})"))
+            .unwrap();
+        let (_, ticket) = road.split_once('|').unwrap();
+        lua.run(&format!("return tpf3mp_native.command({DEPOT_TABLE})"))
+            .unwrap();
+        take_commands();
+        let pending = "local out = {} \
+             for _, g in ipairs(tpf3mp_native.pending()) do \
+                 local v = g.action.BuildRoad.polyline.vertices \
+                 out[#out + 1] = g.ticket .. ':' .. v[2].pos.x \
+             end \
+             return table.concat(out, ' ')";
+        assert_eq!(
+            lua.run(pending),
+            Ok(format!("{ticket}:50")),
+            "the road alone"
+        );
+
+        // Answered (applied here, or refused): gone.
+        refused(ticket.parse().unwrap(), "the room refused it");
+        assert_eq!(lua.run(pending), Ok(String::new()));
+
+        // Leaving the room or loading a world takes every ghost.
+        lua.run(&format!("return tpf3mp_native.command({ROAD_TABLE})"))
+            .unwrap();
+        take_commands();
+        set_in_room(true);
+        set_in_room(false);
+        assert_eq!(lua.run(pending), Ok(String::new()));
+
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(crate::ghost::ENV) };
+        assert!(!crate::ghost::configure_from_env());
+        lua.run(&format!("return tpf3mp_native.command({ROAD_TABLE})"))
+            .unwrap();
+        take_commands();
+        assert_eq!(lua.run("return tpf3mp_native.pending()"), Ok("nil".into()));
+        reset();
     }
 
     #[test]

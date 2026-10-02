@@ -789,6 +789,17 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     } else {
         format!("perf: timing off ({} says so)", crate::perf::ENV)
     });
+    log_line(&if crate::ghost::configure_from_env() {
+        format!(
+            "ghost: the player's road and track builds are pending until the room answers ({}=1)",
+            crate::ghost::ENV
+        )
+    } else {
+        format!(
+            "ghost: pending builds off ({}=1 turns them on)",
+            crate::ghost::ENV
+        )
+    });
     crate::seeds::install(&absolute);
     log_line(&crate::ticks::install(&absolute));
     for line in crate::roadtrace::configure_from_env() {

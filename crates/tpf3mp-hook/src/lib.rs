@@ -38,6 +38,7 @@ pub mod autoload;
 pub mod builds;
 pub mod clipboard;
 pub mod edgewatch;
+pub mod ghost;
 pub mod image;
 mod install;
 pub mod junctions;
