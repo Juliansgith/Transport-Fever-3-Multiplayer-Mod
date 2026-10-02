@@ -145,7 +145,7 @@ game's own **Multiplayer** button (next section).
 
 **Which launcher is this?** The bottom left of the window says its
 version, the protocol it speaks to servers and the commit it was built
-from, as `v1.1.0 · protocol 15 · <commit>`; **Settings**, **About this
+from, as `v1.2.0 · protocol 16 · <commit>`; **Settings**, **About this
 launcher** lists them too. The first line of its log names the file that
 runs. On Windows, the file's **Properties**, **Details** show the same
 version and commit.
