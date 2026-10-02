@@ -637,9 +637,10 @@ pub struct BuyVehicle {
     pub groups: BoundedVec<u8, MAX_CONSIST>,
     /// For each group, the multiple unit's file, or empty.
     pub multiple_units: BoundedVec<Text<128>, MAX_CONSIST>,
-    /// Which of the construction's depots, from 0 (`CONSTRUCTION.depots`):
-    /// an airport's or harbour's second hangar or ship depot. Added under
-    /// schema version 20.
+    /// Which of the construction's depots, from 0: its `CONSTRUCTION.depots`,
+    /// then its subconstructions that are depots (an airfield's or
+    /// airport's hangar module), as the mod's `capture.depotsOf` lists
+    /// them; an airport's second hangar, say. Added under schema version 20.
     #[serde(default)]
     pub depot_index: u8,
 }
