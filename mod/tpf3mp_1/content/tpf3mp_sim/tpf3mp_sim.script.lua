@@ -225,7 +225,9 @@ function data()
 		end
 		local parts = {}
 		if okFollow and type(follow) == "table" then
-			local ok, why = follow.install(api, function() read() return mine end)
+			local ok, why = follow.install(api, function() read() return mine end,
+				function(line) l:log(line .. " (the game scripts' GUI state)") end)
+			follow.install(api, follow.noteSource(l))
 			parts[#parts + 1] = ok and "getPlayer follows the player's company" or ("getPlayer stays the game's: " .. tostring(why))
 		else
 			parts[#parts + 1] = "getPlayer stays the game's: tpf3mp/follow.lua did not load"

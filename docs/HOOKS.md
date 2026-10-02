@@ -1572,6 +1572,42 @@ state, which the game saves with the world:
   (`status().me_id`) and the game script's roster every 2 seconds
   (`hook.log`: `the GUI's company follows the player's in the HUD's
   state`).
+
+  Seen again on 2026-10-02 (build 9ad8837, competitive room): with every
+  state saying it followed, the line manager showed the first company's
+  stations, not Rival's own, and Rival's stops were "another company's".
+  Every one of those views decides "mine" in Lua at call time
+  (`scripts/entity_util.tl`'s `isOwnedByPlayer` and
+  `isOwnedByPlayerOrNotOwned`, and `getLinesForPlayer(getPlayer())`,
+  `requireOwnedByPlayer = getPlayer()` in `line_vehicle_mgmt/manager_window.tl`,
+  `station_group.tl`, the vehicle and depot lists, the finance window's
+  `getPlayersBalance(getPlayer())`), so the state's getPlayer was the
+  game's own when they ran. No native player stands behind them that the
+  hook could write instead: the GUI's `GameState` (`CGame+0x1e0`, where
+  getPlayer's answer and the bulldozer's list come from, `+0x20c`) is one
+  of the simulation's two buffers (the probe, SEEN: `the GUI's is buffer
+  [0]`, then `[1]`), so writing it would change the simulation.
+  INFERRED: the state's api was made anew after the mod's script ran (a
+  React root reloading its interfaces), and the install, once per Lua
+  state (`package.loaded["tpf3mp.followed"]`), never came back. Now
+  `follow.ensure` puts the company in front of the current api's getPlayer
+  whenever it is not there, the loans' `getComponent` likewise, and the
+  game's two ownership tests in each state's `entity_util` call it before
+  they answer, so the first window that asks after a new api gets the
+  company. Where a state cannot read the roster, the company the
+  Multiplayer plugin's state notes for the hook (`tpf3mp.company`, which
+  the native tools already act on) answers (`follow.noteSource`). Each
+  state says what its getPlayer answers, and when it had to put the
+  company back:
+
+  ```
+  the GUI's getPlayer answers the player's company 372630 (the HUD's state)
+  the GUI's getPlayer was the game's own again (a new api in this state); it follows the player's company again (the HUD's state)
+  ```
+
+  No state saying it answers the company while a window still shows the
+  first company's things would mean a Lua state the mod's scripts never
+  run in.
 - *In a competitive room* the GUI founds the player a company of their
   own (`tpf3mp.script.lua`, `foundOwnCompany`): the same `CompanyOp`
   `Create` **Found** sends, named `<name>'s company`, sent by the

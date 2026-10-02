@@ -183,3 +183,27 @@ bulldozer's player and filter written at 16:43:10.
 - **inferred** The menu sets the list back between the tool's frames, so
   queries made after it (the click) carried the save's player. The
   detour of the setter puts the company back right after each call.
+
+### The GUI's views (2026-10-02)
+
+Game test of 9ad8837: the line manager showed company #0's stations to a
+company #1 player and not their own; their stops read as "another
+company's". hook.log said getPlayer followed in all three of the mod's GUI
+states.
+
+- **seen** Every view named decides "mine" in Lua at call time: the
+  game's `entity_util.isOwnedByPlayer` / `isOwnedByPlayerOrNotOwned`
+  (manager_window.tl, line_util.tl, station_group.tl, manager_hud_util.tl,
+  statistic_stations.tl, maintenance_station.tl) and
+  `api.engine.util.getPlayer()` passed to native queries
+  (`getLinesForPlayer`, `requireOwnedByPlayer`, `getLinesIssues`,
+  `getPlayersBalance`). None reads a native player of its own.
+- **seen** In p0's log the probe found the GUI's `GameState`
+  (`CGame+0x1e0`) to be the engine's buffer [0], then [1], the player
+  214443 at `+0x20c` in each: the GUI's player is the simulation's.
+  Writing it is not lockstep-safe, so the fix stays in Lua.
+- **inferred** A state's api is made anew after the mod's script installs
+  (once per Lua state, by a `package.loaded` flag). follow.lua now
+  re-installs on the current api whenever it is not there, from the
+  ownership tests, and answers from the hook's company note where the
+  roster cannot be read. Its log lines say which state answered what.

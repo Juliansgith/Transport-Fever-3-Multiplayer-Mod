@@ -260,7 +260,8 @@ function data()
 
 	-- The GUI's "my company" in this Lua state (tpf3mp/follow.lua).
 	local function followMyCompany()
-		local ok, why = require("tpf3mp.follow").install(api, myCompany)
+		local follow = require("tpf3mp.follow")
+		local ok, why = follow.install(api, myCompany, function(line) link:log(line .. " (the Multiplayer plugin's state)") end)
 		link:log(ok and "the GUI's company follows the player's"
 			or ("the GUI's company cannot follow the player's: " .. tostring(why)))
 	end

@@ -13,45 +13,162 @@
 -- same in every game; what the player does is booked to their company by
 -- the room (tpf3mp/apply.lua) whatever the GUI named.
 --
+-- A GUI state's api can be made anew after the mod's scripts ran (a
+-- window's React root reloading its interfaces, INFERRED from the line
+-- manager filtering by the save's player in a room, 2026-10-02, while every
+-- state had said it followed): follow.ensure puts the answer back in front,
+-- and the game's ownership tests (entity_util) call it before they answer.
+--
 -- Pure Lua; the tests hand it a fake api.
 
 local follow = {}
 
--- Replaces api.engine.util.getPlayer in this Lua state, once, with one that
--- answers `mine()`, the player entity of the company this player plays for,
--- or, when that is nil (outside the room, before the roster is read, the
--- room's first company), the game's own answer. Returns true, or false and
--- why.
-function follow.install(api, mine)
-	if type(package) == "table" and type(package.loaded) == "table" and package.loaded["tpf3mp.followed"] then
-		return true
+-- Where the answer comes from, in this Lua state: each install adds its
+-- `mine`, asked in order; the first number wins. The hook's note
+-- (COMPANY_NOTE, below) is a source too, where a state was given its link
+-- (follow.noteSource): the Multiplayer plugin's state writes it from the
+-- room's roster, and the GUI's native tools already act on it.
+follow.sources = follow.sources or {}
+-- getPlayer wrappers this module made, so an install over one of its own is
+-- a no-op and one over a fresh api is told apart.
+follow.wrappers = follow.wrappers or setmetatable({}, { __mode = "k" })
+-- How many times getPlayer was put in front of a game's own.
+follow.installs = 0
+-- What the wrappers answered last, for the log (follow.say).
+follow.lastAnswer = nil
+
+-- The player entity of the company this player plays for, from the first
+-- source that knows it, or nil.
+function follow.answer()
+	for _, source in ipairs(follow.sources) do
+		local got, entity = pcall(source)
+		if got and type(entity) == "number" then return entity end
 	end
+	return nil
+end
+
+-- Says `line` through the logger the states gave (follow.say), once per
+-- distinct line.
+local said = {}
+local function say(line)
+	if said[line] or type(follow.say) ~= "function" then return end
+	said[line] = true
+	pcall(follow.say, line)
+end
+
+-- The current api of this Lua state: `api` when given, else the global the
+-- game's scripts see at call time (a GUI root can be given a new one).
+local function currentApi(given)
+	if given ~= nil then return given end
+	local ok, g = pcall(function() return api end)
+	return ok and g or nil
+end
+
+-- Puts the company in front of api.engine.util.getPlayer in `api` (or the
+-- state's current api) unless it is there already: a wrapper that answers
+-- follow.answer(), or, when that is nil (outside the room, before the roster
+-- is read, the room's first company), the game's own answer. Returns true,
+-- or false and why.
+function follow.ensure(api)
+	api = currentApi(api)
 	local ok, util = pcall(function() return api.engine.util end)
 	if not ok then util = nil end
 	-- A function, or a callable table, as the game's bindings are (build
 	-- 40408: a table with a metatable).
 	local original = ok and util ~= nil and select(2, pcall(function() return util.getPlayer end)) or nil
+	if follow.wrappers[original] then return true end
 	if type(original) ~= "function" and type(original) ~= "table" and type(original) ~= "userdata" then
 		return false, "no api.engine.util.getPlayer (" .. type(util) .. ", " .. type(original) .. ")"
 	end
-	local replaced, why = pcall(function()
-		util.getPlayer = function(...)
-			local got, entity = pcall(mine)
-			if got and type(entity) == "number" then return entity end
-			return original(...)
+	local wrapper = function(...)
+		local entity = follow.answer()
+		if entity ~= nil then
+			if entity ~= follow.lastAnswer then
+				follow.lastAnswer = entity
+				say("the GUI's getPlayer answers the player's company " .. tostring(entity))
+			end
+			return entity
 		end
-	end)
-	-- A binding may take the assignment and keep its own function.
-	local took = replaced and select(2, pcall(function() return util.getPlayer ~= original end))
+		return original(...)
+	end
+	follow.wrappers[wrapper] = true
+	local replaced, why = pcall(function() util.getPlayer = wrapper end)
+	-- A binding may take the assignment and keep its own function; read it
+	-- back from the api, not from the table held, in case the api hands out
+	-- a new one each time.
+	local took = replaced and select(2, pcall(function() return api.engine.util.getPlayer == wrapper end))
 	if took ~= true then
 		return false, "api.engine.util (" .. type(util) .. ") keeps its getPlayer"
 			.. (why and (": " .. tostring(why)) or "")
 	end
-	if type(package) == "table" and type(package.loaded) == "table" then
-		package.loaded["tpf3mp.followed"] = true
+	follow.installs = follow.installs + 1
+	if follow.installs > 1 then
+		say("the GUI's getPlayer was the game's own again (a new api in this state); it follows the player's company again")
 	end
-	follow.loans(api, mine)
+	follow.loans(api, follow.answer)
 	return true
+end
+
+-- Gives this Lua state the GUI's "my company": `mine` (the player entity of
+-- the company this player plays for, or nil) joins the sources, `log`
+-- (optional) says what it answers and when it had to be put back, and
+-- getPlayer and the game's ownership tests are put in front of the game's
+-- own (follow.ensure, follow.entityUtil). Returns true, or false and why.
+function follow.install(api, mine, log)
+	local known = false
+	for _, source in ipairs(follow.sources) do
+		if source == mine then known = true end
+	end
+	if not known and mine ~= nil then follow.sources[#follow.sources + 1] = mine end
+	if log ~= nil then follow.say = log end
+	local ok, why = follow.ensure(api)
+	if ok then follow.entityUtil() end
+	return ok, why
+end
+
+-- A source answering the company the hook's note names (COMPANY_NOTE,
+-- written by the Multiplayer plugin's state), for `link`.
+function follow.noteSource(link)
+	return function()
+		if not (link and link.note) then return nil end
+		local ok, text = pcall(function() return link:note(follow.COMPANY_NOTE) end)
+		local entity = ok and tonumber(text) or nil
+		if entity ~= nil and entity >= 0 and entity % 1 == 0 then return entity end
+		return nil
+	end
+end
+
+-- The game's ownership tests the windows ask (scripts/entity_util.tl:
+-- isOwnedByPlayer, isOwnedByPlayerOrNotOwned; the line manager, station,
+-- vehicle and depot windows), wrapped in each entity_util table of this
+-- state so getPlayer is put back in front first, should the state's api
+-- have been made anew since. They then answer as the game does, with the
+-- company. Returns how many tables were wrapped.
+follow.ENTITY_UTIL = { "/scripts/entity_util.tl", "::/scripts/entity_util.tl" }
+follow.wrappedTests = follow.wrappedTests or setmetatable({}, { __mode = "k" })
+function follow.entityUtil()
+	local okRequire, require_ = pcall(function() return ug_require end)
+	if not okRequire then return 0 end
+	if type(require_) ~= "function" then return 0 end
+	local count = 0
+	for _, path in ipairs(follow.ENTITY_UTIL) do
+		local ok, util = pcall(require_, path)
+		if ok and type(util) == "table" then
+			for _, name in ipairs({ "isOwnedByPlayer", "isOwnedByPlayerOrNotOwned" }) do
+				local test = util[name]
+				if type(test) == "function" and not follow.wrappedTests[test] then
+					local wrapped = function(...)
+						follow.ensure()
+						return test(...)
+					end
+					follow.wrappedTests[wrapped] = true
+					util[name] = wrapped
+					count = count + 1
+				end
+			end
+		end
+	end
+	return count
 end
 
 -- The game's finance window reads the loans it lists and offers from the
@@ -69,13 +186,13 @@ follow.LOAN_SCRIPT = "::/game_mechanics/finance/loan.gs"
 -- Seconds a company's loans are read for, at most.
 follow.LOANS_EVERY = 0.5
 
+follow.loanWrappers = follow.loanWrappers or setmetatable({}, { __mode = "k" })
 function follow.loans(api, mine)
-	if type(package) == "table" and type(package.loaded) == "table" and package.loaded["tpf3mp.loansFollowed"] then
-		return true
-	end
 	local engine = api.engine
 	local original = engine and engine.getComponent
 	if original == nil then return false, "no api.engine.getComponent" end
+	-- Once per api: a new api (follow.ensure) is given it again.
+	if follow.loanWrappers[original] then return true end
 	local function companies()
 		local loaded = type(package) == "table" and package.loaded and package.loaded["tpf3mp.companies"]
 		if loaded then return loaded end
@@ -120,8 +237,8 @@ function follow.loans(api, mine)
 		cached, cachedFor, cachedAt = (ok and built) or table0, company, t
 		return cached
 	end
-	local replaced = pcall(function()
-		engine.getComponent = function(entity, kind, ...)
+	local wrapper
+	wrapper = function(entity, kind, ...)
 			if kind ~= nil and entity ~= nil then
 				local isLoans = false
 				pcall(function()
@@ -140,11 +257,9 @@ function follow.loans(api, mine)
 			end
 			return original(entity, kind, ...)
 		end
-	end)
+	follow.loanWrappers[wrapper] = true
+	local replaced = pcall(function() engine.getComponent = wrapper end)
 	if not replaced then return false, "api.engine keeps its getComponent" end
-	if type(package) == "table" and type(package.loaded) == "table" then
-		package.loaded["tpf3mp.loansFollowed"] = true
-	end
 	return true
 end
 

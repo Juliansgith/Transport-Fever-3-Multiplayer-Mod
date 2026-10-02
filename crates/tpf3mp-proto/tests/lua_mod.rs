@@ -9270,6 +9270,91 @@ fn the_huds_state_follows_the_players_company() {
     );
 }
 
+/// The GUI's views decide "mine" with the game's ownership tests
+/// (scripts/entity_util.tl) and getPlayer. When a state's api is made anew
+/// after the mod's scripts ran, the tests put the company back in front
+/// before they answer; and where the room's roster cannot be read, the
+/// company the Multiplayer plugin's state notes for the hook answers.
+#[test]
+fn the_guis_ownership_tests_follow_the_company_after_a_new_api() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(
+        r#"
+        ME = string.rep("b", 64)
+        -- No roster readable in this state: only the note says the company.
+        local function freshApi()
+            return { engine = { util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) },
+                                system = { gameScriptSystem = { getEntityForGameScript = function() return -1 end } },
+                                getComponent = function(e, kind)
+                                    if kind == 9 then return { player = OWNERS[e] } end
+                                end },
+                     type = { ComponentType = { GAME_SCRIPT = 7, PLAYER_OWNED = 9 } } }
+        end
+        FRESH = freshApi
+        OWNERS = { [500] = 901, [501] = 25 }
+        api = freshApi()
+        -- The game's entity_util, as build 40408 has it.
+        ENTITY_UTIL = {}
+        function ENTITY_UTIL.getPlayerOwned(e) return api.engine.getComponent(e, api.type.ComponentType.PLAYER_OWNED) end
+        function ENTITY_UTIL.isOwnedByPlayer(e)
+            local o = ENTITY_UTIL.getPlayerOwned(e) return o ~= nil and api.engine.util.getPlayer() == o.player end
+        function ENTITY_UTIL.isOwnedByPlayerOrNotOwned(e)
+            local o = ENTITY_UTIL.getPlayerOwned(e) return o == nil or api.engine.util.getPlayer() == o.player end
+        local real = ug_require
+        ug_require = function(path)
+            if path == "/scripts/entity_util.tl" or path == "::/scripts/entity_util.tl" then return ENTITY_UTIL end
+            if path == "::/gui/construction/construction_react_util.tl" then return { getActionParams = function() return {} end } end
+            return real(path)
+        end
+        HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
+        HOOK.notes = { ["tpf3mp.company"] = "901" }
+        CLOCK = 0
+        os.clock = function() return CLOCK end
+        local script = "gui/tpf3mp/gui_state.script.lua"
+        assert(loadstring(mod_source(script), "@" .. script))()
+        data().prepare({})
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let answer = |lua: &mlua::Lua| -> (i64, bool, bool) {
+        lua.load(
+            "return api.engine.util.getPlayer(), ENTITY_UTIL.isOwnedByPlayer(500), ENTITY_UTIL.isOwnedByPlayer(501)",
+        )
+        .eval()
+        .unwrap()
+    };
+    assert_eq!(
+        answer(&lua),
+        (901, true, false),
+        "the note's company: its station is mine, the first company's is not"
+    );
+    // The state is given a new api: the game's own getPlayer again, until
+    // a window asks an ownership test.
+    lua.load("api = FRESH()").exec().unwrap();
+    let mine: bool = lua
+        .load("return ENTITY_UTIL.isOwnedByPlayerOrNotOwned(500)")
+        .eval()
+        .unwrap();
+    assert!(mine, "the test put the company back before it answered");
+    assert_eq!(answer(&lua), (901, true, false));
+    let logged: String = lua
+        .load("return table.concat(HOOK.logged, '|')")
+        .eval()
+        .unwrap();
+    assert!(
+        logged.contains("the GUI's getPlayer answers the player's company 901 (the HUD's state)")
+            && logged.contains("was the game's own again"),
+        "{logged}"
+    );
+    // The room's first company, or outside the room: the game's own.
+    lua.load("HOOK.notes['tpf3mp.company'] = nil")
+        .exec()
+        .unwrap();
+    assert_eq!(answer(&lua), (25, false, true));
+}
+
 /// The GUI's other Lua state, where the game renders its React recipes (the
 /// vehicle store among them), has an api.cmd of its own (docs/COVERAGE.md,
 /// U1): in the room's game the guard is on it too. What the room carries
