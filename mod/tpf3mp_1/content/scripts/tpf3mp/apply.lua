@@ -824,6 +824,49 @@ for _, name in ipairs({ "BuildRoad", "BuildTrack" }) do
 end
 
 
+-- ------------------------------------------------------------ terraform
+--
+-- A terrain tool's stroke, as its height grid (tpf3mp/capture.lua,
+-- capture.terraform). A script cannot fill a proposal's height grid (Lua's
+-- GridVec2f has no setter, build 40408), so the hook does: the grid goes to
+-- the hook (apply.terrain, which the game script sets to the link's
+-- tpf3mp_native.terrain), then an empty proposal, the carrier, is sent as
+-- the player's build, paid by the player as the tool's is; the hook fills
+-- the carrier's height grid at its apply (crates/tpf3mp-hook/src/terrain.rs).
+-- Then the hook is disarmed, and the action fails unless the carrier was
+-- filled. No verdict first: the game's verdict reads the proposal as sent,
+-- empty.
+function HANDLERS.Terraform(t)
+	if type(apply.terrain) ~= "function" then error("this hook cannot apply a terraform", 0) end
+	local ok, resolution = pcall(function() return api.engine.terrain.getBaseResolution() end)
+	local cell = ok and resolution and (resolution.x or resolution[1])
+	if type(cell) ~= "number" or math.abs(cell - t.cell) > 1e-6 then
+		error("a grid of " .. tostring(t.cell) .. " m cells; this map's are " .. tostring(cell), 0)
+	end
+	local x0, y0 = t.origin.x / t.cell, t.origin.y / t.cell
+	if x0 ~= math.floor(x0) or y0 ~= math.floor(y0) then error("a grid that starts between cells", 0) end
+	local width = t.columns
+	local height = #t.cells / width
+	local values, low, high = {}, nil, nil
+	for i, c in ipairs(t.cells) do
+		values[2 * i - 1], values[2 * i] = c.target, c.before
+		low, high = math.min(low or c.target, c.target), math.max(high or c.target, c.target)
+	end
+	local armed, why = apply.terrain({ x0 = x0, y0 = y0, width = width, height = height, cells = values })
+	if armed ~= true then error("the hook would not take the grid: " .. tostring(why), 0) end
+	local context = api.type.Context.new()
+	context.player = company()
+	local sent, err = pcall(function()
+		return run(api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), context, true, true))
+	end)
+	local filled = apply.terrain(nil)
+	if not sent then error(err, 0) end
+	if filled ~= true then error("the hook filled no build with the grid", 0) end
+	log(string.format("terraform applied: %d by %d cells from cell (%d, %d), heights %.2f to %.2f m",
+		width, height, x0, y0, low or 0, high or 0))
+	return true
+end
+
 -- ---------------------------------------------------------------- stops
 --
 -- A stop is placed, or removed, as the stop tool and the bulldozer propose
@@ -1234,7 +1277,11 @@ function HANDLERS.VehicleOp(op, ctx)
 	if type(change) == "table" and change.Stop ~= nil then
 		return run(api.cmd.makeVehicleSetStoppedByUserCmd(vehicle, change.Stop == true))
 	elseif type(change) == "table" and change.ToDepot then
-		return run(api.cmd.makeVehicleSendToDepotCmd(vehicle, change.ToDepot.sell == true))
+		-- Sold on arrival, the game crashes at the depot (capture.vehicleToDepot).
+		if change.ToDepot.sell == true then
+			return false, "selling a vehicle when it reaches the depot (the game crashes there)"
+		end
+		return run(api.cmd.makeVehicleSendToDepotCmd(vehicle, false))
 	elseif change == "Reverse" then
 		return run(api.cmd.makeVehicleReverseCmd(vehicle))
 	elseif change == "Depart" then
@@ -1496,7 +1543,6 @@ end
 -- at the same update, for the acting company, which spends the permit. The
 -- company script hands it on to the emissions or towns script, in this game
 -- alone, as in every other.
-local captureModule = module("capture")
 
 function HANDLERS.Perk(op, ctx)
 	if op.Greenify then
@@ -1518,7 +1564,10 @@ function HANDLERS.Perk(op, ctx)
 		-- The tool will not start one the company cannot pay for; neither
 		-- does any game.
 		local read, balance = pcall(function() return api.engine.util.finance.getPlayersBalance(company()) end)
-		if read and type(balance) == "number" and balance < cost then
+		if not read or type(balance) ~= "number" or balance ~= balance or math.abs(balance) == math.huge then
+			error("cannot read the company balance for the campaign", 0)
+		end
+		if balance < cost then
 			error("not enough money for the campaign", 0)
 		end
 		log("marketing in town-" .. tostring(m.town) .. " (" .. tostring(town) .. ") for " .. tostring(cost))
@@ -1537,6 +1586,22 @@ function HANDLERS.Perk(op, ctx)
 		return run(api.cmd.makeJournalBookAssetCmd(company(), entry, api.type.Vec3f.new(0, 0, 0)))
 	end
 	return false, "a perk of no kind"
+end
+
+-- A town building's Historic Preservation (action::Preservation), as its
+-- window sets it (gui/entity_window/town_building/town_building.tl): the
+-- town building at that place in the construction's list. Town buildings
+-- are the town's: any company may, as in single player.
+function HANDLERS.Preserve(p)
+	local con, c = constructionAt(p.building)
+	local list = c and c.townBuildings
+	local building = list and list[p.index + 1]
+	if type(building) ~= "number" then
+		error("no town building " .. tostring(p.index) .. " in the " .. tostring(p.building.file), 0)
+	end
+	log((p.preserved and "preserving " or "no longer preserving ") .. tostring(building) .. " of "
+		.. tostring(con) .. " " .. tostring(p.building.file))
+	return run(api.cmd.makeTownBuildingSetBlockedDevelopmentCmd(building, p.preserved == true))
 end
 
 -- The room's companies (tpf3mp/companies.lua): the acting player founds,

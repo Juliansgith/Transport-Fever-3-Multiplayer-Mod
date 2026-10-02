@@ -22,8 +22,10 @@
 -- buy, run lines, borrow, rename and recolour it; its head (the player who
 -- founded it while they play for it, else the one who has played for it
 -- longest) alone gives it a password or takes it away, sends a player out of
--- it and opens or closes its stations to other companies' lines. Joining a
--- company with a password needs it: the room seals the password the player
+-- it and opens or closes its stations to other companies' lines: by default,
+-- and for single companies on their own (`StationAccess`), per company
+-- rather than per player, as a company's players share everything it owns.
+-- Joining a company with a password needs it: the room seals the password the player
 -- typed (tpf3mp_proto::Secret) and every game compares that seal with the
 -- one the company keeps, so no game ever holds the password. The room's
 -- first company is everyone's: it has no head, no password, and its
@@ -33,7 +35,9 @@
 --     next = n,                          -- the next company id
 --     list = { { id =, entity =, name =, color = { r, g, b }, gone = true?,
 --                founder = "<64 hex digits>"?, lock = { scope =, tag = }?,
---                closed = true? }, ... },
+--                closed = true?,          -- the default: stations closed
+--                access = { { company =, open = }, ... }? }, ... },
+--                                        -- its head's choice per company
 --     members = { { player = "<64 hex digits>", company = id }, ... },
 --                                        -- in the order they joined
 --   }
@@ -202,18 +206,40 @@ function companies.locked(c)
 end
 
 -- Whether other companies' lines may stop at company `c`'s stations: yes
--- unless its head closed them.
+-- unless its head closed them. The default, for every company without a
+-- choice of its own (companies.lets).
 function companies.open(c)
 	return not (type(c) == "table" and c.closed == true)
+end
+
+-- Its head's choice for company `other`: true, false, or nil for the
+-- default.
+function companies.choice(c, other)
+	for _, a in ipairs(type(c) == "table" and c.access or {}) do
+		if a.company == other then return a.open end
+	end
+	return nil
+end
+
+-- Whether company `other`'s lines may stop at company `c`'s stations: its
+-- head's choice for `other`, else the default.
+function companies.lets(c, other)
+	local choice = companies.choice(c, other)
+	if choice ~= nil then return choice end
+	return companies.open(c)
 end
 
 -- Who owns `entity` (its PLAYER_OWNED player), or nil: the game's own, or
 -- no one's.
 function companies.ownerOf(api, entity)
 	if type(entity) ~= "number" or entity < 0 then return nil end
-	local ok, c = pcall(api.engine.getComponent, entity, api.type.ComponentType.PLAYER_OWNED)
-	if not ok or type(c) ~= "table" then return nil end
-	local owner = c.player
+	-- Native components are userdata on build 40408, while fixtures use
+	-- tables. Read the field through the binding instead of discarding it.
+	local ok, owner = pcall(function()
+		local c = api.engine.getComponent(entity, api.type.ComponentType.PLAYER_OWNED)
+		return c and c.player
+	end)
+	if not ok then return nil end
 	if type(owner) ~= "number" or owner < 0 then return nil end
 	return owner
 end
@@ -498,10 +524,90 @@ function companies.mayUse(roster, company, group, api)
 	local owner = companies.ownerOf(api, group)
 	if owner == nil or owner == company then return true end
 	local other = roster and companies.byEntity(roster, owner)
-	if other and not companies.open(other) then
+	local mine = roster and companies.byEntity(roster, company)
+	if other and not companies.lets(other, mine and mine.id) then
+		if mine and companies.choice(other, mine.id) == false then
+			return false, "the station belongs to " .. other.name .. ", which keeps its stations from " .. mine.name
+		end
 		return false, "the station belongs to " .. other.name .. ", which keeps its stations to itself"
 	end
 	return true
+end
+
+-- The line manager runs in more than one GUI Lua state. Install the same
+-- station predicate in each state's entity_util, including the HUD state.
+-- Resolve the company from the room roster; native GUI ownership can still
+-- refer to the save's original player. Never extend this to depots/assets.
+local stationUtilities = setmetatable({}, { __mode = "k" })
+local stationSelections = setmetatable({}, { __mode = "k" })
+function companies.followStations(api, require_, current, inHudState)
+	local changed, seen = 0, {}
+	for _, path in ipairs({ "/scripts/entity_util.tl", "::/scripts/entity_util.tl" }) do
+		local ok, util = pcall(require_, path)
+		if ok and type(util) == "table" and stationUtilities[util] and not seen[util] then
+			changed = changed + 1
+		end
+		if ok and type(util) == "table" and not stationUtilities[util]
+			and type(util.isOwnedByPlayerOrNotOwned) == "function" then
+			local original = util.isOwnedByPlayerOrNotOwned
+			util.isOwnedByPlayerOrNotOwned = function(entity, ...)
+				local roster, me = current()
+				if roster and me then
+					local known, station = pcall(function()
+						local CT = api.type.ComponentType
+						if api.engine.getComponent(entity, CT.STATION_GROUP) ~= nil then return true end
+						local c = api.engine.getComponent(entity, CT.CONSTRUCTION)
+						return c ~= nil and c.stations ~= nil and #c.stations > 0
+					end)
+					if known and station then
+						local mine = companies.of(roster, me)
+						if not mine or not mine.entity then return false end
+						return companies.mayUse(roster, mine.entity, entity, api)
+					end
+				end
+				return original(entity, ...)
+			end
+			stationUtilities[util] = true
+			changed = changed + 1
+		end
+		if ok and type(util) == "table" then seen[util] = true end
+	end
+	-- line_util loads React's builtin recipes. Only the HUD state has that
+	-- registry; requiring it from the game-script GUI produces native errors.
+	if not inHudState then return changed end
+	-- Build 40408's native selector can return a STATION entity with
+	-- TransportNetworkEdge details for a station built by another engine
+	-- player. The line manager then treats even our own company's station as
+	-- a waypoint. Recover the ordinary station details from that entity;
+	-- leave genuine network edges and detailed terminal selections alone.
+	local ok, line = pcall(require_, "/gui/line_vehicle_mgmt/line_util.tl")
+	if ok and type(line) == "table" and not stationSelections[line]
+		and type(line.convertDetails) == "function" then
+		local original = line.convertDetails
+		line.convertDetails = function(entity, details)
+			local converted = original(entity, details)
+			local roster, me = current()
+			if roster and me and converted and converted.transportNetworkEdge then
+				local read, group = pcall(function()
+					local CT = api.type.ComponentType
+					if api.engine.getComponent(entity, CT.STATION_GROUP) then return entity end
+					if api.engine.getComponent(entity, CT.STATION) then
+						return api.engine.system.stationGroupSystem.getStationGroup(entity)
+					end
+				end)
+				if read and type(group) == "number" and group >= 0 then
+					local mine = companies.of(roster, me)
+					if not mine or not mine.entity or not companies.mayUse(roster, mine.entity, group, api) then
+						return nil
+					end
+					return original(entity, nil)
+				end
+			end
+			return converted
+		end
+		stationSelections[line] = true
+	end
+	return changed
 end
 
 -- Whether anything is owned by the player entity `entity`; nil when this
@@ -1123,6 +1229,24 @@ function companies.run(roster, player, op, send, api, seal)
 		local ok, why = headOf(roster, player, c, body.open and "opens the stations of" or "closes the stations of")
 		if not ok then return false, why end
 		c.closed = (not body.open) or nil
+		return true, nil, c.id
+	elseif kind == "StationAccess" then
+		-- Its head's choice for one other company, over the default; nil
+		-- leaves that company to the default again.
+		local c = type(body) == "table" and companies.find(roster, body.company)
+		if not c or c.gone then return false, "there is no such company" end
+		if body.open ~= nil and type(body.open) ~= "boolean" then return false, "stations are open or not" end
+		local ok, why = headOf(roster, player, c, "decides whose lines stop at the stations of")
+		if not ok then return false, why end
+		local other = companies.find(roster, body.other)
+		if not other or other.gone then return false, "there is no company " .. tostring(body.other) end
+		if other.id == c.id then return false, c.name .. "'s stations are always its own" end
+		local kept = {}
+		for _, a in ipairs(c.access or {}) do
+			if a.company ~= other.id then kept[#kept + 1] = a end
+		end
+		if body.open ~= nil then kept[#kept + 1] = { company = other.id, open = body.open } end
+		c.access = #kept > 0 and kept or nil
 		return true, nil, c.id
 	end
 	return false, "a company operation of no kind"

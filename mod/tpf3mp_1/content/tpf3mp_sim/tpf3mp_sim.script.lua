@@ -25,6 +25,11 @@
 --   hands it the lanes asked for entry by entry, for hook.log (docs/HOOKS.md,
 --   "Lane dumps").
 --
+-- With the hook's edge watch on (TPF3MP_HOOK_EDGE_WATCH), `update` also
+-- asks which entities to read (`edgewatch`), and `postUpdate` reads each
+-- after everything else it does and hands it over (`edgewatched`;
+-- docs/HOOKS.md, "The edge watch"). Read only.
+--
 -- The hook holds the world if nobody took the actions, or if a checkpoint's
 -- lanes did not come.
 --
@@ -46,10 +51,17 @@
 -- The module editor tells game scripts nothing on build 40408 (CAPTURE):
 -- the hook reads its build natively at the click, and `guiUpdate` takes it
 -- for that click (tpf3mp_native.built), ahead of any preview, and makes the
--- edit of it as of the construction tool's proposal. A click with neither
--- is stopped with "no proposal seen". Every event of the room's game the
--- script does not handle is logged by id and name, once each, a few dozen
--- at most.
+-- edit of it as of the construction tool's proposal. The terrain tools
+-- tell them nothing either: the hook reads a stroke's height grid at the
+-- click the same way, and `guiUpdate` hands the room Terraform actions of
+-- it (tpf3mp/capture.lua terraform), which every game applies through the
+-- hook (tpf3mp/apply.lua) once tpf3mp/acceptance.lua's `terraform` is on.
+-- A click with neither is stopped with "no proposal seen".
+--
+-- Each upgrade (a road or track modifier's build) and each terraform is
+-- said in the hook's log when handed to the room and when applied. Every
+-- event of the room's game the script does not handle is logged by id and
+-- name, once each, a few dozen at most.
 --
 -- `handleEvent` takes the event `command` of id "tpf3mp" (sent with
 -- api.cmd.makeScriptingSendEventCmd) and hands its parameter, an action
@@ -98,7 +110,8 @@ function data()
 	-- game scripts of the proposals of six tools only, each under the id
 	-- the game's GUI names it by (UI::CGameUI's constructor, read from the
 	-- binary): constructionBuilder, streetTerminalBuilder, streetBuilder,
-	-- trackBuilder, streetTrackModifier (the upgrade tool, not carried yet)
+	-- trackBuilder, streetTrackModifier (the road and track modifiers: tram
+	-- tracks, bus lanes, barriers, trees, a street or track type, catenary)
 	-- and bulldozer. The module editor (UI::ModuleBuilder) tells them
 	-- nothing there. moduleBuilder and moduleBulldozer are its names in the
 	-- construction menu's parameters (ConstructionActionParam); INFERRED
@@ -188,11 +201,29 @@ function data()
 			parts[#parts + 1] = "getPlayer stays the game's: tpf3mp/follow.lua did not load"
 		end
 		local ranked, whyRanks = progression.follow(function() return companies.scriptState(api) end)
+		companies.followStations(api, ug_require, function()
+			if not l:room() then return end
+			local state, status = companies.scriptState(api), l:status()
+			return state and state.companies, status and status.me_id
+		end)
 		parts[#parts + 1] = ranked and "ranks are each company's" or ("ranks are the game's: " .. tostring(whyRanks))
 		local counted, whyPermits = companies.followPermits(api, ug_require, function() read() return several end)
 		parts[#parts + 1] = counted and "permits count each company's own constructions"
 			or ("permits count the whole world's: " .. tostring(whyPermits))
 		l:log("the game scripts' GUI state: " .. table.concat(parts, "; "))
+	end
+
+	-- The snapshot of a terrain tool's click, from its stroke as the hook read
+	-- it (tpf3mp_native.built): its Terraform actions, one a band of rows.
+	local function terraformEdit(built)
+		local actions, why = capture.terraform(built)
+		if not actions then return { why = "the terrain tool's stroke: " .. tostring(why), shape = "terrain tool" } end
+		local said = {}
+		for i, a in ipairs(actions) do
+			said[i] = "terraform handed to the room: " .. capture.terraformSummary(a.Terraform)
+				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
+		end
+		return { actions = actions, said = said, shape = "terrain tool" }
 	end
 
 	-- The guard on what this player's personal mods' game scripts send, in
@@ -296,6 +327,8 @@ function data()
 				if link then
 					local linked = link
 					apply.log = function(line) linked:log(line) end
+					-- A terraform's grid goes to the hook (tpf3mp/apply.lua).
+					apply.terrain = function(grid) return linked:terrain(grid) end
 				end
 				lanes = lanesModule
 				capture = captureModule
@@ -396,12 +429,15 @@ function data()
 			-- open: its money is settled (tpf3mp/companies.lua, "subsidies").
 			local day = companies.dayNow(api)
 			local subsidies = l:room() and type(saved) == "table" and companies.subsidiesDue(saved.companies, day)
-			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies then
+			-- The entities the hook's edge watch reads in this update.
+			local watch = l:edgewatch()
+			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies
+				and not watch then
 				return nil
 			end
 			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint,
 				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil,
-				subsidies = subsidies and day or nil }
+				subsidies = subsidies and day or nil, watch = watch }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
@@ -549,10 +585,12 @@ function data()
 					-- Every entry is handed over: the hook keeps the first
 					-- few thousand and counts the rest.
 					for _, lane in ipairs(dump.lanes) do
-						for _, entry in ipairs(lanes.dump(api, lane, reg)) do l:dumped(lane, entry) end
+						for _, entry in ipairs(lanes.dump(api, lane, reg, dump.box)) do l:dumped(lane, entry) end
 					end
 				end
 			end
+			-- The edge watch: each entity as it reads after this update.
+			for _, e in ipairs(work.watch or {}) do l:edgewatched(e, lanes.watch(api, e)) end
 		end,
 
 		guiHandleEvent = function(_params, _state, _guiState, _src, id, name, param)
@@ -593,6 +631,7 @@ function data()
 							.. (shape and (" [" .. shape .. "]") or ""))
 					end
 				end
+				-- An upgrade tool's build, for the log (tpf3mp/roads.lua).
 				local upgrade = action and kind == "modify" and capture.upgradeSummary(action) or nil
 				snapshots[clicks] = { action = action, why = why, shape = shape, upgrade = upgrade }
 				if action then return nil end
@@ -635,8 +674,25 @@ function data()
 				-- The module editor's click: its build as the hook read it,
 				-- whatever preview another tool showed before.
 				local native, whyNot = l:built(handled)
-				if native ~= nil or whyNot ~= nil then seen = moduleEdit(native, whyNot) end
-				if seen and seen.action then
+				if type(native) == "table" and native.terrain ~= nil then
+					seen = terraformEdit(native)
+				elseif native == nil and type(whyNot) == "string" and whyNot:find("terrain tool: ", 1, true) == 1 then
+					-- The painter's, the asset brush's, or a stroke that did not read.
+					seen = { why = whyNot, shape = "terrain tool" }
+				elseif native ~= nil or whyNot ~= nil then
+					seen = moduleEdit(native, whyNot)
+				end
+				if seen and seen.actions then
+					for i, action in ipairs(seen.actions) do
+						local ok, why = l:command(action)
+						if ok then
+							l:log(seen.said[i])
+						else
+							l:log("the player's terraform was not handed to the room: " .. tostring(why))
+							break
+						end
+					end
+				elseif seen and seen.action then
 					local ok, why = l:command(seen.action)
 					if ok then
 						l:log("handed the player's build to the room"

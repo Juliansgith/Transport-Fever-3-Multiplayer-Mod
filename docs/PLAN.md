@@ -286,8 +286,10 @@ Dev B:
   first in order gets it). A loan is never replayed twice for its taker.
 - [ ] Headquarters upgrades; prospecting (the industry at the same place,
   with the same ID, on every game); boosting industry.
-- [ ] Greening and other new brushes, terraforming, terrain paint, the
-  asset brush.
+- [x] Terraforming: raise, lower, smooth, flatten and heightmap brushes.
+  Two local games on build 40408 produced identical native heights on
+  2026-10-02; see `investigation/STATION_TERRAIN_2026-10-02.md` for limits.
+- [ ] Greening and other new brushes, terrain paint, the asset brush.
 - [x] Companies: create, switch, dissolve; owners move with the company,
   and no money is created in the switch. *Added (D21):* any split of the
   room's players, loans for every company, colours, and the GUI showing
@@ -299,12 +301,16 @@ Dev B:
   never held by a game; the game's company window renames the company;
   the colour chooser offers the game's colours too. Built on
   `feat/company-play`; to see in a real game with three players.
-- [ ] *Added, proposed (D22, not decided):* a company's lines stop at
+- [x] *Changed, approved station-access portion of D22 (2026-10-02):*
+  heads can allow or deny each other company over an open/closed default;
+  new companies inherit the default, and existing services are not removed.
+  A company's lines stop at
   another company's open stations: the line manager offers them, and
   every game refuses a line that stops at a closed company's station.
-  To see in a real game: pathing, boarding and fares of such a line, and
-  whether the line manager's ownership test is one shared module (the
-  mod assumes so).
+  Two local games demonstrated native station selection, grants and reset,
+  foreign-edit refusal, pathing, passenger carriage and matching fares after
+  reload. The HUD has its own module state and needs a station-details
+  conversion fix. See `investigation/STATION_TERRAIN_2026-10-02.md`.
 - [ ] *Proposed (D23), for the owner to approve:* company ranks. With one
   company the game's own, a rank the company window takes carried to every
   game (`ApplyRank`); with more, each company's score its share of each

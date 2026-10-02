@@ -335,6 +335,84 @@ function capture.upgradeSummary(action)
 end
 
 
+-- Most cells one Terraform action carries (tpf3mp_proto
+-- action::MAX_TERRAIN_CELLS is 8192; half keeps every action well inside
+-- the room's 48 KiB payload, two varints a cell).
+capture.TERRAIN_CELLS = 4096
+
+-- The side of the map's height cells, in metres
+-- (api.engine.terrain.getBaseResolution, 4 m on build 40408), or nil and why.
+function capture.terrainCell()
+	local ok, resolution = pcall(function() return api.engine.terrain.getBaseResolution() end)
+	local cell = ok and resolution and (resolution.x or resolution[1])
+	if type(cell) ~= "number" or cell <= 0 or cell ~= cell then
+		return nil, "the terrain's resolution does not read"
+	end
+	return cell
+end
+
+-- A terrain tool's stroke, as the hook read it at the click
+-- (tpf3mp_native.built: `{ terrain = { x0 =, y0 =, width =, height =,
+-- cells = { v1, w1, v2, w2, ... } } }`, crates/tpf3mp-hook/src/terrain.rs),
+-- as Terraform actions (tpf3mp_proto action::Terraform): the grid's first
+-- cell by its index times the cell size, its columns, and every cell's two
+-- values, row by row, in bands of whole rows of at most TERRAIN_CELLS
+-- cells, each its own action. Returns the list of actions, or nil and why.
+function capture.terraform(built)
+	local t = type(built) == "table" and built.terrain
+	if type(t) ~= "table" then return nil, "no terrain grid" end
+	local function whole(v) return type(v) == "number" and v == math.floor(v) end
+	local x0, y0, width, height, cells = t.x0, t.y0, t.width, t.height, t.cells
+	if not (whole(x0) and whole(y0) and whole(width) and whole(height)) or width < 1 or height < 1 then
+		return nil, "a terrain grid it cannot read"
+	end
+	if type(cells) ~= "table" or #cells ~= 2 * width * height then
+		return nil, "a terrain grid of " .. width .. " by " .. height .. " cells with " .. tostring(type(cells) == "table"
+			and #cells or 0) .. " values"
+	end
+	if width > capture.TERRAIN_CELLS or width > 65535 then
+		return nil, "a stroke " .. width .. " cells wide, wider than the room carries: use a smaller brush"
+	end
+	local cell, why = capture.terrainCell()
+	if not cell then return nil, why end
+	local rows = math.floor(capture.TERRAIN_CELLS / width)
+	local actions = {}
+	for first = 0, height - 1, rows do
+		local last = math.min(height, first + rows) - 1
+		local band = {}
+		for r = first, last do
+			for c = 0, width - 1 do
+				local i = 2 * (r * width + c)
+				band[#band + 1] = { target = cells[i + 1], before = cells[i + 2] }
+			end
+		end
+		actions[#actions + 1] = { Terraform = {
+			origin = { x = x0 * cell, y = (y0 + first) * cell },
+			cell = cell,
+			columns = width,
+			cells = band,
+		} }
+	end
+	return actions
+end
+
+-- A Terraform action in one line for the log.
+function capture.terraformSummary(t)
+	if type(t) ~= "table" or type(t.cells) ~= "table" or type(t.columns) ~= "number" or t.columns < 1 then
+		return "an unreadable terraform"
+	end
+	local low, high, changed = nil, nil, 0
+	for _, c in ipairs(t.cells) do
+		low = math.min(low or c.target, c.target)
+		high = math.max(high or c.target, c.target)
+		if c.target ~= c.before then changed = changed + 1 end
+	end
+	local cell = t.cell or 0
+	return string.format("%d by %d cells of %g m from cell (%g, %g), %d changed, heights %.2f to %.2f m",
+		t.columns, #t.cells / t.columns, cell, cell > 0 and t.origin.x / cell or 0,
+		cell > 0 and t.origin.y / cell or 0, changed, low or 0, high or 0)
+end
+
 -- A stop placed on a street or track with the stop tool (tpf3mp_proto
 -- action::PlaceStop), read off its proposal by tpf3mp/engine.lua. Returns
 -- the action table; false for a proposal of nothing; or nil and why.
@@ -424,7 +502,52 @@ end
 -- .createProposalReplaceConstruction, gui/construction/construction.tl and
 -- gui/entity_window/entity_window_util.tl, build 40408). Every other build
 -- from a window stays refused. Returns the action table, or raises why not.
+--
+-- A window's build that rebuilds edges in place, nothing else (no
+-- construction, no node added or removed, every new edge between the ends
+-- of one it replaces): the bridge and tunnel window's type
+-- (gui/entity_window/bridge_and_tunnel.tl, api.engine.util.proposal
+-- .createBridgeOrTunnelProposal, build 40408) makes one. It is carried as
+-- the road and track modifiers' rebuild is (capture.modify), once
+-- acceptance.lua's `bridges` is on: until a two-player game shows the
+-- window's proposal reads as the modifiers' does, it is refused, saying so.
+function capture.inPlace(proposal)
+	local p = get(proposal, "proposal")
+	if p == nil or (length(get(proposal, "toAdd")) or 0) > 0 or (length(get(proposal, "toRemove")) or 0) > 0 then
+		return false
+	end
+	if (length(get(p, "addedNodes")) or 0) > 0 or (length(get(p, "removedNodes")) or 0) > 0 then return false end
+	local added, removed = get(p, "addedSegments"), get(p, "removedSegments")
+	local n = length(added)
+	if n == nil or n == 0 or length(removed) ~= n then return false end
+	local used = {}
+	for i = 1, n do
+		local a = get(get(added, i), "comp")
+		local a0, a1 = get(a, "node0"), get(a, "node1")
+		local found = nil
+		for k = 1, n do
+			local r = get(get(removed, k), "comp")
+			local r0, r1 = get(r, "node0"), get(r, "node1")
+			if not used[k] and ((r0 == a0 and r1 == a1) or (r0 == a1 and r1 == a0)) then
+				found = k
+				break
+			end
+		end
+		if found == nil then return false end
+		used[found] = true
+	end
+	return true
+end
+
 function capture.windowBuild(_ctx, proposal)
+	if capture.inPlace(proposal) then
+		if module("acceptance").bridges ~= true then
+			error("rebuilding a bridge or tunnel from its window awaits two-player game acceptance", 0)
+		end
+		local action, why = capture.modify(proposal)
+		if not action then error(why or "a window's rebuild of nothing", 0) end
+		return action
+	end
 	local p = proposal and proposal.proposal
 	if p and #(proposal.toAdd or {}) == 0 and #(proposal.toRemove or {}) == 0
 		and ((p.nodeConfigsToAdd and #p.nodeConfigsToAdd > 0)
@@ -679,9 +802,13 @@ function capture.vehicleStop(ctx, vehicle, stopped)
 	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { Stop = stopped == true } } }
 end
 
+-- Sold on arrival, build 40408 crashes when the vehicle reaches the depot:
+-- it sells the vehicle, then asks the vehicle it removed where its depot is
+-- (Engine.h:323). TF3's own windows only ever send false.
 function capture.vehicleToDepot(ctx, vehicle, sell, jumpTo)
 	if jumpTo ~= nil then error("moving a vehicle into a depot at once", 0) end
-	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ToDepot = { sell = sell == true } } } }
+	if sell == true then error("selling a vehicle when it reaches the depot (the game crashes there)", 0) end
+	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ToDepot = { sell = false } } } }
 end
 
 function capture.vehicleReverse(ctx, vehicle)
@@ -935,6 +1062,55 @@ function capture.marketing(ctx, param)
 		permit = permitOf(param),
 		cost = capture.marketingCost(year),
 	} } }
+end
+
+-- ------------------------------------------------------ town buildings
+--
+-- The construction a town building stands in, and the building's place in
+-- its list of town buildings, from 1 (the construction lists them,
+-- api/tealdef/api/engine.d.tl, Construction.townBuildings): the
+-- construction the game names for the building as a subconstruction,
+-- or the building itself, or else the one construction that lists it.
+-- INFERRED: a town building's window names the TOWN_BUILDING entity, which
+-- its construction lists. Returns the construction's component and the
+-- place, or nil.
+function capture.townBuildingOf(entity)
+	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
+	local function lists(con)
+		local ok, c = pcall(function() return api.engine.getComponent(con, CONSTRUCTION) end)
+		local buildings = ok and c and get(c, "townBuildings") or nil
+		for i = 1, (length(buildings) or 0) do
+			if get(buildings, i) == entity then return c, i end
+		end
+		return nil
+	end
+	local ok, con = pcall(function()
+		return api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(entity)
+	end)
+	if ok and type(con) == "number" and con >= 0 then
+		local c, i = lists(con)
+		if c then return c, i end
+	end
+	local c, i = lists(entity)
+	if c then return c, i end
+	local listed, all = pcall(function() return api.engine.getEntitiesWithComponent(CONSTRUCTION) end)
+	for k = 1, (listed and length(all) or 0) do
+		c, i = lists(get(all, k))
+		if c then return c, i end
+	end
+	return nil
+end
+
+-- A town building's Historic Preservation checkbox (gui/entity_window/
+-- town_building/town_building.tl, HistoricBuildingCard): the building by
+-- its construction's file and place and its index there
+-- (action::Preservation).
+function capture.preserve(_ctx, entity, preserved)
+	if type(preserved) ~= "boolean" then error("a preservation it cannot read", 0) end
+	local c, i = capture.townBuildingOf(entity)
+	local ref = c and capture.replaced(c) or nil
+	if ref == nil or i > 256 then error("a town building the room cannot name", 0) end
+	return { Preserve = { building = ref, index = i - 1, preserved = preserved } }
 end
 
 -- Answering a subsidy offer: the subsidy window's Accept or Decline

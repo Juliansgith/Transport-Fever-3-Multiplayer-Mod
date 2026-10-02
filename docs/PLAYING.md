@@ -403,8 +403,8 @@ protected folder such as Program Files.
   touched.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
-- **Subsidies, entity renaming, vehicle recolouring, line waypoints, and
-  the perk tools (Industry Greenification, marketing campaigns).**
+- **Subsidies, entity renaming, vehicle recolouring, line waypoints, bridge/tunnel
+  window type changes, Industry Greenification marketing campaigns and Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).
@@ -428,8 +428,20 @@ protected folder such as Program Files.
   goes where your cursor is on the road. The road tools tab works too:
   tram tracks, bus lanes, noise barriers, trees along the road and the
   lock against the town's changes, and a road built through a stretch
-  with stops keeps them. Remove them, and roads and tracks, with the
-  bulldozer.
+  with stops keeps them. So do the track menu's tools: electrification,
+  a track's type and its decorations (seen with the road tools; the track
+  tools are not yet tried in a real game). Remove them, and roads and
+  tracks, with the bulldozer.
+- **Terraforming** (not in multiplayer yet: it is switched off until a
+  two-player game has shown it works; a stroke changes nothing, and the
+  hook's log says why). Once on: raise, lower, smooth and flatten the ground,
+  and the heightmap brush, as usual: every player's game reshapes the same
+  cells to the same heights, a moment after each stroke, and your company
+  pays. Your own game changes the ground only when the room's copy of a
+  stroke arrives, so while you hold the mouse down the brush works on the
+  ground as it was before your last strokes came back. A stroke of more
+  than 65,536 cells (a square about 1 km across) is refused. Painting the
+  ground and the asset brush (trees, rocks) are not in multiplayer yet.
 - **Town buildings.** Bulldoze a town's building as usual: every player's
   game removes the same building, a moment after your click; your company
   pays the demolition, and the town's opinion of it changes as in single
@@ -472,7 +484,8 @@ protected folder such as Program Files.
   one company it is the game's own capital, as in single player. The
   game bar's transported figures and the finance window's company value still show
   the room's first company's.
-- **Your company's head, passwords and stations** (proposed, D22). The
+- **Your company's head, passwords and stations** (D22: station access
+  approved; the other policies remain proposed). The
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows
   each company's head. The head can give the company a password: then
@@ -480,13 +493,20 @@ protected folder such as Program Files.
   The password goes to the server, which keeps it from every game and
   every log; nobody, the head included, can read it back, so share it
   the way you share a room's. The head can also remove or change the
-  password, send a player back to the room's first company, and close
-  the company's stations to other companies' lines. Stations start open:
-  your lines may stop at another company's station, and the line manager
-  offers it, until its head closes them. You still cannot change or
-  remove another company's station, and your vehicles use your own
+  password, send a player back to the room's first company, and choose
+  who may stop at the company's stations: **Deny by default** or **Allow
+  by default** for every company (those founded later included), and
+  **Allow** or **Deny** for each other company on its own, which wins over
+  the default (**Default** puts it back). Stations start open: your lines
+  may stop at another company's station, and the line manager offers it,
+  unless its head denies your company. Access is checked when creating or
+  changing a route; existing services keep running after access is denied.
+  You still cannot change or remove another company's station, and your vehicles use your own
   depots. The room's first company is everyone's: it has no head and no
   password. The game's company window renames your company too.
+- **Terrain.** Raise, lower, smooth, flatten and the heightmap brush share
+  their height changes through the room. Terrain paint and asset brushes
+  are still refused until their own multiplayer support is validated.
 - **Achievements.** A game with TPF3-MP active still earns achievements:
   the mod keeps them on, as the game lets a mod do. This holds even when
   the save has other mods that would switch them off.

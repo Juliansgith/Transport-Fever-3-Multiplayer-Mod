@@ -9,14 +9,14 @@ use proptest::{collection::vec, prelude::*, sample::Index};
 use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
-        ACTION_SCHEMA_VERSION, Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
-        ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds,
-        EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData, LineId,
-        LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network,
-        NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle,
-        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef,
-        Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
-        UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
+        ACTION_SCHEMA_VERSION, Action, ActionError, AssignLine, Bulldoze, BuyVehicle, CompanyId,
+        CompanyOp, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration,
+        EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData,
+        LineId, LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES,
+        Network, NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect,
+        ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure,
+        SubsidyOp, SubsidyRef, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
+        Tram, Transform, UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -436,6 +436,16 @@ fn samples() -> Vec<Action> {
             company: CompanyId(2),
             open: false,
         }),
+        Action::CompanyOp(CompanyOp::StationAccess {
+            company: CompanyId(2),
+            other: CompanyId(3),
+            open: Some(true),
+        }),
+        Action::CompanyOp(CompanyOp::StationAccess {
+            company: CompanyId(2),
+            other: CompanyId(0),
+            open: None,
+        }),
         Action::Loan(Box::new(LoanOp::Take {
             next: loan(7_000_000),
             offer: loan(5_000_000),
@@ -449,7 +459,7 @@ fn samples() -> Vec<Action> {
         }),
         Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(2),
-            change: VehicleChange::ToDepot { sell: true },
+            change: VehicleChange::ToDepot { sell: false },
         }),
         Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(2),
@@ -517,6 +527,11 @@ fn samples() -> Vec<Action> {
             line_cost_factor: Fraction(500_000),
             permit: Some(text("::/game_mechanics/company/permitKeys/marketing.res")),
             cost: 4_000_000,
+        }),
+        Action::Preserve(tpf3mp_proto::action::Preservation {
+            building: depot(),
+            index: 0,
+            preserved: true,
         }),
     ]
 }
@@ -605,6 +620,32 @@ fn invalid_junction_relationships_are_refused_on_the_wire_and_in_lua() {
     }
 }
 
+/// A vehicle sent to be sold on arrival at its depot crashes build 40408
+/// there, in every game at once (2026-10-02, `road_vehicles` scenario): no
+/// game sends it, reads it from the room or takes it from the mod.
+#[test]
+fn a_vehicle_sold_on_arrival_at_its_depot_is_refused_on_the_wire_and_in_lua() {
+    let bad = Action::VehicleOp(VehicleOp {
+        vehicle: VehicleId(2),
+        change: VehicleChange::ToDepot { sell: true },
+    });
+    assert!(matches!(bad.validate(), Err(ActionError::SellOnArrival)));
+    assert!(bad.to_payload().is_err());
+    let wire = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, &bad)).unwrap();
+    assert!(matches!(
+        Action::from_payload(&Payload::new(wire).unwrap()),
+        Err(ActionError::SellOnArrival)
+    ));
+    assert!(lua::action_from_lua(&lua::action_to_lua(&bad).unwrap()).is_err());
+    // Sent to the depot and kept, it travels.
+    let good = Action::VehicleOp(VehicleOp {
+        vehicle: VehicleId(2),
+        change: VehicleChange::ToDepot { sell: false },
+    });
+    let payload = good.to_payload().unwrap();
+    assert_eq!(Action::from_payload(&payload).unwrap(), good);
+}
+
 /// A train's replacement: its locomotive kept, turned, and a new coach
 /// behind it.
 fn replacement() -> ReplaceVehicle {
@@ -658,13 +699,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=21.
+    // Every top-level variant is sampled: postcard tags them 0..=22.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=21).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=22).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();
@@ -838,6 +879,37 @@ fn the_payload_limit_holds() {
     let action =
         Action::Terraform(Terraform::new(Pos2 { x: 0, y: 0 }, 4_000, 64, list(cells)).unwrap());
     assert!(action.to_payload().is_err());
+}
+
+/// The mod cuts a stroke into bands of at most 4,096 cells
+/// (`capture.TERRAIN_CELLS`): the largest band, at the worst heights, fits
+/// one payload and round-trips, through bytes and the mod's tables.
+#[test]
+fn the_largest_terraform_band_the_mod_sends_fits_one_payload() {
+    let cells = vec![
+        TerrainCell {
+            target: i32::MIN,
+            before: i32::MAX,
+        };
+        4096
+    ];
+    let action = Action::Terraform(
+        Terraform::new(
+            Pos2 {
+                x: -2_048_000,
+                y: 2_048_000,
+            },
+            4_000,
+            4096,
+            list(cells),
+        )
+        .unwrap(),
+    );
+    let payload = action.to_payload().unwrap();
+    assert!(payload.as_bytes().len() <= MAX_PAYLOAD);
+    assert_eq!(Action::from_payload(&payload).unwrap(), action);
+    let table = lua::action_to_lua(&action).unwrap();
+    assert_eq!(lua::action_from_lua(&table).unwrap(), action);
 }
 
 proptest! {
