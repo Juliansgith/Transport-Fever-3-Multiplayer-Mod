@@ -284,6 +284,33 @@ function follow.noteCompany(link, entity, last)
 	return text
 end
 
+-- The note that tells the hook the room's companies' player entities,
+-- comma separated ("" for none): the map's icons and line colours show
+-- every company's (crates/tpf3mp-hook/src/guiplayer.rs).
+follow.COMPANIES_NOTE = "tpf3mp.companies"
+
+-- The room's live companies' entities as their note says them.
+function follow.companiesText(roster)
+	local out = {}
+	for _, c in ipairs(type(roster) == "table" and type(roster.list) == "table" and roster.list or {}) do
+		if type(c) == "table" and not c.gone and type(c.entity) == "number" and c.entity >= 0
+			and c.entity % 1 == 0 then
+			out[#out + 1] = string.format("%d", c.entity)
+		end
+	end
+	return table.concat(out, ",")
+end
+
+-- Notes the room's companies under COMPANIES_NOTE through `link` when the
+-- text is not `last`. Returns the text noted now.
+function follow.noteCompanies(link, roster, last)
+	local text = follow.companiesText(roster)
+	if text ~= last and link and link.note then
+		pcall(function() link:note(follow.COMPANIES_NOTE, text) end)
+	end
+	return text
+end
+
 function follow.companyOf(roster, me)
 	if type(roster) ~= "table" or type(roster.members) ~= "table" or type(me) ~= "string" then return nil end
 	for _, m in ipairs(roster.members) do

@@ -138,6 +138,13 @@ function data()
 		-- A depot by its construction (capture.depotRef): a street's, a
 		-- harbour's or an airport's.
 		depot = function(depot) return require("tpf3mp.capture").depotRef(api, depot) end,
+		-- The company or player owning an entity (PLAYER_OWNED), for the log.
+		owner = function(entity)
+			local ok, owned = pcall(function() return api.engine.getComponent(entity, api.type.ComponentType.PLAYER_OWNED) end)
+			return ok and owned and owned.player or nil
+		end,
+		-- What the capture tells the log.
+		say = function(text) if link then link:log(text) end end,
 		model = function(id)
 			local ok, name = pcall(function() return api.res.modelRep.getName(id) end)
 			if ok and type(name) == "string" and name ~= "" then return name end
@@ -552,6 +559,7 @@ function data()
 			-- The company the native tools act as, for the hook
 			-- (tpf3mp/follow.lua, noteCompany).
 			shared.companyNoted = require("tpf3mp.follow").noteCompany(link, myCompany(), shared.companyNoted)
+			shared.companiesNoted = require("tpf3mp.follow").noteCompanies(link, shared.companies, shared.companiesNoted)
 		end
 		-- A new world's GUI gets the chat so far again, as old lines: they
 		-- fill the window without counting as new.

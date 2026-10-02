@@ -73,6 +73,11 @@ function hudguard.context(api)
 			return nil
 		end,
 		depot = function(depot) return module("capture").depotRef(api, depot) end,
+		-- The company or player owning an entity (PLAYER_OWNED), for the log.
+		owner = function(entity)
+			local ok, owned = pcall(function() return api.engine.getComponent(entity, api.type.ComponentType.PLAYER_OWNED) end)
+			return ok and owned and owned.player or nil
+		end,
 		model = function(id)
 			local ok, name = pcall(function() return api.res.modelRep.getName(id) end)
 			if ok and type(name) == "string" and name ~= "" then return name end
@@ -266,6 +271,8 @@ function hudguard.install(cmd, link, api, where)
 		end
 	end
 	local context = hudguard.context(api)
+	-- What the capture tells the log (capture.vehicleBuy's depot).
+	context.say = function(text) link:log(text .. " (" .. tostring(where) .. ")") end
 	local named = { vehicles = context.vehicle, lines = context.line }
 	local function sees(entity, kind)
 		local ok, there = pcall(function() return api.engine.entityExists(entity) end)

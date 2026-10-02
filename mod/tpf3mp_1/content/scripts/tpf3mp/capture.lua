@@ -729,9 +729,27 @@ function capture.depotRef(api, depot)
 	return nil, nil, "a depot " .. file .. " does not list among its depots"
 end
 
+-- What the log says of a purchase's depot: the entity the store passed, its
+-- owner, and the construction and index the room names it by (or why it
+-- cannot), so a vehicle that leaves another depot than the player meant
+-- shows which one the store chose.
+function capture.depotText(depot, owner, ref, index, why)
+	local whose = type(owner) == "number" and ("owned by " .. string.format("%d", owner)) or "owned by no one"
+	if ref == nil then
+		return string.format("the store buys at depot entity %s (%s), which the room cannot name: %s",
+			tostring(depot), whose, tostring(why))
+	end
+	return string.format("the store buys at depot entity %s (%s): depot %d of %s at (%.1f, %.1f, %.1f)",
+		tostring(depot), whose, index or -1, tostring(ref.file), ref.at.x, ref.at.y, ref.at.z)
+end
+
 -- The depot's store: a vehicle config (TransportVehicleConfig) bought there.
 function capture.vehicleBuy(ctx, _player, depot, config)
 	local ref, index, why = ctx.depot(depot)
+	if type(ctx.say) == "function" then
+		local owner = type(ctx.owner) == "function" and ctx.owner(depot) or nil
+		pcall(ctx.say, capture.depotText(depot, owner, ref, index, why))
+	end
 	if ref == nil then
 		error("a depot the room cannot name" .. (why and (": " .. tostring(why)) or ""), 0)
 	end

@@ -8371,6 +8371,15 @@ fn the_guis_company_is_the_one_the_player_plays_for() {
         Some("901"),
         "Rival's entity, for the hook"
     );
+    let listed: Option<String> = lua
+        .load("return (HOOK.notes or {})['tpf3mp.companies']")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        listed.as_deref(),
+        Some("25,901"),
+        "every company of the room, for the map's icons"
+    );
     lua.load("ROSTER.members = {}").exec().unwrap();
     run_frames(&lua, 20);
     let noted: Option<String> = lua
@@ -9528,6 +9537,51 @@ fn the_huds_state_follows_the_players_company() {
         logged.contains("the GUI's company follows the player's in the HUD's state")
             && logged.contains("the stop tool's stop is noted"),
         "{logged}"
+    );
+}
+
+/// A purchase names its depot in hook.log: the entity the store passed, its
+/// owner, and the construction and index the room names it by, so a
+/// vehicle that leaves another depot than the player meant shows which one
+/// the store chose.
+#[test]
+fn a_purchases_depot_is_said() {
+    let lua = Lua::new();
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../mod/tpf3mp_1/content/scripts/tpf3mp/capture.lua"
+    ))
+    .unwrap();
+    let capture: Table = lua.load(&source).eval().unwrap();
+    let text: Function = capture.get("depotText").unwrap();
+    let place = lua.create_table().unwrap();
+    place
+        .set("file", "::/depots/road/road_depot/road_depot.con")
+        .unwrap();
+    let at = lua.create_table().unwrap();
+    at.set("x", 1360.7).unwrap();
+    at.set("y", -8829.4).unwrap();
+    at.set("z", 7.2).unwrap();
+    place.set("at", at).unwrap();
+    let said: String = text
+        .call((5001, 372_426, place, 0, mlua::Value::Nil))
+        .unwrap();
+    assert_eq!(
+        said,
+        "the store buys at depot entity 5001 (owned by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7, -8829.4, 7.2)"
+    );
+    let refused: String = text
+        .call((
+            5002,
+            mlua::Value::Nil,
+            mlua::Value::Nil,
+            mlua::Value::Nil,
+            "a depot no construction lists",
+        ))
+        .unwrap();
+    assert_eq!(
+        refused,
+        "the store buys at depot entity 5002 (owned by no one), which the room cannot name: a depot no construction lists"
     );
 }
 

@@ -1441,3 +1441,35 @@ signature = "44 8B B0 0C 02 00 00 48 8B 03 48 8B 08"
 offset = 7
 prologue = "48 8B 03 48 8B 08"
 required = false
+
+# The map with every company (guiplayer.rs; TPF3MP_HOOK_GUI_ALL_COMPANIES=0
+# keeps it to the player's own). The HUD icon pass, sub_674430 (a lambda of
+# UI::HudIconManager::PreemptiveOctreeTraversal through its std::_Binder,
+# 0x680c10; and sub_66c160 from the traversal 0x67b610), skips an entity
+# whose PlayerOwned owner is not the pass's player: lea rdx,[rax+rcx*4];
+# test rdx,rdx; je; cmp [rdx],r12d; jne. Spliced at the lea (a jump target,
+# 0x6748d9 lands there; nothing lands inside): for an owner that is a
+# company of the room the pointer is formed at a copy of the pass's player.
+# rax and rcx are dead after (rax reloaded at 0x674949 or replaced at
+# 0x674990, rcx written at 0x67492f, 0x6744a5, 0x674542 before any read).
+[[target]]
+name = "view: HudIconManager icon pass/owner"
+signature = "48 8B 04 D0 48 8D 14 88 48 85 D2 74 05 44 39 22 75"
+offset = 4
+prologue = "48 8D 14 88 48 85 D2"
+required = false
+
+# The getPlayer binding (SetupUtilInterface's "getPlayer", registered by
+# sub_24791a0 at 0x253a01a; its closure sub_24ed220): rdi the closure, its
+# std::function getter at +0x38 called (call [rax+0x10]), movsxd
+# rdx,[GameState+0x20c], then the Lua integer push sub_2fbe300 at the
+# target. Redirected: for a closure whose getter is the GUI's
+# (CMenuUI::SwitchToGameUI's, 0x6aa800) or the React GUI's
+# (ScriptComponentRoot::ReloadInterfaces's, 0x27c80a0), both reading the
+# GUI's slot +0x1e0, the pushed answer is the player's company in a room.
+[[target]]
+name = "view: getPlayer binding/push"
+signature = "48 8B 01 FF 50 10 48 63 90 0C 02 00 00 48 8B CB E8 ?? ?? ?? ??"
+offset = 16
+prologue = "E8"
+required = false

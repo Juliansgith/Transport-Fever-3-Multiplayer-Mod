@@ -2128,6 +2128,61 @@ view-company: 16 of 16 of the views' player reads see the player's company in a 
 view-company: the icons above the map's stations see the player's company 372631 (view: HudIconManager::PreemptiveOctreeTraversal/player)
 ```
 
+**The map with every company** (2026-10-02, after eba8614). A room's map
+shows every company's icons and lines, not only the player's own: the
+game's own rule shows only the GUI player's, which was the save's player,
+and after the views took the company it was the company's alone. Two of
+the views' tests are widened, display only, with
+`TPF3MP_HOOK_GUI_ALL_COMPANIES=0` to keep them to the player's own:
+
+- the HUD's icon pass (`sub_674430`, a lambda of
+  `HudIconManager::PreemptiveOctreeTraversal`), which skips an entity whose
+  `PlayerOwned` owner is not the pass's player (`lea rdx,[rax+rcx*4]; test
+  rdx,rdx; je; cmp [rdx],r12d; jne`), spliced at the `lea`: for an owner
+  that is a company of the room, the pointer is formed at a copy of the
+  pass's player, so the icon of every company's station, vehicle and line
+  shows. An entity no one owns passes as the game's;
+- the map layers' colour test (`sub_885b10`, `view: LayerManager
+  colour/owner test`): a line or station of any company of the room takes
+  its own colour (its `Color` component) as the player's do.
+
+The room's companies are the GUI's note `tpf3mp.companies` (their player
+entities, comma separated, `tpf3mp/follow.lua`, `noteCompanies`), read
+with the company once a frame into atomics. Each entity keeps its own
+colour: a line its own (each new line its own colour), a vehicle
+the company's paint (`companies.paintVehicle`). INFERRED, not seen: that
+the station icons' colour is per entity too; where they are one colour for
+every company, a per-company tint needs the renderer's colour read found.
+What a player may select, edit or plan stays their own company's: the
+selector, the station viewer and the catchment overlay keep the company
+alone.
+
+**The GUI's Lua getPlayer, natively.** The map's line overlay is a React
+`LineViewer` whose lines a Lua state lists (`params::LineViewer`,
+`LineVisualization`); a GUI state whose api was made anew (the React roots
+reload their interfaces, `ScriptComponentRoot::ReloadInterfaces`) kept the
+game's getPlayer until a window asked an ownership test. So getPlayer's own
+binding answers the company in a room, in every GUI Lua state: its closure
+(`sub_24ed220`, registered as `getPlayer` by `SetupUtilInterface`) reads
+the player of the `GameState` its state's getter gives and pushes it
+(`call sub_2fbe300`, the Lua integer push); that call is redirected
+(`view: getPlayer binding/push`). The closure's getter is a `std::function`
+(`+0x38`); where its call (vtable slot 2) is one of the GUI's getters,
+`CMenuUI::SwitchToGameUI`'s or `ScriptComponentRoot::ReloadInterfaces`'s
+(both `mov rax,[...+0x1e0]`, the GUI's slot), the answer is the company; the
+game scripts' states, whose getter reads the engine's buffers (`+0x1f0`),
+keep the game's. The getter is told by its code's shape, checked at every
+call. hook.log: `view-company: the GUI's Lua getPlayer answers the player's
+company 372426 natively (view: getPlayer binding/push)`.
+
+**A purchase's depot**, in hook.log when the store buys (the GUI's
+capture, `capture.depotText`): `the store buys at depot entity 5001 (owned
+by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7,
+-8829.4, 7.2)`, or why the room cannot name it. Opened from a line, the
+store asks the engine for the line's depot
+(`api.engine.util.vehicle.findBestDepotForLine`, `line_util.tl`), which
+takes no player from Lua; the line says which depot it chose and whose.
+
 Not per company, as the game has no way to ask for another company's:
 `api.engine.util.headquarters.getTransportedData()` and
 `getCompaniesValue()` take no company and answer for the engine's local

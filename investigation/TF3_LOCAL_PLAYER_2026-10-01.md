@@ -230,3 +230,32 @@ line company #1 made showed in the line manager but not on the map.
   overlay is the layer colours' (`LayerManagerColorMap`, the line layer's
   colour function); if a line still does not show, the next place is a
   reader this list does not have.
+
+### Every company on the map, the map's lines, the depot (2026-10-02)
+
+Game test of eba8614 (p1, company #1, 372426): station icons followed the
+company; the player's own line was not drawn on the map although the
+layer colours' owner test ran for the company; vehicles bought from the
+line's store left a depot far away, not the road depot just built. The
+owner then asked for every company's icons and lines on the map.
+
+- **seen** The five scripting readers of `+0x20c` are the bindings
+  `getVehicleProblems`, `getLineProblems`, `headquarters.getTransportedData`,
+  `getCompaniesValue` and `getPlayer` itself (`sub_24ed220`, registered by
+  `sub_24791a0` at 0x253a01a): each calls its state's `GameState` getter, a
+  `std::function` at `+0x38` of the closure. The GUI's getters are
+  `CMenuUI::SwitchToGameUI`'s (0x6aa800, vtable 0x36c9ad0) and
+  `ScriptComponentRoot::ReloadInterfaces`'s (0x27c80a0, vtable 0x3787768);
+  the engine's is `CGame::CGame`'s (0x11ffd0).
+- **seen** The map's line overlay is a React `UI::LineViewer` fed from Lua
+  (`params::LineViewer`, `LineVisualization` user data).
+- **seen** The HUD icon pass `sub_674430` filters every icon entity by
+  `PlayerOwned` owner == the pass's player (0x67490f); no owner passes.
+- **seen** `findBestDepotForLine` takes a carrier, transport modes, the
+  line and a position from Lua, no player (`line_util.tl` 1951).
+- **inferred** The line overlay missed the company's line because its Lua
+  state's getPlayer was the game's; the native getPlayer answer covers it.
+  Not known yet: why the depot chosen was far away (the new depot not on
+  the line's network, the depot build's "Collision" warning, or an owner
+  filter inside `findBestDepotForLine`); hook.log now names the depot each
+  purchase uses and its owner.

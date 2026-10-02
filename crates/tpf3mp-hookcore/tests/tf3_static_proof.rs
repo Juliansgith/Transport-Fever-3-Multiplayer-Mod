@@ -172,6 +172,8 @@ const TARGETS: &[(&str, u64)] = &[
     ("view: LayerManager colour/owner test", 0x885c82),
     ("view: react RendererComponentDelegate/player", 0x29f689a),
     ("view: react RailroadCrossingComp/player", 0x289e116),
+    ("view: HudIconManager icon pass/owner", 0x674906),
+    ("view: getPlayer binding/push", 0x24ed2d2),
     ("probe: StreetBulldozerAction edge test", 0x5f2a00),
     ("probe: bulldozer owner test", 0x5f7db0),
     ("lua_cached_loadfile", 0x2fa8130),
