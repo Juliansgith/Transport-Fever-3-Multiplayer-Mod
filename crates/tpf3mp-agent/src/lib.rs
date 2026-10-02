@@ -470,7 +470,14 @@ async fn over_udp(options: &ConnectOptions) -> Result<Opened, ConnectError> {
     } else {
         (Ipv4Addr::UNSPECIFIED, 0).into()
     };
-    let mut endpoint = quinn::Endpoint::client(local)?;
+    // Through tpf3mp_net::udp, which falls back to a plain socket where the
+    // network stack refuses quinn's socket options (Wine and Proton).
+    let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        None,
+        tpf3mp_net::udp::bind(local)?,
+        Arc::new(quinn::TokioRuntime),
+    )?;
     endpoint.set_default_client_config(client_config(options.trust.clone())?);
     let connection = endpoint
         .connect(options.server, &options.server_name)?

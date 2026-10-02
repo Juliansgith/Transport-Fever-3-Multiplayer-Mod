@@ -32,6 +32,10 @@ jobs:
             macOS) BASH_TO_TEST=/bin/bash /bin/bash packaging/unix/test-install.sh ;;
             *) bash packaging/unix/test-install.sh ;;
           esac
+      - name: Game helper scripts (no game required)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tools/game/test-tools.ps1
       # rustup installs the toolchain pinned in rust-toolchain.toml on first use.
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check

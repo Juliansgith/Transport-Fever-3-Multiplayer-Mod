@@ -76,6 +76,9 @@ function data()
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
 	local told, toldRegistry, toldOwnership = false, false, false
+	-- The headquarters lines last logged in this state, by company id: a
+	-- line is logged again only when it changed (tpf3mp/companies.lua).
+	local toldHeadquarters = {}
 	-- Events subscribed to from this state.
 	local subscribed = false
 	-- Says what a prospection did (below).
@@ -145,6 +148,51 @@ function data()
 		end
 		if not action then return { why = "the module editor's edit: " .. tostring(whyNot), shape = shape } end
 		return { action = action, shape = shape }
+	end
+
+	-- In the GUI state this script's GUI half runs in, where the game's
+	-- company script checks a construction's permits for the player
+	-- (company.script.tl, builder.proposalCreate: an error and skipRender,
+	-- so the tool shows no preview and builds nothing): the player's company
+	-- answers getPlayer there, its rank the game's rank windows, and its own
+	-- constructions the permit counts (tpf3mp/follow.lua,
+	-- tpf3mp/progression.lua, tpf3mp/companies.lua), as in the GUI's other
+	-- states. Without them a founded company's headquarters showed no preview
+	-- and was never placed (2026-10-01): the game's company script asked the
+	-- save's player's rank and counted every company's headquarters. Once
+	-- this Lua state; each piece is a no-op where another of the GUI's
+	-- states sharing its tables put it on first. Only ever in a GUI state:
+	-- guiHandleEvent runs nowhere else.
+	local guiFollowed = false
+	local function followInGui(l)
+		if guiFollowed then return end
+		guiFollowed = true
+		local okFollow, follow = pcall(ug_require, MOD .. "::/scripts/tpf3mp/follow.lua")
+		local mine, several, readAt = nil, false, nil
+		local function read()
+			local ok, now = pcall(function() return os.clock() end)
+			if not ok or readAt == nil or now - readAt >= 2.0 then
+				readAt = ok and now or nil
+				local status = l:status()
+				local state = companies.scriptState(api)
+				mine = okFollow and follow.companyOf(state and state.companies, status and status.me_id) or nil
+				several = state ~= nil and type(state.companies) == "table"
+					and type(state.companies.list) == "table" and #companies.live(state.companies) > 1
+			end
+		end
+		local parts = {}
+		if okFollow and type(follow) == "table" then
+			local ok, why = follow.install(api, function() read() return mine end)
+			parts[#parts + 1] = ok and "getPlayer follows the player's company" or ("getPlayer stays the game's: " .. tostring(why))
+		else
+			parts[#parts + 1] = "getPlayer stays the game's: tpf3mp/follow.lua did not load"
+		end
+		local ranked, whyRanks = progression.follow(function() return companies.scriptState(api) end)
+		parts[#parts + 1] = ranked and "ranks are each company's" or ("ranks are the game's: " .. tostring(whyRanks))
+		local counted, whyPermits = companies.followPermits(api, ug_require, function() read() return several end)
+		parts[#parts + 1] = counted and "permits count each company's own constructions"
+			or ("permits count the whole world's: " .. tostring(whyPermits))
+		l:log("the game scripts' GUI state: " .. table.concat(parts, "; "))
 	end
 
 	-- The guard on what this player's personal mods' game scripts send, in
@@ -447,6 +495,25 @@ function data()
 					local ok, why = progression.sample(prog, roster, api, work.sample,
 						function(line) l:log(line) end, reg, registry)
 					if not ok then l:log("the companies' scores were not sampled: " .. tostring(why)) end
+					-- Each company's headquarters and the bonus its town
+					-- gets, read only, when it changed: the game's own town
+					-- script gives it (tpf3mp/companies.lua).
+					local okHq, lines, whyHq = pcall(companies.headquartersReport, roster, api)
+					if not okHq or lines == nil then
+						local said = "the headquarters were not read: " .. tostring(okHq and whyHq or lines)
+						if toldHeadquarters.failed ~= said then
+							toldHeadquarters.failed = said
+							l:log(said)
+						end
+					else
+						for _, line in ipairs(lines) do
+							local key = line:match("^(.-): headquarters ") or line
+							if toldHeadquarters[key] ~= line then
+								toldHeadquarters[key] = line
+								l:log("headquarters: " .. line)
+							end
+						end
+					end
 				end
 				saved.registry = reg
 				saved.companies = roster
@@ -489,6 +556,10 @@ function data()
 		end,
 
 		guiHandleEvent = function(_params, _state, _guiState, _src, id, name, param)
+			if name == "builder.proposalCreate" then
+				local l = linked()
+				if l and l:room() then followInGui(l) end
+			end
 			if name ~= "builder.proposalCreate" and name ~= "builder.proposalPrepareForApply" then
 				local l = linked()
 				if l and l:room() then note(l, id, name) end
@@ -522,7 +593,8 @@ function data()
 							.. (shape and (" [" .. shape .. "]") or ""))
 					end
 				end
-				snapshots[clicks] = { action = action, why = why, shape = shape }
+				local upgrade = action and kind == "modify" and capture.upgradeSummary(action) or nil
+				snapshots[clicks] = { action = action, why = why, shape = shape, upgrade = upgrade }
 				if action then return nil end
 				return { errorMessages = { ["Not in multiplayer yet: " .. tostring(why)] = true } }
 			end
@@ -569,6 +641,7 @@ function data()
 					if ok then
 						l:log("handed the player's build to the room"
 							.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
+						if seen.upgrade then l:log("upgrade handed to the room: " .. seen.upgrade) end
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
 					end

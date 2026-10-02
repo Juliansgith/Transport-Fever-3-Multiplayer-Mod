@@ -389,6 +389,96 @@ function companies.ownership(roster, api)
 	return table.concat(out, "; ")
 end
 
+-- What a headquarters gives, and to whom (docs/HOOKS.md, "Headquarters").
+-- Build 40408 keeps no headquarters bonus per company: the game's town
+-- script (game_mechanics/towns/towns.script.tl, updateConstructions, every
+-- 20 updates) sums the `town_growth` instance metadata of every
+-- construction in the world, whoever owns it, onto the town closest to it
+-- (landmarks/landmark_util.tl, collectTownGrowthMetadata), and that town's
+-- experience grows by that much more (town_util.getXpFactor: 1 +
+-- xpIncrease). A headquarters carries xp +5% itself and +1% for each
+-- medium wing, and reputation recovery +1% for each large wing
+-- (landmarks/hq/headquarter.script.tl, headquarter_addon.script.tl, the
+-- modules' metadata). So each company's headquarters already gives its
+-- town what a single player's gives, in every game alike; the mod adds
+-- nothing to it. Its PLAYER `headquarters` the engine sets for the
+-- proposal's `playerEntity` (apply_proposal.cpp, "ce.playerEntity !=
+-- ecs::Entity()"), which only the GUI reads: the capital badge, the
+-- "Headquarters" tooltip and selection.
+companies.TOWN_SCRIPT = "::/game_mechanics/towns/town.gs"
+
+local function number(v)
+	if type(v) ~= "number" then return 0 end
+	return v
+end
+
+-- For hook.log, read only: one line per live company whose PLAYER names a
+-- headquarters, saying which construction it is and who owns it, the town
+-- it is closest to, the bonus on it, and the bonus the game's town script
+-- applies to that town. Bounded work that never waits: at most
+-- `REPORT_MAX` companies, a few engine reads each, no pass over the world's
+-- constructions, and nothing at all read while no company has one; every
+-- read in a pcall. Nil and why where the roster is not readable.
+companies.REPORT_MAX = 8
+function companies.headquartersReport(roster, api)
+	if type(roster) ~= "table" or type(roster.list) ~= "table" then return nil, "no roster" end
+	local found = {}
+	for _, c in ipairs(companies.live(roster)) do
+		if #found >= companies.REPORT_MAX then break end
+		local hq = nil
+		pcall(function()
+			local p = api.engine.getComponent(c.entity, api.type.ComponentType.PLAYER)
+			hq = p and p.headquarters
+		end)
+		if type(hq) == "number" and hq >= 0 then found[#found + 1] = { c = c, hq = hq } end
+	end
+	local out = {}
+	if #found == 0 then return out end
+	local towns = nil
+	pcall(function()
+		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(companies.TOWN_SCRIPT)
+		if type(entity) ~= "number" or entity < 0 then return end
+		local script = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+		towns = script and script.state and script.state.townStates
+	end)
+	for _, f in ipairs(found) do
+		local c, hq = f.c, f.hq
+		local owner, town, name, xp, recovery, built = nil, nil, nil, 0, 0, false
+		pcall(function() owner = companies.ownerOf(api, hq) end)
+		pcall(function()
+			local con = api.engine.getComponent(hq, api.type.ComponentType.CONSTRUCTION)
+			if not con then return end
+			built = true
+			local growth = con.persistentMetadata and con.persistentMetadata.town_growth
+			if growth then xp, recovery = number(growth.xpIncrease), number(growth.reputationRecoveryBoost) end
+		end)
+		if built then
+			pcall(function()
+				local t = api.engine.system.streetConnectorSystem.getConstructionClosestTown(hq)
+				if type(t) == "number" and t >= 0 then town = t end
+			end)
+		end
+		if town then pcall(function() name = api.engine.util.getEntityName(town) end) end
+		local applied = "the game's town script has no state for that town"
+		if town and type(towns) == "table" then
+			for k = 1, math.min(#towns, 4096) do
+				local t = towns[k]
+				local te = type(t) == "table" and t.townEntity
+				if type(te) == "table" and te.entity == town and type(t.constructionBoni) == "table" then
+					applied = string.format("the game's town script applies xp +%.2f, reputation recovery +%.2f there",
+						number(t.constructionBoni.xpIncrease), number(t.constructionBoni.reputationRecoveryBoost))
+					break
+				end
+			end
+		end
+		out[#out + 1] = string.format("%s #%s: headquarters %s (%s), owned by %s; closest town %s%s: "
+			.. "on it xp +%.2f, reputation recovery +%.2f; %s",
+			tostring(c.name), tostring(c.id), tostring(hq), built and "a construction" or "no construction",
+			tostring(owner), tostring(town), name and (" (" .. tostring(name) .. ")") or "", xp, recovery, applied)
+	end
+	return out
+end
+
 -- Whether `company` (a player entity) may change `entity`: what no company
 -- owns, and what it owns itself. Else false and why, naming the owner.
 function companies.mayTouch(roster, company, entity, api, what)
@@ -532,6 +622,12 @@ end
 -- The style class of the markers of vehicles in palette colour `index`.
 function companies.markerClass(index)
 	return "tpf3mp-company-" .. tostring(index)
+end
+
+-- The style class of the town label of a capital in palette colour
+-- `index` (tpf3mp/capitals.lua; gui/tpf3mp/tpf3mp.css.lua).
+function companies.capitalClass(index)
+	return "tpf3mp-capital-" .. tostring(index)
 end
 
 -- The mod's game script, by the names the game gives it: game scripts are

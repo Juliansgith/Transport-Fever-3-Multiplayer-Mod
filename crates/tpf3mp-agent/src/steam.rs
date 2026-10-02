@@ -41,14 +41,73 @@ pub fn find(app: u32) -> Option<Installed> {
 
 /// `app`, in the libraries of the Steam installations at `roots`.
 pub fn find_in(roots: &[PathBuf], app: u32) -> Option<Installed> {
+    find_in_where(roots, app, |_| true)
+}
+
+/// The first install of `app` in the libraries of the Steam installations
+/// at `roots` that `fits`.
+fn find_in_where(
+    roots: &[PathBuf],
+    app: u32,
+    mut fits: impl FnMut(&Installed) -> bool,
+) -> Option<Installed> {
     for root in roots {
         for library in libraries(root) {
-            if let Some(installed) = installed_in(&library, app) {
+            if let Some(installed) = installed_in(&library, app).filter(&mut fits) {
                 return Some(installed);
             }
         }
     }
     None
+}
+
+/// Transport Fever 3 as the launcher runs it. With `game_exe` (the
+/// launcher's `--game-exe`), that program's own folder, with Steam's
+/// record of it when the folder is a Steam library's. Without, the install
+/// Steam lists whose program runs on this system: under Proton, Steam's
+/// libraries can hold the native Linux game, which the Windows launcher
+/// cannot start, and whose build is not the Windows game's.
+pub fn find_game(game_exe: Option<&Path>) -> Option<Installed> {
+    match game_exe {
+        Some(exe) => {
+            let exe = std::path::absolute(exe).unwrap_or_else(|_| exe.to_owned());
+            exe.parent().map(installed_at)
+        }
+        None => find_in_where(&steam_roots(), TRANSPORT_FEVER_3, |found| {
+            let runs = tpf3mp_launch::find_executable(&found.dir).is_some();
+            if !runs {
+                tracing::info!(
+                    "passing over {}: it has no game program this system runs \
+                     (the native Linux game, seen from Proton?)",
+                    found.dir.display()
+                );
+            }
+            runs
+        }),
+    }
+}
+
+/// Transport Fever 3 in the folder `dir`: as Steam's manifest records it
+/// when `dir` is `<library>/steamapps/common/<folder>`, else with no build
+/// known.
+pub fn installed_at(dir: &Path) -> Installed {
+    let recorded = (|| {
+        let common = dir.parent()?;
+        let steamapps = common.parent()?;
+        if !common.file_name()?.eq_ignore_ascii_case("common")
+            || !steamapps.file_name()?.eq_ignore_ascii_case("steamapps")
+        {
+            return None;
+        }
+        installed_in(steamapps.parent()?, TRANSPORT_FEVER_3)
+            .filter(|installed| installed.dir.file_name() == dir.file_name())
+    })();
+    recorded.unwrap_or_else(|| Installed {
+        app: TRANSPORT_FEVER_3,
+        name: "Transport Fever 3".to_owned(),
+        dir: dir.to_owned(),
+        build: "unknown".to_owned(),
+    })
 }
 
 fn installed_in(library: &Path, app: u32) -> Option<Installed> {
@@ -111,6 +170,15 @@ pub fn steam_roots() -> Vec<PathBuf> {
                 roots.push(PathBuf::from(base).join("Steam"));
             }
         }
+        // Under Proton, the registry names Proton's stand-in for Steam,
+        // which has no accounts' folders: the Steam client Proton runs for
+        // has them.
+        if let Some(path) = std::env::var("STEAM_COMPAT_CLIENT_INSTALL_PATH")
+            .ok()
+            .and_then(|path| wine_path(&path))
+        {
+            roots.push(path);
+        }
     }
     if let Some(home) = dirs::home_dir() {
         if cfg!(target_os = "macos") {
@@ -134,6 +202,13 @@ pub fn steam_roots() -> Vec<PathBuf> {
         }
     }
     unique
+}
+
+/// Wine's name for the Unix path `unix`, through the drive Z: that Wine
+/// and Proton map to `/`; none for a path that is not a Unix one.
+pub fn wine_path(unix: &str) -> Option<PathBuf> {
+    unix.starts_with('/')
+        .then(|| PathBuf::from(format!("Z:{}", unix.replace('/', "\\"))))
 }
 
 /// Steam's folder as the registry names it, for installations outside
@@ -238,7 +313,7 @@ pub fn find_save_in(roots: &[PathBuf], active: Option<u32>, name: &str) -> Resul
 }
 
 /// The saves in Transport Fever 3's save folder that [`find_save`] finds by
-/// name, newest first: of the account Steam names as playing, or, when it
+/// name, newest named saves first, then autosaves: of the account Steam names as playing, or, when it
 /// names none, those only one account on this machine has.
 pub fn list_saves() -> Vec<String> {
     list_saves_in(&steam_roots(), active_account())
@@ -281,7 +356,7 @@ pub fn list_saves_in(roots: &[PathBuf], active: Option<u32>) -> Vec<String> {
                 else {
                     continue;
                 };
-                if !meta.is_file() || stem.is_empty() {
+                if !meta.is_file() || stem.is_empty() || !offered_save(stem) {
                     continue;
                 }
                 let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
@@ -308,9 +383,34 @@ pub fn list_saves_in(roots: &[PathBuf], active: Option<u32>) -> Vec<String> {
             .map(|(_, name, modified)| (name.clone(), *modified))
             .collect(),
     };
-    saves.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    // Keep automatic recovery saves available, after the player's named saves.
+    let automatic = |name: &str| name.to_ascii_lowercase().starts_with("autosave_");
+    saves.sort_by(|a, b| {
+        automatic(&a.0)
+            .cmp(&automatic(&b.0))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
     saves.dedup_by(|a, b| a.0.eq_ignore_ascii_case(&b.0));
     saves.into_iter().map(|(name, _)| name).collect()
+}
+
+/// Exclude only exact internal copy names. User saves such as
+/// `tpf3mp_fixture` and automatic recovery saves remain selectable.
+fn offered_save(stem: &str) -> bool {
+    let plain = |text: &str| {
+        !text.is_empty()
+            && text.bytes().all(|b| b.is_ascii_digit())
+            && (text == "0" || !text.starts_with('0'))
+    };
+    let pid = |text: &str| plain(text) && text.parse::<u32>().is_ok_and(|n| n > 0);
+    if let Some(rest) = stem.strip_prefix("tpf3mp_room_") {
+        return !pid(rest);
+    }
+    if let Some((process, event)) = stem.strip_prefix("tpf3mp_").and_then(|s| s.split_once('_')) {
+        return !(pid(process) && plain(event) && event.parse::<u64>().is_ok());
+    }
+    true
 }
 
 fn read_small(path: &Path) -> Option<String> {
@@ -697,6 +797,47 @@ mod tests {
     }
 
     #[test]
+    fn the_game_programs_own_folder_is_the_game() {
+        let root = temp("game-exe");
+        steam(&root, "Transport Fever 3");
+        // In a Steam library: Steam's record of it.
+        let dir = root.join("games/steamapps/common/Transport Fever 3");
+        let installed = installed_at(&dir);
+        assert_eq!(installed.build, "20412345");
+        assert_eq!(installed.dir, dir);
+        let found = find_game(Some(&dir.join("TransportFever3.exe"))).unwrap();
+        assert_eq!(found.build, "20412345");
+        // Anywhere else, such as a copy run under Proton: that folder, with
+        // no build known, never another install Steam lists.
+        let elsewhere = root.join("tf3-win/Transport Fever 3");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let found = find_game(Some(&elsewhere.join("TransportFever3.exe"))).unwrap();
+        assert_eq!(found.dir, elsewhere);
+        assert_eq!(found.build, "unknown");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_install_that_does_not_fit_is_passed_over() {
+        let root = temp("passed-over");
+        let steam_root = steam(&root, "Transport Fever 3");
+        assert_eq!(
+            find_in_where(&[steam_root], TRANSPORT_FEVER_3, |_| false),
+            None
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn unix_paths_are_taken_through_wines_drive_z() {
+        assert_eq!(
+            wine_path("/home/me/.local/share/Steam"),
+            Some(PathBuf::from(r"Z:\home\me\.local\share\Steam"))
+        );
+        assert_eq!(wine_path(r"C:\Steam"), None);
+    }
+
+    #[test]
     fn a_folder_name_that_leaves_the_library_is_ignored() {
         let root = temp("escape");
         let steam_root = steam(&root, "../../elsewhere");
@@ -737,6 +878,30 @@ mod tests {
         assert!(find_save_in(&roots, None, "mptest").is_err());
         assert_eq!(find_save_in(&roots, Some(222), "mptest").unwrap(), theirs);
         assert_eq!(find_save_in(&roots, Some(111), "mptest").unwrap(), mine);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn only_internal_room_copies_are_hidden_and_named_saves_come_first() {
+        let root = temp("save-list-filter");
+        put_save(&root, "111", "twomptest.sav");
+        put_save(&root, "111", "autosave_two_1913-02-01.sav");
+        put_save(&root, "111", "Autosave_New Game_1912-1-1.sav");
+        put_save(&root, "111", "tpf3mp_room_56032.sav");
+        put_save(&root, "111", "tpf3mp_84808_26.sav");
+        put_save(&root, "111", "tpf3mp_fixture.sav");
+        put_save(&root, "111", "tpf3mp_01_2.sav");
+        let roots = [root.clone()];
+        let listed = list_saves_in(&roots, None);
+        assert_eq!(listed.len(), 5);
+        assert!(listed[..3].iter().any(|s| s == "twomptest"));
+        assert!(listed[..3].iter().any(|s| s == "tpf3mp_fixture"));
+        assert!(listed[..3].iter().any(|s| s == "tpf3mp_01_2"));
+        assert!(
+            listed[3..]
+                .iter()
+                .all(|s| s.to_ascii_lowercase().starts_with("autosave_"))
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -844,11 +844,13 @@ impl<G: RoomGate> StepDriver<G> {
         }
         let mut commands = commands.into_iter();
         for (ticket, payload, secret) in commands.by_ref() {
+            let kind = Action::from_payload(&payload).map_or("unreadable", |a| a.kind());
             match self.gate.command(payload, secret) {
                 Ok(number) => {
                     self.tickets.insert(number, ticket);
-                    self.log
-                        .push(format!("handed the player's action {number} to the room"));
+                    self.log.push(format!(
+                        "handed the player's action {number} ({kind}) to the room"
+                    ));
                 }
                 Err(error) => {
                     self.refused.push((ticket, format!("{error}")));

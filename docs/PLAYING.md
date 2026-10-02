@@ -247,8 +247,16 @@ window too.
      password if it has one, and **Join** or **Cancel**. A private room is
      joined by invite, either here or through **Join a friend** on the main menu.
    - **Host a room**: a **room name** (your name's room if you leave it
-     empty); **Start from this save**, one of your saves, newest first, or
-     **Create a new world...** (offered first); **Players**, 2 to 16; **How you
+     empty); **Start from this save**, up to 100 saves, newest named saves
+     first, followed by automatic saves (only internal room copies are
+     excluded), or
+     **Create a new world...** (offered first). The save must have TPF3-MP
+     among its mods: a save without it is refused with "This save doesn't
+     have the TPF3-MP mod enabled: load it once, turn TPF3-MP on in its
+     mods, save it, then pick it again", since the room's game cannot run
+     in a world without it. Should such a world reach a game anyway, the
+     launcher does not load it, and both windows say why; **Players**, 2
+     to 16; **How you
      play**, two pictures: **Co-op**, everyone for the room's one company,
      or **Competitive**, each player founding a company of their own in
      the game; **Who can find
@@ -364,7 +372,17 @@ protected folder such as Program Files.
 - **Losing the connection.** If your connection or the server drops, the
   launcher rejoins the room by itself, and your game only pauses. If you
   were away too long to catch up, the room sends you its world again.
-- **Leaving.** **Leave room** gives up your seat. The owner can also remove
+  The server keeps your seat for 10 minutes (its operator may set longer).
+  The launcher stops trying when the server says the room is gone, after
+  5 minutes without getting back in, or when the connection drops again
+  right after each of 5 rejoins in a row. Both windows then say **The
+  room is gone (closed or the server restarted)**, or that it could not
+  rejoin, and you are back on the server in no room: create or join
+  another. **Leave room** works while it is rejoining too, in the
+  launcher and in the game's Multiplayer window: it stops at once.
+- **Leaving.** **Leave room** gives up your seat. It always works: if the
+  server cannot be told, you leave anyway, and the server lets the seat
+  go after its 10 minutes. The owner can also remove
   a player whose game froze; a removed player cannot come back to that
   room. If the room's game had not begun yet, your game keeps running and
   follows you into the next room you create or join: no need to restart
@@ -374,6 +392,15 @@ protected folder such as Program Files.
   and your game reloads it. A notice says so.
 - **Saving.** The room saves everyone's game together from time to time,
   which you notice as a short pause, like an autosave.
+- **Room saves in your save folder.** To load the room's world, your game
+  copies it into Transport Fever 3's save folder
+  (`<Steam>/userdata/<account>/3493540/local/save`) as
+  `tpf3mp_room_<number>.sav`, and the room's saves pass through there as
+  `tpf3mp_<number>_<number>.sav`. They are not offered as saves to start
+  a room from. Each is a whole world, so TPF3-MP removes those of games
+  that have ended, when your game starts and each time it loads a room's
+  world; the copy of a game still running stays. Your own saves are never
+  touched.
 - **Loans.** Take and pay back loans in the company window as usual: every
   player's game books them together.
 - **Subsidies, entity renaming, vehicle recolouring, line waypoints, and
@@ -434,8 +461,17 @@ protected folder such as Program Files.
 - **Headquarters.** Each company builds one headquarters of its own, from
   the construction menu as usual, once its rank allows: another
   company's headquarters does not use up yours. A second one for the
-  same company is refused. The game bar's transported figures and the
-  finance window's company value still show the room's first company's.
+  same company is refused. Each headquarters gives its own town the
+  game's growth bonus, as in a single-player game. With more than one
+  company, the town labels on the map crown every company's headquarters
+  town as its capital, and every player sees them all: yours in the
+  game's blue, another company's in that company's colour, each with a
+  line under it naming whose it is ("Capital of Rival", or "Capital of
+  Rival and Pals" when two companies have theirs by the same town). The
+  line is hidden when you zoom far out; the crown and colour stay. With
+  one company it is the game's own capital, as in single player. The
+  game bar's transported figures and the finance window's company value still show
+  the room's first company's.
 - **Your company's head, passwords and stations** (proposed, D22). The
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows
@@ -586,6 +622,13 @@ before sharing it publicly if you want to be sure.
 - **"connected via tunnel"** next to the connection: your network blocks
   UDP, and the game plays through the tunnel. It works, but lost packets
   cost a little more delay.
+- **Under Proton or Wine** (Linux, Steam Deck) the Windows launcher plays
+  over UDP as well: Wine refuses some socket options QUIC uses, so the
+  launcher's log says it uses a plain UDP socket, which works the same.
+  Should UDP not open at all, it takes the tunnel by itself, unless you
+  started it with `--no-tunnel`. With `--game-exe`, the launcher shows that
+  program's folder as the game's, never the native Linux game Steam may
+  list beside it.
 - **A version mismatch**: your package and the server are different
   versions. The message says which side is older.
 - **"Your game differs from the room's"**: the window lists what to change:

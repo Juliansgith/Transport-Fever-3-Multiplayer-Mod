@@ -56,8 +56,12 @@ use crate::{
 };
 
 /// How long the launcher keeps trying to rejoin a room after losing the
-/// server.
+/// server: as long as a server holds a game nobody is connected to
+/// (`--abandon-after-mins`, 5 by default).
 const REJOIN_PATIENCE: Duration = Duration::from_secs(300);
+/// How long disconnecting waits for the room session to leave before it
+/// stops it.
+const DISCONNECT_WAIT: Duration = Duration::from_secs(5);
 /// Actions queued from the page before it waits.
 const ACTION_QUEUE: usize = 32;
 /// How often the launcher looks whether the game it started still runs.
@@ -520,14 +524,19 @@ async fn control(
                         ended,
                         Some(IdleLink::given_back(link, build, game.is_some())),
                     ),
-                    Err(error) => (Err(bridge::BridgeFault::Rejoin(error)), None),
+                    // Ended by Leave when the session would not take it.
+                    Err(error) if error.is_cancelled() => (Ok(BridgeEnd::Left), None),
+                    Err(error) => (Err(bridge::BridgeFault::Rejoin(error.to_string())), None),
                 };
                 // The game keeps its link for the next room; a session that
                 // failed outright left none, so a new one is opened.
                 idle = link.or_else(|| open_link(&config).ok());
-                let message = match ended {
-                    Ok(end) => format!("the game session ended: {}", describe(&end)),
-                    Err(fault) => format!("the game session failed: {fault}"),
+                // Losing the room for good is said as it is, in both windows.
+                let room_lost = room_lost(&ended);
+                let message = match (&ended, &room_lost) {
+                    (_, Some(lost)) => lost.clone(),
+                    (Ok(end), None) => format!("the game session ended: {}", describe(end)),
+                    (Err(fault), None) => format!("the game session failed: {fault}"),
                 };
                 info!(%message);
                 {
@@ -549,6 +558,14 @@ async fn control(
                     shared.show_mods();
                     connected =
                         reconnect(&shared, finished.options, shared.content(&config)).await;
+                }
+                if let Some(lost) = room_lost {
+                    let mut view = shared.view();
+                    view.error = Some(match view.error.take() {
+                        // Not back on the server either: say both.
+                        Some(error) if connected.is_none() => format!("{lost}. {error}"),
+                        _ => lost,
+                    });
                 }
             }
             () = game_exit(&mut game) => {
@@ -673,9 +690,17 @@ async fn act(
         }
         Action::Disconnect => {
             if let Some(session) = session.take() {
-                let _ = session.controls.send(Control::Leave).await;
-                if let Ok((_, link, build)) = session.task.await {
-                    *idle = Some(IdleLink::resumed(link, build));
+                let _ = session.controls.try_send(Control::Leave);
+                let mut task = session.task;
+                match tokio::time::timeout(DISCONNECT_WAIT, &mut task).await {
+                    Ok(Ok((_, link, build))) => *idle = Some(IdleLink::resumed(link, build)),
+                    // Stuck: stopped, and its link with it; a new one opens.
+                    Err(_) => {
+                        task.abort();
+                        let _ = task.await;
+                        *idle = open_link(config).ok();
+                    }
+                    Ok(Err(_)) => *idle = open_link(config).ok(),
                 }
             }
             if let Some(connected) = connected.take() {
@@ -710,6 +735,7 @@ async fn act(
                 config.start_save.as_ref(),
                 crate::steam::find_save,
             )?;
+            check_start_save(start_world.as_deref())?;
             // The room's shared mods are the start save's, less this
             // player's personal ones: declared before the room exists, so
             // the room compares every guest's with them (docs/MODS.md).
@@ -824,7 +850,7 @@ async fn act(
             }
             forward(session, Control::Chat(text)).await
         }
-        Action::Leave => forward(session, Control::Leave).await,
+        Action::Leave => leave(session),
         Action::LaunchGame => launch_game(shared, config, session, game, idle),
         Action::ChooseMod { id, chosen } => {
             let chosen_now = {
@@ -1025,6 +1051,28 @@ fn start_world(
     find(picked).map(Some)
 }
 
+/// Refuses a save to start a room from that does not run TPF3-MP's mod:
+/// every game would load the room's world without the mod's game script,
+/// and hold it paused for good. A save whose mods do not read is not
+/// refused here: the room's mods then follow no save (`own_start` says so),
+/// and the world is checked again as it arrives (`Bridge`).
+fn check_start_save(file: Option<&Path>) -> Result<(), String> {
+    let Some(file) = file else {
+        return Ok(());
+    };
+    match crate::save_check::runs_own_mod(file) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            warn!(save = %file.display(), "the save picked to start a room from does not run TPF3-MP's mod");
+            Err(crate::save_check::SAVE_WITHOUT_OWN_MOD.to_owned())
+        }
+        Err(why) => {
+            warn!(%why, "cannot tell whether the start save runs TPF3-MP's mod");
+            Ok(())
+        }
+    }
+}
+
 /// A save's name, as the game's save list shows it: its file name without
 /// `.sav`.
 fn save_name(file: &Path) -> Option<String> {
@@ -1070,6 +1118,7 @@ async fn choose_start(
     }
     let listed = shared.view().saves.clone();
     let file = start_world(Some(picked), &listed, None, crate::steam::find_save)?;
+    check_start_save(file.as_deref())?;
     let declare = own_start(shared, file.as_deref());
     let picked = picked.trim();
     if !picked.is_empty() {
@@ -1689,10 +1738,43 @@ fn password_text(password: Option<String>) -> Result<Option<Text<64>>, String> {
 
 /// The end of the current session, or never without one: how it ended and
 /// the link it gives back, or why its task failed.
-async fn session_end(session: &mut Option<Session>) -> Result<SessionEnded, String> {
+async fn session_end(
+    session: &mut Option<Session>,
+) -> Result<SessionEnded, tokio::task::JoinError> {
     match session {
-        Some(session) => (&mut session.task).await.map_err(|error| error.to_string()),
+        Some(session) => (&mut session.task).await,
         None => std::future::pending().await,
+    }
+}
+
+/// What the player is told, in both windows, when a session ended because
+/// its room was lost for good: gone from the server, not rejoined in time,
+/// or with a world this game cannot play. `None` for any other end.
+fn room_lost(ended: &Result<BridgeEnd, bridge::BridgeFault>) -> Option<String> {
+    match ended {
+        Err(
+            fault @ (bridge::BridgeFault::RoomGone
+            | bridge::BridgeFault::Rejoin(_)
+            | bridge::BridgeFault::WorldWithoutOwnMod),
+        ) => Some(fault.to_string()),
+        _ => None,
+    }
+}
+
+/// Leaves the room, always: the session is asked to, and when it cannot
+/// take the request (its queue full, or it is stuck), it is stopped here.
+/// Either way it ends, and the launcher is back on the server in no room;
+/// a seat the server was not told about is let go after the room's grace.
+fn leave(session: &Option<Session>) -> Result<(), String> {
+    let session = session.as_ref().ok_or("join a room first")?;
+    leave_or_stop(&session.controls, &session.task);
+    Ok(())
+}
+
+fn leave_or_stop<T>(controls: &mpsc::Sender<Control>, task: &JoinHandle<T>) {
+    if let Err(error) = controls.try_send(Control::Leave) {
+        warn!(%error, "the room session cannot take the leave; stopping it");
+        task.abort();
     }
 }
 
@@ -1741,6 +1823,75 @@ mod tests {
 
     fn invite() -> Invite {
         Invite("K7QM2X".parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn leave_asks_the_session_and_stops_one_that_cannot_take_it() {
+        // A session that takes requests is asked.
+        let (controls, mut asked) = mpsc::channel(1);
+        let task = tokio::spawn(std::future::pending::<()>());
+        leave_or_stop(&controls, &task);
+        assert_eq!(asked.recv().await, Some(Control::Leave));
+        assert!(!task.is_finished(), "left by the session itself");
+        task.abort();
+
+        // One whose requests back up (stuck, or rejoining in an older
+        // build) is stopped: leaving never waits on it.
+        let (controls, _backed_up) = mpsc::channel(1);
+        controls
+            .try_send(Control::Chat(Text::new("hi").unwrap()))
+            .unwrap();
+        let task = tokio::spawn(std::future::pending::<()>());
+        leave_or_stop(&controls, &task);
+        let stopped = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("stopped at once");
+        assert!(stopped.unwrap_err().is_cancelled());
+    }
+
+    #[test]
+    fn a_room_lost_for_good_is_said_as_it_is_and_nothing_else_is() {
+        assert_eq!(
+            room_lost(&Err(bridge::BridgeFault::RoomGone)).as_deref(),
+            Some("The room is gone (closed or the server restarted)")
+        );
+        let gave_up = room_lost(&Err(bridge::BridgeFault::Rejoin("timed out".into()))).unwrap();
+        assert!(gave_up.contains("could not rejoin") && gave_up.contains("may be gone"));
+        assert_eq!(room_lost(&Ok(BridgeEnd::Left)), None);
+        assert_eq!(room_lost(&Err(bridge::BridgeFault::GameClosed)), None);
+        assert_eq!(
+            room_lost(&Err(bridge::BridgeFault::WorldWithoutOwnMod)).as_deref(),
+            Some(crate::save_check::WORLD_WITHOUT_OWN_MOD)
+        );
+    }
+
+    /// Seen live: a host started a room from a save without TPF3-MP's mod,
+    /// and both games loaded its world and held it paused, without a word.
+    #[test]
+    fn a_start_save_without_tpf3mps_mod_is_refused_saying_how_to_fix_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let without = dir.path().join("without.sav");
+        crate::save_check::saves::write(
+            &without,
+            &["urbangames_deluxe_upgrade_pack", "urbangames_preorder_pack"],
+        );
+        assert_eq!(
+            check_start_save(Some(&without)),
+            Err(
+                "This save doesn't have the TPF3-MP mod enabled: load it once, turn TPF3-MP on \
+                 in its mods, save it, then pick it again"
+                    .to_owned()
+            )
+        );
+        let with = dir.path().join("with.sav");
+        crate::save_check::saves::write(&with, &["tpf3mp_1", "urbangames_preorder_pack"]);
+        assert_eq!(check_start_save(Some(&with)), Ok(()));
+        // No save (a generated world), or one whose mods do not read: not
+        // refused here.
+        assert_eq!(check_start_save(None), Ok(()));
+        let junk = dir.path().join("junk.sav");
+        std::fs::write(&junk, b"not a save").unwrap();
+        assert_eq!(check_start_save(Some(&junk)), Ok(()));
     }
 
     #[test]

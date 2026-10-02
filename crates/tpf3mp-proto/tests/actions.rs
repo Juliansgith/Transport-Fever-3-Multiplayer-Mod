@@ -681,6 +681,21 @@ fn every_variant_round_trips() {
     }
 }
 
+/// The kind the logs name an action by is its variant's name, as serde (and
+/// so a scenario file) writes it.
+#[test]
+fn every_variant_s_kind_is_its_name() {
+    for action in samples() {
+        let json = serde_json::to_value(&action).unwrap();
+        let name = match &json {
+            serde_json::Value::Object(map) => map.keys().next().unwrap().clone(),
+            serde_json::Value::String(name) => name.clone(),
+            other => panic!("{other}"),
+        };
+        assert_eq!(action.kind(), name);
+    }
+}
+
 #[test]
 fn every_variant_round_trips_through_the_mod_s_tables() {
     for action in samples() {
