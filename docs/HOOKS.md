@@ -376,7 +376,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (D17): sent whenever it changes, before, during and after a room's
     game; only the newest counts (bridge version 9). Since bridge version
     10 it also carries the rules the server offers, the player's saves
-    (newest 40, by name) and the one offered first (`start_save`), where
+    (newest 40, by name; since version 22 the newest 100, the player's
+    own only: no `autosave_…` or `tpf3mp_…` copies) and the one offered
+    first (`start_save`), where
     the room's world is in this game (`world`: none, fetching with its
     bytes, loading, playing) and how the game differs from the room's.
     Since bridge version 14 it carries the page of the server's public
