@@ -3177,8 +3177,9 @@ step on another thread than the step's (a worker of a parallel loop)
 would count as outside it, so a count outside the step that grows while
 no frame passes would name such an append.
 
-**The vehicle watcher** (`TPF3MP_HOOK_WATCH_VEHICLES`, on unless `0` or
-`off`). At the platform visit site, inside the game's step, for every
+**The vehicle watcher** (`TPF3MP_HOOK_WATCH_VEHICLES`, off unless `1` or
+`on`; it writes a line for every vehicle that changes, too many for an
+ordinary game's log). At the platform visit site, inside the game's step, for every
 vehicle the chooser's loop looks at in a room's update: its
 `TransportVehicle` state (`+0xa8`), line (`+0xb8`), stop index (`+0xbc`)
 and current terminal (`+0xc0`, `+0xc4`), and one line when any of them
@@ -3258,7 +3259,8 @@ three games): every game ran every step on the same buffer as the others
 everywhere), and the step-3300 split came all the same, in bob's game.
 The buffers' histories are not the cause of that split.
 
-**The claim loop's watcher** (on with the vehicle watcher; logging only).
+**The claim loop's watcher** (on with the vehicle watcher, so off unless
+`TPF3MP_HOOK_WATCH_VEHICLES=1`; logging only).
 In that round only bob's game asked `FindNextFreeTerminal` for vehicle
 217708 at step 3201 (`watch: ... candidates`); the others never asked, so
 no free check differed. `TransportVehicleSystem::Update2` asks only for a
@@ -3404,8 +3406,8 @@ watch: step <s> engine <n> vehicle <entity> path <edges>: <entity>/<index>/<dire
 The first step where two games' path lines differ is where a route was
 computed differently.
 
-**Path ties** (`path-tie-order`, on unless `TPF3MP_HOOK_PATH_TIE_ORDER` is
-`0` or `off`). The route-logging round (`04901bc`, james and cat) found
+**Path ties** (`path-tie-order`, off unless `TPF3MP_HOOK_PATH_TIE_ORDER` is
+`1` or `on`; with it off the engine's own sort stands). The route-logging round (`04901bc`, james and cat) found
 the split: at step 3200 both games recomputed 217708's route to station
 362202, and the two routes were 26 edges long with the same middle
 section. They took different lanes through construction 362201, starting
@@ -3461,7 +3463,9 @@ station 362201's lanes. The search watcher, logging only, says every
 sorted batch that holds a segment on one of the edge entities
 `TPF3MP_HOOK_WATCH_PATH_ENTITIES` lists (commas), in the room steps
 `TPF3MP_HOOK_WATCH_PATH_STEPS` gives (`from-to`), with each segment's key
-and its two floats' bits:
+and its two floats' bits. With both set and the fix off, the hook still
+redirects the three calls, runs the engine's own sort and says the order
+it gave; with neither, nothing is redirected:
 
 ```
 pathsort: step <s> step-thread|other-thread search <id> n=<count>: <entity>/<index>/<dir>:<so far bits>+<heuristic bits> ...
@@ -3714,7 +3718,20 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |
 | `TPF3MP_HOOK_MEASURE_ORDER` | (unset by default) the order measurement, which adds its own detours and hashing when set |
 | `TPF3MP_HOOK_PERF` | the timing and these lines |
-| `TPF3MP_HOOK_WATCH_VEHICLES` | the vehicle watcher's `watch:` lines (a log only; nothing the game computes) |
+
+Off unless set to `1` or `on`:
+
+| switch (`1` or `on`) | turns on |
+|---|---|
+| `TPF3MP_HOOK_PATH_TIE_ORDER` | `path-tie-order` |
+| `TPF3MP_HOOK_DECISION_SYNC` | `decision-sync` |
+| `TPF3MP_HOOK_WATCH_VEHICLES` | the vehicle watcher's `watch:` lines, the claim loop's `claim:` lines and the ships' and aircraft's `nodes:` lines (a log only; nothing the game computes) |
+
+The other watchers are on only while their lists are set:
+`TPF3MP_HOOK_WATCH_ENTITIES` (with the vehicle watcher on) for a vehicle's
+every-visit lines, `movepath` among them;
+`TPF3MP_HOOK_WATCH_PATH_ENTITIES` for the `net:` lines, and with
+`TPF3MP_HOOK_WATCH_PATH_STEPS` for the `pathsort:` and `pathseeds:` lines.
 
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where

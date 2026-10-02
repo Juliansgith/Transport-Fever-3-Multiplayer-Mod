@@ -93,9 +93,12 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
         crate::step::alternate_wanted(std::env::var(decision_sync::TOGGLE_ENV).ok().as_deref()),
     ));
     outcomes.extend(road::install(resolved, wanted(road::TOGGLE_ENV), measuring));
-    outcomes.push(path_ties::install(resolved, wanted(path_ties::TOGGLE_ENV)));
+    outcomes.push(path_ties::install(
+        resolved,
+        crate::step::alternate_wanted(std::env::var(path_ties::TOGGLE_ENV).ok().as_deref()),
+    ));
     // The claim loop's watcher rides on the vehicle watcher's switch.
-    if wanted(platform::WATCH_ENV) {
+    if platform::watch_wanted() {
         outcomes.extend(claims::install(resolved));
         outcomes.extend(nodes::install(resolved));
     }
@@ -920,8 +923,14 @@ pub mod platform {
         static VISIT: RefCell<Visit> = RefCell::new(Visit::default());
     }
 
-    /// Set to `0` (or `off`), the vehicle watcher stays quiet.
+    /// Off unless set to `1` (or `on`): the vehicle watcher, and with it
+    /// the claim loop's and the ship and aircraft list watchers, stay quiet.
     pub const WATCH_ENV: &str = "TPF3MP_HOOK_WATCH_VEHICLES";
+
+    /// Whether [`WATCH_ENV`] asks for the vehicle watcher.
+    pub fn watch_wanted() -> bool {
+        crate::step::alternate_wanted(std::env::var(WATCH_ENV).ok().as_deref())
+    }
     static WATCH: AtomicBool = AtomicBool::new(false);
     /// One `TransportVehicle` component (`imul rbx, rax, 0x1e8` at the site).
     const COMPONENT_LEN: u64 = 0x1e8;
@@ -1172,7 +1181,7 @@ pub mod platform {
                 reason: format!("{TOGGLE_ENV} says so; the engine's visit and tie order stand"),
             }];
         }
-        let watching = crate::ticks::wanted(std::env::var(WATCH_ENV).ok().as_deref());
+        let watching = watch_wanted();
         WATCH.store(watching, Ordering::Release);
         let mut outcomes = vec![
             splice(
@@ -2336,7 +2345,8 @@ pub mod path_ties {
     use super::*;
 
     pub const FIX: &str = "path-tie-order";
-    /// Set to `0` (or `off`), the engine's own sort stands.
+    /// Off unless set to `1` (or `on`): without it the engine's own sort
+    /// stands.
     pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_PATH_TIE_ORDER";
     /// The road search's call of the sort (`0x266ce45`); the sort is its
     /// target.
@@ -2370,6 +2380,10 @@ pub mod path_ties {
 
     static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
     static BROKEN: AtomicBool = AtomicBool::new(false);
+    /// Whether the detour orders the batches ([`TOGGLE_ENV`]); without it
+    /// the detour, installed for the search watcher alone, runs the
+    /// engine's sort and only says its order.
+    static FIXING: AtomicBool = AtomicBool::new(false);
     static CALLS: AtomicU64 = AtomicU64::new(0);
     static TIES: AtomicU64 = AtomicU64::new(0);
 
@@ -2532,9 +2546,6 @@ pub mod path_ties {
             installed: false,
             reason,
         };
-        if !wanted {
-            return off(format!("{TOGGLE_ENV} says so; the engine's sort stands"));
-        }
         let entities =
             super::claims::parse_entities(std::env::var(WATCH_ENTITIES_ENV).ok().as_deref());
         let steps = std::env::var(WATCH_STEPS_ENV)
@@ -2550,6 +2561,13 @@ pub mod path_ties {
             }
             _ => None,
         });
+        let watching = WATCH.get().is_some_and(Option::is_some);
+        if !wanted && !watching {
+            return off(format!(
+                "off unless {TOGGLE_ENV}=1; the engine's sort stands"
+            ));
+        }
+        FIXING.store(wanted, Ordering::Release);
         let Some(site) = resolved.get(CALL_SITE) else {
             return off(format!("the profile has no {CALL_SITE:?}"));
         };
@@ -2616,6 +2634,11 @@ pub mod path_ties {
                 Err(error) => return off(format!("the call at {at:#x}: {error}")),
             }
         }
+        if !wanted {
+            return off(format!(
+                "off unless {TOGGLE_ENV}=1; the engine's sort stands, and the vehicle route searches' {redirected} calls of the segment sort at {target:#x} are only watched (logging)"
+            ));
+        }
         Outcome {
             fix: FIX,
             installed: true,
@@ -2625,9 +2648,75 @@ pub mod path_ties {
         }
     }
 
+    /// The detour with the fix off: the engine's sort, then the watcher
+    /// says the order it gave.
+    ///
+    /// # Safety
+    ///
+    /// As [`sort`].
+    unsafe fn watch_only(begin: *mut i32, end: *mut i32, depth: isize, this: usize) {
+        // SAFETY: the caller's.
+        unsafe { call_original(begin, end, depth, this) };
+        if BROKEN.load(Ordering::Relaxed) {
+            return;
+        }
+        guarded(FIX, &BROKEN, || {
+            let (begin_at, end_at) = (begin as usize, end as usize);
+            if end_at < begin_at || (end_at - begin_at) % 4 != 0 {
+                return;
+            }
+            let count = (end_at - begin_at) / 4;
+            // SAFETY: as in sort.
+            let (seg_begin, seg_end) = unsafe {
+                (
+                    std::ptr::read((this + 8) as *const usize),
+                    std::ptr::read((this + 0x10) as *const usize),
+                )
+            };
+            if count < 2
+                || seg_end < seg_begin
+                || (seg_end - seg_begin) % SEGMENT_LEN != 0
+                || (seg_end - seg_begin) / SEGMENT_LEN > MAX_SEGMENTS
+            {
+                return;
+            }
+            // SAFETY: as in sort; only read.
+            let (indices, segments) = unsafe {
+                (
+                    std::slice::from_raw_parts(begin as *const i32, count),
+                    std::slice::from_raw_parts(seg_begin as *const u8, seg_end - seg_begin),
+                )
+            };
+            let made = segments.len() / SEGMENT_LEN;
+            if indices.iter().all(|&i| i >= 0 && (i as usize) < made) {
+                watch_batch(indices, segments, this);
+            }
+        });
+    }
+
+    /// The engine's own sort, through the trampoline.
+    ///
+    /// # Safety
+    ///
+    /// As [`sort`].
+    unsafe fn call_original(begin: *mut i32, end: *mut i32, depth: isize, this: usize) {
+        let original = ORIGINAL.load(Ordering::Acquire);
+        if original != 0 {
+            // SAFETY: the trampoline of the engine's sort, its arguments
+            // forwarded.
+            let original: SortFn = unsafe { std::mem::transmute::<usize, SortFn>(original) };
+            unsafe { original(begin, end, depth, this) };
+        }
+    }
+
     /// The detour: `(begin, end, depth limit, this)`, the indices
     /// `[begin, end)` into the search's segments at `[this+8]..[this+0x10]`.
     unsafe extern "system" fn sort(begin: *mut i32, end: *mut i32, depth: isize, this: usize) {
+        if !FIXING.load(Ordering::Relaxed) {
+            // SAFETY: the engine's own call, forwarded.
+            unsafe { watch_only(begin, end, depth, this) };
+            return;
+        }
         let mut done = false;
         if !BROKEN.load(Ordering::Relaxed) {
             guarded(FIX, &BROKEN, || {
@@ -2686,13 +2775,8 @@ pub mod path_ties {
         if done {
             return;
         }
-        let original = ORIGINAL.load(Ordering::Acquire);
-        if original != 0 {
-            // SAFETY: the trampoline of the engine's sort, its arguments
-            // forwarded.
-            let original: SortFn = unsafe { std::mem::transmute::<usize, SortFn>(original) };
-            unsafe { original(begin, end, depth, this) };
-        }
+        // SAFETY: the engine's own call, forwarded.
+        unsafe { call_original(begin, end, depth, this) };
     }
 }
 
@@ -4435,11 +4519,11 @@ mod tests {
             on.iter()
                 .all(|o| !o.installed && o.reason.contains("the profile has no"))
         );
-        // The platform fix: both sites and the watcher's free check (the
-        // watcher is on unless its switch says otherwise), each off on its
-        // own; and its switch.
+        // The platform fix: both sites, and the watcher's decision read
+        // and free check only when its switch asks for it (off unless
+        // `1`), each off on its own; and its switch.
         let platform = platform::install(&resolved, true);
-        assert_eq!(platform.len(), 4);
+        assert_eq!(platform.len(), if platform::watch_wanted() { 4 } else { 2 });
         assert!(platform.iter().all(|o| !o.installed));
         let switched = platform::install(&resolved, false);
         assert!(switched[0].reason.contains(platform::TOGGLE_ENV));
@@ -4451,6 +4535,10 @@ mod tests {
         let road = road::install(&resolved, false, false);
         assert_eq!(road.len(), 1);
         assert!(road[0].reason.contains(road::TOGGLE_ENV));
+        // The path-tie fix is opt-in: off, it says how to turn it on.
+        let ties = path_ties::install(&resolved, false);
+        assert!(!ties.installed);
+        assert!(ties.reason.contains(path_ties::TOGGLE_ENV), "{ties}");
     }
 
     #[test]
