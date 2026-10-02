@@ -262,6 +262,30 @@ pub const BULLDOZER_STORE_BYTES: [u8; 25] = [
     0x48, 0x8B, 0x85, 0xC8, 0x01, 0x00, 0x00,
 ];
 pub const BULLDOZER_DISP_AT: usize = 17;
+/// The bulldozer constructor's owner list, a `std::vector<Entity>` it fills
+/// with its player and copies into its filter (rva 0x4c4ad5: `... lea
+/// r15,[r14+0xa8]; mov [r15],rdi; ...`; filled at 0x4c4f6f, copied at
+/// 0x4c4fb7). Every query the bulldozer makes is built from it
+/// (`sub_4d51c0`, called by `Step` 0x4d6a82, 0x4d4ac0, 0x4d2eb1 and its
+/// lambda 0x4d2897, 0x4d29ff).
+pub const BULLDOZER_LIST: &str = "UI::Bulldozer ctor/owner list";
+pub const BULLDOZER_LIST_BYTES: [u8; 32] = [
+    0x49, 0x89, 0xBE, 0x98, 0x00, 0x00, 0x00, 0x49, 0x89, 0xBE, 0xA0, 0x00, 0x00, 0x00, 0x4D, 0x8D,
+    0xBE, 0xA8, 0x00, 0x00, 0x00, 0x49, 0x89, 0x3F, 0x49, 0x89, 0x7F, 0x08, 0x49, 0x89, 0x7F, 0x10,
+];
+pub const BULLDOZER_LIST_DISP_AT: usize = 17;
+/// The bulldozer's setter of its owner list, `sub_4d6220` (rva 0x4d6220:
+/// this in rcx, the new list in rdx; assigns it to the list and to the
+/// filter's copy). The menu's step calls it (`CMenuUI::DoStep`'s lambda,
+/// `sub_68f070`, `sub_6a76e0`, `sub_6a1410` at 0x6a14bc) with the GUI's
+/// player (`[[game+0x1e0]+0x20c]`, the save's) or an empty list, so it
+/// undoes a company written at the tool's frame until the next one.
+pub const BULLDOZER_SETTER: &str = "UI::Bulldozer set owner list";
+pub const BULLDOZER_SETTER_BYTES: [u8; 26] = [
+    0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8D, 0x99, 0xA8, 0x00, 0x00,
+    0x00, 0x4C, 0x8B, 0xC2, 0x48, 0x8B, 0xF9, 0x48, 0x3B, 0xDA,
+];
+pub const BULLDOZER_SETTER_DISP_AT: usize = 13;
 
 /// The bulldozer's own player offset, if `code` is its store.
 pub fn bulldozer_player_offset(code: &[u8]) -> Option<usize> {
@@ -344,11 +368,14 @@ const SLOTS: usize = 64;
 struct State {
     slots: Vec<(usize, Slot)>,
     said: Vec<String>,
+    /// Writes of a company over the save's player the game set back.
+    rewrites: u64,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     slots: Vec::new(),
     said: Vec::new(),
+    rewrites: 0,
 });
 static ON: AtomicBool = AtomicBool::new(false);
 /// Set when a frame's work panicked: no more writes for this game.
@@ -358,6 +385,9 @@ static BROKEN: AtomicBool = AtomicBool::new(false);
 static FIELDS: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
 static FILTER_FIELD: AtomicUsize = AtomicUsize::new(0);
 static FILTER_VTABLE: AtomicUsize = AtomicUsize::new(0);
+/// The bulldozer's owner list's offset, 0 while unknown.
+static LIST_FIELD: AtomicUsize = AtomicUsize::new(0);
+static SETTER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static STREET_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static MODIFIER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static CONSTRUCTION_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -386,16 +416,31 @@ fn read_usize(address: usize) -> Option<usize> {
     Some(unsafe { std::ptr::read_unaligned(address as *const usize) })
 }
 
+/// The one player of the `std::vector<Entity>` at `vector`, if it holds
+/// exactly one (as the constructor and the menu's setter make it; an empty
+/// list, which lets every owner through, is left alone).
+fn one_player(vector: usize) -> Option<usize> {
+    let begin = read_usize(vector)?;
+    let end = read_usize(vector.checked_add(8)?)?;
+    (end.checked_sub(begin) == Some(4)).then_some(begin)
+}
+
 /// The bulldozer filter's one player, if the filter has the shape expected.
 fn filter_player(this: usize) -> Option<usize> {
     let filter = read_usize(this.checked_add(FILTER_FIELD.load(Ordering::Acquire))?)?;
     if read_usize(filter)? != FILTER_VTABLE.load(Ordering::Acquire) {
         return None;
     }
-    let begin = read_usize(filter + FILTER_PLAYERS)?;
-    let end = read_usize(filter + FILTER_PLAYERS + 8)?;
-    // Exactly one player, as the constructor makes the list.
-    (end.checked_sub(begin) == Some(4)).then_some(begin)
+    one_player(filter + FILTER_PLAYERS)
+}
+
+/// The bulldozer's own owner list's one player.
+fn list_player(this: usize) -> Option<usize> {
+    let list = LIST_FIELD.load(Ordering::Acquire);
+    if list == 0 {
+        return None;
+    }
+    one_player(this.checked_add(list)?)
 }
 
 /// The addresses of `tool`'s player fields in the object `this`, with what
@@ -407,10 +452,16 @@ fn fields_of(tool: Tool, this: usize) -> Option<Vec<(usize, &'static str)>> {
     }
     let own = this.checked_add(offset)?;
     if tool == Tool::Bulldozer {
-        return Some(vec![
-            (own, "its player"),
-            (filter_player(this)?, "its owner filter"),
-        ]);
+        // Its own player always; each owner list while it holds one
+        // player (empty, it lets every owner through).
+        let mut fields = vec![(own, "its player")];
+        if let Some(list) = list_player(this) {
+            fields.push((list, "its owner list"));
+        }
+        if let Some(filter) = filter_player(this) {
+            fields.push((filter, "its owner filter"));
+        }
+        return Some(fields);
     }
     Some(vec![(own, "its player")])
 }
@@ -455,6 +506,19 @@ fn field(state: &mut State, tool: Tool, this: usize, field: usize, what: &str) {
                     }
                     state.slots.push((field, next));
                 }
+            }
+            if slot.wrote == Some(value) {
+                // The game set the save's player back (the menu's step sets
+                // the bulldozer's list): written again, said once per field.
+                state.rewrites += 1;
+                if state.rewrites == 1 || state.rewrites.is_power_of_two() {
+                    crate::log::line(&format!(
+                        "{FIX}: {} at {this:#x} ({what}) was set back to player {current}; the company {value} written again ({} time(s) so far, all tools)",
+                        tool.name(),
+                        state.rewrites
+                    ));
+                }
+                return;
             }
             crate::log::line(&if restoring {
                 format!(
@@ -638,14 +702,69 @@ fn read_layout(resolved: &ResolvedProfile, tool: Tool, shape: u64) -> bool {
     let filter = resolved
         .get(BULLDOZER_FILTER)
         .and_then(|f| code(f.address, 48).and_then(|c| filter_layout(c, f.address as usize)));
-    match (player, filter) {
-        (Some(player), Some(filter)) => {
+    let list = resolved.get(BULLDOZER_LIST).and_then(|l| {
+        code(l.address, BULLDOZER_LIST_BYTES.len())
+            .and_then(|c| store_offset(c, &BULLDOZER_LIST_BYTES, BULLDOZER_LIST_DISP_AT))
+    });
+    match (player, filter, list) {
+        (Some(player), Some(filter), Some(list)) => {
             FIELDS[tool.index()].store(player, Ordering::Release);
             FILTER_FIELD.store(filter.filter, Ordering::Release);
             FILTER_VTABLE.store(filter.vtable, Ordering::Release);
+            LIST_FIELD.store(list, Ordering::Release);
             true
         }
         _ => false,
+    }
+}
+
+/// The bulldozer's list setter's detour: the game's own assignment, then
+/// the bulldozer's fields brought to the company at once, so the list the
+/// menu's step sets never stands until the tool's next frame.
+extern "C" fn set_owner_list(this: usize, list: usize) {
+    let original = SETTER_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: the trampoline of the setter, stored before the detour could
+    // be reached; called with the arguments the game passed.
+    let original: extern "C" fn(usize, usize) =
+        unsafe { std::mem::transmute::<usize, extern "C" fn(usize, usize)>(original) };
+    original(this, list);
+    before(Tool::Bulldozer, this);
+}
+
+/// Detours the bulldozer's list setter, once its offset matches the list's.
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn install_setter(resolved: &ResolvedProfile) -> String {
+    let Some(setter) = resolved.get(BULLDOZER_SETTER) else {
+        return format!(
+            "{FIX}: the bulldozer's owner list is set back each time the menu sets it: the profile lacks {BULLDOZER_SETTER}"
+        );
+    };
+    let offset = code(setter.address, BULLDOZER_SETTER_BYTES.len())
+        .and_then(|c| store_offset(c, &BULLDOZER_SETTER_BYTES, BULLDOZER_SETTER_DISP_AT));
+    if offset.is_none() || offset != Some(LIST_FIELD.load(Ordering::Acquire)) {
+        return format!(
+            "{FIX}: the bulldozer's owner list setter at {:#x} is not the code expected; left alone",
+            setter.address
+        );
+    }
+    // SAFETY: as [`detour`]; the detour takes the setter's two arguments
+    // and calls it with them.
+    let installed = unsafe {
+        tpf3mp_hookcore::detour::InlineDetour::install(
+            setter.address as usize as *mut u8,
+            set_owner_list as *const u8,
+        )
+    };
+    match installed {
+        Ok(detoured) => {
+            SETTER_ORIGINAL.store(detoured.trampoline() as usize, Ordering::Release);
+            let _kept = std::mem::ManuallyDrop::new(detoured);
+            format!(
+                "{FIX}: the bulldozer's owner list is set to the company again each time the menu sets it ({BULLDOZER_SETTER} at {:#x})",
+                setter.address
+            )
+        }
+        Err(error) => format!("{FIX}: detouring {BULLDOZER_SETTER} failed: {error:?}"),
     }
 }
 
@@ -680,6 +799,9 @@ fn install_tools(resolved: &ResolvedProfile) -> Vec<String> {
         match detour(step_at.address, entry, original) {
             Ok(()) => {
                 any = true;
+                if tool == Tool::Bulldozer {
+                    lines.push(install_setter(resolved));
+                }
                 lines.push(format!(
                     "{FIX}: {} acts as the player's company in a room ({step} at {:#x}; {ENV}=0 turns it off)",
                     tool.name(),
@@ -769,6 +891,34 @@ mod tests {
             "not a store of ebx: refused"
         );
         assert_eq!(bulldozer_player_offset(&BULLDOZER_STORE_BYTES[..10]), None);
+    }
+
+    #[test]
+    fn the_bulldozers_owner_list_and_its_setter_agree() {
+        assert_eq!(
+            store_offset(
+                &BULLDOZER_LIST_BYTES,
+                &BULLDOZER_LIST_BYTES,
+                BULLDOZER_LIST_DISP_AT
+            ),
+            Some(0xa8)
+        );
+        assert_eq!(
+            store_offset(
+                &BULLDOZER_SETTER_BYTES,
+                &BULLDOZER_SETTER_BYTES,
+                BULLDOZER_SETTER_DISP_AT
+            ),
+            Some(0xa8),
+            "the setter writes the list the constructor made"
+        );
+        let mut other = BULLDOZER_SETTER_BYTES;
+        other[12] = 0x9A;
+        assert_eq!(
+            store_offset(&other, &BULLDOZER_SETTER_BYTES, BULLDOZER_SETTER_DISP_AT),
+            None,
+            "another register: refused"
+        );
     }
 
     #[test]

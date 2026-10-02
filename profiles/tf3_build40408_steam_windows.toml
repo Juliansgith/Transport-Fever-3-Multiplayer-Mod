@@ -1280,3 +1280,26 @@ signature = "48 89 5C 24 18 55 56 41 56 48 83 EC 30 48 8B 42 08"
 offset = 0
 prologue = "48 89 5C 24 18 55 56 41 56 48 83 EC 30 48 8B 42 08"
 required = false
+
+# The bulldozer's owner list (toolplayer.rs): a std::vector<Entity> at
+# +0xa8, which its ctor fills with its player (0x4c4f6f) and copies into
+# its filter (0x4c4fb7), and from which every query it makes is built
+# (sub_4d51c0, called by Step 0x4d6a82, 0x4d4ac0, 0x4d2eb1 and its ctor's
+# lambda 0x4d2897, 0x4d29ff). Its setter sub_4d6220 (this, list) assigns
+# both; the menu's step calls it (CMenuUI::DoStep's lambda, sub_68f070,
+# sub_6a76e0, sub_6a1410 at 0x6a14bc) with the GUI's player
+# ([[game+0x1e0]+0x20c]) or an empty list. Readers of +0xa8 in the
+# bulldozer: those calls, the ctor, the setter, and its dtor sub_4cb390.
+[[target]]
+name = "UI::Bulldozer ctor/owner list"
+signature = "49 89 BE 98 00 00 00 49 89 BE A0 00 00 00 4D 8D BE A8 00 00 00 49 89 3F 49 89 7F 08 49 89 7F 10"
+offset = 0
+prologue = "49 89 BE 98 00 00 00"
+required = false
+
+[[target]]
+name = "UI::Bulldozer set owner list"
+signature = "48 89 5C 24 08 57 48 83 EC 30 48 8D 99 A8 00 00 00 4C 8B C2 48 8B F9 48 3B DA"
+offset = 0
+prologue = "48 89 5C 24 08 57 48 83 EC 30 48 8D 99 A8 00 00 00"
+required = false

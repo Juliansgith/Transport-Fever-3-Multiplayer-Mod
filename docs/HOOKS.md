@@ -1975,11 +1975,11 @@ edge test (`probe: StreetBulldozerAction edge test`, rva 0x5f2a00, a lambda
 of `UI::StreetBulldozerAction::vf2`) and the owner test every bulldozer
 action calls (`probe: bulldozer owner test`, `sub_5f7db0`), each with the
 entity, the owner list it had and the answer, merged by equal answers,
-every 3 s:
+merged by equal answers and callers (the return address, as an RVA), every 3 s:
 
 ```
-probe: the street bulldozer's edge test on entity 380001: refused with owner list [372363]; 4 time(s)
-probe: the bulldozer's owner test on entity 380001: allowed with owner list [372363]; 4 time(s)
+probe: the street bulldozer's edge test on entity 380001: refused with owner list [214443]; 4 time(s), from rva 0x5f2f4b
+probe: the bulldozer's owner test on entity 380001: allowed with owner list [372363]; 4 time(s), from rva 0x5f2ae6
 ```
 
 An edge refused by the edge test with the company in its list, and no
@@ -2005,7 +2005,7 @@ thread, the hook writes the company the GUI notes
 | `UI::ConstructionBuilder` (stations, depots, every construction the menu places) | `+0xa0` | `0x51cd60` |
 | `UI::StreetTerminalBuilder` (the stop builder, and the signal and waypoint builder, a second instance) | `+0xa0` | `0x595f30` |
 | `UI::ModuleBuilder` (a station's modules) | `+0xa8` | `0x545b50` |
-| `UI::Bulldozer` (every bulldozer action) | its own player (`+0x28`, what its proposals are made for) and the one player of its `BulldozerFilter` (`[[+0xc0]+0x10]`) | `0x4d6340` |
+| `UI::Bulldozer` (every bulldozer action) | its own player (`+0x28`), its owner list (`+0xa8`, the one player every query it makes is built from) and the one player of its `BulldozerFilter`'s copy (`[[+0xc0]+0x10]`) | `0x4d6340`, and its list setter `0x4d6220` |
 
 Each field's offset is read from its constructor's code (profile targets
 `... ctor/player store`, `UI::Bulldozer ctor/filter`, which also gives the
@@ -2035,7 +2035,19 @@ capture (the construction and stop builders kept the save's player), and so
 was bulldozing the company's road: the filter's player was written, but
 the bulldozer's own player (`+0x28`), which its proposals are made for
 (`Step` 0x4d687e, 0x4d46b0, 0x4d2b70, its lambda 0x4d2650), was not. Both
-are written now. Not covered: the town, terrain and other tools CGameUI
+are written now. The second test (95127b2) showed the bulldozer's edge
+test allowing the company's road with the company in its list and refusing
+it with the save's player in its list, from the same frames: the menu's
+step (`CMenuUI::DoStep`'s lambda through `sub_6a1410`) sets the bulldozer's
+owner list (`+0xa8`, and the filter's copy) again to the GUI's player
+(`[[game+0x1e0]+0x20c]`, the save's) through `sub_4d6220`, between the
+tool's frames, and the click's query is built from that list. So the
+setter is detoured too (`UI::Bulldozer set owner list`): the game's own
+assignment, then the bulldozer's fields brought to the company at once. An
+empty list (the setter's other case, which lets every owner through) is
+left alone. A field the game set back and this wrote again is said once,
+then at each power of two (`... was set back to player 214443; the company
+372630 written again (N time(s) so far, all tools)`). Not covered: the town, terrain and other tools CGameUI
 hands the player to (`sub_59b890`, `sub_5a2480` and the rest), which build
 nothing a company owns.
 

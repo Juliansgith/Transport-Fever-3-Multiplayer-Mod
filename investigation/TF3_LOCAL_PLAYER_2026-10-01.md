@@ -160,3 +160,26 @@ stops and bulldozing the company's road still did nothing, with no capture.
   (TPF3MP_PROBE_PLAYER=1) logs both tests' answers to confirm it.
 
 All four now get the company the same way (toolplayer.rs).
+
+### The bulldozer's owner list, set again by the menu (2026-10-02)
+
+Game test of 95127b2, p0 (company #1, 372630), `TPF3MP_PROBE_PLAYER=1`:
+bulldozing the company's road still did nothing. The probe answered the
+same edges both ways in the same 3 s, e.g. entity 325970: allowed with
+owner list [372630] (72 times), refused with [214443] (2 times), for both
+the edge test and the owner test, while the tool-company lines showed the
+bulldozer's player and filter written at 16:43:10.
+
+- **seen** The bulldozer keeps its own owner list at `+0xa8` (a
+  `std::vector<Entity>`, 0x4c4ae3), which its ctor fills with its player
+  (0x4c4f6f) and copies into the filter (0x4c4fb7). Every query it makes
+  is built from it by `sub_4d51c0` (its 5th argument, `lea [this+0xa8]` at
+  0x4d2865, 0x4d29d6, 0x4d2e7b, 0x4d4aa2, 0x4d6a60).
+- **seen** `sub_4d6220(this, list)` assigns a list to `+0xa8` and to the
+  filter's copy. Its only caller is `sub_6a1410` (0x6a14bc), from
+  `sub_6a76e0` from `sub_68f070` from `CMenuUI::DoStep`'s lambda: it passes
+  `{ [[game+0x1e0]+0x20c] }`, the GUI GameState's player (the save's), or
+  an empty list when a flag (`cl`, or `[[game+0x1d8]+0x10]+0x4d9`) is set.
+- **inferred** The menu sets the list back between the tool's frames, so
+  queries made after it (the click) carried the save's player. The
+  detour of the setter puts the company back right after each call.

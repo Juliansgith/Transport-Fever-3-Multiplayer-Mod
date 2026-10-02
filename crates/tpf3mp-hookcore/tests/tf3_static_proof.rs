@@ -150,6 +150,8 @@ const TARGETS: &[(&str, u64)] = &[
     ("UI::ModuleBuilder::Step", 0x545b50),
     ("UI::ModuleBuilder ctor/player store", 0x540431),
     ("UI::Bulldozer ctor/player store", 0x4c4a41),
+    ("UI::Bulldozer ctor/owner list", 0x4c4ad5),
+    ("UI::Bulldozer set owner list", 0x4d6220),
     ("probe: StreetBulldozerAction edge test", 0x5f2a00),
     ("probe: bulldozer owner test", 0x5f7db0),
     ("lua_cached_loadfile", 0x2fa8130),
