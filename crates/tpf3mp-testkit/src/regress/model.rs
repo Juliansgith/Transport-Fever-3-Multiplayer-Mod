@@ -549,21 +549,13 @@ impl State {
                 Ok(())
             }
             // The model keeps no vehicle state beyond its line: a vehicle
-            // sent to its depot leaves its line, and one sold there goes, as
-            // a sale.
+            // sent to its depot leaves its line. One sold on arrival never
+            // gets here: `Action::validate` refuses it (the game crashes).
             Action::VehicleOp(op) => {
                 let ids = self.own_vehicles(std::iter::once(op.vehicle.0), company)?;
-                if let VehicleChange::ToDepot { sell } = op.change {
+                if let VehicleChange::ToDepot { .. } = op.change {
                     for id in ids {
-                        if sell {
-                            let vehicle = self.vehicles.remove(&id).expect("checked above");
-                            let cars = i64::try_from(vehicle.consist.len()).unwrap_or(i64::MAX);
-                            if let Some(owner) = self.companies.get_mut(&company) {
-                                owner.money += VEHICLE_COST.saturating_mul(cars) / 2;
-                            }
-                        } else {
-                            self.vehicles.get_mut(&id).expect("checked above").line = None;
-                        }
+                        self.vehicles.get_mut(&id).expect("checked above").line = None;
                     }
                 }
                 Ok(())

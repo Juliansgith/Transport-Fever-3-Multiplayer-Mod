@@ -701,9 +701,13 @@ function capture.vehicleStop(ctx, vehicle, stopped)
 	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { Stop = stopped == true } } }
 end
 
+-- Sold on arrival, build 40408 crashes when the vehicle reaches the depot:
+-- it sells the vehicle, then asks the vehicle it removed where its depot is
+-- (Engine.h:323). TF3's own windows only ever send false.
 function capture.vehicleToDepot(ctx, vehicle, sell, jumpTo)
 	if jumpTo ~= nil then error("moving a vehicle into a depot at once", 0) end
-	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ToDepot = { sell = sell == true } } } }
+	if sell == true then error("selling a vehicle when it reaches the depot (the game crashes there)", 0) end
+	return { VehicleOp = { vehicle = vehicleOf(ctx, vehicle), change = { ToDepot = { sell = false } } } }
 end
 
 function capture.vehicleReverse(ctx, vehicle)

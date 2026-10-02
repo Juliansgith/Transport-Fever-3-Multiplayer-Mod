@@ -9,14 +9,14 @@ use proptest::{collection::vec, prelude::*, sample::Index};
 use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
-        ACTION_SCHEMA_VERSION, Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp,
-        ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds,
-        EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData, LineId,
-        LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES, Network,
-        NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle,
-        ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, SubsidyOp, SubsidyRef,
-        Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform,
-        UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
+        ACTION_SCHEMA_VERSION, Action, ActionError, AssignLine, Bulldoze, BuyVehicle, CompanyId,
+        CompanyOp, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration,
+        EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData,
+        LineId, LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES,
+        Network, NodeRef, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect,
+        ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure,
+        SubsidyOp, SubsidyRef, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
+        Tram, Transform, UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
     lua,
 };
@@ -459,7 +459,7 @@ fn samples() -> Vec<Action> {
         }),
         Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(2),
-            change: VehicleChange::ToDepot { sell: true },
+            change: VehicleChange::ToDepot { sell: false },
         }),
         Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(2),
@@ -602,6 +602,32 @@ fn invalid_junction_relationships_are_refused_on_the_wire_and_in_lua() {
         assert!(Action::from_payload(&Payload::new(wire).unwrap()).is_err());
         assert!(lua::action_from_lua(&lua::action_to_lua(&bad).unwrap()).is_err());
     }
+}
+
+/// A vehicle sent to be sold on arrival at its depot crashes build 40408
+/// there, in every game at once (2026-10-02, `road_vehicles` scenario): no
+/// game sends it, reads it from the room or takes it from the mod.
+#[test]
+fn a_vehicle_sold_on_arrival_at_its_depot_is_refused_on_the_wire_and_in_lua() {
+    let bad = Action::VehicleOp(VehicleOp {
+        vehicle: VehicleId(2),
+        change: VehicleChange::ToDepot { sell: true },
+    });
+    assert!(matches!(bad.validate(), Err(ActionError::SellOnArrival)));
+    assert!(bad.to_payload().is_err());
+    let wire = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, &bad)).unwrap();
+    assert!(matches!(
+        Action::from_payload(&Payload::new(wire).unwrap()),
+        Err(ActionError::SellOnArrival)
+    ));
+    assert!(lua::action_from_lua(&lua::action_to_lua(&bad).unwrap()).is_err());
+    // Sent to the depot and kept, it travels.
+    let good = Action::VehicleOp(VehicleOp {
+        vehicle: VehicleId(2),
+        change: VehicleChange::ToDepot { sell: false },
+    });
+    let payload = good.to_payload().unwrap();
+    assert_eq!(Action::from_payload(&payload).unwrap(), good);
 }
 
 /// A train's replacement: its locomotive kept, turned, and a new coach
