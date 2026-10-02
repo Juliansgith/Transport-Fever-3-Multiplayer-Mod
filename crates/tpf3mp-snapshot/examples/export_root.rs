@@ -21,6 +21,8 @@ fn main() {
         recompress_received: false,
     };
     let store = ChunkStore::open(dir, config).expect("open the store");
-    store.assemble(&manifest, Path::new(&args[3])).expect("assemble");
+    store
+        .assemble(&manifest, Path::new(&args[3]))
+        .expect("assemble");
     println!("{} bytes to {}", manifest.total_size(), args[3]);
 }
