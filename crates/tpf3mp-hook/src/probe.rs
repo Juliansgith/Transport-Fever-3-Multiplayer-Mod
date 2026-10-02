@@ -1145,6 +1145,139 @@ fn flush_viewer() -> Vec<String> {
     lines
 }
 
+/// The map's line viewer's edge geometry of one line (`sub_7f10a0`, in
+/// `game\ui\util\lineviewer.cpp`, called by `LineViewer::Update` at 0x7f6598,
+/// 0x7f69e9 and 0x7f6a55): rcx the viewer's buffers, rdx the result it
+/// fills (vectors at +0x08, +0x28 and +0x50), r8d the line, r9d a stop
+/// filter, then three on the stack. Detoured to say, per line, how much it
+/// built; the original's work and answer are unchanged.
+pub const GEOMETRY_TARGET: &str = "probe: LineViewer GetEdgeGeometries";
+const GEOMETRY_ROWS: usize = 32;
+
+/// One line's geometry as the viewer built it: the byte sizes of the
+/// result's three vectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GeometryRow {
+    pub line: i32,
+    pub filter: i32,
+    pub bytes: [i64; 3],
+}
+
+static GEOMETRY_LOG: Mutex<Vec<GeometryRow>> = Mutex::new(Vec::new());
+static GEOMETRY_SAID: Mutex<Vec<GeometryRow>> = Mutex::new(Vec::new());
+static GEOMETRY_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+
+pub fn geometry_text(r: &GeometryRow) -> String {
+    format!(
+        "probe: the line viewer built line {}'s edge geometry (stop filter {}): {} / {} / {} bytes{}",
+        r.line,
+        r.filter,
+        r.bytes[0],
+        r.bytes[1],
+        r.bytes[2],
+        if r.bytes.iter().all(|&b| b == 0) {
+            "; nothing to draw"
+        } else {
+            ""
+        }
+    )
+}
+
+fn vector_bytes(at: usize) -> Option<i64> {
+    let begin = pointer(at)?;
+    let end = pointer(at.wrapping_add(8))?;
+    i64::try_from(end.checked_sub(begin)?).ok()
+}
+
+type GeometryFn = extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64;
+
+extern "C" fn geometry_detour(
+    a: u64,
+    out: u64,
+    line: u64,
+    filter: u64,
+    p5: u64,
+    p6: u64,
+    p7: u64,
+) -> u64 {
+    let original = GEOMETRY_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: the trampoline of the function this detours, stored before the
+    // detour could be reached; called with all seven of its arguments, as
+    // the game called it (four in registers, three on the stack).
+    let original: GeometryFn = unsafe { std::mem::transmute::<usize, GeometryFn>(original) };
+    let answer = original(a, out, line, filter, p5, p6, p7);
+    let _ = std::panic::catch_unwind(|| {
+        let out = out as usize;
+        let (Some(b0), Some(b1), Some(b2)) = (
+            vector_bytes(out.wrapping_add(0x08)),
+            vector_bytes(out.wrapping_add(0x28)),
+            vector_bytes(out.wrapping_add(0x50)),
+        ) else {
+            return;
+        };
+        let row = GeometryRow {
+            line: line as u32 as i32,
+            filter: filter as u32 as i32,
+            bytes: [b0, b1, b2],
+        };
+        if let Ok(mut log) = GEOMETRY_LOG.try_lock()
+            && !log.contains(&row)
+            && log.len() < GEOMETRY_ROWS
+        {
+            log.push(row);
+        }
+    });
+    answer
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn install_geometry(resolved: &ResolvedProfile) -> String {
+    let Some(target) = resolved.get(GEOMETRY_TARGET) else {
+        return format!("probe: {GEOMETRY_TARGET} not logged: the profile lacks it");
+    };
+    // SAFETY: a function the profile resolved and prologue-checked in this
+    // build, detoured before any world runs; the detour forwards its seven
+    // arguments to the original and returns its answer.
+    let installed = unsafe {
+        tpf3mp_hookcore::detour::InlineDetour::install(
+            target.address as usize as *mut u8,
+            geometry_detour as *const u8,
+        )
+    };
+    match installed {
+        Ok(detoured) => {
+            GEOMETRY_ORIGINAL.store(detoured.trampoline() as usize, Ordering::Release);
+            let _kept = std::mem::ManuallyDrop::new(detoured);
+            format!(
+                "probe: logging the line viewer's edge geometry per line at {:#x}, unchanged",
+                target.address
+            )
+        }
+        Err(error) => format!("probe: {GEOMETRY_TARGET} not logged: detouring failed: {error:?}"),
+    }
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn install_geometry(_resolved: &ResolvedProfile) -> String {
+    "probe: the line viewer's geometry is not logged: Windows x86-64 only".into()
+}
+
+fn flush_geometry() -> Vec<String> {
+    let rows = match GEOMETRY_LOG.try_lock() {
+        Ok(mut log) => std::mem::take(&mut *log),
+        Err(_) => return Vec::new(),
+    };
+    let mut said = GEOMETRY_SAID.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut lines = Vec::new();
+    for row in rows {
+        if !said.contains(&row) && said.len() < 4 * GEOMETRY_ROWS {
+            said.push(row);
+            lines.push(geometry_text(&row));
+        }
+    }
+    lines
+}
+
 /// When the probe last looked, and at which game.
 struct Pace {
     game: usize,
@@ -1204,8 +1337,9 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> String {
     let owners = install_other_owner(resolved);
     let bulldoze = install_bulldoze(resolved).join("\n");
     let viewer = install_viewer(resolved);
+    let geometry = install_geometry(resolved);
     format!(
-        "{callers}\n{owners}\n{bulldoze}\n{viewer}\nprobe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
+        "{callers}\n{owners}\n{bulldoze}\n{viewer}\n{geometry}\nprobe: reading the engine's player, read only: the GUI's GameState at [[menu+{:#x}]+{:#x}], the engine's at [[game+{:#x}]+{:#x}+8*i], i at +{:#x}; {} bytes of each scanned every {} s",
         g.game,
         g.state,
         s.states,
@@ -1246,6 +1380,7 @@ pub fn frame(menu: usize, now_ms: u64) -> Vec<String> {
     lines.extend(flush_other_owned(now_ms));
     lines.extend(flush_bulldoze(now_ms));
     lines.extend(flush_viewer());
+    lines.extend(flush_geometry());
     lines.extend(states(menu, now_ms));
     lines
 }
@@ -1516,6 +1651,24 @@ mod tests {
             [0x41, 0x8B, 0x8F],
             "mov ecx,[r15+disp32]"
         );
+    }
+
+    #[test]
+    fn the_viewers_geometry_per_line_is_said() {
+        let empty = GeometryRow {
+            line: 272_108,
+            filter: -1,
+            bytes: [0, 0, 0],
+        };
+        assert_eq!(
+            geometry_text(&empty),
+            "probe: the line viewer built line 272108's edge geometry (stop filter -1): 0 / 0 / 0 bytes; nothing to draw"
+        );
+        let built = GeometryRow {
+            bytes: [480, 96, 0],
+            ..empty
+        };
+        assert!(geometry_text(&built).ends_with("480 / 96 / 0 bytes"));
     }
 
     #[test]
