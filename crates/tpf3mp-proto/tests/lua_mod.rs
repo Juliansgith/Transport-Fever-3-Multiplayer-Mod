@@ -9754,6 +9754,13 @@ fn the_map_line_probe_says_what_the_line_viewer_draws() {
         ),
         "{logged}"
     );
+    // The line's owner: the component types it has, and its colour.
+    assert!(
+        logged.contains(
+            "probe: the line's owner 901 has (no component types it could list); no colour (the HUD's state)"
+        ),
+        "{logged}"
+    );
 }
 
 /// A purchase names its depot in hook.log: the entity the store passed, its
