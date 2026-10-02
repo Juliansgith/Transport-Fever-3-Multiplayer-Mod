@@ -1508,6 +1508,30 @@ pub mod platform {
             };
             edges.push((word(0), word(4), edge[8]));
         }
+        // Every visit, the MovePath's words too (the decision read's
+        // `movepath` lines skip the steps a vehicle holds a platform).
+        let mut words = Vec::with_capacity(((super::claims::MOVE_PATH_LEN - 0x18) / 4) as usize);
+        let mut at = 0x18;
+        while at < super::claims::MOVE_PATH_LEN {
+            let Some(word) = probe.read::<u32>(mp + at) else {
+                return;
+            };
+            words.push(word);
+            at += 4;
+        }
+        let mut hash = Fnv1a::new();
+        for (entity, index, forward) in &edges {
+            hash.write_u32(*entity as u32);
+            hash.write_u32(*index as u32);
+            hash.write(&[*forward]);
+        }
+        log::line(
+            &movepath_line(step, engine, vehicle, edges.len() as u64, hash.0, &words).replacen(
+                " movepath ",
+                " visit movepath ",
+                1,
+            ),
+        );
         let changed = PATHS.with(|paths| {
             let mut paths = paths.borrow_mut();
             if paths.get(&(engine, vehicle)) == Some(&edges) {

@@ -3459,7 +3459,15 @@ pathseeds: step <s> search <id> made=<n>: <entity>/<index>/<dir>:<bits>+<bits> .
 ```
 
 Two games' seeds for the same search say whether the start set, its
-costs or its order differ.
+costs or its order differ. The search that replaced 217708's path is the stop
+search (`FindPathToStop1`, `0x2670600`, asserting `cutDecisionIndex <
+(int)path.size()`): it keeps the path up to a cut index and searches on
+from there, so a start lane that differs means a cut that differs. For a
+watched entity the vehicle watcher also says its `MovePath` at every
+visit of the transport vehicle loop (`watch: ... visit movepath path
+<edges>/<hash> <words>`, the hash over the edges' meaningful bytes),
+including the steps the decision read skips while the vehicle holds a
+platform, and the per-copy snapshot `+0x74..+0xa0` with it.
 
 **The engine-copy checker** (`crate::copycheck`; read only, off unless
 `TPF3MP_PROBE_ENGINE_COPY` is `1` or `on`, or a number n for every n-th
