@@ -843,7 +843,12 @@ local function assetGroupsAt(model, x, y, z)
 		return api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(x, y), 1, GROUP)
 	end)
 	if ok and type(near) == "table" then candidates = near end
-	if #candidates == 0 then candidates = api.engine.getEntitiesWithComponent(GROUP) end
+	-- TF3 (build 40408) refuses to list asset groups ("Cannot loop over this
+	-- component type"): then the octree's answer, none, stands.
+	if #candidates == 0 then
+		local okAll, all = pcall(api.engine.getEntitiesWithComponent, GROUP)
+		if okAll and type(all) == "table" then candidates = all end
+	end
 	local out = {}
 	for i = 1, #candidates do
 		local g = candidates[i]
