@@ -1167,6 +1167,7 @@ impl Action {
             Action::EditJunctions(_) => "EditJunctions",
             Action::Subsidy(_) => "Subsidy",
             Action::Rename { .. } => "Rename",
+            Action::Perk(_) => "Perk",
         }
     }
 
