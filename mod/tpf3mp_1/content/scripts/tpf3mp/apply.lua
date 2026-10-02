@@ -963,6 +963,7 @@ end
 -- A depot is named by its construction's file and position.
 
 local registry = module("registry")
+local captureModule = module("capture")
 local companiesModule = module("companies")
 require_companies = function() return companiesModule end
 local progressionModule = module("progression")
@@ -1088,12 +1089,28 @@ local function vehicleConfig(vehicles, groups, units)
 	return config
 end
 
-function HANDLERS.BuyVehicle(buy)
+-- The depot a purchase names: its construction's depot by its index there,
+-- among the construction's depots as the capture listed them
+-- (capture.depotsOf: its `depots`, then its subconstructions that are
+-- depots, such as an airfield's or airport's hangar). One the construction
+-- does not have is refused, the same in every game, saying how many it has;
+-- never another depot of it.
+local function purchaseDepot(buy)
 	local _, construction = constructionAt(buy.depot)
-	-- The construction's depot the store bought at, by its index there.
+	local depots = captureModule.depotsOf(api, construction)
 	local index = (buy.depot_index or 0) + 1
-	local depot = construction.depots and construction.depots[index]
-	if depot == nil then error("the construction there has no depot " .. index, 0) end
+	local depot = depots[index]
+	if depot ~= nil then return depot end
+	local file = tostring(buy.depot.file)
+	if #depots == 0 then
+		error(string.format("the %s there has no depot: an airfield or airport has one only with a hangar "
+			.. "module, and a harbour never has one (ships are bought at a ship depot)", file), 0)
+	end
+	error(string.format("the %s there has %d depot(s), and no depot %d", file, #depots, index), 0)
+end
+
+function HANDLERS.BuyVehicle(buy)
+	local depot = purchaseDepot(buy)
 	local time = now()
 	local vehicles = {}
 	for i, p in ipairs(buy.consist) do vehicles[i] = vehiclePart(p, time) end
