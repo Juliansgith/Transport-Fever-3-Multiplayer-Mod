@@ -436,6 +436,16 @@ fn samples() -> Vec<Action> {
             company: CompanyId(2),
             open: false,
         }),
+        Action::CompanyOp(CompanyOp::StationAccess {
+            company: CompanyId(2),
+            other: CompanyId(3),
+            open: Some(true),
+        }),
+        Action::CompanyOp(CompanyOp::StationAccess {
+            company: CompanyId(2),
+            other: CompanyId(0),
+            open: None,
+        }),
         Action::Loan(Box::new(LoanOp::Take {
             next: loan(7_000_000),
             offer: loan(5_000_000),

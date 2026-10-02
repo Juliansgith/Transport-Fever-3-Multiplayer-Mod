@@ -458,7 +458,8 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (**22**). This integration combines the existing
+`ACTION_SCHEMA_VERSION` (**23**; 22 had no station access per company
+(`CompanyOp::StationAccess`)). This integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
 The Lua mod builds an action from a captured
@@ -501,7 +502,7 @@ appended.
 | `AssignLine` | vehicles, the line or none, the first stop or none for the game's choice ("Next Reachable Stop") |
 | `PlaceStop` | a stop, waypoint or signal (`object`): the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, its construction, whether a stop is two-sided and whether a signal is one-way |
 | `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height |
-| `CompanyOp` | create, join, rename or delete a company |
+| `CompanyOp` | create, join, rename or delete a company; its head's password, players and stations (`ShareStations` the default, `StationAccess` one other company over it) |
 | `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
 | `VehicleOp` | a vehicle and what its window does to it: stop or start, to the depot (sold there or not), reverse, depart, its colour |
 | `ReplaceVehicle` | a vehicle and its new consist, as `BuyVehicle` carries one, each part also saying which of the vehicle's own parts it keeps (by index, same model), or none for a part bought new; its groups and multiple units. One vehicle each: a group edit is one action per vehicle, as the game sends it |

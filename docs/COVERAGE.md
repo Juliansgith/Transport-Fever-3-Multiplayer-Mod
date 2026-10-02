@@ -44,10 +44,14 @@ file is part of the installed-mod fingerprint.
 
 ## Deliberately excluded
 
-- Automatic creation of competitive companies and changes to station access.
+- Automatic creation of competitive companies.
 - Additional native terraforming and track-upgrade hooks.
 - Alternate simulation-buffer and world-loading experiments.
 - The expanded scenario runner and notification/discard additions.
+
+Station access per company (`CompanyOp::StationAccess`, action schema 23)
+came in afterwards on its own. It extends D22, which is still proposed:
+the owner decides whether per-company access belongs in it.
 
 The existing junction gate remains off pending its own game acceptance.
 No owner decision in PLAN.md or DECISIONS.md is changed by this integration.
@@ -55,6 +59,6 @@ No owner decision in PLAN.md or DECISIONS.md is changed by this integration.
 ## Compatibility
 
 This selected combination is distinct from both the previous `dev` and PR #37:
-protocol **15**, bridge **22**, action schema **22**. Update launcher, hook,
+protocol **15**, bridge **22**, action schema **23**. Update launcher, hook,
 mod and relay together before release. Older peers must fail version checks;
 this branch is not compatible with the currently deployed relay until upgraded.
