@@ -234,9 +234,17 @@ end
 -- no one's.
 function companies.ownerOf(api, entity)
 	if type(entity) ~= "number" or entity < 0 then return nil end
-	local ok, c = pcall(api.engine.getComponent, entity, api.type.ComponentType.PLAYER_OWNED)
-	if not ok or type(c) ~= "table" then return nil end
-	local owner = c.player
+	-- Native components are userdata on build 40408, while the tests' are
+	-- tables: the field is read through the binding either way. Read as a
+	-- table only, every owner came back nil (2026-10-02: a save's own
+	-- headquarters "owned by nil", every company owning "0 construction(s)",
+	-- no line counted to a company's score, and no other company's thing
+	-- refused). As origin/dev reads it (#70).
+	local ok, owner = pcall(function()
+		local c = api.engine.getComponent(entity, api.type.ComponentType.PLAYER_OWNED)
+		return c and c.player
+	end)
+	if not ok then return nil end
 	if type(owner) ~= "number" or owner < 0 then return nil end
 	return owner
 end
