@@ -37,6 +37,7 @@ pub mod at_menu;
 pub mod autoload;
 pub mod builds;
 pub mod clipboard;
+pub mod edgewatch;
 pub mod image;
 mod install;
 pub mod junctions;
@@ -49,11 +50,14 @@ pub mod order;
 pub mod perf;
 pub mod persons;
 mod platform;
+pub mod roadtrace;
 pub mod seeds;
 pub mod step;
 pub mod terrain;
 pub mod ticks;
 pub mod townfield;
+pub mod streettrace;
+pub mod towntrace;
 pub mod worlds;
 
 /// The lobby as the main menu's Multiplayer window sees it (docs/LOBBY.md).

@@ -98,6 +98,19 @@ const TARGETS: &[(&str, u64)] = &[
     // The town street field's cache fix (crates/tpf3mp-hook/src/townfield.rs).
     ("StreetField::At", 0x2b76a90),
     ("StreetField::At/cache found", 0x2b76b4a),
+    // The town trace (crates/tpf3mp-hook/src/towntrace.rs).
+    ("TownUpdateSize::Apply", 0x9dfb10),
+    ("TownUpdateSize::Apply/develop", 0x9dfc8a),
+    ("TownUpdateSize::Apply/return", 0x9dfcd7),
+    ("TownDeveloper::Develop", 0x8dc240),
+    // The edge watch (crates/tpf3mp-hook/src/edgewatch.rs).
+    ("CommandApply::One", 0x9e1c10),
+    ("CommandApply::One/return", 0x9e1f62),
+    // The street trace (crates/tpf3mp-hook/src/streettrace.rs).
+    ("StreetDeveloper::TryCandidate", 0x967920),
+    ("StreetDeveloper::TryCandidate/return", 0x9680dc),
+    ("StreetDeveloper::Reject", 0x963320),
+    ("StreetDeveloper::BuildStreet/errors", 0x9659ed),
     ("lua_getfield", 0x2fbdb90),
     ("lua_loadfile", 0x2fa1d50),
     ("lua_cached_loadfile", 0x2fa8130),
@@ -235,6 +248,44 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     assert_eq!(callee(0xb17d0a), 0xb186c0);
     // freed ids: the call after the site is the free-id deque's insert.
     assert_eq!(callee(0x2bb4ff3), 0x2bb1110);
+    // The town trace: the applier calls Develop between its two sites, and
+    // reads updateCount for the seed through its getter.
+    assert_eq!(callee(0x9dfccb), 0x8dc240);
+    assert_eq!(callee(0x9dfbf0), 0x2a9680);
+    // The edge watch: every path into CommandApply::One the log names
+    // reaches it (the sim loop's drain, CGame's two send lambdas, and
+    // GameState's command function by a tail jump), and One reads the
+    // payload's kind at +0x9b8 right before it calls the dispatcher.
+    for site in [0x11eb96, 0x120334, 0x1204bf] {
+        assert_eq!(callee(site), 0x9e1c10, "{site:#x} calls One");
+    }
+    {
+        let i = at(0x268ed4);
+        assert_eq!(text_bytes[i], 0xE9, "a tail jump at 0x268ed4");
+        let rel = i32::from_le_bytes(text_bytes[i + 1..i + 5].try_into().unwrap());
+        assert_eq!((0x268ed4_i64 + 5 + i64::from(rel)) as u64, 0x9e1c10);
+    }
+    assert_eq!(
+        &text_bytes[at(0x9e1cbf)..at(0x9e1cbf) + 8],
+        &[0x49, 0x0F, 0xBE, 0x88, 0xB8, 0x09, 0x00, 0x00]
+    );
+    assert_eq!(callee(0x9e1cce), 0x9d7350);
+    // The street trace: Develop runs the street step, which tries each
+    // candidate; the try refuses through the reject function at its three
+    // sites, builds through 0x9692c0 and 0x9657c0, and the errors site
+    // follows the build's call of CreateProposalData.
+    assert_eq!(callee(0x8dca13), 0x967720);
+    assert_eq!(callee(0x96785e), 0x967920);
+    for site in [0x967bd5, 0x967c5f, 0x968035] {
+        assert_eq!(
+            callee(site),
+            0x963320,
+            "{site:#x} calls the reject function"
+        );
+    }
+    assert_eq!(callee(0x96801b), 0x9692c0);
+    assert_eq!(callee(0x9695b4), 0x9657c0);
+    assert_eq!(callee(0x9659e7), 0xa1fd10);
     // The land-vehicle shuffle's seed is the tickCount getter's answer.
     assert_eq!(callee(0xac1b23), 0x2a95c0);
     // The main menu's m_game test reads CMenuUI+0x6b0, the field StartGame

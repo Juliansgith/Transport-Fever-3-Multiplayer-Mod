@@ -806,6 +806,10 @@ for the table (`bridge.find`). Its contract is in
   game script's `postUpdate` at a checkpoint: the lanes the hook wants
   written to its log entry by entry, and each entry ("Lane dumps" below).
   Optional, as `built`.
+- `tpf3mp_native.edgewatch()` and `tpf3mp_native.edgewatched(entity,
+  text)`: in a game script's `update`, the entities the edge watch reads in
+  this update, or `nil`; in its `postUpdate`, what it read of each ("The
+  edge watch" below). Optional, as `built`.
 - `tpf3mp_native.mods(list)`: the mods to load a save with, given the
   save's (names, one a line): that list, then those left out and those
   added, the same way, from the room's `Begin` (`tpf3mp_bridge::mods::plan`);
@@ -2471,12 +2475,24 @@ and nothing more.
   lanes (both diverged games of a room of three say one). A line heard is
   checked: at most 16 lanes and two steps, each a checkpoint step, not past,
   and no more than 20 checkpoints ahead. One checkpoint writes at most
-  `lua::MAX_DUMP_LINES` (5000) entries, all its lanes together, each cut to
+  `lua::MAX_DUMP_LINES` (20,000: room for the whole network lane of
+  `twomptest`, about 10,800 entries) entries, all its lanes together, each cut to
   2000 bytes; the rest are counted.
 - **By hand.** `TPF3MP_HOOK_LANE_DUMP` in the game's environment dumps
   lanes at every checkpoint, for chasing a desync on purpose: `all`, or
   lane numbers (`3`, `0,3`). `off` dumps nothing, not even after a
   divergence. The hook says in its log what it read.
+- **A box of the network.** `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (the
+  world's x and y, metres, any two opposite corners) dumps the network lane
+  at every checkpoint in `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to` (steps,
+  both included; unset, every checkpoint), only the edges with an end
+  inside the box, and no junctions; the lane's `summary` line is still the
+  whole lane's. It works with `TPF3MP_HOOK_LANE_DUMP=off`, and gives way to
+  a whole dump of the lane asked for at the same checkpoint (a divergence,
+  or `TPF3MP_HOOK_LANE_DUMP` naming lane 0). The order carries the box to
+  the mod (`dump()` answers `{ step =, lanes =, box = { x0, y0, x1, y1 }
+  }`). A value that does not read is refused in `hook.log`, and nothing is
+  cut.
 - **In the game.** The driver passes the dump with the batch that ends at
   the checkpoint (`step::Batch::dump`, `lua::begin_batch`). In that
   batch's last update `tpf3mp_native.dump()` answers `{ step =, lanes = {
@@ -2501,16 +2517,34 @@ and nothing more.
 
   | lane | fields |
   |---|---|
-  | 0 network | `p0`, `p1` (the edge's ends), `template` |
+  | 0 network | `p0`, `p1` (the edge's ends, `x,y,z`, read from the game's `Vec3f` userdata), `template` |
   | 1 constructions | `file`, `x`, `y`, `z` |
   | 2 lines | `stops`, then `stop<i>=<group>/<station>/<terminal>` |
-  | 3 vehicles | `state`, `stop` (index), `line`, `edge`, `pos`, `speed` (`MOVE_PATH.dyn`) |
-  | 4 economy | `balance` |
-  | 5 towns | `buildings` |
+  | 3 vehicles | `state`, `stop` (index), `line`, `edge`, `pos`, `speed` (`MOVE_PATH.dyn`); dump only: `arrival`, `arrival_locked`, `load` (`loadState`), `pending` (`unloadPendingIncome.amount`), `free` (`lineStop2cargo2available`: free capacity per cargo type, stops apart by `\|`), the path fields |
+  | 4 economy | `balance`; dump only: `loan`, `time` (`GAME_TIME`), `income` (`finance.calcIncomeSince(0)`), `last_income` (`finance.getLastIncomeTime`), the finance window's table (`finance.computeFinanceTable`, four periods: `transport<carrier>.<kind>`, `investment<kind>`, `other<kind>`, `loan`, `interest`, `total`, ..., sorted), and one entry per vehicle and per line, `takings=` (`finance.calculateBalance({e}, 0, now, true)`: its income and maintenance since the game began, as the game's vehicle and line windows sum them) |
+  | 5 towns | `buildings`, `size` (the three size factors), `experience`, `level` (the town growth script's state) |
   | 6 people | `count` |
 
   A vehicle's line, a line's stops and their station groups are read for
-  the dump only; the lanes hash what the table above says.
+  the dump only; the lanes hash what the table above says. A finance read
+  the engine refuses dumps as `nil`, the finance table as `err`; the
+  balance is dumped all the same.
+
+  Why lane 4 names vehicles: in the round of 2026-10-02 on `twomptest`
+  (three games, no input, `136d775`), cat's game alone said `Diverged {
+  step: 36400, lanes: [4] }` after 36,350 steps in step. The other lanes,
+  vehicles and people among them, agreed. Its balance was 310 above the
+  others' at steps 36450 and 36500 alike (37969976 against 37969666;
+  37992005 against 37991695): one booking of 310 between the checkpoints
+  after steps 36350 and 36400, the balance alike before and after it. The
+  vehicles lane hashes where the vehicles are, not what they carry, and
+  income is the game's `cargo_income.script.lua` over the distance a
+  unit or passenger travelled; maintenance is booked per vehicle and
+  construction too. The balance alone could not say whose booking split;
+  each vehicle's and line's `takings` can. Every checkpoint's
+  (`TPF3MP_HOOK_LANE_DUMP=4`) names the first checkpoint and the vehicle
+  and line whose takings differ, and its `free` and `pending` (lane 3)
+  what it carried.
 
 After a divergence, gather each game's `hook.log` (a second player in a
 Sandboxie box has its own under the box's copy of the data folder) and run:
@@ -2578,6 +2612,362 @@ the second at the first call and every 4,096th; `cache-entries-passed`
 counts the lookups that found a cached answer and were made to compute
 instead. Every game of a room must run it alike: a game with it off builds
 some town streets at other angles than one with it on.
+#### The town trace
+
+`TPF3MP_HOOK_TOWN_TRACE=1` (or `on`; off unless set; logging only,
+`crates/tpf3mp-hook/src/towntrace.rs`). Round of 2026-10-02 on
+`twomptest`: one town street (entity 325514, a `town_old_small` dead end)
+was built at another angle in one of three games between steps 12750 and
+12800, with `tickCount`, `updateCount` and so the town developer's seed
+equal in all three. The trace tells apart three readings: the size
+factors the `town_growth` script sends differ; the developer's context at
+`GameState+0x200`, which `GameState::Replicate` (`0x255de0`) does not
+copy, differs with the frames' batching; or the developer read world
+input the lanes do not hash.
+
+`TownUpdateSize::Apply` (`0x9dfb10`, our name) applies the script's
+`makeTownUpdateSizeCmd`: it writes the size factors into the town, seeds
+a `minstd_rand` from an FNV-1a of `updateCount` and calls
+`TownDeveloper::Develop` (`0x8dc240`) with `GameState+0x200` and the
+generator. Two splices in the applier (`+0x17a`, right before the call
+is set up, the seed in `ecx`; `+0x1c7`, at the return, the generator after
+`Develop` still in the frame) say one line a call; a splice at `Develop`'s
+entry says one line a call from any caller:
+
+```
+town: step <s> update <n> town <e> size <hex>,<hex>,<hex> (<f>,<f>,<f>) flag <0|1> seed <n> (expected <n>) gamestate <ptr> buffer <0|1> engine <ptr> developer <ptr> developer-engine <own|other(buffer n)|ptr> gen-after <n> entity-ids <before>-><after>
+town: step <s> develop from +<call rva> town <e> flag <0|1> gen <n> developer <ptr> engine <ptr>
+```
+
+The size factors are the command's raw float bits, then their values.
+`expected` is the seed recomputed from `updateCount` (`towntrace::
+town_seed`). `buffer` numbers the `GameState`s in the order this game first
+saw them; `developer-engine` names the engine the developer's context holds
+at `+0xb0` (where `Develop` reads the town): this update's, the other
+buffer's, or another. `gen-after` is the generator after `Develop`: equal
+seeds and different `gen-after` mean `Develop` drew a different number of
+times, so its input differed. `entity-ids` is the length of the engine's
+entity table before and after. `step` is `-` outside a released update,
+`update` `?` when unread. Pointers differ between games by nature; the
+other fields of one step's lines must agree.
+
+Before splicing, the two sites must lie at their offsets from the
+applier's start, the call between them must reach `Develop`, and each
+site's bytes must be the expected ones (the profile states them; the static
+proof checks the call and that every target resolves uniquely); otherwise
+nothing is spliced and `hook.log` says why (`town trace: ... not traced,
+...`). A panic switches the trace off.
+
+The switch also dumps the towns lane at every checkpoint (lane dumps
+above, even with `TPF3MP_HOOK_LANE_DUMP=off`): one line a town,
+
+```
+lane 5 step <s> town-<id> buildings=<n> size=<f1>,<f2>,<f3> experience=<n> level=<n> entity=<e> row=<row>
+```
+
+the size factors at full precision (`%.17g`) from the `TOWN` component,
+experience and level from the base game's town growth script's state, read
+as its own `town_cargo_util.getTownCargoState` reads it (`nil` when it
+cannot be read). `tools/lane_diff.py` diffs them like any lane.
+
+#### The edge watch
+
+`TPF3MP_HOOK_EDGE_WATCH=<entities>` (`325514,220468`, edges or nodes, at
+most 32) with `TPF3MP_HOOK_EDGE_WATCH_STEPS=<from>-<to>` (both included;
+unset, every step). Off unless the first is set; logging only
+(`crates/tpf3mp-hook/src/edgewatch.rs`). The round of 2026-10-02 on
+`twomptest` found the town trace's town updates alike in every game while
+an existing town street (entity 325514, a `town_old_small` dead end) had its
+free end moved between steps 12750 and 12800, to (-2356.4, -20690.8) in some
+runs and games and (-2360.9, -20680.5) in others. The watch finds the update
+that moves it and what was applied then.
+
+**Each update** in the window, the mod's game script asks the hook which
+entities to read (`edgewatch()` in its `update`, which then always hands
+`postUpdate` its work), and at the end of its `postUpdate` reads each with
+`lanes.watch` (`tpf3mp/lanes.lua`) and hands the text over
+(`edgewatched(entity, text)`). The hook logs it the first time and whenever
+it differs from the last:
+
+```
+edge watch: step <s> update <n> entity <e> first|changed edge node0=<n> node1=<n> p0=<x,y,z> p1=<x,y,z> t0=<x,y,z> t1=<x,y,z> n0=<x,y,z> n1=<x,y,z> type=<t> template=<t>
+edge watch: step <s> update <n> entity <e> first|changed node pos=<x,y,z>
+edge watch: step <s> update <n> entity <e> first|changed absent
+```
+
+`p0`/`p1` and `t0`/`t1` are the `BASE_EDGE`'s ends and tangents, `n0`/`n1`
+its nodes' `BASE_NODE` positions, all at full precision (`%.17g`); `update`
+is the game's `updateCount`. A change in update `n` happened after the
+watch's read in update `n-1` (after every system and every game script's
+`postUpdate` the mod's ran after) and before its read in `n`.
+
+**Every command applied** in the window, from any path, one line, by two
+logging-only splices in `CommandApply::One` (`0x9e1c10`, our name;
+"Simulation Thread: Apply Command", `apply_command.cpp`; `rcx` the
+`GameState`, `rdx` the `Command`): at its entry, whose return address names
+the path, and at its epilogue after the cookie check (`+0x352`), which both
+ways out reach:
+
+```
+apply: step <s>|after <s> update <n> from +<rva> (<path>) kind <k> result <r> entities <n> [<e>,...] -> <n> [<e>,...] entity-ids <before>-><after>[ watched]
+```
+
+- `step <s>`: applied inside the room's update of step `s`; `after <s>`:
+  between updates, after the batch that ended at step `s`.
+- `from` and the path: `queue` (`+0x11eb96`), the commands
+  `CGame::RunGameSimLoop` drains from `CommandList` between updates, which
+  is where everything the GUI queues lands (the street builder's
+  proposals among them), at whatever step the drain falls on; `script`
+  (`+0x1204bf`), a script's `sendCommand` applied at once by the send
+  lambda `0x120410`; `direct` (`+0x120334`), CGame's other send lambda;
+  `other`, any other site. In a game script's `update` the send lambda
+  does not apply a command: it appends it to that script's buffer
+  (`GameScriptSystem::Update` points a thread-local at it, `0xaad5f0`),
+  and the buffers are applied later through `GameState`'s command
+  function (`0x268ed0`), a tail jump into `One`, so those lines name the
+  site that called that function.
+- `kind`: the payload's variant index, the byte at `payload+0x9b8` that
+  `One` hands the dispatcher (`0x9d7350`), which switches on `kind + 1`
+  (its jump table at `0x9d8bbc`; entry 0 is the empty variant). The kinds
+  the round of 2026-10-02 saw, named by each case's scope string: 9
+  `EntitySetEmissions`, 16 `GameSetCloudCoverage`, 17 `GameSetSpeed`, 23
+  `LogBookValue`, 27 `ScriptingSendEvent`, 40 `TownUpdateSize` (the
+  applier `0x9dfb10` the town trace splices), 52 `WorldBuildProposal`.
+- `result`: the byte `One` leaves at `Command+0x30`.
+- `entities`: the command's entity list (`Command+8`, 16-byte entries, the
+  id in the first four bytes), its length and up to 8 ids, before and after
+  the apply. `watched` marks a line that lists a watched entity.
+- `entity-ids`: the length of the engine's entity table before and after
+  (more after: the command made entities).
+
+`step`, `update` and `from` of a line are `-`, `?` and `?` when unread.
+Before splicing, the epilogue site must lie at `One+0x352`, `One+0xaf` must
+be the kind's read (`movsx rcx, byte [r8+0x9b8]`), and each site's bytes the
+expected ones (the profile states them; the static proof checks the four
+paths reach `One` and the dispatcher's call); otherwise nothing is spliced,
+`hook.log` says why, and the edges are still watched. A panic switches the
+watch off. Calls nest (a command's apply can apply another): each entry is
+paired with its own epilogue by the stack pointer.
+
+**The street builder's pool.** `StreetBuilderPool` is the GUI tool's: it
+is made in `UI::StreetBuilder`'s constructor (`0x56a740`, with
+`action-streetbuilder`), as `TrackModifierPool` is in the track modifier's,
+and computes the player's proposals. Their results reach the world only as
+commands the GUI queues with `CommandList::Add`, which `One` applies from the
+`queue` path above, so the `apply:` lines are where such a job lands. The
+simulation's own pool work (`TownSystem::Update2`, `TransportNetworkSystem::
+Update2`, the street shape factories, ...) is `ThreadPool::Enqueue` returning
+a `JoiningFuture`, joined within the call that made it (read from the
+lambdas' RTTI names, not traced), so none of it lands on a later step; no
+separate hook is added for it.
+
+For the round after 2026-10-02 (the edge, its two neighbours, and a box
+around them):
+
+```
+TPF3MP_HOOK_EDGE_WATCH=325514,220468,261291
+TPF3MP_HOOK_EDGE_WATCH_STEPS=12700-12850
+TPF3MP_HOOK_LANE_DUMP_BOX=-2460,-20790,-2260,-20580
+TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=12700-12850
+```
+
+then, from each game's `hook.log`, `grep -E '^\[[0-9]+\] (edge watch|apply):'`
+and compare the games line by line by `step` and `update`.
+
+`GameSetSpeed` (kind 17) writes the `GameSpeed` component's speed on the
+game's entity (`0xbacc90`, `+4`) and nothing else. In the third round only
+the host applied it, 1,654 times from the `queue` path between steps 12700
+and 12850 (about eleven an update), each with no entities and result 1;
+the guests none. The simulation does not read that speed in the room's
+game: `GameSim::Step` asks it through `CGameTime::GetSpeed`, which the step
+gate redirects, and the other readers are `CGame::Sync`, the UI, the
+camera, the rail vehicles' sounds and their transformators. So it changes
+no lane; it does leave the host's saved `GameSpeed` unlike the guests'.
+
+#### The street trace
+
+`TPF3MP_HOOK_STREET_TRACE=1` (or `on`; off unless set; logging only,
+`crates/tpf3mp-hook/src/streettrace.rs`), with
+`TPF3MP_HOOK_STREET_TRACE_STEPS=<from>-<to>` (both included; unset, every
+step) and `TPF3MP_HOOK_STREET_TRACE_BOX=x0,y0,x1,y1` (the tried node's x
+and y, metres; unset, anywhere). The rounds of 2026-10-02 found the street
+the edge watch watches (325514, the id reused) built new at step 12771
+(update 105104) by town 214465's `TownUpdateSize`, from node 261290 out of a
+straight street through it, 88 m long in every game, but at a right angle
+to that street in some games ((-2360.9, -20680.5)) and 7.3 degrees off in
+the others ((-2356.4, -20690.8)), with the update's inputs, the developer's
+generator after it and every lane before it alike.
+
+What decides the angle, read with `tools/tpfre`:
+
+- `TownDeveloper::Develop` (`0x8dc240`) calls the street step (`0x967720`,
+  our name) until it builds nothing. The step lists the town's street
+  nodes (an octree query, `0x965fa0`, sorted by distance to the town's
+  centre with `std::sort`, `0x964930`), and tries each with
+  `StreetDeveloper::TryCandidate` (`0x967920`, our name) in two passes:
+  **block**, then **open**. The first street built ends the step.
+- `TryCandidate` expands the node into directions (`Expand`, `0x968130`:
+  along and at right angles to each street at the node, 88 m, the two
+  right angles in an order a `minstd_rand` seeded from the node's position
+  picks). The block pass takes a direction only if it points into a closed
+  street loop around the node (`StreetLoopFactory::Extract`, `0x8d9180`, at
+  most 50 streets a loop, cached per step), and builds it exactly; the open
+  pass takes only the others, turned by a random angle from the same
+  position-seeded generator (`0x967d23`). Neither pass draws from the
+  developer's generator, so `gen-after` cannot see this choice.
+- So the right-angle street is the block pass's, and the turned one the
+  open pass's: where the street came out turned, the block pass refused the
+  node's right-angle direction, or never reached it.
+
+Every refusal goes into a `std::set` (`0x963320`; key: the node, its
+streets, the pass, its loops, the direction's index) from one of six slots
+of `TryCandidate`'s frame, and the slot names the reason. The trace logs,
+for the tries its filter covers:
+
+```
+street: step <s> try <k> node <e> at <x>,<y> pass block|open -> built dir <dx>,<dy> end <x>,<y>
+street: step <s> try <k> node <e> at <x>,<y> pass block|open -> no
+street: step <s> try <k> reject node <e> edges <n> loops <n> dir <i> pass block|open reason <reason>
+street: step <s> try <k> proposal errors <bytes>/<bytes> [<hex>] [<hex>]
+```
+
+| reason | refused by |
+|---|---|
+| `branches` | `0x966470` (the branches' angles, `CheckBranchesRec`) |
+| `not-in-block` | the block pass: the direction leaves every closed loop |
+| `in-block` | the open pass: the direction enters a closed loop |
+| `off-map` | `0x388e60`: the end is off the terrain |
+| `snapped` | `0x9689c0`, for an end the block pass snapped to a street |
+| `build` | `0x9692c0`: water at the end, the proposal's checks (`0x2638c00`, `0x2639860`) or its errors |
+
+`try <k>` numbers the tries within a step, so two games' lines pair up by
+step and number; the first line that differs is the decision that split.
+A `proposal` line (from a splice in `0x9657c0` right after
+`CreateProposalData`, `0xa1fd10`) gives the proposal's two error vectors'
+lengths in bytes and first 32 bytes: both empty builds the street. A
+`build` refusal without a `proposal` line before it failed before the
+proposal was made. Differing `loops` say the street loops around the node
+were found differently; a `build` refusal in one game only, with errors,
+says the proposal's collision or terrain checks answered differently,
+which points at the thread pool's collision jobs
+(`street_util::CheckCollision`'s `ThreadPool::LoopImpl`, `0x2631ba0`).
+
+Before splicing, the try's return site must lie at `TryCandidate+0x7bc`,
+`TryCandidate`'s three calls of the reject function must reach it, and
+each site's bytes must be the expected ones (the profile states them; the
+static proof checks the call chain from `Develop` to every site); otherwise
+nothing is spliced and `hook.log` says why. A panic switches the trace off.
+
+For the next round, with the town trace and the edge watch as before; no
+box, so every try of the developments around the split is logged (an
+order of tries that differs elsewhere in the town shows too):
+
+```
+TPF3MP_HOOK_TOWN_TRACE=1
+TPF3MP_HOOK_STREET_TRACE=1
+TPF3MP_HOOK_STREET_TRACE_STEPS=12740-12775
+```
+
+then `grep -E '^\[[0-9]+\] (street|town):'` in each game's `hook.log` and
+compare by step and try number.
+
+#### The road entry trace
+
+Soak 7 of 2026-10-02 on `twomptest` (three games, no input, `51e1e4d`, each
+with `TPF3MP_HOOK_LANE_DUMP=4`): cat's game alone said `Diverged { step:
+25950, lanes: [3] }`, the economy equal at every checkpoint to the end.
+At step 26000 one horse bus, vehicle-11 (entity 198452, line-10, en route to
+stop 2, a road vehicle: never in the land claim loop, whose six contenders
+are the save's trains), was 9.83 m along its path edge in cat's game and
+10.45 m in the others', at the same 4.276 m/s; at 26050 53.25 against 54.12
+m, and a second bus, vehicle-40 (282046, line-12), which stood at stop 5 in
+every game at 26000, 28.00 m from it against 30.83 m at 4.722 m/s. At 200 ms
+an update (`GAME_TIME` 10,000 ms per 50 steps) the first lag is about 0.15 s,
+less than an update: the bus was held back for part of one (braking behind
+something, or its stop time ended later), not started a whole update late;
+the second left its stop about 0.6 s, three updates, later. Every order fix
+said `refused=0` throughout; the land-vehicle samples and the `ticks:`
+lines were equal in all three games. The `vehicles-at-stop-order` count of
+lists it reordered differs from cat's second `alive` line on (65,536 calls
+in), with no split for 25,000 steps: those lists' engine order is each
+buffer's history, which the fix sorts away, so that count is not one games
+must agree on. The road fix's in-step milestone line is: it was equal in
+all three games for 77 milestones and differed in cat's at the one reached
+near step 25850 (`in-step appends=5111808 reordered=1383817`, the others
+`1383824`), while every vehicle's place still agreed to the centimetre at
+the checkpoint of step 25900. So the simulation's own appends to
+`EdgeUseManager`'s edge lists went another way somewhere in steps
+25520..25850, before any vehicle's place did. (Earlier rounds' logs show
+the same: the step-3300 splits' games parted at the milestone near step
+3300. Soak 6's lane-4 split at step 36400 shows no such difference through
+the milestones after it.)
+
+A milestone comes every 65,536 appends, about 330 steps. The trace
+(`crates/tpf3mp-hook/src/roadtrace.rs`, logging only, on the road fix's two
+detours, so nothing new is hooked) narrows it:
+
+- **At every checkpoint**, always while the fix sorts, after the `ticks:`
+  line, the appends inside the game's step since the last checkpoint line:
+
+  ```
+  road-entry: step <s>: in-step appends=<n> persons=<n> vehicles=<n> reordered=<n> set=<fnv64> sequence=<fnv64>
+  ```
+
+  `persons` are `Add`'s (`PersonMoveSystem`), `vehicles` `AddRange`'s
+  (`LandVehicleMoveSystem`). Each append is hashed over its kind, entity,
+  component, current path index, range, `{back, front}` bits and each
+  edge's entity, index and direction byte; `set` sums the hashes (equal
+  whatever their order), `sequence` chains them in order. Two games' lines
+  for one step must be equal; the first that differs bounds the first
+  append that differs to 50 steps, and `set` against `sequence` says
+  whether different appends were made or the same ones in another order.
+  The first line after a load also holds the load's own appends.
+- **In a window**, `TPF3MP_HOOK_ROAD_ENTRY_TRACE=<from>-<to>` (room steps,
+  both included), one line per append inside the step:
+
+  ```
+  road: step <s> #<k> person|vehicle <entity> comp <c> cur <i>|- range <from>..<to>|- bounds <back>,<front> edges <n> <entity>/<index>/<dir>,... reordered <n>[ on <edge>: <count> <entity>:<component>:<back>:<front> ...]
+  ```
+
+  `#k` numbers the appends of a step, so two games' lines pair by step and
+  number; at most 8 edges are listed (`+n` more). `step` is the room's step
+  of the update running; an append made before an update's systems run
+  (applying a command) carries the step before, or `-` at a batch's first
+  update. About 200 appends a step on `twomptest`.
+- **A recorder**, `TPF3MP_HOOK_ROAD_ENTRY_RECORD=<n>` (1 to 4000 steps):
+  the same lines for the last `n` steps are kept in memory and written when
+  the game takes a lane dump asked for in the room's chat (every game hears
+  the ask a diverged game makes, itself included), after a line
+  `road-entry record: <n> in-step append(s) of steps <a> to <b> (...)`. A
+  split no one can predict then leaves the appends before it in every
+  game's log. A game with `TPF3MP_HOOK_LANE_DUMP=off` takes no ask and
+  writes nothing.
+- For the entities `TPF3MP_HOOK_WATCH_ENTITIES` lists (comma-separated
+  entity ids), a traced or
+  recorded append also lists, for each edge it touched, the edge's entries
+  after the sort (`on <edge>:`, at most 16): the vehicles and persons ahead
+  of and behind a watched vehicle, and their places.
+
+hook.log says what it read at start-up (`road-entry trace: ...`).
+
+For the round after soak 7, in every game:
+
+```
+TPF3MP_HOOK_LANE_DUMP=3,4
+TPF3MP_HOOK_ROAD_ENTRY_RECORD=600
+TPF3MP_HOOK_ROAD_ENTRY_TRACE=25500-25960
+TPF3MP_HOOK_WATCH_ENTITIES=198452,282046
+```
+
+Runs of this save are repeatable: bob's soak-6 milestones and every game's
+soak-7 milestones are equal through step 25500. If cat's game splits at
+the same place, the window holds it; if elsewhere, the checkpoint lines
+name the 50 steps and the recorder holds them. Then
+`grep -E '^\[[0-9]+\] road-entry: ' hook.log` in each game, and from the
+first step whose line differs, `grep -E '^\[[0-9]+\] road: step <s> '`,
+compared by step and number: the first append that differs names the
+person or vehicle, its edges and range, and with the watched vehicles'
+`on` lists what held the bus back.
 
 ### Seeds, as built
 
@@ -3477,6 +3867,22 @@ lines' `ms/update` and the piece's total:
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
 every game has the same switches, or alone.
+
+The desync diagnostics are off unless set, and logging only: they change
+nothing the game computes, so one game of a room may run them alone.
+
+| switch | turns on |
+|---|---|
+| `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (with `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to`) | the network lane (0) dumped at every checkpoint of those steps, only its edges with an end in the box, even with lane dumps off ("Lane dumps") |
+| `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump at every checkpoint ("The town trace") |
+| `TPF3MP_HOOK_EDGE_WATCH=<e>,...` (with `TPF3MP_HOOK_EDGE_WATCH_STEPS=from-to`) | the `edge watch:` lines for those entities and an `apply:` line for every command applied ("The edge watch") |
+| `TPF3MP_HOOK_STREET_TRACE` (`1` or `on`; narrowed by `TPF3MP_HOOK_STREET_TRACE_STEPS` and `TPF3MP_HOOK_STREET_TRACE_BOX`) | the `street:` lines ("The street trace") |
+| `TPF3MP_HOOK_ROAD_ENTRY_TRACE=from-to` | a `road:` line for every in-step road edge append in those steps ("The road entry trace") |
+| `TPF3MP_HOOK_ROAD_ENTRY_RECORD=<n>` | the last `n` steps' `road:` lines kept in memory and written when the room asks for a lane dump |
+| `TPF3MP_HOOK_WATCH_ENTITIES=<e>,...` | each traced or recorded append of those entities lists the entries of the edges it touched |
+
+The `road-entry:` digest at every checkpoint needs no switch: it is on
+while `road-entry-order` sorts.
 
 ## Release-day procedure: adding a target for a new build
 

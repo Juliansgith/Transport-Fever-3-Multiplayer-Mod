@@ -1489,12 +1489,65 @@ pub mod road {
         REFUSALS.take_window()
     }
 
-    fn sorted(probe: &mut Probe, data: u64, edge_ids: impl Iterator<Item = u64>) {
+    /// An edge id's meaningful bytes: entity, index, direction.
+    fn edge_key(probe: &mut Probe, edge_id: u64) -> Option<crate::roadtrace::EdgeKey> {
+        Some((
+            probe.read(edge_id)?,
+            probe.read(edge_id.checked_add(4)?)?,
+            probe.read(edge_id.checked_add(8)?)?,
+        ))
+    }
+
+    /// The entries of the edge `edge_id` names, as the road entry trace
+    /// lists them: entity, component, back, front.
+    fn listed(probe: &mut Probe, data: u64, edge_id: u64) -> Option<Vec<crate::roadtrace::Listed>> {
+        let vector = entries_of(probe, data, edge_id).ok()?;
+        let begin: u64 = probe.read(vector)?;
+        let end: u64 = probe.read(vector.checked_add(8)?)?;
+        if end < begin
+            || !(end - begin).is_multiple_of(ENTRY_LEN)
+            || end - begin > MAX_ENTRIES * ENTRY_LEN
+        {
+            return None;
+        }
+        (0..(end - begin) / ENTRY_LEN)
+            .map(|i| {
+                let at = begin + i * ENTRY_LEN;
+                Some((
+                    probe.read::<i32>(at)?,
+                    probe.read::<i32>(at + 4)?,
+                    probe.read::<f32>(at + 8)?,
+                    probe.read::<f32>(at + 12)?,
+                ))
+            })
+            .collect()
+    }
+
+    /// What was appended, for the road entry trace (`crate::roadtrace`):
+    /// everything but its edges, which [`sorted`] reads.
+    struct Appended {
+        kind: crate::roadtrace::Kind,
+        entity: i32,
+        component: i32,
+        current: Option<i32>,
+        range: Option<(i32, i32)>,
+        bounds: u64,
+    }
+
+    fn sorted(
+        probe: &mut Probe,
+        data: u64,
+        appended: Appended,
+        edge_ids: impl Iterator<Item = u64>,
+    ) {
         guarded(FIX, &BROKEN, || {
             let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-            for edge_id in edge_ids {
+            let edge_ids: Vec<u64> = edge_ids.collect();
+            let mut reordered_now = 0;
+            for &edge_id in &edge_ids {
                 match sort_edge(probe, data, edge_id) {
                     Ok(Sorted::Reordered) => {
+                        reordered_now += 1;
                         let reorders = REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
                         if reorders <= 3 {
                             log::line(&format!(
@@ -1505,6 +1558,31 @@ pub mod road {
                     Ok(Sorted::Unchanged) => {}
                     Err(why) => REFUSALS.note(FIX, why),
                 }
+            }
+            if in_step() {
+                // The road entry trace (logging only): the simulation's own
+                // appends, which two agreeing games make alike.
+                let step = crate::seeds::current_step();
+                let append = crate::roadtrace::Append {
+                    kind: appended.kind,
+                    entity: appended.entity,
+                    component: appended.component,
+                    current: appended.current,
+                    range: appended.range,
+                    bounds: appended.bounds,
+                    edges: edge_ids
+                        .iter()
+                        .filter_map(|&id| edge_key(probe, id))
+                        .collect(),
+                };
+                let entries: Option<Vec<_>> =
+                    crate::roadtrace::wants_entries(appended.entity, step).then(|| {
+                        edge_ids
+                            .iter()
+                            .filter_map(|&id| Some((edge_key(probe, id)?, listed(probe, data, id))))
+                            .collect()
+                    });
+                crate::roadtrace::note(step, &append, reordered_now, entries.as_deref());
             }
             if n == 1 || n.is_multiple_of(1 << 16) {
                 log::line(&format!(
@@ -1551,7 +1629,19 @@ pub mod road {
                 .checked_add(MANAGER_DATA)
                 .and_then(|at| probe.read::<u64>(at))
             {
-                Some(data) => sorted(&mut probe, data, std::iter::once(edge_id as u64)),
+                Some(data) => sorted(
+                    &mut probe,
+                    data,
+                    Appended {
+                        kind: crate::roadtrace::Kind::Person,
+                        entity: entity as u32 as i32,
+                        component: component as u32 as i32,
+                        current: None,
+                        range: None,
+                        bounds: bounds as u64,
+                    },
+                    std::iter::once(edge_id as u64),
+                ),
                 None => REFUSALS.note(FIX, "the manager's data is unreadable"),
             }
         }
@@ -1614,7 +1704,19 @@ pub mod road {
                     from as u32 as i32,
                     to as u32 as i32,
                 ) {
-                    Ok(edges) => sorted(&mut probe, data, edges),
+                    Ok(edges) => sorted(
+                        &mut probe,
+                        data,
+                        Appended {
+                            kind: crate::roadtrace::Kind::Vehicle,
+                            entity: entity as u32 as i32,
+                            component: component as u32 as i32,
+                            current: Some(current as u32 as i32),
+                            range: Some((from as u32 as i32, to as u32 as i32)),
+                            bounds: bounds as u64,
+                        },
+                        edges,
+                    ),
                     Err(why) => REFUSALS.note(FIX, why),
                 }
             }

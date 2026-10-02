@@ -1728,10 +1728,10 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
         vehicles,
         [
             "lane 3 step 300 vehicle-0 state=1 stop=0 line=nil edge=3 pos=10.199999999999999 speed=5 \
-             arrival=nil/nil arrival_locked=nil \
+             arrival=nil/nil arrival_locked=nil load=nil pending=nil free=nil \
              entity=401 row=1:0:3@10.20 v5.00",
             "lane 3 step 300 vehicle-1 state=2 stop=1 line=nil edge=0 pos=0 speed=0 \
-             arrival=nil/nil arrival_locked=nil entity=402 \
+             arrival=nil/nil arrival_locked=nil load=nil pending=nil free=nil entity=402 \
              row=2:1:0@0.00 v0.00",
             &format!("lane 3 step 300 summary {}", read_lanes(&a)[3].1),
         ],
@@ -1743,7 +1743,10 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
         assert!(dump_a.contains(&summary), "{summary} in {dump_a:#?}");
     }
     assert!(
-        dump_a.contains(&"lane 5 step 300 town-0 buildings=3 entity=7 row=7:3".to_owned()),
+        dump_a.contains(
+            &"lane 5 step 300 town-0 buildings=3 size=nil,nil,nil experience=nil level=nil entity=7 row=7:3"
+                .to_owned()
+        ),
         "{dump_a:#?}"
     );
     assert!(
@@ -1779,6 +1782,172 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
 }
 
 #[test]
+fn edge_ends_are_dumped_from_the_games_userdata_vectors_at_full_precision() {
+    let a = dumping_game(false);
+    let b = dumping_game(false);
+    // As the game: an edge's ends are Vec3f userdata, whose x, y and z read,
+    // which print as their address and raise on a field they lack.
+    b.load(
+        r#"
+        local function vec(x, y, z)
+            local v = newproxy(true)
+            local fields = { x = x, y = y, z = z }
+            local mt = getmetatable(v)
+            mt.__index = function(_, k)
+                if fields[k] == nil then error("Vec3f has no member " .. tostring(k)) end
+                return fields[k]
+            end
+            mt.__tostring = function() return "Vec3f: 0x24bb8caeb48" end
+            return v
+        end
+        WORLD[1][101].position0 = vec(0, 0, 0)
+        WORLD[1][101].position1 = vec(100.04, 0, 1)
+    "#,
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(read_lanes(&a), read_lanes(&b));
+    let da = dump_at_checkpoint(&a, 50, "0");
+    let db = dump_at_checkpoint(&b, 50, "0");
+    assert_eq!(da, db, "a userdata vector dumps as its table twin");
+    assert!(
+        db.iter()
+            .any(|l| l.contains(" p0=0,0,0 p1=100.04000000000001,0,1 ")),
+        "{db:#?}"
+    );
+    assert!(!db.iter().any(|l| l.contains("Vec3f")), "{db:#?}");
+}
+
+#[test]
+fn a_towns_dump_carries_its_size_factors_experience_and_level() {
+    let a = dumping_game(false);
+    // The town's component, and the base game's town growth script's state
+    // as its own town_cargo_util reads it (state_native:findPath).
+    a.load(
+        r#"
+        api.type.ComponentType.GAME_SCRIPT = 20
+        WORLD[7][7] = { sizeFactors = { 1.5, 0.1, 2 } }
+        WORLD[20] = { [55] = { state_native = {
+            findPath = function(self, path)
+                assert(path[1] == "townState")
+                if path[2] ~= 7 then return nil end
+                return { asTable = function() return { experience = 1200, level = 3 } end }
+            end } } }
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            assert(name == "::/game_mechanics/towns/town_cargo.gs")
+            return 55
+        end }
+    "#,
+    )
+    .exec()
+    .unwrap();
+    let lanes = read_lanes(&a);
+    let dump = dump_at_checkpoint(&a, 50, "5");
+    assert_eq!(
+        dump,
+        [
+            "lane 5 step 50 town-0 buildings=3 size=1.5,0.10000000000000001,2 experience=1200 level=3 entity=7 row=7:3"
+                .to_owned(),
+            format!("lane 5 step 50 summary {}", lanes[5].1),
+        ]
+    );
+    // Without the native state, the plain one; the lane's text never
+    // changes with them.
+    a.load("WORLD[20][55] = { state = { townState = { [7] = { experience = 5, level = 0 } } } }")
+        .exec()
+        .unwrap();
+    let dump = dump_at_checkpoint(&a, 100, "5");
+    assert!(dump[0].contains(" experience=5 level=0 "), "{dump:#?}");
+    assert_eq!(read_lanes(&a), lanes);
+}
+
+#[test]
+fn a_network_dump_cut_to_a_box_keeps_the_edges_with_an_end_inside() {
+    let a = dumping_game(false);
+    let lanes = read_lanes(&a);
+    let dump = |lua: &Lua, order: &str| -> Vec<String> {
+        lua.load(format!(
+            "HOOK.dumped = {{}} HOOK.checkpoint = true HOOK.dump = {order} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        lua.load("return HOOK.dumped").eval().unwrap()
+    };
+    // Edge 102 runs from (100, 0) to (100, 80): its far end is in the box,
+    // edge 101's ends are not.
+    let cut = dump(
+        &a,
+        "{ step = 12800, lanes = { 0, 5 }, box = { 90, 50, 110, 90 } }",
+    );
+    let network: Vec<&String> = cut.iter().filter(|l| l.starts_with("lane 0 ")).collect();
+    assert_eq!(network.len(), 2, "{cut:#?}");
+    assert!(network[0].contains(" entity=102 "), "{cut:#?}");
+    assert_eq!(
+        network[1],
+        &format!("lane 0 step 12800 summary {}", lanes[0].1),
+        "the summary is the whole lane's"
+    );
+    // The box is the network lane's only: the towns lane is whole.
+    assert!(
+        cut.iter()
+            .any(|l| l.starts_with("lane 5 step 12800 town-0 "))
+    );
+    // Without a box, the whole lane.
+    let whole = dump(&a, "{ step = 12850, lanes = { 0 } }");
+    assert_eq!(whole.len(), 3, "{whole:#?}");
+    // A box nothing lies in: the summary alone.
+    let empty = dump(
+        &a,
+        "{ step = 12900, lanes = { 0 }, box = { -9, -9, -8, -8 } }",
+    );
+    assert_eq!(empty.len(), 1, "{empty:#?}");
+}
+
+#[test]
+fn the_edge_watch_reads_each_entity_every_update_it_is_asked_for() {
+    let a = dumping_game(false);
+    a.load(
+        r#"
+        api.type.ComponentType.BASE_NODE = 10
+        WORLD[10] = { [11] = { position = { x = 0, y = 0, z = 0 } },
+                      [12] = { position = { x = 100.04, y = 0, z = 1 } } }
+        local e = WORLD[1][101]
+        e.node0, e.node1 = 11, 12
+        e.tangent0, e.tangent1 = { x = 100, y = 0, z = 1 }, { x = 100, y = 0.5, z = 1 }
+        e.type = 0
+        HOOK.watched = {}
+        tpf3mp_native.edgewatch = function() return HOOK.watch end
+        tpf3mp_native.edgewatched = function(e, text) HOOK.watched[#HOOK.watched + 1] = e .. ' ' .. text end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    // Not asked: no read, and nothing for postUpdate to do.
+    let work: mlua::Value = a.load("return UPDATE({}, STATE, 0.2)").eval().unwrap();
+    assert!(work.is_nil());
+    // Asked: postUpdate runs and reads each one, an edge, a node and none.
+    a.load("HOOK.watch = { 101, 11, 999 } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let watched: Vec<String> = a.load("return HOOK.watched").eval().unwrap();
+    assert_eq!(
+        watched,
+        [
+            "101 edge node0=11 node1=12 p0=0,0,0 p1=100.04000000000001,0,1 t0=100,0,1 \
+             t1=100,0.5,1 n0=0,0,0 n1=100.04000000000001,0,1 type=0 template=street/country.lua",
+            "11 node pos=0,0,0",
+            "999 absent",
+        ]
+    );
+    // An older hook without the watch: nothing asked, nothing read.
+    a.load("tpf3mp_native.edgewatch = nil HOOK.watched = {} UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let watched: Vec<String> = a.load("return HOOK.watched").eval().unwrap();
+    assert!(watched.is_empty());
+}
+
+#[test]
 fn terminal_choices_and_locks_are_dumped_without_changing_the_vehicle_digest() {
     let a = dumping_game(false);
     let b = dumping_game(false);
@@ -1808,6 +1977,100 @@ fn terminal_choices_and_locks_are_dumped_without_changing_the_vehicle_digest() {
         differences[0]
             .1
             .contains(" arrival=0/2 arrival_locked=true ")
+    );
+}
+
+/// The engine's finance reads, as the game script sees them: each vehicle's
+/// and line's takings from the journal, the player's income and the
+/// finance window's table.
+const FAKE_FINANCE: &str = r#"
+api.type.ComponentType.GAME_TIME = 10
+WORLD[10] = { [1] = { gameTime = 5000 } }
+WORLD[4][401].line = 301
+WORLD[4][401].loadState = 3
+WORLD[4][401].unloadPendingIncome = { amount = 77 }
+WORLD[4][401].lineStop2cargo2available = { { 40, 0 }, { 38, 2 } }
+TAKINGS = { [401] = 1200, [402] = -300, [301] = 900 }
+CALLS = {}
+api.engine.util.getWorld = function() return 1 end
+api.engine.util.finance = {
+    calculateBalance = function(list, from, to, incomeOnly)
+        CALLS[#CALLS + 1] = from .. '-' .. to .. ':' .. tostring(incomeOnly)
+        return TAKINGS[list[1]]
+    end,
+    calcIncomeSince = function(time, player) return 4321 end,
+    getLastIncomeTime = function(player) return 4990 end,
+    computeFinanceTable = function(player, config)
+        local data = { total = { 1, 2, 3, config.count }, loan = { 0, 0, 0, 0 } }
+        -- The engine's own map order: the dump sorts it.
+        function data:foreach_carrier(f) f(2) f(0) end
+        function data:foreach_transport(f, carrier) f(1, { carrier * 10, 5 }) end
+        function data:foreach_investment(f) f(4, { -8 }) end
+        function data:foreach_other(f) end
+        return data
+    end,
+}
+api.type.ChartConfig = { new = function() return {} end }
+"#;
+
+#[test]
+fn an_economy_dump_names_each_vehicles_and_lines_takings_without_changing_the_digest() {
+    let a = dumping_game(false);
+    let before = read_lanes(&a);
+    a.load(FAKE_FINANCE).exec().unwrap();
+    assert_eq!(read_lanes(&a)[4], before[4], "the balance alone is hashed");
+    let dump = dump_at_checkpoint(&a, 400, "4");
+    let economy: Vec<&str> = dump
+        .iter()
+        .filter(|l| l.starts_with("lane 4 step 400 "))
+        .map(String::as_str)
+        .collect();
+    let summary = format!("lane 4 step 400 summary {}", before[4].1);
+    assert_eq!(
+        economy,
+        [
+            "lane 4 step 400 line-0 takings=900 entity=301 row=takings:301",
+            "lane 4 step 400 player balance=1234567 loan=nil time=5000 income=4321 \
+             last_income=4990 balance=nil interest=nil investment4=-8 loan=0/0/0/0 \
+             loanBorrowing=nil loanRepayment=nil total=1/2/3/4 transport0.1=0/5 \
+             transport2.1=20/5 entity=25 row=25:1234567",
+            "lane 4 step 400 vehicle-0 takings=1200 line=line-0 entity=401 row=takings:401",
+            "lane 4 step 400 vehicle-1 takings=-300 line=nil entity=402 row=takings:402",
+            summary.as_str(),
+        ],
+        "each line's and vehicle's takings by its id, the balance with the finance table sorted"
+    );
+    let calls: Vec<String> = a.load("return CALLS").eval().unwrap();
+    assert_eq!(
+        calls, ["0-5000:true"; 3],
+        "from the game's start to now, income and maintenance, as the game's windows read it"
+    );
+
+    // The vehicles' dump carries what they have room for and the income
+    // pending; their digest does not.
+    let b = dumping_game(false);
+    assert_eq!(read_lanes(&a)[3], read_lanes(&b)[3]);
+    let vehicles = dump_at_checkpoint(&a, 450, "3");
+    assert!(
+        vehicles
+            .iter()
+            .any(|l| l.contains(" load=3 pending=77 free=40/0|38/2 ")),
+        "{vehicles:#?}"
+    );
+
+    // A world without the finance reads still dumps its balance.
+    let plain = dump_at_checkpoint(&b, 400, "4");
+    assert!(
+        plain.iter().any(|l| l.starts_with(
+            "lane 4 step 400 player balance=1234567 loan=nil time=nil income=nil last_income=nil err "
+        )),
+        "{plain:#?}"
+    );
+    assert!(
+        plain
+            .iter()
+            .any(|l| l.starts_with("lane 4 step 400 vehicle-0 takings=nil ")),
+        "{plain:#?}"
     );
 }
 

@@ -111,6 +111,21 @@ fn now_ms() -> u64 {
         .max(1)
 }
 
+/// The room's step the last batch ended at, if one ran
+/// ([`crate::edgewatch`]).
+pub(crate) fn last_step_run() -> Option<u64> {
+    let last = LAST_STEP_RUN.load(Ordering::Acquire);
+    (last != u64::MAX).then_some(last)
+}
+
+/// The game's `updateCount` while its step runs, else `None`
+/// ([`crate::edgewatch`]).
+pub(crate) fn update_count_now() -> Option<u32> {
+    crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire))
+        .ok()
+        .map(|c| c.update_count)
+}
+
 /// Writes `line` to the hook's log, if it has one.
 pub(crate) fn log_line(line: &str) {
     if let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
@@ -401,6 +416,11 @@ fn log_counters(first: u64, updates: u32, checkpoint: bool) {
     if checkpoint || before.saturating_add(1) != first {
         let counters = crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire));
         log_line(&crate::ticks::checkpoint_line(last, counters));
+        // The road entry trace's digest of the in-step appends since the
+        // last checkpoint (docs/HOOKS.md, "The road entry trace").
+        if let Some(line) = crate::roadtrace::take_checkpoint(last) {
+            log_line(&line);
+        }
     }
 }
 
@@ -626,15 +646,37 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     );
     let env = std::env::var(crate::lanedump::ENV).ok();
     let (setting, refused) = crate::lanedump::Setting::from_env(env.as_deref());
+    // The town trace adds the towns lane, its size factors, experience and
+    // level, at every checkpoint (crate::towntrace).
+    let setting = setting.with_town_trace(crate::towntrace::wanted(
+        std::env::var(crate::towntrace::ENV).ok().as_deref(),
+    ));
+    // The network lane cut to a box at the checkpoints of a step range
+    // (crate::lanedump::BOX_ENV), even with dumps off.
+    let boxed = crate::lanedump::BoxDump::from_env(
+        std::env::var(crate::lanedump::BOX_ENV).ok().as_deref(),
+        std::env::var(crate::lanedump::BOX_STEPS_ENV)
+            .ok()
+            .as_deref(),
+    )
+    .unwrap_or_else(|why| {
+        log_line(&why);
+        None
+    });
+    if let Some(boxed) = &boxed {
+        log_line(&boxed.describe());
+    }
+    let setting = setting.with_box(boxed);
     if let Some(why) = refused {
         log_line(&why);
     } else if setting.off {
         log_line("lane dumps are off, even after a divergence");
     } else if !setting.always.is_empty() {
         log_line(&format!(
-            "dumping lanes {:?} at every checkpoint ({})",
+            "dumping lanes {:?} at every checkpoint ({} or {})",
             setting.always,
-            crate::lanedump::ENV
+            crate::lanedump::ENV,
+            crate::towntrace::ENV
         ));
     }
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
@@ -749,11 +791,23 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     });
     crate::seeds::install(&absolute);
     log_line(&crate::ticks::install(&absolute));
+    for line in crate::roadtrace::configure_from_env() {
+        log_line(&line);
+    }
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
     }
     log_line(&crate::townfield::install(&absolute));
     for line in crate::persons::install(&absolute) {
+        log_line(&line);
+    }
+    for line in crate::towntrace::install(&absolute, base as u64) {
+        log_line(&line);
+    }
+    for line in crate::edgewatch::install(&absolute, base as u64) {
+        log_line(&line);
+    }
+    for line in crate::streettrace::install(&absolute) {
         log_line(&line);
     }
     Ok(step_rva)
