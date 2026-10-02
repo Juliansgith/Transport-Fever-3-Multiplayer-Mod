@@ -979,6 +979,7 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         log_line(&outcome.to_string());
     }
     log_line(&crate::copycheck::install(base));
+    log_line(&crate::netwatch::install(base));
     Ok(step_rva)
 }
 

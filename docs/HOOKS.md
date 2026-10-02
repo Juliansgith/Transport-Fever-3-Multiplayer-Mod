@@ -3415,6 +3415,31 @@ their order in the log may differ between games, but each search's batches
 must be equal. The first segment whose cost differs between two games, for
 the same key, names the lane whose cost differs.
 
+The next round (`1908df3`) answered: the costs are equal, but they sit
+under other lane indices of construction 362201 in each game (james's
+lanes 10, 11, 2, 3, 4, 8, 9 carry what cat's 8, 9, 12, 13, 14, 6, 7 do),
+while station 362202's lanes match. Its edge list is permuted between the
+games, though at step 921 a path through it used the same indices in
+both: the list was rebuilt in between, in another order in each game.
+The network watcher (`crate::netwatch`, logging only, on when
+`TPF3MP_HOOK_WATCH_PATH_ENTITIES` lists entities) reads each listed
+entity's `TransportNetwork` (its const getter found in the code as the
+copy checker finds its getters; the edges a vector at `+0x18`, 0x70 bytes
+each) at the start of every room's update, and says its edge list when it
+changes:
+
+```
+net: step <s> entity <e> edges <n>: <i>:<fingerprint> ...
+```
+
+A fingerprint hashes an edge's 8-byte words, a heap address left out. The
+first `net:` line after the load's says at which step the list was
+rebuilt; two games' lines with the same fingerprints in another order say
+it was rebuilt in another order. A construction's network is built by
+`construction_builder_util::ConstructTransportNetwork` (`0xa06cd0`,
+named by its assert; a map `node2index2position` among its locals),
+INFERRED to be where the order comes from.
+
 **The engine-copy checker** (`crate::copycheck`; read only, off unless
 `TPF3MP_PROBE_ENGINE_COPY` is `1` or `on`, or a number n for every n-th
 change of engine). It asks which other fields the copy leaves behind. The
