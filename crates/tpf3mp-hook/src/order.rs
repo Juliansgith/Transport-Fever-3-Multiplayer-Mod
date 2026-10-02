@@ -93,6 +93,7 @@ pub fn install(resolved: &ResolvedProfile) -> Vec<Outcome> {
         crate::step::alternate_wanted(std::env::var(decision_sync::TOGGLE_ENV).ok().as_deref()),
     ));
     outcomes.extend(road::install(resolved, wanted(road::TOGGLE_ENV), measuring));
+    outcomes.push(path_ties::install(resolved, wanted(path_ties::TOGGLE_ENV)));
     // The claim loop's watcher rides on the vehicle watcher's switch.
     if wanted(platform::WATCH_ENV) {
         outcomes.extend(claims::install(resolved));
@@ -2181,6 +2182,230 @@ pub mod decision_sync {
     }
 }
 
+/// The path finder's tie order (the 2026-10-01 step-3300 split on
+/// `twomptest`, docs/HOOKS.md, "Path ties").
+///
+/// `transport::PathFinder<...>::PrioritySearch` keeps its open search
+/// segments (24 bytes each, at `[this+8]`; the cost so far at `+0x0c`, the
+/// heuristic at `+0x10`) in a sorted list, and sorts each batch of new ones
+/// (`SortAndMergeUnsorted`) with `std::sort` over their `int` indices by
+/// `+0x10 + +0x0c` alone (`0x5af710`, shared by every instantiation with
+/// that layout: road and rail vehicles' `pair<EdgeId,bool>` searches and
+/// the persons' `LinkPathSeg` ones). Equal costs, as a station's parallel
+/// lanes have, come out in an order that depends on the batch's input
+/// order, so two games' buses took different lanes through construction
+/// 362201 on the same 26 edges at step 3200, and one reached its stop a lap
+/// later. The fix detours the sort and orders the indices by the cost, then
+/// by the segment's first 12 bytes (its edge or link key), then by its cost
+/// so far, a stable sort: one order for one set of segments, whatever the
+/// input order, and still the order by cost the search needs.
+pub mod path_ties {
+    use super::*;
+
+    pub const FIX: &str = "path-tie-order";
+    /// Set to `0` (or `off`), the engine's own sort stands.
+    pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_PATH_TIE_ORDER";
+    /// The road search's call of the sort (`0x266ce45`); the sort is its
+    /// target.
+    pub const CALL_SITE: &str = "PathFinder::PrioritySearch/sort call";
+    /// The sort's first bytes.
+    pub const SORT_EXPECTED: [u8; 22] = [
+        0x48, 0x89, 0x5C, 0x24, 0x18, // mov [rsp+0x18], rbx
+        0x48, 0x89, 0x6C, 0x24, 0x20, // mov [rsp+0x20], rbp
+        0x56, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57, // push rsi .. r15
+        0x48, 0x83, 0xEC, 0x40, // sub rsp, 0x40
+    ];
+    /// Its comparator, at `+0xf0`: `mov rdx,[rbx+8]` .. `vaddss xmm3, xmm0,
+    /// [rdx+r10*8+0xc]` (the segments, `+0x10` plus `+0x0c`).
+    pub const COMPARATOR_AT: u64 = 0xf0;
+    pub const COMPARATOR_EXPECTED: [u8; 31] = [
+        0x48, 0x8B, 0x53, 0x08, // mov rdx, [rbx+8]
+        0x4C, 0x8B, 0xDE, // mov r11, rsi
+        0x4C, 0x63, 0x3E, // movsxd r15, [rsi]
+        0x48, 0x63, 0x07, // movsxd rax, [rdi]
+        0x4F, 0x8D, 0x14, 0x7F, // lea r10, [r15+r15*2]
+        0xC4, 0xA1, 0x7A, 0x10, 0x44, 0xD2, 0x10, // vmovss xmm0, [rdx+r10*8+0x10]
+        0xC4, 0xA1, 0x7A, 0x58, 0x5C, 0xD2, 0x0C, // vaddss xmm3, xmm0, [rdx+r10*8+0xc]
+    ];
+    pub const SEGMENT_LEN: usize = 24;
+    const MAX_SEGMENTS: usize = 1 << 26;
+
+    static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+    static BROKEN: AtomicBool = AtomicBool::new(false);
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static TIES: AtomicU64 = AtomicU64::new(0);
+    static REFUSED: AtomicU64 = AtomicU64::new(0);
+
+    type SortFn = unsafe extern "system" fn(*mut i32, *mut i32, isize, usize);
+
+    /// A segment's sort key: its cost (`+0x10` plus `+0x0c`, added as the
+    /// engine adds them), its first 12 bytes, its cost so far.
+    pub fn key(segment: &[u8]) -> (f32, [u8; 12], u32) {
+        let word = |at: usize| {
+            [
+                segment[at],
+                segment[at + 1],
+                segment[at + 2],
+                segment[at + 3],
+            ]
+        };
+        let so_far = f32::from_le_bytes(word(0x0c));
+        let cost = f32::from_le_bytes(word(0x10)) + so_far;
+        let mut head = [0u8; 12];
+        head.copy_from_slice(&segment[..12]);
+        (cost, head, so_far.to_bits())
+    }
+
+    /// The order the fix gives `indices` into `segments` (24 bytes each):
+    /// by cost, then the key; and how many neighbours tie on cost.
+    pub fn order(indices: &mut [i32], segments: &[u8]) -> Result<u64, &'static str> {
+        let count = segments.len() / SEGMENT_LEN;
+        if indices.iter().any(|&i| i < 0 || i as usize >= count) {
+            return Err("an index past the segments");
+        }
+        let seg = |i: i32| &segments[i as usize * SEGMENT_LEN..(i as usize + 1) * SEGMENT_LEN];
+        indices.sort_by(|&a, &b| {
+            let (ka, kb) = (key(seg(a)), key(seg(b)));
+            ka.0.partial_cmp(&kb.0)
+                .unwrap_or_else(|| ka.0.total_cmp(&kb.0))
+                // The edge key (entity, index, direction byte), the cost so
+                // far, then the rest (padding in the vehicles' searches).
+                .then(ka.1[..9].cmp(&kb.1[..9]))
+                .then(ka.2.cmp(&kb.2))
+                .then(ka.1[9..].cmp(&kb.1[9..]))
+        });
+        Ok(indices
+            .windows(2)
+            .filter(|p| key(seg(p[0])).0 == key(seg(p[1])).0)
+            .count() as u64)
+    }
+
+    pub fn install(resolved: &ResolvedProfile, wanted: bool) -> Outcome {
+        let off = |reason: String| Outcome {
+            fix: FIX,
+            installed: false,
+            reason,
+        };
+        if !wanted {
+            return off(format!("{TOGGLE_ENV} says so; the engine's sort stands"));
+        }
+        let Some(site) = resolved.get(CALL_SITE) else {
+            return off(format!("the profile has no {CALL_SITE:?}"));
+        };
+        let read = |at: u64, len: usize| -> Option<Vec<u8>> {
+            let at = usize::try_from(at).ok()?;
+            if !crate::image::readable(at, len) {
+                return None;
+            }
+            // SAFETY: `len` readable bytes at `at`, in the game's image.
+            Some(unsafe { std::slice::from_raw_parts(at as *const u8, len) }.to_vec())
+        };
+        let Some(call) = read(site.address, 5) else {
+            return off("the sort's call is unreadable".into());
+        };
+        if call[0] != 0xE8 {
+            return off(format!("no call at {:#x}", site.address));
+        }
+        let rel = i32::from_le_bytes([call[1], call[2], call[3], call[4]]);
+        let target = site
+            .address
+            .wrapping_add(5)
+            .wrapping_add_signed(i64::from(rel));
+        if read(target, SORT_EXPECTED.len()).as_deref() != Some(&SORT_EXPECTED[..])
+            || read(target + COMPARATOR_AT, COMPARATOR_EXPECTED.len()).as_deref()
+                != Some(&COMPARATOR_EXPECTED[..])
+        {
+            return off(format!("the sort at {target:#x} is not the shape expected"));
+        }
+        // SAFETY: a function of the game whose code was just checked,
+        // detoured before any world exists; the detour has its ABI (four
+        // integer arguments, no return value).
+        match unsafe { InlineDetour::install(target as usize as *mut u8, sort as *const u8) } {
+            Ok(detoured) => {
+                ORIGINAL.store(detoured.trampoline() as usize, Ordering::Release);
+                let _kept = std::mem::ManuallyDrop::new(detoured);
+                Outcome {
+                    fix: FIX,
+                    installed: true,
+                    reason: format!(
+                        "the path finder's segment sort at {target:#x}: equal costs in one order, by the segment's key"
+                    ),
+                }
+            }
+            Err(error) => off(format!("the sort at {target:#x}: {error}")),
+        }
+    }
+
+    /// The detour: `(begin, end, depth limit, this)`, the indices
+    /// `[begin, end)` into the search's segments at `[this+8]..[this+0x10]`.
+    unsafe extern "system" fn sort(begin: *mut i32, end: *mut i32, depth: isize, this: usize) {
+        let mut done = false;
+        if !BROKEN.load(Ordering::Relaxed) {
+            guarded(FIX, &BROKEN, || {
+                let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+                let (begin_at, end_at) = (begin as usize, end as usize);
+                if end_at < begin_at || (end_at - begin_at) % 4 != 0 {
+                    REFUSED.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                let count = (end_at - begin_at) / 4;
+                if count < 2 {
+                    done = true;
+                    return;
+                }
+                // SAFETY: the search's segment vector, live while it sorts.
+                let (seg_begin, seg_end) = unsafe {
+                    (
+                        std::ptr::read((this + 8) as *const usize),
+                        std::ptr::read((this + 0x10) as *const usize),
+                    )
+                };
+                if seg_end < seg_begin
+                    || (seg_end - seg_begin) % SEGMENT_LEN != 0
+                    || (seg_end - seg_begin) / SEGMENT_LEN > MAX_SEGMENTS
+                {
+                    REFUSED.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                // SAFETY: the engine's own index range and segment vector,
+                // which only this thread's search touches while it sorts.
+                let (indices, segments) = unsafe {
+                    (
+                        std::slice::from_raw_parts_mut(begin, count),
+                        std::slice::from_raw_parts(seg_begin as *const u8, seg_end - seg_begin),
+                    )
+                };
+                match order(indices, segments) {
+                    Ok(ties) => {
+                        TIES.fetch_add(ties, Ordering::Relaxed);
+                        done = true;
+                    }
+                    Err(_) => {
+                        REFUSED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                if n == 1 || n.is_multiple_of(1 << 20) {
+                    log::line(&format!(
+                        "order fix {FIX}: alive, sorts={n} ties={} refused={}",
+                        TIES.load(Ordering::Relaxed),
+                        REFUSED.load(Ordering::Relaxed)
+                    ));
+                }
+            });
+        }
+        if done {
+            return;
+        }
+        let original = ORIGINAL.load(Ordering::Acquire);
+        if original != 0 {
+            // SAFETY: the trampoline of the engine's sort, its arguments
+            // forwarded.
+            let original: SortFn = unsafe { std::mem::transmute::<usize, SortFn>(original) };
+            unsafe { original(begin, end, depth, this) };
+        }
+    }
+}
+
 /// The ship and aircraft move systems' watcher (logging only; it changes
 /// nothing). Both `Update2`s (`ecs::ShipMoveSystem` `0xaf6120`,
 /// `ecs::AircraftMoveSystem` `0xa83a40`) walk their node list (16-byte
@@ -3554,6 +3779,31 @@ mod tests {
         other.insert(call, vec![0x90; 5]);
         let mut read = reads(other);
         assert!(decision_sync::getter_from_call(call, &mut read).is_err());
+    }
+
+    #[test]
+    fn equal_cost_segments_come_out_in_one_order_whatever_the_input() {
+        // Four segments: 0 and 2 tie on cost (1.0 + 2.0, 2.5 + 0.5), 1 is
+        // cheaper, 3 dearer.
+        let mut segments = vec![0u8; 4 * path_ties::SEGMENT_LEN];
+        let put = |segments: &mut Vec<u8>, i: usize, key: i32, so_far: f32, h: f32| {
+            let at = i * path_ties::SEGMENT_LEN;
+            segments[at..at + 4].copy_from_slice(&key.to_le_bytes());
+            segments[at + 0x0c..at + 0x10].copy_from_slice(&so_far.to_le_bytes());
+            segments[at + 0x10..at + 0x14].copy_from_slice(&h.to_le_bytes());
+        };
+        put(&mut segments, 0, 362_201, 1.0, 2.0);
+        put(&mut segments, 1, 5, 1.0, 0.0);
+        put(&mut segments, 2, 362_200, 2.5, 0.5);
+        put(&mut segments, 3, 1, 9.0, 0.0);
+        let mut a = vec![0, 1, 2, 3];
+        let mut b = vec![3, 2, 1, 0];
+        assert_eq!(path_ties::order(&mut a, &segments), Ok(1));
+        assert_eq!(path_ties::order(&mut b, &segments), Ok(1));
+        // By cost first; the tie by the key (362200 before 362201).
+        assert_eq!(a, vec![1, 2, 0, 3]);
+        assert_eq!(a, b);
+        assert!(path_ties::order(&mut [4], &segments).is_err());
     }
 
     #[test]

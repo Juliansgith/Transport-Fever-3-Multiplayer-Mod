@@ -680,6 +680,19 @@ offset = 0
 prologue = "0F B6 40 70 84 C0"
 required = false
 
+# The path finder's tie order (crates/tpf3mp-hook/src/order.rs, `path_ties`): the
+# road search's PrioritySearch (0x266cd50, named by its assert) calls its segment
+# sort at 0x266ce45: `mov r8,rdx; sub r8,rcx; sar r8,2; call <sort>`. The hook takes
+# the sort (0x5af710, std::sort of int indices by [seg+0x10]+[seg+0xc]; code shared
+# by every PathFinder instantiation with that layout) from the call and checks its
+# code before detouring it.
+[[target]]
+name = "PathFinder::PrioritySearch/sort call"
+signature = "4C 8B C2 4C 2B C1 49 C1 F8 02 E8 ?? ?? ?? ?? 48 63 4D 68"
+offset = 10
+prologue = "E8 C6 28 F4 FD"
+required = false
+
 # transport::EdgeReservationManager::Reserve (assert-named): log every claim in order. 0x255c2e0
 [[target]]
 name = "transport::EdgeReservationManager::Reserve"

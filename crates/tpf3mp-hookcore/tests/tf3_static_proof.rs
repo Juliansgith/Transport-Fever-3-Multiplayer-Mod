@@ -77,6 +77,7 @@ const TARGETS: &[(&str, u64)] = &[
         0xac2235,
     ),
     ("ecs::ShipMoveSystem::Update2/node head", 0xaf644e),
+    ("PathFinder::PrioritySearch/sort call", 0x266ce45),
     (
         "ecs::TransportVehicleSystem::Update2/decision flag",
         0xb8bdb3,
@@ -190,6 +191,8 @@ fn every_target_resolves_uniquely_in_the_installed_game() {
     assert_eq!(callee(0xb85453), 0xb76b30);
     // The watcher's free check follows the call of the occupant query.
     assert_eq!(callee(0xb8572d), 0x255bce0);
+    // The road search's segment sort, which the path-tie fix detours.
+    assert_eq!(callee(0x266ce45), 0x5af710);
     // The road-entry fix: Add appends in place (`add qword [rcx+8], 0x14`).
     assert_eq!(
         &text_bytes[at(0x255ea6d)..at(0x255ea6d) + 5],

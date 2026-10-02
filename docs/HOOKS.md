@@ -3347,6 +3347,44 @@ watch: step <s> engine <n> vehicle <entity> path <edges>: <entity>/<index>/<dire
 The first step where two games' path lines differ is where a route was
 computed differently.
 
+**Path ties** (`path-tie-order`, on unless `TPF3MP_HOOK_PATH_TIE_ORDER` is
+`0` or `off`). The route-logging round (`04901bc`, james and cat) found
+the split: at step 3200 both games recomputed 217708's route to station
+362202, and the two routes were 26 edges long with the same middle
+section. They took different lanes through construction 362201, starting
+on lane 9 in one game and lane 7 in the other: equal-cost alternatives
+broken differently.
+
+`transport::PathFinder<...>::PrioritySearch` keeps its open search
+segments (24 bytes each, at `[this+8]`, cost so far at `+0x0c`, heuristic
+at `+0x10`) in a sorted list. It sorts each batch of new ones
+(`SortAndMergeUnsorted`) with `std::sort` over their `int` indices by
+`+0x10 + +0x0c` alone (`0x5af710`, SEEN). That code is shared by every
+instantiation with that layout: road and rail vehicles'
+`pair<EdgeId,bool>` searches (`0x266cd50`, `0x266d1d0`, `0x266d600`, ...)
+and the persons' `LinkPathSeg` ones (`0x938370`, ...). Introsort leaves
+equal costs in an order that depends on the batch's input order, and with
+it which of a station's parallel lanes the search expands first. Which
+per-game input made the two batches' orders differ is not established;
+the fix does not need it.
+
+The fix takes the sort from the road search's call (`0x266ce45`, profile
+target `PathFinder::PrioritySearch/sort call`), checks its prologue and
+its comparator's bytes, and detours it whole. It orders the indices by
+the cost (added as the engine adds it), then by the segment's edge key
+(its first 9 bytes: entity, index, direction), then by its cost so far,
+then by its other key bytes. The sort is stable, so one set of segments
+gives one order whatever the input order, still ordered by cost as the
+search needs. A range it cannot read goes to the engine's own sort. Once,
+and every `1 << 20` sorts:
+
+```
+order fix path-tie-order: alive, sorts=<n> ties=<n> refused=<n>
+```
+
+`ties` counts neighbours of equal cost in the sorted ranges: the
+decisions the engine's order alone used to make.
+
 **The engine-copy checker** (`crate::copycheck`; read only, off unless
 `TPF3MP_PROBE_ENGINE_COPY` is `1` or `on`, or a number n for every n-th
 change of engine). It asks which other fields the copy leaves behind. The
