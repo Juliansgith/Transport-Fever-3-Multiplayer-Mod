@@ -1517,3 +1517,15 @@ signature = "48 8B C8 E8 ?? ?? ?? ?? 41 8B 8F 80 00 00 00 39 48 18"
 offset = 8
 prologue = "41 8B 8F 80 00 00 00"
 required = false
+
+# The probe's log of the line viewer's edge geometry (probe.rs), only with
+# TPF3MP_PROBE_PLAYER=1: sub_7f10a0 (game/ui/util/lineviewer.cpp, the one
+# that builds a line's edge geometries; called by LineViewer::Update at
+# 0x7f6598, 0x7f69e9, 0x7f6a55). Detoured to read, after the original, the
+# byte sizes of its result's three vectors per line; answer unchanged.
+[[target]]
+name = "probe: LineViewer GetEdgeGeometries"
+signature = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 A0 48 81 EC 60 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 50 45 8B F9"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
+required = false

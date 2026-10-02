@@ -9680,7 +9680,7 @@ fn the_map_line_probe_says_what_the_line_viewer_draws() {
                                           if station == 900 and terminal == 1 then return { { 700, 0 } } end return {} end,
                                       getProblemLines = function() return { { 700, 3 } } end } },
                        getComponent = function(e, kind)
-                           if kind == 9 then return OWNERS[e] and { player = OWNERS[e] } or nil end
+                           if kind == 9 then return (OWNERS[e] or e == 901) and { player = OWNERS[e] or 1 } or nil end
                            if kind == 10 and e == 700 then
                                return { stops = { { stationGroup = 800, station = 0, terminal = 1 },
                                                   { stationGroup = 800, station = 1, terminal = 0 } } }
@@ -9756,9 +9756,8 @@ fn the_map_line_probe_says_what_the_line_viewer_draws() {
     );
     // The line's owner: the component types it has, and its colour.
     assert!(
-        logged.contains(
-            "probe: the line's owner 901 has (no component types it could list); no colour (the HUD's state)"
-        ),
+        logged
+            .contains("probe: the line's owner 901 has PLAYER_OWNED; no colour (the HUD's state)"),
         "{logged}"
     );
 }

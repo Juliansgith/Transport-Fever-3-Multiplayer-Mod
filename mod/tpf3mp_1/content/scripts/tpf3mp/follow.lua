@@ -375,21 +375,32 @@ function follow.colourText(api, entity)
 	return string.format("colour %.3f %.3f %.3f", x, y, z)
 end
 
+follow.COMPONENT_TYPES = { "AIRCRAFT", "ANIMAL", "ASSET_GROUP", "BASE_EDGE", "BASE_EDGE_STREET", "BASE_NODE",
+	"BASE_PARALLEL_STRIP", "CUSTOM_STATE", "EMISSION_EMITTER", "FIELD", "GAME_TIME", "GAME_SPEED",
+	"MODEL_INSTANCE_LIST", "NAME", "LINE", "LOG_BOOK", "MODEL_PERSON", "MOVE_PATH", "MOVE_PATH_AIRCRAFT", "STATION",
+	"STATION_GROUP", "SIM_PERSON", "SIM_PERSON_AT_TERMINAL", "SIM_PERSON_AT_VEHICLE", "SIM_CARGO",
+	"SIM_ENTITY_AT_BUILDING", "SIM_ENTITY_AT_VEHICLE", "SIM_ENTITY_AT_TERMINAL", "SIM_ENTITY_IDLE",
+	"SIM_ENTITY_MOVING", "SIGNAL_LIST", "TOWN", "INDUSTRY", "STOCK_LIST", "TOWN_BUILDING", "TRANSPORT_VEHICLE", "TRAIN",
+	"CARRIAGE", "CARRIAGE_LIST", "VEHICLE_DEPOT", "COLOR", "BOUNDING_VOLUME", "CONSTRUCTION", "SUBCONSTRUCTION",
+	"PERSON_CAPACITY", "PLAYER_OWNED", "ACCOUNT", "GAME_SCRIPT", "WAREHOUSE", "TRANSPORT_NETWORK", "MAINTENANCE_COST",
+	"RAILROAD_CROSSING", "PLAYER", "WORLD", "BRIDGE", "BASE_NODE_CONFIG", "LAND_VEHICLE", "BASE_NODE_TRAFFIC_LIGHT",
+	"EDGE_OBJECT", "EMISSION_GRID", "TERRAIN", "SHIP" }
+
 -- The names of the component types `entity` has, from
 -- api.type.ComponentType, sorted.
 function follow.componentsOf(api, entity)
 	local names = {}
 	local okT, types = pcall(function() return api.type.ComponentType end)
 	if not okT or types == nil then return names end
-	-- The game's enum tables may not iterate; then the names stay empty.
-	pcall(function()
-		for name, kind in pairs(types) do
-			if type(name) == "string" and type(kind) == "number" then
-				local ok, c = pcall(function() return api.engine.getComponent(entity, kind) end)
-				if ok and c ~= nil then names[#names + 1] = name end
-			end
+	-- The game's enum does not iterate (build 40408): its names, as
+	-- api/tealdef/api/engine.d.tl lists them.
+	for _, name in ipairs(follow.COMPONENT_TYPES) do
+		local okK, kind = pcall(function() return types[name] end)
+		if okK and kind ~= nil then
+			local ok, c = pcall(function() return api.engine.getComponent(entity, kind) end)
+			if ok and c ~= nil then names[#names + 1] = name end
 		end
-	end)
+	end
 	table.sort(names)
 	if #names == 0 then names[1] = "(no component types it could list)" end
 	return names
