@@ -278,3 +278,20 @@ company's with a station group of its own; the line was not drawn.
 - Not known: whether the company's line reaches a `LineViewer`. The probe
   (`follow.watchLines`) says, in one try, what each viewer is handed and
   what `getLinesForPlayer` answers.
+
+### The line is listed, not drawn (2026-10-02, probe of 3d91e83)
+
+- **seen** (p0, company #2, 372671) `getLinesForPlayer(372671)` answers
+  338852, owned by 372671, and a viewer is handed it; it is not drawn. So
+  the line reaches the viewer; ownership is not what stops it.
+- **seen** `UI::LineViewer` draws from `LineSystem::GetData(line)`
+  (`line2data`), comparing the data's revision (`+0x18`) with its own and
+  the data's per-stop segment count with the line's stops before it draws
+  (`sub_7f01d0`); no player is read on that path (tpfre, to depth 3).
+- **inferred** The line system's data for a line whose stops are the
+  room's placed stops is missing or does not match its stops: a stop naming
+  a station or terminal the stop does not have (a two-sided stop is two
+  stations in one group, each with its own terminals), or a route the line
+  system could not compute. The probe now reports each stop and the
+  engine's verdict for every line a viewer is handed, the first company's
+  lines too, so one try compares them.

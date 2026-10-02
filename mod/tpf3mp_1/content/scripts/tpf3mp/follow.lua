@@ -345,6 +345,84 @@ function follow.linesText(api, lines)
 	return n, table.concat(out, ", ")
 end
 
+-- What the probe says of one line a viewer is handed: its owner, each
+-- stop's station group, station and terminal as the line names them and
+-- whether they exist (the group's stations, the station's terminals, their
+-- owners), whether the line system lists the line at that terminal, and
+-- what the engine says is wrong with the line (lineSystem.getProblemLines,
+-- util.line.getLineProblems, util.line.getDetailedLineProblems). For a
+-- company's line and the first company's alike, so the two compare.
+function follow.lineReport(api, line)
+	local CT = api.type.ComponentType
+	local parts = {}
+	local function owner(e)
+		local ok, o = pcall(function() return api.engine.getComponent(e, CT.PLAYER_OWNED) end)
+		return ok and o and o.player or nil
+	end
+	local lineOwner = owner(line)
+	parts[#parts + 1] = "line " .. tostring(line) .. " owned by " .. tostring(lineOwner)
+	local okL, comp = pcall(function() return api.engine.getComponent(line, CT.LINE) end)
+	if not okL or comp == nil then
+		parts[#parts + 1] = "no LINE component"
+		return table.concat(parts, "; ")
+	end
+	local stops = {}
+	pcall(function() for k = 1, #comp.stops do stops[k] = comp.stops[k] end end)
+	parts[#parts + 1] = #stops .. " stop(s)"
+	for k, stop in ipairs(stops) do
+		local text = {}
+		pcall(function()
+			local group, station, terminal = stop.stationGroup, stop.station, stop.terminal
+			text[#text + 1] = string.format("stop %d: group %s station %s terminal %s", k, tostring(group),
+				tostring(station), tostring(terminal))
+			local g = api.engine.getComponent(group, CT.STATION_GROUP)
+			if g == nil then
+				text[#text + 1] = "no STATION_GROUP"
+				return
+			end
+			local stations = g.stations or {}
+			text[#text + 1] = "group of " .. #stations .. " station(s) owned by " .. tostring(owner(group))
+			local entity = stations[(station or -1) + 1]
+			if entity == nil then
+				text[#text + 1] = "no station " .. tostring(station) .. " in the group"
+				return
+			end
+			local s = api.engine.getComponent(entity, CT.STATION)
+			local terminals = s and s.terminals and #s.terminals or 0
+			text[#text + 1] = string.format("station %s owned by %s with %d terminal(s)", tostring(entity),
+				tostring(owner(entity)), terminals)
+			if (terminal or -1) < 0 or terminal >= terminals then
+				text[#text + 1] = "no terminal " .. tostring(terminal)
+			end
+			local listed = false
+			for _, ls in ipairs(api.engine.system.lineSystem.getLineStopsForTerminal(entity, terminal) or {}) do
+				if ls[1] == line then listed = true end
+			end
+			text[#text + 1] = listed and "listed at the terminal" or "not listed at the terminal"
+		end)
+		parts[#parts + 1] = table.concat(text, ", ")
+	end
+	pcall(function()
+		for _, p in ipairs(api.engine.system.lineSystem.getProblemLines(lineOwner) or {}) do
+			if p[1] == line then parts[#parts + 1] = "line system problem " .. tostring(p[2]) end
+		end
+	end)
+	pcall(function()
+		for _, p in ipairs(api.engine.util.line.getLineProblems() or {}) do
+			if p[1] == line then parts[#parts + 1] = "path problem " .. tostring(p[2]) end
+		end
+	end)
+	pcall(function()
+		local states = api.engine.util.line.getDetailedLineProblems(line) or {}
+		local n = 0
+		for _, stopStates in ipairs(states) do
+			for _ in ipairs(stopStates or {}) do n = n + 1 end
+		end
+		parts[#parts + 1] = n .. " detailed stop problem(s)"
+	end)
+	return table.concat(parts, "; ")
+end
+
 function follow.watchLines(api, require_, link, where)
 	if not (link and link.note) then return 0 end
 	local saidCount, saidText = 0, {}
@@ -374,6 +452,13 @@ function follow.watchLines(api, require_, link, where)
 				pcall(function()
 					local n, text = follow.linesText(api, params and params.showLines)
 					say("probe: a line viewer is handed " .. n .. " line(s) to draw: " .. text)
+					-- Each line's stops and the engine's verdict on it.
+					for _, l in ipairs(params and params.showLines or {}) do
+						local okE, entity = pcall(function() return type(l) == "number" and l or l.entity end)
+						if okE and type(entity) == "number" then
+							say("probe: line to draw: " .. follow.lineReport(api, entity))
+						end
+					end
 				end)
 			end
 			return original(params, ...)

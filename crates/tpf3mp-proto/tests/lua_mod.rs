@@ -9626,11 +9626,20 @@ fn the_map_line_probe_says_what_the_line_viewer_draws() {
         api.engine = { util = { getPlayer = setmetatable({}, { __call = function() return 25 end }) },
                        system = { gameScriptSystem = { getEntityForGameScript = function() return -1 end },
                                   lineSystem = { getLinesForPlayer = function(p)
-                                      if p == 901 then return { 700 } end return { 701 } end } },
+                                      if p == 901 then return { 700 } end return { 701 } end,
+                                      getLineStopsForTerminal = function(station, terminal)
+                                          if station == 900 and terminal == 1 then return { { 700, 0 } } end return {} end,
+                                      getProblemLines = function() return { { 700, 3 } } end } },
                        getComponent = function(e, kind)
                            if kind == 9 then return OWNERS[e] and { player = OWNERS[e] } or nil end
+                           if kind == 10 and e == 700 then
+                               return { stops = { { stationGroup = 800, station = 0, terminal = 1 },
+                                                  { stationGroup = 800, station = 1, terminal = 0 } } }
+                           end
+                           if kind == 11 and e == 800 then return { stations = { 900 } } end
+                           if kind == 12 and e == 900 then return { terminals = { {}, {} } } end
                        end }
-        api.type = { ComponentType = { GAME_SCRIPT = 7, PLAYER_OWNED = 9 } }
+        api.type = { ComponentType = { GAME_SCRIPT = 7, PLAYER_OWNED = 9, LINE = 10, STATION_GROUP = 11, STATION = 12 } }
         DRAWN = {}
         local builtin = ug_require("::/gui/main/builtin.lua")
         builtin.LineViewer = function(params) DRAWN[#DRAWN + 1] = params return {} end
@@ -9687,6 +9696,13 @@ fn the_map_line_probe_says_what_the_line_viewer_draws() {
         logged.matches("probe: a line viewer").count(),
         1,
         "once per answer"
+    );
+    // Each line's stops and the engine's verdict on it.
+    assert!(
+        logged.contains(
+            "probe: line to draw: line 700 owned by 901; 2 stop(s); stop 1: group 800 station 0 terminal 1, group of 1 station(s) owned by nil, station 900 owned by nil with 2 terminal(s), listed at the terminal; stop 2: group 800 station 1 terminal 0, group of 1 station(s) owned by nil, no station 1 in the group; line system problem 3 (the HUD's state)"
+        ),
+        "{logged}"
     );
 }
 

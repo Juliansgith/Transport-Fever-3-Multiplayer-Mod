@@ -2197,6 +2197,26 @@ probe: a line viewer is handed 1 line(s) to draw: 373300 (owned by 372553) (the 
 A company's line in that list but not drawn is the viewer's path (the
 line's own route through its stops); one missing from it is the list's.
 
+The 3d91e83 try (p0, company #2, 372671): the company's line 338852 was
+listed by `getLinesForPlayer(372671)` and handed to a viewer, owned by
+372671, and still not drawn. The viewer draws from the simulation's
+per-line data (`ecs::LineSystem::GetData`, `sub_ad2050`, its `line2data`),
+and draws nothing unless that data's revision (`+0x18`) and its per-stop
+segment count match the line's own (`sub_7f01d0`, 0x7f03e7 and 0x7f0444);
+nothing in its call tree reads a player (tpfre: no `+0x20c` read, no
+`PlayerOwned`, to depth 3 from `LineViewer::vf1`, `vf4` and `sub_7f53c0`).
+So the probe also says, for every line a viewer is handed (the first
+company's as well, to compare): each stop's station group, station and
+terminal as the line names them, whether that station and terminal exist,
+their owners, whether the line system lists the line at that terminal, and
+the engine's own verdict (`lineSystem.getProblemLines`,
+`util.line.getLineProblems`, `getDetailedLineProblems`; the values below
+illustrative, not seen):
+
+```
+probe: line to draw: line 338852 owned by 372671; 3 stop(s); stop 1: group 373231 station 0 terminal 1, group of 2 station(s) owned by 372671, station 180929 owned by 372671 with 1 terminal(s), no terminal 1, not listed at the terminal; ...; line system problem 3
+```
+
 **A purchase's depot**, in hook.log when the store buys (the GUI's
 capture, `capture.depotText`): `the store buys at depot entity 5001 (owned
 by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7,
