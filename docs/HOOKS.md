@@ -962,7 +962,7 @@ stands still meanwhile:
   played would leave a whole world behind (`tpf3mp_room_<pid>.sav`, and a
   `tpf3mp_<pid>_<event>.sav` whose save failed or was never moved). The
   hook removes those of games no longer running
-  (`crate::worlds::sweep`): when it starts, after it copies a room's
+  (`crate::worlds::sweep`): once its save folder is resolved, after it copies a room's
   world in, and after a save it moved out. It fails closed:
   - only files named exactly `tpf3mp_room_<pid>.sav`,
     `tpf3mp_<pid>_<event>.sav` or the `.jpg` beside either (decimal
@@ -3225,3 +3225,11 @@ change disables one feature rather than the mod.
 
 The GUI hook exposes `copy(text)` for the room invite. The lobby uses the
 local `copy` action; clipboard errors are reported and never sent to the server.
+
+### Upgrade diagnostics
+
+Road and track modifiers log a bounded summary when handed to the room and
+again when applied in each game. The summary identifies the modifier and
+edge count without changing its payload. Track proposal tests use the Lua
+API stand-in; they do not establish native track-tool acceptance. Action
+handoff logs also include the action kind, without a wire format change.

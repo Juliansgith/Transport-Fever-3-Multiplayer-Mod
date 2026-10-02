@@ -809,6 +809,21 @@ function HANDLERS.BuildTrack(track)
 	return buildNetwork("Track", track.track, track.style, track.polyline)
 end
 
+-- An upgrade tool's build, said in the log once every game built it
+-- (tpf3mp/roads.lua upgradeSummary): the same line in every game.
+for _, name in ipairs({ "BuildRoad", "BuildTrack" }) do
+	local build = HANDLERS[name]
+	HANDLERS[name] = function(body)
+		local ok, why = build(body)
+		if ok == true then
+			local summarised, text = pcall(module("roads").upgradeSummary, { [name] = body })
+			if summarised and text then log("upgrade applied: " .. text) end
+		end
+		return ok, why
+	end
+end
+
+
 -- ---------------------------------------------------------------- stops
 --
 -- A stop is placed, or removed, as the stop tool and the bulldozer propose

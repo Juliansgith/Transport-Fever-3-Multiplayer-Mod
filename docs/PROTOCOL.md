@@ -97,7 +97,7 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   the room.
 - **Closing.** A room closes when its last member leaves; a lobby also
   when its last member disconnects. A running game also closes when nobody
-  has been connected to it for the server's grace period, 5 minutes by
+  has been connected to it for the server's grace period, 10 minutes by
   default (OPERATIONS.md, "Room lifetime"); until then, disconnected
   players keep their seats and can resume, and the room is left out of the
   room list. Joining a room that closed is refused as `BadInvite`, like

@@ -7,7 +7,7 @@
 # 3. once the room's game starts, loads the fixture save in the host (p1)
 #    through its console; the room saves that world, and the guests load it
 #    from their main menus; a guest that has not after -GuestWait seconds
-#    loads the fixture from its console too;
+#    fails the setup instead of loading a different world;
 # 4. closes the host's console and zooms each game in a little.
 #
 # Prints "run: <folder>" and "games: p1=<pid> p2=<pid> ..."; the rig keeps
@@ -16,20 +16,19 @@
 #   room.ps1 [-Players 2] [-Run name] [-Fixture tpf3mp_fixture3] [-NoInstall]
 #
 # Refuses while any Transport Fever 3, tpf3mp-rig or tpf3mp-server runs:
-# they may be someone else's test. -QuitRunning quits those games
-# (quit.ps1) and stops those rigs and servers first.
+# they may be someone else's test. Existing processes are never stopped.
 param(
-  [int]$Players = 2,
-  [string]$Run = ("run-" + (Get-Date -Format "MMdd-HHmmss")),
-  [string]$Fixture = "tpf3mp_fixture3",
+  [ValidateRange(2,8)][int]$Players = 2,
+  [ValidatePattern("^[A-Za-z0-9_-]+$")][string]$Run = ("run-" + (Get-Date -Format "MMdd-HHmmss")),
+  [ValidatePattern("^[A-Za-z0-9_-]+$")][string]$Fixture = "tpf3mp_fixture3",
   [string]$GameBuild = "40408",
   [int]$Stagger = 25,
   [int]$MenuSeconds = 55,
   [int]$GuestWait = 150,
   [string]$CloseConsoleAt = "557,47",
-  [switch]$NoInstall,
-  [switch]$QuitRunning
+  [switch]$NoInstall
 )
+$ErrorActionPreference = "Stop"
 . "$PSScriptRoot\env.ps1"
 if (-not $GameExe) { throw "Transport Fever 3 not found; set TPF3MP_GAME_EXE" }
 if (-not $GameLocal) { throw "the game's userdata folder not found; set TPF3MP_GAME_LOCAL" }
@@ -42,19 +41,25 @@ $games = @(Get-Process TransportFever3 -ErrorAction SilentlyContinue)
 $ours = @(Get-Process tpf3mp-rig, tpf3mp-server -ErrorAction SilentlyContinue)
 if ($games.Count -gt 0 -or $ours.Count -gt 0) {
   $list = (@($games) + @($ours) | ForEach-Object { "$($_.ProcessName) $($_.Id)" }) -join ", "
-  if (-not $QuitRunning) { throw "already running: $list. Someone may be testing; pass -QuitRunning to quit them" }
-  if ($games.Count -gt 0) { & "$PSScriptRoot\quit.ps1" -GamePids (($games | ForEach-Object { $_.Id }) -join ",") }
-  foreach ($p in $ours) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
-  Start-Sleep -Seconds 3
+  throw "Already running: $list. Quit only your own sessions first; this script never stops existing games or servers."
 }
 
+$runDir = "$Work\$Run"
+if (Test-Path -LiteralPath $runDir) { throw "Run directory already exists: $runDir" }
+
 if (-not $NoInstall) {
-  if (Test-Path $ModStaging) { Remove-Item -Recurse -Force $ModStaging }
+  $parent = [IO.Path]::GetFullPath((Join-Path $GameLocal 'staging_area'))
+  $target = [IO.Path]::GetFullPath($ModStaging)
+  if ($target -ne (Join-Path $parent 'tpf3mp_1')) { throw 'Unexpected staging target' }
+  foreach ($path in @($GameLocal,$parent,$target)) {
+    if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Refusing linked staging path: $path" }
+  }
+  if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop }
+  New-Item -ItemType Directory -Force $parent | Out-Null
   Copy-Item -Recurse "$Repo\mod\tpf3mp_1" $ModStaging
   "installed the mod into $ModStaging"
 }
 
-$runDir = "$Work\$Run"
 New-Item -ItemType Directory -Force $runDir | Out-Null
 $rigArgs = @("--players", "$Players", "--stagger", "$Stagger", "--wait-for-games", "--server", "local",
   "--game", "`"$GameExe`"", "--data-root", "`"$runDir`"", "--game-build", $GameBuild)
@@ -76,6 +81,7 @@ if (-not ((Test-Path $out) -and (Select-String -Path $out -Pattern "game started
   exit 1
 }
 $pids = @(Select-String -Path $out -Pattern "\(game pid (\d+)\)" | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
+if ($pids.Count -ne $Players) { throw 'Rig did not report every game PID' }
 
 $load = 'local ns=app.SaveGameNamespace.getSavegame() for _,i in ipairs(app.findAllSavegames(ns)) do ' +
   'if i.saveName=="' + $Fixture + '" then local id=api.type.SavegameId.new() id.path=i.path ' +
@@ -99,13 +105,13 @@ while ((Get-Date) -lt $deadline -and -not (Hook-Says "p1" "saved the world|not s
 for ($i = 1; $i -lt $pids.Count; $i++) {
   $player = "p$($i + 1)"
   $deadline = (Get-Date).AddSeconds($GuestWait)
-  while ((Get-Date) -lt $deadline -and -not (Hook-Says $player "playing the room's world|from its save")) { Start-Sleep -Seconds 3 }
-  if (-not (Hook-Says $player "playing the room's world|from its save")) {
-    "$player did not get the room's world from its menu; loading the fixture from its console"
-    Load-Fixture $pids[$i]
-    $deadline = (Get-Date).AddSeconds(300)
-    while ((Get-Date) -lt $deadline -and -not (Hook-Says $player "from its save|holding")) { Start-Sleep -Seconds 3 }
+  while ((Get-Date) -lt $deadline -and -not (Hook-Says $player "playing the room's world from its save")) { Start-Sleep -Seconds 3 }
+  if (-not (Hook-Says $player "playing the room's world from its save")) {
+    throw "$player did not load the shared snapshot. Test is not ready; games left running for diagnosis in $runDir"
   }
+}
+if (-not (Hook-Says "p1" "playing the room's world from its save")) {
+  throw "Host has not loaded the shared snapshot; test not ready in $runDir"
 }
 Start-Sleep -Seconds 15
 

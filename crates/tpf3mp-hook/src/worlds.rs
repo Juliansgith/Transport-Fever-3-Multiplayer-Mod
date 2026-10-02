@@ -232,12 +232,20 @@ pub fn running(pid: u32) -> bool {
     }
 }
 
-/// Whether process `pid` may be running. Fails closed: without `/proc`,
-/// every process is taken as running.
+/// Query existence without sending a signal, on macOS as well as Linux.
+/// Only ESRCH proves absence; permission errors keep the copy untouched.
 #[cfg(unix)]
+#[allow(unsafe_code)]
 pub fn running(pid: u32) -> bool {
-    let proc = Path::new("/proc");
-    !proc.join("self").exists() || proc.join(pid.to_string()).exists()
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return true;
+    }
+    // SAFETY: signal zero only queries a positive process ID.
+    let exists = unsafe { libc::kill(pid, 0) == 0 };
+    exists || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 /// Whether process `pid` may be running: here, always.

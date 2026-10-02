@@ -247,9 +247,9 @@ window too.
      password if it has one, and **Join** or **Cancel**. A private room is
      joined by invite, either here or through **Join a friend** on the main menu.
    - **Host a room**: a **room name** (your name's room if you leave it
-     empty); **Start from this save**, one of your own saves, newest first
-     and up to 100 (the game's autosaves and the copies TPF3-MP writes for
-     rooms are not listed), or
+     empty); **Start from this save**, up to 100 saves, newest named saves
+     first, followed by automatic saves (only internal room copies are
+     excluded), or
      **Create a new world...** (offered first). The save must have TPF3-MP
      among its mods: a save without it is refused with "This save doesn't
      have the TPF3-MP mod enabled: load it once, turn TPF3-MP on in its
@@ -372,7 +372,7 @@ protected folder such as Program Files.
 - **Losing the connection.** If your connection or the server drops, the
   launcher rejoins the room by itself, and your game only pauses. If you
   were away too long to catch up, the room sends you its world again.
-  The server keeps your seat for 5 minutes (its operator may set longer).
+  The server keeps your seat for 10 minutes (its operator may set longer).
   The launcher stops trying when the server says the room is gone, after
   5 minutes without getting back in, or when the connection drops again
   right after each of 5 rejoins in a row. Both windows then say **The
@@ -382,7 +382,7 @@ protected folder such as Program Files.
   launcher and in the game's Multiplayer window: it stops at once.
 - **Leaving.** **Leave room** gives up your seat. It always works: if the
   server cannot be told, you leave anyway, and the server lets the seat
-  go after its 5 minutes. The owner can also remove
+  go after its 10 minutes. The owner can also remove
   a player whose game froze; a removed player cannot come back to that
   room. If the room's game had not begun yet, your game keeps running and
   follows you into the next room you create or join: no need to restart

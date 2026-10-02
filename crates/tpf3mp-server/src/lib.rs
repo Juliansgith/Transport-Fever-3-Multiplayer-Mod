@@ -137,8 +137,8 @@ impl ServerConfig {
             max_rooms_per_address: 8,
             // Long enough to ride out a server restart or a player's crash,
             // short enough that a game everyone closed does not linger. The
-            // agent tries to rejoin for as long (`REJOIN_PATIENCE`).
-            abandoned_timeout: Duration::from_secs(300),
+            // agent stops retrying sooner (`REJOIN_PATIENCE`, five minutes).
+            abandoned_timeout: Duration::from_secs(600),
             secret,
             rules: RulesMenu::native(),
             tick: Duration::from_millis(100),

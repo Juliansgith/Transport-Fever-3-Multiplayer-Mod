@@ -79,8 +79,17 @@ local COPIED_POLLS = 5
 -- Whether the save `name` is one of the hook's own copies of a room's world
 -- (docs/HOOKS.md, "The room's world"), which it removes once their game
 -- ends: never a world to start a room from.
+local function plainUint(value, maximum)
+	return value ~= nil and value:match("^%d+$") ~= nil
+		and (value == "0" or value:sub(1, 1) ~= "0")
+		and (#value < #maximum or (#value == #maximum and value <= maximum))
+end
 local function hookCopy(name)
-	return name:match("^tpf3mp_room_%d+$") ~= nil or name:match("^tpf3mp_%d+_%d+$") ~= nil
+	local pid = name:match("^tpf3mp_room_(%d+)$")
+	if pid then return pid ~= "0" and plainUint(pid, "4294967295") end
+	local owner, event = name:match("^tpf3mp_(%d+)_(%d+)$")
+	return owner ~= "0" and plainUint(owner, "4294967295")
+		and plainUint(event, "18446744073709551615")
 end
 
 -- The request channel -------------------------------------------------------

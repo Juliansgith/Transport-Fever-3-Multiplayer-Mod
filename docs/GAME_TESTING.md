@@ -36,9 +36,8 @@ scripting it. Say exactly what to do and what to look for.
 ## Rules
 
 - **Only the games you started.** Other agents may be testing on the same
-  PC. `room.ps1` refuses while any game, rig or server runs. Pass
-  `-QuitRunning` only when you know those are yours or idle. Stop
-  processes by PID, never by name.
+  PC. `room.ps1` refuses while any game, rig or server runs. Quit your
+  own sessions first by PID; the script never stops existing processes.
 - **Never the game install.** The mod goes into the game's per-user
   staging area. The game's own folder and Steam are never changed.
 - **Never the production server.** Rooms here use the rig's throwaway
@@ -48,7 +47,8 @@ scripting it. Say exactly what to do and what to look for.
   desktop. Use them for clicking, and keep what they show out of logs,
   commits and reports.
 - **Quit cleanly.** Use `quit.ps1`. A killed game uploads an "abnormal
-  termination" report at its next start.
+  termination" report at its next start. If quitting times out, the script
+  reports failure and leaves the process alive for diagnosis.
 - **Lua in the console can crash the game.** A Lua error inside an engine
   callback is fatal. One example is `api.engine.forEachEntityWithComponent`'s
   function. Wrap queries in `pcall`, read only, and never send commands
@@ -133,7 +133,7 @@ What is where:
 | `<run>\rig.out` | the rig: invite, `(game pid N)`, room started, what each agent heard |
 | `<run>\pN\hook.log` | player N's hook and mod: actions handed and applied, refusals, saves, probes |
 | `<game local>\crash_dump\stdout.txt` | the game's own log, **shared by every game on the PC**: console output, Lua errors, crashes |
-| `<game local>\save\tpf3mp_room_*.sav` | worlds the room saved; they pile up, so delete old ones now and then |
+| `<game local>\save\tpf3mp_room_*.sav` | internal snapshots; stale files are cleaned up after their owner process exits |
 
 ## Driving a game
 
@@ -268,3 +268,13 @@ once its games have exited. If it does not, stop it by the PID in
 Say what you ran (the run's name, the fixture, which players acted) and
 what each player's log said. Give the probe result, and attach the shots
 that show it. Say plainly what you did not test in the game.
+
+## Checking the helpers without launching a game
+
+Run `powershell -NoProfile -ExecutionPolicy Bypass -File tools/game/test-tools.ps1`.
+It parses every helper and exercises probe comparison on synthetic logs. A
+missing sample inside the overlap, unreadable lane or conflicting duplicate
+fails the comparison. A shorter overlap is reported explicitly; it is not
+proof about steps outside that overlap. Room setup succeeds only when every
+game reports loading the shared snapshot, and never loads the fixture into a
+guest as a fallback. These checks do not replace a fresh end-to-end game run.

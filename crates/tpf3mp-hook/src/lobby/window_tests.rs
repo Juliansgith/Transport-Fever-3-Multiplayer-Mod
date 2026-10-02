@@ -275,6 +275,37 @@ fn a_game_without_its_launcher_says_so_and_offers_nothing() {
 }
 
 #[test]
+fn the_save_picker_preserves_user_names_and_recovery_saves() {
+    let lua = menu();
+    let mut view = online();
+    let kept = [
+        "tpf3mp_fixture",
+        "tpf3mp_01_2",
+        "tpf3mp_room_0",
+        "tpf3mp_room_4294967296",
+        "autosave_recovery",
+    ];
+    let mut saves = view.saves.to_vec();
+    saves.extend(kept.iter().map(|name| Text::new(*name).unwrap()));
+    view.saves = BoundedVec::new(saves).unwrap();
+    show(&lua, Some(&view));
+    open(&lua, None);
+    call(&lua, "click_card", "Host a room");
+    let (values, _) = offered(&lua, "Start from this save");
+    for name in kept {
+        assert!(
+            values.iter().any(|value| value == name),
+            "missing {name}: {values:?}"
+        );
+    }
+    assert!(
+        !values
+            .iter()
+            .any(|v| v == "tpf3mp_room_41856" || v == "tpf3mp_41856_21")
+    );
+}
+
+#[test]
 fn a_room_is_created_with_the_rules_players_and_save_picked() {
     let lua = menu();
     show(&lua, Some(&online()));

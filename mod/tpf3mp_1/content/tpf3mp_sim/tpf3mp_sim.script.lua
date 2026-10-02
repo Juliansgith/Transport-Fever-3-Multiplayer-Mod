@@ -593,7 +593,8 @@ function data()
 							.. (shape and (" [" .. shape .. "]") or ""))
 					end
 				end
-				snapshots[clicks] = { action = action, why = why, shape = shape }
+				local upgrade = action and kind == "modify" and capture.upgradeSummary(action) or nil
+				snapshots[clicks] = { action = action, why = why, shape = shape, upgrade = upgrade }
 				if action then return nil end
 				return { errorMessages = { ["Not in multiplayer yet: " .. tostring(why)] = true } }
 			end
@@ -640,6 +641,7 @@ function data()
 					if ok then
 						l:log("handed the player's build to the room"
 							.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
+						if seen.upgrade then l:log("upgrade handed to the room: " .. seen.upgrade) end
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
 					end
