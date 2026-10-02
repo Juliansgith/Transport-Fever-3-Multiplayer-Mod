@@ -22,8 +22,10 @@
 -- buy, run lines, borrow, rename and recolour it; its head (the player who
 -- founded it while they play for it, else the one who has played for it
 -- longest) alone gives it a password or takes it away, sends a player out of
--- it and opens or closes its stations to other companies' lines. Joining a
--- company with a password needs it: the room seals the password the player
+-- it and opens or closes its stations to other companies' lines: by default,
+-- and for single companies on their own (`StationAccess`), per company
+-- rather than per player, as a company's players share everything it owns.
+-- Joining a company with a password needs it: the room seals the password the player
 -- typed (tpf3mp_proto::Secret) and every game compares that seal with the
 -- one the company keeps, so no game ever holds the password. The room's
 -- first company is everyone's: it has no head, no password, and its
@@ -33,7 +35,9 @@
 --     next = n,                          -- the next company id
 --     list = { { id =, entity =, name =, color = { r, g, b }, gone = true?,
 --                founder = "<64 hex digits>"?, lock = { scope =, tag = }?,
---                closed = true? }, ... },
+--                closed = true?,          -- the default: stations closed
+--                access = { { company =, open = }, ... }? }, ... },
+--                                        -- its head's choice per company
 --     members = { { player = "<64 hex digits>", company = id }, ... },
 --                                        -- in the order they joined
 --   }
@@ -202,9 +206,27 @@ function companies.locked(c)
 end
 
 -- Whether other companies' lines may stop at company `c`'s stations: yes
--- unless its head closed them.
+-- unless its head closed them. The default, for every company without a
+-- choice of its own (companies.lets).
 function companies.open(c)
 	return not (type(c) == "table" and c.closed == true)
+end
+
+-- Its head's choice for company `other`: true, false, or nil for the
+-- default.
+function companies.choice(c, other)
+	for _, a in ipairs(type(c) == "table" and c.access or {}) do
+		if a.company == other then return a.open end
+	end
+	return nil
+end
+
+-- Whether company `other`'s lines may stop at company `c`'s stations: its
+-- head's choice for `other`, else the default.
+function companies.lets(c, other)
+	local choice = companies.choice(c, other)
+	if choice ~= nil then return choice end
+	return companies.open(c)
 end
 
 -- Who owns `entity` (its PLAYER_OWNED player), or nil: the game's own, or
@@ -408,7 +430,11 @@ function companies.mayUse(roster, company, group, api)
 	local owner = companies.ownerOf(api, group)
 	if owner == nil or owner == company then return true end
 	local other = roster and companies.byEntity(roster, owner)
-	if other and not companies.open(other) then
+	local mine = roster and companies.byEntity(roster, company)
+	if other and not companies.lets(other, mine and mine.id) then
+		if mine and companies.choice(other, mine.id) == false then
+			return false, "the station belongs to " .. other.name .. ", which keeps its stations from " .. mine.name
+		end
 		return false, "the station belongs to " .. other.name .. ", which keeps its stations to itself"
 	end
 	return true
@@ -1027,6 +1053,24 @@ function companies.run(roster, player, op, send, api, seal)
 		local ok, why = headOf(roster, player, c, body.open and "opens the stations of" or "closes the stations of")
 		if not ok then return false, why end
 		c.closed = (not body.open) or nil
+		return true, nil, c.id
+	elseif kind == "StationAccess" then
+		-- Its head's choice for one other company, over the default; nil
+		-- leaves that company to the default again.
+		local c = type(body) == "table" and companies.find(roster, body.company)
+		if not c or c.gone then return false, "there is no such company" end
+		if body.open ~= nil and type(body.open) ~= "boolean" then return false, "stations are open or not" end
+		local ok, why = headOf(roster, player, c, "decides whose lines stop at the stations of")
+		if not ok then return false, why end
+		local other = companies.find(roster, body.other)
+		if not other or other.gone then return false, "there is no company " .. tostring(body.other) end
+		if other.id == c.id then return false, c.name .. "'s stations are always its own" end
+		local kept = {}
+		for _, a in ipairs(c.access or {}) do
+			if a.company ~= other.id then kept[#kept + 1] = a end
+		end
+		if body.open ~= nil then kept[#kept + 1] = { company = other.id, open = body.open } end
+		c.access = #kept > 0 and kept or nil
 		return true, nil, c.id
 	end
 	return false, "a company operation of no kind"

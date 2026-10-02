@@ -1438,8 +1438,13 @@ state, which the game saves with the world:
   it longest (the roster's members are kept in the order they joined),
   alone gives it a password (`CompanyOp::Lock`), takes it away
   (`Unlock`), sends a player out (`Dismiss`: they play for the room's
-  first company again) and opens or closes its stations
-  (`ShareStations`). The room's first company is everyone's: no head, no
+  first company again) and opens or closes its stations by default
+  (`ShareStations`), or for one other company over the default
+  (`StationAccess`, action schema 23; `open` nil puts it back to the
+  default; the roster keeps it as the company's `access` list). The
+  line manager offers a station, and every game refuses a line's stop,
+  by the same rule (`companies.lets`, `mayUse`). The room's first company
+  is everyone's: no head, no
   password, and its stations stay open. `hook.log` names why a refused
   action was refused.
 - *Passwords.* The window hands the password to `command` beside the
