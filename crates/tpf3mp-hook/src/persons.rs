@@ -935,11 +935,13 @@ mod tests {
     }
 
     /// A `std::vector<Entity>` header and its ids in this test's memory.
+    #[cfg(windows)]
     struct Vector {
         header: Box<[u64; 3]>,
         _ids: Vec<i32>,
     }
 
+    #[cfg(windows)]
     impl Vector {
         fn new(ids: &[i32]) -> Self {
             let mut ids = ids.to_vec();
@@ -964,6 +966,9 @@ mod tests {
         }
     }
 
+    // Reads real memory through the hook's readable check, which only
+    // answers on Windows.
+    #[cfg(windows)]
     #[test]
     fn a_vector_in_memory_is_sorted_in_place() {
         let vector = Vector::new(&[9, 2, 5]);
@@ -1008,6 +1013,9 @@ mod tests {
         assert!(candidates::vectors_at(0x2000, 0x2078).is_err());
     }
 
+    // Reads real memory through the hook's readable check, which only
+    // answers on Windows.
+    #[cfg(windows)]
     #[test]
     fn the_freed_ids_hook_sorts_the_modifications_removed_ids() {
         let vector = Vector::new(&[44, 12, 30]);
@@ -1023,6 +1031,9 @@ mod tests {
         assert!(freed_ids::BATCH.state.refused.load(Ordering::Relaxed) >= 1);
     }
 
+    // Reads real memory through the hook's readable check, which only
+    // answers on Windows.
+    #[cfg(windows)]
     #[test]
     fn the_departures_hook_sorts_both_batches() {
         let persons = Vector::new(&[8, 3]);
@@ -1051,6 +1062,9 @@ mod tests {
         assert!(needs_path::shared(None).is_err());
     }
 
+    // Reads real memory through the hook's readable check, which only
+    // answers on Windows.
+    #[cfg(windows)]
     #[test]
     fn the_needs_path_hook_sorts_an_unshared_list() {
         // The system: [+0x10] the data (the vector itself), [+0x18] the
