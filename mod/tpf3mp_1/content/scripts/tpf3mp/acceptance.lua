@@ -1,7 +1,10 @@
 -- New channels remain refused until ordinary two-game acceptance is recorded.
 -- These defaults travel with the mod fingerprint: every room member has the
 -- same settings. Fixtures may enable a channel explicitly to test its mechanics.
-local acceptance = { subsidies = false, rename = false, waypoints = false }
+-- `bridges`: the bridge and tunnel window's in-place rebuild, which travels as
+-- an ordinary road or track build and so is gated where it is captured
+-- (capture.windowBuild).
+local acceptance = { subsidies = false, rename = false, waypoints = false, bridges = false }
 
 function acceptance.check(action)
     local feature

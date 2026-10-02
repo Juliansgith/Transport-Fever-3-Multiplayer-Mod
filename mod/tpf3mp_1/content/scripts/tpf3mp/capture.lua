@@ -424,7 +424,52 @@ end
 -- .createProposalReplaceConstruction, gui/construction/construction.tl and
 -- gui/entity_window/entity_window_util.tl, build 40408). Every other build
 -- from a window stays refused. Returns the action table, or raises why not.
+--
+-- A window's build that rebuilds edges in place, nothing else (no
+-- construction, no node added or removed, every new edge between the ends
+-- of one it replaces): the bridge and tunnel window's type
+-- (gui/entity_window/bridge_and_tunnel.tl, api.engine.util.proposal
+-- .createBridgeOrTunnelProposal, build 40408) makes one. It is carried as
+-- the road and track modifiers' rebuild is (capture.modify), once
+-- acceptance.lua's `bridges` is on: until a two-player game shows the
+-- window's proposal reads as the modifiers' does, it is refused, saying so.
+function capture.inPlace(proposal)
+	local p = get(proposal, "proposal")
+	if p == nil or (length(get(proposal, "toAdd")) or 0) > 0 or (length(get(proposal, "toRemove")) or 0) > 0 then
+		return false
+	end
+	if (length(get(p, "addedNodes")) or 0) > 0 or (length(get(p, "removedNodes")) or 0) > 0 then return false end
+	local added, removed = get(p, "addedSegments"), get(p, "removedSegments")
+	local n = length(added)
+	if n == nil or n == 0 or length(removed) ~= n then return false end
+	local used = {}
+	for i = 1, n do
+		local a = get(get(added, i), "comp")
+		local a0, a1 = get(a, "node0"), get(a, "node1")
+		local found = nil
+		for k = 1, n do
+			local r = get(get(removed, k), "comp")
+			local r0, r1 = get(r, "node0"), get(r, "node1")
+			if not used[k] and ((r0 == a0 and r1 == a1) or (r0 == a1 and r1 == a0)) then
+				found = k
+				break
+			end
+		end
+		if found == nil then return false end
+		used[found] = true
+	end
+	return true
+end
+
 function capture.windowBuild(_ctx, proposal)
+	if capture.inPlace(proposal) then
+		if module("acceptance").bridges ~= true then
+			error("rebuilding a bridge or tunnel from its window awaits two-player game acceptance", 0)
+		end
+		local action, why = capture.modify(proposal)
+		if not action then error(why or "a window's rebuild of nothing", 0) end
+		return action
+	end
 	local p = proposal and proposal.proposal
 	if p and #(proposal.toAdd or {}) == 0 and #(proposal.toRemove or {}) == 0
 		and ((p.nodeConfigsToAdd and #p.nodeConfigsToAdd > 0)

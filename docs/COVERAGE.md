@@ -37,7 +37,10 @@ load gating and save setup. This is not a fresh two-player game playthrough.
 Subsidies, entity renaming/vehicle recolouring and line waypoints have capture,
 schema and replay code, but `content/scripts/tpf3mp/acceptance.lua` disables
 them. Both command submission and replay refuse these channels; subsidy
-settlement is disabled too. Mechanics fixtures explicitly enable a channel
+settlement is disabled too. A bridge's or tunnel's type changed in its
+window came in afterwards behind `bridges`: it travels as an ordinary
+track or road rebuild, so the gate stops it where it is captured, and with
+the gate off it is refused saying so. Mechanics fixtures explicitly enable a channel
 only in their own Lua state. Enable a channel only after ordinary two-player
 acceptance demonstrates matching outcomes, ownership and money. The gate
 file is part of the installed-mod fingerprint.
