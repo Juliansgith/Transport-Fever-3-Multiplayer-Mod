@@ -679,8 +679,9 @@ engine.ASSET_TOLERANCE = 0.005
 -- Whether the asset bulldozer's removals go to the room: only where the
 -- hook says so (TPF3MP_TREE_BULLDOZE=1), for a trial of the replay.
 function engine.treesOn()
-	local native = rawget(_G, "tpf3mp_native")
-	local ok, on = pcall(function() return native.trees() end)
+	-- The game's GUI state has no rawget, and reading an unset global may
+	-- throw there: read it as bridge.lua does.
+	local ok, on = pcall(function() return tpf3mp_native.trees() end)
 	return ok and on == true
 end
 
