@@ -84,6 +84,11 @@
 --                                   -- free places -> step, full | nil
 --     observed = function(step, text), -- optional; that observation, JSON
 --                                   -- (tpf3mp/observe.lua)
+--     edgewatch = function(),       -- optional; in a game script's update:
+--                                   -- the entities the edge watch reads in
+--                                   -- this update, { e, ... } | nil
+--     edgewatched = function(e, text), -- optional; in its postUpdate: what
+--                                   -- it read of e (tpf3mp/lanes.lua watch)
 --   }
 --
 -- An action table mirrors tpf3mp_proto::action::Action field for field, in
@@ -375,6 +380,22 @@ end
 function Link:observed(step, text)
 	if type(self.native.observed) ~= "function" then return end
 	pcall(self.native.observed, step, tostring(text))
+end
+
+-- In a game script's update: the entities the edge watch reads in this
+-- update (docs/HOOKS.md, "The edge watch"), a list; or nil, and nil from a
+-- hook without the watch (`edgewatch` is optional).
+function Link:edgewatch()
+	if type(self.native.edgewatch) ~= "function" then return nil end
+	local ok, list = pcall(self.native.edgewatch)
+	if ok and type(list) == "table" and #list > 0 then return list end
+	return nil
+end
+
+-- Hands the hook what the edge watch read of `entity`.
+function Link:edgewatched(entity, text)
+	if type(self.native.edgewatched) ~= "function" then return end
+	pcall(self.native.edgewatched, entity, tostring(text))
 end
 
 -- Names in a text, one a line.

@@ -250,7 +250,7 @@ pub fn classify(buffers: &[(u64, u64); 2], buffer: u8, named: Option<u64>) -> De
 
 /// The length of `engine`'s entity table (24-byte entries from
 /// `[engine+0x90]` to `[engine+0x98]`, `GetComponentDataIndex`'s reads).
-fn entity_ids(probe: &mut Probe, engine: u64) -> Option<u64> {
+pub(crate) fn entity_ids(probe: &mut Probe, engine: u64) -> Option<u64> {
     let begin = probe.read::<u64>(engine.checked_add(0x90)?)?;
     let end = probe.read::<u64>(engine.checked_add(0x98)?)?;
     (end >= begin && (end - begin) % 24 == 0).then(|| (end - begin) / 24)

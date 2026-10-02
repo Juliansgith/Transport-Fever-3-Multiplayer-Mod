@@ -848,6 +848,33 @@ offset = 0
 prologue = "44 89 44 24 18"
 required = false
 
+# The edge watch (crates/tpf3mp-hook/src/edgewatch.rs; HOOKS.md, "The edge
+# watch"; logging only). CommandApply::One (our name; "Simulation Thread: Apply
+# Command", game/command/apply_command.cpp): rcx the GameState (engine at +0x18,
+# CGameTime at +0x28), rdx the 0x38-byte Command (payload at +0, entity list
+# +8/+0x10 of 16-byte entries, result byte +0x30). It reads the payload's kind at
+# +0xaf (`movsx rcx, byte [r8+0x9b8]`) for the dispatcher 0x9d7350. Its callers:
+# CGame::RunGameSimLoop's drain of CommandList (0x11eb96), CGame's two send
+# lambdas (0x120334; 0x1204bf, a script's sendCommand applied at once, in
+# 0x120410), and GameState's command function (0x268ed0, a tail jump). Two
+# splices: its entry (`mov [rsp+0x18],rbx`, 5 bytes stolen) and its epilogue
+# past the cookie check (0x9e1f62, `lea r11,[rsp+0xb0]`, 8 bytes stolen; r14
+# the command, r15 the GameState), which both paths out reach; nothing
+# branches into either's stolen bytes past the first. 0x9e1c10
+[[target]]
+name = "CommandApply::One"
+signature = "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 56 41 57 48 8D 6C 24 C9 48 81 EC B0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 2F 4C 8B F2"
+offset = 0
+prologue = "48 89 5C 24 18"
+required = false
+
+[[target]]
+name = "CommandApply::One/return"
+signature = "4C 89 65 BF E8 ?? ?? ?? ?? 90 48 8B 4D 2F 48 33 CC E8 ?? ?? ?? ?? 4C 8D 9C 24 B0 00 00 00 49 8B 5B 40 49 8B 73 48 49 8B E3 41 5F 41 5E 41 5C 5F 5D C3"
+offset = 0x16
+prologue = "4C 8D 9C 24 B0 00 00 00"
+required = false
+
 # Junction layout anchors from the Lua binding registration code. Read-only:
 # these instructions establish the field offsets used by junctions.rs.
 [[target]]

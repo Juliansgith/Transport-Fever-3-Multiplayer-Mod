@@ -39,6 +39,7 @@ pub mod builds;
 pub mod clipboard;
 pub mod cmdkinds;
 pub mod copycheck;
+pub mod edgewatch;
 pub mod image;
 mod install;
 pub mod junctions;

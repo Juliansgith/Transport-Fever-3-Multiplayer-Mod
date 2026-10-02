@@ -111,6 +111,21 @@ fn now_ms() -> u64 {
         .max(1)
 }
 
+/// The room's step the last batch ended at, if one ran
+/// ([`crate::edgewatch`]).
+pub(crate) fn last_step_run() -> Option<u64> {
+    let last = LAST_STEP_RUN.load(Ordering::Acquire);
+    (last != u64::MAX).then_some(last)
+}
+
+/// The game's `updateCount` while its step runs, else `None`
+/// ([`crate::edgewatch`]).
+pub(crate) fn update_count_now() -> Option<u32> {
+    crate::ticks::read_counters(GAME_TIME.load(Ordering::Acquire))
+        .ok()
+        .map(|c| c.update_count)
+}
+
 /// Writes `line` to the hook's log, if it has one.
 pub(crate) fn log_line(line: &str) {
     if let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
@@ -838,6 +853,22 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     let setting = setting.with_town_trace(crate::towntrace::wanted(
         std::env::var(crate::towntrace::ENV).ok().as_deref(),
     ));
+    // The network lane cut to a box at the checkpoints of a step range
+    // (crate::lanedump::BOX_ENV), even with dumps off.
+    let boxed = crate::lanedump::BoxDump::from_env(
+        std::env::var(crate::lanedump::BOX_ENV).ok().as_deref(),
+        std::env::var(crate::lanedump::BOX_STEPS_ENV)
+            .ok()
+            .as_deref(),
+    )
+    .unwrap_or_else(|why| {
+        log_line(&why);
+        None
+    });
+    if let Some(boxed) = &boxed {
+        log_line(&boxed.describe());
+    }
+    let setting = setting.with_box(boxed);
     if let Some(why) = refused {
         log_line(&why);
     } else if setting.off {
@@ -999,6 +1030,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     log_line(&crate::copycheck::install(base));
     log_line(&crate::netwatch::install(base));
     for line in crate::towntrace::install(&absolute, base as u64) {
+        log_line(&line);
+    }
+    for line in crate::edgewatch::install(&absolute, base as u64) {
         log_line(&line);
     }
     Ok(step_rva)

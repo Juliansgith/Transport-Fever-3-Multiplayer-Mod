@@ -73,7 +73,9 @@
 //!   `{ ticket =, ok =, entity =, why = }`, oldest first ([`refused`]).
 //! - `dump()`: in a game script's `postUpdate`, at a checkpoint whose lanes
 //!   the driver wants dumped ([`crate::lanedump`]): `{ step =, lanes = {
-//!   ... } }`, once, or `nil`. Optional in the contract, as `dumped` is.
+//!   ... }, box = { x0, y0, x1, y1 } }` (`box` only when the network lane
+//!   is cut to one), once, or `nil`. Optional in the contract, as `dumped`
+//!   is.
 //! - `dumped(lane, entry)`: one entry of a lane dumped there, which goes to
 //!   `hook.log` as `lane <lane> step <step> <entry>`, up to
 //!   [`MAX_DUMP_LINES`] a checkpoint. Returns `true`, or `false` once no
@@ -86,6 +88,12 @@
 //! - `observed(step, text)`: the observation, a JSON text, which the hook
 //!   writes to `hook.log`. Both optional in the contract: a mod without them
 //!   plays no scenario.
+//! - `edgewatch()`: in a game script's `update`: the entities to watch in
+//!   this update, a list, or `nil` (the edge watch is off or this step is
+//!   outside its window, [`crate::edgewatch`]).
+//! - `edgewatched(entity, text)`: what the script read of a watched entity
+//!   in this update's `postUpdate`; the hook logs it when it changed. Both
+//!   optional in the contract.
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -252,6 +260,8 @@ struct Batch {
 struct Dump {
     step: u64,
     lanes: Vec<u16>,
+    /// The network lane cut to this box.
+    network_box: Option<[f64; 4]>,
     /// `dump()` handed it to the mod.
     taken: bool,
     written: usize,
@@ -450,6 +460,7 @@ pub fn begin_batch(
         dump: dump.filter(|_| lanes).map(|order| Dump {
             step: order.step,
             lanes: order.lanes.clone(),
+            network_box: order.network_box,
             taken: false,
             written: 0,
             left_out: 0,
@@ -706,6 +717,8 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"observe", native_observe),
                 (b"observed", native_observed),
                 (b"trees", native_trees),
+                (b"edgewatch", native_edgewatch),
+                (b"edgewatched", native_edgewatched),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -2053,14 +2066,14 @@ unsafe extern "C-unwind" fn native_dump(l: State) -> c_int {
         match batch.dump.as_mut() {
             Some(dump) if due && !dump.taken => {
                 dump.taken = true;
-                Some((dump.step, dump.lanes.clone()))
+                Some((dump.step, dump.lanes.clone(), dump.network_box))
             }
             _ => None,
         }
     };
     #[allow(clippy::cast_precision_loss)]
-    let table = order.map(|(step, lanes)| {
-        LuaValue::Table(vec![
+    let table = order.map(|(step, lanes, network_box)| {
+        let mut fields = vec![
             (LuaValue::string("step"), LuaValue::Number(step as f64)),
             (
                 LuaValue::string("lanes"),
@@ -2077,7 +2090,19 @@ unsafe extern "C-unwind" fn native_dump(l: State) -> c_int {
                         .collect(),
                 ),
             ),
-        ])
+        ];
+        if let Some(rect) = network_box {
+            fields.push((
+                LuaValue::string("box"),
+                LuaValue::Table(
+                    rect.iter()
+                        .enumerate()
+                        .map(|(i, v)| (LuaValue::Number((i + 1) as f64), LuaValue::Number(*v)))
+                        .collect(),
+                ),
+            ));
+        }
+        LuaValue::Table(fields)
     });
     // SAFETY: Lua calls this with its own state, on its thread.
     unsafe { push_or_nil(api, l, table.as_ref()) }
@@ -2182,6 +2207,48 @@ unsafe extern "C-unwind" fn native_note(l: State) -> c_int {
         None => unsafe { (api.pushnil)(l) },
     }
     1
+}
+
+/// `edgewatch()`: the entities to read in this update, or nil
+/// ([`crate::edgewatch`]).
+unsafe extern "C-unwind" fn native_edgewatch(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let table = crate::edgewatch::due_now().map(|entities| {
+        LuaValue::Table(
+            entities
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    (
+                        LuaValue::Number((i + 1) as f64),
+                        LuaValue::Number(f64::from(*e)),
+                    )
+                })
+                .collect(),
+        )
+    });
+    // SAFETY: Lua calls this with its own state, on its thread.
+    unsafe { push_or_nil(api, l, table.as_ref()) }
+}
+
+/// `edgewatched(entity, text)`: logged when it changed.
+unsafe extern "C-unwind" fn native_edgewatched(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let (entity, text) = unsafe { (number_arg(api, l, 1), string_arg(api, l, 2, MAX_DUMP_LINE)) };
+    if let (Some(entity), Some(text)) = (entity, text)
+        && entity.fract() == 0.0
+        && (0.0..=f64::from(u32::MAX)).contains(&entity)
+    {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        crate::edgewatch::watched_now(entity as u32, &text);
+    }
+    0
 }
 
 unsafe extern "C-unwind" fn native_log(l: State) -> c_int {
@@ -2658,6 +2725,7 @@ my_timetables";
             step: 300,
             lanes: vec![1, 3],
             why: "step 250 diverged".into(),
+            network_box: None,
         };
         begin_batch(&[], 2, true, Some(&order)).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
@@ -2724,10 +2792,15 @@ my_timetables";
             step: 50,
             lanes: vec![0, 3],
             why: String::new(),
+            network_box: Some([-2460.0, -20790.0, -2260.0, -20580.5]),
         };
         begin_batch(&[], 1, true, Some(&order)).unwrap();
         lua.run("tpf3mp_native.take()").unwrap();
-        lua.run(DUMP).unwrap();
+        // The box goes to the mod with the order.
+        assert_eq!(
+            lua.run("local d = tpf3mp_native.dump() return table.concat(d.box, ',')"),
+            Ok("-2460,-20790,-2260,-20580.5".into())
+        );
         let taken = lua
             .run(&format!(
                 "local n = 0 \
