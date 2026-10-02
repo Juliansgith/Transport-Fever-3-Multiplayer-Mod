@@ -2283,6 +2283,100 @@ const CONSTRUCTION_PROPOSAL: &str = "{ \
                 params = { modules = { [3801] = { name = 'depot/module.module', variant = 2 } }, \
                            year = 1990, seed = 0, scale = 1.5, lit = true } } } }";
 
+/// A PLAYER_OWNED component as build 40408 hands it to Lua: userdata, its
+/// `player` read through the binding, never a table.
+struct NativeOwner(i64);
+
+impl mlua::UserData for NativeOwner {
+    fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("player", |_, this| Ok(this.0));
+    }
+}
+
+/// A company's depots did not count as its own (2026-10-02: "0
+/// construction(s)" after a depot built by company #1, and its vehicles
+/// bought from a far depot). The owner read took the game's userdata
+/// component for no one's; and the room never made sure of what the engine
+/// made from the build. Every game now hands the new construction, its
+/// depots, stations, their own group and its own edges to the acting
+/// company where anyone else owns them, and reads an owner through the
+/// binding.
+#[test]
+fn a_depot_the_room_builds_is_the_acting_companys() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let owned = lua
+        .create_function(|lua, player: i64| lua.create_userdata(NativeOwner(player)))
+        .unwrap();
+    lua.globals().set("NATIVE_OWNER", owned).unwrap();
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = capture.construction({CONSTRUCTION_PROPOSAL})"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load(
+        "local CT = api.type.ComponentType \
+         CT.STATION_GROUP, CT.PLAYER_OWNED = 9, 15 \
+         OWNERS = { [5010] = 25, [5020] = 30 } \
+         EDGES[5020] = { node0 = 8, node1 = 9, objects = { { 5030, 0 } } } \
+         api.engine.system.stationGroupSystem = { getStationGroup = function(s) \
+             if s == 5040 then return 5050 end return -1 end } \
+         local get = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 15 then return OWNERS[e] and NATIVE_OWNER(OWNERS[e]) or nil end \
+             if kind == 9 and e == 5050 then return { stations = { 5040 } } end \
+             return get(e, kind) \
+         end \
+         api.cmd.makeEntitySetPlayerCmd = function(entity, player) \
+             return { setPlayer = entity, player = player } end \
+         local send = api.cmd.sendCommand \
+         api.cmd.sendCommand = function(cmd, ...) \
+             local r = send(cmd, ...) \
+             if cmd.setPlayer then OWNERS[cmd.setPlayer] = cmd.player end \
+             local c = CONSTRUCTIONS[5000] \
+             if c and not c.depots then \
+                 c.depots, c.stations, c.frozenEdges = { 5010 }, { 5040 }, { 5020 } \
+                 OWNERS[5000] = 901 \
+             end \
+             return r \
+         end \
+         A = string.rep('a', 64) \
+         HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
+         UPDATE({}, STATE, 0.2) \
+         SENT = {} HOOK.applied = {} \
+         HOOK.batch = { ACTION } HOOK.origins = { A } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let (ok, built, owners): (bool, String, String) = lua
+        .load(
+            "local o = {} \
+             for _, e in ipairs({ 5000, 5010, 5020, 5030, 5040, 5050 }) do o[#o + 1] = e .. '=' .. tostring(OWNERS[e]) end \
+             local p = SENT[1].proposal \
+             return HOOK.applied[1].ok == true, \
+                 p.constructionsToAdd[1].playerEntity .. '>' .. SENT[1].context.player, table.concat(o, ' ')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(ok, "{}", hook_log(&lua));
+    assert_eq!(built, "901>901", "built for the acting company, paid by it");
+    assert_eq!(
+        owners, "5000=901 5010=901 5020=901 5030=901 5040=901 5050=901",
+        "the construction, its depot, its own edge and what stands on it, its station and group"
+    );
+    let log = hook_log(&lua);
+    assert!(
+        log.contains(
+            "the new ::/depots/road/road_maint_station.con made the acting company's (901): \
+             depot 5010 (was 25), station 5040 (was nil), station group 5050 (was nil), \
+             edge 5020 (was 30), edge object 5030 (was nil)"
+        ),
+        "{log}"
+    );
+}
+
 #[test]
 fn a_construction_the_tool_placed_becomes_the_rooms_action() {
     let (lua, _script) = engine();

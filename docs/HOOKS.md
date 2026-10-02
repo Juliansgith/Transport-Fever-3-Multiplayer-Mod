@@ -1423,6 +1423,16 @@ state, which the game saves with the world:
   entity where it put the save's player before (a build's `Context.player`
   and its constructions' and stops' `playerEntity`, `makeVehicleBuyCmd`'s
   and `makeLineCreateCmd`'s player, prospecting's `companyEntity`).
+- *What a company builds* is its own: after a construction (a station,
+  depot, airport, harbour) is built, every game hands the construction,
+  its depots, its stations, the station groups they alone make up and
+  its own (frozen) edges with what stands on them to the acting company
+  with `makeEntitySetPlayerCmd` wherever anyone else owns them, or no one,
+  as the game's missions hand one over (`setPlayerForConstruction`), and
+  hook.log names each (`the new <file> made the acting company's`). An
+  owner is read through the component's binding (`PLAYER_OWNED` is
+  userdata on build 40408; read as a table only, every owner came back
+  nil until 2026-10-02, so nothing counted as any company's).
 - *What another company owns* is refused, the same in every game, naming
   its owner: an edited, bulldozed or removed construction, road or track
   edge, or stop, and the vehicles and lines an action names, when their
