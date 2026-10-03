@@ -803,6 +803,132 @@ end
 --                      paid =, rate = (a month), payment = }, ... }
 --   roster.nextLoan = n
 --   roster.month = the last month whose payments were booked
+--   roster.loanOffers = { { company = id, availableLoans = { Loan, ... } }, ... }
+
+companies.LOAN_SCRIPT = "::/game_mechanics/finance/loan.gs"
+
+local function loanState(api)
+	local ok, state = pcall(function()
+		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(companies.LOAN_SCRIPT)
+		if type(entity) ~= "number" or entity < 0 then return nil end
+		local component = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+		return component and component.state
+	end)
+	return ok and type(state) == "table" and state or nil
+end
+
+local function copyOffer(offer)
+	if type(offer) ~= "table" then return nil end
+	local out = {}
+	for key, value in pairs(offer) do out[key] = value end
+	return out
+end
+
+local function loanOfferGroup(roster, id)
+	for _, group in ipairs(type(roster) == "table" and roster.loanOffers or {}) do
+		if type(group) == "table" and group.company == id then return group end
+	end
+	return nil
+end
+
+local function createLoan(api, kind)
+	if type(ug_require) ~= "function" or type(kind) ~= "string" then return nil end
+	local ok, util = pcall(ug_require, "::/game_mechanics/finance/loan_util.tl")
+	if not ok or type(util) ~= "table" then return nil end
+	local make = util["create" .. kind .. "Loan"]
+	if type(make) ~= "function" then return nil end
+	ok, util = pcall(make)
+	if not ok or type(util) ~= "table" or util.type ~= kind or type(util.amount) ~= "number"
+		or type(util.duration) ~= "number" or type(util.percentage) ~= "number" then return nil end
+	return copyOffer(util)
+end
+
+-- A founded company starts with its own copy of the native loan offers. A
+-- native cooldown belongs only to the save's player, so draw a fresh offer
+-- of that kind from the game's utility, as the native loan update does.
+-- Called from the ordered simulation update, where the room has seeded
+-- math.random identically in every game.
+local function seedLoanOffers(roster, id, api)
+	if id == 0 or loanOfferGroup(roster, id) then return loanOfferGroup(roster, id) end
+	local real = loanState(api)
+	if type(real) ~= "table" or type(real.availableLoans) ~= "table" then return nil end
+	local offers = {}
+	for i, source in ipairs(real.availableLoans) do
+		local offer = copyOffer(source)
+		if offer and offer.cooldownUntil ~= nil then
+			offer = createLoan(api, offer.type) or offer
+		end
+		if offer then offers[i] = offer end
+	end
+	if #offers == 0 then return nil end
+	roster.loanOffers = roster.loanOffers or {}
+	local group = { company = id, availableLoans = offers }
+	roster.loanOffers[#roster.loanOffers + 1] = group
+	return group
+end
+
+-- Seed companies on the simulation side, including a roster saved before
+-- company offers became persistent. GUI reads never mutate the roster.
+function companies.ensureLoanOffers(roster, api)
+	if type(roster) ~= "table" then return false end
+	local changed = false
+	for _, c in ipairs(companies.live(roster)) do
+		if c.id ~= 0 and not loanOfferGroup(roster, c.id) then
+			if seedLoanOffers(roster, c.id, api) then changed = true end
+		end
+	end
+	return changed
+end
+
+-- Keep the simulation update alive when an old roster needs its offers
+-- initialized, or when one of its independent cooldowns expires.
+function companies.loanOffersNeedInit(roster, api)
+	local real = loanState(api)
+	if type(roster) ~= "table" or type(real) ~= "table" or type(real.availableLoans) ~= "table" then return false end
+	for _, c in ipairs(companies.live(roster)) do
+		if c.id ~= 0 and not loanOfferGroup(roster, c.id) then return true end
+	end
+	return false
+end
+
+local function gameTimeNow(api)
+	local ok, gameTime = pcall(function()
+		local world = api.engine.util.getWorld()
+		local time = api.engine.getComponent(world, api.type.ComponentType.GAME_TIME)
+		return time and time.gameTime
+	end)
+	return ok and type(gameTime) == "number" and gameTime or nil
+end
+
+function companies.loanOffersDue(roster, api)
+	local now = gameTimeNow(api)
+	if now == nil then return false end
+	for _, group in ipairs(type(roster) == "table" and roster.loanOffers or {}) do
+		for _, offer in ipairs(type(group) == "table" and group.availableLoans or {}) do
+			if type(offer) == "table" and type(offer.cooldownUntil) == "number" and offer.cooldownUntil < now then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function companies.refreshLoanOffers(roster, api)
+	local now = gameTimeNow(api)
+	if now == nil then return false, "this game does not say what time it is" end
+	local changed = false
+	for _, group in ipairs(type(roster) == "table" and roster.loanOffers or {}) do
+		for i, offer in ipairs(type(group) == "table" and group.availableLoans or {}) do
+			if type(offer) == "table" and type(offer.cooldownUntil) == "number" and offer.cooldownUntil < now then
+				local fresh = createLoan(api, offer.type)
+				if not fresh then return false, "the game's loan utility cannot replace a cooled-down offer" end
+				group.availableLoans[i] = fresh
+				changed = true
+			end
+		end
+	end
+	return changed
+end
 
 -- The month of the game's calendar now, counted from the game's start; nil
 -- where the game does not say.
@@ -848,25 +974,79 @@ function companies.loansOf(roster, id)
 	return out
 end
 
--- Company `id` takes the loan `terms` (the loan script's own: amount, the
--- duration in the game's milliseconds, the interest a year as a fraction).
-function companies.borrow(roster, id, terms, send, api)
+-- The most loans a company has at once, as the game's loan script allows
+-- (loan_util.tl, maximalObtainableLoans).
+companies.MAX_LOANS = 4
+
+-- The loan script's state (LoanTable, loan.d.tl) as the game's finance
+-- window should show it to a player of company `id`, not the room's first:
+-- the company's persisted offers and loans, each by its room id and amount,
+-- which its Repay sends back (companies.repay). The first company continues
+-- to use the game's own loan state. `monthLength` is the game's.
+function companies.loanTable(roster, id, real, monthLength, fresh)
+	local offers = {}
+	local group = id ~= 0 and loanOfferGroup(roster, id) or nil
+	local source = group and group.availableLoans
+	if not group and id == 0 then source = type(real) == "table" and real.availableLoans end
+	for _, offer in ipairs(type(source) == "table" and source or {}) do
+		local copyOfOffer = copyOffer(offer)
+		if copyOfOffer then offers[#offers + 1] = copyOfOffer end
+	end
+	local obtained = {}
+	for _, loan in ipairs(type(roster) == "table" and companies.loansOf(roster, id) or {}) do
+		obtained[#obtained + 1] = { type = loan.type or "Custom", amount = loan.amount,
+			duration = loan.months * monthLength, percentage = loan.rate * 12,
+			timesPaid = loan.paid, id = loan.id }
+	end
+	return { availableLoans = offers, obtainedLoans = obtained, freeId = type(roster) == "table" and roster.nextLoan or 1 }
+end
+
+local function sameOffer(offer, terms)
+	return type(offer) == "table" and type(terms) == "table"
+		and offer.type == terms.type and offer.amount == terms.amount
+		and offer.duration == terms.duration and offer.percentage == terms.percentage
+end
+
+-- Company `id` takes an exact offer in its own slot. `next` is the fresh
+-- loan the native finance window draws before clicking; like loan.script.tl,
+-- only its type identifies the slot that goes on cooldown.
+function companies.borrow(roster, id, terms, nextTerms, send, api)
 	local c = companies.find(roster, id)
 	if not c or c.gone then return false, "there is no such company" end
-	local amount = type(terms) == "table" and tonumber(terms.amount)
-	local duration = type(terms) == "table" and tonumber(terms.duration)
-	local percentage = type(terms) == "table" and tonumber(terms.percentage) or 0
-	if not amount or amount <= 0 or not duration or duration <= 0 then return false, "a loan needs an amount and a duration" end
+	if #companies.loansOf(roster, id) >= companies.MAX_LOANS then
+		return false, c.name .. " has " .. companies.MAX_LOANS .. " loans already"
+	end
+	local state = loanOfferGroup(roster, id) or seedLoanOffers(roster, id, api)
+	if not state or type(state.availableLoans) ~= "table" then return false, "this company's loan offers are not available" end
+	if type(terms) ~= "table" or type(terms.type) ~= "string" or type(terms.amount) ~= "number"
+		or type(terms.duration) ~= "number" or type(terms.percentage) ~= "number" then
+		return false, "a loan needs a current offered term"
+	end
+	if type(nextTerms) ~= "table" or nextTerms.type ~= terms.type then
+		return false, "the replacement must match the offered loan type"
+	end
+	local slot
+	for i, offer in ipairs(state.availableLoans) do
+		if sameOffer(offer, terms) and offer.cooldownUntil == nil then slot = i break end
+	end
+	if not slot then return false, "that loan offer is no longer available" end
 	local length = monthLength(api)
 	if not length then return false, "this game does not say how long a month is" end
+	local amount, duration, percentage = terms.amount, terms.duration, terms.percentage
+	if amount <= 0 or duration <= 0 or percentage < 0 then return false, "the offered loan terms are invalid" end
 	local months = math.max(1, math.floor(duration / length + 0.5))
-	local rate = math.max(0, percentage) / 12
-	amount = math.floor(amount)
+	local rate = percentage / 12
+	local now = gameTimeNow(api)
+	if now == nil then return false, "this game does not say what time it is" end
+	local minCooldown, maxCooldown = length * 4, length * 8
+	if maxCooldown > 2147483647 then return false, "this game's loan cooldown is out of range" end
+	local cooldown = math.random(minCooldown, maxCooldown)
 	book(api, send, c.entity, amount, "LOAN")
+	state.availableLoans[slot] = { type = terms.type, cooldownUntil = now + cooldown }
 	roster.loans = roster.loans or {}
 	roster.nextLoan = (roster.nextLoan or 1)
 	roster.loans[#roster.loans + 1] = { id = roster.nextLoan, company = id, amount = amount, remaining = amount,
-		months = months, paid = 0, rate = rate, payment = annuity(amount, rate, months) }
+		months = months, paid = 0, rate = rate, payment = annuity(amount, rate, months), type = terms.type }
 	roster.nextLoan = roster.nextLoan + 1
 	roster.month = roster.month or companies.monthNow(api)
 	return true
@@ -932,9 +1112,11 @@ end
 -- ------------------------------------------------------------- subsidies
 --
 -- The game's subsidy script (::/game_mechanics/subventions/subventions.gs,
--- build 40408's subventions.script.tl) draws the offers in every game alike:
--- in its update, from the world and the game time, its math.random reseeded
--- per call by the hook (docs/HOOKS.md, "Seeds, as built"). It keeps them in
+-- build 40408's subventions.script.tl) draws the offers in its update, from
+-- the world and the game time, its math.random reseeded per call by the hook
+-- (docs/HOOKS.md, "Seeds, as built"): alike in every game only while their
+-- worlds and game times agree at every room step, which the economy lane
+-- checks (tpf3mp/lanes.lua, tpf3mp/subsidies.lua). It keeps them in
 -- its state, offered (`proposedSubventions`), taken (`activeSubventions`),
 -- completed and failed, each by its number (`uid`) and its kind (`id`, the
 -- subsidy resource). Accepting moves an offer to the taken and books its
@@ -947,7 +1129,8 @@ end
 -- moves what the script booked to the first company on to the company that
 -- took it, as SUBSIDY journal entries (the first company's books show the
 -- money in and out again, so they net to nothing), at accepting and when the
--- script completes or fails it, at the same update in every game.
+-- script completes or fails it, at the same update in every game. Only the
+-- taker's transport counts towards it (tpf3mp/subsidies.lua).
 --
 --   roster.subsidies = { { uid =, kind =, company =, state = "taken" |
 --                          "completed" }, ... }
@@ -1102,8 +1285,11 @@ end
 -- Settles the subsidies the room keeps against the script's `state`: a
 -- subsidy another company took that the script completed has its reward
 -- moved on to that company, one that failed its penalty; one the script no
--- longer has, or one settled for good, is forgotten. Returns what it did,
--- as lines for the log.
+-- longer has, or one settled for good, is forgotten. A taker that is gone
+-- (dissolved) gets nothing and pays nothing: the first company gives back
+-- the reward, or gets back the penalty, the script booked to it, so it
+-- ends with nothing of a subsidy it did not take. Returns what it did, as
+-- lines for the log.
 function companies.settleSubsidies(roster, state, day, send, api)
 	if not acceptance.subsidies then return end
 	local said, kept = {}, {}
@@ -1113,17 +1299,34 @@ function companies.settleSubsidies(roster, state, day, send, api)
 		local where, s = companies.findSubsidy(state, r.uid)
 		local c = companies.find(roster, r.company)
 		local keep = s ~= nil and s.id == r.kind and where ~= "failed"
-		if s ~= nil and s.id == r.kind and c and not c.gone and c.id ~= 0 and r.state == "taken" then
+		if s ~= nil and s.id == r.kind and c and c.id ~= 0 and r.state == "taken" then
 			local data = type(s.data) == "table" and s.data or {}
+			local first = companies.find(roster, 0)
 			if where == "completed" then
 				local amount = companies.subsidyMoney(data.complete)
-				moveSubsidy(roster, c, amount, send, api)
 				r.state = "completed"
-				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name .. ": " .. amount
+				if not c.gone then
+					moveSubsidy(roster, c, amount, send, api)
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name .. ": " .. amount
+				elseif first and amount ~= 0 then
+					-- Its taker is gone: the reward is no one's, and the
+					-- first company gives back what the script booked it.
+					book(api, send, first.entity, -amount, "SUBSIDY")
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name
+						.. ", gone: its reward of " .. amount .. " is no one's"
+				end
 			elseif where == "failed" then
 				local amount = companies.subsidyMoney(data.failure)
-				moveSubsidy(roster, c, -amount, send, api)
-				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name .. ": -" .. amount
+				if not c.gone then
+					moveSubsidy(roster, c, -amount, send, api)
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name .. ": -" .. amount
+				elseif first and amount ~= 0 then
+					-- Its taker is gone: no one pays its penalty, and the
+					-- first company gets back what the script charged it.
+					book(api, send, first.entity, amount, "SUBSIDY")
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name
+						.. ", gone: its penalty of " .. amount .. " is no one's"
+				end
 			end
 		end
 		-- Completed, it stays the company's in the script for years: kept
@@ -1157,6 +1360,7 @@ function companies.run(roster, player, op, send, api, seal)
 		roster.next = id + 1
 		roster.list[#roster.list + 1] = { id = id, entity = entity, name = name, color = color, founder = player }
 		setMember(roster, player, id)
+		companies.ensureLoanOffers(roster, api)
 		return true, nil, id
 	elseif kind == "Join" then
 		local c = companies.find(roster, body)
