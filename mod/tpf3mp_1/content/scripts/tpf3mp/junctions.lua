@@ -336,6 +336,15 @@ function junctions.into(proposal, changes, preserve, mine, gone)
 	for _, node in ipairs(preserve or {}) do
 		if gone and not handled[node] and not removedNodes[node] and node >= 0 and atGone(node) then
 			handled[node] = true
+			-- Its settings go as a change of them would: only where the
+			-- acting company may change every edge at it (D21).
+			if mine then
+				for _, kind in ipairs({"Street", "Track"}) do
+					for _, id in ipairs(list(api.engine.system.streetSystem["getNode"..kind.."Segments"](node))) do
+						mine(id, "junction edge")
+					end
+				end
+			end
 			remove(node)
 			left[#left+1] = node
 		end

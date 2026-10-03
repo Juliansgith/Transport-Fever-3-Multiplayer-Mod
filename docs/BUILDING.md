@@ -354,9 +354,9 @@ construction by file and place, and every game replaces it within 2 m in
 one proposal mapped old to new, as the game's own upgrade does
 ([HOOKS.md](HOOKS.md), "The build tools"). The construction tool's
 proposals, the construction menu's parameters and the station window's
-cargo buttons are carried so; one replacing more than one construction,
-one the room cannot name, or one that changes streets around it is
-refused. The module editor itself tells game scripts nothing of its
+cargo buttons are carried so, with the streets an edit changes around the
+construction as its connection (below); one replacing more than one
+construction or one the room cannot name is refused. The module editor itself tells game scripts nothing of its
 proposals on build 40408 (read from the binary: `UI::CGameUI` forwards
 `builder.proposalCreate` for six other tools only), so the hook reads its
 proposal natively at its call of `CommandList::Add` and hands the GUI the
@@ -411,8 +411,13 @@ name the old entrance, which goes with the old station). Every edge a
 construction's connection removes or splits must be the acting company's
 or no company's, for new stations too, which did not check it. Covered by
 `lua_mod.rs` (the capture and its refusals, the replay, a road of another
-company, the old entrance's junction, a refused refresh after the split);
-the replay in two games is still to be seen.
+company, the old entrance's junction and another company's road at it, a
+refused refresh after the split). Seen in two launcher-started games on
+the local server the same day: a new exit onto another road was carried
+from the module editor and replayed alike in both games (`building
++n-3(-1042.6,-1959.4,11.0) +e-1/0:48073>-3 … +e-2/0:-3>71864 … -e71975`,
+then `snapping 72116 +e-3:-1>73619 +e-4:-2>71600 -e72101 -e73645`), both
+entrances joined to their roads, and edits after it too.
 
 ### Demolish
 

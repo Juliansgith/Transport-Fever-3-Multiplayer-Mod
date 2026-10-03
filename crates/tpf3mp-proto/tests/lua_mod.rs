@@ -3369,6 +3369,7 @@ fn an_edit_leaves_the_junction_at_its_old_entrance_to_the_station() {
          local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
          FULL = function() return {split} end \
          ACTION = assert(capture.moduleEdit(NATIVE_OF(FULL()))) \
+         SAVED = {{}} for k, v in pairs(CONSTRUCTIONS) do SAVED[k] = v end \
          HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
     ))
     .exec()
@@ -3389,6 +3390,28 @@ fn an_edit_leaves_the_junction_at_its_old_entrance_to_the_station() {
             |l| l == "left to the construction: the settings of 1 junction(s) at its old edges"
         ),
         "{logged:?}"
+    );
+    // Another company's road at that junction: its settings are not this
+    // company's to drop (D21), and nothing is sent.
+    lua.load(
+        "SENT = {} CONSTRUCTIONS = {} for k, v in pairs(SAVED) do CONSTRUCTIONS[k] = v end \
+         NODES[12] = { x = 0, y = -60, z = 0 } \
+         EDGES[102] = { node0 = 7, node1 = 12, tangent0 = { x = 0, y = -60, z = 0 }, \
+             tangent1 = { x = 0, y = -60, z = 0 }, objects = {}, \
+             roadTemplate = '::/street/town_small.street_template' } \
+         STREETS[7] = { 101, 6000, 102 } STREETS[12] = { 102 } OWNERS[102] = 900 \
+         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let (sent, ok, why): (usize, bool, String) = lua
+        .load("return #SENT, HOOK.applied[2].ok, HOOK.applied[2].why")
+        .eval()
+        .unwrap();
+    assert_eq!((sent, ok), (0, false));
+    assert!(
+        why.ends_with("the junction edge belongs to another company"),
+        "{why}"
     );
 }
 

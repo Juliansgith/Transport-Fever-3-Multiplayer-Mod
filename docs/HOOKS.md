@@ -2397,12 +2397,14 @@ construction's window its edits:
   own edges, and no junction's settings may name them: a junction the
   connection rebuilds next to the old entrance keeps no settings, which the
   construction and its refresh give it, the game's own (logged `left to
-  the construction: the settings of N junction(s) at its old edges`).
+  the construction: the settings of N junction(s) at its old edges`),
+  only where the acting company may change every edge at it.
   Every edge a construction's connection removes or splits, a new one's or
   an edit's, must be the acting company's or no company's (D21), as a
-  bulldozed one. The plain edit's refresh was seen in the game
-  (2026-10-03, `snapping 72194 +e-2:-1>57114 -e71473`); INFERRED, not yet
-  seen in the game: the replay of an edit with a road split. The new
+  bulldozed one. Seen in two games on 2026-10-03: a plain edit's refresh
+  (`snapping 72194 +e-2:-1>57114 -e71473`), and an edit adding an exit
+  onto another road, replayed with the road split and both entrances
+  snapped alike in both games (docs/BUILDING.md). The new
   construction stands where the old one stood, so the next edit, a depot
   bought at it or a line finds it by the same reference; what stood on it
   passes to it through `old2new`, and the registry binds, after the
