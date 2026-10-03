@@ -192,6 +192,31 @@ fn process_path_on_this_system(_pid: u32) -> Option<PathBuf> {
     None
 }
 
+/// Whether process `pid` may still run. Fails closed: a process the system
+/// cannot be asked about is taken as running.
+pub fn process_runs(pid: u32) -> bool {
+    process_runs_on_this_system(pid)
+}
+
+#[cfg(windows)]
+fn process_runs_on_this_system(pid: u32) -> bool {
+    windows::process_runs(pid)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn process_runs_on_this_system(pid: u32) -> bool {
+    // Only "no such entry" says it is gone.
+    std::fs::metadata(format!("/proc/{pid}")).map_or_else(
+        |error| error.kind() != std::io::ErrorKind::NotFound,
+        |_| true,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn process_runs_on_this_system(_pid: u32) -> bool {
+    true
+}
+
 /// Steam's client, by the file name of its program in lower case.
 fn is_steam(program: &str) -> bool {
     matches!(program, "steam.exe" | "steam" | "steam_osx")
@@ -410,5 +435,23 @@ mod tests {
         let env = environment(&launch);
         assert!(env.contains(&("SteamAppId".into(), STEAM_APP_ID.into())));
         assert!(env.contains(&("TPF3MP_GAME_LINK".into(), "tpf3mp.default".into())));
+    }
+
+    #[test]
+    fn a_process_that_exited_no_longer_runs() {
+        assert!(process_runs(std::process::id()));
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit"])
+                .spawn()
+        } else {
+            std::process::Command::new("true").spawn()
+        }
+        .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        // Reaped and its handle closed: gone, unless macOS cannot tell.
+        drop(child);
+        assert_eq!(process_runs(pid), cfg!(target_os = "macos"));
     }
 }

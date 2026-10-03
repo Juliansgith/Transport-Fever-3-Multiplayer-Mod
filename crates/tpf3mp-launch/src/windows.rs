@@ -421,6 +421,30 @@ pub(crate) fn process_path(pid: u32) -> Option<std::path::PathBuf> {
     }
 }
 
+/// Whether process `pid` may still run: it exists and has no exit code.
+/// A process that exited may still be there while another program holds a
+/// handle to it. Fails closed: one that cannot be asked about (access
+/// denied) is taken as running. As the hook's `worlds::running`.
+pub(crate) fn process_runs(pid: u32) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{ERROR_INVALID_PARAMETER, GetLastError},
+        System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    /// The exit code of a process still running.
+    const STILL_ACTIVE: u32 = 259;
+    // SAFETY: a handle opened for querying only, closed once.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return GetLastError() != ERROR_INVALID_PARAMETER;
+        }
+        let mut code = 0u32;
+        let asked = GetExitCodeProcess(handle, &raw mut code);
+        CloseHandle(handle);
+        asked == 0 || code == STILL_ACTIVE
+    }
+}
+
 /// `wait` in milliseconds for a wait call, short of `INFINITE`.
 fn millis(wait: std::time::Duration) -> u32 {
     u32::try_from(wait.as_millis()).map_or(u32::MAX - 1, |ms| ms.min(u32::MAX - 1))
