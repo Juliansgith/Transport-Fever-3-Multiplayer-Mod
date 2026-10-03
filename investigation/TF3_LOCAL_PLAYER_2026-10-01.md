@@ -329,3 +329,25 @@ company's with a station group of its own; the line was not drawn.
   `sub_7edbd0`, stored at 0x7eddc0).
 - Fix: the call at 0x7f3f12 answers every company's lines in a room
   (guiplayer.rs, `lines_for`).
+
+### The store's depot (2026-10-02, build 45b8ed5)
+
+- **seen** p1 (company #2) built a road depot (action 2) and bought from
+  the line window: `the store buys at depot entity 317114 (owned by
+  214443)`.
+- **seen** `findBestDepotForLine` (registered at 0x253c13f) and
+  `findBestLineAndDepotForVehicle` (0x253c094) reach `sub_2689fd0` (owner
+  test at 0x268a335) and `sub_2689dd0` (owner test at 0x2689eeb, through
+  `sub_5ab270`, a `PlayerOwned` read), each comparing with
+  `[GameState+0x20c]`, the save's player. Their only callers are the two
+  bindings; their only Lua callers are `line_util.tl`,
+  `manager_window.tl` and `vehicle_store_window.tl`.
+- Fix: both tests spliced (guiplayer.rs), on the GUI's thread outside the
+  step only.
+- **open (a rule, not code)** The room let company #2 buy at company #0's
+  depot: `BuyVehicle` checks only that the depot exists. In single player
+  every depot is the one player's (or no one's), so the game never asks.
+  The room's rule for what another company owns (`companies.mayTouch`:
+  edits, removals, its vehicles and lines refused) would refuse it; D22
+  (proposed) lets a company open its stations to others, and says nothing
+  of depots. Not changed: it is the owner's to decide.
