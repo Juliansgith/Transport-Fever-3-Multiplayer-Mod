@@ -1155,7 +1155,8 @@ function data()
 			-- they would build here and drawn by the hook (tpf3mp/previews.lua;
 			-- never the game's ProposalViewer, which build 40408 allows only
 			-- inside a tool's ActionDescriptor: a fatal assert elsewhere).
-			if link and link:room() then
+			-- Out of a room too: its end tells each one drawn as gone.
+			if link then
 				local took, why = pcall(require("tpf3mp.previews").take, link, previewProposal, drawPreview)
 				if not took then say("taking the build previews failed: " .. tostring(why)) end
 			end

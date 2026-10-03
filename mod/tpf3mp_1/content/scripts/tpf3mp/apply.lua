@@ -823,7 +823,10 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	proposal.streetProposal.edgesToRemove = edgesToRemove
 	if #nodesToRemove > 0 then proposal.streetProposal.nodesToRemove = nodesToRemove end
 	if #configsToRemove > 0 then proposal.streetProposal.nodeConfigsToRemove = configsToRemove end
-	junctions.into(proposal, polyline.junctions, ends, mine)
+	-- A preview (dry) leaves the junctions' lane and light settings out:
+	-- they draw nothing, and a snapped build's may name a node only its
+	-- originator's tool has.
+	if not dry then junctions.into(proposal, polyline.junctions, ends, mine) end
 
 	-- What is sent, in the log before it goes: an exception from the game
 	-- does not always come back through pcall.

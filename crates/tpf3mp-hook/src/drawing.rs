@@ -27,9 +27,21 @@
 //!   main component and are destroyed ([`teardown`]).
 //!
 //! The renderer's tint is this game's verdict on the proposal, blue, or red
-//! where this game would refuse it. Its terrain heights are never uploaded
-//! (the flag at `+0xf0` cleared): every renderer shares one view terrain,
-//! and another player's embankments must never change this player's.
+//! where this game would refuse it.
+//!
+//! **Terrain.** A preview's cuts and embankments are terrain heights its
+//! renderer uploads into the one view terrain every renderer shares
+//! (`EndHeightMod`, `ViewTerrain::ApplyBlocks`). A renderer's `Clear`
+//! resets that view terrain whole, every renderer's heights at once
+//! (`0x398600` walks all of its changed blocks), so the hook composes it as
+//! TpF2 Multiplayer did: after every reset, whoever's `Clear` it was, each
+//! renderer's heights are applied again, the members' first and this
+//! player's own tools last, so where both change the same ground this
+//! player's tool shows ([`compose`]). The game's own renderers that upload
+//! heights are noted in `EndHeightMod` and forgotten in their destructor.
+//! Without every part of that (a build where one is missing), the hook's
+//! renderers upload no heights at all (their flag at `+0xf0` cleared): a
+//! preview then shows no cut or embankment, and is never left behind.
 //!
 //! Every target is in the profile, each offset read from the instruction
 //! of the game's own that uses it ([`Layout`]); a build missing any draws
@@ -47,7 +59,7 @@ use std::{
     cell::{Cell, RefCell},
     sync::{
         Mutex, MutexGuard, OnceLock, PoisonError,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::ThreadId,
 };
@@ -64,6 +76,8 @@ pub const FILL_TARGET: &str = "builder_renderer_util::AddToRenderer";
 pub const EVALUATE_TARGET: &str = "CreateProposalData";
 pub const CALL_TARGET: &str = "makeProposalData/CreateProposalData call";
 pub const GAME_UI_DTOR_TARGET: &str = "UI::CGameUI::~CGameUI";
+pub const END_HEIGHTS_TARGET: &str = "UI::BuilderRenderer::EndHeightMod";
+pub const APPLY_TARGET: &str = "terrain::ViewTerrain::ApplyBlocks";
 /// The layout anchors, and the opcode each one's offset follows.
 pub const GAME_UI_FIELD: (&str, &[u8]) =
     ("UI::CMenuUI::StartGame/CGameUI store", &[0x48, 0x89, 0x83]);
@@ -82,6 +96,8 @@ pub const UPLOAD_FIELD: (&str, &[u8]) =
 
 /// Most members drawn at once.
 pub const MAX_DRAWN: usize = 16;
+/// Most of the game's own renderers whose heights are composed.
+pub const MAX_LOCALS: usize = 64;
 
 /// The offset an instruction `opcode disp32` at `code` uses, when it is
 /// that instruction and the offset is a plausible field's.
@@ -131,6 +147,79 @@ impl Layout {
     }
 }
 
+/// Bytes of the upload anchor [`Upload::read`] reads.
+pub const UPLOAD_LEN: usize = 40;
+
+/// Where `EndHeightMod` uploads a renderer's terrain heights, each offset
+/// from its own instruction (build 40408, 0x7bbb6a): `cmp byte
+/// [rcx+upload],0; je; mov rdx,[rcx+state]; add rdx,list; movzx r8d,byte
+/// [rcx+flag]; mov rcx,[rcx+terrain]; call ApplyBlocks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Upload {
+    /// `BuilderRenderer` -> its upload flag (a byte).
+    pub upload: usize,
+    /// `BuilderRenderer` -> its state.
+    pub state: usize,
+    /// State -> its list of height blocks (a `std::vector`).
+    pub list: usize,
+    /// `BuilderRenderer` -> the flag `ApplyBlocks` takes (a byte).
+    pub flag: usize,
+    /// `BuilderRenderer` -> the view terrain it uploads into.
+    pub terrain: usize,
+    /// The address the call calls.
+    pub apply: usize,
+}
+
+impl Upload {
+    /// The upload from the anchor's code at `at`, or `None` when it is not
+    /// that sequence.
+    pub fn read(code: &[u8], at: usize) -> Option<Self> {
+        let code = code.get(..UPLOAD_LEN)?;
+        if code[6] != 0 || code[7] != 0x74 || code[31..34] != [0x48, 0x8B, 0x49] || code[35] != 0xE8
+        {
+            return None;
+        }
+        let terrain = usize::from(code[34]);
+        if terrain == 0 || terrain >= 0x80 {
+            return None;
+        }
+        let rel = i32::from_le_bytes(code[36..40].try_into().ok()?);
+        Some(Self {
+            upload: field_after(code, &[0x80, 0xB9])?,
+            state: field_after(&code[9..], &[0x48, 0x8B, 0x91])?,
+            list: field_after(&code[16..], &[0x48, 0x81, 0xC2])?,
+            flag: field_after(&code[23..], &[0x44, 0x0F, 0xB6, 0x81])?,
+            terrain,
+            apply: (at + UPLOAD_LEN).wrapping_add_signed(rel as isize),
+        })
+    }
+}
+
+/// Renderers' terrain heights: the game's in the game, a recording
+/// stand-in in the tests.
+pub trait Heights {
+    /// `renderer`'s view terrain, list of height blocks and flag, when it
+    /// uploads heights and has any.
+    fn blocks(&self, renderer: usize) -> Option<(usize, usize, u8)>;
+    /// Applies a list of height blocks to a view terrain.
+    fn apply(&self, terrain: usize, list: usize, flag: u8);
+}
+
+/// Applies every renderer's heights again, after the view terrain they
+/// share was reset: the members' (`ours`) first, then this player's own
+/// tools (`locals`), so where both change the same ground the player's own
+/// tool shows. Returns how many lists were applied.
+pub fn compose(heights: &dyn Heights, ours: &[usize], locals: &[usize]) -> usize {
+    let mut applied = 0;
+    for &renderer in ours.iter().chain(locals) {
+        if let Some((terrain, list, flag)) = heights.blocks(renderer) {
+            heights.apply(terrain, list, flag);
+            applied += 1;
+        }
+    }
+    applied
+}
+
 /// What the hook does with renderers: the game's functions in the game,
 /// a recording stand-in in the tests.
 pub trait Renderers {
@@ -140,7 +229,8 @@ pub trait Renderers {
     fn register(&self, view: usize, renderer: usize);
     /// Takes `renderer` off the component `view`.
     fn unregister(&self, view: usize, renderer: usize);
-    /// Clears what `renderer` shows; the view terrain is left alone.
+    /// Clears what `renderer` shows, and resets the view terrain when the
+    /// hook composes it.
     fn clear(&self, renderer: usize);
     /// Destroys `renderer`.
     fn destroy(&self, renderer: usize);
@@ -241,6 +331,30 @@ fn table() -> MutexGuard<'static, Table> {
     TABLE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The hook's renderers, and the game's own that upload heights, for the
+/// detours. Never locked across a call into the game, and TABLE is never
+/// taken under them: the game calls the detours from inside the very calls
+/// the table makes.
+static OURS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+static LOCALS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Every part of the composition is in.
+static COMPOSING: AtomicBool = AtomicBool::new(false);
+/// A `CGameUI` is being destroyed: nothing is composed.
+static TEARING: AtomicBool = AtomicBool::new(false);
+
+fn ours() -> MutexGuard<'static, Vec<usize>> {
+    OURS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn locals() -> MutexGuard<'static, Vec<usize>> {
+    LOCALS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The hook's renderers as the table has them, for the detours.
+fn note_ours(table: &Table) {
+    *ours() = table.drawn.iter().map(|d| d.renderer).collect();
+}
+
 /// The menu whose frames run, and the thread they run on: the GUI's.
 static MENU: AtomicUsize = AtomicUsize::new(0);
 static GUI_THREAD: Mutex<Option<ThreadId>> = Mutex::new(None);
@@ -277,7 +391,13 @@ struct Game {
     #[allow(clippy::type_complexity)]
     fill: unsafe extern "C-unwind" fn(usize, usize, usize, usize, usize, usize, usize, u8, u8, u8),
     evaluate: EvaluateFn,
+    /// The composition's: the upload's layout and `ApplyBlocks`, when every
+    /// part of it is in.
+    heights: Option<(Upload, ApplyFn)>,
 }
+
+/// `ViewTerrain::ApplyBlocks(terrain, list, flag)`.
+type ApplyFn = unsafe extern "C-unwind" fn(usize, usize, u8) -> usize;
 
 /// `CreateProposalData(out, toolkit, r8, proposal, preprocess, opt,
 /// context)`, which returns `out`.
@@ -303,9 +423,13 @@ impl Renderers for Game {
         unsafe { (self.remove)(view, renderer) }
     }
     fn clear(&self, renderer: usize) {
-        // SAFETY: a renderer the hook made and has not destroyed; models
-        // cleared, the shared view terrain and its height mods left alone.
-        unsafe { (self.clear)(renderer, 1, 0, 0) }
+        // Composing, as the game's own ProposalViewer clears: the view
+        // terrain reset too, and composed again by the caller. Otherwise the
+        // renderer never uploaded any heights, and the terrain is left alone.
+        let terrain = u8::from(self.heights.is_some());
+        // SAFETY: a renderer the hook made and has not destroyed, through
+        // Clear's trampoline when it is detoured.
+        unsafe { (self.clear)(renderer, 1, terrain, terrain) };
     }
     fn destroy(&self, renderer: usize) {
         // SAFETY: as clear, taken off its component first; slot 0 with
@@ -314,6 +438,110 @@ impl Renderers for Game {
             (self.destroy)(renderer, 1);
         }
     }
+}
+
+impl Heights for (Upload, ApplyFn) {
+    fn blocks(&self, renderer: usize) -> Option<(usize, usize, u8)> {
+        let upload = &self.0;
+        // SAFETY: a live renderer (the hook's, or one of the game's noted in
+        // EndHeightMod and not yet destroyed), read at the offsets the
+        // game's own upload reads; its list is a std::vector (begin, end).
+        unsafe {
+            if std::ptr::read_volatile((renderer + upload.upload) as *const u8) == 0 {
+                return None;
+            }
+            let state = pointer_at(renderer, upload.state);
+            let terrain = pointer_at(renderer, upload.terrain);
+            if state == 0 || terrain == 0 {
+                return None;
+            }
+            let list = state + upload.list;
+            if pointer_at(list, 0) == pointer_at(list, 8) {
+                return None;
+            }
+            let flag = std::ptr::read_volatile((renderer + upload.flag) as *const u8);
+            Some((terrain, list, flag))
+        }
+    }
+    fn apply(&self, terrain: usize, list: usize, flag: u8) {
+        // SAFETY: as EndHeightMod calls it, with a renderer's own view
+        // terrain, list and flag, on the GUI thread.
+        unsafe { (self.1)(terrain, list, flag) };
+    }
+}
+
+/// Composes the view terrain again, after a reset: on the GUI thread, with
+/// every part in, and never while a `CGameUI` is destroyed.
+fn recompose() {
+    let Some(heights) = GAME.get().and_then(|game| game.heights.as_ref()) else {
+        return;
+    };
+    if !COMPOSING.load(Ordering::Acquire) || TEARING.load(Ordering::Acquire) || !on_gui_thread() {
+        return;
+    }
+    let ours = ours().clone();
+    let locals = locals().clone();
+    compose(heights, &ours, &locals);
+}
+
+/// The trampolines of the detoured renderer functions.
+static CLEAR_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static END_HEIGHTS_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static DESTROY_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+
+type ClearFn = unsafe extern "C-unwind" fn(usize, u8, u8, u8) -> usize;
+type EndHeightsFn = unsafe extern "C-unwind" fn(usize, usize, usize, usize) -> usize;
+type DestroyFn = unsafe extern "C-unwind" fn(usize, usize) -> usize;
+
+/// Any renderer's `Clear`, detoured: one that reset the view terrain has
+/// every renderer's heights applied again after it.
+unsafe extern "C-unwind" fn clear_detour(
+    renderer: usize,
+    models: u8,
+    reset: u8,
+    mods: u8,
+) -> usize {
+    let original = CLEAR_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: Clear's trampoline, called as the game called Clear.
+    let done =
+        unsafe { std::mem::transmute::<usize, ClearFn>(original)(renderer, models, reset, mods) };
+    if reset != 0 {
+        recompose();
+    }
+    done
+}
+
+/// Any renderer's `EndHeightMod`, detoured: a renderer of the game's own
+/// that uploads heights is noted, to be composed after the next reset.
+unsafe extern "C-unwind" fn end_heights_detour(
+    renderer: usize,
+    a: usize,
+    b: usize,
+    c: usize,
+) -> usize {
+    let original = END_HEIGHTS_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: EndHeightMod's trampoline, called as the game called it.
+    let done = unsafe { std::mem::transmute::<usize, EndHeightsFn>(original)(renderer, a, b, c) };
+    let uploads = GAME
+        .get()
+        .and_then(|game| game.heights.as_ref())
+        .is_some_and(|heights| heights.blocks(renderer).is_some());
+    if uploads && !ours().contains(&renderer) {
+        let mut locals = locals();
+        if !locals.contains(&renderer) && locals.len() < MAX_LOCALS {
+            locals.push(renderer);
+        }
+    }
+    done
+}
+
+/// Any renderer's destructor, detoured: it is forgotten first.
+unsafe extern "C-unwind" fn destroy_detour(renderer: usize, flags: usize) -> usize {
+    locals().retain(|&r| r != renderer);
+    ours().retain(|&r| r != renderer);
+    let original = DESTROY_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: the destructor's trampoline, called as the game called it.
+    unsafe { std::mem::transmute::<usize, DestroyFn>(original)(renderer, flags) }
 }
 
 /// Whether this game draws the others' previews: every target installed,
@@ -371,6 +599,7 @@ pub fn hide(from: PlayerId) {
     }
     let ui = game_ui(&game.layout);
     table().hide(game, from, ui);
+    recompose();
 }
 
 /// The zero offset `AddToRenderer` takes.
@@ -461,10 +690,18 @@ unsafe fn draw_made(
     if models == 0 {
         return Err("the world's GUI has no model data yet".into());
     }
-    let renderer = table().renderer_for(game, from, ui, factory, view)?;
-    // SAFETY: the hook's own renderer, live: its terrain heights stay out
-    // of the view terrain every renderer shares.
-    unsafe { std::ptr::write_volatile((renderer + layout.upload) as *mut u8, 0) };
+    let renderer = {
+        let mut table = table();
+        let made = table.renderer_for(game, from, ui, factory, view);
+        note_ours(&table);
+        made?
+    };
+    let heights = game.heights.is_some();
+    if !heights {
+        // SAFETY: the hook's own renderer, live: without the composition its
+        // terrain heights stay out of the view terrain every renderer shares.
+        unsafe { std::ptr::write_volatile((renderer + layout.upload) as *mut u8, 0) };
+    }
     game.clear(renderer);
     // SAFETY: as the game's ProposalViewer calls it (0x2aa3b0d): its model
     // data, the toolkit and proposal the game just used, the data it made,
@@ -484,9 +721,15 @@ unsafe fn draw_made(
             1,
         );
     }
-    // The upload flag again: the fill may set it for its own pass.
-    // SAFETY: as above.
-    unsafe { std::ptr::write_volatile((renderer + layout.upload) as *mut u8, 0) };
+    if heights {
+        // The clear reset every renderer's heights, the fill uploaded this
+        // one's: all of them again, this player's own tools last.
+        recompose();
+    } else {
+        // The upload flag again: the fill may set it for its own pass.
+        // SAFETY: as above.
+        unsafe { std::ptr::write_volatile((renderer + layout.upload) as *mut u8, 0) };
+    }
     table().mark(from, true);
     Ok(())
 }
@@ -522,11 +765,21 @@ type DtorFn = unsafe extern "C-unwind" fn(usize, usize, usize, usize) -> usize;
 
 /// `~CGameUI`, detoured: the hook's renderers of this `CGameUI` go first.
 unsafe extern "C-unwind" fn game_ui_dtor(this: usize, a: usize, b: usize, c: usize) -> usize {
+    TEARING.store(true, Ordering::Release);
     if let Some(game) = GAME.get() {
         // SAFETY: the CGameUI being destroyed, still whole at its
         // destructor's entry.
         let view = unsafe { pointer_at(this, game.layout.main_view) };
-        let gone = table().teardown(game, this, view);
+        let mut table = table();
+        // Forgotten by the detours before they go.
+        *ours() = table
+            .drawn
+            .iter()
+            .filter(|d| d.game_ui != this)
+            .map(|d| d.renderer)
+            .collect();
+        let gone = table.teardown(game, this, view);
+        drop(table);
         if gone > 0 {
             crate::lua::log(format!(
                 "build previews: {gone} member renderer(s) taken down with the world's GUI"
@@ -535,7 +788,12 @@ unsafe extern "C-unwind" fn game_ui_dtor(this: usize, a: usize, b: usize, c: usi
     }
     let original = GAME_UI_DTOR_ORIGINAL.load(Ordering::Acquire);
     // SAFETY: the destructor's trampoline, called as the game called it.
-    unsafe { std::mem::transmute::<usize, DtorFn>(original)(this, a, b, c) }
+    let done = unsafe { std::mem::transmute::<usize, DtorFn>(original)(this, a, b, c) };
+    // The world's tools went with it; one the destructor did not reach is
+    // never composed again.
+    locals().clear();
+    TEARING.store(false, Ordering::Release);
+    done
 }
 
 /// Installs the drawing: reads the layout, redirects the call and detours
@@ -576,9 +834,53 @@ pub unsafe fn install(
             at(GAME_UI_DTOR_TARGET)?,
         ))
     })();
-    let (create, add, remove, clear, destroy, fill, evaluate, call, dtor) = match targets {
+    let (create, add, remove, mut clear, mut destroy, fill, evaluate, call, dtor) = match targets {
         Ok(targets) => targets,
         Err(error) => return why(error),
+    };
+    // The terrain composition: every part, or no heights at all.
+    let composition = (|| -> Result<(Upload, usize), String> {
+        let anchor = at(UPLOAD_FIELD.0)?;
+        // SAFETY: the instruction sequence the profile resolved and checked
+        // in this process's code, mapped and only read.
+        let bytes = unsafe { std::slice::from_raw_parts(anchor as *const u8, UPLOAD_LEN) };
+        let upload = Upload::read(bytes, anchor)
+            .ok_or_else(|| format!("{} is not the upload it names", UPLOAD_FIELD.0))?;
+        let apply = at(APPLY_TARGET)?;
+        if upload.apply != apply {
+            return Err(format!("the upload does not call {APPLY_TARGET}"));
+        }
+        Ok((upload, at(END_HEIGHTS_TARGET)?))
+    })();
+    let mut heights = None;
+    let terrain = match composition {
+        Err(error) => format!("their terrain is not shown ({error})"),
+        Ok((upload, end_heights)) => {
+            // The destructor first: a renderer noted is always forgotten.
+            // SAFETY: the caller's; each detour passes its registers through.
+            let detoured = unsafe {
+                detour(destroy as *mut u8, destroy_detour as *const u8).and_then(|original| {
+                    DESTROY_ORIGINAL.store(original, Ordering::Release);
+                    destroy = original;
+                    let original = detour(end_heights as *mut u8, end_heights_detour as *const u8)?;
+                    END_HEIGHTS_ORIGINAL.store(original, Ordering::Release);
+                    let original = detour(clear as *mut u8, clear_detour as *const u8)?;
+                    CLEAR_ORIGINAL.store(original, Ordering::Release);
+                    clear = original;
+                    Ok(())
+                })
+            };
+            match detoured {
+                Ok(()) => {
+                    // SAFETY: the address the upload calls, which is the
+                    // function the profile names; its ABI as the upload's.
+                    let apply = unsafe { std::mem::transmute::<usize, ApplyFn>(upload.apply) };
+                    heights = Some((upload, apply));
+                    "with their terrain, composed".to_string()
+                }
+                Err(error) => format!("their terrain is not shown (detouring: {error})"),
+            }
+        }
     };
     // SAFETY: each address is the function the profile names, found by its
     // signature and prologue in this very build; each type is its ABI as
@@ -594,6 +896,7 @@ pub unsafe fn install(
             destroy: std::mem::transmute(destroy),
             fill: std::mem::transmute(fill),
             evaluate: std::mem::transmute(evaluate),
+            heights,
         }
     };
     // The detour first: a renderer is never made unless it can be taken
@@ -624,9 +927,13 @@ pub unsafe fn install(
             return why(format!("redirecting {CALL_TARGET}: {error:?}"));
         }
     }
+    COMPOSING.store(
+        GAME.get().is_some_and(|game| game.heights.is_some()),
+        Ordering::Release,
+    );
     ARMABLE.store(1, Ordering::Release);
     format!(
-        "the others' build previews are drawn: a renderer each, CGameUI +{:#x} (factory +{:#x}, main view +{:#x}, model data +{:#x}), ProposalData +{:#x}, renderer +{:#x}",
+        "the others' build previews are drawn, {terrain}: a renderer each, CGameUI +{:#x} (factory +{:#x}, main view +{:#x}, model data +{:#x}), ProposalData +{:#x}, renderer +{:#x}",
         layout.game_ui,
         layout.factory,
         layout.main_view,
@@ -858,6 +1165,84 @@ mod tests {
             }
             assert_eq!((*map.add(6), *map.add(7)), (7, 8), "mask and bucket count");
         }
+    }
+
+    /// The upload's instructions on build 40408, at 0x7bbb6a, calling
+    /// ApplyBlocks at 0x396a00.
+    fn upload_code() -> Vec<u8> {
+        let mut code = vec![
+            0x80, 0xB9, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x74, 0x1F, 0x48, 0x8B, 0x91, 0xB8, 0x01,
+            0x00, 0x00, 0x48, 0x81, 0xC2, 0xF8, 0x1A, 0x00, 0x00, 0x44, 0x0F, 0xB6, 0x81, 0xF3,
+            0x00, 0x00, 0x00, 0x48, 0x8B, 0x49, 0x50, 0xE8,
+        ];
+        let rel = (0x396a00_i64 - 0x7bbb92_i64) as i32;
+        code.extend_from_slice(&rel.to_le_bytes());
+        code
+    }
+
+    #[test]
+    fn the_upload_gives_its_fields_and_the_function_it_calls() {
+        assert_eq!(
+            Upload::read(&upload_code(), 0x7bbb6a),
+            Some(Upload {
+                upload: 0xf0,
+                state: 0x1b8,
+                list: 0x1af8,
+                flag: 0xf3,
+                terrain: 0x50,
+                apply: 0x396a00,
+            })
+        );
+        // Anything else there: nothing composed (fail closed).
+        let mut moved = upload_code();
+        moved[33] = 0x4F;
+        assert_eq!(Upload::read(&moved, 0x7bbb6a), None);
+        let mut moved = upload_code();
+        moved[35] = 0xE9;
+        assert_eq!(Upload::read(&moved, 0x7bbb6a), None);
+        assert_eq!(Upload::read(&upload_code()[..39], 0x7bbb6a), None);
+    }
+
+    #[derive(Default)]
+    struct Ground {
+        /// Renderers with heights to upload: (renderer, terrain, list, flag).
+        uploads: Vec<(usize, usize, usize, u8)>,
+        applied: RefCell<Vec<usize>>,
+    }
+
+    impl Heights for Ground {
+        fn blocks(&self, renderer: usize) -> Option<(usize, usize, u8)> {
+            self.uploads
+                .iter()
+                .find(|u| u.0 == renderer)
+                .map(|u| (u.1, u.2, u.3))
+        }
+        fn apply(&self, terrain: usize, list: usize, flag: u8) {
+            assert_eq!(terrain, 0x7e);
+            self.applied.borrow_mut().push(list + usize::from(flag));
+        }
+    }
+
+    #[test]
+    fn a_reset_terrain_gets_the_members_heights_then_the_players_own_on_top() {
+        let ground = Ground {
+            uploads: vec![
+                (0x100, 0x7e, 0x1000, 0),
+                (0x300, 0x7e, 0x3000, 1),
+                (0x900, 0x7e, 0x9000, 0),
+            ],
+            ..Ground::default()
+        };
+        // 0x200 is a member's renderer cleared (no heights), 0x800 one of
+        // the player's tools with none.
+        let applied = compose(&ground, &[0x100, 0x200, 0x300], &[0x800, 0x900]);
+        assert_eq!(applied, 3);
+        assert_eq!(
+            *ground.applied.borrow(),
+            [0x1000, 0x3001, 0x9000],
+            "the members' in order, the player's own tool last, each with its flag"
+        );
+        assert_eq!(compose(&Ground::default(), &[0x100], &[0x900]), 0);
     }
 
     #[test]

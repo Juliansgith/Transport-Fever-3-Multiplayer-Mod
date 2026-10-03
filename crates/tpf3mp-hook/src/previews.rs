@@ -155,9 +155,15 @@ impl In {
         changes
     }
 
-    /// The room's game is over: every preview with it, untold.
+    /// The room's game is over: every preview with it, each one shown told
+    /// as gone, so the GUI clears what it drew.
     pub fn clear(&mut self) {
-        self.members.clear();
+        self.members
+            .retain(|_, heard| heard.preview.is_some() || !heard.taken);
+        for heard in self.members.values_mut() {
+            heard.preview = None;
+            heard.taken = false;
+        }
     }
 }
 
@@ -324,6 +330,33 @@ mod tests {
             heard.take(t0).is_empty(),
             "never shown, nothing to take away"
         );
+    }
+
+    #[test]
+    fn the_rooms_end_tells_the_gui_every_preview_is_gone() {
+        let t0 = Instant::now();
+        let mut r#in = In::default();
+        r#in.heard(player(1), Some(payload(1)), t0);
+        r#in.heard(player(2), Some(payload(2)), t0);
+        assert_eq!(r#in.take(t0).len(), 2);
+        r#in.clear();
+        let gone = r#in.take(t0);
+        assert_eq!(
+            gone,
+            [
+                Change {
+                    from: player(1),
+                    action: None
+                },
+                Change {
+                    from: player(2),
+                    action: None
+                }
+            ],
+            "each one drawn is cleared"
+        );
+        assert!(r#in.take(t0).is_empty(), "and told once");
+        assert!(r#in.members.is_empty());
     }
 
     #[test]

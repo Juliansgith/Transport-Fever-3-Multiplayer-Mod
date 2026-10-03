@@ -8,8 +8,11 @@
 --   (tpf3mp/capture.lua), for the tools whose builds can be shown (SHOWN):
 --   `shown`. It hides it when the tool shows nothing (an empty proposal, a
 --   proposal the room cannot carry, a click, which the room then orders as
---   the real build) and when the tool that showed it is no longer the
---   active one (`tick`, from the game's own list of active tools). The hook
+--   the real build) and when the game's own list of active tools is no
+--   longer what it was at the tool's last proposal (`tick`): build 40408
+--   names its tools there by their window ("Construction",
+--   "variant-tracks"), never by the event's id ("streetBuilder"), so a
+--   change of the list is the tool closing or another opening. The hook
 --   sends it on, at most five times a second, and again every two seconds
 --   while it shows (crates/tpf3mp-hook/src/previews.rs).
 -- - **In.** The Multiplayer plugin (gui/tpf3mp/tpf3mp.script.lua), which
@@ -42,8 +45,9 @@ local TOOL_EVERY = 0.25
 -- Members whose first preview the log says, at most.
 local MAX_SAID = 16
 
--- What the player's tool shows: the tool's id and whether the game's list
--- of active tools named it when it did (then the list says when it closes).
+-- What the player's tool shows: the tool's id and the game's list of
+-- active tools at its last proposal (`tools`, nil where the game cannot
+-- say: then only its next proposal or click hides it).
 local showing = nil
 -- When the active tools were last looked at.
 local lookedAt = nil
@@ -58,13 +62,15 @@ local unmade = 0
 -- What the log said of the active tools' list, once.
 local toldTools = false
 
--- The game's active tools, as a set of ids, or nil where it cannot say.
+-- The game's active tools, as one string, the same whatever their order,
+-- or nil where it cannot say.
 local function activeTools(api)
 	local ok, ids = pcall(function() return api.gui.contextHelper.getIdsOfActiveTool() end)
 	if not ok or type(ids) ~= "table" then return nil end
-	local set = {}
-	for _, id in ipairs(ids) do set[tostring(id)] = true end
-	return set, ids
+	local names = {}
+	for i, id in ipairs(ids) do names[i] = tostring(id) end
+	table.sort(names)
+	return table.concat(names, ", ")
 end
 
 local function now()
@@ -86,18 +92,18 @@ function previews.shown(link, api, tool, kind, action)
 		if showing ~= nil then previews.hidden(link) end
 		return why
 	end
+	-- The list as the tool shows this proposal: one that changes later is
+	-- the tool closing, or another opening.
+	local tools = activeTools(api)
 	if showing == nil or showing.tool ~= tool then
-		local set, ids = activeTools(api)
-		showing = { tool = tool, listed = set ~= nil and set[tool] == true }
-		if not showing.listed and set ~= nil and not toldTools then
+		if not toldTools then
 			toldTools = true
-			local names = {}
-			for i, id in ipairs(ids or {}) do names[i] = tostring(id) end
-			link:log("the game's active tools do not name the " .. tostring(tool)
-				.. " showing a preview (" .. table.concat(names, ", ")
-				.. "): its preview hides on its next proposal or click only")
+			link:log("the game's active tools as the " .. tostring(tool) .. " shows a preview: "
+				.. (tools ~= nil and "(" .. tools .. "); it hides once they change"
+					or "the game does not say; it hides on its next proposal or click only"))
 		end
 	end
+	showing = { tool = tool, tools = tools }
 	return nil
 end
 
@@ -109,15 +115,15 @@ function previews.hidden(link)
 end
 
 -- Once a GUI frame in the room's game, in the game script's GUI half:
--- hides the player's preview once the tool that showed it is no longer
--- active.
+-- hides the player's preview once the game's active tools are no longer
+-- those of its last proposal.
 function previews.tick(link, api)
-	if showing == nil or not showing.listed then return end
+	if showing == nil or showing.tools == nil then return end
 	local t = now()
 	if lookedAt == nil or t - lookedAt >= TOOL_EVERY or t < lookedAt then
 		lookedAt = t
-		local set = activeTools(api)
-		if set ~= nil and not set[showing.tool] then previews.hidden(link) end
+		local tools = activeTools(api)
+		if tools ~= showing.tools then previews.hidden(link) end
 	end
 end
 

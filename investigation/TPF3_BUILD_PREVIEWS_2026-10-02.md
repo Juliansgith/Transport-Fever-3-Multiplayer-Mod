@@ -553,6 +553,12 @@ original, `rcx` the `CGameUI`): for each peer renderer of this `CGameUI`:
 (`0x7b89a0`). Forget every pointer, including any cached factory. Then run
 the original.
 
+**Resolved 2026-10-03:** `0x398600` resets every changed block of the
+view terrain, not one renderer's: it walks the hash sets at
+`ViewTerrain+0x80` (`0x398668`, `0x398725`). So any renderer's
+`Clear(r, _, 1, _)` takes every renderer's heights away, and the hook
+composes after each one (docs/HOOKS.md, "Their terrain").
+
 ## Not resolved
 
 - Whether one `ProposalViewer` per peer works, and whether it can be
@@ -560,8 +566,6 @@ the original.
   tool.
 - The meaning of `Clear`'s three flags beyond what is listed, of
   `ProposalData+0x350`, and of `0x7bb730`.
-- Whether `0x398600` resets every view-terrain block or only one
-  renderer's.
 - Whether render passes run on the GUI thread.
 - That `makeProposalData` works from GUI Lua in the running game (static
   evidence says it is registered there).

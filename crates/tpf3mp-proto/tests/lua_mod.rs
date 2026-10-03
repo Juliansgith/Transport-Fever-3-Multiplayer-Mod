@@ -2655,8 +2655,10 @@ fn the_players_build_preview_goes_to_the_room_until_the_tool_shows_nothing() {
 fn a_preview_hides_once_its_tool_is_no_longer_active() {
     let (lua, _script) = engine();
     lua.load(FAKE_STATION).exec().unwrap();
+    // Build 40408 names the active tools by their window, never by the
+    // event's id: the list changing is the tool closing.
     lua.load(format!(
-        "ACTIVE = {{ 'constructionBuilder' }} \
+        "ACTIVE = {{ 'construction-menu-stations', 'Construction' }} \
          api.gui = {{ contextHelper = {{ getIdsOfActiveTool = function() return ACTIVE end }} }} \
          HOOK.room = true HOOK.clicks = 0 \
          SCRIPT.guiUpdate({{}}, nil, nil) \
@@ -2664,6 +2666,16 @@ fn a_preview_hides_once_its_tool_is_no_longer_active() {
              {{ {CONSTRUCTION_PROPOSAL} }}) \
          SCRIPT.guiUpdate({{}}, nil, nil)"
     ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction"], "still active");
+    // The same tools in another order: still the same tool.
+    lua.load(
+        "ACTIVE = { 'Construction', 'construction-menu-stations' } \
+         local t0 = os.clock() \
+         while os.clock() - t0 < 0.3 do end \
+         SCRIPT.guiUpdate({}, nil, nil)",
+    )
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(previewed(&lua), ["BuildConstruction"], "still active");
@@ -3035,6 +3047,31 @@ fn a_rail_station_on_open_ground_leaves_its_own_track_to_the_station() {
         links, 3,
         "joined to an existing track, it travels as before"
     );
+}
+
+#[test]
+fn a_snapped_stations_preview_leaves_its_junction_settings_out() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    // The station as the tool snapped it to the street, with a junction
+    // setting on a node this game does not have (seen on build 40408: "the
+    // junction no longer exists").
+    let (made, sent): (String, usize) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+             local action = assert(capture.construction({STATION_BY_ROAD})) \
+             action.BuildConstruction.connection.junctions = {{ {{ \
+                 node = {{ network = 'Street', at = {{ x = 999, y = 999, z = 0 }} }} }} }} \
+             local p, why = apply.proposalOf(action, {{}}) \
+             if not p then return 'none: ' .. tostring(why), #SENT end \
+             return p.constructionsToAdd[1].fileName .. ' ' .. #p.streetProposal.edgesToAdd, #SENT"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(made.contains(".con "), "{made}");
+    assert!(!made.starts_with("none"), "{made}");
+    assert_eq!(sent, 0);
 }
 
 #[test]

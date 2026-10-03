@@ -3233,7 +3233,7 @@ my_timetables";
                 .starts_with("false|"),
         );
         // Another member's preview comes in as take() gives an action, and
-        // goes with the game's end.
+        // goes with the game's end: told once as gone, so the GUI clears it.
         let ann = PlayerId(tpf3mp_proto::FixedBytes([0xab; 32]));
         notice(&Notice::Preview {
             from: ann,
@@ -3248,7 +3248,12 @@ my_timetables";
             Ok("1|abab|Depot|0".into())
         );
         notice(&Notice::Ended(Text::new("the owner left").unwrap()));
-        assert_eq!(lua.run("return #tpf3mp_native.previews()"), Ok("0".into()));
+        assert_eq!(
+            lua.run(
+                "local c = tpf3mp_native.previews()                  return #c, c[1].from:sub(1, 4), tostring(c[1].action), #tpf3mp_native.previews()"
+            ),
+            Ok("1|abab|nil|0".into())
+        );
     }
 
     #[test]

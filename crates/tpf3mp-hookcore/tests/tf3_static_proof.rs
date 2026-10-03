@@ -188,6 +188,8 @@ const TARGETS: &[(&str, u64)] = &[
     ("ProposalViewer/ModelData read", 0x2aa3b06),
     ("ProposalViewer/evaluated test", 0x2aa39d5),
     ("BuilderRenderer::EndHeightMod/upload flag", 0x7bbb6a),
+    ("UI::BuilderRenderer::EndHeightMod", 0x7bbae0),
+    ("terrain::ViewTerrain::ApplyBlocks", 0x396a00),
 ];
 
 #[test]

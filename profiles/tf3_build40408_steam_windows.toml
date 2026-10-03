@@ -1493,12 +1493,39 @@ prologue = "41 80 BF"
 required = false
 
 # EndHeightMod uploads a renderer's terrain heights into the view terrain
-# every renderer shares only while its flag at +0xf0 is set (cmp byte
-# [rcx+0xf0],0, 0x7bbb6a). The hook clears it on its renderers: another
-# player's embankments never change this player's terrain.
+# every renderer shares, only while its flag at +0xf0 is set (0x7bbb6a):
+# cmp byte [rcx+0xf0],0; je; mov rdx,[rcx+0x1b8]; add rdx,0x1af8; movzx
+# r8d,byte [rcx+0xf3]; mov rcx,[rcx+0x50]; call ViewTerrain::ApplyBlocks.
+# The hook reads every one of those offsets here, and checks the call's
+# target is ApplyBlocks below, to compose the view terrain after a reset
+# (crates/tpf3mp-hook/src/drawing.rs); without them its renderers' flag is
+# cleared and they upload no heights.
 [[target]]
 name = "BuilderRenderer::EndHeightMod/upload flag"
-signature = "80 B9 F0 00 00 00 00 74 ?? 48 8B 91 B8 01 00 00 48 81 C2 F8 1A 00 00"
+signature = "80 B9 F0 00 00 00 00 74 ?? 48 8B 91 B8 01 00 00 48 81 C2 F8 1A 00 00 44 0F B6 81 F3 00 00 00 48 8B 49 50 E8"
 offset = 0
 prologue = "80 B9"
+required = false
+
+# UI::BuilderRenderer::EndHeightMod (0x7bbae0), detoured: its only caller
+# is AddToRenderer (0x5e31ab), the end of a renderer's height mods. The hook
+# notes the game's own renderers that upload heights, to apply them again
+# after a reset.
+[[target]]
+name = "UI::BuilderRenderer::EndHeightMod"
+signature = "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D 6C 24 90 48 81 EC 70 01 00 00 C5 F8 29 70 C8 C5 F8 29 78 B8 C5 78 29 40 A8"
+offset = 0
+prologue = "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20"
+required = false
+
+# terrain::ViewTerrain::ApplyBlocks(vector<tuple<CVec2i, CVec2i, unsigned
+# short const*>> const&, bool) (0x396a00, named by its RTTI lambdas): the
+# upload of a renderer's height blocks into the view terrain. Called, not
+# detoured; Clear's reset (0x398600, its only caller is Clear, 0x7ba7af)
+# undoes every block of the view terrain at once.
+[[target]]
+name = "terrain::ViewTerrain::ApplyBlocks"
+signature = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 50 FF FF FF 48 81 EC B0 01 00 00 C5 F8 29 B4 24 A0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 98 00 00 00"
+offset = 0
+prologue = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56"
 required = false
