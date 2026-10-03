@@ -258,7 +258,11 @@ pub fn refresh() {
     SAVE.store(save, Ordering::Release);
     SAVE_SLOT.store(i32::try_from(save).unwrap_or(-1), Ordering::Release);
     COMPANY_SLOT.store(i32::try_from(company).unwrap_or(-1), Ordering::Release);
-    let listed = if pair.is_some() {
+    // The room's companies while in a room, the first company's player
+    // included (the line viewers show every company's lines either way).
+    let room = crate::lua::in_room();
+    ROOM.store(room, Ordering::Release);
+    let listed = if room {
         companies(crate::lua::noted(COMPANIES_NOTE).as_deref())
     } else {
         Vec::new()
@@ -267,6 +271,190 @@ pub fn refresh() {
         slot.store(listed.get(k).copied().unwrap_or(-1), Ordering::Release);
     }
     COMPANY.store(company, Ordering::Release);
+}
+
+/// The line viewers' candidate lines (`sub_7f3ea0`, called by
+/// `LineViewer::Update` 0x7f554c and `UI::MetroViewer::vf4` 0x7fdbd9): its
+/// call of the line system's player-to-lines index, `sub_ad2620(lines,
+/// player)` (rva 0x7f3f12), with the player the viewer stored when it was
+/// made (`[viewer+0x28]`, from `sub_29f66d0`'s read of the GUI's player).
+/// Only these lines get their whole route built and drawn. Redirected: in a
+/// room the call answers every company's lines (or, with
+/// [`ALL_ENV`]`=0`, the player's company's), so a viewer made before the
+/// player's company was known still draws the right lines. The index and
+/// its other callers, the simulation's among them, are untouched.
+pub const LINES_SITE: &str = "view: LineViewer lines of the player/call";
+/// The first bytes of `sub_ad2620`, checked before the call is redirected:
+/// `mov [rsp+0x10],edx; sub rsp,0x28; mov r9,[rcx+0x58]`.
+pub const LINES_CALLEE_BYTES: [u8; 12] = [
+    0x89, 0x54, 0x24, 0x10, 0x48, 0x83, 0xEC, 0x28, 0x4C, 0x8B, 0x49, 0x58,
+];
+/// Lines read from one player's list, at most.
+const LINES_MAX: usize = 1 << 16;
+static LINES_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+/// Whether the last refresh found the game in a room.
+static ROOM: AtomicBool = AtomicBool::new(false);
+static LINES_ANSWERED: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// The lines answered last on this thread, and the `std::vector`
+    /// header (begin, end, capacity) the caller reads them through. Kept
+    /// until the next call on the thread; the caller copies them at once.
+    static LINES_BUF: std::cell::RefCell<(Vec<i32>, [usize; 3])> =
+        const { std::cell::RefCell::new((Vec::new(), [0; 3])) };
+}
+
+/// Whose lines the viewers are to be given in a room: every company's
+/// (`all`), else the player's company's; none (the game's own answer) where
+/// neither is known.
+pub fn line_players(room: bool, all: bool, companies: &[i64], company: i64) -> Vec<i64> {
+    if !room {
+        return Vec::new();
+    }
+    if all && !companies.is_empty() {
+        return companies.to_vec();
+    }
+    if company >= 0 {
+        return vec![company];
+    }
+    Vec::new()
+}
+
+/// The entities of the `std::vector<Entity>` at `vector`.
+fn entities_at(vector: usize, into: &mut Vec<i32>) {
+    let read = |a: usize| -> Option<usize> {
+        if a == 0 || !crate::image::readable(a, 8) {
+            return None;
+        }
+        // SAFETY: eight readable bytes; only read.
+        Some(unsafe { std::ptr::read_unaligned(a as *const usize) })
+    };
+    let (Some(begin), Some(end)) = (read(vector), read(vector.wrapping_add(8))) else {
+        return;
+    };
+    let Some(bytes) = end.checked_sub(begin) else {
+        return;
+    };
+    let count = (bytes / 4).min(LINES_MAX);
+    if count == 0 || !crate::image::readable(begin, count * 4) {
+        return;
+    }
+    // SAFETY: `count` readable dwords from `begin`; only read.
+    let slice = unsafe { std::slice::from_raw_parts(begin as *const i32, count) };
+    into.extend_from_slice(slice);
+}
+
+/// The redirected call: the game's answer outside a room, else the lines
+/// of [`line_players`], in a vector this keeps.
+extern "C" fn lines_for(index: usize, player: i32) -> usize {
+    let original = LINES_ORIGINAL.load(Ordering::Acquire);
+    // SAFETY: the index lookup the call reached, its address read from the
+    // call and its bytes checked at install; same two arguments.
+    let original: extern "C" fn(usize, i32) -> usize =
+        unsafe { std::mem::transmute::<usize, extern "C" fn(usize, i32) -> usize>(original) };
+    if BROKEN.load(Ordering::Acquire) || !ON.load(Ordering::Acquire) {
+        return original(index, player);
+    }
+    let companies: Vec<i64> = COMPANIES
+        .iter()
+        .map(|c| c.load(Ordering::Acquire))
+        .filter(|&c| c >= 0)
+        .collect();
+    let players = line_players(
+        ROOM.load(Ordering::Acquire),
+        ALL.load(Ordering::Acquire),
+        &companies,
+        COMPANY.load(Ordering::Acquire),
+    );
+    if players.is_empty() {
+        return original(index, player);
+    }
+    let built = std::panic::catch_unwind(|| {
+        LINES_BUF.with(|buf| {
+            let mut buf = buf.borrow_mut();
+            let (lines, header) = &mut *buf;
+            lines.clear();
+            for p in &players {
+                let Ok(p) = i32::try_from(*p) else { continue };
+                entities_at(original(index, p), lines);
+            }
+            let begin = lines.as_ptr() as usize;
+            *header = [begin, begin + lines.len() * 4, begin + lines.capacity() * 4];
+            (header.as_ptr() as usize, lines.len())
+        })
+    });
+    match built {
+        Ok((header, n)) => {
+            if LINES_ANSWERED.fetch_add(1, Ordering::Relaxed) == 0 {
+                crate::log::line(&format!(
+                    "{FIX}: the line viewers draw the lines of {} ({n} line(s)) in place of player {player}'s ({LINES_SITE})",
+                    players
+                        .iter()
+                        .map(i64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            header
+        }
+        Err(_) => {
+            BROKEN.store(true, Ordering::Release);
+            original(index, player)
+        }
+    }
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn install_lines(resolved: &ResolvedProfile) -> String {
+    let Some(site) = resolved.get(LINES_SITE) else {
+        return format!(
+            "{FIX}: the line viewers draw the player's lines only: the profile lacks {LINES_SITE}"
+        );
+    };
+    let at = site.address as usize;
+    if !crate::image::readable(at, 5) {
+        return format!("{FIX}: {LINES_SITE} is unreadable");
+    }
+    // SAFETY: five readable bytes of the call; only read.
+    let call = unsafe { std::slice::from_raw_parts(at as *const u8, 5) };
+    let rel = i32::from_le_bytes([call[1], call[2], call[3], call[4]]);
+    let target = (at as isize + 5 + rel as isize) as usize;
+    if call[0] != 0xE8 || !crate::image::readable(target, LINES_CALLEE_BYTES.len()) {
+        return format!("{FIX}: {LINES_SITE} at {at:#x} is not a call it reads");
+    }
+    // SAFETY: readable bytes of the call's target; only read.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(target as *const u8, LINES_CALLEE_BYTES.len()) };
+    if bytes != LINES_CALLEE_BYTES {
+        return format!("{FIX}: {LINES_SITE} at {at:#x} reaches {target:#x}, not the line index");
+    }
+    LINES_ORIGINAL.store(target, Ordering::Release);
+    // SAFETY: the call inside the line viewers' candidate builder, which no
+    // viewer runs yet (installed before any world); install checks it is a
+    // 5-byte call of `target`; lines_for takes and returns as it does.
+    match unsafe {
+        tpf3mp_hookcore::detour::CallRedirect::install(
+            at as *mut u8,
+            target,
+            lines_for as *const u8,
+        )
+    } {
+        Ok(redirect) => {
+            let _kept = std::mem::ManuallyDrop::new(redirect);
+            format!(
+                "{FIX}: the line viewers draw every company's lines in a room ({LINES_SITE} at {at:#x})"
+            )
+        }
+        Err(error) => {
+            LINES_ORIGINAL.store(0, Ordering::Release);
+            format!("{FIX}: the line viewers draw the player's lines only: {error}")
+        }
+    }
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn install_lines(_resolved: &ResolvedProfile) -> String {
+    format!("{FIX}: the line viewers draw the player's lines only: Windows x86-64 only")
 }
 
 /// The room's companies' entities from their note ("372426,214443"), at most
@@ -680,8 +868,11 @@ pub fn install_with(resolved: &ResolvedProfile, wanted: bool) -> Vec<String> {
     let all = crate::ticks::wanted(std::env::var(ALL_ENV).ok().as_deref());
     ALL.store(all, Ordering::Release);
     lines.push(install_push(resolved));
+    lines.push(install_lines(resolved));
     ON.store(
-        spliced > 0 || PUSH_ORIGINAL.load(Ordering::Acquire) != 0,
+        spliced > 0
+            || PUSH_ORIGINAL.load(Ordering::Acquire) != 0
+            || LINES_ORIGINAL.load(Ordering::Acquire) != 0,
         Ordering::Release,
     );
     lines.insert(
@@ -810,6 +1001,37 @@ mod tests {
         assert!(
             !gui_getter(&other),
             "another slot of the game is no GUI getter"
+        );
+    }
+
+    #[test]
+    fn the_line_viewers_get_every_companys_lines_in_a_room() {
+        let companies = [214_443, 372_609];
+        assert_eq!(
+            line_players(false, true, &companies, 372_609),
+            Vec::<i64>::new(),
+            "outside a room: the game's"
+        );
+        assert_eq!(
+            line_players(true, true, &companies, 372_609),
+            vec![214_443, 372_609]
+        );
+        assert_eq!(
+            line_players(true, true, &companies, -1),
+            vec![214_443, 372_609],
+            "playing for the first company: still every company's"
+        );
+        assert_eq!(
+            line_players(true, false, &companies, 372_609),
+            vec![372_609],
+            "the switch off: the player's own"
+        );
+        assert_eq!(line_players(true, false, &companies, -1), Vec::<i64>::new());
+        assert_eq!(line_players(true, true, &[], 372_609), vec![372_609]);
+        assert_eq!(
+            LINES_CALLEE_BYTES[..4],
+            [0x89, 0x54, 0x24, 0x10],
+            "mov [rsp+0x10],edx"
         );
     }
 

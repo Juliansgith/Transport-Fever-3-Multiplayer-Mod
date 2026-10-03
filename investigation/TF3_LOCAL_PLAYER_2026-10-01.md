@@ -295,3 +295,37 @@ company's with a station group of its own; the line was not drawn.
   system could not compute. The probe now reports each stop and the
   engine's verdict for every line a viewer is handed, the first company's
   lines too, so one try compares them.
+
+### Drawing depends on the owner, not in the viewer (2026-10-02, probe of 34a2edf)
+
+- **seen** (p1) company #1's line 342589, its stops' groups, stations and
+  terminals all there and the company's, listed at every terminal, "3
+  detailed stop problem(s)", not drawn; the first company's new line
+  329152 on room-placed stops, "2 detailed stop problem(s)", drawn.
+- **seen** No player read and no `PlayerOwned` lookup six calls deep from
+  the viewer (tpfre). The line system's own owner reads (`LineSystem` vf4,
+  vf5, vf8, vf9, through `sub_95790`) keep its player-to-lines index
+  (`+0x58`, what `getLinesForPlayer` reads), not route data. The sim
+  loop's player read (`sub_157860`) is `player_util::ClearPositions`.
+- **open** What makes the line system's data for a company's line differ.
+  The probe now logs the viewer's route data test per line (revision and
+  segment lists against what it expects), so one try shows whether the
+  company's line fails it and how.
+
+### Found: the line viewer's candidate lines are one player's (2026-10-02)
+
+- **seen** (4415a50 probe, p1) a founded company's line and the first
+  company's both got edge geometry with stop filter 0 only, and the first
+  company's alone got the whole route (stop filter -1), and only while the
+  player played for the first company; the owners' components are the
+  same (ACCOUNT COLOR LOG_BOOK NAME PLAYER).
+- **seen** The -1 call (0x7f6598 in `LineViewer::Update`) runs for the
+  candidate lines `sub_7f3ea0` makes, as they age past 1.0 (the time since
+  each line's last whole build, `+0x60`). `sub_7f3ea0` takes them from
+  `sub_ad2620(index, [viewer+0x28])`, the line system's player-to-lines
+  index (`[lineSystem+0x58]`, kept by `LineSystem` vf4/vf5/vf8/vf9).
+- **seen** `[viewer+0x28]` is the player `sub_29f66d0` read when it made
+  the viewer (`mov ebx,[GameState+0x20c]` at 0x29f6894, passed to
+  `sub_7edbd0`, stored at 0x7eddc0).
+- Fix: the call at 0x7f3f12 answers every company's lines in a room
+  (guiplayer.rs, `lines_for`).

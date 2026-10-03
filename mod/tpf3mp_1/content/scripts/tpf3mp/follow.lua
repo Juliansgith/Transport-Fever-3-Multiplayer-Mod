@@ -259,6 +259,60 @@ end
 -- what the engine says is wrong with the line (lineSystem.getProblemLines,
 -- util.line.getLineProblems, util.line.getDetailedLineProblems). For a
 -- company's line and the first company's alike, so the two compare.
+-- A field of the game's userdata or table, or nil: an index the userdata
+-- does not have raises, which is no answer.
+local function field(value, key)
+	if value == nil then return nil end
+	local ok, v = pcall(function() return value[key] end)
+	return ok and v or nil
+end
+
+-- "colour r g b" of an entity's COLOR component, or why there is none.
+function follow.colourText(api, entity)
+	local okType, kind = pcall(function() return api.type.ComponentType.COLOR end)
+	if not okType or kind == nil then return "no COLOR component type" end
+	local ok, c = pcall(function() return api.engine.getComponent(entity, kind) end)
+	if not ok then return "colour unreadable: " .. tostring(c) end
+	if c == nil then return "no colour" end
+	local v = field(c, "color") or c
+	local x, y, z = field(v, "x") or field(v, 1), field(v, "y") or field(v, 2), field(v, "z") or field(v, 3)
+	if type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
+		return "colour of no numbers (" .. type(x) .. ")"
+	end
+	return string.format("colour %.3f %.3f %.3f", x, y, z)
+end
+
+follow.COMPONENT_TYPES = { "AIRCRAFT", "ANIMAL", "ASSET_GROUP", "BASE_EDGE", "BASE_EDGE_STREET", "BASE_NODE",
+	"BASE_PARALLEL_STRIP", "CUSTOM_STATE", "EMISSION_EMITTER", "FIELD", "GAME_TIME", "GAME_SPEED",
+	"MODEL_INSTANCE_LIST", "NAME", "LINE", "LOG_BOOK", "MODEL_PERSON", "MOVE_PATH", "MOVE_PATH_AIRCRAFT", "STATION",
+	"STATION_GROUP", "SIM_PERSON", "SIM_PERSON_AT_TERMINAL", "SIM_PERSON_AT_VEHICLE", "SIM_CARGO",
+	"SIM_ENTITY_AT_BUILDING", "SIM_ENTITY_AT_VEHICLE", "SIM_ENTITY_AT_TERMINAL", "SIM_ENTITY_IDLE",
+	"SIM_ENTITY_MOVING", "SIGNAL_LIST", "TOWN", "INDUSTRY", "STOCK_LIST", "TOWN_BUILDING", "TRANSPORT_VEHICLE", "TRAIN",
+	"CARRIAGE", "CARRIAGE_LIST", "VEHICLE_DEPOT", "COLOR", "BOUNDING_VOLUME", "CONSTRUCTION", "SUBCONSTRUCTION",
+	"PERSON_CAPACITY", "PLAYER_OWNED", "ACCOUNT", "GAME_SCRIPT", "WAREHOUSE", "TRANSPORT_NETWORK", "MAINTENANCE_COST",
+	"RAILROAD_CROSSING", "PLAYER", "WORLD", "BRIDGE", "BASE_NODE_CONFIG", "LAND_VEHICLE", "BASE_NODE_TRAFFIC_LIGHT",
+	"EDGE_OBJECT", "EMISSION_GRID", "TERRAIN", "SHIP" }
+
+-- The names of the component types `entity` has, from
+-- api.type.ComponentType, sorted.
+function follow.componentsOf(api, entity)
+	local names = {}
+	local okT, types = pcall(function() return api.type.ComponentType end)
+	if not okT or types == nil then return names end
+	-- The game's enum does not iterate (build 40408): its names, as
+	-- api/tealdef/api/engine.d.tl lists them.
+	for _, name in ipairs(follow.COMPONENT_TYPES) do
+		local okK, kind = pcall(function() return types[name] end)
+		if okK and kind ~= nil then
+			local ok, c = pcall(function() return api.engine.getComponent(entity, kind) end)
+			if ok and c ~= nil then names[#names + 1] = name end
+		end
+	end
+	table.sort(names)
+	if #names == 0 then names[1] = "(no component types it could list)" end
+	return names
+end
+
 function follow.lineReport(api, line)
 	local CT = api.type.ComponentType
 	local parts = {}
@@ -268,6 +322,13 @@ function follow.lineReport(api, line)
 	end
 	local lineOwner = owner(line)
 	parts[#parts + 1] = "line " .. tostring(line) .. " owned by " .. tostring(lineOwner)
+	-- Its colour (the COLOR component the game paints it with) and how
+	-- many vehicles run it.
+	parts[#parts + 1] = follow.colourText(api, line)
+	pcall(function()
+		local vehicles = api.engine.system.transportVehicleSystem.getLineVehicles(line) or {}
+		parts[#parts + 1] = #vehicles .. " vehicle(s)"
+	end)
 	local okL, comp = pcall(function() return api.engine.getComponent(line, CT.LINE) end)
 	if not okL or comp == nil then
 		parts[#parts + 1] = "no LINE component"
@@ -362,8 +423,19 @@ function follow.watchLines(api, require_, link, where)
 					-- Each line's stops and the engine's verdict on it.
 					for _, l in ipairs(params and params.showLines or {}) do
 						local okE, entity = pcall(function() return type(l) == "number" and l or l.entity end)
+						local okT, transparency = pcall(function() return type(l) ~= "number" and l.transparency or nil end)
 						if okE and type(entity) == "number" then
-							say("probe: line to draw: " .. follow.lineReport(api, entity))
+							pcall(function()
+								local o = api.engine.getComponent(entity, api.type.ComponentType.PLAYER_OWNED)
+								local who = o and o.player
+								if type(who) == "number" then
+									say("probe: the line's owner " .. tostring(who) .. " has "
+										.. table.concat(follow.componentsOf(api, who), " ")
+										.. "; " .. follow.colourText(api, who))
+								end
+							end)
+							say("probe: line to draw: " .. follow.lineReport(api, entity)
+								.. (okT and transparency ~= nil and ("; handed at transparency " .. tostring(transparency)) or ""))
 						end
 					end
 				end)

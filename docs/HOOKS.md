@@ -2209,6 +2209,51 @@ illustrative, not seen):
 probe: line to draw: line 338852 owned by 372671; 3 stop(s); stop 1: group 373231 station 0 terminal 1, group of 2 station(s) owned by 372671, station 180929 owned by 372671 with 1 terminal(s), no terminal 1, not listed at the terminal; ...; line system problem 3
 ```
 
+The 34a2edf try (p1, company #1, 372571): line 342589, its three stops'
+groups, stations and terminals all there, all the company's, the line
+listed at every terminal, was not drawn; a line made the same way while
+playing for the room's first company (329152, the save's player 214443)
+was. So drawing depends on the owner, but not in the viewer: tpfre finds
+no player read and no `PlayerOwned` six calls deep from
+`UI::LineViewer::vf1`, `vf4`, `sub_7f53c0` and `sub_7f01d0`. The viewer
+draws a line only when the line system's data for it
+(`LineSystem::GetData`) has the revision it expects (`[data+0x18]` against
+`[state+0x80]`) and one segment list per stop (`sub_7f01d0`, 0x7f03e7 and
+0x7f0444). With `TPF3MP_PROBE_PLAYER=1` that test is now spliced and said
+per line, read only (`probe: LineViewer route data test`):
+
+```
+probe: the line viewer's route data for line 342589: revision 0 (it expects 7), 0 segment list(s) (it expects 3); it skips the line
+```
+
+(illustrative). A company's line skipped there and the first company's
+drawn says the line system keeps route data for the save's player's lines
+only, which is the simulation's own and is not changed; the next step is
+then to find what fills `line2data` and its player.
+
+**The line viewers draw every company's lines** (`view: LineViewer lines
+of the player/call`, guiplayer.rs; found 2026-10-02 with the probes of
+4415a50). A line viewer builds a line's whole route (`sub_7f10a0` with
+stop filter -1) only for its candidate lines, and `sub_7f3ea0` (called by
+`LineViewer::Update` and `UI::MetroViewer::vf4`) makes them the lines of
+one player from the line system's player-to-lines index (`sub_ad2620`,
+the index `getLinesForPlayer` reads), that player being the one the viewer
+stored when it was made (`[viewer+0x28]`, from the GUI player read of
+`sub_29f66d0`, `RendererComponentDelegate`). So only the save's player's
+lines were drawn while the GUI was the room's first company, and none
+otherwise (seen: a founded company's line and the first company's both
+got only stop filter 0 geometry, and only the first company's got -1, and
+only while the player played for it). That one call is redirected: in a
+room it answers the lines of every company the GUI notes
+(`tpf3mp.companies`), or with `TPF3MP_HOOK_GUI_ALL_COMPANIES=0` the
+player's company's, in a vector the hook keeps until the next call (the
+caller copies it at once). Outside a room it answers as the game. The
+index function and its other callers, the simulation's among them, are
+untouched: the change is to which lines a viewer draws. hook.log, once:
+`view-company: the line viewers draw the lines of 214443, 372609 (2
+line(s)) in place of player 372609's (view: LineViewer lines of the
+player/call)`.
+
 **A purchase's depot**, in hook.log when the store buys (the GUI's
 capture, `capture.depotText`): `the store buys at depot entity 5001 (owned
 by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7,
