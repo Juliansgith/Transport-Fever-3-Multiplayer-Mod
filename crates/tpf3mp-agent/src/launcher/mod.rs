@@ -1064,6 +1064,7 @@ fn launch_game(
         .into_iter()
         .chain(config.game_env.iter().cloned())
         .collect(),
+        ready_wait: tpf3mp_launch::HOOK_READY_WAIT,
     })
     .map_err(|error| error.to_string())?;
     info!(pid = started.pid, "started the game with the hook");
