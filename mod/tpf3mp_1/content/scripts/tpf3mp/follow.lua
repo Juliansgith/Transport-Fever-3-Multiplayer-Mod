@@ -156,20 +156,6 @@ function follow.loans(api, mine)
 		return ok and t or 0
 	end
 	local loanEntity, cached, cachedFor, cachedAt = nil, nil, nil, nil
-	-- Offers in place of those on the first company's cooldown, drawn once
-	-- per kind (the game's loan_util), kept until the first company's
-	-- offer of that kind is back.
-	local fresh = {}
-	local function freshOffer(kind)
-		if fresh[kind] == nil then
-			pcall(function()
-				local util = ug_require("::/game_mechanics/finance/loan_util.tl")
-				local make = util and util["create" .. tostring(kind) .. "Loan"]
-				if make then fresh[kind] = make() end
-			end)
-		end
-		return fresh[kind]
-	end
 	local function companyLoans(company)
 		local t = now()
 		if cached ~= nil and cachedFor == company and t - cachedAt < follow.LOANS_EVERY then return cached end
@@ -182,10 +168,7 @@ function follow.loans(api, mine)
 			if not own then return nil end
 			local real = original(loanEntity, api.type.ComponentType.GAME_SCRIPT)
 			real = real and real.state
-			for _, offer in ipairs(type(real) == "table" and real.availableLoans or {}) do
-				if type(offer) == "table" and offer.cooldownUntil == nil then fresh[offer.type] = nil end
-			end
-			return c.loanTable(roster, own.id, real, api.util.getDefaultMonthDuration(), freshOffer)
+			return c.loanTable(roster, own.id, real, api.util.getDefaultMonthDuration())
 		end)
 		cached, cachedFor, cachedAt = (ok and built) or table0, company, t
 		return cached

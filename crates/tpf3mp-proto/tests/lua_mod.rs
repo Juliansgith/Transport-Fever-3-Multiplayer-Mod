@@ -8150,6 +8150,7 @@ fn what_a_player_does_is_booked_to_their_company() {
         -- A's loan, for Rival: 1200 over 12 months at 12 % a year; and B's,
         -- who plays for the first company, through the game's loan script.
         OFFER = { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }
+        STATE.value.companies.loanOffers = { { company = 1, availableLoans = { OFFER } } }
         HOOK.batch = { { Loan = { Take = { next = OFFER, offer = OFFER } } },
                        { Loan = { Take = { next = OFFER, offer = OFFER } } } }
         HOOK.origins = { A, B }
@@ -10026,6 +10027,7 @@ fn only_the_company_that_borrowed_pays_its_loan() {
         UPDATE({}, STATE, 0.2)
         -- Ann (901) borrows 1200 over 12 months at 12 % a year.
         OFFER = { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }
+        STATE.value.companies.loanOffers = { { company = 1, availableLoans = { OFFER } } }
         HOOK.batch = { { Loan = { Take = { next = OFFER, offer = OFFER } } } } HOOK.origins = { A }
         UPDATE({}, STATE, 0.2)
         function BOOKED()
@@ -10087,12 +10089,160 @@ fn only_the_company_that_borrowed_pays_its_loan() {
     // refused.
     let why: String = lua
         .load(
-            "HOOK.batch = {} HOOK.origins = {}              for i = 1, 5 do HOOK.batch[i] = { Loan = { Take = { next = OFFER, offer = OFFER } } } HOOK.origins[i] = A end              UPDATE({}, STATE, 0.2)              return tostring(HOOK.applied[#HOOK.applied].why) .. ' ' .. tostring(HOOK.applied[#HOOK.applied - 1].ok)",
+            "for i = 1, 4 do STATE.value.companies.loans[i] = { id = i, company = 1, amount = 1, remaining = 1, months = 1, paid = 0, rate = 0, payment = 1 } end              HOOK.batch = { { Loan = { Take = { next = OFFER, offer = OFFER } } } } HOOK.origins = { A } UPDATE({}, STATE, 0.2)              return tostring(HOOK.applied[#HOOK.applied].why)",
         )
         .eval()
         .unwrap_or_else(|error| panic!("{error}
 {}", log(&lua)));
-    assert_eq!(why, "Ann has 4 loans already true");
+    assert_eq!(why, "Ann has 4 loans already");
+}
+
+/// Founded companies get loan offers from their own persistent copy. The
+/// exact displayed terms are required, a taken slot cools down, and neither
+/// another company nor the save player's native loan table is changed.
+#[test]
+fn founded_company_loan_offers_are_checked_consumed_and_company_scoped() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        GAME_T = 0
+        HOOK.seed = 12345
+        api.type.ComponentType.GAME_TIME = 99
+        api.type.ComponentType.GAME_SCRIPT = 7
+        api.engine.util.getWorld = function() return 1 end
+        api.engine.system.gameScriptSystem = {}
+        api.engine.system.gameScriptSystem.getEntityForGameScript = function(name)
+            if name == '::/game_mechanics/finance/loan.gs' then return 40 end
+            return -1
+        end
+        api.engine.getComponent = function(e, kind)
+            if e == 1 and kind == 99 then return { gameTime = GAME_T } end
+            if e == 40 and kind == 7 then return { state = LOANS } end
+        end
+        api.util = { getDefaultMonthDuration = function() return 1000 end }
+        api.type.JournalEntry = { new = function() return { category = {} } end,
+                                  Type = { LOAN = 'LOAN', INTEREST = 'INTEREST' } }
+        api.cmd.makeJournalBookAssetCmd = function(e, entry) return { journal = entry, entity = e } end
+        LOANS = { availableLoans = {
+            { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12, birthDay = 0 },
+            { type = 'Medium', amount = 2400, duration = 24000, percentage = 0.08, birthDay = 0 },
+            { type = 'Large', amount = 3600, duration = 36000, percentage = 0.10, birthDay = 0 },
+            { type = 'ExtraLarge', amount = 4800, duration = 48000, percentage = 0.12, birthDay = 0 },
+        }, obtainedLoans = {}, freeId = 0 }
+        GAME_MODULES = { ['::/game_mechanics/finance/loan_util.tl'] = {
+            createSmallLoan = function() return { type = 'Small', amount = 1300, duration = 12000, percentage = 0.10, birthDay = GAME_T } end,
+            createMediumLoan = function() return { type = 'Medium', amount = 2500, duration = 24000, percentage = 0.07, birthDay = GAME_T } end,
+            createLargeLoan = function() return { type = 'Large', amount = 3700, duration = 36000, percentage = 0.09, birthDay = GAME_T } end,
+            createExtraLargeLoan = function() return { type = 'ExtraLarge', amount = 4900, duration = 48000, percentage = 0.11, birthDay = GAME_T } end,
+        } }
+        A, B = string.rep('a', 64), string.rep('b', 64)
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Ann' } } },
+                       { CompanyOp = { Create = { name = 'Bob' } } } }
+        HOOK.origins = { A, B }
+        UPDATE({}, STATE, 0.2)
+        ANN, BOB = STATE.value.companies.list[2].id, STATE.value.companies.list[3].id
+        assert(#STATE.value.companies.loanOffers == 2)
+        OFFER = { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }
+        NEXT = { type = 'Small', amount = 1300, duration = 12000, percentage = 0.10, birthDay = GAME_T }
+        function TAKE(player, offer, next)
+            HOOK.batch = { { Loan = { Take = { next = next, offer = offer } } } }
+            HOOK.origins = { player }
+            UPDATE({}, STATE, 0.2)
+            return HOOK.applied[#HOOK.applied].ok, HOOK.applied[#HOOK.applied].why
+        end
+        function JOURNALS()
+            local n = 0
+            for _, c in ipairs(SENT) do
+                if c.journal and c.journal.category.type == 'LOAN' and c.journal.amount > 0 then n = n + 1 end
+            end
+            return n
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+
+    let forged: (bool, String) = lua
+        .load("local ok, why = TAKE(A, { type = 'Small', amount = 999999, duration = 12000, percentage = 0.12 }, NEXT) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        forged,
+        (false, "that loan offer is no longer available".into())
+    );
+    let forged_rate: (bool, String) = lua
+        .load("local ok, why = TAKE(A, { type = 'Small', amount = 1200, duration = 12000, percentage = 0.01 }, NEXT) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        forged_rate,
+        (false, "that loan offer is no longer available".into())
+    );
+    let forged_duration: (bool, String) = lua
+        .load("local ok, why = TAKE(A, { type = 'Small', amount = 1200, duration = 24000, percentage = 0.12 }, NEXT) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        forged_duration,
+        (false, "that loan offer is no longer available".into())
+    );
+    let wrong_replacement: (bool, String) = lua
+        .load("local ok, why = TAKE(A, OFFER, { type = 'Medium', amount = 2500, duration = 24000, percentage = 0.07 }) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        wrong_replacement,
+        (
+            false,
+            "the replacement must match the offered loan type".into()
+        )
+    );
+    let accepted: (bool, Option<String>) = lua.load("return TAKE(A, OFFER, NEXT)").eval().unwrap();
+    assert_eq!(accepted, (true, None));
+    let after_first = lua
+        .load(
+            "local roster = STATE.value.companies local offers = roster.loanOffers \
+             return offers[1].availableLoans[1].cooldownUntil, offers[2].availableLoans[1].amount, \
+                 LOANS.availableLoans[1].amount, JOURNALS()",
+        )
+        .eval::<(i64, i64, i64, i64)>()
+        .unwrap();
+    assert!(after_first.0 >= 4_000 && after_first.0 <= 8_000);
+    assert_eq!(after_first.1, 1200, "Bob's same slot remains available");
+    assert_eq!(after_first.2, 1200, "the native offer remains untouched");
+    assert_eq!(after_first.3, 1, "one loan booking only");
+    let reused: (bool, String) = lua
+        .load("local ok, why = TAKE(A, OFFER, NEXT) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        reused,
+        (false, "that loan offer is no longer available".into())
+    );
+    let bob: (bool, Option<String>) = lua.load("return TAKE(B, OFFER, NEXT)").eval().unwrap();
+    assert_eq!(
+        bob,
+        (true, None),
+        "another company's offer slot stays independent"
+    );
+    let journals: i64 = lua.load("return JOURNALS()").eval().unwrap();
+    assert_eq!(journals, 2, "the refused reuse made no duplicate charge");
+    let refreshed: (i64, i64, Option<i64>, i64) = lua
+        .load(
+            "local roster = STATE.value.companies local untilTime = roster.loanOffers[1].availableLoans[1].cooldownUntil \
+             GAME_T = untilTime + 1 UPDATE({}, STATE, 0.2) \
+             return roster.loanOffers[1].availableLoans[1].amount, \
+                 roster.loanOffers[2].availableLoans[1].amount, \
+                 roster.loanOffers[1].availableLoans[1].cooldownUntil, JOURNALS()",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        refreshed,
+        (1300, 1300, None, 2),
+        "both slots refresh independently after cooldown"
+    );
 }
 
 /// A headquarters as the game's resources declare one
@@ -12052,6 +12202,10 @@ fn the_finance_window_shows_a_founded_companys_own_loans() {
                    list = { { id = 0, entity = 25, name = "First", color = { 1, 0, 0 } },
                             { id = 1, entity = 901, name = "Rival", color = { 0, 0, 1 } } },
                    members = {},
+                   loanOffers = { { company = 1, availableLoans = {
+                       { type = "Small", amount = 5000000, duration = 3000, percentage = 0.03 },
+                       { type = "Medium", amount = 5000, duration = 6000, percentage = 0.05 },
+                   } } },
                    loans = { { id = 2, company = 1, amount = 1200, remaining = 1105, months = 12, paid = 1,
                                rate = 0.01, payment = 107, type = "Small" },
                              { id = 1, company = 7, amount = 99, remaining = 99, months = 1, paid = 0,
