@@ -8,7 +8,7 @@
     "postRunScript": { "fileName": "" },
     "preRunScript": { "fileName": "" },
     "revision": 1,
-    "runScript": { "fileName": "" },
+    "runScript": { "fileName": "tpf3mp_1::/mod.script@runFn" },
     "severityAdd": "None",
     "severityRemove": "None"
 }
