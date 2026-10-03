@@ -742,13 +742,18 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         (Ok(add), Ok(apply)) => {
             let module = at(crate::modules::MODULE_ADD_CALL).ok();
             let terrain = at(crate::terrain::DO_APPLY_ADD_CALL).ok();
+            // The stop tool takes its next click at once only where the
+            // profile finds both its call and its busy byte.
+            let stop = at(crate::stoptool::STOP_ADD_CALL)
+                .ok()
+                .filter(|_| at(crate::stoptool::STOP_BUSY_SET).is_ok());
             crate::junctions::enable(
                 at(crate::junctions::CONFIG_LAYOUT).is_ok()
                     && at(crate::junctions::PROPOSAL_LAYOUT).is_ok()
                     && at(crate::junctions::CROSSWALK_LAYOUT).is_ok(),
             );
             // SAFETY: as above.
-            unsafe { crate::builds::install(add, apply, module, terrain, detour_forever) }
+            unsafe { crate::builds::install(add, apply, module, terrain, stop, detour_forever) }
                 .map(|()| {
                     let module = match module {
                         Some(call) => format!(
@@ -767,7 +772,16 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                                  stays refused"
                             .to_owned(),
                     };
-                    format!("the build tools build through the room; {module}; {terrain}")
+                    let stop = match stop {
+                        Some(call) => format!(
+                            "the stop tool takes its next click at once where Add returns to {:#x}",
+                            call + 5
+                        ),
+                        None => "the profile has no stop tool call, so it waits for each \
+                                 click's answer"
+                            .to_owned(),
+                    };
+                    format!("the build tools build through the room; {module}; {terrain}; {stop}")
                 })
                 .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))
         }

@@ -5647,6 +5647,55 @@ fn a_stop_the_stop_tool_placed_goes_to_the_room_and_every_game_places_it() {
     );
 }
 
+/// Several stops clicked quickly in a row (the stop tool takes each click
+/// at once in a room, crates/tpf3mp-hook/src/stoptool.rs): each click
+/// becomes its own PlaceStop, in click order, also when several clicks
+/// come between two GUI updates, and every game places them in that order.
+#[test]
+fn several_quick_stop_clicks_each_go_to_the_room_in_order() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    let at = |y: i32| stop_proposal("", "", "").replace("56,0,0,1", &format!("56,{y},0,1"));
+    let (a, b, c, d) = (at(-30), at(-10), at(10), at(30));
+    // The tool proposes each stop when it is clicked (MousePressed), with the
+    // clicks counted so far; the count goes up as each is queued. Two clicks
+    // come in one GUI frame, then two more.
+    lua.load(format!(
+        "HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({{}}, nil, nil) \
+         local function click(proposal) \
+             local r = SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'streetTerminalBuilder', \
+                 'builder.proposalCreate', {{ proposal }}) \
+             assert(r == nil, 'the stop tool builds through the room') \
+             HOOK.clicks = HOOK.clicks + 1 \
+         end \
+         click({a}) click({b}) SCRIPT.guiUpdate({{}}, nil, nil) \
+         click({c}) click({d}) SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let handed: String = lua
+        .load(
+            "local out = {}
+             for i, c in ipairs(HOOK.commands) do
+                 local s = c.PlaceStop
+                 out[i] = s and string.format('%.0f', s.at.y) or 'not a stop'
+             end
+             return #HOOK.commands .. ':' .. table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        handed, "4:-30,-10,10,30",
+        "one PlaceStop a click, in click order"
+    );
+}
+
 /// As build 40408 proposes a stop to game scripts: no model and no place on
 /// its edge objects (seen in a room: `+o{resultEntity=-1 category=0
 /// left=false playerEntity=3869}`). The stop is the construction the

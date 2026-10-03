@@ -29,6 +29,9 @@ const TARGETS: &[(&str, u64)] = &[
     ("WorldBuildProposal apply", 0x9e1160),
     ("ModuleBuilder::MousePressed/Add call", 0x543b25),
     ("ProposalAction::DoApply/Add call", 0x549be5),
+    // The stop tool (crates/tpf3mp-hook/src/stoptool.rs).
+    ("StreetTerminalBuilder::MousePressed/Add call", 0x5954e8),
+    ("StreetTerminalBuilder::MousePressed/busy set", 0x595305),
     ("BaseNodeConfig/field offsets", 0x1768337),
     ("StreetProposal/node configuration offsets", 0x22c395f),
     ("BaseNodeConfig/crosswalk set layout", 0xa4990d),
