@@ -1155,6 +1155,54 @@ money lanes changing alike after the build
 (`investigation/dayone-2026-09-29/6-determinism.md`; the edge lane is
 still unread there).
 
+#### A world the room did not load
+
+A room's world is replaced only by a load the room orders: its first
+world (the start save, or the owner's world saved before step 1 and
+loaded by every game, the owner's too: "The first world" in
+[PROTOCOL.md](PROTOCOL.md)), a rebase after a divergence, a rejoin. Each
+one is the same save, at the same room step, in every game. A new world
+generated in the room's lobby (**New world: choose map and settings**, the
+stock New Game page) takes that path too: the owner's game has it up when
+the room starts, the room has it saved before step 1, and every game
+loads that save.
+
+A world the player starts on their own after the room's world closed
+does not. On 2026-10-02 both games of a running room came to play a
+freshly generated world started from the game's own menus: neither
+launcher fetched a world from the room between the start save and the
+divergence. Each game's step gate,
+still following the room, ran the new world from whatever room step the
+room had reached when it came up, with no load and no
+`playing the room's world from its save, from step N` line. At room step
+450 one game's world had run 58 updates and the other's 75. The same
+`CompanyOp` applied at game time 9800 in one game and 13200 in the
+other, and created different entities (47426 and 47334). The subsidy
+offers parted first, and the room saw the split at step 2250. The owner's
+game then saved its new world for the room as if it were the room's.
+
+So the driver marks the world it takes for the room
+(`crate::step::WorldMark`, taken when a load of the room's is done or the
+owner's world is taken at a `Load` without a file):
+
+- `closed`: the worlds that closed in this game (`CMenuUI::m_game`
+  cleared, seen by the menu's frame), other than for a load the hook
+  started (`lua::load_started`), which closes the world it was asked in;
+- `started`: the worlds whose GUI started (`tpf3mp_native.world`), which
+  decides only where the hook cannot see a close (no `m_game` test in the
+  profile).
+
+In the room's game, with no load of the room's under way, a world up
+with another mark than the room's is none the room loaded. The step's
+detour holds it for good before it runs a step or answers a `Save`
+(`holding the world (fail closed): this game has a world up the room did
+not load ...`). At the main menu after the room's world closed, the menu
+says once that a world started now is held (`at the main menu: the
+room's world closed in this game ...`). A load the room orders there (a
+rejoin, a rebase) takes a new mark, and the room's steps run on. To play
+the room's world again, the player leaves the room and joins it again,
+which loads its latest save.
+
 ### The player's commands
 
 In the room's game a player's command runs in every game at the same
