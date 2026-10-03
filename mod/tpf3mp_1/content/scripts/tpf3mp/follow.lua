@@ -109,68 +109,6 @@ function follow.ensure(api)
 	return true
 end
 
--- Gives this Lua state the GUI's "my company": `mine` (the player entity of
--- the company this player plays for, or nil) joins the sources, `log`
--- (optional) says what it answers and when it had to be put back, and
--- getPlayer and the game's ownership tests are put in front of the game's
--- own (follow.ensure, follow.entityUtil). Returns true, or false and why.
-function follow.install(api, mine, log)
-	local known = false
-	for _, source in ipairs(follow.sources) do
-		if source == mine then known = true end
-	end
-	if not known and mine ~= nil then follow.sources[#follow.sources + 1] = mine end
-	if log ~= nil then follow.say = log end
-	local ok, why = follow.ensure(api)
-	if ok then follow.entityUtil() end
-	return ok, why
-end
-
--- A source answering the company the hook's note names (COMPANY_NOTE,
--- written by the Multiplayer plugin's state), for `link`.
-function follow.noteSource(link)
-	return function()
-		if not (link and link.note) then return nil end
-		local ok, text = pcall(function() return link:note(follow.COMPANY_NOTE) end)
-		local entity = ok and tonumber(text) or nil
-		if entity ~= nil and entity >= 0 and entity % 1 == 0 then return entity end
-		return nil
-	end
-end
-
--- The game's ownership tests the windows ask (scripts/entity_util.tl:
--- isOwnedByPlayer, isOwnedByPlayerOrNotOwned; the line manager, station,
--- vehicle and depot windows), wrapped in each entity_util table of this
--- state so getPlayer is put back in front first, should the state's api
--- have been made anew since. They then answer as the game does, with the
--- company. Returns how many tables were wrapped.
-follow.ENTITY_UTIL = { "/scripts/entity_util.tl", "::/scripts/entity_util.tl" }
-follow.wrappedTests = follow.wrappedTests or setmetatable({}, { __mode = "k" })
-function follow.entityUtil()
-	local okRequire, require_ = pcall(function() return ug_require end)
-	if not okRequire then return 0 end
-	if type(require_) ~= "function" then return 0 end
-	local count = 0
-	for _, path in ipairs(follow.ENTITY_UTIL) do
-		local ok, util = pcall(require_, path)
-		if ok and type(util) == "table" then
-			for _, name in ipairs({ "isOwnedByPlayer", "isOwnedByPlayerOrNotOwned" }) do
-				local test = util[name]
-				if type(test) == "function" and not follow.wrappedTests[test] then
-					local wrapped = function(...)
-						follow.ensure()
-						return test(...)
-					end
-					follow.wrappedTests[wrapped] = true
-					util[name] = wrapped
-					count = count + 1
-				end
-			end
-		end
-	end
-	return count
-end
-
 -- The game's finance window reads the loans it lists and offers from the
 -- loan script's state (finances_loan_gui.tl, LoanBoard:
 -- getComponent(getEntityForGameScript(LOAN_SCRIPT), GAME_SCRIPT).state),
@@ -261,6 +199,68 @@ function follow.loans(api, mine)
 	local replaced = pcall(function() engine.getComponent = wrapper end)
 	if not replaced then return false, "api.engine keeps its getComponent" end
 	return true
+end
+
+-- Gives this Lua state the GUI's "my company": `mine` (the player entity of
+-- the company this player plays for, or nil) joins the sources, `log`
+-- (optional) says what it answers and when it had to be put back, and
+-- getPlayer and the game's ownership tests are put in front of the game's
+-- own (follow.ensure, follow.entityUtil). Returns true, or false and why.
+function follow.install(api, mine, log)
+	local known = false
+	for _, source in ipairs(follow.sources) do
+		if source == mine then known = true end
+	end
+	if not known and mine ~= nil then follow.sources[#follow.sources + 1] = mine end
+	if log ~= nil then follow.say = log end
+	local ok, why = follow.ensure(api)
+	if ok then follow.entityUtil() end
+	return ok, why
+end
+
+-- A source answering the company the hook's note names (COMPANY_NOTE,
+-- written by the Multiplayer plugin's state), for `link`.
+function follow.noteSource(link)
+	return function()
+		if not (link and link.note) then return nil end
+		local ok, text = pcall(function() return link:note(follow.COMPANY_NOTE) end)
+		local entity = ok and tonumber(text) or nil
+		if entity ~= nil and entity >= 0 and entity % 1 == 0 then return entity end
+		return nil
+	end
+end
+
+-- The game's ownership tests the windows ask (scripts/entity_util.tl:
+-- isOwnedByPlayer, isOwnedByPlayerOrNotOwned; the line manager, station,
+-- vehicle and depot windows), wrapped in each entity_util table of this
+-- state so getPlayer is put back in front first, should the state's api
+-- have been made anew since. They then answer as the game does, with the
+-- company. Returns how many tables were wrapped.
+follow.ENTITY_UTIL = { "/scripts/entity_util.tl", "::/scripts/entity_util.tl" }
+follow.wrappedTests = follow.wrappedTests or setmetatable({}, { __mode = "k" })
+function follow.entityUtil()
+	local okRequire, require_ = pcall(function() return ug_require end)
+	if not okRequire then return 0 end
+	if type(require_) ~= "function" then return 0 end
+	local count = 0
+	for _, path in ipairs(follow.ENTITY_UTIL) do
+		local ok, util = pcall(require_, path)
+		if ok and type(util) == "table" then
+			for _, name in ipairs({ "isOwnedByPlayer", "isOwnedByPlayerOrNotOwned" }) do
+				local test = util[name]
+				if type(test) == "function" and not follow.wrappedTests[test] then
+					local wrapped = function(...)
+						follow.ensure()
+						return test(...)
+					end
+					follow.wrappedTests[wrapped] = true
+					util[name] = wrapped
+					count = count + 1
+				end
+			end
+		end
+	end
+	return count
 end
 
 -- The player entity of the company the player `me` (64 hex digits) plays

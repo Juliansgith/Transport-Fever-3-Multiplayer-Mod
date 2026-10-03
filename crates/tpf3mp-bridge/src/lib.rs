@@ -65,8 +65,12 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// a room starts from on its page ([`LobbyRoom::start`]), the owner's
 /// upload of it ([`LobbyRoom::upload`]) and the owner's choice of another
 /// in the lobby ([`LobbyAction::ChooseStart`]; protocol 14); 22 lists up to
-/// 100 saves ([`MAX_LOBBY_SAVES`], 40 before), the player's own only.
-pub const BRIDGE_VERSION: u32 = 22;
+/// 100 saves ([`MAX_LOBBY_SAVES`], 40 before), the player's own only; 23
+/// the launcher's run, for the window to show ([`LobbyView::log_session`];
+/// protocol 16); 24 carries what the players' build tools show: the
+/// player's own ([`ToAgent::Preview`]) and the other members'
+/// ([`ToHook::Preview`]; protocol 17).
+pub const BRIDGE_VERSION: u32 = 24;
 /// The link name the agent creates and the hook opens, unless told
 /// otherwise.
 pub const DEFAULT_LINK: &str = "tpf3mp.default";
@@ -139,6 +143,14 @@ pub enum ToHook {
     /// room's game. Only the latest counts. Boxed: it is far larger than
     /// the other messages.
     Lobby(Box<LobbyView>),
+    /// What another member's build tool shows now: an action as an intent
+    /// carries one, or `None` once it shows nothing (protocol 17's
+    /// `ServerMessage::Preview`). Advisory: never applied to the world, and
+    /// only the latest of each member counts.
+    Preview {
+        from: PlayerId,
+        preview: Option<Payload>,
+    },
 }
 
 /// Most chat lines a [`LobbyView`] carries: the newest.
@@ -207,6 +219,10 @@ pub struct LobbyView {
     pub room_mods: BoundedVec<LobbyRoomMod, MAX_LOBBY_ROOM_MODS>,
     /// The room's shared mods beyond those listed.
     pub room_mods_more: u32,
+    /// The launcher's run, the code every line of its diagnostics carries,
+    /// for the window to show with a Copy (proposed D10 amendment); empty
+    /// while diagnostics are off.
+    pub log_session: Text<8>,
 }
 
 /// Most portraits a [`LobbyView`] offers: room for all of
@@ -346,6 +362,7 @@ impl Default for LobbyView {
             room_mods: BoundedVec::empty(),
             room_mods_more: 0,
             rooms: None,
+            log_session: Text::lossy(""),
         }
     }
 }
@@ -575,6 +592,10 @@ pub enum ToAgent {
     MenuUp { menu: u64 },
     /// The player asked for this in the main menu's Multiplayer window.
     Lobby(LobbyAction),
+    /// What the player's build tool shows now, for the other members: an
+    /// action as [`ToAgent::Command`] carries one, at most
+    /// `tpf3mp_proto::MAX_PREVIEW` bytes, or `None` once it shows nothing.
+    Preview { preview: Option<Payload> },
 }
 
 #[derive(Debug, Error)]
@@ -791,6 +812,7 @@ mod tests {
             ])
             .unwrap(),
             room_mods_more: u32::MAX,
+            log_session: Text::new("l".repeat(8)).unwrap(),
             rooms: Some(LobbyRoomList {
                 page: u16::MAX,
                 rooms: BoundedVec::new(vec![

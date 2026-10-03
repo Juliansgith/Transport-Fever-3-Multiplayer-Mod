@@ -62,6 +62,12 @@ function data()
 			pcall(follow.watchLines, api, ug_require, link, "the HUD's state")
 			link:log(followed and "the GUI's company follows the player's in the HUD's state"
 				or ("the GUI's company cannot follow the player's in the HUD's state: " .. tostring(why)))
+			local stations = companies.followStations(api, ug_require, function()
+				if not link:room() then return end
+				local state, status = companies.scriptState(api), link:status()
+				return state and state.companies, status and status.me_id
+			end, true)
+			link:log("station access installed in the HUD's state (" .. stations .. " entity_util table(s))")
 
 			-- The construction menu's permits: each company's own
 			-- constructions, with more than one (companies.followPermits).

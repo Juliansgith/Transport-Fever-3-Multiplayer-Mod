@@ -543,11 +543,55 @@ end
 -- gui/entity_window/entity_window_util.tl, build 40408). Every other build
 -- from a window stays refused. Returns the action table, or raises why not.
 --
+-- A window's build that rebuilds edges in place, nothing else (no
+-- construction, no node added or removed, every new edge between the ends
+-- of one it replaces): the bridge and tunnel window's type
+-- (gui/entity_window/bridge_and_tunnel.tl, api.engine.util.proposal
+-- .createBridgeOrTunnelProposal, build 40408) makes one. It is carried as
+-- the road and track modifiers' rebuild is (capture.modify), once
+-- acceptance.lua's `bridges` is on: until a two-player game shows the
+-- window's proposal reads as the modifiers' does, it is refused, saying so.
+function capture.inPlace(proposal)
+	local p = get(proposal, "proposal")
+	if p == nil or (length(get(proposal, "toAdd")) or 0) > 0 or (length(get(proposal, "toRemove")) or 0) > 0 then
+		return false
+	end
+	if (length(get(p, "addedNodes")) or 0) > 0 or (length(get(p, "removedNodes")) or 0) > 0 then return false end
+	local added, removed = get(p, "addedSegments"), get(p, "removedSegments")
+	local n = length(added)
+	if n == nil or n == 0 or length(removed) ~= n then return false end
+	local used = {}
+	for i = 1, n do
+		local a = get(get(added, i), "comp")
+		local a0, a1 = get(a, "node0"), get(a, "node1")
+		local found = nil
+		for k = 1, n do
+			local r = get(get(removed, k), "comp")
+			local r0, r1 = get(r, "node0"), get(r, "node1")
+			if not used[k] and ((r0 == a0 and r1 == a1) or (r0 == a1 and r1 == a0)) then
+				found = k
+				break
+			end
+		end
+		if found == nil then return false end
+		used[found] = true
+	end
+	return true
+end
+
 -- A junction's window changes the junction alone (its traffic light phases,
 -- api.engine.util.proposal.createTrafficLightProposal; a double slip switch,
 -- createDoubleSlipSwitchProposal; gui/entity_window/double_slip_switch.tl):
 -- carried as the street detail tools' are (capture.junction).
 function capture.windowBuild(_ctx, proposal)
+	if capture.inPlace(proposal) then
+		if module("acceptance").bridges ~= true then
+			error("rebuilding a bridge or tunnel from its window awaits two-player game acceptance", 0)
+		end
+		local action, why = capture.modify(proposal)
+		if not action then error(why or "a window's rebuild of nothing", 0) end
+		return action
+	end
 	local p = proposal and proposal.proposal
 	if p and #(proposal.toAdd or {}) == 0 and #(proposal.toRemove or {}) == 0
 		and ((p.nodeConfigsToAdd and #p.nodeConfigsToAdd > 0)
@@ -974,6 +1018,161 @@ function capture.prospect(ctx, param)
 		industries = industries,
 		permit = permit,
 	} }
+end
+
+-- ------------------------------------------------------------ company perks
+--
+-- The construction menu's perk tools (gui/construction/tools/, build
+-- 40408): each picks a town or an industry and sends the company script an
+-- event, which spends the perk's permit for the player's company and hands
+-- the perk on (game_mechanics/company/company.script.tl, handleEvent).
+
+-- The construction an industry the player picked stands in, as the game's
+-- industry window finds it (gui/entity_window/industry/industry.tl), and
+-- tpf3mp/registry.lua names industries by: a part the game places in no
+-- construction stands for itself. Returns the construction, or nil.
+function capture.industryConstruction(part)
+	local ok, con = pcall(function()
+		return api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(part)
+	end)
+	if not ok or type(con) ~= "number" or con < 0 then con = part end
+	return con
+end
+
+-- The industry part of construction `con` a perk acts on: its one industry,
+-- or the construction itself where it is one. nil where it has none, or
+-- more than one, which no id the room carries tells apart. Every game finds
+-- it so (tpf3mp/apply.lua, HANDLERS.Perk).
+function capture.industryPart(con)
+	local CT = api.type.ComponentType
+	local ok, c = pcall(function() return api.engine.getComponent(con, CT.CONSTRUCTION) end)
+	local parts = ok and c and get(c, "industries") or nil
+	local n = length(parts) or 0
+	if n == 1 then return get(parts, 1) end
+	if n == 0 then
+		local isOne, industry = pcall(function() return api.engine.getComponent(con, CT.INDUSTRY) end)
+		if isOne and industry ~= nil then return con end
+	end
+	return nil
+end
+
+local function permitOf(param)
+	local permit = get(param, "permitKey")
+	if permit ~= nil and (type(permit) ~= "string" or permit == "") then error("a permit it cannot read", 0) end
+	return permit
+end
+
+local function ownCompany(ctx, param, what)
+	local player = ctx.player and ctx.player()
+	if player == nil or get(param, "companyEntity") ~= player then
+		error(what .. " for another company", 0)
+	end
+end
+
+-- Industry Greenification (industry_greenify_tool.script.tl): the event
+-- `Companies` `MakeGreen` with the player's company, the industry picked
+-- and the permit, the industry by its id (action::IndustryId).
+function capture.greenify(ctx, param)
+	if type(param) ~= "table" then error("a greenification it cannot read", 0) end
+	ownCompany(ctx, param, "greenifying")
+	local part = get(param, "constructionEntity")
+	if type(part) ~= "number" then error("greenifying no industry", 0) end
+	local con = capture.industryConstruction(part)
+	if capture.industryPart(con) ~= part then error("an industry the room cannot name", 0) end
+	local industry = ctx.industry and ctx.industry(con) or nil
+	return { Perk = { Greenify = {
+		industry = named("an industry the room cannot name", industry),
+		permit = permitOf(param),
+	} } }
+end
+
+-- What the marketing tool charges for a campaign in `year`: the tool's own
+-- price (marketing_campaign_tool.script.tl, GetMarketingCost, build 40408),
+-- with the game's math helpers (scripts/mathutil.lua: round, mapClamp)
+-- written out. The tool books it once the campaign started; the room's
+-- action carries it, so every game books the same sum.
+capture.MARKETING_COST = 10000000
+function capture.marketingCost(year)
+	local function round(x) return math.floor(x + .5) end
+	local lo, hi = math.log(0.4) / math.log(2), math.log(2.5) / math.log(2)
+	local mapped = lo + (hi - lo) * ((year - 1900) / (2020 - 1900))
+	if mapped < lo then mapped = lo elseif mapped > hi then mapped = hi end
+	local rounding = round(capture.MARKETING_COST / 10)
+	return round(capture.MARKETING_COST * math.pow(2, mapped) / rounding) * rounding
+end
+
+-- A marketing campaign (marketing_campaign_tool.script.tl): the event
+-- `Companies` `startMarketingCampaign` with the player's company, the town
+-- picked, the campaign's terms (the tool's town_marketing metadata) and the
+-- permit; and the price the tool books after it (capture.marketingCost).
+function capture.marketing(ctx, param)
+	if type(param) ~= "table" then error("a marketing campaign it cannot read", 0) end
+	ownCompany(ctx, param, "marketing")
+	local terms = get(param, "marketingParams")
+	local duration, factor = get(terms, "durationMs"), get(terms, "lineCostFactor")
+	if type(duration) ~= "number" or duration ~= math.floor(duration) or duration < 0
+		or type(factor) ~= "number" then
+		error("a campaign whose terms it cannot read", 0)
+	end
+	local ok, year = pcall(function() return api.engine.util.getYear() end)
+	if not ok or type(year) ~= "number" then error("a campaign it cannot price", 0) end
+	local town = ctx.town and ctx.town(get(param, "townEntity")) or nil
+	return { Perk = { Marketing = {
+		town = named("a town the room cannot name", town),
+		duration_ms = duration,
+		line_cost_factor = factor,
+		permit = permitOf(param),
+		cost = capture.marketingCost(year),
+	} } }
+end
+
+-- ------------------------------------------------------ town buildings
+--
+-- The construction a town building stands in, and the building's place in
+-- its list of town buildings, from 1 (the construction lists them,
+-- api/tealdef/api/engine.d.tl, Construction.townBuildings): the
+-- construction the game names for the building as a subconstruction,
+-- or the building itself, or else the one construction that lists it.
+-- INFERRED: a town building's window names the TOWN_BUILDING entity, which
+-- its construction lists. Returns the construction's component and the
+-- place, or nil.
+function capture.townBuildingOf(entity)
+	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
+	local function lists(con)
+		local ok, c = pcall(function() return api.engine.getComponent(con, CONSTRUCTION) end)
+		local buildings = ok and c and get(c, "townBuildings") or nil
+		for i = 1, (length(buildings) or 0) do
+			if get(buildings, i) == entity then return c, i end
+		end
+		return nil
+	end
+	local ok, con = pcall(function()
+		return api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(entity)
+	end)
+	if ok and type(con) == "number" and con >= 0 then
+		local c, i = lists(con)
+		if c then return c, i end
+	end
+	local c, i = lists(entity)
+	if c then return c, i end
+	local listed, all = pcall(function() return api.engine.getEntitiesWithComponent(CONSTRUCTION) end)
+	for k = 1, (listed and length(all) or 0) do
+		c, i = lists(get(all, k))
+		if c then return c, i end
+	end
+	return nil
+end
+
+-- A town building's Historic Preservation checkbox (gui/entity_window/
+-- town_building/town_building.tl, HistoricBuildingCard): the building by
+-- its construction's file and place and its index there
+-- (action::Preservation).
+function capture.preserve(_ctx, entity, preserved)
+	if type(preserved) ~= "boolean" then error("a preservation it cannot read", 0) end
+	local c, i = capture.townBuildingOf(entity)
+	local ref = c and capture.replaced(c) or nil
+	if ref == nil or i > 256 then error("a town building the room cannot name", 0) end
+	return { Preserve = { building = ref, index = i - 1, preserved = preserved } }
 end
 
 -- Answering a subsidy offer: the subsidy window's Accept or Decline

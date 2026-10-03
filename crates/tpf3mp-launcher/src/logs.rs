@@ -1,9 +1,11 @@
 //! The launcher's log: daily files in the per-user `TPF3-MP/logs` folder,
 //! a week of them. Its lines also go, redacted, to the server the player
 //! plays on, unless they switch that off (`tpf3mp_agent::diagnostics`,
-//! D10): the operator reads them by the support code the window shows.
-//! `tpf3mp-agent collect-logs` zips the files with the hook's and the
-//! game's, for the rare report that needs those (`tpf3mp_agent::logs`).
+//! D10), with the hook's and the game's (`tpf3mp_agent::game_logs`,
+//! proposed D10 amendment): the operator reads them by the support code
+//! or the log session the window shows. `tpf3mp-agent collect-logs` zips
+//! the files with the hook's and the game's and the game's crash dumps,
+//! for the rare report that needs those (`tpf3mp_agent::logs`).
 
 use std::{fmt, io, path::PathBuf};
 

@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 24;
+pub const ACTION_SCHEMA_VERSION: u32 = 26;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -52,7 +52,7 @@ pub const MAX_PHASES: usize = 64;
 pub const MAX_EDGES: usize = 256;
 /// Most town buildings one bulldoze of streets removes with them.
 pub const MAX_BUILDINGS: usize = 64;
-/// Most trees and other assets one bulldoze takes out of their group.
+/// Most assets removed by one action.
 pub const MAX_ASSETS: usize = 64;
 /// Most parameters of one construction, nested modules counted one by one.
 pub const MAX_PARAMS: usize = 1024;
@@ -165,6 +165,13 @@ canonical_id!(
     /// game binds them, lowest entity first, at the room's first update.
     TownId,
     "town-"
+);
+canonical_id!(
+    /// An industry, by its construction. Industries come with the room's
+    /// world or from a prospection, and every game binds them as it binds
+    /// towns (`tpf3mp/registry.lua`, `industries`).
+    IndustryId,
+    "industry-"
 );
 
 /// The two transport networks. A road node and a track node can stand at
@@ -513,7 +520,7 @@ pub enum Bulldoze {
         model: ResName,
     },
     /// Trees and other assets taken out of their asset group, which every
-    /// game builds again from its own copy without them (schema 21).
+    /// game builds again from its own copy without them (schema 25).
     Assets(AssetRemoval),
 }
 
@@ -997,7 +1004,7 @@ pub enum CompanyOp {
     /// stations (`Some(true)`), or not (`Some(false)`), whatever the default
     /// says; `None` leaves that company to the default again. Per company,
     /// not per player: a company's players share everything it owns.
-    /// Appended under schema version 11: the variants before it keep their
+    /// Appended under schema version 23: the variants before it keep their
     /// bytes.
     StationAccess {
         company: CompanyId,
@@ -1103,6 +1110,50 @@ pub enum Renamed {
     Construction(ConstructionRef),
 }
 
+/// A company perk the construction menu's perk tools use on a town or an
+/// industry (`gui/construction/tools/*.script.tl`): an event to TF3's
+/// company script, which spends the perk's permit for the acting company
+/// and passes the perk on to the towns or emissions script. Appended under
+/// schema version 24.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PerkOp {
+    /// Industry Greenification (`Companies` `MakeGreen`,
+    /// `industry_greenify_tool.script.tl`): the industry's emissions cut.
+    Greenify {
+        industry: IndustryId,
+        /// The company permit it spends (`permitKey`), if it names one.
+        permit: Option<ResName>,
+    },
+    /// A marketing campaign in a town (`Companies`
+    /// `startMarketingCampaign`, `marketing_campaign_tool.script.tl`),
+    /// with the campaign's terms as the tool's metadata gives them, and its
+    /// cost, which the tool books to the company once the campaign started.
+    Marketing {
+        town: TownId,
+        /// How long it runs, in the game's milliseconds (`durationMs`).
+        duration_ms: i64,
+        /// `lineCostFactor`.
+        line_cost_factor: Fraction,
+        permit: Option<ResName>,
+        /// In the game's money, as the tool priced it at the click.
+        cost: i64,
+    },
+}
+
+/// A town building's Historic Preservation checkbox
+/// (`makeTownBuildingSetBlockedDevelopmentCmd`,
+/// `gui/entity_window/town_building/town_building.tl`): the building keeps
+/// its look but still levels up. Appended under schema version 24.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preservation {
+    /// The construction the town building stands in, by its file and place.
+    pub building: ConstructionRef,
+    /// Which of that construction's town buildings, from 0.
+    pub index: u8,
+    /// Preserved (true), or free to change again (false).
+    pub preserved: bool,
+}
+
 /// What the notification log and popups send the game's Notifications
 /// script (`game_mechanics/notifications/gui/notification_log.tl`,
 /// `notification_popups.tl`): every game's script does it alike.
@@ -1173,8 +1224,7 @@ pub enum Action {
     /// Appended under schema version 11.
     EditJunctions(JunctionEdit),
     /// Accepting or declining a subsidy offer (`SubsidyOp`). Appended under
-    /// schema version 21 (13 before dev's junction tools took 18): the
-    /// variants before it keep their bytes.
+    /// schema version 13: the variants before it keep their bytes.
     Subsidy(SubsidyOp),
     /// Renaming what is not a line or a company (`Renamed`): a vehicle, a
     /// station, a town, a construction. Appended under schema version 17:
@@ -1183,11 +1233,20 @@ pub enum Action {
         what: Renamed,
         name: ObjectName,
     },
+    /// A company perk used on a town or an industry (`PerkOp`). Appended
+    /// under schema version 24: the variants before it keep their bytes.
+    Perk(PerkOp),
+    /// A town building's Historic Preservation (`Preservation`). Appended
+    /// under schema version 24: the variants before it keep their bytes.
+    Preserve(Preservation),
     /// What the notification log does (`NotificationOp`). Appended under
-    /// schema version 19.
+    /// schema version 26, after dev's `Perk` and `Preserve` (the local line
+    /// had it at 21 under schema 19): the variants before it keep their
+    /// bytes.
     Notification(NotificationOp),
     /// Discarding a warehouse's cargo (`DiscardCargo`). Appended under
-    /// schema version 19.
+    /// schema version 26, after `Notification` (22 under schema 19 on the
+    /// local line).
     DiscardCargo(DiscardCargo),
 }
 
@@ -1240,6 +1299,8 @@ impl Action {
             Action::Subsidy(_) => "Subsidy",
             Action::EditJunctions(_) => "EditJunctions",
             Action::Rename { .. } => "Rename",
+            Action::Perk(_) => "Perk",
+            Action::Preserve(_) => "Preserve",
             Action::Notification(_) => "Notification",
             Action::DiscardCargo(_) => "DiscardCargo",
         }
@@ -1431,7 +1492,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                24, // schema version
+                26, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1474,7 +1535,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                26, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1509,7 +1570,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                26, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1527,7 +1588,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                26, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1542,7 +1603,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                26, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1553,7 +1614,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                26, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1565,7 +1626,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                26, // schema version
                 19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1590,7 +1651,7 @@ mod tests {
                 },
                 &[8, 2, 0],
             ),
-            // Appended under schema version 11.
+            // Appended under schema version 23.
             (
                 CompanyOp::StationAccess {
                     company: CompanyId(2),
@@ -1605,6 +1666,26 @@ mod tests {
             assert_eq!(payload.as_bytes()[..2], [ACTION_SCHEMA_VERSION as u8, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
+        // Appended under schema version 24: the perk tools take the next tag.
+        let green = Action::Perk(PerkOp::Greenify {
+            industry: IndustryId(5),
+            permit: None,
+        });
+        assert_eq!(green.to_payload().unwrap().as_bytes(), [26, 21, 0, 5, 0]);
+        // Appended under schema version 24: Historic Preservation takes the
+        // next tag.
+        let preserve = Action::Preserve(Preservation {
+            building: ConstructionRef {
+                file: Text::new("b").unwrap(),
+                at: pos(1, 0, 0),
+            },
+            index: 0,
+            preserved: true,
+        });
+        assert_eq!(
+            preserve.to_payload().unwrap().as_bytes(),
+            [26, 22, 1, b'b', 2, 0, 0, 0, 1]
+        );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
             change: VehicleChange::ManualDeparture(true),
@@ -1612,7 +1693,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                24, // schema version
+                26, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10
@@ -1625,8 +1706,10 @@ mod tests {
         );
     }
 
-    /// The junction tools' action keeps dev's number (18, schema 11) and
-    /// the actions appended on the companies branch follow it.
+    /// The junction tools' action keeps dev's number (18, schema 11), and
+    /// the actions appended on the companies branch follow dev's: the
+    /// notification log takes 23 and the warehouse's discard 24 (schema
+    /// 26), after dev's perk (21) and Historic Preservation (22).
     #[test]
     fn junction_edits_keep_their_number_and_ours_follow() {
         let node = NodeRef {
@@ -1640,7 +1723,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                24, // schema version
+                26, // schema version
                 18, // Action::EditJunctions, appended under schema version 11
                 1, 0, 2, 0, 0, // one change: Street, (1, 0, 0)
                 0, // no configuration: the game's defaults
@@ -1656,9 +1739,20 @@ mod tests {
             what: Renamed::Town(TownId(3)),
             name: Text::new("a").unwrap(),
         };
-        assert_eq!(rename.to_payload().unwrap().as_bytes()[..3], [24, 20, 2]);
+        assert_eq!(rename.to_payload().unwrap().as_bytes()[..3], [26, 20, 2]);
         let note = Action::Notification(NotificationOp::Dismiss(4));
-        assert_eq!(note.to_payload().unwrap().as_bytes()[..3], [24, 21, 0]);
+        assert_eq!(note.to_payload().unwrap().as_bytes()[..3], [26, 23, 0]);
+        let discard = Action::DiscardCargo(DiscardCargo {
+            warehouse: ConstructionRef {
+                file: Text::new("w").unwrap(),
+                at: pos(1, 0, 0),
+            },
+            stocks: BoundedVec::new(vec![3]).unwrap(),
+            remaining: Fraction(1_000_000),
+        });
+        let payload = discard.to_payload().unwrap();
+        assert_eq!(payload.as_bytes()[..2], [26, 24]);
+        assert_eq!(Action::from_payload(&payload).unwrap(), discard);
     }
 
     #[test]
@@ -1686,5 +1780,6 @@ mod tests {
     fn ids_display_with_their_kind() {
         assert_eq!(LineId(7).to_string(), "line-7");
         assert_eq!(StationId(12).to_string(), "station-12");
+        assert_eq!(IndustryId(3).to_string(), "industry-3");
     }
 }

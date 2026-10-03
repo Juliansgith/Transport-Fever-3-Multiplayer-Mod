@@ -40,7 +40,7 @@ function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
 	local MODULES = { "acceptance", "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
-		"bridge", "guard", "hudguard", "worldload" }
+		"bridge", "guard", "hudguard", "worldload", "junctions", "apply", "previews" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -120,6 +120,8 @@ function data()
 		line = idOf("lines"),
 		group = idOf("groups"),
 		town = idOf("towns"),
+		-- An industry by its construction (capture.industryConstruction).
+		industry = idOf("industries"),
 		-- The room's company whose player entity `entity` is, by its id: the
 		-- game's company window renames the player's company so
 		-- (game_mechanics/company/company.tl, its editable title).
@@ -297,61 +299,15 @@ function data()
 			or ("the company window shows the game's own rank only: " .. tostring(why)))
 	end
 
-	-- Whether this player's company may have its lines stop at `entity`, a
-	-- station group or a station's construction another company owns: while
-	-- that company keeps its stations open (tpf3mp/companies.lua, mayUse;
-	-- DECISIONS.md, D22, proposed). Every game checks the line again when
-	-- the room orders it; this only lets the line manager offer the station.
-	local function openToMe(entity)
-		local shared = ui()
-		local roster = shared.companies
-		if not (shared.status and roster and link and link:room()) then return false end
-		local ok, open = pcall(function()
-			local CT = api.type.ComponentType
-			local group = api.engine.getComponent(entity, CT.STATION_GROUP)
-			local con = group == nil and api.engine.getComponent(entity, CT.CONSTRUCTION) or nil
-			if group == nil and not (con and con.stations and #con.stations > 0) then return false end
-			local owned = api.engine.getComponent(entity, CT.PLAYER_OWNED)
-			local owner = owned and owned.player
-			-- The player's company, by the room's roster: whether the
-			-- owner lets it stop there (its head's choice, else its default).
-			local companies = require("tpf3mp.companies")
-			local mine = 0
-			for _, m in ipairs(roster.members or {}) do
-				if m.player == shared.status.me_id then mine = m.company end
-			end
-			for _, c in ipairs(roster.list or {}) do
-				if c.entity == owner then return companies.lets(c, mine) end
-			end
-			return false
-		end)
-		return ok and open == true
-	end
-
-	-- TF3's line manager offers only the player's own stations and those no
-	-- one owns (gui/line_vehicle_mgmt/manager_window.tl asks
-	-- scripts/entity_util.tl's isOwnedByPlayerOrNotOwned; seen on build
-	-- 40408); the game itself stops a line anywhere. In this GUI state the
-	-- mod's answer also takes another company's open stations. Other windows
-	-- ask the same function of vehicles and warehouses, which stay as the
-	-- game answers. Whether every script shares one entity_util table, as
-	-- one ug_require's cache would give, is INFERRED: hook.log says how many
-	-- the mod changed.
+	-- Install in this GUI state too; the HUD and game-script GUI install
+	-- the same helper in their own states.
 	local function offerOpenStations()
-		local changed, tried = 0, {}
-		for _, path in ipairs({ "/scripts/entity_util.tl", "::/scripts/entity_util.tl" }) do
-			local ok, util = pcall(ug_require, path)
-			if ok and type(util) == "table" and not tried[util]
-				and type(util.isOwnedByPlayerOrNotOwned) == "function" then
-				tried[util] = true
-				local original = util.isOwnedByPlayerOrNotOwned
-				util.isOwnedByPlayerOrNotOwned = function(entity, ...)
-					if original(entity, ...) then return true end
-					return openToMe(entity)
-				end
-				changed = changed + 1
+		local changed = require("tpf3mp.companies").followStations(api, ug_require, function()
+			local shared = ui()
+			if link and link:room() and shared.status then
+				return shared.companies, shared.status.me_id
 			end
-		end
+		end)
 		link:log(changed > 0 and ("the line manager offers other companies' open stations ("
 			.. changed .. " entity_util table(s))")
 			or "the line manager offers the player's own stations only: no entity_util.isOwnedByPlayerOrNotOwned")
@@ -938,29 +894,32 @@ function data()
 					function() companyOp(shared, { Unlock = c.id }, "Removing the password of " .. c.name) end)
 			end
 			row(lockChildren)
-			-- Whose lines may stop at its stations: the default, then each
-			-- other company's own choice (CompanyOp StationAccess). Per
+			-- Who may add/change lines stopping at its stations (D22):
+			-- a default, which also holds for companies founded later, and a
+			-- choice for each other company, which wins over it. Per
 			-- company, not per player: a company's players share everything
 			-- it owns.
+			row({ label("Station access applies to new and changed routes. Existing services keep running.",
+				"font-scale-annotation", 500, 42) })
+			local open = not c.closed
 			row({
-				label(c.closed and "Stations: yours alone by default" or "Stations: open to other companies by default",
-					"font-scale-annotation", 300, 28),
-				button(c.closed and "Open" or "Close", c.closed
-					and "Let every company without a choice of its own stop at " .. tostring(c.name) .. "'s stations"
-					or "Keep " .. tostring(c.name) .. "'s stations from every company without a choice of its own",
+				label("Stations, by default and for companies founded later: " .. (open and "allowed" or "denied"),
+					"font-scale-annotation", 300, 56),
+				button(open and "Deny by default" or "Allow by default", open
+					and "Keep " .. tostring(c.name) .. "'s stations from every company without a choice of its own"
+					or "Let every company without a choice of its own stop at " .. tostring(c.name) .. "'s stations",
 					function()
-						companyOp(shared, { ShareStations = { company = c.id, open = c.closed == true } },
-							(c.closed and "Opening " or "Closing ") .. "the stations of " .. c.name)
+						companyOp(shared, { ShareStations = { company = c.id, open = not open } },
+							(open and "Closing " or "Opening ") .. "the stations of " .. c.name .. " by default")
 					end),
 			})
-			for _, other in ipairs(roster.list or {}) do
-				if other.id ~= c.id then
+			for _, other in ipairs(roster.list) do
+				if other.id ~= c.id and not other.gone then
 					local choice = companies.choice(c, other.id)
 					local allowed = companies.lets(c, other.id)
-					local cells = {
+					local children = {
 						label(tostring(other.name) .. ": " .. (allowed and "allowed" or "denied")
-							.. (choice == nil and " (default)" or ""),
-							"font-scale-annotation, " .. (allowed and "success" or "warning"), 300, 28),
+							.. (choice == nil and " (default)" or ""), "font-scale-annotation", 300, 28),
 						button(allowed and "Deny" or "Allow", (allowed and "Keep " or "Let ") .. tostring(other.name)
 							.. (allowed and "'s lines from " or "'s lines stop at ") .. tostring(c.name) .. "'s stations",
 							function()
@@ -969,13 +928,13 @@ function data()
 							end),
 					}
 					if choice ~= nil then
-						cells[#cells + 1] = button("Default", tostring(other.name) .. " follows the default again",
+						children[#children + 1] = button("Default", tostring(other.name) .. " follows the default again",
 							function()
 								companyOp(shared, { StationAccess = { company = c.id, other = other.id } },
 									"Putting " .. other.name .. " back to the default")
 							end)
 					end
-					row(cells)
+					row(children)
 				end
 			end
 			for _, player in ipairs(companies.members(roster, mine)) do
@@ -1314,6 +1273,30 @@ function data()
 		end
 	end
 
+	-- The proposal another member's preview `action` would build here, for
+	-- the company `from` plays for (tpf3mp/apply.lua, apply.proposalOf), its
+	-- context and that company; or nil and why.
+	local function previewProposal(action, from)
+		local shared = ui()
+		local roster = shared.companies
+		local company = require("tpf3mp.follow").companyOf(roster, from)
+		local proposal, context = require("tpf3mp.apply").proposalOf(action, { company = company, roster = roster })
+		if proposal == nil then return nil, context end
+		return proposal, context, company
+	end
+
+	-- Has the hook draw another member's preview `kept` (its proposal and
+	-- context), or with nil clear it (tpf3mp/previews.lua).
+	local function drawPreview(from, kept)
+		if kept == nil then
+			link:undrawPreview(from)
+			return true
+		end
+		return link:drawPreview(from, kept.proposal, kept.context, function(proposal, context)
+			return api.engine.util.proposal.makeProposalData(proposal, context)
+		end)
+	end
+
 	local Tpf3mpPlugin = react.RegisterPluginRecipe(game_bar_widgets.GameBarInfoDisplayExtension, "Tpf3mpPlugin", function()
 		-- Once per game: the ref lives as long as this plugin is mounted.
 		local started = react.useRef(false)
@@ -1349,6 +1332,15 @@ function data()
 				room:set(ui().version)
 			end
 			runPending()
+			-- The other members' build previews, made into the proposals
+			-- they would build here and drawn by the hook (tpf3mp/previews.lua;
+			-- never the game's ProposalViewer, which build 40408 allows only
+			-- inside a tool's ActionDescriptor: a fatal assert elsewhere).
+			-- Out of a room too: its end tells each one drawn as gone.
+			if link then
+				local took, why = pcall(require("tpf3mp.previews").take, link, previewProposal, drawPreview)
+				if not took then say("taking the build previews failed: " .. tostring(why)) end
+			end
 			if link and guardedCmd then
 				local delivered, why = pcall(function()
 					local results = link:results()

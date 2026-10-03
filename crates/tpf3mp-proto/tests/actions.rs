@@ -577,6 +577,22 @@ fn samples() -> Vec<Action> {
             what: tpf3mp_proto::action::Renamed::Construction(depot()),
             name: text("North depot"),
         },
+        Action::Perk(tpf3mp_proto::action::PerkOp::Greenify {
+            industry: tpf3mp_proto::action::IndustryId(3),
+            permit: Some(text("ECO_INDUSTRY")),
+        }),
+        Action::Perk(tpf3mp_proto::action::PerkOp::Marketing {
+            town: TownId(2),
+            duration_ms: 1_095_000,
+            line_cost_factor: Fraction(500_000),
+            permit: Some(text("::/game_mechanics/company/permitKeys/marketing.res")),
+            cost: 4_000_000,
+        }),
+        Action::Preserve(tpf3mp_proto::action::Preservation {
+            building: depot(),
+            index: 0,
+            preserved: true,
+        }),
         Action::Notification(tpf3mp_proto::action::NotificationOp::Dismiss(41)),
         Action::Notification(tpf3mp_proto::action::NotificationOp::Enlist(42)),
         Action::Notification(tpf3mp_proto::action::NotificationOp::Ignore {
@@ -751,13 +767,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=22.
+    // Every top-level variant is sampled: postcard tags them 0..=24.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=22).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=24).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

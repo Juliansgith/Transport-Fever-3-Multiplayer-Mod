@@ -79,6 +79,14 @@ guard.CARRY = {
 			end
 		elseif id == "Companies" and name == "spawnIndustry" then
 			return capture().prospect(ctx, param)
+		elseif id == "Companies" and name == "MakeGreen" then
+			-- The construction menu's Industry Greenification
+			-- (industry_greenify_tool.script.tl): capture.greenify.
+			return capture().greenify(ctx, param)
+		elseif id == "Companies" and name == "startMarketingCampaign" then
+			-- The construction menu's marketing campaign
+			-- (marketing_campaign_tool.script.tl): capture.marketing.
+			return capture().marketing(ctx, param)
 		elseif id == "Companies" and name == "applyLevel" then
 			-- The company window taking a rank (company.tl): the acting
 			-- player's company takes it in every game (tpf3mp/progression.lua).
@@ -120,6 +128,8 @@ guard.CARRY = {
 	makeEntitySetNameCmd = by("setName"),
 	makeEntitySetColorCmd = by("setColor"),
 	makeStockListDiscardCargoCmd = by("discardCargo"),
+	-- A town building's Historic Preservation checkbox.
+	makeTownBuildingSetBlockedDevelopmentCmd = by("preserve"),
 	-- A construction's parameters changed in its window: an edit of that
 	-- construction, which every game replaces alike. Other builds a window
 	-- sends stay refused.
@@ -156,6 +166,18 @@ guard.NAMED = {
 	makeLineCreateCmd = "lines",
 }
 
+-- What an event's own callback sends after it that the room's action does
+-- in every game already, by the event's id and name: the marketing tool
+-- books the campaign's price in its callback (marketing_campaign_tool
+-- .script.tl), which the room's action books (tpf3mp/apply.lua,
+-- HANDLERS.Perk). While that callback runs, the first such command for the
+-- player's company is neither sent nor refused, whatever became of the
+-- event: carried, the room books it; refused, nothing is booked, as nothing
+-- ran.
+guard.FOLLOWS = {
+	["Companies.startMarketingCampaign"] = "makeJournalBookAssetCmd",
+}
+
 -- What the player is told a refused kind is, where "this" would not do.
 guard.WHAT = {
 	makeVehicleBuyCmd = "buying vehicles",
@@ -172,6 +194,7 @@ guard.WHAT = {
 	makeWorldBuildProposalCmd = "building from this window",
 	makeEntitySetNameCmd = "renaming",
 	makeEntitySetColorCmd = "changing colours",
+	makeTownBuildingSetBlockedDevelopmentCmd = "historic preservation",
 	makeGameSetCalendarSpeedCmd = "changing the calendar speed",
 }
 
@@ -356,6 +379,17 @@ function guard.install(cmd, env)
 	-- that mod no longer on the stack.
 	local makers = setmetatable({}, { __mode = "k" })
 	local factories = {}
+	local follower = {}
+	for _, kind in pairs(guard.FOLLOWS) do follower[kind] = true end
+	-- The follow-up a running callback may send that is not to be sent
+	-- (guard.FOLLOWS): { kind =, company = }, or nil.
+	local absorbing = nil
+	local function absorbs(kind, args)
+		local a = absorbing
+		if a == nil or kind ~= a.kind or args == nil or args[1] ~= a.company then return false end
+		absorbing = nil
+		return true
+	end
 	for name, factory in pairs(cmd) do
 		if type(name) == "string" and name:match("^make.+Cmd$") then
 			factories[name] = factory
@@ -372,7 +406,7 @@ function guard.install(cmd, env)
 			if t == "table" or t == "userdata" then
 				kinds[command] = name
 				makers[command] = (env.caller or guard.caller)()
-				if guard.CARRY[name] or name == "makeScriptingSendEventCmd" then
+				if guard.CARRY[name] or name == "makeScriptingSendEventCmd" or follower[name] then
 					calls[command] = { n = select("#", ...), ... }
 				end
 			end
@@ -391,6 +425,7 @@ function guard.install(cmd, env)
 		if kind ~= nil and guard.PASS[kind] then
 			return send(command, ...)
 		end
+		if kind ~= nil and absorbs(kind, calls[command]) then return end
 		local from = makers[command] or (env.caller or guard.caller)()
 		-- A personal mod's event to its own game script reaches this game's
 		-- scripts alone, where that script runs (docs/MODS.md); any other of
@@ -403,6 +438,18 @@ function guard.install(cmd, env)
 		end
 		local callback = ...
 		local carry, args = kind and guard.CARRY[kind], calls[command]
+		local follows = kind == "makeScriptingSendEventCmd" and args
+			and guard.FOLLOWS[tostring(args[2]) .. "." .. tostring(args[3])]
+		if follows and type(callback) == "function" then
+			local inner = callback
+			local company = env.context and env.context.player and env.context.player()
+			callback = function(...)
+				absorbing = { kind = follows, company = company }
+				local ok, err = pcall(inner, ...)
+				absorbing = nil
+				if not ok then error(err, 0) end
+			end
+		end
 		local made, action = false, nil
 		if carry and args then
 			made, action = pcall(carry, env.context, unpackArgs(args, 1, args.n))

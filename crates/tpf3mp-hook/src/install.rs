@@ -311,6 +311,8 @@ fn close_lobby_before_load(lines: &mut Vec<String>) {
 /// started in the menu. Otherwise nothing: the step's detour drives the room
 /// while a world is up.
 pub(crate) fn menu_frame(menu: usize) {
+    // The GUI thread and its menu, for the others' previews drawn.
+    crate::drawing::note_menu(menu);
     if BROKEN.load(Ordering::Acquire) {
         return;
     }
@@ -620,6 +622,9 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         }
         for text in lua::take_said() {
             driver.say(text);
+        }
+        if let Some(preview) = crate::previews::take_out(Instant::now()) {
+            driver.preview(preview);
         }
         // The main menu's Multiplayer window, whose lobby the step just read.
         crate::lobby::exchange(driver.as_mut());
@@ -1013,7 +1018,8 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                         "the stop tool takes its next click at once where Add returns to {:#x}",
                         call + 5
                     ),
-                    None => "the profile has no stop tool call, so it waits for each                                  click's answer"
+                    None => "the profile has no stop tool call, so it waits for each \
+                                 click's answer"
                         .to_owned(),
                 };
                 let read = junctions.iter().filter(|call| call.is_some()).count();
@@ -1028,7 +1034,8 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                     )
                 };
                 format!(
-                    "the build tools build through the room; {module}; {terrain}; {stop};                      {detail}"
+                    "the build tools build through the room; {module}; {terrain}; {stop}; \
+                         {detail}"
                 )
             })
             .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))
@@ -1048,6 +1055,10 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
             Ok(line) | Err(line) => log_line(&line),
         }
     }
+    // The others' build previews, drawn (docs/HOOKS.md, "Build previews"):
+    // without every target, nobody's is.
+    // SAFETY: as above.
+    log_line(&unsafe { crate::drawing::install(&at, detour_forever) });
     // The seeds and the order fixes (docs/HOOKS.md, "Seeds, as built" and
     // "The order fixes, as built") take the targets at their addresses in
     // this process; each piece installs, and fails closed, on its own, and
@@ -1067,7 +1078,6 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     });
     crate::seeds::install(&absolute);
     log_line(&crate::ticks::install(&absolute));
-    log_line(&crate::probe::install(&absolute));
     for line in crate::roadtrace::configure_from_env() {
         log_line(&line);
     }
@@ -1075,6 +1085,7 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
         log_line(&outcome.to_string());
     }
     log_line(&crate::townfield::install(&absolute));
+    log_line(&crate::probe::install(&absolute));
     for line in crate::toolplayer::install(&absolute) {
         log_line(&line);
     }

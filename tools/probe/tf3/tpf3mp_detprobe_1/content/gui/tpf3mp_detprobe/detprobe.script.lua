@@ -117,11 +117,11 @@ function data()
     local pos = {}
     for _, id in ipairs(sortedIds(list)) do
       local p = position(id)
-      if type(p) == "table" then
+      if p ~= nil then
         pos[#pos + 1] = string.format("%d,%d,%d",
           q1(p.x or p[1]), q1(p.y or p[2]), q1(p.z or p[3]))
       else
-        pos[#pos + 1] = "nopos:" .. tostring(id)
+        return tostring(#list), nil
       end
     end
     table.sort(pos)
@@ -151,7 +151,22 @@ function data()
   -- edge is read on its own, so one unreadable edge is counted ("!N"), not
   -- the whole lane lost.
   local function laneEdges()
-    local list = entitiesWith(ct().BASE_EDGE, "BASE_EDGE")
+    -- Build 40408 refuses generic BASE_EDGE enumeration. The street
+    -- system's node map includes road and rail segments, each listed at
+    -- both ends; deduplicate before hashing (as tpf3mp/lanes.lua does).
+    local ok, map = pcall(function() return api().engine.system.streetSystem.getNode2SegmentMap() end)
+    local list
+    if ok and type(map) == "table" then
+      list = {}
+      local seen = {}
+      for _, segments in pairs(map) do
+        for _, id in pairs(segments) do
+          if not seen[id] then seen[id] = true; list[#list + 1] = id end
+        end
+      end
+    else
+      list = entitiesWith(ct().BASE_EDGE, "BASE_EDGE")
+    end
     if not list then return nil end
     local cache, geo, bad = {}, {}, 0
     for _, eid in ipairs(list) do
@@ -218,6 +233,18 @@ function data()
       end
     else
       local players = entitiesWith(ct().PLAYER, "PLAYER") or {}
+      if #players == 0 then
+        -- PLAYER cannot be enumerated on build 40408. In multiplayer the
+        -- GUI's getPlayer is deliberately local to each player, so use the
+        -- saved roster to compare every company's actual ACCOUNT instead.
+        pcall(function()
+          local e = api().engine.system.gameScriptSystem.getEntityForGameScript("tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs")
+          local script = assert(getComp(e, ct().GAME_SCRIPT))
+          for _, company in ipairs(script.state.companies.list) do
+            if not company.gone and type(company.entity) == "number" then players[#players + 1] = company.entity end
+          end
+        end)
+      end
       if #players == 0 then
         pcall(function() players = { api().engine.util.getPlayer() } end)
       end

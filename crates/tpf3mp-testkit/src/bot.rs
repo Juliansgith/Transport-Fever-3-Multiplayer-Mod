@@ -206,6 +206,7 @@ impl Bot {
                 ClientEvent::RoomUpdate(_)
                 | ClientEvent::Upload { .. }
                 | ClientEvent::Chat { .. }
+                | ClientEvent::Preview { .. }
                 | ClientEvent::ContentDiff(_)
                 | ClientEvent::Notice(_) => {}
                 ClientEvent::Kicked => return Err(BotError::Closed("kicked from the room".into())),

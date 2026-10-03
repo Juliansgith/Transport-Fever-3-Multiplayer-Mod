@@ -32,7 +32,10 @@ const ANNOUNCEMENTS: usize = 16;
 
 pub use crate::{
     admin::serve_admin,
-    diagnostics::{DiagnosticsConfig, Entry as DiagnosticsEntry, SESSION_QUOTA},
+    diagnostics::{
+        DiagnosticsConfig, Entry as DiagnosticsEntry, READ_LIMIT as DIAGNOSTICS_READ_LIMIT,
+        SESSION_QUOTA, SessionOf as DiagnosticsSession, Summary as DiagnosticsSummary,
+    },
     ruleset::{AcceptAll, NATIVE, RulesChoice, RulesMenu, Ruleset, RulesetFactory},
     snapshots::SnapshotConfig,
     tunnel::{AddressRange, TunnelConfig},
@@ -469,11 +472,32 @@ impl ServerStats {
         self.shared.diagnostics.as_ref().map(Diagnostics::list)
     }
 
+    /// Who the session or run `code` is: its sessions and their players,
+    /// by ID and name. `None` when the server keeps none or has none for it.
+    pub fn diagnostics_summary(&self, code: &str) -> io::Result<Option<DiagnosticsSummary>> {
+        match &self.shared.diagnostics {
+            Some(diagnostics) => diagnostics.summary(code),
+            None => Ok(None),
+        }
+    }
+
     /// One session's diagnostics, one JSON object a line; `None` when the
     /// server keeps none or has none for it.
     pub fn session_diagnostics(&self, session: &str) -> io::Result<Option<Vec<u8>>> {
+        self.diagnostics_of(session, None)
+    }
+
+    /// The diagnostics of a session, by its support code, or of a
+    /// launcher's run, by its log session, one JSON object a line, of `source` alone when one is
+    /// given: the newest [`DIAGNOSTICS_READ_LIMIT`] bytes at most. `None`
+    /// when the server keeps none or has none for it.
+    pub fn diagnostics_of(
+        &self,
+        code: &str,
+        source: Option<tpf3mp_proto::LogSource>,
+    ) -> io::Result<Option<Vec<u8>>> {
         match &self.shared.diagnostics {
-            Some(diagnostics) => diagnostics.read(session),
+            Some(diagnostics) => diagnostics.read(code, source),
             None => Ok(None),
         }
     }

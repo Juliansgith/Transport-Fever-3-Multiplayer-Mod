@@ -40,6 +40,7 @@
 //! [`ENV`]`=0`, the game's own value stays (and one this wrote goes back).
 
 #![allow(unsafe_code)]
+#![cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
 
 use std::sync::{
     Mutex, PoisonError,

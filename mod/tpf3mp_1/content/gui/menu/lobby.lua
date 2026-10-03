@@ -1084,6 +1084,24 @@ function lobby.content(onClose, focus, onNewGame)
 	local page = pageOf(state)
 	local disconnect = function() send({ action = "disconnect" }, _("Disconnecting...")) end
 
+	-- The launcher's run, which every line of its diagnostics carries, with
+	-- a Copy: what to quote with a report so the operator reads all of
+	-- this run's logs. Nothing while diagnostics are off.
+	local function logSession()
+		local code = state.log_session
+		if code == nil or code == "" then return gap(1) end
+		return row({
+			note(_("Log session  ")),
+			label(code, "font-scale-body, info"),
+			gap(6),
+			button(copiedS:old() > 0 and _("Copied") or _("Copy"), function()
+				local refused = act({ action = "copy", text = code })
+				refusedS:set(refused)
+				if not refused then copiedS:set(COPIED_POLLS) end
+			end, nil, true, _("Copy the log session code, to quote with a report")),
+		})
+	end
+
 	-- Where the player is, top right: online as whom, on which server.
 	local status
 	if connected then
@@ -1281,6 +1299,8 @@ function lobby.content(onClose, focus, onNewGame)
 		children[#children + 1] = row(buttons)
 		children[#children + 1] = gap(12)
 		children[#children + 1] = note(_("Changing the server disconnects you and connects to the new one. Invites only join rooms on your own server."))
+		children[#children + 1] = gap(12)
+		children[#children + 1] = logSession()
 		return frame(_("Server"), status, column(children, style{ size = { LEFT + 100, AUTO } }),
 			{ gui_react_util.makeHorizontalSpacer(), button(_("Close"), onClose) })
 	end
@@ -1354,6 +1374,8 @@ function lobby.content(onClose, focus, onNewGame)
 				gap(8),
 				button(_("Your banner"), function() bannerS:set(true) end, nil, canAct),
 				gui_react_util.makeHorizontalSpacer(),
+				logSession(),
+				gap(12),
 				button(_("Close"), onClose),
 			}
 		)

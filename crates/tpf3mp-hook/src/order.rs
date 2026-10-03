@@ -114,15 +114,11 @@ thread_local! {
 }
 
 /// From the step detour, around its call of the game's `GameSim::Step`:
-/// this thread is inside the simulation's step. The road fix counts the
-/// appends it sees there apart from all others: the second engine's copy
-/// (`GameState::Replicate` `0x255de0` -> `ecs::Engine::Replicate`
-/// `0x2bb78f0` -> `Replicator::Apply` `0x2bb4430`, whose end of
-/// modification calls the systems' `EntityAdded` in that engine) runs from
-/// the game's frame, outside the step, as often as the frames come, and
-/// any append on a worker thread inside the step would show up there too.
-/// The appends inside the step are the simulation's own, in one order in
-/// every game, so their counts are what two games' logs must agree on.
+/// this thread is inside the simulation's step. The second engine's copy
+/// (`GameState::Replicate` -> `Replicator::Apply`) runs from the game's
+/// frame, outside the step, as often as the frames come, so the fixes count
+/// what they see inside the step apart: those counts are what two games'
+/// logs must agree on.
 pub fn set_in_step(inside: bool) {
     IN_STEP.with(|flag| flag.set(inside));
 }
@@ -3392,41 +3388,6 @@ pub mod road {
         REFUSALS.take_window()
     }
 
-    /// The appends seen inside the game's step, and outside it: those inside
-    /// are the simulation's own and come in one order in every game; the
-    /// others (the second engine's copy, made from the frame) come when the
-    /// frames do, so the counters taken together jitter from game to game
-    /// without anything having diverged.
-    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-    pub struct ThreadCounts {
-        pub step_appends: u64,
-        pub step_reorders: u64,
-        pub other_appends: u64,
-        pub other_reorders: u64,
-    }
-
-    static STEP_CALLS: AtomicU64 = AtomicU64::new(0);
-    static STEP_REORDERS: AtomicU64 = AtomicU64::new(0);
-    static OTHER_CALLS: AtomicU64 = AtomicU64::new(0);
-    static OTHER_REORDERS: AtomicU64 = AtomicU64::new(0);
-
-    /// The counts so far.
-    pub fn thread_counts() -> ThreadCounts {
-        ThreadCounts {
-            step_appends: STEP_CALLS.load(Ordering::Relaxed),
-            step_reorders: STEP_REORDERS.load(Ordering::Relaxed),
-            other_appends: OTHER_CALLS.load(Ordering::Relaxed),
-            other_reorders: OTHER_REORDERS.load(Ordering::Relaxed),
-        }
-    }
-
-    /// The in-step milestone line: one per 65536 appends inside the game's
-    /// step, the line two games' logs must agree on (the others' counts are
-    /// not in it).
-    pub fn step_line(appends: u64, reorders: u64) -> String {
-        format!("order fix {FIX}: in-step appends={appends} reordered={reorders}")
-    }
-
     /// An edge id's meaningful bytes: entity, index, direction.
     fn edge_key(probe: &mut Probe, edge_id: u64) -> Option<crate::roadtrace::EdgeKey> {
         Some((
@@ -3480,20 +3441,16 @@ pub mod road {
     ) {
         guarded(FIX, &BROKEN, || {
             let n = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-            let on_step = in_step();
-            let (calls, reorders_here) = if on_step {
-                (&STEP_CALLS, &STEP_REORDERS)
-            } else {
-                (&OTHER_CALLS, &OTHER_REORDERS)
-            };
-            let here = calls.fetch_add(1, Ordering::Relaxed) + 1;
-            let edge_ids: Vec<u64> = edge_ids.collect();
+            let tracing = in_step() && crate::roadtrace::enabled();
+            let mut traced_edges = Vec::new();
             let mut reordered_now = 0;
-            for &edge_id in &edge_ids {
+            for edge_id in edge_ids {
+                if tracing {
+                    traced_edges.push(edge_id);
+                }
                 match sort_edge(probe, data, edge_id) {
                     Ok(Sorted::Reordered) => {
                         reordered_now += 1;
-                        reorders_here.fetch_add(1, Ordering::Relaxed);
                         let reorders = REORDERS.fetch_add(1, Ordering::Relaxed) + 1;
                         if reorders <= 3 {
                             log::line(&format!(
@@ -3505,7 +3462,7 @@ pub mod road {
                     Err(why) => REFUSALS.note(FIX, why),
                 }
             }
-            if on_step {
+            if tracing {
                 // The road entry trace (logging only): the simulation's own
                 // appends, which two agreeing games make alike.
                 let step = crate::seeds::current_step();
@@ -3516,33 +3473,25 @@ pub mod road {
                     current: appended.current,
                     range: appended.range,
                     bounds: appended.bounds,
-                    edges: edge_ids
+                    edges: traced_edges
                         .iter()
                         .filter_map(|&id| edge_key(probe, id))
                         .collect(),
                 };
                 let entries: Option<Vec<_>> =
                     crate::roadtrace::wants_entries(appended.entity, step).then(|| {
-                        edge_ids
+                        traced_edges
                             .iter()
                             .filter_map(|&id| Some((edge_key(probe, id)?, listed(probe, data, id))))
                             .collect()
                     });
                 crate::roadtrace::note(step, &append, reordered_now, entries.as_deref());
             }
-            if on_step && here.is_multiple_of(1 << 16) {
-                log::line(&step_line(here, reorders_here.load(Ordering::Relaxed)));
-            }
             if n == 1 || n.is_multiple_of(1 << 16) {
-                let counts = thread_counts();
                 log::line(&format!(
-                    "order fix {FIX}: alive, appends={n} reordered={} refused={} (in the step {}/{}, outside it {}/{})",
+                    "order fix {FIX}: alive, appends={n} reordered={} refused={}",
                     REORDERS.load(Ordering::Relaxed),
-                    REFUSALS.count.load(Ordering::Relaxed),
-                    counts.step_appends,
-                    counts.step_reorders,
-                    counts.other_appends,
-                    counts.other_reorders,
+                    REFUSALS.count.load(Ordering::Relaxed)
                 ));
             }
         });
@@ -4233,10 +4182,6 @@ mod tests {
         assert_eq!(
             platform::watch_line(3290, 0, 217708, seen),
             "watch: step 3290 engine 0 vehicle 217708 state 2 line 4711 stop 1 terminal 900/3"
-        );
-        assert_eq!(
-            road::step_line(65536, 17000),
-            "order fix road-entry-order: in-step appends=65536 reordered=17000"
         );
     }
 
@@ -5542,57 +5487,6 @@ mod splice_tests {
         assert_eq!(result, 7);
         assert_eq!(world.ids(3), vec![2, 8]);
         assert_eq!(world.ids(0), vec![40, 12]);
-        road::arm_for_test(0, 0);
-    }
-
-    /// An append inside the game's step and one outside it (the second
-    /// engine's copy is made from the frame) are counted apart, so the
-    /// in-step counts can be compared between games.
-    #[test]
-    fn appends_are_counted_apart_inside_the_step_and_outside_it() {
-        let _serial = crate::lua::tests::SERIAL
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        road::arm_for_test(
-            engine_add as *const () as usize,
-            engine_add_range as *const () as usize,
-        );
-        let append = |step: bool, lists: &'static [&'static [i32]]| {
-            std::thread::spawn(move || {
-                if step {
-                    set_in_step(true);
-                }
-                let world = RoadWorld::new(lists);
-                // SAFETY: as in the test above: the detour on a world built
-                // in memory, the "engine" appending nothing.
-                unsafe {
-                    road::add_range(
-                        world.at(RoadWorld::DATA),
-                        9,
-                        0,
-                        world.at(RoadWorld::PATH),
-                        0,
-                        0,
-                        0,
-                        0,
-                        world.at(0),
-                    )
-                };
-            })
-            .join()
-            .unwrap();
-        };
-        let before = road::thread_counts();
-        append(true, &[&[3, 1]]);
-        let after_step = road::thread_counts();
-        assert_eq!(after_step.step_appends, before.step_appends + 1);
-        assert_eq!(after_step.step_reorders, before.step_reorders + 1);
-        assert_eq!(after_step.other_appends, before.other_appends);
-        append(false, &[&[1, 3]]);
-        let after_other = road::thread_counts();
-        assert_eq!(after_other.other_appends, after_step.other_appends + 1);
-        assert_eq!(after_other.other_reorders, after_step.other_reorders);
-        assert_eq!(after_other.step_appends, after_step.step_appends);
         road::arm_for_test(0, 0);
     }
 

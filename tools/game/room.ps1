@@ -33,7 +33,7 @@ $ErrorActionPreference = "Stop"
 if (-not $GameExe) { throw "Transport Fever 3 not found; set TPF3MP_GAME_EXE" }
 if (-not $GameLocal) { throw "the game's userdata folder not found; set TPF3MP_GAME_LOCAL" }
 $rig = "$Bin\tpf3mp-rig.exe"
-if (-not (Test-Path $rig)) { throw "no $rig; build it: cargo build --release -p tpf3mp-testkit --bin tpf3mp-rig -p tpf3mp-hook" }
+if (-not (Test-Path $rig)) { throw "no $rig; build it: cargo build --release -p tpf3mp-testkit --bin tpf3mp-rig; then cargo build --release -p tpf3mp-hook --lib" }
 if (-not (Test-Path "$Bin\tpf3mp_hook.dll")) { throw "no tpf3mp_hook.dll in $Bin; cargo build --release -p tpf3mp-hook" }
 if (-not (Test-Path "$GameSaves\$Fixture.sav")) { throw "no save $Fixture in $GameSaves (docs/GAME_TESTING.md, 'Fixture saves')" }
 

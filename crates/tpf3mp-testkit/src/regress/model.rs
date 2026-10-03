@@ -615,6 +615,12 @@ impl State {
             Action::Subsidy(_) => Ok(()),
             // A name: the model keeps no names.
             Action::Rename { .. } => Ok(()),
+            // A company perk: the model keeps no permits, towns' reputations
+            // or emissions.
+            Action::Perk(_) => Ok(()),
+            // A town building's preservation: the model keeps no towns'
+            // buildings.
+            Action::Preserve(_) => Ok(()),
             // The notification log and a warehouse's stocks: the model keeps
             // neither.
             Action::Notification(_) | Action::DiscardCargo(_) => Ok(()),
@@ -1057,6 +1063,7 @@ impl State {
                     self.edges.remove(&key);
                 }
             }
+            Bulldoze::Assets(_) => refuse!("no asset group there"),
             Bulldoze::Construction(reference) => {
                 let key = self.find_construction(reference)?;
                 let construction = &self.constructions[&key];
@@ -1094,8 +1101,6 @@ impl State {
                 }
                 self.objects.remove(&object);
             }
-            // The model's world has no trees or other assets.
-            Bulldoze::Assets(_) => refuse!("no asset group there"),
         }
         Ok(())
     }

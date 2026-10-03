@@ -234,12 +234,8 @@ end
 -- no one's.
 function companies.ownerOf(api, entity)
 	if type(entity) ~= "number" or entity < 0 then return nil end
-	-- Native components are userdata on build 40408, while the tests' are
-	-- tables: the field is read through the binding either way. Read as a
-	-- table only, every owner came back nil (2026-10-02: a save's own
-	-- headquarters "owned by nil", every company owning "0 construction(s)",
-	-- no line counted to a company's score, and no other company's thing
-	-- refused). As origin/dev reads it (#70).
+	-- Native components are userdata on build 40408, while fixtures use
+	-- tables. Read the field through the binding instead of discarding it.
 	local ok, owner = pcall(function()
 		local c = api.engine.getComponent(entity, api.type.ComponentType.PLAYER_OWNED)
 		return c and c.player
@@ -537,6 +533,82 @@ function companies.mayUse(roster, company, group, api)
 		return false, "the station belongs to " .. other.name .. ", which keeps its stations to itself"
 	end
 	return true
+end
+
+-- The line manager runs in more than one GUI Lua state. Install the same
+-- station predicate in each state's entity_util, including the HUD state.
+-- Resolve the company from the room roster; native GUI ownership can still
+-- refer to the save's original player. Never extend this to depots/assets.
+local stationUtilities = setmetatable({}, { __mode = "k" })
+local stationSelections = setmetatable({}, { __mode = "k" })
+function companies.followStations(api, require_, current, inHudState)
+	local changed, seen = 0, {}
+	for _, path in ipairs({ "/scripts/entity_util.tl", "::/scripts/entity_util.tl" }) do
+		local ok, util = pcall(require_, path)
+		if ok and type(util) == "table" and stationUtilities[util] and not seen[util] then
+			changed = changed + 1
+		end
+		if ok and type(util) == "table" and not stationUtilities[util]
+			and type(util.isOwnedByPlayerOrNotOwned) == "function" then
+			local original = util.isOwnedByPlayerOrNotOwned
+			util.isOwnedByPlayerOrNotOwned = function(entity, ...)
+				local roster, me = current()
+				if roster and me then
+					local known, station = pcall(function()
+						local CT = api.type.ComponentType
+						if api.engine.getComponent(entity, CT.STATION_GROUP) ~= nil then return true end
+						local c = api.engine.getComponent(entity, CT.CONSTRUCTION)
+						return c ~= nil and c.stations ~= nil and #c.stations > 0
+					end)
+					if known and station then
+						local mine = companies.of(roster, me)
+						if not mine or not mine.entity then return false end
+						return companies.mayUse(roster, mine.entity, entity, api)
+					end
+				end
+				return original(entity, ...)
+			end
+			stationUtilities[util] = true
+			changed = changed + 1
+		end
+		if ok and type(util) == "table" then seen[util] = true end
+	end
+	-- line_util loads React's builtin recipes. Only the HUD state has that
+	-- registry; requiring it from the game-script GUI produces native errors.
+	if not inHudState then return changed end
+	-- Build 40408's native selector can return a STATION entity with
+	-- TransportNetworkEdge details for a station built by another engine
+	-- player. The line manager then treats even our own company's station as
+	-- a waypoint. Recover the ordinary station details from that entity;
+	-- leave genuine network edges and detailed terminal selections alone.
+	local ok, line = pcall(require_, "/gui/line_vehicle_mgmt/line_util.tl")
+	if ok and type(line) == "table" and not stationSelections[line]
+		and type(line.convertDetails) == "function" then
+		local original = line.convertDetails
+		line.convertDetails = function(entity, details)
+			local converted = original(entity, details)
+			local roster, me = current()
+			if roster and me and converted and converted.transportNetworkEdge then
+				local read, group = pcall(function()
+					local CT = api.type.ComponentType
+					if api.engine.getComponent(entity, CT.STATION_GROUP) then return entity end
+					if api.engine.getComponent(entity, CT.STATION) then
+						return api.engine.system.stationGroupSystem.getStationGroup(entity)
+					end
+				end)
+				if read and type(group) == "number" and group >= 0 then
+					local mine = companies.of(roster, me)
+					if not mine or not mine.entity or not companies.mayUse(roster, mine.entity, group, api) then
+						return nil
+					end
+					return original(entity, nil)
+				end
+			end
+			return converted
+		end
+		stationSelections[line] = true
+	end
+	return changed
 end
 
 -- Whether anything is owned by the player entity `entity`; nil when this

@@ -76,8 +76,13 @@ local function params(list)
 	return out
 end
 
+-- Whether a handler runs dry (apply.proposalOf): it makes the proposal its
+-- action would build and stops there, sending nothing and saying nothing.
+local dry = false
+
 -- A line for the hook's log; the game script sets apply.log once linked.
 local function log(line)
+	if dry then return end
 	if apply.log then pcall(apply.log, line) end
 end
 
@@ -112,6 +117,7 @@ local callbacks = true
 -- its command data and result entities (nil, where it answers nothing
 -- here). A command the game refuses raises, and apply.run reports it.
 local function send(command)
+	if dry then error({ dry = "a command that is not a build" }, 0) end
 	if callbacks then
 		local heard, went, data, entities = false, nil, nil, nil
 		local sent, err = pcall(api.cmd.sendCommand, command, function(d, success, e)
@@ -214,6 +220,9 @@ end
 -- enough money) fails here with its reasons, the same in every game, and is
 -- never sent; sent without a callback, a refused build would fail unseen.
 local function buildProposal(proposal, context)
+	-- Dry: the proposal is what was asked for; the game's verdict and the
+	-- build are not.
+	if dry then error({ dry = true, proposal = proposal, context = context }, 0) end
 	local proposals = api.engine.util.proposal
 	if proposals and proposals.makeProposalData then
 		local data = proposals.makeProposalData(proposal, context)
@@ -242,9 +251,8 @@ local removeEdgeObject
 
 -- Names station groups the room built, the same in every game (2026-10-02:
 -- room-built stops and stations stood unnamed). The game's own tools name
--- them natively, a name game scripts never see: a stop tool's proposal
--- carries no name for its edge objects (build 40408), and a script build
--- with an empty name leaves its entities with no NAME (docs/BUILDING.md,
+-- them natively; the room carries that name from the originator's proposal.
+-- A script build with an empty name leaves its entities with no NAME (docs/BUILDING.md,
 -- "What a script proposal must carry"). `groups` lists { group =, stations
 -- = { ... } }, each a group this build's own stations alone make up; one
 -- with a name of its own already keeps it. `name` is the name to give, or
@@ -372,7 +380,6 @@ local function settleConstruction(con, file)
 			.. table.concat(fixed, ", "))
 	end
 end
-
 
 -- An edit of a construction (its modules or parameters, an upgrade): the
 -- construction the action names removed and the new one built in one
@@ -629,52 +636,47 @@ local function lanesFor(link, t)
 	return out
 end
 
--- The links of a construction tool's streets (BuildConstruction's
--- `connection`) that are not the construction's own, and the vertices left
--- out with the rest (skipped[i + 1] for vertex i). The construction's own
--- tracks and streets end in new nodes nothing else reaches: its entrance,
--- or a depot's whole track, snapped by the tool onto an existing node at
--- its far end (build 40408). The construction builds those itself, and
--- built beside it as well they collide, so its refresh cannot snap it
--- (2026-09-30: a rail depot left unconnected in every game). So a new
--- vertex with one link is left out with its link, and again, until none
--- is; what stays joins existing nodes or the streets the build splits.
-function apply.ownStreets(polyline)
-	local vertices, all = polyline.vertices, polyline.links
-	local out, degree = {}, {}
-	for _, link in ipairs(all) do
-		degree[link.from] = (degree[link.from] or 0) + 1
-		degree[link.to] = (degree[link.to] or 0) + 1
-	end
-	local function loose(i) return vertices[i + 1].resolve == "New" and degree[i] == 1 end
-	local changed = true
-	while changed do
-		changed = false
-		for k, link in ipairs(all) do
-			if not out[k] and (loose(link.from) or loose(link.to)) then
-				out[k], changed = true, true
-				degree[link.from] = degree[link.from] - 1
-				degree[link.to] = degree[link.to] - 1
-			end
-		end
-	end
-	local links, skipped = {}, {}
-	for k, link in ipairs(all) do
-		if not out[k] then links[#links + 1] = link end
-	end
-	for i = 0, #vertices - 1 do
-		skipped[i + 1] = vertices[i + 1].resolve == "New" and (degree[i] or 0) == 0
-	end
-	return links, skipped
-end
-
 -- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
 -- street proposal. `network`, `templateName` and `style` are the build's
 -- own kind, for the links that name none; nil for a construction's
--- streets, whose every link names its kind. With `dangling` true, what
--- hangs off the rest at a new vertex with no other link is left out, link
--- by link until none does: in a construction's streets, the construction's
--- own (ownStreets).
+-- streets, whose every link names its kind. With `dangling` true, peel
+-- back complete branches ending at new vertices: the construction makes
+-- its own entrance and internal track. Removing only the outermost links
+-- leaves duplicate track inside a branched depot (Steam 40408). Existing
+-- nodes and splits anchor the external network and are never peeled off.
+function apply.ownStreets(polyline)
+	local links, skipped = polyline.links, {}
+	local degree, incident = {}, {}
+	for i = 0, #polyline.vertices - 1 do degree[i], incident[i] = 0, {} end
+	for k, link in ipairs(links) do
+		for _, i in ipairs({ link.from, link.to }) do
+			degree[i] = degree[i] + 1
+			incident[i][#incident[i] + 1] = k
+		end
+	end
+	local function loose(i) return polyline.vertices[i + 1].resolve == "New" and degree[i] == 1 end
+	local queue, removed = {}, {}
+	for i = 0, #polyline.vertices - 1 do if loose(i) then queue[#queue + 1] = i end end
+	local head = 1
+	while head <= #queue do
+		local i = queue[head]
+		head = head + 1
+		for _, k in ipairs(incident[i]) do
+			if not removed[k] then
+				removed[k] = true
+				local link = links[k]
+				local other = link.from == i and link.to or link.from
+				degree[i], degree[other] = degree[i] - 1, degree[other] - 1
+				if loose(other) then queue[#queue + 1] = other end
+			end
+		end
+	end
+	links = {}
+	for k, link in ipairs(polyline.links) do if not removed[k] then links[#links + 1] = link end end
+	for i, v in ipairs(polyline.vertices) do skipped[i] = v.resolve == "New" and degree[i - 1] == 0 end
+	return links, skipped
+end
+
 function networkInto(proposal, network, templateName, style, polyline, dangling)
 	local links, skipped = polyline.links, {}
 	local settings = polyline.junctions
@@ -839,6 +841,15 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 		s.comp.roadTemplate = kind.template
 		s.comp.roadStyle = kind.style or t.streetStyle
 		s.comp.roadType = kind.network == "Track" and enum("RoadType").TRACK or enum("RoadType").STREET
+		-- A track's distance between its centre and its neighbours', its
+		-- template's (StreetTemplate.trackDistance): without it the game lays
+		-- no shared ballast bed or catenary with the tracks beside it, and
+		-- the ground shows between them (2026-10-02, tracks laid side by
+		-- side in a room). Every game reads the same template.
+		if kind.network == "Track" then
+			local ok, d = pcall(function() return t.trackDistance end)
+			if ok and type(d) == "number" and d > 0 then s.comp.distance = d end
+		end
 		-- What the tool left on it: its decorations (by name, as every game
 		-- numbers them), the towns' lock, and the acting company's ownership.
 		local decorations = {}
@@ -925,7 +936,10 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	proposal.streetProposal.edgesToRemove = edgesToRemove
 	if #nodesToRemove > 0 then proposal.streetProposal.nodesToRemove = nodesToRemove end
 	if #configsToRemove > 0 then proposal.streetProposal.nodeConfigsToRemove = configsToRemove end
-	junctions.into(proposal, polyline.junctions, ends, mine)
+	-- A preview (dry) leaves the junctions' lane and light settings out:
+	-- they draw nothing, and a snapped build's may name a node only its
+	-- originator's tool has.
+	if not dry then junctions.into(proposal, polyline.junctions, ends, mine) end
 
 	-- What is sent, in the log before it goes: an exception from the game
 	-- does not always come back through pcall.
@@ -2109,6 +2123,74 @@ function HANDLERS.Prospect(p, ctx)
 	}))
 end
 
+-- A company perk (action::PerkOp) goes through the company script's own
+-- event, with the parameters the construction menu's perk tool sends it
+-- (gui/construction/tools/industry_greenify_tool.script.tl,
+-- marketing_campaign_tool.script.tl): here it runs at once, in every game
+-- at the same update, for the acting company, which spends the permit. The
+-- company script hands it on to the emissions or towns script, in this game
+-- alone, as in every other.
+
+function HANDLERS.Perk(op, ctx)
+	if op.Greenify then
+		local g = op.Greenify
+		local con = entityOf(ctx, "industries", g.industry)
+		local part = captureModule.industryPart(con)
+		if part == nil then error("industry-" .. tostring(g.industry) .. " is no one industry here", 0) end
+		log("greenifying industry-" .. tostring(g.industry) .. " (" .. tostring(part) .. ")")
+		return run(api.cmd.makeScriptingSendEventCmd("", "Companies", "MakeGreen", {
+			companyEntity = company(),
+			constructionEntity = part,
+			permitKey = g.permit,
+		}))
+	elseif op.Marketing then
+		local m = op.Marketing
+		local town = entityOf(ctx, "towns", m.town)
+		local cost = tonumber(m.cost)
+		if cost == nil or cost < 0 then error("a campaign of no price", 0) end
+		-- The tool will not start one the company cannot pay for; neither
+		-- does any game.
+		local read, balance = pcall(function() return api.engine.util.finance.getPlayersBalance(company()) end)
+		if not read or type(balance) ~= "number" or balance ~= balance or math.abs(balance) == math.huge then
+			error("cannot read the company balance for the campaign", 0)
+		end
+		if balance < cost then
+			error("not enough money for the campaign", 0)
+		end
+		log("marketing in town-" .. tostring(m.town) .. " (" .. tostring(town) .. ") for " .. tostring(cost))
+		send(api.cmd.makeScriptingSendEventCmd("", "Companies", "startMarketingCampaign", {
+			townEntity = town,
+			companyEntity = company(),
+			marketingParams = { durationMs = m.duration_ms, lineCostFactor = m.line_cost_factor },
+			permitKey = m.permit,
+		}))
+		-- What the tool books once the campaign started (its command's
+		-- callback): the price, to the company, as another expense.
+		local entry = api.type.JournalEntry.new()
+		entry.amount = -cost
+		entry.time = -1
+		entry.category.type = api.type.JournalEntry.Type.OTHER
+		return run(api.cmd.makeJournalBookAssetCmd(company(), entry, api.type.Vec3f.new(0, 0, 0)))
+	end
+	return false, "a perk of no kind"
+end
+
+-- A town building's Historic Preservation (action::Preservation), as its
+-- window sets it (gui/entity_window/town_building/town_building.tl): the
+-- town building at that place in the construction's list. Town buildings
+-- are the town's: any company may, as in single player.
+function HANDLERS.Preserve(p)
+	local con, c = constructionAt(p.building)
+	local list = c and c.townBuildings
+	local building = list and list[p.index + 1]
+	if type(building) ~= "number" then
+		error("no town building " .. tostring(p.index) .. " in the " .. tostring(p.building.file), 0)
+	end
+	log((p.preserved and "preserving " or "no longer preserving ") .. tostring(building) .. " of "
+		.. tostring(con) .. " " .. tostring(p.building.file))
+	return run(api.cmd.makeTownBuildingSetBlockedDevelopmentCmd(building, p.preserved == true))
+end
+
 -- The room's companies (tpf3mp/companies.lua): the acting player founds,
 -- joins, renames, recolours or dissolves one, and its head locks it, sends a
 -- player out or shares its stations, in `ctx.roster`; `ctx.seal` is the
@@ -2214,6 +2296,34 @@ function apply.run(action, ctx)
 	if not ok then return false, tostring(applied) end
 	if applied == true then return true, nil, detail end
 	return false, detail
+end
+
+-- The actions whose proposal apply.proposalOf makes: the builds a player's
+-- tool previews (tpf3mp/previews.lua).
+apply.PREVIEWS = { BuildConstruction = true, BuildRoad = true, BuildTrack = true, PlaceStop = true }
+
+-- The proposal `action` would build in this game, and the context it would
+-- be built with, as apply.run would make them for `ctx`, without sending
+-- anything, building anything or writing the log: for showing another
+-- player's build preview (docs/HOOKS.md, "Build previews"). Or nil and why:
+-- an action that is not a build, or one this game cannot make (a street
+-- type it lacks, an edge it does not have).
+function apply.proposalOf(action, ctx)
+	if type(action) ~= "table" then return nil, "an action is a table" end
+	local kind, body = next(action)
+	if kind == nil or next(action, kind) ~= nil then return nil, "an action is a table of one entry" end
+	if not apply.PREVIEWS[kind] then return nil, "no preview of " .. tostring(kind) end
+	local allowed, why = acceptance.check(action)
+	if not allowed then return nil, why end
+	dry, acting = true, ctx
+	local ok, stopped = pcall(HANDLERS[kind], body, ctx)
+	dry, acting = false, nil
+	if not ok and type(stopped) == "table" and stopped.proposal ~= nil then
+		return stopped.proposal, stopped.context
+	end
+	if ok then return nil, "the build made no proposal" end
+	if type(stopped) == "table" then return nil, tostring(stopped.dry) end
+	return nil, tostring(stopped)
 end
 
 -- The actions this version applies, for tests and the log.

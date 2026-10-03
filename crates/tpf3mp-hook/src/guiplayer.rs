@@ -27,6 +27,7 @@
 //! missing, or with [`ENV`]`=0`, every read answers as the game's.
 
 #![allow(unsafe_code)]
+#![cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
 
 use std::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering,
@@ -278,11 +279,11 @@ fn noted(key: &str) -> Option<i64> {
         .filter(|&v| (0..=i64::from(i32::MAX)).contains(&v))
 }
 
-/// The company to answer with and the save's player, when the views are to
-/// see the company: in a room, both noted, and the company not the save's.
+/// The GUI company and save player in a room. An absent company note means
+/// the first company; it must also see the other room companies on the map.
 pub fn wanted(room: bool, save: Option<i64>, company: Option<i64>) -> Option<(i64, i64)> {
     match (room, save, company) {
-        (true, Some(save), Some(company)) if company != save => Some((company, save)),
+        (true, Some(save), company) => Some((company.unwrap_or(save), save)),
         _ => None,
     }
 }
@@ -946,11 +947,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_room_with_another_company_changes_the_views() {
+    fn every_room_company_can_see_the_map_but_outside_rooms_stays_native() {
         assert_eq!(wanted(false, Some(214_443), Some(372_631)), None);
         assert_eq!(wanted(true, None, Some(372_631)), None);
-        assert_eq!(wanted(true, Some(214_443), None), None);
-        assert_eq!(wanted(true, Some(214_443), Some(214_443)), None);
+        assert_eq!(wanted(true, Some(214_443), None), Some((214_443, 214_443)));
+        assert_eq!(
+            wanted(true, Some(214_443), Some(214_443)),
+            Some((214_443, 214_443))
+        );
+        assert!(shown(372_631, 214_443, true, true));
+        assert_eq!(value(214_443, 214_443, 214_443), 214_443);
+        assert_eq!(owner(372_631, 214_443, 214_443), None);
         assert_eq!(
             wanted(true, Some(214_443), Some(372_631)),
             Some((372_631, 214_443))

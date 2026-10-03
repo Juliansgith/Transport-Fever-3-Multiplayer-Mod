@@ -339,6 +339,11 @@ impl LauncherArgs {
         Ok(LauncherConfig {
             // The launcher window sets it: it records the player's log.
             diagnostics: None,
+            // The hook's log in the per-user folder, unless a playtest's
+            // game keeps its own (`TPF3MP_DATA_DIR` in `game_env`).
+            game_logs: data_dir()
+                .ok()
+                .map(|dir| crate::game_logs::Places::of_this_computer(&dir)),
             hook: package_hook(),
             game_exe: self.game_exe.clone(),
             game_env: Vec::new(),

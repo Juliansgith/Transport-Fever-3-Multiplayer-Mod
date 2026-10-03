@@ -155,6 +155,11 @@ struct Args {
     #[arg(long, default_value_t = 1024)]
     diagnostics_mib: u64,
 
+    /// Disk one session's diagnostics may take, in MiB: the launcher's,
+    /// the hook's and the game's logs, and the game's error reports.
+    #[arg(long, default_value_t = 64)]
+    diagnostics_session_mib: u64,
+
     /// TCP address that also takes players through a WebSocket tunnel, for
     /// networks that block UDP. Serves TLS with --cert unless
     /// --tunnel-behind-proxy. Players look for wss://<host>/tpf3mp on 443.
@@ -254,11 +259,15 @@ async fn main() -> Result<()> {
         warn!("no snapshots: players cannot join games that have started");
     }
     config.diagnostics = match &args.data_dir {
-        Some(data) if args.diagnostics_days > 0 => Some(DiagnosticsConfig {
-            dir: data.join("diagnostics"),
-            keep_for: Duration::from_secs(args.diagnostics_days.saturating_mul(86_400)),
-            max_total: args.diagnostics_mib.saturating_mul(1 << 20),
-        }),
+        Some(data) if args.diagnostics_days > 0 => {
+            let mut diagnostics = DiagnosticsConfig::new(
+                data.join("diagnostics"),
+                Duration::from_secs(args.diagnostics_days.saturating_mul(86_400)),
+                args.diagnostics_mib.saturating_mul(1 << 20),
+            );
+            diagnostics.session_quota = args.diagnostics_session_mib.saturating_mul(1 << 20);
+            Some(diagnostics)
+        }
         _ => None,
     };
     match &args.secret_file {

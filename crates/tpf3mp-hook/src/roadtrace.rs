@@ -16,7 +16,7 @@
 //! agreed to the centimetre at the checkpoint of step 25900. A milestone
 //! comes every 65,536 appends, about 330 steps; this module narrows it:
 //!
-//! - **At every checkpoint** (always, while the fix sorts) one line with
+//! - **At every checkpoint** (opt-in with [`DIGEST_ENV`], a trace or recorder) one line with
 //!   the in-step appends since the last one: counts, persons (`Add`) and
 //!   vehicles (`AddRange`) apart, an order-free hash of the appends and a
 //!   hash of their sequence. The first checkpoint whose line differs
@@ -28,7 +28,7 @@
 //!   (every game hears the ask), so the appends before a split no one could
 //!   predict are in every game's log.
 //!
-//! For the entities [`ENTITIES_ENV`] lists (the vehicle watcher's list),
+//! For the entities [`ENTITIES_ENV`] lists (entity ids, comma-separated),
 //! a traced append also lists who is on each edge it touched, after the
 //! sort: the vehicles and persons ahead of and behind a watched vehicle.
 
@@ -39,20 +39,35 @@ use crate::order::Fnv1a;
 
 /// `from-to` (room steps, both included): every in-step append in those
 /// steps is logged.
+pub const DIGEST_ENV: &str = "TPF3MP_HOOK_ROAD_ENTRY_DIGEST";
+/// Trace individual appends in a bounded step window.
 pub const TRACE_ENV: &str = "TPF3MP_HOOK_ROAD_ENTRY_TRACE";
 /// A number of steps: the last that many steps' append lines are kept in
 /// memory and written when the room asks for a lane dump.
 pub const RECORD_ENV: &str = "TPF3MP_HOOK_ROAD_ENTRY_RECORD";
-/// The vehicle watcher's list of entities; their appends list each edge's
+/// A list of entity ids, comma-separated; their appends list each edge's
 /// entries.
 pub const ENTITIES_ENV: &str = "TPF3MP_HOOK_WATCH_ENTITIES";
 /// The recorder keeps at most this many steps (about 200 appends a step on
 /// `twomptest`: some 800,000 lines, tens of megabytes).
 pub const MAX_RECORD_STEPS: u64 = 4000;
+/// Hard bounds even when a busy step produces many appends.
+pub const MAX_RECORD_LINES: usize = 100_000;
+pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 /// Edges listed in one line; the rest are counted.
 pub const MAX_EDGES_LISTED: usize = 8;
 /// Entries listed per edge for a watched entity's append.
 pub const MAX_ENTRIES_LISTED: usize = 16;
+
+/// The entity ids `value` lists (commas, spaces or semicolons between
+/// them); what does not read as one is left out.
+pub fn parse_entities(value: Option<&str>) -> HashSet<i32> {
+    value
+        .unwrap_or("")
+        .split([',', ' ', ';'])
+        .filter_map(|word| word.trim().parse().ok())
+        .collect()
+}
 
 /// Who appended: `EdgeUseManager::Add` is the persons' (from
 /// `PersonMoveSystem`), `AddRange` the vehicles' (from
@@ -244,6 +259,7 @@ pub fn trace_line(
 /// The trace's settings, from the environment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Config {
+    pub digest: bool,
     pub window: Option<(u64, u64)>,
     pub record: u64,
     pub watched: HashSet<i32>,
@@ -258,8 +274,20 @@ impl Config {
         record: Option<&str>,
         entities: Option<&str>,
     ) -> (Self, Vec<String>) {
+        Self::with_digest(window, record, entities, None)
+    }
+
+    pub fn with_digest(
+        window: Option<&str>,
+        record: Option<&str>,
+        entities: Option<&str>,
+        digest: Option<&str>,
+    ) -> (Self, Vec<String>) {
         let mut said = Vec::new();
-        let mut config = Config::default();
+        let mut config = Config {
+            digest: matches!(digest.map(str::trim), Some("1" | "on")),
+            ..Config::default()
+        };
         if let Some(value) = window.map(str::trim).filter(|v| !v.is_empty()) {
             match crate::lanedump::parse_step_range(value) {
                 Some(range) => config.window = Some(range),
@@ -276,7 +304,7 @@ impl Config {
                 )),
             }
         }
-        config.watched = crate::order::claims::parse_entities(entities);
+        config.watched = parse_entities(entities);
         let window = match config.window {
             Some((from, to)) => format!("steps {from} to {to} traced"),
             None => "no window traced".to_owned(),
@@ -293,10 +321,19 @@ impl Config {
             let ids: Vec<String> = watched.iter().map(i32::to_string).collect();
             format!(", edge lists said for {}", ids.join(","))
         };
+        let digest = if config.enabled() {
+            "a digest of the in-step appends at every checkpoint"
+        } else {
+            "off"
+        };
         said.push(format!(
-            "road-entry trace: a digest of the in-step appends at every checkpoint; {window}, {record}{watched}"
+            "road-entry trace: {digest}; {window}, {record}{watched}"
         ));
         (config, said)
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.digest || self.record > 0 || self.window.is_some()
     }
 
     /// Whether an append in `step` gets a line (traced or recorded).
@@ -320,6 +357,8 @@ impl Config {
 #[derive(Debug, Default)]
 pub struct Recorder {
     keep: u64,
+    bytes: usize,
+    dropped: u64,
     lines: VecDeque<(u64, String)>,
 }
 
@@ -327,7 +366,7 @@ impl Recorder {
     pub fn new(keep: u64) -> Self {
         Self {
             keep,
-            lines: VecDeque::new(),
+            ..Self::default()
         }
     }
 
@@ -337,10 +376,31 @@ impl Recorder {
         if self.keep == 0 {
             return;
         }
+        // Store only the text length, not excess caller allocation.
+        let line = line.into_boxed_str().into_string();
+        self.bytes += line.len();
         self.lines.push_back((step, line));
         let oldest = step.saturating_sub(self.keep - 1);
         while self.lines.front().is_some_and(|(s, _)| *s < oldest) {
-            self.lines.pop_front();
+            self.bytes -= self
+                .lines
+                .pop_front()
+                .expect("the recorder has an oldest line")
+                .1
+                .len();
+        }
+        self.enforce_limit();
+    }
+
+    fn enforce_limit(&mut self) {
+        while self.lines.len() > MAX_RECORD_LINES || self.bytes > MAX_RECORD_BYTES {
+            self.bytes -= self
+                .lines
+                .pop_front()
+                .expect("the recorder has an oldest line")
+                .1
+                .len();
+            self.dropped += 1;
         }
     }
 
@@ -350,7 +410,17 @@ impl Recorder {
             (Some((first, _)), Some((last, _))) => Some((*first, *last)),
             _ => None,
         };
-        (span, self.lines.drain(..).map(|(_, line)| line).collect())
+        let mut lines = Vec::new();
+        if self.dropped > 0 {
+            lines.push(format!(
+                "road-entry record: truncated, {} append(s) dropped at the memory/line limit",
+                self.dropped
+            ));
+        }
+        lines.extend(self.lines.drain(..).map(|(_, line)| line));
+        self.bytes = 0;
+        self.dropped = 0;
+        (span, lines)
     }
 }
 
@@ -373,10 +443,11 @@ fn state() -> std::sync::MutexGuard<'static, Option<State>> {
 
 /// Reads the environment once, at install; returns the lines for hook.log.
 pub fn configure_from_env() -> Vec<String> {
-    let (config, said) = Config::from_env(
+    let (config, said) = Config::with_digest(
         std::env::var(TRACE_ENV).ok().as_deref(),
         std::env::var(RECORD_ENV).ok().as_deref(),
         std::env::var(ENTITIES_ENV).ok().as_deref(),
+        std::env::var(DIGEST_ENV).ok().as_deref(),
     );
     let keep = config.record;
     let _ = CONFIG.set(config);
@@ -391,6 +462,11 @@ fn config() -> Option<&'static Config> {
     CONFIG.get()
 }
 
+/// False by default: the detour need not allocate or hash diagnostic data.
+pub fn enabled() -> bool {
+    config().is_some_and(Config::enabled)
+}
+
 /// Whether the detour should read the edges' lists for this append (a
 /// watched entity's, in a step that gets lines).
 pub fn wants_entries(entity: i32, step: Option<u64>) -> bool {
@@ -401,7 +477,7 @@ pub fn wants_entries(entity: i32, step: Option<u64>) -> bool {
 /// window or the recorder wants one. `step` is the room's step of the
 /// update running.
 pub fn note(step: Option<u64>, append: &Append, reordered: u64, entries: Option<&[EdgeEntries]>) {
-    let Some(config) = config() else {
+    let Some(config) = config().filter(|c| c.enabled()) else {
         return;
     };
     let mut guard = state();
@@ -432,6 +508,9 @@ pub fn note(step: Option<u64>, append: &Append, reordered: u64, entries: Option<
 /// The checkpoint line for `step`, with the appends since the last one;
 /// `None` before the trace is configured.
 pub fn take_checkpoint(step: u64) -> Option<String> {
+    if !enabled() {
+        return None;
+    }
     let mut guard = state();
     let state = guard.as_mut()?;
     let digest = std::mem::take(&mut state.digest);
@@ -441,6 +520,9 @@ pub fn take_checkpoint(step: u64) -> Option<String> {
 /// The room asked for a lane dump: the recorded lines go to hook.log, with
 /// a line before them saying what they are.
 pub fn flush_recorded(why: &str) {
+    if !enabled() {
+        return;
+    }
     let (span, lines) = {
         let mut guard = state();
         match guard.as_mut() {
@@ -449,11 +531,17 @@ pub fn flush_recorded(why: &str) {
         }
     };
     let Some((first, last)) = span else {
+        for line in lines {
+            crate::log::line(&line);
+        }
         return;
     };
     crate::log::line(&format!(
         "road-entry record: {} in-step append(s) of steps {first} to {last} ({why})",
-        lines.len()
+        lines
+            .iter()
+            .filter(|line| line.starts_with("road: "))
+            .count()
     ));
     for line in lines {
         crate::log::line(&line);
@@ -609,6 +697,28 @@ mod tests {
         let mut off = Recorder::new(0);
         off.push(1, "x".into());
         assert_eq!(off.take().0, None);
+    }
+
+    #[test]
+    fn diagnostics_are_opt_in_and_recording_is_bounded_within_one_step() {
+        assert!(!Config::from_env(None, None, None).0.enabled());
+        assert!(Config::with_digest(None, None, None, Some("1")).0.enabled());
+        assert!(Config::from_env(Some("1-2"), None, None).0.enabled());
+        assert!(Config::from_env(None, Some("2"), None).0.enabled());
+        let mut recorder = Recorder::new(MAX_RECORD_STEPS);
+        for _ in 0..MAX_RECORD_LINES + 5 {
+            recorder.push(1, "x".into());
+        }
+        assert_eq!(recorder.lines.len(), MAX_RECORD_LINES);
+        let (_, lines) = recorder.take();
+        assert!(lines[0].contains("5 append(s) dropped"));
+        for _ in 0..65 {
+            recorder.push(2, "x".repeat(1024 * 1024));
+        }
+        assert!(recorder.bytes <= MAX_RECORD_BYTES);
+        assert_eq!(recorder.dropped, 1);
+        assert!(recorder.take().1[0].contains("truncated"));
+        assert_eq!(recorder.bytes, 0);
     }
 
     #[test]

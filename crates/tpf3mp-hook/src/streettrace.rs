@@ -175,7 +175,7 @@ impl Filter {
         steps: Option<&str>,
         rect: Option<&str>,
     ) -> Result<Option<Self>, String> {
-        if !crate::step::alternate_wanted(on) {
+        if !crate::towntrace::wanted(on) {
             return Ok(None);
         }
         let steps = match steps.map(str::trim).filter(|v| !v.is_empty()) {

@@ -32,8 +32,9 @@ use tpf3mp_bridge::{
 use tpf3mp_net::close;
 use tpf3mp_proto::{
     BoundedVec, ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom,
-    LaneDigest, LoadingStage, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomPhase,
-    RoomView, SavedWorld, SessionId, SnapshotId, Speed, StartSave, Text, WorldOffer,
+    LaneDigest, LoadingStage, MAX_PREVIEW, MAX_ROOM_MEMBERS, Payload, PlayerId, Request,
+    RequestError, Resume, RoomPhase, RoomView, SavedWorld, SessionId, SnapshotId, Speed, StartSave,
+    Text, WorldOffer,
 };
 use tpf3mp_snapshot::ManifestId;
 use tracing::{debug, info, warn};
@@ -497,6 +498,11 @@ pub struct Bridge<L> {
     hook_ready: bool,
     begun: bool,
     world: World,
+    /// Every load sent to the hook still awaiting its answer, in send order.
+    /// A server restart can replace a load before its answer arrives.
+    sent_loads: VecDeque<(u64, u64)>,
+    /// Identifies the latest load order even if it starts at the same step.
+    load_generation: u64,
     /// Whether the game has loaded a world since the last load was ordered.
     loaded: bool,
     /// The room's speed as the hook was last told it; none before the
@@ -590,6 +596,8 @@ impl<L: HookLink> Bridge<L> {
             hook_ready: false,
             begun: false,
             world: World::Ready,
+            sent_loads: VecDeque::new(),
+            load_generation: 0,
             loaded: false,
             speed: None,
             commands: 0,
@@ -862,17 +870,10 @@ impl<L: HookLink> Bridge<L> {
                     });
                 }
                 ToAgent::Loaded { next_step } => {
-                    let World::Loading {
-                        next_step: expected,
-                    } = self.world
-                    else {
-                        return Err(BridgeFault::Unexpected("a world nobody ordered"));
-                    };
-                    if next_step != expected {
-                        return Err(BridgeFault::LoadedElsewhere {
-                            expected,
-                            got: next_step,
-                        });
+                    // The hook finishes loads in order. A previous world's
+                    // answer may arrive after rejoining ordered a replacement.
+                    if !self.current_load_ack(next_step)? {
+                        continue;
                     }
                     self.world = World::Ready;
                     self.status(|status| status.world = WorldStatus::Playing);
@@ -909,6 +910,13 @@ impl<L: HookLink> Bridge<L> {
                 ToAgent::MenuUp { menu } => self.menu_up(menu, client),
                 ToAgent::Log { message } => info!(hook = %message),
                 ToAgent::Lobby(action) => self.lobby_action(action),
+                // Advisory and over the size the room relays: not shown.
+                ToAgent::Preview { preview }
+                    if current && preview.as_ref().is_none_or(|p| p.len() <= MAX_PREVIEW) =>
+                {
+                    client.send_preview(preview).await?;
+                }
+                ToAgent::Preview { .. } => {}
             }
         }
         Ok(())
@@ -1428,6 +1436,13 @@ impl<L: HookLink> Bridge<L> {
                 self.outbox.push_back(ToHook::Diverged { step, lanes });
             }
             ClientEvent::Upload { event, snapshot } => self.upload(event, snapshot, client),
+            ClientEvent::Preview { from, preview } => {
+                // Only to a game that plays the room's world, and only the
+                // latest of each member: one waiting is replaced.
+                if self.begun && self.world == World::Ready {
+                    self.outbox.preview(from, preview);
+                }
+            }
             ClientEvent::Chat { from, text } => {
                 // The game hears chat once its session began; the front end
                 // hears all of it.
@@ -1728,6 +1743,7 @@ impl<L: HookLink> Bridge<L> {
     fn order_load(&mut self, file: Option<&Path>, next_step: u64) -> Result<(), BridgeFault> {
         let file = file.map(path_text).transpose()?;
         self.void_world();
+        self.load_generation += 1;
         self.outbox.push_back(ToHook::Load { file, next_step });
         self.world = World::Loading { next_step };
         self.status(|status| status.world = WorldStatus::Loading);
@@ -1835,6 +1851,24 @@ impl<L: HookLink> Bridge<L> {
         self.loaded = false;
     }
 
+    /// Consumes the next sent load's answer. Only the latest ordered world
+    /// can become playable; an older one may finish while its replacement is
+    /// being fetched or loaded, even when both begin at the same step.
+    fn current_load_ack(&mut self, next_step: u64) -> Result<bool, BridgeFault> {
+        let (expected, generation) = self
+            .sent_loads
+            .pop_front()
+            .ok_or(BridgeFault::Unexpected("a world nobody ordered"))?;
+        if next_step != expected {
+            return Err(BridgeFault::LoadedElsewhere {
+                expected,
+                got: next_step,
+            });
+        }
+        Ok(generation == self.load_generation
+            && matches!(self.world, World::Loading { next_step: step } if step == next_step))
+    }
+
     /// Uploads a save the room asked for.
     fn upload(&mut self, event: u64, snapshot: SnapshotId, client: &Client) {
         let Some(worlds) = self.options.worlds.clone() else {
@@ -1914,6 +1948,10 @@ impl<L: HookLink> Bridge<L> {
             let bytes = encode(message)?;
             if !self.link.send(&bytes)? {
                 break;
+            }
+            if let ToHook::Load { next_step, .. } = message {
+                self.sent_loads
+                    .push_back((*next_step, self.load_generation));
             }
             self.outbox.pop_front();
         }
@@ -2024,6 +2062,7 @@ impl Outbox {
             }
             ToHook::Diverged { lanes, .. } => lanes.len() * 2,
             ToHook::Chat { from, text } => from.as_str().len() + text.as_str().len(),
+            ToHook::Preview { preview, .. } => preview.as_ref().map_or(0, Payload::len),
             ToHook::Room(room) => room.members.len() * 64,
             ToHook::Lobby(view) => {
                 view.chat.len() * 320
@@ -2064,6 +2103,21 @@ impl Outbox {
 
     fn is_full(&self) -> bool {
         self.bytes >= OUTBOX_BYTES
+    }
+
+    /// Queues `from`'s preview in place of one of theirs still waiting:
+    /// only the latest counts, so the queue holds one a member at most.
+    fn preview(&mut self, from: PlayerId, preview: Option<Payload>) {
+        if self
+            .messages
+            .iter()
+            .any(|queued| matches!(queued, ToHook::Preview { from: other, .. } if *other == from))
+        {
+            self.retain(
+                |queued| !matches!(queued, ToHook::Preview { from: other, .. } if *other == from),
+            );
+        }
+        self.push_back(ToHook::Preview { from, preview });
     }
 }
 
@@ -2492,6 +2546,81 @@ mod tests {
 
     use super::*;
 
+    struct AcceptingLink;
+
+    impl HookLink for AcceptingLink {
+        fn send(&mut self, _: &[u8]) -> Result<bool, BridgeFault> {
+            Ok(true)
+        }
+
+        fn recv(&mut self, _: &mut Vec<u8>) -> Result<bool, BridgeFault> {
+            Ok(false)
+        }
+
+        fn heartbeat(&mut self) {}
+
+        fn peer_heartbeat(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn an_old_load_answer_cannot_complete_its_replacement_at_the_same_step() {
+        let mut bridge = Bridge::new(AcceptingLink, BridgeOptions::default()).greeted("test");
+        bridge.order_load(None, 1).unwrap();
+        bridge.flush().unwrap();
+        bridge.order_load(None, 1).unwrap();
+        bridge.flush().unwrap();
+
+        assert!(!bridge.current_load_ack(1).unwrap());
+        assert_eq!(bridge.world, World::Loading { next_step: 1 });
+        assert!(bridge.current_load_ack(1).unwrap());
+    }
+
+    #[test]
+    fn a_replaced_load_answer_during_rejoin_is_ignored() {
+        let mut bridge = Bridge::new(AcceptingLink, BridgeOptions::default()).greeted("test");
+        bridge.order_load(None, 1).unwrap();
+        bridge.flush().unwrap();
+        bridge.void_world();
+        bridge.world = World::Ready;
+
+        assert!(!bridge.current_load_ack(1).unwrap());
+        assert!(matches!(
+            bridge.current_load_ack(1),
+            Err(BridgeFault::Unexpected("a world nobody ordered"))
+        ));
+    }
+
+    #[test]
+    fn an_unsent_replaced_load_needs_no_answer() {
+        let mut bridge = Bridge::new(AcceptingLink, BridgeOptions::default()).greeted("test");
+        bridge.order_load(None, 1).unwrap();
+        bridge.order_load(None, 1).unwrap();
+        bridge.flush().unwrap();
+
+        assert!(bridge.current_load_ack(1).unwrap());
+        assert!(matches!(
+            bridge.current_load_ack(1),
+            Err(BridgeFault::Unexpected("a world nobody ordered"))
+        ));
+    }
+
+    #[test]
+    fn a_load_answer_for_the_wrong_step_is_still_a_protocol_error() {
+        let mut bridge = Bridge::new(AcceptingLink, BridgeOptions::default()).greeted("test");
+        bridge.order_load(None, 5).unwrap();
+        bridge.flush().unwrap();
+
+        assert!(matches!(
+            bridge.current_load_ack(4),
+            Err(BridgeFault::LoadedElsewhere {
+                expected: 5,
+                got: 4
+            })
+        ));
+    }
+
     #[test]
     fn a_world_without_tpf3mps_mod_is_not_loaded() {
         let dir = tempfile::tempdir().unwrap();
@@ -2726,6 +2855,33 @@ mod tests {
         assert!(!generated_world_can_start(Some(&room), owner, 1, true));
         room.phase = RoomPhase::Running;
         assert!(!generated_world_can_start(Some(&room), owner, 1, false));
+    }
+
+    #[test]
+    fn only_each_members_latest_preview_waits_for_the_game() {
+        let mut out = Outbox::default();
+        let ann = PlayerId(tpf3mp_proto::FixedBytes([1; 32]));
+        let bob = PlayerId(tpf3mp_proto::FixedBytes([2; 32]));
+        let shown = |n: u8| Some(Payload::new(vec![n; 8]).unwrap());
+        out.preview(ann, shown(1));
+        out.push_back(ToHook::Release { through: 5 });
+        out.preview(bob, shown(2));
+        out.preview(ann, shown(3));
+        out.preview(ann, None);
+        assert_eq!(
+            out.messages,
+            [
+                ToHook::Release { through: 5 },
+                ToHook::Preview {
+                    from: bob,
+                    preview: shown(2)
+                },
+                ToHook::Preview {
+                    from: ann,
+                    preview: None
+                },
+            ]
+        );
     }
 
     #[test]

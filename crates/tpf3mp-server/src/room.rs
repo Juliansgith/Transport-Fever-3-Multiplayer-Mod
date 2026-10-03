@@ -98,6 +98,9 @@ pub(crate) struct MemberLink {
     /// same player.
     pub(crate) id: u64,
     pub(crate) control: mpsc::Sender<ServerMessage>,
+    /// Other members' build previews ([`ServerMessage::Preview`]): dropped
+    /// when full, never a reason to disconnect.
+    pub(crate) advisory: mpsc::Sender<ServerMessage>,
     pub(crate) turns: mpsc::Sender<TurnFeed>,
     pub(crate) connection: quinn::Connection,
 }
@@ -236,6 +239,11 @@ pub(crate) enum RoomCommand {
     Loading {
         player: PlayerId,
         stage: Option<LoadingStage>,
+    },
+    /// What a member's build tool shows now, for the others.
+    Preview {
+        player: PlayerId,
+        preview: Option<Payload>,
     },
     Checkpoint {
         player: PlayerId,
@@ -1394,6 +1402,7 @@ impl Room {
             } => self.intent(player, client_seq, payload, secret.as_ref()),
             RoomCommand::Progress { player, link, step } => self.progress(player, link, step),
             RoomCommand::Loading { player, stage } => self.loading(player, stage, Instant::now()),
+            RoomCommand::Preview { player, preview } => self.preview(player, preview),
             RoomCommand::Checkpoint {
                 player,
                 link,
@@ -1607,6 +1616,29 @@ impl Room {
         }
         self.after_departure(player);
         Ok(())
+    }
+
+    /// A member's build preview, to every other member of the running game
+    /// still connected: advisory, so the room keeps, orders and logs none of
+    /// it, sends it in a queue of its own and drops it for a member whose
+    /// queue is full. Outside a running game, or from a non-member, ignored.
+    fn preview(&mut self, player: PlayerId, preview: Option<Payload>) {
+        if !matches!(self.phase, Phase::Running(_))
+            || !self.members.iter().any(|m| m.player == player)
+        {
+            return;
+        }
+        for member in &self.members {
+            if member.player == player {
+                continue;
+            }
+            if let Some(link) = &member.link {
+                let _ = link.advisory.try_send(ServerMessage::Preview {
+                    from: player,
+                    preview: preview.clone(),
+                });
+            }
+        }
     }
 
     /// Passes a member's message to everyone in the room, the sender too, so

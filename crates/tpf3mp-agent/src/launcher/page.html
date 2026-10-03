@@ -61,6 +61,7 @@
   <span id="identity" class="muted"></span>
   <span class="grow"></span>
   <span id="support-id" class="muted" title="Quote this to the server's operator when something goes wrong"></span>
+  <span id="log-session" class="muted hidden" title="Every line of this launcher's logs, the game's too, goes to the server under this code"><span id="log-session-code"></span> <button id="log-session-copy" class="secondary">Copy</button></span>
   <span id="server-version" class="muted"></span>
 </header>
 <main>
@@ -326,6 +327,8 @@ function render(s) {
   badge.className = "badge " + s.connection;
   text($("identity"), s.player ? s.name + " (" + s.player + ")" : s.name);
   text($("support-id"), s.support_id ? "support code " + s.support_id : "");
+  show("log-session", !!s.log_session);
+  text($("log-session-code"), s.log_session ? "log session " + s.log_session : "");
   text($("server-version"), s.server_version ? "server " + s.server_version : "");
   if (s.error) showError(s.error);
   // A launcher with its server offers no other here (D12): the field takes
@@ -481,6 +484,9 @@ $("ready-button").onclick = () =>
   act({ action: "ready", ready: !$("ready-button").dataset.ready });
 $("start-button").onclick = () => act({ action: "start" });
 $("leave-button").onclick = () => act({ action: "leave" });
+$("log-session-copy").onclick = () => {
+  if (state && state.log_session && navigator.clipboard) navigator.clipboard.writeText(state.log_session);
+};
 $("copy-button").onclick = () => {
   const invite = $("room-invite").value;
   if (navigator.clipboard) navigator.clipboard.writeText(invite);

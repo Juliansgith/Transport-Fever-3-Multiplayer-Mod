@@ -136,8 +136,8 @@ game's own **Multiplayer** button (next section).
 - **Your game**, the bar along the bottom, says where Steam has Transport
   Fever 3 and whether the TPF3-MP mod is installed (see "Installing").
   **Settings** has the server, updates and diagnostics (see "Changing the
-  server" below); the **support code** at the bottom is what to quote to
-  the server's operator.
+  server" below); the **support code** and the **log session** at the
+  bottom are what to quote to the server's operator.
 - If the game closes or crashes once it has connected, the launcher
   notices within a second: the Session log says "the game session failed:
   Transport Fever 3 closed", and you are back on the server, out of the
@@ -145,7 +145,7 @@ game's own **Multiplayer** button (next section).
 
 **Which launcher is this?** The bottom left of the window says its
 version, the protocol it speaks to servers and the commit it was built
-from, as `v1.1.0 · protocol 15 · <commit>`; **Settings**, **About this
+from, as `v1.2.0 · protocol 16 · <commit>`; **Settings**, **About this
 launcher** lists them too. The first line of its log names the file that
 runs. On Windows, the file's **Properties**, **Details** show the same
 version and commit.
@@ -413,7 +413,8 @@ protected folder such as Program Files.
   player's game books them together. The window shows your own company's
   loans and offers, up to four loans at once; the interest and repayments
   are your company's alone.
-- **Subsidies, entity renaming, vehicle recolouring and line waypoints.**
+- **Subsidies, entity renaming, vehicle recolouring, line waypoints, bridge/tunnel
+  window type changes, Industry Greenification marketing campaigns and Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).
@@ -421,8 +422,7 @@ protected folder such as Program Files.
   construction menu as usual: every player's game starts the prospection
   together, a moment after your click, and uses your company's permit.
   When it ends, months later, every game finds the same industry at the
-  same place, or nothing, and says so in the same notification. Greening
-  an industry and marketing campaigns are not in multiplayer yet.
+  same place, or nothing, and says so in the same notification.
 - **Company ranks.** Take a new rank in the company window as usual: every
   player's game takes it together, a moment after your click. With one
   company in the room the rank grows as in single player. With more (a
@@ -442,6 +442,16 @@ protected folder such as Program Files.
   a track's type and its decorations (seen with the road tools; the track
   tools are not yet tried in a real game). Remove them, and roads and
   tracks, with the bulldozer.
+- **Terraforming** (not in multiplayer yet: it is switched off until a
+  two-player game has shown it works; a stroke changes nothing, and the
+  hook's log says why). Once on: raise, lower, smooth and flatten the ground,
+  and the heightmap brush, as usual: every player's game reshapes the same
+  cells to the same heights, a moment after each stroke, and your company
+  pays. Your own game changes the ground only when the room's copy of a
+  stroke arrives, so while you hold the mouse down the brush works on the
+  ground as it was before your last strokes came back. A stroke of more
+  than 65,536 cells (a square about 1 km across) is refused. Painting the
+  ground and the asset brush (trees, rocks) are not in multiplayer yet.
 - **Town buildings.** Bulldoze a town's building as usual: every player's
   game removes the same building, a moment after your click; your company
   pays the demolition, and the town's opinion of it changes as in single
@@ -453,16 +463,6 @@ protected folder such as Program Files.
   multiplayer yet: the bulldozer says so and removes nothing. A game
   started with `TPF3MP_TREE_BULLDOZE=1` hands them to the room for a
   trial: every game then takes the same trees out of the same group.
-- **Terraforming.** Raise, lower, smooth and flatten the ground, and the
-  heightmap brush, as usual: every player's game reshapes the same cells
-  to the same heights, a moment after each stroke, and your company pays.
-  Your own game changes the ground only when the room's copy of a stroke
-  arrives, so while you hold the mouse down the brush works on the
-  ground as it was before your last strokes came back. A stroke of more
-  than 65,536 cells (a square about 1 km across) is refused. Not yet
-  tried in a real game.
-  Painting the ground and the asset brush (trees, rocks) are not in
-  multiplayer yet.
 - **Vehicles and lines.** Buy vehicles in a depot's store, make and change
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window
@@ -521,7 +521,8 @@ protected folder such as Program Files.
   you. If founding
   fails (the room has eight companies already, or your company's name is
   taken), you stay in the first company and can found one by hand.
-- **Your company's head, passwords and stations** (proposed, D22). The
+- **Your company's head, passwords and stations** (D22: station access
+  approved; the other policies remain proposed). The
   player who founded a company is its head while they play for it; after
   that, whoever has played for it longest. The Multiplayer window shows
   each company's head. The head can give the company a password: then
@@ -529,17 +530,20 @@ protected folder such as Program Files.
   The password goes to the server, which keeps it from every game and
   every log; nobody, the head included, can read it back, so share it
   the way you share a room's. The head can also remove or change the
-  password, send a player back to the room's first company (**Send out**),
-  and choose under **Station access** on the **Your company** tab who may
-  stop at the company's stations: **Deny by default** or **Allow
+  password, send a player back to the room's first company, and choose
+  who may stop at the company's stations: **Deny by default** or **Allow
   by default** for every company (those founded later included), and
   **Allow** or **Deny** for each other company on its own, which wins over
   the default (**Default** puts it back). Stations start open: your lines
   may stop at another company's station, and the line manager offers it,
-  unless its head denies your company. You still cannot change or
-  remove another company's station, and your vehicles use your own
+  unless its head denies your company. Access is checked when creating or
+  changing a route; existing services keep running after access is denied.
+  You still cannot change or remove another company's station, and your vehicles use your own
   depots. The room's first company is everyone's: it has no head and no
   password. The game's company window renames your company too.
+- **Terrain.** Raise, lower, smooth, flatten and the heightmap brush share
+  their height changes through the room. Terrain paint and asset brushes
+  are still refused until their own multiplayer support is validated.
 - **Achievements.** A game with TPF3-MP active still earns achievements:
   the mod keeps them on, as the game lets a mod do. This holds even when
   the save has other mods that would switch them off.
@@ -590,11 +594,15 @@ server.
 
 The bottom of the window shows your **support code**, six letters and
 digits like an invite's (**Copy** copies it). It names your connection in
-the server's log: quote it to the server's operator with your report. It
-lets nobody into your room, so it is safe to post. There is nothing to
-send: while you are connected, the launcher sends its log to the server
-by itself (see "Diagnostics"), so the operator finds what happened to you
-from your support code alone. The launcher also keeps its log on your machine
+the server's log: quote it to the server's operator with your report.
+Next to it, while diagnostics are on, is your **log session**, a code of
+the same kind that names this whole run of the launcher, across every
+time it connected; the game's Multiplayer window shows it too, on its
+first page and under **Server...**, with its own **Copy**. Quote both.
+Neither lets anybody into your room, so they are safe to post. There is
+nothing to send: while you are connected, the launcher sends its logs to
+the server by itself (see "Diagnostics"), so the operator finds what
+happened to you from those codes alone. The launcher also keeps its log on your machine
 (`TPF3-MP/logs` in your user data folder, one file a day, a week kept).
 
 **"This launcher is too old for the server"?** The server speaks a newer
@@ -617,25 +625,37 @@ launcher as before.
 
 ### Diagnostics
 
-While you are connected, the launcher sends the lines of its log to the
+While you are connected, the launcher sends the lines of its logs to the
 server you play on, so its operator can see what went wrong for you from
-your support code, without asking you for files. Before a line leaves your
-machine, paths are cut to their last part (so your user name and your
-Steam account are not in them), and IP addresses, invites, keys and
-passwords, e-mail addresses and Steam IDs are taken out; the server does
-the same again. Your game's own log and crash dumps are not sent. The
-server keeps the lines for a limited time, 30 days unless its operator
-chose otherwise.
+your support code or log session, without asking you for files (D10 and
+its amendment). The lines are:
+
+- the launcher's own log;
+- the in-game hook's log (`hook.log`) and the game's own log
+  (`stdout.txt`), from where they stood when you started the launcher;
+- the text of the game's error reports (the `.txt` and `.json` files in
+  its `crash_dump` folder) written since.
+
+Never the game's crash dumps (`.dmp`), your saves, your identity key or
+any file whose name looks like a key, certificate or token. Each source
+sends only so much a minute, so a log that runs away sends its newest
+lines and skips older ones. Before a line leaves your machine, paths are
+cut to their last part (so your user name and your Steam account are not
+in them), and IP addresses, invites, keys and passwords, account IDs,
+e-mail addresses and Steam IDs are taken out; the server does the same
+again. The server keeps the lines for a limited time, 30 days unless its
+operator chose otherwise.
 
 Set **Send diagnostics** to **Off**, in **Settings** (or untick it at the
-bottom of the browser page), to stop: the
-launcher then sends nothing more, forgets the lines it had not sent yet,
-and remembers your choice.
+bottom of the browser page), to stop: the launcher then sends nothing
+more from any of these logs, forgets the lines it had not sent yet,
+never sends what the logs gain while it is off, and remembers your
+choice. The log session is not shown while it is off.
 
 ### The game's own logs
 
-The game's own log and crash dumps are not sent. When the operator needs
-them, `tpf3mp-agent collect-logs`, run from the TPF3-MP folder, puts them
+The game's crash dumps are never sent, and the logs' older parts (from
+before you started the launcher) neither. When the operator needs them, `tpf3mp-agent collect-logs`, run from the TPF3-MP folder, puts them
 into one zip with TPF3-MP's logs: `tpf3mp-logs-<time>.zip` in your
 Downloads folder (in `TPF3-MP` when there is no Downloads folder).
 `--out <folder>` puts it elsewhere, `--since 2h` takes a shorter window,

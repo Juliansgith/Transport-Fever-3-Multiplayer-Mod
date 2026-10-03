@@ -24,6 +24,7 @@
 //! [`EVERY_MS`].
 
 #![allow(unsafe_code)]
+#![cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
 
 use std::sync::{
     Mutex, PoisonError,

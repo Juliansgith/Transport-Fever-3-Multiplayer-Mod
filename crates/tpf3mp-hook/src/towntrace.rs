@@ -113,7 +113,7 @@ static BUFFERS: Mutex<[(u64, u64); 2]> = Mutex::new([(0, 0); 2]);
 
 /// Whether `value` (of [`ENV`]) turns the trace on.
 pub fn wanted(value: Option<&str>) -> bool {
-    crate::step::alternate_wanted(value)
+    matches!(value.map(str::trim), Some("1" | "on"))
 }
 
 /// The town developer's seed as `TownUpdateSize::Apply` makes it

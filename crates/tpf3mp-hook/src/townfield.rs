@@ -1,7 +1,7 @@
 //! The town street field's cache fix (`town-field-cache`; on unless
 //! [`TOGGLE_ENV`] is `0` or `off`; docs/HOOKS.md, "The town street field").
 //!
-//! Soak 4 of 2026-10-02 (street trace on): every street try at step 12771
+//! Soak 4 of 2026-10-02 on save twomptest: every street try at step 12771
 //! was alike in three games but one, the open pass's build of node 261290,
 //! whose direction came out at 27.03 degrees in two games and 19.72 in the
 //! third. The open pass turns a direction by a draw from a generator seeded

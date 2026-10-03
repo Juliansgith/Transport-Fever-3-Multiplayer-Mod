@@ -129,6 +129,7 @@ fn launcher_config(
 ) -> LauncherConfig {
     LauncherConfig {
         diagnostics: None,
+        game_logs: None,
         hook: None,
         game_exe: None,
         game_env: Vec::new(),
