@@ -288,6 +288,24 @@ pub fn load_field_at(code: &[u8]) -> Option<usize> {
     field_at(code, MENU_LOAD_OPCODE)
 }
 
+/// The worlds that closed in this game other than for a load the hook
+/// started ([`note_world_closed`]).
+static WORLD_CLOSES: AtomicU64 = AtomicU64::new(0);
+
+/// A world closed (`CMenuUI::m_game` cleared), and no load the hook started
+/// closed it: the player left it, for the main menu, a new game or a save of
+/// their own (`crate::install`'s menu frame).
+pub fn note_world_closed() {
+    WORLD_CLOSES.fetch_add(1, Ordering::AcqRel);
+}
+
+/// How many worlds closed as [`note_world_closed`] counts them, or `None`
+/// where the hook cannot see a world close: no `CMenuUI::m_game` known
+/// (`crate::step::WorldMark::closed`).
+pub fn world_closes() -> Option<u64> {
+    (GAME_FIELD.load(Ordering::Acquire) != 0).then(|| WORLD_CLOSES.load(Ordering::Acquire))
+}
+
 /// Makes `offset` the one [`world_loaded`] reads; 0 forgets it.
 pub fn set_game_field(offset: usize) {
     GAME_FIELD.store(offset, Ordering::Release);
