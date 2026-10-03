@@ -344,10 +344,10 @@ company's with a station group of its own; the line was not drawn.
   `manager_window.tl` and `vehicle_store_window.tl`.
 - Fix: both tests spliced (guiplayer.rs), on the GUI's thread outside the
   step only.
-- **open (a rule, not code)** The room let company #2 buy at company #0's
-  depot: `BuyVehicle` checks only that the depot exists. In single player
-  every depot is the one player's (or no one's), so the game never asks.
-  The room's rule for what another company owns (`companies.mayTouch`:
-  edits, removals, its vehicles and lines refused) would refuse it; D22
-  (proposed) lets a company open its stations to others, and says nothing
-  of depots. Not changed: it is the owner's to decide.
+- **closed in replay** A room action could name another company's depot
+  because `BuyVehicle` checked only that the depot existed. The line-store
+  view patch filters the GUI choice, and the replay now requires exact depot
+  ownership by the acting company whenever more than one company is live;
+  a missing or unreadable `PLAYER_OWNED` fails closed. A one-company room
+  keeps the game's native purchase behavior. The D22 station-access decision
+  explicitly does not grant use of another company's depots.

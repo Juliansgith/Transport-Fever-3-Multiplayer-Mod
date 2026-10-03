@@ -1577,6 +1577,8 @@ end
 
 function HANDLERS.BuyVehicle(buy)
 	local depot = purchaseDepot(buy)
+	local allowed, why = companiesModule.mayBuyAtDepot(acting and acting.roster, company(), depot, api)
+	if not allowed then error(why, 0) end
 	local time = now()
 	local vehicles = {}
 	for i, p in ipairs(buy.consist) do vehicles[i] = vehiclePart(p, time) end

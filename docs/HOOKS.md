@@ -1297,7 +1297,11 @@ reference of its own to either. Once linked, the GUI wraps every
     bought at the first depot. Every game refuses a purchase naming a depot
     the construction does not have, saying how many it has: an airfield or
     airport built without its hangar module has none, and a harbour never
-    has one, ships being bought at a ship depot. The consist part by part,
+    has one, ships being bought at a ship depot. With more than one company,
+    every game's replay also requires that the depot's `PLAYER_OWNED` is the
+    acting company; another company's depot and a depot with no readable owner
+    are refused. With one company, the game's native purchase behavior stays.
+    The consist part by part,
     as the store configured it), selling, putting on a line, and the vehicle window's stop, start,
     to the depot (kept: sell-on-arrival is refused because build 40408 crashes
     at arrival), reverse and depart; replacing
