@@ -4719,6 +4719,66 @@ fn the_game_script_buys_the_vehicle_and_tells_the_buyer_which() {
     assert_eq!(saved, 2);
 }
 
+/// The sender's GUI filters another company's depot, but every game's replay
+/// must enforce the same rule for old or forged actions. An absent owner is
+/// refused too; with one company the existing native behavior remains.
+#[test]
+fn every_game_buys_only_at_its_companys_owned_depot() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(format!(
+        "api.cmd.makeEntitySetColorCmd = function(e, color) return {{ paint = e }} end \
+         local CT = api.type.ComponentType CT.PLAYER_OWNED = 13 \
+         local base = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == CT.PLAYER_OWNED then \
+                 if e == 202 then return {{ player = 901 }} end \
+                 if e == 203 then return {{ player = 25 }} end \
+                 return nil \
+             end \
+             if kind == CT.CONSTRUCTION and e == 201 then \
+                 local c = base(e, kind) c.depots = {{ 202, 203, 204 }} return c \
+             end \
+             return base(e, kind) \
+         end \
+         ROSTER = {{ next = 2, list = {{ \
+             {{ id = 0, entity = 25, name = 'First', color = {{ 0.80, 0.16, 0.12 }} }}, \
+             {{ id = 1, entity = 901, name = 'Rival', color = {{ 0.13, 0.42, 0.85 }} }} }}, \
+             members = {{ {{ player = 'rival-player', company = 1 }} }} }} \
+         STATE.value = {{ companies = ROSTER }} \
+         HOOK.room = true UPDATE({{}}, STATE, 0.2) \
+         local function buy(index) local action = {BUY_BUS} \
+             action.BuyVehicle.depot_index = index return action end \
+         HOOK.origins = {{ 'rival-player', 'rival-player', 'rival-player' }} \
+         HOOK.batch = {{ buy(0), buy(1), buy(2) }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let result: (usize, i64, i64, bool, bool, String, bool, String) = lua
+        .load(
+            "local buys = {} for _, c in ipairs(SENT) do if c.buy then buys[#buys + 1] = c.buy end end \
+             return #buys, buys[1].player, buys[1].depot, \
+                 HOOK.applied[1].ok, HOOK.applied[2].ok, HOOK.applied[2].why, \
+                 HOOK.applied[3].ok, HOOK.applied[3].why",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        result,
+        (
+            1,
+            901,
+            202,
+            true,
+            false,
+            "the depot belongs to First".to_owned(),
+            false,
+            "the depot has no company owner".to_owned(),
+        ),
+        "only the acting company's owned depot is purchased; foreign and ownerless depots fail closed"
+    );
+}
+
 #[test]
 fn a_bought_vehicle_goes_to_the_room_and_the_store_hears_which_it_is() {
     let lua = gui();

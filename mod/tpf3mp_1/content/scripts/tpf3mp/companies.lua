@@ -515,6 +515,19 @@ function companies.mayTouch(roster, company, entity, api, what)
 	return false, "the " .. (what or "thing") .. " belongs to " .. name
 end
 
+-- A company's vehicles use its own depots (DECISIONS.md, D22 station-access
+-- decision). Unlike mayTouch, a depot with no readable owner is not usable in
+-- a multi-company room: do not let a missing PLAYER_OWNED component turn into
+-- permission. With one company, keep the game's native purchase behavior.
+function companies.mayBuyAtDepot(roster, company, depot, api)
+	if not companies.painting(roster) then return true end
+	local owner = companies.ownerOf(api, depot)
+	if owner == company then return true end
+	if owner == nil then return false, "the depot has no company owner" end
+	local other = roster and companies.byEntity(roster, owner)
+	return false, "the depot belongs to " .. (other and other.name or "another company")
+end
+
 -- Whether `company` (a player entity) may have its lines stop at the
 -- station group `group` (D22, proposed): one no company owns, its own, or
 -- another company's that keeps its stations open. Else false and why,

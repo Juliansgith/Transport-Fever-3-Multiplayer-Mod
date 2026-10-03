@@ -1365,7 +1365,11 @@ reference of its own to either. Once linked, the GUI wraps every
     bought at the first depot. Every game refuses a purchase naming a depot
     the construction does not have, saying how many it has: an airfield or
     airport built without its hangar module has none, and a harbour never
-    has one, ships being bought at a ship depot. The consist part by part,
+    has one, ships being bought at a ship depot. With more than one company,
+    every game's replay also requires that the depot's `PLAYER_OWNED` is the
+    acting company; another company's depot and a depot with no readable owner
+    are refused. With one company, the game's native purchase behavior stays.
+    The consist part by part,
     as the store configured it), selling, putting on a line, and the vehicle window's stop, start,
     to the depot (kept: sell-on-arrival is refused because build 40408 crashes
     at arrival), reverse and depart; replacing
@@ -2439,6 +2443,23 @@ untouched: the change is to which lines a viewer draws. hook.log, once:
 `view-company: the line viewers draw the lines of 214443, 372609 (2
 line(s)) in place of player 372609's (view: LineViewer lines of the
 player/call)`.
+
+**The store's depot follows the company** (`view: findBestDepot depot owner
+test`, `view: findBestDepot owner test`, guiplayer.rs; 2026-10-02, build
+45b8ed5: the line window bought company #2's vehicles at depot 317114,
+owned by 214443, the first company's). Opened from a line, the store asks
+`api.engine.util.vehicle.findBestDepotForLine` (`line_util.tl`), and the
+line manager and the store `findBestLineAndDepotForVehicle`. Both reach
+`sub_2689fd0` and through it `sub_2689dd0`, which keep only what the
+`GameState`'s player owns: `mov reg,[GameState+0x20c]; cmp [rax],reg; jne`,
+rax the depot's (or line's) `PlayerOwned`. Nothing but those two bindings
+calls the four functions on the way (tpfre), and only the game's GUI scripts
+call the bindings on build 40408. Each test is spliced as the other owner
+tests are: an owner that is the player's company passes, the save's
+player's does not. Because a game script could call the bindings too,
+these two answer the company only on the GUI's thread (the menu's frame's,
+noted at each refresh) outside the simulation's step; anywhere else they
+answer as the game.
 
 **A purchase's depot**, in hook.log when the store buys (the GUI's
 capture, `capture.depotText`): `the store buys at depot entity 5001 (owned
