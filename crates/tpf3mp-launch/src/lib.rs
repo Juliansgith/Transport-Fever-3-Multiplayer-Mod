@@ -20,9 +20,12 @@
 //! game can start at all: the launcher, like TPF2MP's, starts it only while
 //! Steam runs.
 
-use std::path::{Path, PathBuf};
 #[cfg(all(unix, not(target_os = "macos")))]
 use std::process::Command;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use thiserror::Error;
 
@@ -41,6 +44,10 @@ pub const HOOK_FILE: &str = if cfg!(windows) {
     "libtpf3mp_hook.so"
 };
 
+/// How long a game started on Windows stays suspended for TPF3-MP's hook
+/// to say it is ready, before it is let run anyway.
+pub const HOOK_READY_WAIT: Duration = Duration::from_secs(30);
+
 /// A game to start, and the hook to start it with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
@@ -51,6 +58,10 @@ pub struct Launch {
     pub hook: PathBuf,
     /// Variables for the game's environment, on top of the launcher's own.
     pub env: Vec<(String, String)>,
+    /// How long the game stays suspended for the hook to say it is ready
+    /// (Windows): [`HOOK_READY_WAIT`] for TPF3-MP's hook. Test rigs that
+    /// load a stand-in library, which never says so, give it less.
+    pub ready_wait: Duration,
 }
 
 /// Whether this system can start the game with the hook in it.
@@ -389,6 +400,7 @@ mod tests {
             args: Vec::new(),
             hook: dir.path().join(HOOK_FILE),
             env: Vec::new(),
+            ready_wait: HOOK_READY_WAIT,
         };
         assert!(matches!(start(&launch), Err(LaunchError::NoGame(_))));
         let exe = dir.path().join("game");
@@ -418,6 +430,7 @@ mod tests {
             args: Vec::new(),
             hook: PathBuf::from("hook"),
             env: vec![("TPF3MP_GAME_LINK".into(), "tpf3mp.default".into())],
+            ready_wait: HOOK_READY_WAIT,
         };
         let env = environment(&launch);
         assert!(env.contains(&("SteamAppId".into(), STEAM_APP_ID.into())));
