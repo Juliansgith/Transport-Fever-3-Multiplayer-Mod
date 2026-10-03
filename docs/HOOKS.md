@@ -2280,6 +2280,23 @@ untouched: the change is to which lines a viewer draws. hook.log, once:
 line(s)) in place of player 372609's (view: LineViewer lines of the
 player/call)`.
 
+**The store's depot follows the company** (`view: findBestDepot depot owner
+test`, `view: findBestDepot owner test`, guiplayer.rs; 2026-10-02, build
+45b8ed5: the line window bought company #2's vehicles at depot 317114,
+owned by 214443, the first company's). Opened from a line, the store asks
+`api.engine.util.vehicle.findBestDepotForLine` (`line_util.tl`), and the
+line manager and the store `findBestLineAndDepotForVehicle`. Both reach
+`sub_2689fd0` and through it `sub_2689dd0`, which keep only what the
+`GameState`'s player owns: `mov reg,[GameState+0x20c]; cmp [rax],reg; jne`,
+rax the depot's (or line's) `PlayerOwned`. Nothing but those two bindings
+calls the four functions on the way (tpfre), and only the game's GUI scripts
+call the bindings on build 40408. Each test is spliced as the other owner
+tests are: an owner that is the player's company passes, the save's
+player's does not. Because a game script could call the bindings too,
+these two answer the company only on the GUI's thread (the menu's frame's,
+noted at each refresh) outside the simulation's step; anywhere else they
+answer as the game.
+
 **A purchase's depot**, in hook.log when the store buys (the GUI's
 capture, `capture.depotText`): `the store buys at depot entity 5001 (owned
 by 372426): depot 0 of ::/depots/road/road_depot/road_depot.con at (1360.7,
