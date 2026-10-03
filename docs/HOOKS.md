@@ -2371,15 +2371,20 @@ construction's window its edits:
   where it stands (a `ConstructionRef`, as a depot is named; entity ids are
   no name, docs/BUILDING.md), the new one's file, transform, parameters and
   name (the old one's, where the proposal leaves it out). Its street part
-  is the construction's own entrance, made again with it, and is not
-  carried; an edit that removes a street or track the old construction
-  does not own (its `frozenEdges`, `frozenNodes`) is refused, as is one
-  replacing a construction the room cannot name. Every game finds the old
+  is mostly the construction's own entrance, made again with it, and that
+  is not carried: what it removes of the old construction's own (its
+  `frozenEdges`, `frozenNodes`, and track ends only its frozen edges
+  touch) goes with the old construction. What it changes around it travels
+  as its connection, as a new construction's does, without those: a new
+  exit onto a road the station did not join splits that road through a new
+  junction (seen 2026-10-03, build 40408). One replacing a construction the
+  room cannot name is refused. Every game finds the old
   construction by file and place (within 2 m), then asks the game's
   verdict and builds, as the player's own build (`ignoreErrors`,
   `playerInitiated`), paid by the player and clearing town buildings in
   its way, one `SimpleProposal` that removes it (`constructionsToRemove`,
-  this game's own entity) and adds the new one, mapped old to new
+  this game's own entity), builds the connection as a new construction's
+  (its own entrances peeled off) and adds the new one, mapped old to new
   (`old2new = { [old] = 0 }`), as the game's own upgrade makes one
   (`mission_framework_util_entity.tl`, `upgradeConstruction`). The new
   construction makes its entrances again unsnapped, as a scripted build
@@ -2388,9 +2393,16 @@ construction's window its edits:
   the streets beside them (a road station edited by the street came loose
   from it in both games, 2026-10-03). A refresh with no street change is
   not sent; one the game refuses leaves the edit standing, unsnapped, the
-  same in every game, and is logged. INFERRED, not yet seen in the game:
-  that the refresh finds the junction the old entrance joined, and that it
-  snaps a new entrance onto a road the station did not join before. The new
+  same in every game, and is logged. A connection may not remove or split the old construction's
+  own edges, and no junction's settings may name them: a junction the
+  connection rebuilds next to the old entrance keeps no settings, which the
+  construction and its refresh give it, the game's own (logged `left to
+  the construction: the settings of N junction(s) at its old edges`).
+  Every edge a construction's connection removes or splits, a new one's or
+  an edit's, must be the acting company's or no company's (D21), as a
+  bulldozed one. The plain edit's refresh was seen in the game
+  (2026-10-03, `snapping 72194 +e-2:-1>57114 -e71473`); INFERRED, not yet
+  seen in the game: the replay of an edit with a road split. The new
   construction stands where the old one stood, so the next edit, a depot
   bought at it or a line finds it by the same reference; what stood on it
   passes to it through `old2new`, and the registry binds, after the
@@ -2466,10 +2478,24 @@ construction's window its edits:
   (`module editor: click N queued …`, or `module editor: click N does not
   read: …`). The GUI's `guiUpdate`, handing on click N, asks
   `tpf3mp_native.built(N)` first, ahead of any preview another tool
-  showed: the proposal is made an action by `capture.construction`, as
+  showed: the proposal is made an action by `capture.moduleEdit`, as
   the construction tool's, and must replace a construction (else
   refused: `an edit that replaces no construction`); one that did not
-  read is refused with why. The click's apply is stopped as every
+  read is refused with why. The hook reads only how many nodes and edges
+  the street part adds, so an edit that changes the streets around its
+  construction (a new exit splitting a road) is asked of the game again:
+  `api.engine.util.proposal.createProposalReplaceConstruction(old,
+  params)` with the editor's parameters, as the construction menu asks
+  for a construction's new parameters (`gui/construction/construction.tl`),
+  proposed the editor's street part exactly in the game (2026-10-03, build
+  40408: the same three nodes and four edges added, the same node and two
+  edges removed). Its street part travels only if it is the same edit as
+  far as the hook read it: the same construction replaced by the same
+  file, standing where the editor put it (within 0.01), as many nodes and
+  edges added, the same nodes and edges removed (none twice), and no stop
+  or signal on either side; else it is refused with why (`a construction
+  edit the game proposes otherwise: …`). The construction itself (file,
+  parameters, matrix, name) is the one the hook read. The click's apply is stopped as every
   player's build is, and the room orders the edit for every game, which
   replaces the construction as above. `built` is optional in the bridge:
   a mod or hook without it keeps the module editor refused. Without the

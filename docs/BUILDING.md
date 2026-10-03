@@ -391,11 +391,28 @@ fresh build does; the fresh build is refreshed afterwards, the edit was
 not. Every game now refreshes the new construction after an edit too,
 which snaps its entrances onto the streets beside them. `lua_mod.rs`
 covers the refresh, a refresh with nothing to snap (nothing sent) and a
-refused one (the edit stands, logged). Not yet seen in the game: that the
-refresh finds the old junction again, and whether a new entrance onto a
-road it does not yet join, which needs that road split, snaps too; an edit
-cannot carry a road split (it is refused as one that changes the streets
-around it).
+refused one (the edit stands, logged). Seen in the game the same day: a
+plain edit snapped again (`snapping 72194 +e-2:-1>57114 -e71473`).
+
+A new exit onto a road the station did not join was refused: the module
+editor's proposal splits that road through a new junction (three nodes and
+four edges added; the station's own entrance node and edge and the road's
+edge removed), and an edit carried no street change around its
+construction. The hook reads only how many nodes and edges the editor
+adds. Asked again in the game's console with the editor's parameters,
+`createProposalReplaceConstruction` proposed exactly the editor's street
+part. So the editing player's game asks it so, checks it against what the
+hook read, and the edit carries the streets around it as its connection,
+without the old construction's own removals; every game builds the
+connection in the replacing proposal, the station's own entrances peeled
+off as for a new station, then refreshes the station. The old entrance's
+junction, where the split road ends at it, keeps no settings (they would
+name the old entrance, which goes with the old station). Every edge a
+construction's connection removes or splits must be the acting company's
+or no company's, for new stations too, which did not check it. Covered by
+`lua_mod.rs` (the capture and its refusals, the replay, a road of another
+company, the old entrance's junction, a refused refresh after the split);
+the replay in two games is still to be seen.
 
 ### Demolish
 

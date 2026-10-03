@@ -2472,7 +2472,7 @@ fn an_edit_of_a_station_travels_with_the_station_it_replaces() {
             "a construction that replaces more than one",
             "a construction the room cannot name",
             "removing something that is no construction",
-            "a construction edit that changes the streets around it",
+            "a construction edit that changes the streets around it: roadTemplate is not a resource name: nil",
             "a bulldozer proposal that builds"
         ]
     );
@@ -3047,6 +3047,348 @@ fn every_game_replaces_the_edited_station_in_one_proposal() {
     assert_eq!(
         why,
         "no ::/stations/street/modular_street_station/modular_terminal.con there"
+    );
+}
+
+/// The station 77 by FAKE_NETWORK's node 7: its own entrance, edge 6000
+/// from its street node 6001 to node 7, frozen in it. As the game, a built
+/// construction is listed, and a new one takes entity 911.
+const STATION_AT_NODE_7: &str = r#"
+api.type.ComponentType.CONSTRUCTION = 2
+api.type.ComponentType.PLAYER_OWNED = 14
+NODES[6001] = { x = 70, y = 0, z = 0 }
+EDGES[6000] = { node0 = 6001, node1 = 7, tangent0 = { x = -70, y = 0, z = 0 },
+    tangent1 = { x = -70, y = 0, z = 0 }, objects = {},
+    roadTemplate = '::/street/town_small.street_template' }
+STREETS[7] = { 101, 6000 }
+STREETS[6001] = { 6000 }
+OWNERS = {}
+CONSTRUCTIONS = { [77] = { fileName = '::/stations/street/modular_street_station/modular_terminal.con',
+    transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 80,0,0,1 }, townBuildings = {},
+    frozenEdges = { 6000 }, frozenNodes = { 6001 }, params = { seed = 7, length = 2 } } }
+local get = api.engine.getComponent
+api.engine.getComponent = function(e, kind)
+    if kind == 2 then return CONSTRUCTIONS[e] end
+    if kind == 14 then return OWNERS[e] and { player = OWNERS[e] } end
+    return get(e, kind)
+end
+api.engine.getEntitiesWithComponent = function(kind)
+    local l = {}
+    if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end
+    table.sort(l)
+    return l
+end
+api.engine.util.getEntityName = function(e) if e == 77 then return 'Okehampton Station' end end
+local send = api.cmd.sendCommand
+api.cmd.sendCommand = function(cmd, ...)
+    local p = cmd.proposal
+    for _, e in ipairs(p and p.constructionsToRemove or {}) do CONSTRUCTIONS[e] = nil end
+    local c = p and p.constructionsToAdd and p.constructionsToAdd[1]
+    if c then CONSTRUCTIONS[911] = { fileName = c.fileName,
+        transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } end
+    return send(cmd, ...)
+end
+REFRESH = function(e) return { refreshed = e,
+    proposal = { addedSegments = { { entity = -2, comp = { node0 = -1, node1 = 7 } } },
+                 removedSegments = { { entity = 6100 } } } } end
+REGENERATED = 0
+api.engine.util.proposal = {
+    refreshConstruction = function(e) return REFRESH(e) end,
+    createProposalReplaceConstruction = function(e, params)
+        REGENERATED = REGENERATED + 1
+        return FULL(e, params)
+    end,
+}
+"#;
+
+/// Station 77 given a second exit at its other end, onto the road {ROAD}
+/// (FAKE_NETWORK's 100, 8-9, or 101, 10-7), as the game proposes it: its
+/// own entrance made again (-1 to node 7, 6000 and 6001 removed), its exit
+/// node -2, and the road split through a new junction -3 the exit joins
+/// (seen on build 40408, 2026-10-03). `{EXTRA}` adds to the lists.
+const EDIT_SPLIT: &str = "{ toRemove = { 77 }, \
+    toAdd = { { fileName = '::/stations/street/modular_street_station/modular_terminal.con', \
+                name = 'Okehampton Station', \
+                transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 80, 0, 0, 1 }, \
+                params = { seed = 7, length = 2, modules = { [12] = { name = 'station/exit.module' } } } } }, \
+    proposal = { \
+    addedNodes = { { entity = -1, comp = { position = { x = 70, y = 0, z = 0 } } }, \
+                   { entity = -2, comp = { position = { X2, Y2, z = 0 } } }, \
+                   { entity = -3, comp = { position = { X3, Y3, z = 0 } } } }, \
+    addedSegments = { \
+        { entity = -4, type = 0, comp = { node0 = -1, node1 = 7, type = 0, typeIndex = -1, \
+          tangent0 = { x = -70, y = 0, z = 0 }, tangent1 = { x = -70, y = 0, z = 0 }, \
+          roadTemplate = '::/street/town_small.street_template', roadStyle = '' } }, \
+        { entity = -5, type = 0, comp = { node0 = -2, node1 = -3, type = 0, typeIndex = -1, \
+          tangent0 = { x = 0, y = -10, z = 0 }, tangent1 = { x = 0, y = -10, z = 0 }, \
+          roadTemplate = '::/street/town_small.street_template', roadStyle = '' } }, \
+        { entity = -6, type = 0, comp = { node0 = A, node1 = -3, type = 0, typeIndex = -1, \
+          tangent0 = { TA }, tangent1 = { TA }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } }, \
+        { entity = -7, type = 0, comp = { node0 = -3, node1 = B, type = 0, typeIndex = -1, \
+          tangent0 = { TA }, tangent1 = { TA }, \
+          roadTemplate = '::/street/country.street_template', roadStyle = '' } } }, \
+    removedSegments = { { entity = 6000, type = 0, comp = { node0 = 6001, node1 = 7 } }, \
+                        { entity = ROAD, type = 0, comp = { node0 = A, node1 = B } } {EXTRA} }, \
+    removedNodes = { { entity = 6001, comp = { position = { x = 70, y = 0, z = 0 } } } }, \
+    edgeObjectsToAdd = {}, edgeObjectsToRemove = {} } }";
+
+/// EDIT_SPLIT onto road `road`, with `extra` in its removed segments.
+fn edit_split(road: u32, extra: &str) -> String {
+    let (a, b, x2, y2, x3, y3, ta) = if road == 100 {
+        (
+            8,
+            9,
+            "x = 50",
+            "y = 20",
+            "x = 50",
+            "y = 10",
+            "x = 0, y = 40, z = 0",
+        )
+    } else {
+        (
+            10,
+            7,
+            "x = -30",
+            "y = 10",
+            "x = -30",
+            "y = 0",
+            "x = 30, y = 0, z = 0",
+        )
+    };
+    EDIT_SPLIT
+        .replace("{EXTRA}", extra)
+        .replace("ROAD", &road.to_string())
+        .replace("X2", x2)
+        .replace("Y2", y2)
+        .replace("X3", x3)
+        .replace("Y3", y3)
+        .replace("TA", ta)
+        .replace("node0 = A", &format!("node0 = {a}"))
+        .replace("node1 = A", &format!("node1 = {a}"))
+        .replace("node0 = B", &format!("node0 = {b}"))
+        .replace("node1 = B", &format!("node1 = {b}"))
+}
+
+/// The module editor's edit as the hook reads it: the construction, and of
+/// the street part what it removes, and how many nodes and edges it adds.
+const NATIVE_OF: &str = "function NATIVE_OF(full) \
+    local s = full.proposal \
+    local function blanks(n) local l = {} for i = 1, n do l[i] = {} end return l end \
+    local function ids(l) local out = {} for i, x in ipairs(l) do out[i] = { entity = x.entity } end return out end \
+    return { toRemove = full.toRemove, toAdd = full.toAdd, proposal = { \
+        addedNodes = blanks(#s.addedNodes), addedSegments = blanks(#s.addedSegments), \
+        removedNodes = ids(s.removedNodes), removedSegments = ids(s.removedSegments), \
+        edgeObjectsToAdd = {}, edgeObjectsToRemove = {} } } \
+end";
+
+/// A module editor's edit that changes the streets around its station (a
+/// new exit splitting a road, 2026-10-03) is asked of the game again, and
+/// travels with its connection when the game proposes the same edit as the
+/// hook read: else it is refused, with why. An edit of its own streets only
+/// is not asked again.
+#[test]
+fn a_module_edit_that_splits_a_road_travels_with_the_split() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_AT_NODE_7).exec().unwrap();
+    lua.load(NATIVE_OF).exec().unwrap();
+    let split = edit_split(100, "");
+    lua.load(format!(
+        "capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         FULL = function() return {split} end \
+         ACTION, WHY = capture.moduleEdit(NATIVE_OF(FULL()))"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let carried: String = lua
+        .load(
+            "assert(ACTION, WHY) local b = ACTION.BuildConstruction local c = b.connection \
+             local out = { REGENERATED, b.replaces.file, b.replaces.at.x, b.name, #c.links, #c.removals, \
+                 tostring(schema_check(ACTION)) } \
+             for _, r in ipairs(c.removals) do \
+                 out[#out + 1] = r.ends.a.x .. ',' .. r.ends.a.y .. '>' .. r.ends.b.x .. ',' .. r.ends.b.y end \
+             return table.concat(out, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        carried,
+        "1|::/stations/street/modular_street_station/modular_terminal.con|80|Okehampton Station|4|1|true\
+         |50,-40>50,40",
+        "the road it splits travels, not the old station's own entrance, which goes with the station"
+    );
+    // The game proposes another edit than the hook read: refused.
+    for (full, why) in [
+        (
+            edit_split(100, "").replace("{ entity = 100,", "{ entity = 101,"),
+            "a construction edit the game proposes otherwise: what it removes",
+        ),
+        (
+            edit_split(
+                100,
+                ", { entity = 100, type = 0, comp = { node0 = 8, node1 = 9 } }",
+            ),
+            "a construction edit the game proposes otherwise: what it removes",
+        ),
+        (
+            edit_split(100, "").replace("0, 0, 1, 0, 80, 0, 0, 1", "0, 0, 1, 0, 85, 0, 0, 1"),
+            "a construction edit the game proposes otherwise: where it stands",
+        ),
+        (
+            edit_split(100, "").replace(
+                "edgeObjectsToAdd = {}",
+                "edgeObjectsToAdd = { { entity = -9 } }",
+            ),
+            "a construction edit with a stop or signal",
+        ),
+    ] {
+        let got: String = lua
+            .load(format!(
+                "local native = NATIVE_OF({split}) \
+                 FULL = function() return {full} end \
+                 local a, why = capture.moduleEdit(native) \
+                 return tostring(a) .. ' ' .. tostring(why)"
+            ))
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+        assert_eq!(got, format!("nil {why}"));
+    }
+    // A game that cannot propose it again: refused as before.
+    let got: String = lua
+        .load(format!(
+            "api.engine.util.proposal.createProposalReplaceConstruction = nil \
+             local a, why = capture.moduleEdit(NATIVE_OF({split})) \
+             return tostring(a) .. ' ' .. tostring(why)"
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(
+        got,
+        "nil a construction edit that changes the streets around it"
+    );
+    // An edit of its own streets only travels as the hook read it.
+    let (regenerated, connection): (i64, String) = lua
+        .load(format!(
+            "REGENERATED = 0 \
+             local a = assert(capture.moduleEdit(NATIVE_OF({EDIT_PROPOSAL}))) \
+             return REGENERATED, tostring(a.BuildConstruction.connection)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!((regenerated, connection.as_str()), (0, "nil"));
+}
+
+/// Every game builds such an edit in one proposal: the old station removed,
+/// the new one added, the road split through the junction its exit meets,
+/// without the station's own entrances, which it makes itself; then its
+/// refresh snaps them. A road of another company it may not split (D21),
+/// and a refused refresh leaves the edit and the split standing.
+#[test]
+fn every_game_builds_an_edit_with_the_road_it_splits() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_AT_NODE_7).exec().unwrap();
+    lua.load(NATIVE_OF).exec().unwrap();
+    let split = edit_split(100, "");
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         FULL = function() return {split} end \
+         ACTION = assert(capture.moduleEdit(NATIVE_OF(FULL()))) \
+         SAVED = {{}} for k, v in pairs(CONSTRUCTIONS) do SAVED[k] = v end \
+         HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let built: String = lua
+        .load(
+            "local p = SENT[1].proposal local s = p.streetProposal \
+             local out = { tostring(HOOK.applied[1].ok), #SENT, p.constructionsToRemove[1], p.old2new[77], \
+                 p.constructionsToAdd[1].fileName, #s.nodesToAdd, table.concat(s.edgesToRemove, ','), \
+                 tostring(s.nodesToRemove) } \
+             for _, e in ipairs(s.edgesToAdd) do out[#out + 1] = e.comp.node0 .. '>' .. e.comp.node1 end \
+             out[#out + 1] = tostring(SENT[2].proposal.refreshed) \
+             return table.concat(out, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        built,
+        "true|2|77|0|::/stations/street/modular_street_station/modular_terminal.con|1|100|nil\
+         |8>-3|-3>9|911",
+        "one proposal: the station replaced and the road split, its entrances left to it; then its refresh"
+    );
+    // A road of another company: refused in every game, nothing sent.
+    lua.load(
+        "SENT = {} CONSTRUCTIONS = {} for k, v in pairs(SAVED) do CONSTRUCTIONS[k] = v end \
+         OWNERS[100] = 900 HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let (sent, ok, why): (usize, bool, String) = lua
+        .load("return #SENT, HOOK.applied[2].ok, HOOK.applied[2].why")
+        .eval()
+        .unwrap();
+    assert_eq!((sent, ok), (0, false));
+    assert!(
+        why.ends_with("the road or track belongs to another company"),
+        "{why}"
+    );
+    // A refresh the game refuses: the edit and the split stand.
+    lua.load(
+        "SENT = {} CONSTRUCTIONS = {} for k, v in pairs(SAVED) do CONSTRUCTIONS[k] = v end \
+         OWNERS[100] = nil REFRESH = function() error('Construction Not Possible') end \
+         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let (sent, ok): (usize, bool) = lua.load("return #SENT, HOOK.applied[3].ok").eval().unwrap();
+    assert_eq!((sent, ok), (1, true));
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.starts_with("the edited construction stays unsnapped: ")),
+        "{logged:?}"
+    );
+}
+
+/// A road split next to the junction the old station's entrance meets: the
+/// settings kept for that junction would name the old entrance, which goes
+/// with the old station. So that junction keeps none; the new station and
+/// its refresh give it the game's own, the same in every game.
+#[test]
+fn an_edit_leaves_the_junction_at_its_old_entrance_to_the_station() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_AT_NODE_7).exec().unwrap();
+    lua.load(NATIVE_OF).exec().unwrap();
+    let split = edit_split(101, "");
+    lua.load(format!(
+        "CONFIGS[7] = true \
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         FULL = function() return {split} end \
+         ACTION = assert(capture.moduleEdit(NATIVE_OF(FULL()))) \
+         HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let built: String = lua
+        .load(
+            "local s = SENT[1].proposal.streetProposal \
+             local added = {} for _, n in ipairs(s.nodeConfigsToAdd or {}) do added[#added + 1] = n.entity end \
+             return table.concat({ tostring(HOOK.applied[1].ok), table.concat(s.edgesToRemove, ','), \
+                 table.concat(s.nodeConfigsToRemove or {}, ','), table.concat(added, ',') }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(built, "true|101|7|");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(
+            |l| l == "left to the construction: the settings of 1 junction(s) at its old edges"
+        ),
+        "{logged:?}"
     );
 }
 
