@@ -268,17 +268,23 @@ end
 
 -- The station groups construction `con`'s stations alone make up, as
 -- nameStationGroups takes them.
-local function constructionGroups(con)
+local function constructionGroups(con, mustResolve)
 	local c = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
 	local mine, byGroup, out = {}, {}, {}
-	for _, s in ipairs(c and c.stations or {}) do mine[s] = true end
-	for _, s in ipairs(c and c.stations or {}) do
+	for _, s in ipairs(seq(c and c.stations or {})) do mine[s] = true end
+	for _, s in ipairs(seq(c and c.stations or {})) do
 		local group = -1
-		pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(s) end)
+		local found, result = pcall(api.engine.system.stationGroupSystem.getStationGroup, s)
+		if found then
+			group = result
+		elseif mustResolve then
+			error("cannot find station group for station " .. tostring(s) .. ": " .. tostring(result), 0)
+		end
 		if type(group) == "number" and group >= 0 and not byGroup[group] then
 			local g = api.engine.getComponent(group, api.type.ComponentType.STATION_GROUP)
+			if mustResolve and g == nil then error("no station group component on " .. tostring(group), 0) end
 			local alone = g ~= nil
-			for _, other in ipairs(g and g.stations or {}) do
+			for _, other in ipairs(seq(g and g.stations or {})) do
 				if not mine[other] then alone = false end
 			end
 			if alone then
@@ -289,6 +295,59 @@ local function constructionGroups(con)
 		if byGroup[group] then table.insert(byGroup[group].stations, s) end
 	end
 	return out
+end
+
+-- A construction the room built is the acting company's, the same in every
+-- game, as the game's own missions hand one over
+-- (mission_framework_util_entity.tl, setPlayerForConstruction): the
+-- construction, its depots, its stations and the station groups they alone
+-- make up, and its own (frozen) edges with what stands on them, each
+-- given with makeEntitySetPlayerCmd where anyone else owns it, or no one
+-- (2026-10-02: a company's depots did not count as its own). The build
+-- names the company (`playerEntity`, `Context.player`); this makes sure of
+-- what the engine made from it. hook.log names each one handed over.
+local function settleConstruction(con, file)
+	local C = api.type.ComponentType
+	local me = company()
+	local seen, fixed = {}, {}
+	local function ownerOf(entity)
+		local ok, owned = pcall(api.engine.getComponent, entity, C.PLAYER_OWNED)
+		if not ok then error("cannot read " .. tostring(entity) .. " owner: " .. tostring(owned), 0) end
+		if owned == nil then return nil end
+		local read, owner = pcall(function() return owned.player end)
+		if not read then error("cannot read " .. tostring(entity) .. " owner: " .. tostring(owner), 0) end
+		if owner == nil or (type(owner) == "number" and owner < 0) then return nil end
+		if type(owner) ~= "number" then error("invalid owner on " .. tostring(entity), 0) end
+		return owner
+	end
+	local function give(entity, what)
+		if type(entity) ~= "number" or entity < 0 then
+			error("the game gave no " .. what .. " entity for " .. tostring(file), 0)
+		end
+		if seen[entity] then return end
+		seen[entity] = true
+		local owner = ownerOf(entity)
+		if owner == me then return end
+		send(api.cmd.makeEntitySetPlayerCmd(entity, me))
+		fixed[#fixed + 1] = what .. " " .. entity .. " (was " .. tostring(owner) .. ")"
+	end
+	if type(con) ~= "number" or con < 0 then error("the game made no " .. tostring(file) .. " construction", 0) end
+	local c = api.engine.getComponent(con, C.CONSTRUCTION)
+	if c == nil then error("no construction component on " .. tostring(con), 0) end
+	give(con, "construction")
+	for _, depot in ipairs(seq(c.depots or {})) do give(depot, "depot") end
+	for _, station in ipairs(seq(c.stations or {})) do give(station, "station") end
+	for _, g in ipairs(constructionGroups(con, true)) do give(g.group, "station group") end
+	for _, edge in ipairs(seq(c.frozenEdges or {})) do
+		give(edge, "edge")
+		local e = api.engine.getComponent(edge, C.BASE_EDGE)
+		if e == nil then error("no edge component on " .. tostring(edge), 0) end
+		for _, o in ipairs(seq(e.objects or {})) do give(o[1], "edge object") end
+	end
+	if #fixed > 0 then
+		log("the new " .. tostring(file) .. " made the acting company's (" .. tostring(me) .. "): "
+			.. table.concat(fixed, ", "))
+	end
 end
 
 -- An edit of a construction (its modules or parameters, an upgrade): the
@@ -314,7 +373,9 @@ local function replaceConstruction(build, proposal, entity)
 	context.gatherFields = true
 	buildProposal(proposal, context)
 	-- What it made, where the action says: this game could name it.
-	return true, constructionAt({ file = build.file, at = build.transform.origin })
+	local made = constructionAt({ file = build.file, at = build.transform.origin })
+	settleConstruction(made, build.file)
+	return true, made
 end
 
 function HANDLERS.BuildConstruction(build)
@@ -355,6 +416,11 @@ function HANDLERS.BuildConstruction(build)
 		local groups = constructionGroups(con)
 		if #groups > 0 then nameStationGroups(groups, build.name) end
 	end)
+	-- The acting company's, whatever the engine made of it.
+	do
+		local con = constructionAt({ file = build.file, at = build.transform.origin })
+		settleConstruction(con, build.file)
+	end
 	if require_companies().isHeadquarters(api, build.file) then
 		-- Whether the engine took it as the company's headquarters (its
 		-- PLAYER component's `headquarters`), for hook.log: the game's
