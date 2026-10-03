@@ -70,13 +70,20 @@ pub fn default_roots(game: Option<&Path>, steam_roots: &[PathBuf]) -> Vec<PathBu
 /// `%LOCALAPPDATA%`; elsewhere the per-user local data folder.
 fn modio_data() -> Vec<PathBuf> {
     #[cfg(windows)]
-    let found = ["PUBLIC", "LOCALAPPDATA"]
-        .into_iter()
-        .filter_map(|var| std::env::var_os(var).map(PathBuf::from))
-        .collect();
+    let found = windows_modio_data(|var| std::env::var_os(var));
     #[cfg(not(windows))]
     let found = dirs_local().into_iter().collect();
     found
+}
+
+/// [`modio_data`] on Windows, with `env` reading the environment: those of
+/// the two folders that are set.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_modio_data(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    ["PUBLIC", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(|var| env(var).map(PathBuf::from))
+        .collect()
 }
 
 #[cfg(not(windows))]
@@ -205,11 +212,23 @@ mod tests {
     /// Mod Hub's downloads were missed on a PC that keeps them in the
     /// users' shared folder, so a room's start save listed mods its owner
     /// had as missing (2026-10-03).
-    #[cfg(windows)]
     #[test]
     fn mod_hub_downloads_are_looked_for_in_the_shared_folder_first() {
-        let public = PathBuf::from(std::env::var_os("PUBLIC").expect("PUBLIC is set"));
-        let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA is set"));
-        assert_eq!(modio_data(), [public, local]);
+        let env = |public: bool, local: bool| {
+            move |var: &str| match var {
+                "PUBLIC" if public => Some(r"C:\Users\Public".into()),
+                "LOCALAPPDATA" if local => Some(r"C:\Users\p\AppData\Local".into()),
+                _ => None,
+            }
+        };
+        let public = PathBuf::from(r"C:\Users\Public");
+        let local = PathBuf::from(r"C:\Users\p\AppData\Local");
+        assert_eq!(
+            windows_modio_data(env(true, true)),
+            [public.clone(), local.clone()]
+        );
+        assert_eq!(windows_modio_data(env(false, true)), [local]);
+        assert_eq!(windows_modio_data(env(true, false)), [public]);
+        assert!(windows_modio_data(env(false, false)).is_empty());
     }
 }

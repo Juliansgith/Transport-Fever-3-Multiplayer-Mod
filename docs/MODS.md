@@ -101,8 +101,9 @@ has, from each place the game keeps them (`tpf3mp_modscan::roots`):
   and `...\local\mods`;
 - the game's own: `<game>\mods` and `<game>\dlcs`.
 
-A mod is found by its `mod.json`'s `modId`, else its folder's name. Which of
-the two a save lists for a Mod Hub mod is to confirm (below).
+A mod is found by its `mod.json`'s `modId`, else its folder's name. A save
+lists a Mod Hub mod by its `modId`, the mod.io number only as its hub id
+(SEEN, below).
 
 ## At run time
 
