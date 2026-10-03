@@ -169,6 +169,11 @@ Dev A where it can):
   including pause; guests' buttons and keyboard speed shortcuts are
   disabled with "Host controls speed" help. The host still requests changes
   through the game's speed helper. Two-game visual acceptance is pending.
+  *Added (2026-10-03):* ordered actions apply between simulation updates,
+  including while paused, through a token-only wake of the game script.
+  The driver holds updates and room saves until replay and script-state
+  storage finish. Duplicate/stale wakes and failed or timed-out replay are
+  covered by automated tests. Two-game paused-building acceptance is pending.
 - [ ] *Added:* whether the stock tools send their commands through
   `api.cmd.sendCommand`. If they do, the caller-RVA filter cannot tell a
   click from our replay (HOOKS.md), and the hook needs another way to

@@ -348,7 +348,10 @@ function data()
 	local function serve()
 		if not link then return end
 		local request = link:poll()
-		if request and request.save then
+		if request and request.replay then
+			local ok, why = require("tpf3mp.guard").wakeReplay(guardedCmd, request.replay)
+			if not ok then link:replayed(request.replay, false, why) end
+		elseif request and request.save then
 			local name = request.save
 			local ok, err = pcall(app.saveGame, name, function()
 				link:saved(name, true)
