@@ -470,6 +470,12 @@ function data()
 			-- A month begun since the companies' loans were last charged.
 			local month = companies.monthNow(api)
 			local monthly = l:room() and type(saved) == "table" and companies.due(saved.companies, month)
+			-- Founded companies keep their own offers: initialize old rosters
+			-- once and refresh each independent cooldown when it expires.
+			local loanInit = l:room() and type(saved) == "table"
+				and companies.loanOffersNeedInit(saved.companies, api)
+			local loanRefresh = l:room() and type(saved) == "table"
+				and companies.loanOffersDue(saved.companies, api)
 			-- A quarter of a month begun since the companies' scores were
 			-- last sampled, with more than one company (tpf3mp/progression.lua).
 			local quarter = progression.quarterNow(api)
@@ -481,24 +487,29 @@ function data()
 			-- The entities the hook's edge watch reads in this update.
 			local watch = l:edgewatch()
 			if not actions and not checkpoint and not begin and not monthly and not sample and not subsidies
+				and not loanInit and not loanRefresh
 				and not watch then
 				return nil
 			end
 			return { actions = actions, origins = origins, seals = seals, checkpoint = checkpoint,
 				begin = begin, monthly = monthly and month or nil, sample = sample and quarter or nil,
-				subsidies = subsidies and day or nil, watch = watch }
+				subsidies = subsidies and day or nil, loanInit = loanInit, loanRefresh = loanRefresh, watch = watch }
 		end,
 
 		postUpdate = function(_params, state, _dt, work)
 			local l = linked()
 			if not l or type(work) ~= "table" then return end
-			if work.actions or work.begin or work.monthly or work.sample then
+			if work.actions or work.begin or work.monthly or work.sample or work.loanInit or work.loanRefresh then
 				local saved = state:get()
 				if type(saved) ~= "table" then saved = {} end
 				local reg, _, failed = registry.sync(saved.registry)
 				-- The room's companies: begun at its first update, as the
 				-- registry, the same in every game (tpf3mp/companies.lua).
 				local roster = companies.ensure(saved.companies, api)
+				if work.loanInit then
+					local ok, why = pcall(companies.ensureLoanOffers, roster, api)
+					if not ok then l:log("the companies' loan offers were not initialized: " .. tostring(why)) end
+				end
 				-- What each company owns, once in this game's state, with
 				-- more than one company: whether a world loaded from a save
 				-- kept its owners (read only, tpf3mp/companies.lua).
@@ -587,6 +598,12 @@ function data()
 				if work.monthly then
 					local ok, why = pcall(companies.chargeMonths, roster, work.monthly, apply.send, api)
 					if not ok then l:log("the companies' loans were not charged: " .. tostring(why)) end
+				end
+				if work.loanRefresh then
+					local ok, refreshed, why = pcall(companies.refreshLoanOffers, roster, api)
+					if not ok or (refreshed == false and why) then
+						l:log("the companies' cooled-down loan offers were not refreshed: " .. tostring(ok and why or refreshed))
+					end
 				end
 				if work.sample then
 					local ok, why = progression.sample(prog, roster, api, work.sample,
