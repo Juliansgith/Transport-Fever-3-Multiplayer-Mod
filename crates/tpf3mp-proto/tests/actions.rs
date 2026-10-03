@@ -724,6 +724,97 @@ fn every_variant_round_trips() {
     }
 }
 
+/// How big the room's largest removals are, against what a preview may carry
+/// (`MAX_PREVIEW`): the bulldozer's are shown to the other members as
+/// previews (HOOKS.md, "Build previews"), and one over the ceiling is
+/// refused by the hook rather than shown half. This says where that is, so
+/// the numbers in the docs are measured and not guessed, and a change to
+/// either bound is noticed here.
+#[test]
+fn the_largest_removals_a_preview_can_carry_are_measured() {
+    use tpf3mp_proto::MAX_PREVIEW;
+    // The most edges one action removes, each ending at the nodes' own
+    // places, with the most town buildings along them named by file.
+    let edges = (0..MAX_EDGES as i32)
+        .map(|i| {
+            ends(
+                pos(1_000 * i, 2_000 * i, 0),
+                pos(1_000 * i + 500, 2_000 * i, 0),
+            )
+        })
+        .collect();
+    let buildings = (0..tpf3mp_proto::action::MAX_BUILDINGS as i32)
+        .map(|i| ConstructionRef {
+            file: text("buildings/a/c1/4x4_02/a_com_l1_4x4_02.con"),
+            at: pos(1_000 * i, 2_000 * i, 0),
+        })
+        .collect();
+    let biggest = Action::Bulldoze(Bulldoze::Edges {
+        network: Network::Street,
+        edges: list(edges),
+        buildings: list(buildings),
+    })
+    .to_payload()
+    .unwrap();
+    // The most assets one action takes out, each by its model's file.
+    let removed = (0..tpf3mp_proto::action::MAX_ASSETS as i32)
+        .map(|i| tpf3mp_proto::action::AssetRef {
+            model: text("assets/trees/fir.mdl"),
+            at: pos(1_000 * i, 2_000 * i, 0),
+        })
+        .collect();
+    let trees = Action::Bulldoze(Bulldoze::Assets(tpf3mp_proto::action::AssetRemoval {
+        first: tpf3mp_proto::action::AssetRef {
+            model: text("assets/trees/fir.mdl"),
+            at: pos(0, 0, 0),
+        },
+        count: 256,
+        removed: list(removed),
+        mirrored: false,
+        owned: true,
+    }))
+    .to_payload()
+    .unwrap();
+    // One street's removal, the common case.
+    let one = Action::Bulldoze(Bulldoze::Edges {
+        network: Network::Street,
+        edges: list(vec![ends(pos(10, 0, 0), pos(90_000, 0, 0))]),
+        buildings: list(vec![]),
+    })
+    .to_payload()
+    .unwrap();
+    println!(
+        "a preview of MAX_PREVIEW is {MAX_PREVIEW} bytes: one street's removal {}, \
+         {} edges and {} town buildings {}, {} trees {}",
+        one.len(),
+        MAX_EDGES,
+        tpf3mp_proto::action::MAX_BUILDINGS,
+        biggest.len(),
+        tpf3mp_proto::action::MAX_ASSETS,
+        trees.len(),
+    );
+    assert!(
+        one.len() < MAX_PREVIEW,
+        "the common case is shown: {} bytes",
+        one.len()
+    );
+    assert!(
+        biggest.len() <= MAX_PREVIEW,
+        "{} edges and {} town buildings fit a preview: {} bytes over {}",
+        MAX_EDGES,
+        tpf3mp_proto::action::MAX_BUILDINGS,
+        biggest.len(),
+        MAX_PREVIEW
+    );
+    assert!(
+        trees.len() <= MAX_PREVIEW,
+        "{} trees fit a preview: {} bytes over {}",
+        tpf3mp_proto::action::MAX_ASSETS,
+        trees.len(),
+        MAX_PREVIEW
+    );
+}
+
 /// The kind the logs name an action by is its variant's name, as serde (and
 /// so a scenario file) writes it.
 #[test]

@@ -38,9 +38,9 @@ local previews = {}
 
 -- The tools whose previews the other members are shown, by the capture's
 -- kind: new constructions (stations, depots, buildings, a station's edit),
--- streets, tracks and stops. Not the bulldozer's removals, nor the
--- modifiers' and junction tools' changes, which show nothing new.
-previews.SHOWN = { construction = true, street = true, track = true, stop = true }
+-- streets, tracks, stops and the bulldozer's removals. Not the modifiers'
+-- and junction tools' changes, which show nothing new.
+previews.SHOWN = { construction = true, street = true, track = true, stop = true, bulldoze = true }
 
 -- Seconds between two looks at the game's active tools.
 local TOOL_EVERY = 0.25
