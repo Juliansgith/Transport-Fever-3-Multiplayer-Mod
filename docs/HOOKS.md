@@ -2940,12 +2940,22 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   ProposalViewer does (`ModelData` from `CGameUI+0x538`, no offset, an
   empty entity map, no catchment-area job). Every other call of the
   binding, the mod's own game script's included, is the game's alone. A
-  proposal the game did not evaluate (`ProposalData+0x570`) clears it
-  instead. `undraw(from)` clears a member's renderer when their tool shows
+  proposal the game calls critical ("Construction Not Possible",
+  `errorState.critical`, `ProposalData+0x570`) is drawn too, as the
+  game's own street, track and construction builders draw theirs:
+  `AddToRenderer` draws that state itself (`0x5e3357`); only the
+  ProposalViewer skips it (`0x2aa39d5`), and the hook once did, so a track
+  dragged through a road showed nothing to the others.
+  `undraw(from)` clears a member's renderer when their tool shows
   nothing. `~CGameUI` is detoured: its renderers are cleared, leave its main
   component and are destroyed before the game's own destructor runs.
-  The tint is this game's verdict, blue, or red where this game would
-  refuse the build.
+  The tint is this game's verdict, blue, or red where this game finds
+  errors in the build (a collision) or calls it critical. `drawPreview`
+  answers the game's `ProposalData`, and the log says what this game says
+  of each member's preview whenever that changes ("another member's
+  BuildTrack preview, as this game sees it: critical, errors Construction
+  Not Possible"; the entities it collides with by kind, edge, node,
+  construction or town building, and their ids).
 - **Their terrain**, composed as TpF2 Multiplayer composed it. A preview's
   cuts and embankments are terrain heights its renderer uploads into the
   one view terrain every renderer shares: `EndHeightMod` (`0x7bbae0`)

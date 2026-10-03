@@ -1546,22 +1546,12 @@ prologue = "49 89 8C 24"
 required = false
 
 # The game's ProposalViewer reads the CGameUI's ModelData at +0x538 for
-# AddToRenderer (mov rcx,[rcx+0x538], 0x2aa3b06) ...
+# AddToRenderer (mov rcx,[rcx+0x538], 0x2aa3b06).
 [[target]]
 name = "ProposalViewer/ModelData read"
 signature = "48 8B 4D 80 48 8B 89 38 05 00 00 E8"
 offset = 4
 prologue = "48 8B 89"
-required = false
-
-# ... after testing the ProposalData's preprocess flag at +0x570, set when
-# the game did not evaluate the proposal (cmp byte [r15+0x570],0,
-# 0x2aa39d5).
-[[target]]
-name = "ProposalViewer/evaluated test"
-signature = "41 80 BF 70 05 00 00 00 0F 85"
-offset = 0
-prologue = "41 80 BF"
 required = false
 
 # EndHeightMod uploads a renderer's terrain heights into the view terrain
