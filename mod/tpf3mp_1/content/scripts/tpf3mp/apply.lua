@@ -76,8 +76,13 @@ local function params(list)
 	return out
 end
 
+-- Whether a handler runs dry (apply.proposalOf): it makes the proposal its
+-- action would build and stops there, sending nothing and saying nothing.
+local dry = false
+
 -- A line for the hook's log; the game script sets apply.log once linked.
 local function log(line)
+	if dry then return end
 	if apply.log then pcall(apply.log, line) end
 end
 
@@ -101,6 +106,7 @@ local callbacks = true
 -- its command data and result entities (nil, where it answers nothing
 -- here). A command the game refuses raises, and apply.run reports it.
 local function send(command)
+	if dry then error({ dry = "a command that is not a build" }, 0) end
 	if callbacks then
 		local heard, went, data, entities = false, nil, nil, nil
 		local sent, err = pcall(api.cmd.sendCommand, command, function(d, success, e)
@@ -164,6 +170,9 @@ end
 -- enough money) fails here with its reasons, the same in every game, and is
 -- never sent; sent without a callback, a refused build would fail unseen.
 local function buildProposal(proposal, context)
+	-- Dry: the proposal is what was asked for; the game's verdict and the
+	-- build are not.
+	if dry then error({ dry = true, proposal = proposal, context = context }, 0) end
 	local proposals = api.engine.util.proposal
 	if proposals and proposals.makeProposalData then
 		local data = proposals.makeProposalData(proposal, context)
@@ -814,7 +823,10 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	proposal.streetProposal.edgesToRemove = edgesToRemove
 	if #nodesToRemove > 0 then proposal.streetProposal.nodesToRemove = nodesToRemove end
 	if #configsToRemove > 0 then proposal.streetProposal.nodeConfigsToRemove = configsToRemove end
-	junctions.into(proposal, polyline.junctions, ends, mine)
+	-- A preview (dry) leaves the junctions' lane and light settings out:
+	-- they draw nothing, and a snapped build's may name a node only its
+	-- originator's tool has.
+	if not dry then junctions.into(proposal, polyline.junctions, ends, mine) end
 
 	-- What is sent, in the log before it goes: an exception from the game
 	-- does not always come back through pcall.
@@ -2085,6 +2097,34 @@ function apply.run(action, ctx)
 	if not ok then return false, tostring(applied) end
 	if applied == true then return true, nil, detail end
 	return false, detail
+end
+
+-- The actions whose proposal apply.proposalOf makes: the builds a player's
+-- tool previews (tpf3mp/previews.lua).
+apply.PREVIEWS = { BuildConstruction = true, BuildRoad = true, BuildTrack = true, PlaceStop = true }
+
+-- The proposal `action` would build in this game, and the context it would
+-- be built with, as apply.run would make them for `ctx`, without sending
+-- anything, building anything or writing the log: for showing another
+-- player's build preview (docs/HOOKS.md, "Build previews"). Or nil and why:
+-- an action that is not a build, or one this game cannot make (a street
+-- type it lacks, an edge it does not have).
+function apply.proposalOf(action, ctx)
+	if type(action) ~= "table" then return nil, "an action is a table" end
+	local kind, body = next(action)
+	if kind == nil or next(action, kind) ~= nil then return nil, "an action is a table of one entry" end
+	if not apply.PREVIEWS[kind] then return nil, "no preview of " .. tostring(kind) end
+	local allowed, why = acceptance.check(action)
+	if not allowed then return nil, why end
+	dry, acting = true, ctx
+	local ok, stopped = pcall(HANDLERS[kind], body, ctx)
+	dry, acting = false, nil
+	if not ok and type(stopped) == "table" and stopped.proposal ~= nil then
+		return stopped.proposal, stopped.context
+	end
+	if ok then return nil, "the build made no proposal" end
+	if type(stopped) == "table" then return nil, tostring(stopped.dry) end
+	return nil, tostring(stopped)
 end
 
 -- The actions this version applies, for tests and the log.

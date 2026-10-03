@@ -88,6 +88,22 @@
 //! - `edgewatched(entity, text)`: what the script read of a watched entity
 //!   in this update's `postUpdate`; the hook logs it when it changed. Both
 //!   optional in the contract.
+//! - `preview(action)`: in the GUI: what the player's build tool shows now,
+//!   the action its proposal would build, or `nil` once it shows nothing,
+//!   for the room's other members to see ([`crate::previews`]). Returns
+//!   `true`, or `false` and why (an action the schema does not take, or
+//!   one over `tpf3mp_proto::MAX_PREVIEW`). Never applied, in any game.
+//! - `previews()`: in the GUI: what the other members' tools show that
+//!   changed since the last call, `{ { from =, action = }, ... }`, `from`
+//!   as 64 hex digits and `action` as `take()` gives one, absent once that
+//!   member's tool shows nothing. Both optional in the contract.
+//! - `draw(from)`, `drawn()` and `undraw(from)`: in the GUI, draws another
+//!   member's preview ([`crate::drawing`]): `draw` arms the GUI thread for
+//!   member `from` (64 hex digits), the GUI then has the game evaluate the
+//!   preview's proposal (`api.engine.util.proposal.makeProposalData`), which
+//!   the hook draws in that member's renderer, and `drawn` disarms: `true`,
+//!   or `false` and why, or `nil` when the game evaluated nothing. `undraw`
+//!   clears the member's renderer. Optional in the contract.
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -111,7 +127,7 @@ use std::{
 
 use tpf3mp_bridge::{ModLists, Notice, Plan, RoomInfo};
 use tpf3mp_proto::{
-    ChatText, Payload, PlayerId, Seal, Secret, Text,
+    ChatText, MAX_PREVIEW, Payload, PlayerId, Seal, Secret, Text,
     action::{Action, CompanyOp},
     lua::{LuaValue, MAX_DEPTH, MAX_NODES, action_from_lua, action_to_lua},
 };
@@ -642,7 +658,7 @@ pub fn take_world_up() -> Option<u64> {
     }
 }
 
-fn log(line: String) {
+pub(crate) fn log(line: String) {
     let mut shared = shared();
     if shared.log.len() < MAX_LOG_LINES {
         shared.log.push_back(line);
@@ -706,6 +722,11 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"trees", native_trees),
                 (b"edgewatch", native_edgewatch),
                 (b"edgewatched", native_edgewatched),
+                (b"preview", native_preview),
+                (b"previews", native_previews),
+                (b"draw", native_draw),
+                (b"drawn", native_drawn),
+                (b"undraw", native_undraw),
             ] {
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
@@ -1174,9 +1195,171 @@ pub fn notice(notice: &Notice) {
         Notice::Ended(_) => {
             room.info = None;
             room.diverged = None;
+            crate::previews::clear();
         }
         Notice::Refused { .. } => {}
+        Notice::Preview { from, preview } => {
+            crate::previews::heard(*from, preview.clone(), std::time::Instant::now());
+        }
     }
+}
+
+/// `preview(action)`: what the player's build tool shows now, or `nil`
+/// once it shows nothing: `true`, or `false` and why not.
+unsafe extern "C-unwind" fn native_preview(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread.
+    let top = unsafe { (api.gettop)(l) };
+    let read = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: as above.
+        unsafe { preview_from(api, l) }
+    }))
+    .unwrap_or_else(|_| Err("the hook failed reading the preview".into()));
+    // SAFETY: as above.
+    unsafe { (api.settop)(l, top) };
+    let shown = read.map(crate::previews::show);
+    // SAFETY: as above; a C function's call has room for its results.
+    unsafe {
+        match shown {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(reason) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, reason.as_bytes());
+                2
+            }
+        }
+    }
+}
+
+/// # Safety
+///
+/// Lua's own state, on its thread.
+unsafe fn preview_from(api: &LuaApi, l: State) -> Result<Option<Payload>, String> {
+    // SAFETY: the caller's.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) == TNIL {
+            return Ok(None);
+        }
+        if (api.type_of)(l, 1) != TTABLE {
+            return Err("a preview is an action table, or nil".into());
+        }
+        let mut nodes = 0;
+        let tree = read(api, l, 1, 0, &mut nodes)?;
+        let action = action_from_lua(&tree).map_err(|error| error.to_string())?;
+        let payload = action.to_payload().map_err(|error| error.to_string())?;
+        if payload.len() > MAX_PREVIEW {
+            return Err(format!(
+                "a preview of {} bytes, over the {MAX_PREVIEW} the room shows",
+                payload.len()
+            ));
+        }
+        Ok(Some(payload))
+    }
+}
+
+/// The member a GUI call names by its first argument, 64 hex digits.
+///
+/// # Safety
+///
+/// Lua's own state, on its thread.
+unsafe fn member_arg(api: &LuaApi, l: State) -> Result<PlayerId, String> {
+    // SAFETY: the caller's.
+    let hex = unsafe { string_arg(api, l, 1, 64) };
+    hex.as_deref()
+        .and_then(crate::lobby::player)
+        .ok_or_else(|| "a member is 64 hex digits".to_owned())
+}
+
+/// Pushes `true`, or `false` and why.
+///
+/// # Safety
+///
+/// Lua's own state, inside a C function's call.
+unsafe fn push_outcome(api: &LuaApi, l: State, outcome: Result<(), String>) -> c_int {
+    // SAFETY: the caller's; a C function's call has room for its results.
+    unsafe {
+        match outcome {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushboolean)(l, 0);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
+    }
+}
+
+/// `draw(from)`: arms this thread to draw member `from`'s preview with the
+/// next `makeProposalData` ([`crate::drawing::arm`]).
+unsafe extern "C-unwind" fn native_draw(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let outcome = unsafe { member_arg(api, l) }.and_then(crate::drawing::arm);
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
+/// `drawn()`: disarms, and says what the armed call came to: `true`, or
+/// `false` and why, or `nil` when the game evaluated nothing.
+unsafe extern "C-unwind" fn native_drawn(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    match crate::drawing::disarm() {
+        // SAFETY: Lua calls this with its own state.
+        Some(outcome) => unsafe { push_outcome(api, l, outcome) },
+        None => 0,
+    }
+}
+
+/// `undraw(from)`: member `from`'s tool shows nothing now.
+unsafe extern "C-unwind" fn native_undraw(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it.
+    let outcome = unsafe { member_arg(api, l) }.map(crate::drawing::hide);
+    // SAFETY: as above.
+    unsafe { push_outcome(api, l, outcome) }
+}
+
+/// `previews()`: the other members' previews that changed since the last
+/// call, `{ { from =, action = }, ... }`, without `action` for one gone.
+unsafe extern "C-unwind" fn native_previews(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let changes = crate::previews::take_in(std::time::Instant::now());
+    #[allow(clippy::cast_precision_loss)]
+    let list = LuaValue::Table(
+        changes
+            .iter()
+            .enumerate()
+            .map(|(index, change)| {
+                let mut entry = vec![(
+                    LuaValue::string("from"),
+                    LuaValue::string(&crate::lobby::hex(&change.from)),
+                )];
+                // One with no table form shows nothing, as one gone.
+                if let Some(Ok(action)) = change.action.as_ref().map(action_to_lua) {
+                    entry.push((LuaValue::string("action"), action));
+                }
+                (LuaValue::Number((index + 1) as f64), LuaValue::Table(entry))
+            })
+            .collect(),
+    );
+    // SAFETY: Lua calls this with its own state, on its thread.
+    unsafe { push_or_nil(api, l, Some(&list)) }
 }
 
 /// The local player, as the room's `Begin` names it.
@@ -3069,6 +3252,93 @@ my_timetables";
         assert_eq!(
             lua.run("return tostring(tpf3mp_native.status())"),
             Ok("nil".into())
+        );
+    }
+
+    #[test]
+    fn previews_go_out_as_payloads_and_come_in_as_tables() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        crate::previews::clear();
+        let lua = Lua::new();
+        lua.register();
+        let start = std::time::Instant::now();
+        // The player's tool shows the depot, then nothing.
+        assert_eq!(
+            lua.run(&format!("return tpf3mp_native.preview({DEPOT_TABLE})")),
+            Ok("true".into())
+        );
+        assert_eq!(
+            crate::previews::take_out(start),
+            Some(Some(depot_build().to_payload().unwrap()))
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.preview(nil)"),
+            Ok("true".into())
+        );
+        assert_eq!(
+            crate::previews::take_out(start + crate::previews::MIN_INTERVAL),
+            Some(None)
+        );
+        // What the schema refuses is not shown, and says why.
+        assert!(
+            lua.run("return tpf3mp_native.preview({ Nonsense = {} })")
+                .unwrap()
+                .starts_with("false|"),
+        );
+        assert!(
+            lua.run("return tpf3mp_native.preview(42)")
+                .unwrap()
+                .starts_with("false|"),
+        );
+        // Another member's preview comes in as take() gives an action, and
+        // goes with the game's end: told once as gone, so the GUI clears it.
+        let ann = PlayerId(tpf3mp_proto::FixedBytes([0xab; 32]));
+        notice(&Notice::Preview {
+            from: ann,
+            preview: Some(depot_build().to_payload().unwrap()),
+        });
+        assert_eq!(
+            lua.run(
+                "local c = tpf3mp_native.previews() \
+                 return #c, c[1].from:sub(1, 4), c[1].action.BuildConstruction.name, \
+                     #tpf3mp_native.previews()"
+            ),
+            Ok("1|abab|Depot|0".into())
+        );
+        notice(&Notice::Ended(Text::new("the owner left").unwrap()));
+        assert_eq!(
+            lua.run(
+                "local c = tpf3mp_native.previews()                  return #c, c[1].from:sub(1, 4), tostring(c[1].action), #tpf3mp_native.previews()"
+            ),
+            Ok("1|abab|nil|0".into())
+        );
+    }
+
+    #[test]
+    fn a_build_that_cannot_draw_says_so_and_draws_nothing() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        let member = "ab".repeat(32);
+        assert_eq!(
+            lua.run(&format!("return tpf3mp_native.draw('{member}')")),
+            Ok("false|this build cannot draw the others' previews".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.draw('nobody')"),
+            Ok("false|a member is 64 hex digits".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.drawn()"),
+            Ok(String::new()),
+            "nothing armed"
+        );
+        assert_eq!(
+            lua.run(&format!("return tpf3mp_native.undraw('{member}')")),
+            Ok("true".into()),
+            "nothing drawn, nothing to clear"
         );
     }
 

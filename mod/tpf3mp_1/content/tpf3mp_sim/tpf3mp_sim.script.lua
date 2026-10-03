@@ -83,8 +83,8 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes, capture, registry, companies, progression, modbuild =
-		false, nil, nil, nil, nil, nil, nil, nil, nil
+	local tried, link, apply, lanes, capture, registry, companies, progression, modbuild, previews =
+		false, nil, nil, nil, nil, nil, nil, nil, nil, nil
 	-- Whether this state is applying the room's actions (in postUpdate);
 	-- the scripts' follow-up builds in the GUI's state, and whether their
 	-- wrapper is on there (tpf3mp/modbuild.lua).
@@ -370,6 +370,10 @@ function data()
 				end
 				lanes = lanesModule
 				capture = captureModule
+				-- The players' build previews (tpf3mp/previews.lua): optional,
+				-- so a mod without them still builds through the room.
+				local okPreviews, previewsModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/previews.lua")
+				previews = okPreviews and type(previewsModule) == "table" and previewsModule or nil
 				registry = registryModule
 				companies = companiesModule
 				progression = progressionModule
@@ -668,7 +672,16 @@ function data()
 				if action == false then
 					-- Nothing proposed yet: nothing to refuse, nothing to hand on.
 					snapshots[clicks] = nil
+					if previews then previews.hidden(l) end
 					return nil
+				end
+				-- What the tool shows, for the room's other members to see.
+				if previews then
+					local unshown = previews.shown(l, api, id, kind, action or nil)
+					if unshown and refusals < 40 then
+						refusals = refusals + 1
+						l:log("this " .. id .. " preview is not shown to the others: " .. tostring(unshown))
+					end
 				end
 				local shape
 				do
@@ -721,9 +734,13 @@ function data()
 			if not l then return end
 			followUpsInGui(l)
 			if followUps then followUps.seen(l:note(modbuild.NOTE)) end
+			-- The player's own preview; the others' the Multiplayer plugin shows.
+			if previews and l:room() then previews.tick(l, api) end
 			local clicks = l:clicks()
 			if clicks == nil then return end
 			if handled == nil then handled = clicks end
+			-- A click: the room orders the build itself, for every game.
+			if previews and handled < clicks then previews.hidden(l) end
 			while handled < clicks do
 				local seen = snapshots[handled]
 				-- The module editor's click: its build as the hook read it,

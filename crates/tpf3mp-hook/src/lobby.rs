@@ -304,7 +304,7 @@ fn password(value: &str) -> Result<Option<Text<64>>, String> {
 }
 
 /// A player named by 64 hex digits, as [`Member::id`] names them.
-fn player(hex: &str) -> Option<PlayerId> {
+pub(crate) fn player(hex: &str) -> Option<PlayerId> {
     let hex = hex.trim();
     if hex.len() != 64 || !hex.is_ascii() {
         return None;
@@ -1329,6 +1329,7 @@ mod tests {
         }
         fn chosen_speed(&mut self, _speedup: u64) {}
         fn say(&mut self, _text: tpf3mp_proto::ChatText) {}
+        fn preview(&mut self, _preview: Option<tpf3mp_proto::Payload>) {}
         fn on_menu(&mut self) {}
         fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
             self.heard.extend(actions);

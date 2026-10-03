@@ -106,6 +106,9 @@ pub trait RoomGate {
     fn command(&mut self, payload: Payload, secret: Option<Secret>) -> Result<u64, SessionError>;
     /// Says `text` to the room for the player.
     fn chat(&mut self, text: ChatText) -> Result<(), SessionError>;
+    /// Shows the room's other members what the player's build tool shows,
+    /// or that it shows nothing.
+    fn preview(&mut self, preview: Option<Payload>) -> Result<(), SessionError>;
     /// Before the room begins: the game's world number `world` is up. Says
     /// whether the agent was told.
     fn world_up(&mut self, world: u64) -> Result<bool, SessionError>;
@@ -225,6 +228,9 @@ impl RoomGate for Session {
     fn chat(&mut self, text: ChatText) -> Result<(), SessionError> {
         Session::chat(self, text)
     }
+    fn preview(&mut self, preview: Option<Payload>) -> Result<(), SessionError> {
+        Session::preview(self, preview)
+    }
     fn world_up(&mut self, world: u64) -> Result<bool, SessionError> {
         Session::world_up(self, world)
     }
@@ -314,8 +320,12 @@ impl Game for HookGame {
             self.refused.push((*command, format!("{reason:?}")));
         }
         self.window.push(notice.clone());
-        // The room and its chat are for the Multiplayer window, not the log.
-        if !matches!(notice, Notice::Room(_) | Notice::Chat { .. }) {
+        // The room and its chat are for the Multiplayer window, and the
+        // other members' previews for the GUI, not the log.
+        if !matches!(
+            notice,
+            Notice::Room(_) | Notice::Chat { .. } | Notice::Preview { .. }
+        ) {
             self.notices.push(format!("{notice:?}"));
         }
     }
@@ -353,6 +363,8 @@ pub trait StepHandler: Send {
     fn chosen_speed(&mut self, speedup: u64);
     /// See [`StepDriver::say`].
     fn say(&mut self, text: ChatText);
+    /// See [`StepDriver::preview`].
+    fn preview(&mut self, preview: Option<Payload>);
     /// See [`StepDriver::on_menu`].
     fn on_menu(&mut self);
     /// See [`StepDriver::lobby`].
@@ -380,6 +392,9 @@ impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     }
     fn say(&mut self, text: ChatText) {
         StepDriver::say(self, text);
+    }
+    fn preview(&mut self, preview: Option<Payload>) {
+        StepDriver::preview(self, preview);
     }
     fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView> {
         StepDriver::lobby(self, actions)
@@ -588,6 +603,19 @@ impl<G: RoomGate> StepDriver<G> {
         if let Err(error) = self.gate.chat(text) {
             self.log
                 .push(format!("the room did not hear the player: {error}"));
+        }
+    }
+
+    /// Shows the room's other members what the player's build tool shows
+    /// now, in the room's game only; outside it, nobody is shown anything.
+    pub fn preview(&mut self, preview: Option<Payload>) {
+        if self.phase != Phase::Running {
+            return;
+        }
+        if let Err(error) = self.gate.preview(preview) {
+            self.log.push(format!(
+                "the room was not shown the player's preview: {error}"
+            ));
         }
     }
 
@@ -1270,6 +1298,8 @@ pub(crate) mod tests {
         pub(crate) checkpoints: Vec<(u64, Vec<LaneDigest>)>,
         /// What the player said to the room.
         pub(crate) said: Vec<ChatText>,
+        /// What the player's build tool showed the room.
+        pub(crate) previews: Vec<Option<Payload>>,
         /// What the room says, handed to the game by each poll, one list a
         /// poll.
         pub(crate) notices: VecDeque<Vec<Notice>>,
@@ -1378,6 +1408,10 @@ pub(crate) mod tests {
         }
         fn chat(&mut self, text: ChatText) -> Result<(), SessionError> {
             self.said.push(text);
+            Ok(())
+        }
+        fn preview(&mut self, preview: Option<Payload>) -> Result<(), SessionError> {
+            self.previews.push(preview);
             Ok(())
         }
         fn world_up(&mut self, world: u64) -> Result<bool, SessionError> {
@@ -2244,6 +2278,23 @@ pub(crate) mod tests {
         call(&mut d, &mut calls);
         d.say(text("on my way"));
         assert_eq!(d.gate.said, vec![text("on my way")]);
+    }
+
+    #[test]
+    fn the_players_preview_reaches_the_room_in_its_game_only() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        let (mut d, mut calls) = driver(script);
+        let shown = Payload::new(vec![1, 2, 3]).unwrap();
+        d.preview(Some(shown.clone()));
+        assert!(
+            d.gate.previews.is_empty(),
+            "before the room's game, nobody sees"
+        );
+        call(&mut d, &mut calls);
+        d.preview(Some(shown.clone()));
+        d.preview(None);
+        assert_eq!(d.gate.previews, vec![Some(shown), None]);
     }
 
     #[test]

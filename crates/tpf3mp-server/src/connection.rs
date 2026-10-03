@@ -24,8 +24,9 @@ use tpf3mp_net::{
 use tpf3mp_proto::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkResponse, CONTROL_MAX_FRAME,
     ChatText, ClientMessage, Code, GameMessage, Hello, IntentRejection, JoinRoom,
-    MAX_CHECKPOINT_LANES, PROTOCOL_VERSION, PlayerId, Reject, RejectReason, Request, RequestError,
-    Response, RoomView, ServerMessage, SessionId, TURN_MAX_FRAME, TurnMessage, TurnStart, Welcome,
+    MAX_CHECKPOINT_LANES, MAX_PREVIEW, PROTOCOL_VERSION, PlayerId, Reject, RejectReason, Request,
+    RequestError, Response, RoomView, ServerMessage, SessionId, TURN_MAX_FRAME, TurnMessage,
+    TurnStart, Welcome,
 };
 use tracing::{debug, info};
 
@@ -46,6 +47,17 @@ const CONTROL_QUEUE: usize = 256;
 /// Turns queued for one client before it counts as too slow: about 100 s of
 /// turns at the default tick.
 const TURN_QUEUE: usize = 1024;
+/// Other members' build previews queued for one client. A full queue drops
+/// the newest: previews are advisory and sent again, so a slow client
+/// misses some and is never disconnected for them.
+const ADVISORY_QUEUE: usize = 64;
+/// Bytes of other members' previews written to one client per second, and
+/// the burst: a preview's bytes share the control stream with the client's
+/// own messages, and once written they stay ahead of them, so previews over
+/// this are dropped rather than let a flood of them (many members, 16 KiB
+/// each) fill the stream's window. A preview that hides costs nothing.
+const ADVISORY_BYTES_PER_SECOND: u32 = 48 * 1024;
+const ADVISORY_BYTES_BURST: u32 = 64 * 1024;
 /// Requests one connection may make per second, and the burst on top. A
 /// client makes a handful per game.
 const REQUESTS_PER_SECOND: u32 = 10;
@@ -76,6 +88,11 @@ const PROGRESS_BURST: u32 = 400;
 /// only keeps a flood out of the room's queue.
 const INTENTS_PER_SECOND: u32 = 40;
 const INTENT_BURST: u32 = 80;
+/// Build previews: the agent sends at most five a second while the player's
+/// tool changes what it shows, and one every few seconds while it does not.
+/// Excess ones are dropped.
+const PREVIEWS_PER_SECOND: u32 = 5;
+const PREVIEW_BURST: u32 = 10;
 /// Time a client gets to say what a new bulk stream is for.
 const BULK_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -324,12 +341,14 @@ struct Client {
     /// The room, for the task that serves bulk streams.
     rooms: watch::Sender<Option<RoomHandle>>,
     control: Option<mpsc::Receiver<ServerMessage>>,
+    advisory: Option<mpsc::Receiver<ServerMessage>>,
     turns: Option<mpsc::Receiver<TurnFeed>>,
     requests: TokenBucket,
     joins: TokenBucket,
     lists: TokenBucket,
     progress: TokenBucket,
     intents: TokenBucket,
+    previews: TokenBucket,
     diagnostics: TokenBucket,
     /// Bytes of diagnostics this session has had kept.
     diagnostics_kept: u64,
@@ -348,10 +367,12 @@ impl Client {
         session: SessionId,
     ) -> Self {
         let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE);
+        let (advisory_tx, advisory_rx) = mpsc::channel(ADVISORY_QUEUE);
         let (turns_tx, turns_rx) = mpsc::channel(TURN_QUEUE);
         let link = MemberLink {
             id: NEXT_LINK.fetch_add(1, Ordering::Relaxed),
             control: control_tx,
+            advisory: advisory_tx,
             turns: turns_tx,
             connection: connection.clone(),
         };
@@ -367,12 +388,14 @@ impl Client {
             room: None,
             rooms: watch::Sender::new(None),
             control: Some(control_rx),
+            advisory: Some(advisory_rx),
             turns: Some(turns_rx),
             requests: TokenBucket::new(REQUESTS_PER_SECOND, REQUEST_BURST),
             joins: TokenBucket::new(JOINS_PER_SECOND, JOIN_BURST),
             lists: TokenBucket::new(LISTS_PER_SECOND, LIST_BURST),
             progress: TokenBucket::new(PROGRESS_PER_SECOND, PROGRESS_BURST),
             intents: TokenBucket::new(INTENTS_PER_SECOND, INTENT_BURST),
+            previews: TokenBucket::new(PREVIEWS_PER_SECOND, PREVIEW_BURST),
             diagnostics: TokenBucket::new(DIAGNOSTICS_PER_SECOND, DIAGNOSTICS_BURST),
             diagnostics_kept: 0,
             runs: Vec::new(),
@@ -381,10 +404,12 @@ impl Client {
     }
 
     async fn run(mut self, send: SendStream, mut recv: RecvStream) {
-        let (Some(control), Some(turns)) = (self.control.take(), self.turns.take()) else {
+        let (Some(control), Some(advisory), Some(turns)) =
+            (self.control.take(), self.advisory.take(), self.turns.take())
+        else {
             return;
         };
-        let control_writer = tokio::spawn(write_control(send, control));
+        let control_writer = tokio::spawn(write_control(send, control, advisory));
         let turn_writer = tokio::spawn(write_turns(self.connection.clone(), turns));
         let bulk = tokio::spawn(accept_bulk(BulkPeer {
             connection: self.connection.clone(),
@@ -484,6 +509,7 @@ impl Client {
                         // The room keeps at most about two a second; more
                         // are never needed.
                         GameMessage::Loading(_) => self.progress.take(now, 1),
+                        GameMessage::Preview(_) => self.previews.take(now, 1),
                         // Like checkpoints: the room ignores reports of
                         // saves it is not deciding.
                         GameMessage::Checkpoint { .. } | GameMessage::Saved { .. } => true,
@@ -807,6 +833,15 @@ impl Client {
                     stage,
                 });
             }
+            GameMessage::Preview(preview) => {
+                // Larger than any client sends: not shown, and no harm done.
+                if preview.as_ref().is_none_or(|p| p.len() <= MAX_PREVIEW) {
+                    room.notify(RoomCommand::Preview {
+                        player: self.player,
+                        preview,
+                    });
+                }
+            }
             GameMessage::Progress { step } => {
                 room.notify(RoomCommand::Progress {
                     player: self.player,
@@ -853,14 +888,49 @@ impl Client {
     }
 }
 
-async fn write_control(mut send: SendStream, mut messages: mpsc::Receiver<ServerMessage>) {
-    while let Some(message) = messages.recv().await {
+/// Writes the client's control stream: its own messages first, other
+/// members' previews when none wait, so a preview never holds up a
+/// response, a chat line or a rejected intent. Ends when the control
+/// messages end.
+async fn write_control(
+    mut send: SendStream,
+    mut messages: mpsc::Receiver<ServerMessage>,
+    mut advisory: mpsc::Receiver<ServerMessage>,
+) {
+    let mut budget = TokenBucket::new(ADVISORY_BYTES_PER_SECOND, ADVISORY_BYTES_BURST);
+    loop {
+        let message = tokio::select! {
+            biased;
+            message = messages.recv() => match message {
+                Some(message) => message,
+                None => return,
+            },
+            Some(message) = advisory.recv() => {
+                if !budget.take(std::time::Instant::now(), advisory_cost(&message)) {
+                    continue;
+                }
+                message
+            }
+        };
         if write_message(&mut send, &message, CONTROL_MAX_FRAME)
             .await
             .is_err()
         {
             return;
         }
+    }
+}
+
+/// What a relayed preview costs a client's advisory byte budget: its
+/// payload. One that hides costs nothing, so the budget never keeps a
+/// preview drawn that its member's tool no longer shows.
+fn advisory_cost(message: &ServerMessage) -> u64 {
+    match message {
+        ServerMessage::Preview {
+            preview: Some(preview),
+            ..
+        } => u64::try_from(preview.len()).unwrap_or(u64::MAX),
+        _ => 0,
     }
 }
 
@@ -1074,5 +1144,44 @@ async fn forward_announcements(
             Err(RecvError::Lagged(_)) => {}
             Err(RecvError::Closed) => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tpf3mp_proto::{FixedBytes, MAX_PREVIEW, Payload, PlayerId, ServerMessage};
+
+    use super::*;
+
+    fn preview(len: usize) -> ServerMessage {
+        ServerMessage::Preview {
+            from: PlayerId(FixedBytes([7; 32])),
+            preview: (len > 0).then(|| Payload::new(vec![0; len]).unwrap()),
+        }
+    }
+
+    #[test]
+    fn a_flood_of_previews_is_cut_to_the_byte_budget_and_hides_always_pass() {
+        let now = std::time::Instant::now();
+        let mut budget = TokenBucket::new(ADVISORY_BYTES_PER_SECOND, ADVISORY_BYTES_BURST);
+        let largest = preview(MAX_PREVIEW);
+        let mut written = 0;
+        for _ in 0..20 {
+            if budget.take(now, advisory_cost(&largest)) {
+                written += 1;
+            }
+        }
+        assert_eq!(written, 4, "64 KiB of 16 KiB previews at once, no more");
+        assert!(
+            budget.take(now, advisory_cost(&preview(0))),
+            "a hide is never dropped for the budget"
+        );
+        assert_eq!(advisory_cost(&ServerMessage::Kicked), 0);
+        // A second on, three more fit.
+        let later = now + Duration::from_secs(1);
+        let refilled = (0..20)
+            .filter(|_| budget.take(later, advisory_cost(&largest)))
+            .count();
+        assert_eq!(refilled, 3);
     }
 }

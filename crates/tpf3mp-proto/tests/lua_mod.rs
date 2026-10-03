@@ -198,6 +198,7 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
         added,
         [
             "tpf3mp.acceptance",
+            "tpf3mp.apply",
             "tpf3mp.banners",
             "tpf3mp.bridge",
             "tpf3mp.capture",
@@ -207,6 +208,8 @@ fn without_the_hook_the_mod_loads_and_does_nothing() {
             "tpf3mp.geom",
             "tpf3mp.guard",
             "tpf3mp.hudguard",
+            "tpf3mp.junctions",
+            "tpf3mp.previews",
             "tpf3mp.progression",
             "tpf3mp.registry",
             "tpf3mp.roads",
@@ -596,6 +599,43 @@ tpf3mp_native = {
     say = function(text)
         if text:match('^%s*$') then return false, 'nothing to say' end
         HOOK.said[#HOOK.said + 1] = text
+        return true
+    end,
+    -- The player's previews, 'none' for nothing shown; and the other
+    -- members' changes the test puts in HOOK.incoming, each taken once.
+    preview = function(action)
+        if action ~= nil then
+            local ok, why = schema_check(action)
+            if not ok then return ok, why end
+        end
+        HOOK.previewed = HOOK.previewed or {}
+        HOOK.previewed[#HOOK.previewed + 1] = action or 'none'
+        return true
+    end,
+    previews = function()
+        local changes = HOOK.incoming or {}
+        HOOK.incoming = {}
+        return changes
+    end,
+    -- Drawing another member's preview: armed for one member, then what
+    -- makeProposalData evaluated while armed is drawn; HOOK.drawing says
+    -- what happened, in order.
+    draw = function(from)
+        if #from ~= 64 then return false, 'a member is 64 hex digits' end
+        HOOK.armed = from
+        return true
+    end,
+    drawn = function()
+        local evaluated = HOOK.evaluated
+        HOOK.armed, HOOK.evaluated = nil, nil
+        if evaluated == nil then return nil end
+        HOOK.drawing = HOOK.drawing or {}
+        HOOK.drawing[#HOOK.drawing + 1] = 'drew ' .. evaluated
+        return true
+    end,
+    undraw = function(from)
+        HOOK.drawing = HOOK.drawing or {}
+        HOOK.drawing[#HOOK.drawing + 1] = 'undrew ' .. from:sub(1, 2)
         return true
     end,
     -- A lane dump the hook asks for ({ step =, lanes = }), once; the
@@ -2555,6 +2595,257 @@ fn a_station_edit_a_click_saw_goes_to_the_room_and_unhandled_events_are_logged()
     assert!(!logged.iter().any(|l| l.contains("elsewhere")));
 }
 
+/// What the fake hook was handed as the player's previews: each one's
+/// action kind, or "none".
+fn previewed(lua: &Lua) -> Vec<String> {
+    lua.load(
+        "local out = {} \
+         for i, p in ipairs(HOOK.previewed or {}) do \
+             out[i] = p == 'none' and 'none' or next(p) \
+         end \
+         return out",
+    )
+    .eval()
+    .unwrap()
+}
+
+#[test]
+fn the_players_build_preview_goes_to_the_room_until_the_tool_shows_nothing() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    lua.load(format!(
+        "HOOK.room = true HOOK.clicks = 0 \
+         SCRIPT.guiUpdate({{}}, nil, nil) \
+         SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', \
+             {{ {CONSTRUCTION_PROPOSAL} }})"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction"]);
+    // The bulldozer's removals show nothing new: what showed is hidden.
+    lua.load(
+        "SCRIPT.guiHandleEvent({}, nil, nil, '', 'bulldozer', 'builder.proposalCreate', \
+             { { proposal = { addedNodes = {}, addedSegments = {}, removedNodes = {}, \
+                 removedSegments = {}, edgeObjectsToAdd = {} }, toRemove = {}, toAdd = {} } })",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction", "none"]);
+    // Shown again, then clicked: the room orders the build, and the preview
+    // goes.
+    lua.load(format!(
+        "SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', \
+             {{ {CONSTRUCTION_PROPOSAL} }}) \
+         HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        previewed(&lua),
+        ["BuildConstruction", "none", "BuildConstruction", "none"]
+    );
+    let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
+    assert_eq!(
+        handed, 1,
+        "the click's build, and no preview, went to the room"
+    );
+}
+
+#[test]
+fn a_preview_hides_once_its_tool_is_no_longer_active() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    // Build 40408 names the active tools by their window, never by the
+    // event's id: the list changing is the tool closing.
+    lua.load(format!(
+        "ACTIVE = {{ 'construction-menu-stations', 'Construction' }} \
+         api.gui = {{ contextHelper = {{ getIdsOfActiveTool = function() return ACTIVE end }} }} \
+         HOOK.room = true HOOK.clicks = 0 \
+         SCRIPT.guiUpdate({{}}, nil, nil) \
+         SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'constructionBuilder', 'builder.proposalCreate', \
+             {{ {CONSTRUCTION_PROPOSAL} }}) \
+         SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction"], "still active");
+    // The same tools in another order: still the same tool.
+    lua.load(
+        "ACTIVE = { 'Construction', 'construction-menu-stations' } \
+         local t0 = os.clock() \
+         while os.clock() - t0 < 0.3 do end \
+         SCRIPT.guiUpdate({}, nil, nil)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction"], "still active");
+    // The player closed the tool; the next look at the list, a quarter of a
+    // second on, hides it.
+    lua.load(
+        "ACTIVE = {} \
+         local t0 = os.clock() \
+         while os.clock() - t0 < 0.3 do end \
+         SCRIPT.guiUpdate({}, nil, nil)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["BuildConstruction", "none"]);
+}
+
+#[test]
+fn a_preview_the_hook_could_not_draw_is_drawn_once_a_renderer_frees() {
+    let (lua, _script) = engine();
+    // All the hook's renderers busy at first; one frees later. The member's
+    // preview does not change, so it never comes again as a change.
+    let (first, later, tries): (usize, usize, usize) = lua
+        .load(
+            "local previews = ug_require('tpf3mp_1::/scripts/tpf3mp/previews.lua') \
+             previews.reset() \
+             local incoming = { { from = string.rep('ab', 32), action = { BuildTrack = {} } } } \
+             local link = { previews = function() local c = incoming incoming = {} return c end, \
+                            log = function() end } \
+             local full, tries, drawn = true, 0, 0 \
+             local function make() return { track = true }, {}, 1 end \
+             local function draw(from, kept) \
+                 if kept == nil then return true end \
+                 tries = tries + 1 \
+                 if full then return nil, 'every renderer is busy' end \
+                 drawn = drawn + 1 return true \
+             end \
+             previews.take(link, make, draw) \
+             previews.take(link, make, draw) \
+             local first = drawn \
+             full = false \
+             local t0 = os.clock() while os.clock() - t0 < 0.6 do end \
+             previews.take(link, make, draw) \
+             previews.take(link, make, draw) \
+             return first, drawn, tries",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(first, 0, "nothing drawn while every renderer is busy");
+    assert_eq!(later, 1, "drawn once one frees, and only once");
+    assert!(tries <= 3, "tried again at most every half second: {tries}");
+}
+
+#[test]
+fn a_dry_run_makes_a_builds_proposal_and_sends_nothing() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_STATION).exec().unwrap();
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')          local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')          apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end          local action = assert(capture.construction({CONSTRUCTION_PROPOSAL}))          P, C = apply.proposalOf(action, {{ company = 31 }})          NOT, WHY = apply.proposalOf({{ Bulldoze = {{}} }}, {{}})"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}
+{}", log(&lua)));
+    let (file, player, sent, logged): (String, i64, usize, usize) = lua
+        .load("return P.constructionsToAdd[1].fileName, C.player, #SENT, #HOOK.logged")
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}
+{}",
+                log(&lua)
+            )
+        });
+    assert!(file.ends_with(".con"), "{file}");
+    assert_eq!(player, 31, "built for the sender's company");
+    assert_eq!((sent, logged), (0, 0), "nothing sent, nothing said");
+    let why: String = lua
+        .load("return tostring(NOT) .. ' ' .. WHY")
+        .eval()
+        .unwrap();
+    assert_eq!(why, "nil no preview of Bulldoze");
+    // The next action applies as before: the dry run left nothing behind.
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')          local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')          OK = apply.run(assert(capture.construction({CONSTRUCTION_PROPOSAL})), {{}})"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}
+{}", log(&lua)));
+    let (ok, sent): (bool, usize) = lua.load("return OK, #SENT").eval().unwrap();
+    assert!(ok && sent == 1, "{}", log(&lua));
+}
+
+#[test]
+fn the_plugin_has_the_hook_draw_each_other_members_preview_and_mounts_nothing() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    // The proposal a preview makes here, as apply.proposalOf would make it,
+    // and the game's evaluation of it, which the hook draws while armed.
+    lua.load(
+        "api.engine = { util = { getPlayer = function() return 25 end, proposal = { \
+             makeProposalData = function(proposal, context) \
+                 if HOOK.armed then HOOK.evaluated = HOOK.armed:sub(1, 2) .. ' ' \
+                     .. tostring(proposal.track) .. ' for ' .. tostring(context.player) end \
+                 return {} \
+             end } } } \
+         package.loaded['tpf3mp.apply'] = { proposalOf = function(action) \
+             if action.BuildTrack then return { track = true }, { player = 25 } end \
+             return nil, 'this game has no such street' \
+         end } \
+         HOOK.room = true",
+    )
+    .exec()
+    .unwrap();
+    lua.load(
+        "M = mount(loadPlugin()) M.step() M.render() \
+         HOOK.incoming = { { from = string.rep('ab', 32), action = { BuildTrack = {} } }, \
+                           { from = string.rep('cd', 32), action = { BuildRoad = {} } } } \
+         M.step() M.render()",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let (kept, mounted): (String, usize) = lua
+        .load(
+            "local kept = {} \
+             for from, p in pairs(require('tpf3mp.previews').remote()) do \
+                 kept[#kept + 1] = from:sub(1, 2) .. ' ' .. p.kind .. ' ' .. tostring(p.proposal.track) \
+             end \
+             local mounted = 0 \
+             for _, child in ipairs(M.layout.params.children) do \
+                 if child.view == 'ProposalViewer' then mounted = mounted + 1 end \
+             end \
+             return table.concat(kept, ','), mounted",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        kept, "ab BuildTrack true",
+        "the track kept; the road this game cannot make not"
+    );
+    assert_eq!(
+        mounted, 0,
+        "no ProposalViewer outside a tool: build 40408 fails fatally (!IsTransformWithContext)"
+    );
+    let drawing: Vec<String> = lua.load("return HOOK.drawing").eval().unwrap();
+    assert_eq!(
+        drawing,
+        ["drew ab true for 25"],
+        "the hook drew the track, as evaluated"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for line in [
+        "another member's build preview arrived: BuildTrack from abababababababab",
+        "drawing another member's build preview: BuildTrack from abababababababab",
+        "another member's BuildRoad preview does not show here: this game has no such street",
+    ] {
+        assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
+    }
+    // The member's tool shows nothing now: the hook clears it.
+    lua.load("HOOK.incoming = { { from = string.rep('ab', 32) } } M.step() M.render()")
+        .exec()
+        .unwrap();
+    let drawing: Vec<String> = lua.load("return HOOK.drawing").eval().unwrap();
+    assert_eq!(drawing, ["drew ab true for 25", "undrew ab"]);
+    let left: usize = lua
+        .load("local n = 0 for _ in pairs(require('tpf3mp.previews').remote()) do n = n + 1 end return n")
+        .eval()
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
 #[test]
 fn a_module_editor_click_goes_to_the_room_as_the_hook_read_it() {
     let (lua, _script) = engine();
@@ -2792,6 +3083,31 @@ fn a_rail_station_on_open_ground_leaves_its_own_track_to_the_station() {
         links, 3,
         "joined to an existing track, it travels as before"
     );
+}
+
+#[test]
+fn a_snapped_stations_preview_leaves_its_junction_settings_out() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    // The station as the tool snapped it to the street, with a junction
+    // setting on a node this game does not have (seen on build 40408: "the
+    // junction no longer exists").
+    let (made, sent): (String, usize) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+             local action = assert(capture.construction({STATION_BY_ROAD})) \
+             action.BuildConstruction.connection.junctions = {{ {{ \
+                 node = {{ network = 'Street', at = {{ x = 999, y = 999, z = 0 }} }} }} }} \
+             local p, why = apply.proposalOf(action, {{}}) \
+             if not p then return 'none: ' .. tostring(why), #SENT end \
+             return p.constructionsToAdd[1].fileName .. ' ' .. #p.streetProposal.edgesToAdd, #SENT"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(made.contains(".con "), "{made}");
+    assert!(!made.starts_with("none"), "{made}");
+    assert_eq!(sent, 0);
 }
 
 #[test]
@@ -3515,6 +3831,28 @@ fn a_track_the_room_ordered_has_its_templates_track_distance() {
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(distances, ["5", "nil"], "{}", log(&lua));
+}
+
+#[test]
+fn a_roads_preview_is_the_proposal_its_build_would_send() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(format!(
+        "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')          apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end          P, C = apply.proposalOf({ROAD}, {{}})"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    let (nodes, edges, removed, sent, logged): (usize, usize, String, usize, usize) = lua
+        .load(
+            "local p = P.streetProposal              return #p.nodesToAdd, #p.edgesToAdd, table.concat(p.edgesToRemove, ','), #SENT, #HOOK.logged",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        (nodes, edges, removed.as_str(), sent, logged),
+        (2, 4, "100", 0, 0),
+        "the build's nodes and edges, the split street's edge removed, nothing sent or said"
+    );
 }
 
 #[test]

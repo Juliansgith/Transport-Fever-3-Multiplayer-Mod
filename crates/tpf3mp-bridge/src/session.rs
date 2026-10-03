@@ -70,6 +70,12 @@ pub enum Notice {
     },
     /// The room as it stands: its name, owner and members.
     Room(RoomInfo),
+    /// What another member's build tool shows now, or `None` once it shows
+    /// nothing.
+    Preview {
+        from: PlayerId,
+        preview: Option<Payload>,
+    },
 }
 
 /// What the game does about its next step.
@@ -343,8 +349,8 @@ impl Session {
                     }));
                 }
                 // Talk in the lobby, and the lobby itself, are for the front
-                // end.
-                ToHook::Chat { .. } | ToHook::Room(_) => {}
+                // end; a preview is for a running game alone.
+                ToHook::Chat { .. } | ToHook::Room(_) | ToHook::Preview { .. } => {}
                 // The room session ended before its game began: the
                 // launcher's next room comes on a new link generation.
                 ToHook::End { .. } => {
@@ -517,6 +523,7 @@ impl Session {
                 | ToHook::Chat { .. }
                 | ToHook::Room(_)
                 | ToHook::Lobby(_)
+                | ToHook::Preview { .. }
                 | ToHook::Refused { .. }
                 | ToHook::Diverged { .. } => self.handle(message, game)?,
                 other => {
@@ -605,6 +612,12 @@ impl Session {
     /// Says something to the room for the player.
     pub fn chat(&mut self, text: ChatText) -> Result<(), SessionError> {
         self.send(&ToAgent::Chat { text })
+    }
+
+    /// Shows the other members what the player's build tool shows now, or
+    /// that it shows nothing.
+    pub fn preview(&mut self, preview: Option<Payload>) -> Result<(), SessionError> {
+        self.send(&ToAgent::Preview { preview })
     }
 
     /// Hands the launcher an action the player took in the main menu's
@@ -699,7 +712,7 @@ impl Session {
         while let Some(message) = self.try_recv()? {
             match message {
                 ToHook::Lobby(view) => self.remember_lobby(*view),
-                ToHook::Chat { .. } | ToHook::Room(_) => {}
+                ToHook::Chat { .. } | ToHook::Room(_) | ToHook::Preview { .. } => {}
                 begin @ ToHook::Begin { .. } if ended => {
                     self.peeked = Some(begin);
                     break;
@@ -754,6 +767,7 @@ impl Session {
             Gated::Ended(reason) => game.notice(Notice::Ended(reason)),
             Gated::Chat { from, text } => game.notice(Notice::Chat { from, text }),
             Gated::Room(room) => game.notice(Notice::Room(room)),
+            Gated::Preview { from, preview } => game.notice(Notice::Preview { from, preview }),
             Gated::Lobby(view) => self.remember_lobby(*view),
             Gated::Nothing => {}
         }

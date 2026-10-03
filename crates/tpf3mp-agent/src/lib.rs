@@ -296,6 +296,13 @@ pub enum ClientEvent {
     ContentDiff(Option<ContentDiff>),
     /// The server's operator says something to everyone connected.
     Notice(ChatText),
+    /// What another member's build tool shows now, or `None` once it shows
+    /// nothing. Dropped rather than queued when events are not taken fast
+    /// enough: another comes within seconds.
+    Preview {
+        from: PlayerId,
+        preview: Option<Payload>,
+    },
     /// The connection ended.
     Closed(quinn::ConnectionError),
 }
@@ -749,6 +756,12 @@ impl Client {
         .await
     }
 
+    /// Shows the room's other members what this player's build tool shows
+    /// now, an action's payload, or that it shows nothing.
+    pub async fn send_preview(&self, preview: Option<Payload>) -> Result<(), ClientError> {
+        self.send(GameMessage::Preview(preview)).await
+    }
+
     /// Tells the room where this player's game is with its world while it
     /// comes in; `None` once it plays.
     pub async fn report_loading(
@@ -921,6 +934,14 @@ async fn read_control(
             ServerMessage::Chat { from, text } => ClientEvent::Chat { from, text },
             ServerMessage::ContentDiff(diff) => ClientEvent::ContentDiff(diff),
             ServerMessage::Notice(text) => ClientEvent::Notice(text),
+            ServerMessage::Preview { from, preview } => {
+                // Advisory: never a reason to stop reading the control
+                // stream, which carries the responses.
+                match events.try_send((ClientEvent::Preview { from, preview }, None)) {
+                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => continue,
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
             ServerMessage::Welcome(_) | ServerMessage::Reject(_) => {
                 connection.close(close::PROTOCOL_VIOLATION, b"unexpected handshake message");
                 break;

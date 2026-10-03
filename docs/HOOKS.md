@@ -399,6 +399,12 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.
+  - `Preview { from, preview }`: what another member's build tool shows
+    now, an action's payload, or `None` once it shows nothing (bridge
+    version 24; "Build previews" below). Sent only while the game plays the
+    room's world, and only the latest of each member: one still waiting in
+    the agent's queue is replaced. The gate drops one that arrives while a
+    world loads.
 - **From the hook (`ToAgent`):**
   - `Hello`: always first, with the game build.
   - `Loaded { next_step }`: the ordered world is loaded.
@@ -458,6 +464,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     lobby's room carries the save it starts from and the owner's upload
     of it.
   - `Log`: a line for the agent's log.
+  - `Preview { preview }`: what the player's build tool shows now, for the
+    other members, or `None` once it shows nothing (`Session::preview`;
+    bridge version 24). The agent sends it on in the room's game only, and
+    not one over `MAX_PREVIEW`.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
   gate hands over, so an event for step `s` is applied after step `s - 1`
@@ -822,6 +832,9 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.personal()`: this player's personal mods, names one a
   line, or `nil`: the guards tell a personal mod's commands by it
   ("The player's commands" below). Optional.
+- `tpf3mp_native.preview(action)` and `tpf3mp_native.previews()`: in the
+  GUI, what the player's build tool shows, for the other members, and what
+  theirs show ("Build previews" below). Optional.
 
 The table's functions run on whichever thread runs their state (the GUI's
 the main thread, the game scripts' a pool of simulation threads) and share
@@ -2847,6 +2860,121 @@ and malformed memory. These tests do not launch the game and do not
 complete the playtest above. AGENTS.md currently prohibits automated game
 launches/modifications; a human must run this check or explicitly override
 that restriction before an agent runs it.
+
+### Build previews
+
+What a player's build tool shows before the click, the road, track,
+station or building it would build, the other members see in their own
+games while it shows. Advisory: a preview is never applied, ordered,
+logged by the room or saved, and nothing of it reaches the world.
+Ported from TpF2 Multiplayer's shared build previews (`mp/previews.lua`
+and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
+
+- **What is shown.** The action the tool's proposal would build, as the
+  capture makes it for the click (`tpf3mp/capture.lua`): the room's own
+  action schema, in millimetres and resource names (D8), so no engine id
+  travels. Only the tools that build something new: constructions
+  (stations, depots, buildings, a station's edit), streets, tracks and
+  stops (`tpf3mp/previews.lua`, `SHOWN`). Not the bulldozer, the
+  modifiers or the junction tools; not the module editor or the terrain
+  tools, which tell game scripts nothing of their proposals.
+- **Out.** The game script's GUI half (`guiHandleEvent`) hands each such
+  proposal's action to `tpf3mp_native.preview(action)`, and `nil` when the
+  tool shows nothing: an empty proposal, one the room cannot carry, one of
+  a tool not shown, a click (the room then orders the real build), or the
+  game's active tools changed since the tool's last proposal
+  (`api.gui.contextHelper.getIdsOfActiveTool()`, looked at four times a
+  second: build 40408 lists its tools by their window, "Construction" or
+  "variant-tracks", never by the event's id, so the list changing is the
+  tool closing or another opening; where the game gives no list, the
+  preview hides on its next proposal or click only).
+  The hook converts it with the schema, refuses one over
+  `tpf3mp_proto::MAX_PREVIEW` (16 KiB) and keeps the latest
+  (`crate::previews`); the step driver sends it (`Session::preview`) at
+  most five times a second, and again every two seconds while it shows,
+  in the room's game only.
+- **The room.** The server relays it (`GameMessage::Preview`,
+  `ServerMessage::Preview`, protocol 17) to the other members of the
+  running game, on the control stream, in a queue of its own behind
+  everything else and dropped when full (PROTOCOL.md, "Game messages from
+  the client"). Not over QUIC datagrams: a road's or a station's action is
+  several kilobytes, more than one datagram carries.
+- **In.** The hook keeps each member's latest (`crate::previews`); one not
+  heard of again for six seconds is gone. `tpf3mp_native.previews()` gives
+  the GUI what changed, `{ { from =, action = } }`, without `action` for
+  one gone; the room's end tells each one still shown as gone. The
+  Multiplayer plugin (`gui/tpf3mp/tpf3mp.script.lua`), which stays mounted
+  in the game bar, takes them every frame, in a room or not
+  (`tpf3mp/previews.lua`, `take`), and says each
+  member's first in the log ("another member's build preview arrived:
+  ...").
+- **Showing them.** Each preview is made into the proposal its action
+  would build in this game, for the sender's company:
+  `apply.proposalOf(action, ctx)` runs the build's handler dry, stopping
+  it at the proposal it would send, so nothing is sent, built or logged
+  (construction, road, track and stop builds only). One this game cannot
+  make (a street type it lacks, an edge it has not) does not show, and the
+  log says why. Its junction settings are left out (`junctions.into` is
+  skipped in the dry run): they name nodes of the sender's game, and
+  checking them failed every station snapped to a street ("the junction
+  no longer exists").
+- **Drawing them** (`crate::drawing`), as TpF2 Multiplayer did
+  (`native/src/preview_plugin.cpp`): the hook keeps a `UI::BuilderRenderer`
+  of its own for each other member, made by the game's own
+  `RendererFactory` (`CGameUI+0x588`) and registered once with the main
+  `CRendererComponent` ("mainView", `CGameUI+0xbf0`), at most 16. To draw
+  one, the plugin arms the GUI thread for the member
+  (`tpf3mp_native.draw(from)`), has the game evaluate the proposal with
+  `api.engine.util.proposal.makeProposalData(proposal, context)`, and
+  disarms (`drawn()`). The hook redirects that binding's one call of
+  `CreateProposalData`: after the game's own call, on the armed thread
+  only, it clears the member's renderer and fills it with
+  `builder_renderer_util::AddToRenderer` from the toolkit, the converted
+  proposal and the `ProposalData` just made, as the game's own
+  ProposalViewer does (`ModelData` from `CGameUI+0x538`, no offset, an
+  empty entity map, no catchment-area job). Every other call of the
+  binding, the mod's own game script's included, is the game's alone. A
+  proposal the game did not evaluate (`ProposalData+0x570`) clears it
+  instead. `undraw(from)` clears a member's renderer when their tool shows
+  nothing. `~CGameUI` is detoured: its renderers are cleared, leave its main
+  component and are destroyed before the game's own destructor runs.
+  The tint is this game's verdict, blue, or red where this game would
+  refuse the build.
+- **Their terrain**, composed as TpF2 Multiplayer composed it. A preview's
+  cuts and embankments are terrain heights its renderer uploads into the
+  one view terrain every renderer shares: `EndHeightMod` (`0x7bbae0`)
+  calls `terrain::ViewTerrain::ApplyBlocks(*(r+0x50), *(r+0x1b8)+0x1af8,
+  *(r+0xf3))` while the renderer's flag at `+0xf0` is set. A renderer's
+  `Clear` with its second flag resets that view terrain whole (`0x398600`
+  walks every changed block of it, not the renderer's own), so a reset by
+  the player's own tool takes a member's embankments away, and a member's
+  preview gone would leave its embankments behind. The hook detours
+  `Clear`, `EndHeightMod` and the renderer's destructor (`vf0`): after
+  every `Clear` that reset the view terrain, whoever's, each renderer's
+  heights are applied again, the members' first and this player's own
+  tools last, so where both change the same ground the player's tool
+  shows. The game's renderers that upload heights are noted in
+  `EndHeightMod` (at most 64) and forgotten in their destructor and with
+  the world's GUI; the hook clears its own as the ProposalViewer does
+  (`Clear(r, 1, 1, 1)`, through the trampoline) and composes after. Every
+  offset is read from the upload's own instructions (`0x7bbb6a`), and its
+  call must be the profile's `ApplyBlocks`. Without every part, the hook's
+  renderers upload no heights (their flag cleared before and after each
+  fill): the preview then shows no cut or embankment, and is drawn paler,
+  partly under the ground, but never leaves terrain behind; the log says
+  which ("drawn, with their terrain, composed" or "their terrain is not
+  shown"). Composing runs on the GUI thread only, never while a world's
+  GUI is destroyed.
+- **Every target and offset** is in the
+  profile, each offset read from the game's own instruction that uses it;
+  a build without all of them draws nothing (fail closed), and the log
+  says so ("the others' build previews are (not) drawn").
+  The game's own `builtin.ProposalViewer` cannot draw them: build 40408
+  allows it only inside a tool's `ActionDescriptor`, and mounted anywhere
+  else (the plugin's layout, tried 2026-10-03) every game that received a
+  preview stopped with the fatal assertion `!IsTransformWithContext`
+  (`react_transform.cpp:97`). Inside the action slot it would take the
+  player's own tool's place.
 
 ### Terraforming
 
