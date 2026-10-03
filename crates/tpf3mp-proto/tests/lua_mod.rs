@@ -2377,6 +2377,102 @@ fn a_depot_the_room_builds_is_the_acting_companys() {
     );
 }
 
+/// A construction may already exist when its ownership cannot be settled.
+/// The room must hear that its build was not applied, and a missing result
+/// lookup must not be silently reported as success.
+#[test]
+fn a_construction_owner_command_or_lookup_failure_is_not_applied() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load(format!("DEPOT_ACTION = {DEPOT}")).exec().unwrap();
+    lua.load(
+        r#"
+        api.type.ComponentType.PLAYER_OWNED = 15
+        OWNERS, FAIL_OWNER, HIDE_CONSTRUCTION, FAIL_READ_OWNER = {}, false, false, false
+        local get = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == 15 and e == 5000 and FAIL_READ_OWNER then error('owner component read failed') end
+            if kind == 15 then return OWNERS[e] and { player = OWNERS[e] } end
+            return get(e, kind)
+        end
+        local list = api.engine.getEntitiesWithComponent
+        api.engine.getEntitiesWithComponent = function(kind)
+            if kind == 2 and HIDE_CONSTRUCTION then return {} end
+            return list(kind)
+        end
+        api.cmd.makeEntitySetPlayerCmd = function(entity, player)
+            return { setPlayer = entity, player = player }
+        end
+        local send = api.cmd.sendCommand
+        api.cmd.sendCommand = function(cmd, ...)
+            if cmd.setPlayer then
+                if FAIL_OWNER then error('the game refused owner settlement') end
+                OWNERS[cmd.setPlayer] = cmd.player
+            elseif cmd.proposal and cmd.proposal.constructionsToAdd
+                and cmd.proposal.constructionsToAdd[1] then
+                local result = send(cmd, ...)
+                -- The game committed the construction before owner settlement.
+                OWNERS[5000] = 25
+                return result
+            end
+            return send(cmd, ...)
+        end
+        A = string.rep('a', 64)
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } }
+        HOOK.origins = { A }
+        UPDATE({}, STATE, 0.2)
+        function buildWithFailure(fail_owner, hide_construction, fail_read_owner)
+            FAIL_OWNER, HIDE_CONSTRUCTION, FAIL_READ_OWNER = fail_owner, hide_construction, fail_read_owner
+            HOOK.applied = {}
+            HOOK.batch = { DEPOT_ACTION }
+            HOOK.origins = { A }
+            UPDATE({}, STATE, 0.2)
+            local result = HOOK.applied[1]
+            return result.ok, result.why, CONSTRUCTIONS[5000] ~= nil
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+
+    let (applied, why, construction_exists): (bool, String, bool) = lua
+        .load("return buildWithFailure(true, false, false)")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(!applied, "a refused owner command cannot report success");
+    assert!(why.contains("the game refused owner settlement"), "{why}");
+    assert!(
+        construction_exists,
+        "the engine build happened before settlement"
+    );
+
+    let (applied, why, construction_exists): (bool, String, bool) = lua
+        .load("return buildWithFailure(false, false, true)")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(!applied, "an owner lookup failure cannot report success");
+    assert!(why.contains("owner component read failed"), "{why}");
+    assert!(
+        construction_exists,
+        "the engine build happened before owner lookup"
+    );
+
+    let (applied, why, construction_exists): (bool, String, bool) = lua
+        .load("return buildWithFailure(false, true, false)")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert!(
+        !applied,
+        "a missing construction lookup cannot report success"
+    );
+    assert!(why.contains("no depot/road_depot_era_a.con there"), "{why}");
+    assert!(
+        construction_exists,
+        "the lookup failure follows the engine build"
+    );
+}
+
 #[test]
 fn a_construction_the_tool_placed_becomes_the_rooms_action() {
     let (lua, _script) = engine();
@@ -3283,28 +3379,10 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
     // which the station makes again unsnapped; then the game's refresh of
     // the new station, which snaps its entrance onto the junction. As the
     // game: a built construction is listed, and refreshed on request.
-    lua.load(
-        "api.type.ComponentType.CONSTRUCTION = 2 \
-         CONSTRUCTIONS = {} \
-         local get = api.engine.getComponent \
-         api.engine.getComponent = function(e, kind) \
-             if kind == 2 then return CONSTRUCTIONS[e] end return get(e, kind) end \
-         api.engine.getEntitiesWithComponent = function(kind) \
-             local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
-         local send = api.cmd.sendCommand \
-         api.cmd.sendCommand = function(cmd, ...) \
-             local c = cmd.proposal and cmd.proposal.constructionsToAdd and cmd.proposal.constructionsToAdd[1] \
-             if c then CONSTRUCTIONS[5000] = { fileName = c.fileName, \
-                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } end \
-             return send(cmd, ...) \
-         end \
-         api.engine.util.proposal = { refreshConstruction = function(e) return { refreshed = e, \
-             proposal = { addedSegments = { { entity = -2, comp = { node0 = -1, node1 = 7777 } } }, \
-                          removedSegments = { { entity = 6000 } } } } end } \
-         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
-    )
-    .exec()
-    .unwrap();
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
     let built: String = lua
         .load(
             "local p = SENT[1].proposal local s = p.streetProposal \
@@ -3344,17 +3422,22 @@ fn a_station_by_a_road_travels_with_the_junction_that_joins_it() {
 /// As the game: a built construction is listed, and refreshed on request,
 /// its refresh snapping its entrance onto node 7777.
 const STATION_REFRESH: &str = "api.type.ComponentType.CONSTRUCTION = 2 \
-    CONSTRUCTIONS = {} \
+    api.type.ComponentType.PLAYER_OWNED = 15 \
+    CONSTRUCTIONS, OWNERS = {}, {} \
     local get = api.engine.getComponent \
     api.engine.getComponent = function(e, kind) \
-        if kind == 2 then return CONSTRUCTIONS[e] end return get(e, kind) end \
+        if kind == 2 then return CONSTRUCTIONS[e] end \
+        if kind == 15 then return OWNERS[e] and { player = OWNERS[e] } end \
+        return get(e, kind) end \
     api.engine.getEntitiesWithComponent = function(kind) \
         local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
+    api.cmd.makeEntitySetPlayerCmd = function(entity, player) return { setPlayer = entity, player = player } end \
     local send = api.cmd.sendCommand \
     api.cmd.sendCommand = function(cmd, ...) \
         local c = cmd.proposal and cmd.proposal.constructionsToAdd and cmd.proposal.constructionsToAdd[1] \
         if c then CONSTRUCTIONS[5000] = { fileName = c.fileName, \
-            transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } end \
+            transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } \
+            OWNERS[5000] = cmd.context and cmd.context.player or api.engine.util.getPlayer() end \
         return send(cmd, ...) \
     end \
     api.engine.util.proposal = { refreshConstruction = function(e) return { refreshed = e, \
@@ -3379,6 +3462,7 @@ fn a_station_the_room_builds_names_its_group_as_the_tool_named_it() {
         lua.load(STATION_REFRESH).exec().unwrap();
         lua.load(format!(
             "api.type.ComponentType.STATION_GROUP = 9 \
+             OWNERS[5001], OWNERS[5002] = api.engine.util.getPlayer(), api.engine.util.getPlayer() \
              NAMES = {{ [5002] = {before} }} \
              api.engine.util.getEntityName = function(e) return NAMES[e] end \
              api.engine.system.stationGroupSystem = {{ getStationGroup = function(s) \
@@ -3515,28 +3599,14 @@ fn a_construction_whose_own_track_the_tool_snapped_is_built_alone_then_snapped()
          api.res.streetTemplateRep.find = function(n) \
              if n == '::/track/standard.track_template' then return 6 end return find(n) end \
          api.res.streetTemplateRep.get = function(id) \
-             if id == 6 then return { laneConfigs = { 'track lanes' }, streetStyle = '' } end return get(id) end \
-         api.type.ComponentType.CONSTRUCTION = 2 \
-         CONSTRUCTIONS = {} \
-         local getc = api.engine.getComponent \
-         api.engine.getComponent = function(e, kind) \
-             if kind == 2 then return CONSTRUCTIONS[e] end return getc(e, kind) end \
-         api.engine.getEntitiesWithComponent = function(kind) \
-             local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
-         local send = api.cmd.sendCommand \
-         api.cmd.sendCommand = function(cmd, ...) \
-             local c = cmd.proposal and cmd.proposal.constructionsToAdd and cmd.proposal.constructionsToAdd[1] \
-             if c then CONSTRUCTIONS[5000] = { fileName = c.fileName, \
-                 transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 } } end \
-             return send(cmd, ...) \
-         end \
-         api.engine.util.proposal = { refreshConstruction = function(e) return { refreshed = e, \
-             proposal = { addedSegments = { { entity = -1, comp = { node0 = 8, node1 = -2 } } }, \
-                          removedSegments = { { entity = 6000 } } } } end } \
-         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+             if id == 6 then return { laneConfigs = { 'track lanes' }, streetStyle = '' } end return get(id) end",
     )
     .exec()
     .unwrap();
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
     let built: String = lua
         .load(
             "local p = SENT[1].proposal local s = p.streetProposal \

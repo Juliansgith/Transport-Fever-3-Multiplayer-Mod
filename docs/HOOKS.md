@@ -1432,7 +1432,11 @@ state, which the game saves with the world:
   hook.log names each (`the new <file> made the acting company's`). An
   owner is read through the component's binding (`PLAYER_OWNED` is
   userdata on build 40408; read as a table only, every owner came back
-  nil until 2026-10-02, so nothing counted as any company's).
+  nil until 2026-10-02, so nothing counted as any company's). If the game
+  cannot find the built construction, read an owner, or complete an
+  ownership command, the action is reported as not applied with the failure.
+  The engine may already have built the construction before this check, so
+  a failed settlement can leave that partial result in this game.
 - *What another company owns* is refused, the same in every game, naming
   its owner: an edited, bulldozed or removed construction, road or track
   edge, or stop, and the vehicles and lines an action names, when their
