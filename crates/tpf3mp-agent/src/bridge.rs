@@ -32,8 +32,9 @@ use tpf3mp_bridge::{
 use tpf3mp_net::close;
 use tpf3mp_proto::{
     BoundedVec, ChatText, ContentDiff, ContentManifest, Event, EventBody, Invite, JoinRoom,
-    LaneDigest, LoadingStage, MAX_ROOM_MEMBERS, PlayerId, Request, RequestError, Resume, RoomPhase,
-    RoomView, SavedWorld, SessionId, SnapshotId, Speed, StartSave, Text, WorldOffer,
+    LaneDigest, LoadingStage, MAX_PREVIEW, MAX_ROOM_MEMBERS, Payload, PlayerId, Request,
+    RequestError, Resume, RoomPhase, RoomView, SavedWorld, SessionId, SnapshotId, Speed, StartSave,
+    Text, WorldOffer,
 };
 use tpf3mp_snapshot::ManifestId;
 use tracing::{debug, info, warn};
@@ -899,6 +900,13 @@ impl<L: HookLink> Bridge<L> {
                 ToAgent::MenuUp { menu } => self.menu_up(menu, client),
                 ToAgent::Log { message } => info!(hook = %message),
                 ToAgent::Lobby(action) => self.lobby_action(action),
+                // Advisory and over the size the room relays: not shown.
+                ToAgent::Preview { preview }
+                    if current && preview.as_ref().is_none_or(|p| p.len() <= MAX_PREVIEW) =>
+                {
+                    client.send_preview(preview).await?;
+                }
+                ToAgent::Preview { .. } => {}
             }
         }
         Ok(())
@@ -1418,6 +1426,13 @@ impl<L: HookLink> Bridge<L> {
                 self.outbox.push_back(ToHook::Diverged { step, lanes });
             }
             ClientEvent::Upload { event, snapshot } => self.upload(event, snapshot, client),
+            ClientEvent::Preview { from, preview } => {
+                // Only to a game that plays the room's world, and only the
+                // latest of each member: one waiting is replaced.
+                if self.begun && self.world == World::Ready {
+                    self.outbox.preview(from, preview);
+                }
+            }
             ClientEvent::Chat { from, text } => {
                 // The game hears chat once its session began; the front end
                 // hears all of it.
@@ -2010,6 +2025,7 @@ impl Outbox {
             }
             ToHook::Diverged { lanes, .. } => lanes.len() * 2,
             ToHook::Chat { from, text } => from.as_str().len() + text.as_str().len(),
+            ToHook::Preview { preview, .. } => preview.as_ref().map_or(0, Payload::len),
             ToHook::Room(room) => room.members.len() * 64,
             ToHook::Lobby(view) => {
                 view.chat.len() * 320
@@ -2050,6 +2066,21 @@ impl Outbox {
 
     fn is_full(&self) -> bool {
         self.bytes >= OUTBOX_BYTES
+    }
+
+    /// Queues `from`'s preview in place of one of theirs still waiting:
+    /// only the latest counts, so the queue holds one a member at most.
+    fn preview(&mut self, from: PlayerId, preview: Option<Payload>) {
+        if self
+            .messages
+            .iter()
+            .any(|queued| matches!(queued, ToHook::Preview { from: other, .. } if *other == from))
+        {
+            self.retain(
+                |queued| !matches!(queued, ToHook::Preview { from: other, .. } if *other == from),
+            );
+        }
+        self.push_back(ToHook::Preview { from, preview });
     }
 }
 
@@ -2714,6 +2745,33 @@ mod tests {
         assert!(!generated_world_can_start(Some(&room), owner, 1, true));
         room.phase = RoomPhase::Running;
         assert!(!generated_world_can_start(Some(&room), owner, 1, false));
+    }
+
+    #[test]
+    fn only_each_members_latest_preview_waits_for_the_game() {
+        let mut out = Outbox::default();
+        let ann = PlayerId(tpf3mp_proto::FixedBytes([1; 32]));
+        let bob = PlayerId(tpf3mp_proto::FixedBytes([2; 32]));
+        let shown = |n: u8| Some(Payload::new(vec![n; 8]).unwrap());
+        out.preview(ann, shown(1));
+        out.push_back(ToHook::Release { through: 5 });
+        out.preview(bob, shown(2));
+        out.preview(ann, shown(3));
+        out.preview(ann, None);
+        assert_eq!(
+            out.messages,
+            [
+                ToHook::Release { through: 5 },
+                ToHook::Preview {
+                    from: bob,
+                    preview: shown(2)
+                },
+                ToHook::Preview {
+                    from: ann,
+                    preview: None
+                },
+            ]
+        );
     }
 
     #[test]

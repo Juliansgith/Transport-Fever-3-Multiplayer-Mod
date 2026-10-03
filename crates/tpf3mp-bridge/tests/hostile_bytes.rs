@@ -87,6 +87,14 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
             from: Text::new("Ann").unwrap(),
             text: Text::new("gg").unwrap(),
         },
+        ToHook::Preview {
+            from: PlayerId(FixedBytes([2; 32])),
+            preview: Some(Payload::new(vec![5; 300]).unwrap()),
+        },
+        ToHook::Preview {
+            from: PlayerId(FixedBytes([2; 32])),
+            preview: None,
+        },
         ToHook::Room(RoomInfo {
             name: Text::new("Sunday line").unwrap(),
             owner: PlayerId(FixedBytes([1; 32])),
@@ -215,6 +223,9 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
         },
         ToAgent::Chat {
             text: Text::new("brb").unwrap(),
+        },
+        ToAgent::Preview {
+            preview: Some(Payload::new(vec![6; 300]).unwrap()),
         },
         ToAgent::Speed {
             speed: Speed::PAUSED,

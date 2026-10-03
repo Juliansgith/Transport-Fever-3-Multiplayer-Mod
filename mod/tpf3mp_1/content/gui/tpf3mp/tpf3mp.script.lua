@@ -40,7 +40,7 @@ function data()
 	local MOD = "tpf3mp_1"
 	-- Every module, in an order where each needs only those before it.
 	local MODULES = { "acceptance", "banners", "geom", "roads", "engine", "registry", "companies", "progression", "follow", "capture",
-		"bridge", "guard", "hudguard", "worldload" }
+		"bridge", "guard", "hudguard", "worldload", "junctions", "apply", "previews" }
 	-- Frames a refusal's notice stays in the game bar.
 	local NOTICE_FRAMES = 360
 
@@ -1096,6 +1096,30 @@ function data()
 		end
 	end
 
+	-- The proposal another member's preview `action` would build here, for
+	-- the company `from` plays for (tpf3mp/apply.lua, apply.proposalOf), its
+	-- context and that company; or nil and why.
+	local function previewProposal(action, from)
+		local shared = ui()
+		local roster = shared.companies
+		local company = require("tpf3mp.follow").companyOf(roster, from)
+		local proposal, context = require("tpf3mp.apply").proposalOf(action, { company = company, roster = roster })
+		if proposal == nil then return nil, context end
+		return proposal, context, company
+	end
+
+	-- Has the hook draw another member's preview `kept` (its proposal and
+	-- context), or with nil clear it (tpf3mp/previews.lua).
+	local function drawPreview(from, kept)
+		if kept == nil then
+			link:undrawPreview(from)
+			return true
+		end
+		return link:drawPreview(from, kept.proposal, kept.context, function(proposal, context)
+			return api.engine.util.proposal.makeProposalData(proposal, context)
+		end)
+	end
+
 	local Tpf3mpPlugin = react.RegisterPluginRecipe(game_bar_widgets.GameBarInfoDisplayExtension, "Tpf3mpPlugin", function()
 		-- Once per game: the ref lives as long as this plugin is mounted.
 		local started = react.useRef(false)
@@ -1127,6 +1151,15 @@ function data()
 				room:set(ui().version)
 			end
 			runPending()
+			-- The other members' build previews, made into the proposals
+			-- they would build here and drawn by the hook (tpf3mp/previews.lua;
+			-- never the game's ProposalViewer, which build 40408 allows only
+			-- inside a tool's ActionDescriptor: a fatal assert elsewhere).
+			-- Out of a room too: its end tells each one drawn as gone.
+			if link then
+				local took, why = pcall(require("tpf3mp.previews").take, link, previewProposal, drawPreview)
+				if not took then say("taking the build previews failed: " .. tostring(why)) end
+			end
 			if link and guardedCmd then
 				local delivered, why = pcall(function()
 					local results = link:results()

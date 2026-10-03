@@ -386,6 +386,16 @@ Dev C:
   (towns, industries, network, stations, camera, click to move, companies
   and industry types); then the terrain picture rendered by the hook; in a
   room, other players' cameras and builds.
+- [ ] *Added* (proposed by tearded, 2026-10-02, for the owner): other
+  players' build previews in the game, as TpF2 Multiplayer showed them:
+  what a player's road, track, station or building tool shows before the
+  click, the others see in 3D, in the game's own blue or red, while it
+  shows (HOOKS.md, "Build previews"). Advisory, never part of the world.
+  The transport (protocol 17, bridge 24) and the hook's
+  `UI::BuilderRenderer` for each other member on build 40408 are built
+  (the game's own `ProposalViewer` fails fatally outside a tool's action)
+  (investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md). Tick once seen in the
+  real game.
 - [ ] *Changed:* (D17, the hold lifted by the owner on 2026-09-30): the
   room in the game. The main menu's Multiplayer window connects, creates
   and joins rooms, shows the players and their ready marks, chats and
