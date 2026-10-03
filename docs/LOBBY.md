@@ -330,6 +330,15 @@ Before opening stock setup, the menu adds `tpf3mp_1` to its active mod
 selection without removing other mods. Otherwise a freshly generated world
 could silently run without the multiplayer script while guests wait.
 
+That is the only way a new world enters a room: in its lobby, before its
+game starts, after which the room saves it before step 1 and every game
+loads that save, the owner's too. The room's page offers **Set up world**
+only then. A new game or a save started from the game's own menus while
+the room's game runs is none the room loaded: the hook holds it before it
+runs a single room's step, rather than let each game start it at another
+step ([HOOKS.md](HOOKS.md), "A world the room did not load"). To play the
+room's world again, leave the room and join it again.
+
 The launcher retains its hook link between rooms. The hook therefore resets
 its menu-arrival notification when the lobby invite changes, even if the
 link generation is unchanged. After a running room ends, returning to the
