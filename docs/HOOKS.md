@@ -758,22 +758,22 @@ for the table (`bridge.find`). Its contract is in
   one, scoped to that company (`tpf3mp_proto::Secret`); it goes to the room
   with the action and is never logged, and no refusal quotes it (version
   12).
-- `tpf3mp_native.take()`: the actions the room ordered for this simulation
-  update, as `action_to_lua` tables, or `nil` (below), and second, who
-  sent each, a list of player ids (64 hex digits) beside it ("Companies"
-  below), and third, each one's seal, `{ scope =, tag = }` (the tag as 64
-  hex digits), or `false` (version 12). A list's items are
-  in its table's array part, so `next` walks them in order. The game
-  copies a list it is handed (a stop's loading flags, a consist's groups)
-  into its own vector in the order `next` gives, and what a game script's
-  `update` returns reaches `postUpdate` as the game's own copy, whose
-  lists `next` walks in hash order all the same (build 40408: a bus line's
-  stops set to load grain, one cargo over from passengers). So `apply.lua`
-  hands the game every such list afresh, filled in order (`seq`).
+- `tpf3mp_native.take()`: marks a simulation update begun, so its
+  checkpoint can be read after the batch's last update. Runtime update
+  batches return `nil` actions; ordered actions use the event path below.
+- `tpf3mp_native.takeReplay(token)`: once, in the engine's `handleEvent`,
+  the actions ordered for the next room step, as `action_to_lua` tables;
+  second, each sender (64 hex digits); third, each seal, `{ scope =,
+  tag = }` or `false` (version 13). A stale or duplicate token returns
+  `nil`. Lists keep their array order; `apply.lua` fills every list passed
+  to the game afresh in order (`seq`), because the engine's Lua copies
+  can otherwise expose a list in hash order.
+- `tpf3mp_native.replayed(token, ok, why)`: completes after every action's
+  report and `state:set`; missing reports or a failed script hold the world.
 - `tpf3mp_native.log(line)`: a line for `hook.log`, marked `mod:`.
 - `tpf3mp_native.poll()`: in the GUI, every frame: what the hook asks of
-  it, once, `{ save = name }` or `{ load = name }`, or `nil` ("The room's
-  world" below).
+  it, once, `{ replay = token }`, `{ save = name }` or `{ load = name }`,
+  or `nil` ("Actions in the game" and "The room's world" below).
 - `tpf3mp_native.saved(name, ok, why)`: the GUI's answer to a save.
 - `tpf3mp_native.world()`: a world's GUI started. Before the room begins
   a game, the step gate's next call tells the agent the latest such world
@@ -865,22 +865,38 @@ That is every game Steam started (D11).
 ### Actions in the game
 
 A player's action happens in no game until the room orders it, and then in
-every game in the same simulation update:
+every game between the same two simulation steps, including while paused:
 
 1. The mod hands the action to `tpf3mp_native.command`. The step gate
    sends it to the room.
-2. The room orders it as an event for a step `s`. The session ends a
-   batch before every step with events (`Session::batch`), so `s` is
-   always the first update of a batch; the driver hands that batch its
-   actions (`lua::begin_batch`), and runs it.
-3. The mod's game script asks the hook in every `update`
-   (`tpf3mp_native.take`); the first update of the batch gets the actions
-   and returns them, and its `postUpdate` applies them through `api.cmd`
-   (`mod/tpf3mp_1/content/scripts/tpf3mp/apply.lua`).
-4. After the batch, the driver checks the actions were taken
-   (`lua::end_batch`). If they were not, the world ran step `s` without
-   them: none of those steps is reported and the world stands still
-   (fail closed).
+2. The room orders it as an event for step `s`. After step `s - 1`,
+   `StepDriver` gives the ordered actions to `lua::request_replay` and
+   holds updates. This applies to running rooms too, so every replica uses
+   the same engine phase regardless of when the resume arrives.
+3. The GUI polls a `replay` token (Lua contract version 13) and sends only
+   that token in the existing `tpf3mp/command` scripting event (a string
+   token, rather than an action table, so older saves already subscribe).
+   `guard.wakeReplay` can bypass the GUI guard for this wake only; it cannot send an action. The
+   native command loop runs outside `GameSim::Step`'s update loop.
+4. In the engine's `handleEvent`, `takeReplay(token)` takes the hook's
+   actions, origins and seals exactly once. The script uses its existing
+   `postUpdate` action processing through `api.cmd` and saves the registry,
+   companies and progression state. No update, monthly charge, progression
+   sample or checkpoint is requested by the wake. The ordered step scopes
+   the RNG seed for this processing and nested script events.
+5. Each action is reported with `applied`, including normal refusals. Only
+   after `state:set` does `replayed(token, ok, why)` complete the replay.
+   The driver then allows later actions, a save, a load or step `s`. A
+   missing report, failed wake, script exception or 30-second timeout holds
+   the world (fail closed). A hold or closed world invalidates delayed
+   wakes; duplicates and stale tokens take nothing.
+
+The world still runs the game's paused path while waiting: neither room
+steps nor game time advance, and the paused-tick fix keeps `tickCount`
+unchanged. Construction costs are charged normally. Existing update and
+checkpoint processing remains in `update`/`postUpdate`. The engine event
+path requires two-game acceptance on the supported game build; stand-in
+tests alone do not establish that native callbacks are synchronous there.
 
 Measured on build 40408:
 
@@ -1467,8 +1483,8 @@ state, which the game saves with the world:
   ownership.
 - *Who acted.* The hook hands each ordered action to the game script with
   the player who sent it (the Lua link's version 10, `tpf3mp_native.version`:
-  `take()` answers the actions
-  and, second, each one's sender as 64 hex digits, and since version 12
+  `takeReplay(token)` answers the actions
+  and, second, each one's sender as 64 hex digits, and
   third, each one's seal; `status()` names each
   player's `id` and the local one's `me_id`). The game script books the
   action to that player's company: `apply.lua` puts the company's player
@@ -1865,7 +1881,7 @@ then in every game of the room, at the same step:
 ```
 prospecting for ::/cargos/coal/coal.cargo near town-3 (1234): coal_mine
 prospecting began: ::/cargos/coal/coal.cargo near town-3 at game time 5400000
-the game applied 1 action(s) the room ordered
+the game applied the room's actions between simulation updates
 ```
 
 and, one to six game months later, again in every game at the same step:

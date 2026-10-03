@@ -106,7 +106,7 @@ function data()
 	-- The events the script needs: its console event, and the build tools'
 	-- proposals. Each by name, since a save may carry an older mod's
 	-- subscriptions.
-	local EVENTS = { "command", "builder.proposalCreate", "builder.proposalPrepareForApply",
+	local EVENTS = { "command", "replay", "builder.proposalCreate", "builder.proposalPrepareForApply",
 		"startProspection", "endProspection" }
 
 	-- What a build tool shows in the room's game.
@@ -447,7 +447,8 @@ function data()
 		end
 	end
 
-	return {
+	local script
+	script = {
 		update = function(_params, state, _dt)
 			local l = linked()
 			if not l then return nil end
@@ -832,6 +833,35 @@ function data()
 		end,
 
 		handleEvent = function(_params, state, _src, id, name, param)
+			-- The game's lifecycle events also run before the first update.
+			-- Register on load, including saves with older subscriptions, so
+			-- a room that starts paused can receive its first build.
+			if id == "" and (name == "handleLegacy" or tostring(name):find("init", 1, true) == 1) then
+				if state and state.subscribeToEvent then
+					for _, event in ipairs(EVENTS) do state:subscribeToEvent(event) end
+					subscribed = true
+				end
+				return
+			end
+			if id == "tpf3mp" and (name == "replay" or name == "command") and type(param) == "string" then
+				local l = linked()
+				if not l or not l:room() or type(param) ~= "string" then return end
+				local actions, origins, seals = l:takeReplay(param)
+				if not actions then return end -- stale or duplicate wake
+				local ok, why = pcall(function()
+					local seed = l:seed()
+					if seed then math.randomseed(seed) end
+					-- Only action processing: no monthly charges, progression
+					-- sampling, simulation updates or checkpoint reports.
+					script.postUpdate(_params, state, 0, {
+						actions = actions, origins = origins, seals = seals,
+					})
+				end)
+				l:replaying(false)
+				applying = false
+				l:replayed(param, ok, why)
+				return
+			end
 			if id == "Company" and (name == "startProspection" or name == "endProspection") then
 				prospected(state, name, param)
 				return
@@ -847,4 +877,5 @@ function data()
 			end
 		end,
 	}
+	return script
 end

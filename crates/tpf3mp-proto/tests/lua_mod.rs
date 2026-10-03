@@ -530,7 +530,7 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          dump = nil, dumped = {} }
 tpf3mp_native = {
     copy = function(text) HOOK.copied = text return true end,
-    version = 12,
+    version = 13,
     note = function(key, value)
         HOOK.notes = HOOK.notes or {}
         if value == nil then return HOOK.notes[key] end
@@ -551,6 +551,15 @@ tpf3mp_native = {
         local batch, origins, seals = HOOK.batch, HOOK.origins, HOOK.seals
         HOOK.batch, HOOK.origins, HOOK.seals = nil, nil, nil
         return batch, origins, seals
+    end,
+    takeReplay = function(token)
+        if token ~= HOOK.replayToken or HOOK.replayTaken then return nil end
+        HOOK.replayTaken = true
+        local batch = HOOK.replayBatch
+        return batch, HOOK.replayOrigins, HOOK.replaySeals
+    end,
+    replayed = function(token, ok, why)
+        HOOK.replayDone = { token = token, ok = ok, why = why }
     end,
     log = function(line) HOOK.logged[#HOOK.logged + 1] = line end,
     poll = function()
@@ -875,7 +884,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 12; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 13; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -968,7 +977,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 12, command = print, log = print })
+             why({ version = 13, command = print, log = print })
              return out",
         )
         .eval()
@@ -1171,10 +1180,10 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 12 }
+             local native = { version = 13 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
-                                  'status', 'chat', 'say' }) do
+                                  'status', 'chat', 'say', 'takeReplay', 'replayed' }) do
                  native[n] = function() end
              end
              native.room = function() error('gone') end
@@ -2239,6 +2248,62 @@ fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
             .unwrap(),
         "the game script is linked"
     );
+}
+
+#[test]
+fn a_paused_game_applies_ordered_builds_without_running_an_update() {
+    let (lua, _) = engine();
+    lua.load(format!(
+        "HOOK.room=true HOOK.replayToken='1' HOOK.replayBatch={{ {DEPOT} }} \
+        SCRIPT.handleEvent({{}}, STATE, '', '', 'handleLegacy', {{}}) \
+        assert(STATE.subscribed.replay) \
+        SCRIPT.handleEvent({{}}, STATE, '', 'tpf3mp', 'replay', 'stale') \
+        assert(#SENT == 0) \
+        SCRIPT.handleEvent({{}}, STATE, '', 'tpf3mp', 'command', '1') \
+        assert(#SENT == 1 and #HOOK.applied == 1 and HOOK.replayDone.ok) \
+        assert(STATE.value and STATE.value.registry and STATE.value.companies) \
+        assert(HOOK.lanes == nil and HOOK.replaying[#HOOK.replaying] == false) \
+        SCRIPT.handleEvent({{}}, STATE, '', 'tpf3mp', 'command', '1') \
+        assert(#SENT == 1 and #HOOK.applied == 1)"
+    ))
+    .exec()
+    .unwrap();
+}
+
+#[test]
+fn a_replay_script_error_is_reported_and_always_clears_the_build_bypass() {
+    let (lua, _) = engine();
+    lua.load(format!(
+        "HOOK.room=true HOOK.replayToken='1' HOOK.replayBatch={{ {DEPOT} }} \
+        STATE.set=function() error('state storage failed') end \
+        SCRIPT.handleEvent({{}}, STATE, '', 'tpf3mp', 'command', '1') \
+        assert(not HOOK.replayDone.ok and HOOK.replayDone.why:find('state storage failed',1,true)) \
+        assert(HOOK.replaying[#HOOK.replaying] == false)"
+    ))
+    .exec()
+    .unwrap();
+}
+
+#[test]
+fn the_gui_wakes_only_the_ordered_replay_and_never_forwards_its_payload() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    run_frames(&lua, 1);
+    lua.load("HOOK.room=true HOOK.request={ replay='123' }")
+        .exec()
+        .unwrap();
+    run_frames(&lua, 1);
+    lua.load(
+        "assert(#SENT == 1, 'sent=' .. #SENT .. ' wake=' .. tostring(HOOK.replayDone and HOOK.replayDone.why) .. ' logs=' .. table.concat(HOOK.logged, ' | ')) local c=SENT[1].command \
+        assert(c.id=='tpf3mp' and c.name=='command' and c.param=='123') \
+        local guard=require('tpf3mp.guard') \
+        assert(not guard.wakeReplay(api.cmd, { BuildRoad={} })) \
+        api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'tpf3mp', 'replay', '123')) \
+        assert(#SENT == 1)",
+    )
+    .exec()
+    .unwrap();
 }
 
 #[test]

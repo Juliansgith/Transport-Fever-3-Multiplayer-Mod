@@ -366,6 +366,9 @@ protected folder such as Program Files.
   it. Guests' speed buttons highlight the room's accepted speed,
   including pause. Their buttons and speed shortcuts are disabled;
   their tooltip and the Multiplayer window say **Host controls speed**.
+  You can build while the room is paused. Everyone receives the ordered
+  build and its normal construction costs without advancing game time or
+  moving vehicles. Editing and demolition follow the same room ordering.
   Outside a multiplayer game the normal controls return.
 - **Joining later.** You can join a game that is already running: the
   room sends you its world, and your game loads it and catches up.
