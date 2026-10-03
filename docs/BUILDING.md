@@ -381,6 +381,22 @@ also applied in both games; all 54 shared network checkpoints through step
 also rebuilds external connecting track. One host startup failed before
 testing and succeeded on rejoin; that loading failure remains unresolved.
 
+A road station placed by a road snapped onto it, but came loose as soon as
+it was edited (2026-10-03, adding a second entrance at its other end, and
+in both games, the editing player's too, since every game replays the
+edit): its street pieces no longer joined the road or made junctions with
+it. The replacement builds the new construction alone, and a scripted
+build makes the entrance again unsnapped, ending short of the road, as a
+fresh build does; the fresh build is refreshed afterwards, the edit was
+not. Every game now refreshes the new construction after an edit too,
+which snaps its entrances onto the streets beside them. `lua_mod.rs`
+covers the refresh, a refresh with nothing to snap (nothing sent) and a
+refused one (the edit stands, logged). Not yet seen in the game: that the
+refresh finds the old junction again, and whether a new entrance onto a
+road it does not yet join, which needs that road split, snaps too; an edit
+cannot carry a road split (it is refused as one that changes the streets
+around it).
+
 ### Demolish
 
 Strict: every instance requires the same file within 2 m of the position. The

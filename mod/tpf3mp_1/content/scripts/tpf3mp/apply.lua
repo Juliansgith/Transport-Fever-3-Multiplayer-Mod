@@ -291,6 +291,25 @@ local function constructionGroups(con)
 	return out
 end
 
+-- The game's refresh of construction `con`, and whether it changes its
+-- streets. A scripted build does not snap; the game's refresh of a
+-- construction does, as its tool does: the entrance then ends at the street
+-- node beside it (refreshConstruction, build 40408: the same edge the tool
+-- proposed). Logged as what it snaps. The game's verdict takes simple
+-- proposals only ("SimpleProposal expected, got Proposal", build 40408): a
+-- refresh the game refuses fails in the command's own answer instead (run).
+local function refreshOf(con)
+	local refresh = api.engine.util.proposal.refreshConstruction(con)
+	local street, shape = refresh.proposal, {}
+	for i = 1, #street.addedSegments do
+		local s = street.addedSegments[i]
+		shape[#shape + 1] = "+e" .. s.entity .. ":" .. tostring(s.comp.node0) .. ">" .. tostring(s.comp.node1)
+	end
+	for i = 1, #street.removedSegments do shape[#shape + 1] = "-e" .. tostring(street.removedSegments[i].entity) end
+	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " "))
+	return refresh, #shape > 0
+end
+
 -- An edit of a construction (its modules or parameters, an upgrade): the
 -- construction the action names removed and the new one built in one
 -- proposal, the old mapped to the new (old2new), as the game's own upgrade
@@ -314,7 +333,21 @@ local function replaceConstruction(build, proposal, entity)
 	context.gatherFields = true
 	buildProposal(proposal, context)
 	-- What it made, where the action says: this game could name it.
-	return true, constructionAt({ file = build.file, at = build.transform.origin })
+	local new = constructionAt({ file = build.file, at = build.transform.origin })
+	-- The new one makes its entrances again itself, unsnapped, as a build
+	-- does: a road station edited by the street came loose from it, its
+	-- entrance no longer joined to the junction (2026-10-03, in both games).
+	-- So every game refreshes it as a build's, which snaps its entrances,
+	-- a new one included, onto the streets beside them as the game's own
+	-- edit does. Where nothing is to snap, nothing is sent. The edit stands
+	-- in every game either way: a refresh the game refuses leaves it as it
+	-- was before, the same everywhere, and is logged.
+	local snapped, why = pcall(function()
+		local refresh, changes = refreshOf(new)
+		if changes then run(api.cmd.makeWorldBuildProposalCmd(refresh, nil, true, false)) end
+	end)
+	if not snapped then log("the edited construction stays unsnapped: " .. tostring(why)) end
+	return true, new
 end
 
 function HANDLERS.BuildConstruction(build)
@@ -372,18 +405,7 @@ function HANDLERS.BuildConstruction(build)
 	-- the same edge the tool proposed). So every game refreshes it at once,
 	-- for free, as part of this action.
 	local con = constructionAt({ file = build.file, at = build.transform.origin })
-	local refresh = api.engine.util.proposal.refreshConstruction(con)
-	local street, shape = refresh.proposal, {}
-	for i = 1, #street.addedSegments do
-		local s = street.addedSegments[i]
-		shape[#shape + 1] = "+e" .. s.entity .. ":" .. tostring(s.comp.node0) .. ">" .. tostring(s.comp.node1)
-	end
-	for i = 1, #street.removedSegments do shape[#shape + 1] = "-e" .. tostring(street.removedSegments[i].entity) end
-	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " "))
-	-- The game's verdict takes simple proposals only ("SimpleProposal
-	-- expected, got Proposal", build 40408): a refresh the game refuses
-	-- fails in the command's own answer instead (run).
-	return run(api.cmd.makeWorldBuildProposalCmd(refresh, nil, true, false))
+	return run(api.cmd.makeWorldBuildProposalCmd(refreshOf(con), nil, true, false))
 end
 
 -- ---------------------------------------------------------------- roads

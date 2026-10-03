@@ -2943,7 +2943,11 @@ fn every_game_replaces_the_edited_station_in_one_proposal() {
          ASKED = {{}} \
          api.engine.util.proposal = {{ makeProposalData = function(p, context) \
              ASKED[#ASKED + 1] = {{ sent = #SENT, removes = p.constructionsToRemove[1] }} \
-             return {{ errorState = {{ critical = false, messages = {{}} }} }} end }} \
+             return {{ errorState = {{ critical = false, messages = {{}} }} }} end, \
+             refreshConstruction = function(e) return REFRESH(e) end }} \
+         REFRESH = function(e) return {{ refreshed = e, \
+             proposal = {{ addedSegments = {{ {{ entity = -2, comp = {{ node0 = -1, node1 = 7777 }} }} }}, \
+                          removedSegments = {{ {{ entity = 6000 }} }} }} }} end \
          local send = api.cmd.sendCommand \
          api.cmd.sendCommand = function(cmd, ...) \
              local p = cmd.proposal \
@@ -2971,27 +2975,71 @@ fn every_game_replaces_the_edited_station_in_one_proposal() {
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(
         built,
-        "1|1|0|910|1|910|0\
+        "2|1|0|910|1|910|0\
          |::/stations/street/modular_street_station/modular_terminal.con|Okehampton Station|3\
          |station/platform.module|25|25|true|true|true|true|nil|true",
         "the verdict, then one proposal removing this game's station and adding the new one, \
          mapped old to new, as the player's own build"
     );
-    // The next edit finds the new station where the old one stood.
-    lua.load("SENT = {} HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
-        .exec()
-        .unwrap();
-    let again: String = lua
-        .load("return SENT[1].proposal.constructionsToRemove[1] .. '|' .. tostring(HOOK.applied[2].ok)")
+    // Then the new station's refresh, which snaps its entrance onto the
+    // street again, free, as no player's click: a road station edited by
+    // the street came loose from it (2026-10-03).
+    let refreshed: String = lua
+        .load(
+            "local r = SENT[2] return table.concat({ r.proposal.refreshed, tostring(r.context), \
+                 tostring(r.ignoreErrors), tostring(r.playerInitiated) }, '|')",
+        )
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
-    assert_eq!(again, "911|true");
+    assert_eq!(refreshed, "911|nil|true|false");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l == "snapping 911 +e-2:-1>7777 -e6000"),
+        "{logged:?}"
+    );
+    // The next edit finds the new station where the old one stood. Its
+    // refresh has nothing to snap: nothing more is sent.
+    lua.load(
+        "SENT = {} REFRESH = function(e) return { refreshed = e, \
+             proposal = { addedSegments = {}, removedSegments = {} } } end \
+         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let again: String = lua
+        .load("return #SENT .. '|' .. SENT[1].proposal.constructionsToRemove[1] .. '|' .. tostring(HOOK.applied[2].ok)")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(again, "1|911|true");
+    // A refresh the game refuses leaves the edit standing, the same in
+    // every game, and says so in the log.
+    lua.load(
+        "SENT = {} REFRESH = function(e) error('Construction Not Possible') end \
+         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let refused: String = lua
+        .load("return #SENT .. '|' .. tostring(HOOK.applied[3].ok) .. '|' .. tostring(CONSTRUCTIONS[911] ~= nil)")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(refused, "1|true|true");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(
+            |l| l.starts_with("the edited construction stays unsnapped: ")
+                && l.contains("Construction Not Possible")
+        ),
+        "{logged:?}"
+    );
     // A station that is not there is refused with why, and nothing is sent.
     lua.load("SENT = {} CONSTRUCTIONS = {} HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
         .exec()
         .unwrap();
     let (sent, ok, why): (usize, bool, String) = lua
-        .load("return #SENT, HOOK.applied[3].ok, HOOK.applied[3].why")
+        .load("return #SENT, HOOK.applied[4].ok, HOOK.applied[4].why")
         .eval()
         .unwrap();
     assert_eq!(sent, 0);

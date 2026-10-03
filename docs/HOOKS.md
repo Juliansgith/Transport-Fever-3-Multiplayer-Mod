@@ -2382,6 +2382,14 @@ construction's window its edits:
   this game's own entity) and adds the new one, mapped old to new
   (`old2new = { [old] = 0 }`), as the game's own upgrade makes one
   (`mission_framework_util_entity.tl`, `upgradeConstruction`). The new
+  construction makes its entrances again unsnapped, as a scripted build
+  does, so every game then refreshes it as it refreshes a build's, free
+  and not as a click of the player's: the refresh snaps its entrances, a
+  new one the edit added included, onto the streets beside them (a road
+  station edited by the street came loose from it in both games,
+  2026-10-03). A refresh with no street change is not sent; one the game
+  refuses leaves the edit standing, unsnapped, the same in every game, and
+  is logged. The new
   construction stands where the old one stood, so the next edit, a depot
   bought at it or a line finds it by the same reference; what stood on it
   passes to it through `old2new`, and the registry binds, after the
