@@ -27,7 +27,8 @@
 //!   the room until its game begins, tells the agent the game is at its
 //!   menu, and starts a load of the room's save from there;
 //! - on anything it cannot follow (the agent gone, a malformed message, a
-//!   room's world that did not load) none, for good: the world stands still
+//!   room's world that did not load, a world up the room never loaded:
+//!   [`WorldMark`]) none, for good: the world stands still
 //!   rather than run on apart from the room's (fail closed).
 //!
 //! Answering the step's own speed call rather than skipping calls is how
@@ -39,14 +40,11 @@
 //! (docs/HOOKS.md, "The world's lanes"), and the driver reports their
 //! digests for that step. A batch that does not bring them holds the world.
 //!
-//! The room's actions travel the same way (docs/HOOKS.md, "Actions in the
-//! game"). The session ends a batch before every step the room ordered
-//! actions for, so such a step is always the first update of a batch, and
-//! the detour hands the batch its actions: the mod's game script applies
-//! them in that update ([`crate::lua`]). If they were not applied, the
-//! world has run the room's step without them, and the driver holds it. The
-//! actions the player hands over go to the room from here as well, and only
-//! in the room's game.
+//! Ordered actions run between simulation updates through the game's
+//! engine-event path. The driver queues a token-only GUI wake and holds
+//! steps, saves and loads until the game script has applied the actions
+//! and stored its state. This also works while paused, and every replica
+//! uses the same phase when running. No simulation update is invented.
 //!
 //! This module knows nothing of the process: the detour hands it the
 //! game's step as a closure, and the room's side is a [`RoomGate`], the
@@ -86,6 +84,7 @@ pub enum Updates {
 
 /// The room's side of the gate: what the detour needs of a [`Session`].
 pub trait RoomGate {
+    fn heartbeat(&self) {}
     fn poll_departure(&mut self) -> Result<bool, SessionError> {
         Ok(false)
     }
@@ -146,6 +145,13 @@ pub const LOAD_PATIENCE: Duration = Duration::from_secs(600);
 /// whole worlds, which the game's GUI does (the mod, through
 /// [`crate::lua`], and [`crate::worlds`] for the files).
 pub trait GameControl: Send {
+    /// Apply ordered actions on the simulation thread, between updates.
+    /// The GUI wakes the game script; it never receives the action payloads.
+    fn request_replay(&mut self, step: u64, actions: &[Ordered]) -> Result<(), String>;
+    /// Completion of that replay, after its script state was saved.
+    fn replay_result(&mut self) -> Option<Result<(), String>>;
+    /// Invalidate a delayed wake when the world stops following this room.
+    fn cancel_replay(&mut self);
     /// Asks the game to save its world under `name`.
     fn request_save(&mut self, name: &str);
     /// The last save's outcome, once the game has one: the file written, or
@@ -169,6 +175,34 @@ pub trait GameControl: Send {
     /// The number of a world whose GUI started with the mod linked, since
     /// the last call, if one did: the latest. Once.
     fn world_up(&mut self) -> Option<u64>;
+    /// Which world the game has up, as far as the hook can count worlds
+    /// ([`WorldMark`]). Reads only.
+    fn world_mark(&mut self) -> WorldMark;
+}
+
+/// Counts of the worlds a game has had, which tell one world up from the
+/// next: a world up since the room's world was taken has another mark.
+/// docs/HOOKS.md, "A world the room did not load".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorldMark {
+    /// The worlds that closed in this game (`CMenuUI::m_game` cleared),
+    /// other than for a load the hook started; `None` where the hook cannot
+    /// see a world close (no `m_game` in the profile).
+    pub closed: Option<u64>,
+    /// The worlds whose GUI started with the mod linked in this game.
+    pub started: u64,
+}
+
+impl WorldMark {
+    /// Whether the world up at this mark is another than the one up at
+    /// `then`: one closed since, or, where closes cannot be seen, another
+    /// world's GUI started since.
+    pub fn replaced_since(&self, then: &WorldMark) -> bool {
+        match (self.closed, then.closed) {
+            (Some(now), Some(before)) => now != before,
+            _ => self.started != then.started,
+        }
+    }
 }
 
 /// Where a load of the room's save is started from.
@@ -195,6 +229,9 @@ struct Loading {
 }
 
 impl RoomGate for Session {
+    fn heartbeat(&self) {
+        Session::heartbeat(self);
+    }
     fn poll_departure(&mut self) -> Result<bool, SessionError> {
         Session::poll_departure(self)
     }
@@ -424,8 +461,6 @@ pub struct Outcome {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Batch<'a> {
     pub updates: Updates,
-    /// The room's actions, for the batch's first update.
-    pub actions: &'a [Ordered],
     /// The batch ends at a checkpoint step: after its last update the game
     /// reads the world's lanes.
     pub lanes: bool,
@@ -445,9 +480,9 @@ pub struct Batch<'a> {
 /// the driver reports as a digest.
 pub type LaneText = (u16, String);
 
-/// Runs the game's own step exactly once, as the batch says. Returns the
-/// lanes the game read, if it read them, or why it did not follow the
-/// batch (its actions were not applied).
+/// Runs the game's own step exactly once. Ordered actions have already
+/// finished before an update batch starts. Returns checkpoint lanes,
+/// or why the game could not follow the batch.
 pub type RunStep<'a> = dyn FnMut(&Batch<'_>) -> Result<Option<Vec<LaneText>>, String> + 'a;
 
 /// Numbers as a comma-separated list, for the log.
@@ -483,6 +518,7 @@ pub struct StepDriver<G> {
     tag: String,
     saving: Option<Saving>,
     loading: Option<Loading>,
+    replaying: Option<Instant>,
     phase: Phase,
     /// The speed row's last value in the room's game, once seen.
     chosen: Option<u64>,
@@ -510,6 +546,10 @@ pub struct StepDriver<G> {
     /// The room's step the next update runs, once a world is loaded: what
     /// the per-update reseed ([`crate::seeds`]) numbers updates by.
     next_step: Option<u64>,
+    /// The mark of the world the room's game was taken in (its load, or
+    /// the owner's world it starts from): a world up with another mark is
+    /// none the room loaded, and is held ([`StepDriver::foreign_world`]).
+    room_world: Option<WorldMark>,
     /// Lines for the hook's log.
     log: Vec<String>,
     /// What last went wrong with the lobby, logged once.
@@ -525,6 +565,7 @@ impl<G: RoomGate> StepDriver<G> {
             tag: std::process::id().to_string(),
             saving: None,
             loading: None,
+            replaying: None,
             phase: Phase::BeforeBegin,
             chosen: None,
             checkpoint_interval: u64::MAX,
@@ -538,6 +579,7 @@ impl<G: RoomGate> StepDriver<G> {
             menu_departing: false,
             menu_said: None,
             next_step: None,
+            room_world: None,
             log: Vec::new(),
             lobby_fault: None,
         }
@@ -675,8 +717,8 @@ impl<G: RoomGate> StepDriver<G> {
 
     /// In place of one call of the game's step. `commands` are the actions
     /// the player handed over since the last call, for the room; `run` runs
-    /// the game's own step, exactly once, with the updates given and the
-    /// room's actions for the step the batch starts at.
+    /// the game's own step, exactly once, with the updates given. Ordered
+    /// actions finish in the engine event phase before updates are released.
     pub fn on_step(&mut self, commands: Vec<Handed>, run: &mut RunStep<'_>) -> Outcome {
         // A world is up: the next time the menu drives, the game came back
         // to it.
@@ -698,22 +740,9 @@ impl<G: RoomGate> StepDriver<G> {
             self.plan_dumps(&notice);
             self.control.room_notice(&notice);
         }
-        // The actions wait until a batch runs: a batch that starts at their
-        // step, since the session ends the one before there.
+        // Ordered commands finish in the engine's event phase before any
+        // simulation update is allowed to run.
         let runs = matches!(updates, Updates::Exactly(steps) if steps > 0);
-        let actions: Vec<Ordered> = if runs {
-            std::mem::take(&mut self.game.actions)
-                .into_iter()
-                .map(|(action, own, player, seal)| Ordered {
-                    action,
-                    ticket: own.and_then(|seq| self.tickets.remove(&seq)),
-                    player,
-                    seal,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
         // The per-update reseed numbers exactly the updates this call runs
         // for the room; anything else disarms it.
         let released = match (self.phase == Phase::Running, updates) {
@@ -737,7 +766,6 @@ impl<G: RoomGate> StepDriver<G> {
         }
         let batch = Batch {
             updates,
-            actions: &actions,
             lanes,
             room: self.in_room(),
             first_step: released,
@@ -763,12 +791,6 @@ impl<G: RoomGate> StepDriver<G> {
                         }
                     }
                 }
-                if !actions.is_empty() {
-                    self.log.push(format!(
-                        "the game applied {} action(s) the room ordered",
-                        actions.len()
-                    ));
-                }
                 if let Updates::Exactly(steps) = updates {
                     for _ in 0..steps {
                         match self.gate.after_step(&mut self.game) {
@@ -781,8 +803,7 @@ impl<G: RoomGate> StepDriver<G> {
                     }
                 }
             }
-            // The steps ran without the room's actions: nothing of them is
-            // reported, and the world stands still from here.
+            // A failed update batch is not reported; the world holds.
             Err(reason) => self.hold(format!("the game did not follow the room's step: {reason}")),
         }
         Outcome { updates }
@@ -923,8 +944,53 @@ impl<G: RoomGate> StepDriver<G> {
             Phase::Ended => return Updates::Own,
             Phase::Running => {}
         }
+        // Never replay room actions into a world the room did not load.
+        if let Some(why) = self.foreign_world() {
+            self.hold(why);
+            return Updates::Exactly(0);
+        }
+        if let Some(since) = self.replaying {
+            self.gate.heartbeat();
+            match self.control.replay_result() {
+                Some(Ok(())) => {
+                    self.replaying = None;
+                    self.log.push(
+                        "the game applied the room's actions between simulation updates".into(),
+                    );
+                }
+                Some(Err(why)) => {
+                    self.hold(format!("applying the room's actions: {why}"));
+                    return Updates::Exactly(0);
+                }
+                None => {
+                    if since.elapsed() >= Duration::from_secs(30) {
+                        self.hold("the game did not finish the room's actions within 30 s".into());
+                    }
+                    return Updates::Exactly(0);
+                }
+            }
+        }
         loop {
-            match self.gate.poll_step(&mut self.game) {
+            let gate = self.gate.poll_step(&mut self.game);
+            // Apply before any release, save, load or end that follows these
+            // events. Even a paused world receives commands on its sim thread.
+            if gate.is_ok() && self.game.fault.is_none() && !self.game.actions.is_empty() {
+                let actions: Vec<_> = std::mem::take(&mut self.game.actions)
+                    .into_iter()
+                    .map(|(action, own, player, seal)| Ordered {
+                        action,
+                        ticket: own.and_then(|seq| self.tickets.remove(&seq)),
+                        player,
+                        seal,
+                    })
+                    .collect();
+                match self.control.request_replay(self.gate.next_step(), &actions) {
+                    Ok(()) => self.replaying = Some(Instant::now()),
+                    Err(why) => self.hold(format!("starting the room's actions: {why}")),
+                }
+                return Updates::Exactly(0);
+            }
+            match gate {
                 Ok(StepGate::Run) => {
                     let first = self.gate.next_step();
                     return match self.gate.batch(&mut self.game, MAX_STEPS_PER_CALL) {
@@ -1134,7 +1200,43 @@ impl<G: RoomGate> StepDriver<G> {
     /// the order measurement number updates by the room's steps from here.
     fn world_loaded(&mut self, next_step: u64) {
         self.next_step = Some(next_step);
+        self.room_world = Some(self.control.world_mark());
         crate::order::measure::room_step(next_step);
+    }
+
+    /// Whether the room's world closed in this game since it was taken,
+    /// with no load of the room's under way: whatever world is up after is
+    /// not the room's.
+    fn room_world_gone(&mut self) -> bool {
+        if self.loading.is_some() {
+            return false;
+        }
+        let Some(then) = self.room_world else {
+            return false;
+        };
+        self.control.world_mark().replaced_since(&then)
+    }
+
+    /// In the room's game, with a world up: why that world is not the one
+    /// the room loaded, if it is not. The room's world closed (the player
+    /// went back to the main menu) and the game started another of its
+    /// own: a new game, or a save. Only a load the room orders replaces the
+    /// room's world, in every game at the same step, from the same save
+    /// (docs/HOOKS.md, "A world the room did not load").
+    fn foreign_world(&mut self) -> Option<String> {
+        if !self.room_world_gone() {
+            return None;
+        }
+        let now = self.control.world_mark();
+        let then = self.room_world.unwrap_or_default();
+        Some(format!(
+            "this game has a world up the room did not load (worlds closed: {} when the room's was taken, {} now; worlds started: {}, {}): the room's world closed in this game, and a new game or a save started here would run the room's steps from step {} on, apart from every other game's; leave the room and join again to play its world",
+            then.closed.map_or("unknown".to_owned(), |n| n.to_string()),
+            now.closed.map_or("unknown".to_owned(), |n| n.to_string()),
+            then.started,
+            now.started,
+            self.gate.next_step()
+        ))
     }
 
     /// At the game's main menu, with no world up, on each of the menu's
@@ -1154,6 +1256,11 @@ impl<G: RoomGate> StepDriver<G> {
     /// - a load without a file (the owner's own world) and a save need a
     ///   world up: the menu leaves them to the step, and logs so once.
     pub fn on_menu(&mut self) {
+        // The world is closed. A wake queued for it must never reach a new
+        // world, even if the player leaves or reconnects before it arrives.
+        if self.replaying.take().is_some() {
+            self.control.cancel_replay();
+        }
         if self.menu_departing {
             match self.gate.poll_departure() {
                 Ok(true) => {
@@ -1173,6 +1280,7 @@ impl<G: RoomGate> StepDriver<G> {
             self.loading = None;
             self.tickets.clear();
             self.menu_said = None;
+            self.room_world = None;
             self.log
                 .push("back at the menu: ready for another multiplayer room".into());
         }
@@ -1218,6 +1326,10 @@ impl<G: RoomGate> StepDriver<G> {
                     "the room plays the world this game starts from, which the main menu cannot pick: load it (the room's owner loads the world everyone plays)",
                 ),
             },
+            Ok(StepGate::Save(_) | StepGate::Run | StepGate::Wait) if self.room_world_gone() => self
+                .menu_says(
+                    "the room's world closed in this game: a new game or a save started now is not the room's, and is held (fail closed); leave the room and join again to play its world",
+                ),
             Ok(StepGate::Save(_)) => self.menu_says(
                 "the room asks this game to save its world, which needs a world up: load it from the main menu",
             ),
@@ -1248,6 +1360,9 @@ impl<G: RoomGate> StepDriver<G> {
     }
 
     fn hold(&mut self, reason: String) {
+        if self.replaying.take().is_some() {
+            self.control.cancel_replay();
+        }
         self.log
             .push(format!("holding the world (fail closed): {reason}"));
         self.phase = Phase::Holding(reason);
@@ -1465,6 +1580,9 @@ pub(crate) mod tests {
 
     #[derive(Default)]
     pub(crate) struct ControlState {
+        pub(crate) replay_requests: Vec<(u64, Vec<Ordered>)>,
+        pub(crate) replay_wait: bool,
+        pub(crate) replay_answer: Option<Result<(), String>>,
         pub(crate) save_requests: Vec<String>,
         pub(crate) save_answer: Option<Result<PathBuf, String>>,
         pub(crate) load_requests: Vec<(PathBuf, LoadFrom)>,
@@ -1474,9 +1592,25 @@ pub(crate) mod tests {
         pub(crate) me: Option<PlayerId>,
         pub(crate) mods: Option<ModLists>,
         pub(crate) world_up: Option<u64>,
+        /// The worlds the game has had ([`GameControl::world_mark`]).
+        pub(crate) mark: WorldMark,
     }
 
     impl GameControl for FakeControl {
+        fn request_replay(&mut self, step: u64, actions: &[Ordered]) -> Result<(), String> {
+            let mut s = self.state.lock().unwrap();
+            s.replay_requests.push((step, actions.to_vec()));
+            if !s.replay_wait {
+                s.replay_answer = Some(Ok(()));
+            }
+            Ok(())
+        }
+        fn replay_result(&mut self) -> Option<Result<(), String>> {
+            self.state.lock().unwrap().replay_answer.take()
+        }
+        fn cancel_replay(&mut self) {
+            self.state.lock().unwrap().replay_answer = None;
+        }
         fn request_save(&mut self, name: &str) {
             self.state
                 .lock()
@@ -1512,6 +1646,9 @@ pub(crate) mod tests {
         }
         fn world_up(&mut self) -> Option<u64> {
             self.state.lock().unwrap().world_up.take()
+        }
+        fn world_mark(&mut self) -> WorldMark {
+            self.state.lock().unwrap().mark
         }
     }
 
@@ -1588,10 +1725,7 @@ pub(crate) mod tests {
             .map(|payload| (0, payload, None))
             .collect();
         let outcome = driver.on_step(commands, &mut |batch| {
-            applied.push((
-                batch.updates,
-                batch.actions.iter().map(|o| o.action.clone()).collect(),
-            ));
+            applied.push((batch.updates, Vec::new()));
             if applies {
                 Ok(batch.lanes.then(Vec::new))
             } else {
@@ -1602,7 +1736,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_rooms_actions_reach_the_game_at_the_first_update_of_their_step() {
+    fn the_rooms_actions_apply_while_the_next_step_is_withheld() {
         let mut script = Script::default();
         script.begin.push_back(Some(begin()));
         script.gates.extend([
@@ -1640,18 +1774,122 @@ pub(crate) mod tests {
             vec![
                 (Updates::Exactly(1), vec![]),
                 (Updates::Exactly(0), vec![]),
-                (Updates::Exactly(2), vec![depot_build()]),
+                (Updates::Exactly(2), vec![]),
             ],
-            "handed to the batch that starts at step 2, not to the paused call before"
+            "the replay runs between updates, never in an update batch"
         );
         assert_eq!(d.phase(), &Phase::Running);
-        assert!(d.take_log().iter().any(|l| l.contains("applied 1 action")));
+        assert!(d.take_log().iter().any(|l| l.contains("applied the room")));
     }
 
     fn begin_every(interval: u32) -> Begin {
         Begin {
             checkpoint_interval: interval,
             ..begin()
+        }
+    }
+
+    #[test]
+    fn ordered_actions_finish_before_resuming_and_are_not_applied_twice() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([StepGate::Wait, StepGate::Run]);
+        script.events.push_back(vec![
+            command_event(1, 1, &depot_build()),
+            command_event(2, 1, &depot_build()),
+        ]);
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        state.lock().unwrap().replay_wait = true;
+        let mut d = StepDriver::new(script, Box::new(control));
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert_eq!(state.lock().unwrap().replay_requests[0].1.len(), 2);
+        assert_eq!(
+            call(&mut d, &mut calls),
+            PAUSED,
+            "resume waits for replay completion"
+        );
+        assert_eq!(d.gate.ran, 0);
+        state.lock().unwrap().replay_answer = Some(Ok(()));
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+        assert_eq!(d.gate.ran, 1);
+    }
+
+    #[test]
+    fn a_foreign_world_holds_before_pending_room_actions_can_finish() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.push_back(StepGate::Run);
+        script
+            .events
+            .push_back(vec![command_event(1, 1, &depot_build())]);
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        state.lock().unwrap().mark = mark(0, 1);
+        state.lock().unwrap().replay_wait = true;
+        let mut d = StepDriver::new(script, Box::new(control));
+        d.room_world = Some(mark(0, 1));
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+        state.lock().unwrap().mark = mark(1, 2);
+        state.lock().unwrap().replay_answer = Some(Ok(()));
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert!(matches!(d.phase(), Phase::Holding(why) if why.contains("did not load")));
+        assert_eq!(d.gate.ran, 0);
+    }
+
+    #[test]
+    fn a_save_waits_for_all_preceding_ordered_actions() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script
+            .gates
+            .push_back(StepGate::Save(order(2, Path::new("unused.sav"))));
+        script
+            .events
+            .push_back(vec![command_event(1, 1, &depot_build())]);
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        state.lock().unwrap().replay_wait = true;
+        let mut d = StepDriver::new(script, Box::new(control));
+        let mut calls = Vec::new();
+        call(&mut d, &mut calls);
+        call(&mut d, &mut calls);
+        assert!(state.lock().unwrap().save_requests.is_empty());
+        state.lock().unwrap().replay_answer = Some(Ok(()));
+        call(&mut d, &mut calls);
+        assert_eq!(state.lock().unwrap().save_requests.len(), 1);
+        assert_eq!(d.gate.ran, 0);
+    }
+
+    #[test]
+    fn a_failed_or_timed_out_replay_holds_before_any_update() {
+        for timeout in [false, true] {
+            let mut script = Script::default();
+            script.begin.push_back(Some(begin()));
+            script.gates.push_back(StepGate::Run);
+            script
+                .events
+                .push_back(vec![command_event(1, 1, &depot_build())]);
+            let control = FakeControl::default();
+            let state = control.state.clone();
+            state.lock().unwrap().replay_wait = true;
+            let mut d = StepDriver::new(script, Box::new(control));
+            let mut calls = Vec::new();
+            call(&mut d, &mut calls);
+            if timeout {
+                d.replaying = Some(Instant::now() - Duration::from_secs(31));
+            } else {
+                state.lock().unwrap().replay_answer =
+                    Some(Err("script state was not saved".into()));
+            }
+            assert_eq!(call(&mut d, &mut calls), PAUSED);
+            assert!(matches!(d.phase(), Phase::Holding(_)));
+            assert_eq!(d.gate.ran, 0);
         }
     }
 
@@ -1833,6 +2071,7 @@ pub(crate) mod tests {
                 next_step: 1,
             }),
             StepGate::Run,
+            StepGate::Wait,
             StepGate::Run,
             StepGate::Wait,
         ]);
@@ -1855,26 +2094,34 @@ pub(crate) mod tests {
             *client_seq = 0;
             *sealed = Some(seal);
         }
-        script
-            .events
-            .extend([vec![], vec![command_event(1, 2, &depot_build()), own]]);
+        script.events.extend([
+            vec![],
+            vec![],
+            vec![command_event(1, 2, &depot_build()), own],
+        ]);
         let (mut d, _) = driver(script);
         let payload = depot_build().to_payload().unwrap();
         let secret = Secret {
             scope: 3,
             password: tpf3mp_proto::Text::new("pw").unwrap(),
         };
-        let mut tickets = Vec::new();
-        let mut seals = Vec::new();
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        d.control = Box::new(control);
         for commands in [vec![(7, payload, Some(secret.clone()))], Vec::new()] {
-            d.on_step(commands, &mut |batch| {
-                tickets.extend(batch.actions.iter().map(|o| o.ticket));
-                seals.extend(batch.actions.iter().map(|o| o.seal));
-                Ok(batch.lanes.then(Vec::new))
-            });
+            d.on_step(commands, &mut |batch| Ok(batch.lanes.then(Vec::new)));
         }
-        assert_eq!(tickets, [None, Some(7)], "the ticket the mod was given");
-        assert_eq!(seals, [None, Some(seal)], "each action's seal beside it");
+        let state = state.lock().unwrap();
+        let (step, actions) = &state.replay_requests[0];
+        assert_eq!(*step, 2);
+        assert_eq!(
+            actions.iter().map(|o| o.ticket).collect::<Vec<_>>(),
+            [None, Some(7)]
+        );
+        assert_eq!(
+            actions.iter().map(|o| o.seal).collect::<Vec<_>>(),
+            [None, Some(seal)]
+        );
         assert_eq!(
             d.gate.secrets,
             [Some(secret)],
@@ -2449,6 +2696,160 @@ pub(crate) mod tests {
                 .iter()
                 .any(|line| line.contains("from its save, from step 101"))
         );
+    }
+
+    /// The marks of a game whose closes the hook sees.
+    fn mark(closed: u64, started: u64) -> WorldMark {
+        WorldMark {
+            closed: Some(closed),
+            started,
+        }
+    }
+
+    /// The room's world closed and the player started another of their
+    /// own (a new game from the main menu, as in the room of 2026-10-02):
+    /// it never runs the room's steps, nor is it saved for the room. Each
+    /// game started such a world at another room's step, from its own
+    /// state, and the room split.
+    #[test]
+    fn a_world_the_room_did_not_load_is_held_never_stepped_nor_saved() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Save(order(7, Path::new("room.sav"))),
+            StepGate::Run,
+        ]);
+        let (mut d, state) = driver_with(script);
+        state.lock().unwrap().mark = mark(0, 1);
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(d.gate.ran, 1);
+        // Back at the main menu: the room's world closed. The menu says why
+        // a world started now is held, once.
+        state.lock().unwrap().mark = mark(1, 1);
+        d.on_menu();
+        d.on_menu();
+        let log = d.take_log();
+        assert_eq!(
+            log.iter()
+                .filter(|l| l.contains("the room's world closed in this game"))
+                .count(),
+            1,
+            "said once: {log:?}"
+        );
+        // A new game generated from the menu: its GUI started.
+        state.lock().unwrap().mark = mark(1, 2);
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert!(matches!(d.phase(), Phase::Holding(why) if why.contains("did not load")));
+        assert_eq!(d.gate.ran, 1, "no room's step ran in the new world");
+        assert!(
+            state.lock().unwrap().save_requests.is_empty(),
+            "the new world is never saved as the room's"
+        );
+        // For good, like any world the room cannot follow.
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert_eq!(d.gate.ran, 1);
+    }
+
+    /// The room's own loads replace its world without a hold: one through
+    /// the world's GUI (its close is the hook's, never counted), and one
+    /// from the main menu after the player left the room's world, which
+    /// makes the room's world the loaded one again.
+    #[test]
+    fn a_load_the_room_orders_replaces_its_world_and_plays_on() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        let file = PathBuf::from("worlds/room.sav");
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Load(Load {
+                file: Some(file.clone()),
+                next_step: 2,
+            }),
+            StepGate::Run,
+            StepGate::Wait,
+            StepGate::Load(Load {
+                file: Some(file.clone()),
+                next_step: 3,
+            }),
+            StepGate::Run,
+        ]);
+        let (mut d, state) = driver_with(script);
+        state.lock().unwrap().mark = mark(0, 1);
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        // The room's load through the GUI: another world's GUI starts, no
+        // close is counted.
+        assert_eq!(call(&mut d, &mut calls), PAUSED, "asked to load");
+        state.lock().unwrap().mark = mark(0, 2);
+        state.lock().unwrap().load_done = true;
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(d.gate.loaded, vec![1, 2]);
+        assert_eq!(call(&mut d, &mut calls), PAUSED, "the room waits");
+        // The player went back to the main menu; the room orders its world
+        // loaded there (a rejoin, a rebase).
+        state.lock().unwrap().mark = mark(1, 2);
+        d.on_menu();
+        assert_eq!(
+            state.lock().unwrap().load_requests.last(),
+            Some(&(file, LoadFrom::Menu))
+        );
+        state.lock().unwrap().mark = mark(1, 3);
+        state.lock().unwrap().load_done = true;
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(d.gate.loaded, vec![1, 2, 3]);
+        assert_eq!(d.phase(), &Phase::Running);
+        assert_eq!(d.gate.ran, 3);
+    }
+
+    /// Where the hook cannot see a world close (no `CMenuUI::m_game` in the
+    /// profile), another world's GUI starting tells a world the room did not
+    /// load.
+    #[test]
+    fn without_closes_another_worlds_gui_tells_a_world_the_room_did_not_load() {
+        let then = WorldMark {
+            closed: None,
+            started: 1,
+        };
+        assert!(!then.replaced_since(&then));
+        assert!(
+            WorldMark {
+                closed: None,
+                started: 2
+            }
+            .replaced_since(&then)
+        );
+        // With closes seen, only a close counts: the GUI of the room's own
+        // load starts a world too.
+        assert!(!mark(0, 2).replaced_since(&mark(0, 1)));
+        assert!(mark(1, 1).replaced_since(&mark(0, 1)));
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Wait,
+            StepGate::Run,
+        ]);
+        let (mut d, state) = driver_with(script);
+        state.lock().unwrap().mark = then;
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        state.lock().unwrap().mark.started = 2;
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert!(matches!(d.phase(), Phase::Holding(_)));
     }
 
     /// The driver knows the room's step the next update runs, from the

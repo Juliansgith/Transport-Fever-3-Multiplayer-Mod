@@ -758,22 +758,22 @@ for the table (`bridge.find`). Its contract is in
   one, scoped to that company (`tpf3mp_proto::Secret`); it goes to the room
   with the action and is never logged, and no refusal quotes it (version
   12).
-- `tpf3mp_native.take()`: the actions the room ordered for this simulation
-  update, as `action_to_lua` tables, or `nil` (below), and second, who
-  sent each, a list of player ids (64 hex digits) beside it ("Companies"
-  below), and third, each one's seal, `{ scope =, tag = }` (the tag as 64
-  hex digits), or `false` (version 12). A list's items are
-  in its table's array part, so `next` walks them in order. The game
-  copies a list it is handed (a stop's loading flags, a consist's groups)
-  into its own vector in the order `next` gives, and what a game script's
-  `update` returns reaches `postUpdate` as the game's own copy, whose
-  lists `next` walks in hash order all the same (build 40408: a bus line's
-  stops set to load grain, one cargo over from passengers). So `apply.lua`
-  hands the game every such list afresh, filled in order (`seq`).
+- `tpf3mp_native.take()`: marks a simulation update begun, so its
+  checkpoint can be read after the batch's last update. Runtime update
+  batches return `nil` actions; ordered actions use the event path below.
+- `tpf3mp_native.takeReplay(token)`: once, in the engine's `handleEvent`,
+  the actions ordered for the next room step, as `action_to_lua` tables;
+  second, each sender (64 hex digits); third, each seal, `{ scope =,
+  tag = }` or `false` (version 13). A stale or duplicate token returns
+  `nil`. Lists keep their array order; `apply.lua` fills every list passed
+  to the game afresh in order (`seq`), because the engine's Lua copies
+  can otherwise expose a list in hash order.
+- `tpf3mp_native.replayed(token, ok, why)`: completes after every action's
+  report and `state:set`; missing reports or a failed script hold the world.
 - `tpf3mp_native.log(line)`: a line for `hook.log`, marked `mod:`.
 - `tpf3mp_native.poll()`: in the GUI, every frame: what the hook asks of
-  it, once, `{ save = name }` or `{ load = name }`, or `nil` ("The room's
-  world" below).
+  it, once, `{ replay = token }`, `{ save = name }` or `{ load = name }`,
+  or `nil` ("Actions in the game" and "The room's world" below).
 - `tpf3mp_native.saved(name, ok, why)`: the GUI's answer to a save.
 - `tpf3mp_native.world()`: a world's GUI started. Before the room begins
   a game, the step gate's next call tells the agent the latest such world
@@ -865,22 +865,38 @@ That is every game Steam started (D11).
 ### Actions in the game
 
 A player's action happens in no game until the room orders it, and then in
-every game in the same simulation update:
+every game between the same two simulation steps, including while paused:
 
 1. The mod hands the action to `tpf3mp_native.command`. The step gate
    sends it to the room.
-2. The room orders it as an event for a step `s`. The session ends a
-   batch before every step with events (`Session::batch`), so `s` is
-   always the first update of a batch; the driver hands that batch its
-   actions (`lua::begin_batch`), and runs it.
-3. The mod's game script asks the hook in every `update`
-   (`tpf3mp_native.take`); the first update of the batch gets the actions
-   and returns them, and its `postUpdate` applies them through `api.cmd`
-   (`mod/tpf3mp_1/content/scripts/tpf3mp/apply.lua`).
-4. After the batch, the driver checks the actions were taken
-   (`lua::end_batch`). If they were not, the world ran step `s` without
-   them: none of those steps is reported and the world stands still
-   (fail closed).
+2. The room orders it as an event for step `s`. After step `s - 1`,
+   `StepDriver` gives the ordered actions to `lua::request_replay` and
+   holds updates. This applies to running rooms too, so every replica uses
+   the same engine phase regardless of when the resume arrives.
+3. The GUI polls a `replay` token (Lua contract version 13) and sends only
+   that token in the existing `tpf3mp/command` scripting event (a string
+   token, rather than an action table, so older saves already subscribe).
+   `guard.wakeReplay` can bypass the GUI guard for this wake only; it cannot send an action. The
+   native command loop runs outside `GameSim::Step`'s update loop.
+4. In the engine's `handleEvent`, `takeReplay(token)` takes the hook's
+   actions, origins and seals exactly once. The script uses its existing
+   `postUpdate` action processing through `api.cmd` and saves the registry,
+   companies and progression state. No update, monthly charge, progression
+   sample or checkpoint is requested by the wake. The ordered step scopes
+   the RNG seed for this processing and nested script events.
+5. Each action is reported with `applied`, including normal refusals. Only
+   after `state:set` does `replayed(token, ok, why)` complete the replay.
+   The driver then allows later actions, a save, a load or step `s`. A
+   missing report, failed wake, script exception or 30-second timeout holds
+   the world (fail closed). A hold or closed world invalidates delayed
+   wakes; duplicates and stale tokens take nothing.
+
+The world still runs the game's paused path while waiting: neither room
+steps nor game time advance, and the paused-tick fix keeps `tickCount`
+unchanged. Construction costs are charged normally. Existing update and
+checkpoint processing remains in `update`/`postUpdate`. The engine event
+path requires two-game acceptance on the supported game build; stand-in
+tests alone do not establish that native callbacks are synchronous there.
 
 Measured on build 40408:
 
@@ -943,9 +959,12 @@ money, ran in the game script's `postUpdate`.
   remove, reputation lost) are logged and built through, as the tool
   builds once the player clicks (`ignoreErrors` true: with it false the
   game dropped such a build without a word, seen on build 40408);
-- `Loan`: the loan script's own event, `makeScriptingSendEventCmd("",
-  "Loan", "Obtain", { next, offer })` or `"Repay", { nil, loan }`, with the
-  tables the finance window sends;
+- `Loan`: for the room's first company, the loan script's own event,
+  `makeScriptingSendEventCmd("", "Loan", "Obtain", { next, offer })` or
+  `"Repay", { nil, loan }`, with the tables the finance window sends. For a
+  founded company, Take must match that company's saved active offer slot;
+  the room books it to that company and puts only its slot on cooldown;
+  Repay names one of its saved loans;
 - `Prospect`: the company script's own event,
   `makeScriptingSendEventCmd("", "Companies", "spawnIndustry", {
   companyEntity, townEntity, types, permitKey, cargoType })`, with the
@@ -955,7 +974,8 @@ money, ran in the game script's `postUpdate`.
   `startMarketingCampaign`, for the acting company, and for a campaign the
   price booked to it after ("Company perks" below);
 - `Subsidy`: the subsidy script's own event, `makeScriptingSendEventCmd("",
-  "Subvention", "onAccept" | "onDecline", { uid })`, once every game has
+  "Subvention", "onAccept" | "onDecline", { uid })`, the accept with the
+  taking company's player entity (`tpf3mpCompany`), once every game has
   checked the offer against its own script's state ("Subsidies" below).
 
 Every other action is refused with a line in `hook.log`, the same on every
@@ -1155,6 +1175,54 @@ money lanes changing alike after the build
 (`investigation/dayone-2026-09-29/6-determinism.md`; the edge lane is
 still unread there).
 
+#### A world the room did not load
+
+A room's world is replaced only by a load the room orders: its first
+world (the start save, or the owner's world saved before step 1 and
+loaded by every game, the owner's too: "The first world" in
+[PROTOCOL.md](PROTOCOL.md)), a rebase after a divergence, a rejoin. Each
+one is the same save, at the same room step, in every game. A new world
+generated in the room's lobby (**New world: choose map and settings**, the
+stock New Game page) takes that path too: the owner's game has it up when
+the room starts, the room has it saved before step 1, and every game
+loads that save.
+
+A world the player starts on their own after the room's world closed
+does not. On 2026-10-02 both games of a running room came to play a
+freshly generated world started from the game's own menus: neither
+launcher fetched a world from the room between the start save and the
+divergence. Each game's step gate,
+still following the room, ran the new world from whatever room step the
+room had reached when it came up, with no load and no
+`playing the room's world from its save, from step N` line. At room step
+450 one game's world had run 58 updates and the other's 75. The same
+`CompanyOp` applied at game time 9800 in one game and 13200 in the
+other, and created different entities (47426 and 47334). The subsidy
+offers parted first, and the room saw the split at step 2250. The owner's
+game then saved its new world for the room as if it were the room's.
+
+So the driver marks the world it takes for the room
+(`crate::step::WorldMark`, taken when a load of the room's is done or the
+owner's world is taken at a `Load` without a file):
+
+- `closed`: the worlds that closed in this game (`CMenuUI::m_game`
+  cleared, seen by the menu's frame), other than for a load the hook
+  started (`lua::load_started`), which closes the world it was asked in;
+- `started`: the worlds whose GUI started (`tpf3mp_native.world`), which
+  decides only where the hook cannot see a close (no `m_game` test in the
+  profile).
+
+In the room's game, with no load of the room's under way, a world up
+with another mark than the room's is none the room loaded. The step's
+detour holds it for good before it runs a step or answers a `Save`
+(`holding the world (fail closed): this game has a world up the room did
+not load ...`). At the main menu after the room's world closed, the menu
+says once that a world started now is held (`at the main menu: the
+room's world closed in this game ...`). A load the room orders there (a
+rejoin, a rebase) takes a new mark, and the room's steps run on. To play
+the room's world again, the player leaves the room and joins it again,
+which loads its latest save.
+
 ### The player's commands
 
 In the room's game a player's command runs in every game at the same
@@ -1254,9 +1322,9 @@ reference of its own to either. Once linked, the GUI wraps every
   line took its stops one by one as in single player (build 40408). So
   far:
   - loans, the finance window's `makeScriptingSendEventCmd("", "Loan",
-    "Obtain" | "Repay", …)`, as a `Loan` action carrying the loans' terms,
-    which every game's game script replays through the loan script's own
-    event;
+    "Obtain" | "Repay", …)`, as a `Loan` action carrying the loans' terms.
+    The first company uses the loan script's event; founded-company offers
+    and loans are checked and booked by the room's companies module;
   - prospecting, the construction menu's `makeScriptingSendEventCmd("",
     "Companies", "spawnIndustry", …)`, as a `Prospect` action ("Prospecting"
     below);
@@ -1415,45 +1483,106 @@ state, which the game saves with the world:
   ownership.
 - *Who acted.* The hook hands each ordered action to the game script with
   the player who sent it (the Lua link's version 10, `tpf3mp_native.version`:
-  `take()` answers the actions
-  and, second, each one's sender as 64 hex digits, and since version 12
+  `takeReplay(token)` answers the actions
+  and, second, each one's sender as 64 hex digits, and
   third, each one's seal; `status()` names each
   player's `id` and the local one's `me_id`). The game script books the
   action to that player's company: `apply.lua` puts the company's player
   entity where it put the save's player before (a build's `Context.player`
   and its constructions' and stops' `playerEntity`, `makeVehicleBuyCmd`'s
   and `makeLineCreateCmd`'s player, prospecting's `companyEntity`).
+- *What a company builds* is its own: after a construction (a station,
+  depot, airport, harbour) is built, every game hands the construction,
+  its depots, its stations, the station groups they alone make up and
+  its own (frozen) edges with what stands on them to the acting company
+  with `makeEntitySetPlayerCmd` wherever anyone else owns them, or no one,
+  as the game's missions hand one over (`setPlayerForConstruction`), and
+  hook.log names each (`the new <file> made the acting company's`). An
+  owner is read through the component's binding (`PLAYER_OWNED` is
+  userdata on build 40408; read as a table only, every owner came back
+  nil until 2026-10-02, so nothing counted as any company's). If the game
+  cannot find the built construction, read an owner, or complete an
+  ownership command, the action is reported as not applied with the failure.
+  The engine may already have built the construction before this check, so
+  a failed settlement can leave that partial result in this game.
 - *What another company owns* is refused, the same in every game, naming
   its owner: an edited, bulldozed or removed construction, road or track
   edge, or stop, and the vehicles and lines an action names, when their
   `PLAYER_OWNED` player is another company's. What no company owns (the
   towns' roads) stays everyone's.
 - *Loans.* The game's loan script (`::/game_mechanics/finance/loan.gs`)
-  keeps the save's own player's loans only. Another company borrows on the
-  terms the loan script offers (its `availableLoans`), and the room keeps
-  that loan: booked to the company as the game books one (a `LOAN` journal
-  entry, `makeJournalBookAssetCmd`, which raises the account's balance and
-  loan alike, seen on build 40408), and paid back each month of the game's
-  calendar as an annuity, the interest as `INTEREST` and the rest as
-  `LOAN`, or all at once. Each company pays its own loans only. Paying
-  one back names it by its id and amount: the game's finance window lists
-  the loan script's loans, the room's first company's, whose ids count
-  from 0 as the room's count from 1, so another company's Repay there is
-  refused unless the amount is its own loan's too. The game script books the months since the last
-  on the first update of a new month, in every game alike.
+  keeps the save's own player's loans only. Each founded company has its
+  own copy of the available loan slots in the room's saved roster. It starts
+  from the native offers, replacing a slot on the first company's cooldown
+  with a fresh offer of that kind. A Take must match the exact type, amount,
+  duration and rate in one of that company's active slots; forged terms and
+  reused or cooling-down offers are refused before any journal entry is
+  booked. On a valid Take, that slot enters its own 4-to-8-month cooldown,
+  as the native loan script does, and `loan_util` draws its replacement
+  when the cooldown expires. The room's update seed makes those draws the
+  same in every game. The native loan table is never changed for a founded
+  company's Take. The room books the money to that company as the game books
+  a loan (a `LOAN` journal entry, `makeJournalBookAssetCmd`, which raises the
+  account's balance and loan alike, seen on build 40408), and pays it back
+  each month of the game's calendar as an annuity, the interest as
+  `INTEREST` and the rest as `LOAN`, or all at once. Each company pays its
+  own loans only. Paying one back names it by its id and amount. A company
+  has four loans at most, as the loan script allows. In GUI states the
+  finance window shows a player of another company that company's persisted
+  offers and loans: `tpf3mp/follow.lua` answers its loan-script
+  `GAME_SCRIPT` component with `companies.loanTable`, so Obtain and Repay go
+  to the room as that company. The room's first company continues using the
+  native loan state and finance window. The game script books the months
+  since the last payment on the first update of a new month, in every game
+  alike.
 - *Subsidies.* The game's subsidy script
-  (`::/game_mechanics/subventions/subventions.gs`) draws its offers in
-  every game alike: in its `update`, from the world and the game time,
-  with `math.random` reseeded per call ("Seeds, as built"); INFERRED from
-  its code (build 40408), not yet compared between games. Offers belong to
-  no company. Accepting one (`Subsidy::Accept`) is checked by every game
-  against its script's state first: the offer under that number must
-  still be offered, of the kind the action names, and the only offer under
-  that number; else it is refused, alike in every game, naming who took
-  it ("the subsidy was taken already, by Rival"). So when two companies
-  accept one offer in the same step, the first in the room's order gets
-  it. Then the script's own `onAccept` runs, which books the money up
-  front. The script books every amount, up front, the reward for
+  (`::/game_mechanics/subventions/subventions.gs`, `subventions.script.tl`
+  on build 40408) draws its offers in its `update`: once the last offer is
+  older than an interval that follows the first company's rank
+  (`subvention_util.getSpawnIntervalDuration`), it reseeds `math.random`
+  from the game time (`math.randomseed(gameTime + math.random(0, 1000))`,
+  after the hook's own reseed of the call, "Seeds, as built"), picks a kind
+  and lets the kind draw the offer from the world (towns and industries in
+  the engine's order, `gridCollision` weights, the first company's
+  balance). So two games draw the same offers only while their worlds and
+  **game times agree at every room step**. They did not in a room seen on
+  2026-10-02 (two games): its world was replaced while the room ran (a new
+  world from the lobby, not the room's load "from its save, from step N"),
+  each game closed the old world and stepped the new one from another room
+  step, so at room step 450 one game's new world had run 58 updates
+  (`ticks: step 450: tickCount=58`) and the other's 75, the same action
+  applied at game time 9800 in one and 13200 in the other, and even the
+  company the room founded got another entity in each (47426 and 47334).
+  The offers then differed, an accept applied in one game and was refused
+  in the other ("the subsidy is no longer offered"), and the room split,
+  noticed only at step 2250 (lane 3): the economy lane read the save's own
+  player alone, whose subsidy money nets to nothing. Two changes make such
+  a split show at once and say where: the economy lane carries every
+  company's balance and the subsidy script's offers, taken, completed and
+  failed subsidies with their terms (`tpf3mp/subsidies.lua`, `rows`), so
+  the first checkpoint after the offers part diverges in lane 4, and its
+  dump lists each subsidy; and the mod's game script says the offers in
+  `hook.log` at a checkpoint whenever they changed (`subsidies at game
+  time T: last=... modifier=... pause=...; N subsidies`, then one
+  `subsidy: <offered|taken|completed|failed> <uid> <kind> spawn= accepted=
+  completed= upfront= complete= failure= deliver= delivered= lapses=
+  taker=` line each), so two games' logs show where they part. A world
+  stepped from different room steps is the step gate's to hold, not the
+  subsidy script's. A world loaded from the room's save starts every game
+  at the same step and game time; that its offers agree there is INFERRED,
+  and these lines check it in the next two-game test with subsidies on.
+  Offers belong to no company. Accepting one (`Subsidy::Accept`) is
+  checked by every game against its script's state first: the offer under
+  that number must still be offered, of the kind the action names, and the
+  only offer under that number; else it is refused, alike in every game
+  whose world agrees, naming who took it ("the subsidy was taken already,
+  by Rival"). So when two companies accept one offer in the same step, the
+  first in the room's order gets it, and the offer leaves every company's
+  list. A game cannot refuse alike what only it lacks: its world already
+  differs from the others', and the economy lane reports that at the next
+  checkpoint. Then the script's own `onAccept` runs, with the taking
+  company's player entity (`{ uid, tpf3mpCompany }`), and books the money
+  up front. The script books every amount, up front, the reward for
   completing and the penalty for failing, to `getPlayer()`, the room's
   first company in a game script's state (`subvention_util.tl`,
   `applyBonusMalus`). For a subsidy another company took, every game moves
@@ -1461,12 +1590,43 @@ state, which the game saves with the world:
   first company's account and into the taker's): the money up front at
   once, and the reward or penalty on the first update of the game day
   after the script completed or failed it, while the room keeps a record
-  of who took which (`roster.subsidies`), saved with the world. Declining
-  (`Subsidy::Decline`) runs the script's `onDecline`: the offer is gone for
-  every company, as in single player. Not carried: the script counts any
-  company's deliveries towards a subsidy, and its reputation and town
-  growth bonuses are the towns', as the game has them; the pace of new
-  offers follows the first company's rank (`subventions.script.tl`).
+  of who took which (`roster.subsidies`), saved with the world. When the
+  taker is gone (dissolved) by then, its reward and its penalty are no
+  one's: the first company gives back the reward, or gets back the
+  penalty, the script booked to it, so it ends with nothing of a subsidy
+  it did not take. Companies do not merge in a room. Declining
+  (`Subsidy::Decline`) runs the script's `onDecline`: the offer is gone
+  for every company, as in single player.
+  *Progress is the taker's.* Each kind counts progress in its own
+  `handleEvent`, for anyone's transport: `deliver_passengers` completes
+  when a person starts a direct line between its towns
+  (`OnStartedLineUsage`, SimPersonSystem), then doubles that line's
+  tickets; `deliver_cargo` and `deliver_cargo_town` count each cargo
+  delivered to the industry, or to the town's buildings, by the line that
+  carried it (`OnCalcTicketPrice`, TransportVehicleSystem), then double
+  those lines' cargo. The subsidy script reaches a kind's functions
+  through the kind's resource at every call (`util.useFn(scriptFile ..
+  ".handleEvent")`). The mod's run script (`mod.script.lua`, `runScript`
+  in `mod.json`) adds a resource modifier (`addModifier("loadGameRes",
+  subsidies.redirect)`) that points the four base kinds' resources at
+  `tpf3mp_sim/subsidies.script.lua`, which wraps each kind's own table:
+  on the room's `onAccept` the wrapper keeps the taker in the subsidy's own
+  data (`tpf3mpTaker`, in the script's state, the same in every game), and
+  from then on hands the kind only the entries whose line the taker owns
+  (`PLAYER_OWNED`), mapping the ticket multipliers it answers back to the
+  event's own entries. Resources are the whole game's, so every Lua state
+  runs the same wrapper. A subsidy with no taker kept (single player, a
+  save from before) counts everyone's, as the game does. Only while
+  `acceptance.subsidies` is on. The modifier's name is read from the
+  binary (`loadGameRes`, beside `loadConstruction` and `loadGameScript`):
+  INFERRED to be the one for generic resources until a game shows
+  `taker=` on a taken subsidy and only the taker's deliveries in
+  `delivered=`. Not carried: `deliver_workers` completes when the
+  industry's workers are boosted (`industry_util.isPersonCapacityBoosted`),
+  a state of the industry the engine keeps for no company, so anyone's
+  commuters complete it; the reputation and town growth bonuses are the
+  towns', as the game has them; the pace of new offers follows the first
+  company's rank (`subventions.script.tl`).
 - *Colours.* With more than one company, a vehicle bought is painted in its
   company's colour (`makeEntitySetColorCmd`), and a new colour repaints the
   company's vehicles, in the engine's own order. With one company the
@@ -1735,7 +1895,7 @@ then in every game of the room, at the same step:
 ```
 prospecting for ::/cargos/coal/coal.cargo near town-3 (1234): coal_mine
 prospecting began: ::/cargos/coal/coal.cargo near town-3 at game time 5400000
-the game applied 1 action(s) the room ordered
+the game applied the room's actions between simulation updates
 ```
 
 and, one to six game months later, again in every game at the same step:
@@ -3160,7 +3320,7 @@ matter:
 | 1 constructions | every construction by its file and position (0.1 m) |
 | 2 lines | every line's number of stops |
 | 3 vehicles | each vehicle's state, stop and place on its path: the path edge, the distance along it (1 cm) and the speed (1 cm/s), the simulation's own (`MOVE_PATH.dyn`) |
-| 4 economy | the player's balance |
+| 4 economy | the save's own player's balance; with more than one company, each company's balance by its roster id; the subsidy script's offers, taken, completed and failed subsidies with their terms (`tpf3mp/subsidies.lua`, `rows`) |
 | 5 towns | each town's number of buildings |
 | 6 people | the number of people |
 
