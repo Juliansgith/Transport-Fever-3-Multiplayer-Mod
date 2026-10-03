@@ -600,7 +600,20 @@ connection (D11): the window is only another front end of the launcher's
   hello, sends the lobby whenever it changes and carries out the window's
   actions. A room session's bridge takes the link over already greeted
   (`Bridge::greeted`), passes the lobby both ways (`BridgeOptions::lobby`)
-  and gives the link back when it ends (`Bridge::into_link`).
+  and gives the link back when it ends (`Bridge::into_link`). Before it
+  starts a game or begins a room, the launcher opens the link anew unless
+  a game is on it: the one it started, while it runs, or any whose hook
+  attached and whose process is still there, such as a game it took over
+  (`launcher::renew_unused_link`; a process the system cannot be asked
+  about counts as there). A game that closed never read what was sent
+  last (the room's end, the lobby's updates); the next game's hook,
+  finding that before the launcher's hello, would refuse the link and say
+  the game has no link to the launcher. The link is renewed then, not when
+  a game closes, because the launcher does not always see that: a game it
+  took over may only have fallen silent. Such a game counts as closed once
+  its hook fell silent and its process is gone; until then, and while a
+  room's session still lets go of a game that closed in it, the launcher
+  starts no other game.
 - **Reading the link at the menu.** At the main menu no step of the game
   runs, so nothing else reads the link. The window asks the hook for the
   lobby a few times a second; each request exchanges it through the step
