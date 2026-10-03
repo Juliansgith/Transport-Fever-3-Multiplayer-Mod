@@ -2193,6 +2193,7 @@ fn the_game_script_applies_the_rooms_actions_as_the_players_own_builds() {
     assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
     // update only takes the actions; the world changes in postUpdate, as
     // the game's own scripts change it.
+    lua.load(STATION_REFRESH).exec().unwrap();
     lua.load(format!(
         "HOOK.batch = {{ {DEPOT} }} WORK = SCRIPT.update({{}}, STATE, 0.2)"
     ))
@@ -2995,6 +2996,7 @@ fn a_dry_run_makes_a_builds_proposal_and_sends_nothing() {
         .unwrap();
     assert_eq!(why, "nil no preview of Bulldoze");
     // The next action applies as before: the dry run left nothing behind.
+    lua.load(STATION_REFRESH).exec().unwrap();
     lua.load(format!(
         "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')          local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')          OK = apply.run(assert(capture.construction({CONSTRUCTION_PROPOSAL})), {{}})"
     ))
@@ -3130,6 +3132,11 @@ fn every_game_replaces_the_edited_station_in_one_proposal() {
         "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
          ACTION = capture.construction({EDIT_PROPOSAL}) \
          CONSTRUCTIONS[910] = CONSTRUCTIONS[77] CONSTRUCTIONS[77] = nil \
+         api.type.ComponentType.PLAYER_OWNED = 15 OWNERS = {{ [910] = 25 }} \
+         local getComponent = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 15 then return OWNERS[e] and {{ player = OWNERS[e] }} end \
+             return getComponent(e, kind) end \
          ASKED = {{}} \
          api.engine.util.proposal = {{ makeProposalData = function(p, context) \
              ASKED[#ASKED + 1] = {{ sent = #SENT, removes = p.constructionsToRemove[1] }} \
@@ -3140,7 +3147,8 @@ fn every_game_replaces_the_edited_station_in_one_proposal() {
              for _, e in ipairs(p and p.constructionsToRemove or {{}}) do CONSTRUCTIONS[e] = nil end \
              local c = p and p.constructionsToAdd and p.constructionsToAdd[1] \
              if c then CONSTRUCTIONS[911] = {{ fileName = c.fileName, \
-                 transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 }} }} end \
+                 transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, c.transf[4][1], c.transf[4][2], c.transf[4][3], 1 }} }} \
+                 OWNERS[911] = 25 end \
              return send(cmd, ...) \
          end \
          HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
@@ -10284,6 +10292,12 @@ fn each_company_builds_one_headquarters_of_its_own() {
             if kind == 2 then return CONS[e] end
             if kind == 55 then return OWNERS[e] and { player = OWNERS[e] } end
         end
+        api.engine.getEntitiesWithComponent = function(kind)
+            local entities = {}
+            if kind == 2 then for e in pairs(CONS) do entities[#entities + 1] = e end end
+            table.sort(entities)
+            return entities
+        end
         api.engine.forEachEntityWithComponent = function(fn, kind)
             if kind == 2 then for e in pairs(CONS) do fn(e) end end
         end
@@ -10293,7 +10307,9 @@ fn each_company_builds_one_headquarters_of_its_own() {
         api.cmd.makeWorldBuildProposalCmd = function(proposal, context, ...)
             for _, e in ipairs(proposal.constructionsToAdd or {}) do
                 NEXT_CON = NEXT_CON + 1
-                CONS[NEXT_CON] = { fileName = e.fileName }
+                CONS[NEXT_CON] = { fileName = e.fileName,
+                    transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
+                        e.transf[4][1], e.transf[4][2], e.transf[4][3], 1 } }
                 OWNERS[NEXT_CON] = e.playerEntity
             end
             return make(proposal, context, ...)
@@ -10319,7 +10335,11 @@ fn each_company_builds_one_headquarters_of_its_own() {
     };
     // Rival builds its headquarters, then the first company its own.
     assert_eq!(eval(&format!("return built({HQ}, A)")), "true");
-    assert_eq!(eval(&format!("return built({HQ}, B)")), "true");
+    let second_hq = HQ.replace(
+        "origin = { x = 100, y = 200, z = 5 }",
+        "origin = { x = 200, y = 200, z = 5 }",
+    );
+    assert_eq!(eval(&format!("return built({second_hq}, B)")), "true");
     // A second one is refused, alike in every game; other buildings not.
     assert_eq!(
         eval(&format!("return built({HQ}, A)")),
