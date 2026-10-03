@@ -943,9 +943,12 @@ money, ran in the game script's `postUpdate`.
   remove, reputation lost) are logged and built through, as the tool
   builds once the player clicks (`ignoreErrors` true: with it false the
   game dropped such a build without a word, seen on build 40408);
-- `Loan`: the loan script's own event, `makeScriptingSendEventCmd("",
-  "Loan", "Obtain", { next, offer })` or `"Repay", { nil, loan }`, with the
-  tables the finance window sends;
+- `Loan`: for the room's first company, the loan script's own event,
+  `makeScriptingSendEventCmd("", "Loan", "Obtain", { next, offer })` or
+  `"Repay", { nil, loan }`, with the tables the finance window sends. For a
+  founded company, Take must match that company's saved active offer slot;
+  the room books it to that company and puts only its slot on cooldown;
+  Repay names one of its saved loans;
 - `Prospect`: the company script's own event,
   `makeScriptingSendEventCmd("", "Companies", "spawnIndustry", {
   companyEntity, townEntity, types, permitKey, cargoType })`, with the
@@ -1303,9 +1306,9 @@ reference of its own to either. Once linked, the GUI wraps every
   line took its stops one by one as in single player (build 40408). So
   far:
   - loans, the finance window's `makeScriptingSendEventCmd("", "Loan",
-    "Obtain" | "Repay", …)`, as a `Loan` action carrying the loans' terms,
-    which every game's game script replays through the loan script's own
-    event;
+    "Obtain" | "Repay", …)`, as a `Loan` action carrying the loans' terms.
+    The first company uses the loan script's event; founded-company offers
+    and loans are checked and booked by the room's companies module;
   - prospecting, the construction menu's `makeScriptingSendEventCmd("",
     "Companies", "spawnIndustry", …)`, as a `Prospect` action ("Prospecting"
     below);
@@ -1478,18 +1481,30 @@ state, which the game saves with the world:
   `PLAYER_OWNED` player is another company's. What no company owns (the
   towns' roads) stays everyone's.
 - *Loans.* The game's loan script (`::/game_mechanics/finance/loan.gs`)
-  keeps the save's own player's loans only. Another company borrows on the
-  terms the loan script offers (its `availableLoans`), and the room keeps
-  that loan: booked to the company as the game books one (a `LOAN` journal
-  entry, `makeJournalBookAssetCmd`, which raises the account's balance and
-  loan alike, seen on build 40408), and paid back each month of the game's
-  calendar as an annuity, the interest as `INTEREST` and the rest as
-  `LOAN`, or all at once. Each company pays its own loans only. Paying
-  one back names it by its id and amount: the game's finance window lists
-  the loan script's loans, the room's first company's, whose ids count
-  from 0 as the room's count from 1, so another company's Repay there is
-  refused unless the amount is its own loan's too. The game script books the months since the last
-  on the first update of a new month, in every game alike.
+  keeps the save's own player's loans only. Each founded company has its
+  own copy of the available loan slots in the room's saved roster. It starts
+  from the native offers, replacing a slot on the first company's cooldown
+  with a fresh offer of that kind. A Take must match the exact type, amount,
+  duration and rate in one of that company's active slots; forged terms and
+  reused or cooling-down offers are refused before any journal entry is
+  booked. On a valid Take, that slot enters its own 4-to-8-month cooldown,
+  as the native loan script does, and `loan_util` draws its replacement
+  when the cooldown expires. The room's update seed makes those draws the
+  same in every game. The native loan table is never changed for a founded
+  company's Take. The room books the money to that company as the game books
+  a loan (a `LOAN` journal entry, `makeJournalBookAssetCmd`, which raises the
+  account's balance and loan alike, seen on build 40408), and pays it back
+  each month of the game's calendar as an annuity, the interest as
+  `INTEREST` and the rest as `LOAN`, or all at once. Each company pays its
+  own loans only. Paying one back names it by its id and amount. A company
+  has four loans at most, as the loan script allows. In GUI states the
+  finance window shows a player of another company that company's persisted
+  offers and loans: `tpf3mp/follow.lua` answers its loan-script
+  `GAME_SCRIPT` component with `companies.loanTable`, so Obtain and Repay go
+  to the room as that company. The room's first company continues using the
+  native loan state and finance window. The game script books the months
+  since the last payment on the first update of a new month, in every game
+  alike.
 - *Subsidies.* The game's subsidy script
   (`::/game_mechanics/subventions/subventions.gs`, `subventions.script.tl`
   on build 40408) draws its offers in its `update`: once the last offer is

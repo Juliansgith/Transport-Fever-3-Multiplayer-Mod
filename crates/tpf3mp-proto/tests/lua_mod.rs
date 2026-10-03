@@ -8150,6 +8150,7 @@ fn what_a_player_does_is_booked_to_their_company() {
         -- A's loan, for Rival: 1200 over 12 months at 12 % a year; and B's,
         -- who plays for the first company, through the game's loan script.
         OFFER = { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }
+        STATE.value.companies.loanOffers = { { company = 1, availableLoans = { OFFER } } }
         HOOK.batch = { { Loan = { Take = { next = OFFER, offer = OFFER } } },
                        { Loan = { Take = { next = OFFER, offer = OFFER } } } }
         HOOK.origins = { A, B }
@@ -10026,6 +10027,7 @@ fn only_the_company_that_borrowed_pays_its_loan() {
         UPDATE({}, STATE, 0.2)
         -- Ann (901) borrows 1200 over 12 months at 12 % a year.
         OFFER = { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }
+        STATE.value.companies.loanOffers = { { company = 1, availableLoans = { OFFER } } }
         HOOK.batch = { { Loan = { Take = { next = OFFER, offer = OFFER } } } } HOOK.origins = { A }
         UPDATE({}, STATE, 0.2)
         function BOOKED()
@@ -10083,6 +10085,164 @@ fn only_the_company_that_borrowed_pays_its_loan() {
     );
     let booked: String = lua.load("return BOOKED()").eval().unwrap();
     assert_eq!(booked, "LOAN-912@901");
+    // Four loans at once, as the game's loan script allows: a fifth is
+    // refused.
+    let why: String = lua
+        .load(
+            "for i = 1, 4 do STATE.value.companies.loans[i] = { id = i, company = 1, amount = 1, remaining = 1, months = 1, paid = 0, rate = 0, payment = 1 } end              HOOK.batch = { { Loan = { Take = { next = OFFER, offer = OFFER } } } } HOOK.origins = { A } UPDATE({}, STATE, 0.2)              return tostring(HOOK.applied[#HOOK.applied].why)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}
+{}", log(&lua)));
+    assert_eq!(why, "Ann has 4 loans already");
+}
+
+/// Founded companies get loan offers from their own persistent copy. The
+/// exact displayed terms are required, a taken slot cools down, and neither
+/// another company nor the save player's native loan table is changed.
+#[test]
+fn founded_company_loan_offers_are_checked_consumed_and_company_scoped() {
+    let (lua, _script) = engine();
+    lua.load(
+        r#"
+        GAME_T = 0
+        HOOK.seed = 12345
+        api.type.ComponentType.GAME_TIME = 99
+        api.type.ComponentType.GAME_SCRIPT = 7
+        api.engine.util.getWorld = function() return 1 end
+        api.engine.system.gameScriptSystem = {}
+        api.engine.system.gameScriptSystem.getEntityForGameScript = function(name)
+            if name == '::/game_mechanics/finance/loan.gs' then return 40 end
+            return -1
+        end
+        api.engine.getComponent = function(e, kind)
+            if e == 1 and kind == 99 then return { gameTime = GAME_T } end
+            if e == 40 and kind == 7 then return { state = LOANS } end
+        end
+        api.util = { getDefaultMonthDuration = function() return 1000 end }
+        api.type.JournalEntry = { new = function() return { category = {} } end,
+                                  Type = { LOAN = 'LOAN', INTEREST = 'INTEREST' } }
+        api.cmd.makeJournalBookAssetCmd = function(e, entry) return { journal = entry, entity = e } end
+        LOANS = { availableLoans = {
+            { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12, birthDay = 0 },
+            { type = 'Medium', amount = 2400, duration = 24000, percentage = 0.08, birthDay = 0 },
+            { type = 'Large', amount = 3600, duration = 36000, percentage = 0.10, birthDay = 0 },
+            { type = 'ExtraLarge', amount = 4800, duration = 48000, percentage = 0.12, birthDay = 0 },
+        }, obtainedLoans = {}, freeId = 0 }
+        GAME_MODULES = { ['::/game_mechanics/finance/loan_util.tl'] = {
+            createSmallLoan = function() return { type = 'Small', amount = 1300, duration = 12000, percentage = 0.10, birthDay = GAME_T } end,
+            createMediumLoan = function() return { type = 'Medium', amount = 2500, duration = 24000, percentage = 0.07, birthDay = GAME_T } end,
+            createLargeLoan = function() return { type = 'Large', amount = 3700, duration = 36000, percentage = 0.09, birthDay = GAME_T } end,
+            createExtraLargeLoan = function() return { type = 'ExtraLarge', amount = 4900, duration = 48000, percentage = 0.11, birthDay = GAME_T } end,
+        } }
+        A, B = string.rep('a', 64), string.rep('b', 64)
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Ann' } } },
+                       { CompanyOp = { Create = { name = 'Bob' } } } }
+        HOOK.origins = { A, B }
+        UPDATE({}, STATE, 0.2)
+        ANN, BOB = STATE.value.companies.list[2].id, STATE.value.companies.list[3].id
+        assert(#STATE.value.companies.loanOffers == 2)
+        OFFER = { type = 'Small', amount = 1200, duration = 12000, percentage = 0.12 }
+        NEXT = { type = 'Small', amount = 1300, duration = 12000, percentage = 0.10, birthDay = GAME_T }
+        function TAKE(player, offer, next)
+            HOOK.batch = { { Loan = { Take = { next = next, offer = offer } } } }
+            HOOK.origins = { player }
+            UPDATE({}, STATE, 0.2)
+            return HOOK.applied[#HOOK.applied].ok, HOOK.applied[#HOOK.applied].why
+        end
+        function JOURNALS()
+            local n = 0
+            for _, c in ipairs(SENT) do
+                if c.journal and c.journal.category.type == 'LOAN' and c.journal.amount > 0 then n = n + 1 end
+            end
+            return n
+        end
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+
+    let forged: (bool, String) = lua
+        .load("local ok, why = TAKE(A, { type = 'Small', amount = 999999, duration = 12000, percentage = 0.12 }, NEXT) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        forged,
+        (false, "that loan offer is no longer available".into())
+    );
+    let forged_rate: (bool, String) = lua
+        .load("local ok, why = TAKE(A, { type = 'Small', amount = 1200, duration = 12000, percentage = 0.01 }, NEXT) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        forged_rate,
+        (false, "that loan offer is no longer available".into())
+    );
+    let forged_duration: (bool, String) = lua
+        .load("local ok, why = TAKE(A, { type = 'Small', amount = 1200, duration = 24000, percentage = 0.12 }, NEXT) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        forged_duration,
+        (false, "that loan offer is no longer available".into())
+    );
+    let wrong_replacement: (bool, String) = lua
+        .load("local ok, why = TAKE(A, OFFER, { type = 'Medium', amount = 2500, duration = 24000, percentage = 0.07 }) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        wrong_replacement,
+        (
+            false,
+            "the replacement must match the offered loan type".into()
+        )
+    );
+    let accepted: (bool, Option<String>) = lua.load("return TAKE(A, OFFER, NEXT)").eval().unwrap();
+    assert_eq!(accepted, (true, None));
+    let after_first = lua
+        .load(
+            "local roster = STATE.value.companies local offers = roster.loanOffers \
+             return offers[1].availableLoans[1].cooldownUntil, offers[2].availableLoans[1].amount, \
+                 LOANS.availableLoans[1].amount, JOURNALS()",
+        )
+        .eval::<(i64, i64, i64, i64)>()
+        .unwrap();
+    assert!(after_first.0 >= 4_000 && after_first.0 <= 8_000);
+    assert_eq!(after_first.1, 1200, "Bob's same slot remains available");
+    assert_eq!(after_first.2, 1200, "the native offer remains untouched");
+    assert_eq!(after_first.3, 1, "one loan booking only");
+    let reused: (bool, String) = lua
+        .load("local ok, why = TAKE(A, OFFER, NEXT) return ok, why")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        reused,
+        (false, "that loan offer is no longer available".into())
+    );
+    let bob: (bool, Option<String>) = lua.load("return TAKE(B, OFFER, NEXT)").eval().unwrap();
+    assert_eq!(
+        bob,
+        (true, None),
+        "another company's offer slot stays independent"
+    );
+    let journals: i64 = lua.load("return JOURNALS()").eval().unwrap();
+    assert_eq!(journals, 2, "the refused reuse made no duplicate charge");
+    let refreshed: (i64, i64, Option<i64>, i64) = lua
+        .load(
+            "local roster = STATE.value.companies local untilTime = roster.loanOffers[1].availableLoans[1].cooldownUntil \
+             GAME_T = untilTime + 1 UPDATE({}, STATE, 0.2) \
+             return roster.loanOffers[1].availableLoans[1].amount, \
+                 roster.loanOffers[2].availableLoans[1].amount, \
+                 roster.loanOffers[1].availableLoans[1].cooldownUntil, JOURNALS()",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        refreshed,
+        (1300, 1300, None, 2),
+        "both slots refresh independently after cooldown"
+    );
 }
 
 /// A headquarters as the game's resources declare one
@@ -12023,4 +12183,132 @@ fn the_simulation_notes_the_save_player_for_native_company_tools() {
         .eval()
         .unwrap();
     assert_eq!(noted, "214443");
+}
+
+/// The game's finance window reads the loan script's state, which keeps
+/// the room's first company's loans only. In the GUI it shows a player of
+/// another company that company's own loans and the offers it can take; a
+/// player of the first company sees the loan script's own, as before. The
+/// simulation's view of the loan script is never changed.
+#[test]
+fn the_finance_window_shows_a_founded_companys_own_loans() {
+    let lua = gui();
+    lua.load(FAKE_HOOK).exec().unwrap();
+    lua.load(FAKE_CMD).exec().unwrap();
+    lua.load(
+        r#"
+        ME = string.rep("b", 64)
+        ROSTER = { next = 2, nextLoan = 3,
+                   list = { { id = 0, entity = 25, name = "First", color = { 1, 0, 0 } },
+                            { id = 1, entity = 901, name = "Rival", color = { 0, 0, 1 } } },
+                   members = {},
+                   loanOffers = { { company = 1, availableLoans = {
+                       { type = "Small", amount = 5000000, duration = 3000, percentage = 0.03 },
+                       { type = "Medium", amount = 5000, duration = 6000, percentage = 0.05 },
+                   } } },
+                   loans = { { id = 2, company = 1, amount = 1200, remaining = 1105, months = 12, paid = 1,
+                               rate = 0.01, payment = 107, type = "Small" },
+                             { id = 1, company = 7, amount = 99, remaining = 99, months = 1, paid = 0,
+                               rate = 0, payment = 99 } } }
+        LOANS = { availableLoans = { { type = "Small", amount = 5000000, duration = 3000, percentage = 0.03 },
+                                     { type = "Medium", cooldownUntil = 5000 } },
+                  obtainedLoans = { { id = 0 }, { id = 1 }, { id = 2 }, { id = 3 } }, freeId = 4 }
+        api.engine = api.engine or {}
+        api.engine.util = { getPlayer = function() return 25 end }
+        api.engine.system = api.engine.system or {}
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs" then return 77 end
+            if name == "::/game_mechanics/finance/loan.gs" then return 40 end
+            return -1 end }
+        api.type = api.type or {}
+        api.type.ComponentType = api.type.ComponentType or {}
+        api.type.ComponentType.GAME_SCRIPT = 7
+        api.util = api.util or {}
+        api.util.getDefaultMonthDuration = function() return 1000 end
+        api.engine.getComponent = function(e, kind)
+            if e == 77 and kind == 7 then return { state = { companies = ROSTER } } end
+            if e == 40 and kind == 7 then return { state = LOANS } end
+        end
+        local realGetComponent = api.engine.getComponent
+        function FRESH_API()
+            return { engine = { util = { getPlayer = function() return 25 end },
+                                system = api.engine.system, getComponent = realGetComponent },
+                     type = api.type, util = api.util, cmd = api.cmd }
+        end
+        HOOK.status = { room = "r", players = { { name = "b", id = ME, me = true, connected = true } }, me_id = ME }
+        function BOARD()
+            local s = api.engine.getComponent(api.engine.system.gameScriptSystem.getEntityForGameScript(
+                "::/game_mechanics/finance/loan.gs"), api.type.ComponentType.GAME_SCRIPT).state
+            local out = {}
+            for _, l in ipairs(s.availableLoans) do out[#out + 1] = l.type .. ":" .. tostring(l.amount or l.cooldownUntil) end
+            out[#out + 1] = "|"
+            for _, l in ipairs(s.obtainedLoans) do
+                out[#out + 1] = tostring(l.id) .. ":" .. tostring(l.amount) .. ":" .. tostring(l.duration) .. ":"
+                    .. tostring(l.percentage) .. ":" .. tostring(l.timesPaid)
+            end
+            return table.concat(out, " ")
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    run_frames(&lua, 20);
+    let board: String = lua.load("return BOARD()").eval().unwrap();
+    assert_eq!(
+        board,
+        "Small:5000000 Medium:5000 | 0:nil:nil:nil:nil 1:nil:nil:nil:nil 2:nil:nil:nil:nil 3:nil:nil:nil:nil",
+        "the first company's player: the loan script's own"
+    );
+    lua.load("ROSTER.members = { { player = ME, company = 1 } }")
+        .exec()
+        .unwrap();
+    run_frames(&lua, 20);
+    let board: String = lua.load("return BOARD()").eval().unwrap();
+    assert_eq!(
+        board, "Small:5000000 Medium:5000 | 2:1200:12000:0.12:1",
+        "Rival's player: Rival's one loan, the offers it can take"
+    );
+    let refreshed: String = lua
+        .load(
+            "api = FRESH_API(); assert(package.loaded['tpf3mp.follow'].ensure(api)); return BOARD()",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        refreshed, "Small:5000000 Medium:5000 | 2:1200:12000:0.12:1",
+        "a refreshed GUI api still shows Rival's loans"
+    );
+    let unchanged: bool = lua
+        .load(
+            "return LOANS.availableLoans[2].cooldownUntil == 5000 and #LOANS.obtainedLoans == 4 and ROSTER.loans[1].id == 2 and ROSTER.loans[1].paid == 1",
+        )
+        .eval()
+        .unwrap();
+    assert!(
+        unchanged,
+        "reading the finance window does not change simulation state"
+    );
+    // The window's Repay of it goes to the room as Rival's, by its id and
+    // amount, which every game's companies.repay takes.
+    lua.load(
+        "HOOK.room = true \
+         local s = api.engine.getComponent(40, 7).state \
+         api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd('', 'Loan', 'Repay', { nil, s.obtainedLoans[1] }))",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let repay: String = lua
+        .load("local l = HOOK.commands[#HOOK.commands].Loan.Repay.loan return l.id .. ':' .. l.amount")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(repay, "2:1200");
+    // Where Rival's loans cannot be read, the window shows none and offers
+    // none: never the first company's as Rival's.
+    let board: String = lua
+        .load(
+            "package.loaded['tpf3mp.follow'].LOANS_EVERY = -1              package.loaded['tpf3mp.companies'].loanTable = function() error('unreadable') end              local s = api.engine.getComponent(40, 7).state              return #s.availableLoans .. ' ' .. #s.obtainedLoans",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(board, "0 0");
 }

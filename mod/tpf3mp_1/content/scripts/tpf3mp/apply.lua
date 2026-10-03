@@ -1878,7 +1878,7 @@ function HANDLERS.Loan(op, ctx)
 	local mine = roster and companiesModule.byEntity(roster, company())
 	if roster and not mine then return false, "the acting company is not in the room's roster" end
 	if mine and mine.id ~= 0 then
-		if op.Take then return companiesModule.borrow(roster, mine.id, op.Take.offer, send, api) end
+		if op.Take then return companiesModule.borrow(roster, mine.id, op.Take.offer, op.Take.next, send, api) end
 		if op.Repay then return companiesModule.repay(roster, mine.id, op.Repay.loan, send, api) end
 		return false, "a loan is taken or paid back"
 	end
