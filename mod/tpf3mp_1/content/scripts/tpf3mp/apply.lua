@@ -297,6 +297,25 @@ local function constructionGroups(con, mustResolve)
 	return out
 end
 
+-- The game's refresh of construction `con`, and whether it changes its
+-- streets. A scripted build does not snap; the game's refresh of a
+-- construction does, as its tool does: the entrance then ends at the street
+-- node beside it (refreshConstruction, build 40408: the same edge the tool
+-- proposed). Logged as what it snaps. The game's verdict takes simple
+-- proposals only ("SimpleProposal expected, got Proposal", build 40408): a
+-- refresh the game refuses fails in the command's own answer instead (run).
+local function refreshOf(con)
+	local refresh = api.engine.util.proposal.refreshConstruction(con)
+	local street, shape = refresh.proposal, {}
+	for i = 1, #street.addedSegments do
+		local s = street.addedSegments[i]
+		shape[#shape + 1] = "+e" .. s.entity .. ":" .. tostring(s.comp.node0) .. ">" .. tostring(s.comp.node1)
+	end
+	for i = 1, #street.removedSegments do shape[#shape + 1] = "-e" .. tostring(street.removedSegments[i].entity) end
+	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " "))
+	return refresh, #shape > 0
+end
+
 -- A construction the room built is the acting company's, the same in every
 -- game, as the game's own missions hand one over
 -- (mission_framework_util_entity.tl, setPlayerForConstruction): the
@@ -355,27 +374,49 @@ end
 -- proposal, the old mapped to the new (old2new), as the game's own upgrade
 -- makes one (mission_framework_util_entity.tl, upgradeConstruction), so
 -- what stood on the old one (its stations, their station groups and the
--- lines that stop there) passes to the new. The game's verdict first, and
--- built as the player's own build, paid by the player (buildProposal). The
--- new one stands where the old one stood, so the next edit, a depot or a
--- line finds it by the same file and place.
+-- lines that stop there) passes to the new. The streets the edit changes
+-- around it (a road split for a new exit, 2026-10-03) go in the same
+-- proposal, as a new construction's connection does; the old one's own
+-- streets go with it, and the connection may not name them. The game's
+-- verdict first, and built as the player's own build, paid by the player
+-- (buildProposal). The new one stands where the old one stood, so the next
+-- edit, a depot or a line finds it by the same file and place.
 local function replaceConstruction(build, proposal, entity)
-	if build.connection ~= nil then error("an edit that builds streets around the construction", 0) end
-	local old = constructionAt(build.replaces)
+	local old, oldComponent = constructionAt(build.replaces)
 	mine(old, "construction")
 	proposal.constructionsToAdd = { entity }
 	proposal.constructionsToRemove = { old }
 	proposal.old2new = { [old] = 0 }
 	log("replacing " .. tostring(old) .. " " .. tostring(build.replaces.file) .. " with " .. tostring(build.file))
+	if build.connection ~= nil then
+		local gone = {}
+		local frozen = oldComponent and oldComponent.frozenEdges or {}
+		for i = 1, #frozen do gone[frozen[i]] = true end
+		networkInto(proposal, nil, nil, nil, build.connection, true, gone)
+	end
 	local context = api.type.Context.new()
 	context.player = company()
 	context.gatherBuildings = true
 	context.gatherFields = true
 	buildProposal(proposal, context)
 	-- What it made, where the action says: this game could name it.
-	local made = constructionAt({ file = build.file, at = build.transform.origin })
-	settleConstruction(made, build.file)
-	return true, made
+	local new = constructionAt({ file = build.file, at = build.transform.origin })
+	-- The acting company's, whatever the engine made of it, as a new one.
+	settleConstruction(new, build.file)
+	-- The new one makes its entrances again itself, unsnapped, as a build
+	-- does: a road station edited by the street came loose from it, its
+	-- entrance no longer joined to the junction (2026-10-03, in both games).
+	-- So every game refreshes it as a build's, which snaps its entrances,
+	-- a new one included, onto the streets beside them as the game's own
+	-- edit does. Where nothing is to snap, nothing is sent. The edit stands
+	-- in every game either way: a refresh the game refuses leaves it as it
+	-- was before, the same everywhere, and is logged.
+	local snapped, why = pcall(function()
+		local refresh, changes = refreshOf(new)
+		if changes then run(api.cmd.makeWorldBuildProposalCmd(refresh, nil, true, false)) end
+	end)
+	if not snapped then log("the edited construction stays unsnapped: " .. tostring(why)) end
+	return true, new
 end
 
 function HANDLERS.BuildConstruction(build)
@@ -438,18 +479,7 @@ function HANDLERS.BuildConstruction(build)
 	-- the same edge the tool proposed). So every game refreshes it at once,
 	-- for free, as part of this action.
 	local con = constructionAt({ file = build.file, at = build.transform.origin })
-	local refresh = api.engine.util.proposal.refreshConstruction(con)
-	local street, shape = refresh.proposal, {}
-	for i = 1, #street.addedSegments do
-		local s = street.addedSegments[i]
-		shape[#shape + 1] = "+e" .. s.entity .. ":" .. tostring(s.comp.node0) .. ">" .. tostring(s.comp.node1)
-	end
-	for i = 1, #street.removedSegments do shape[#shape + 1] = "-e" .. tostring(street.removedSegments[i].entity) end
-	log("snapping " .. tostring(con) .. " " .. table.concat(shape, " "))
-	-- The game's verdict takes simple proposals only ("SimpleProposal
-	-- expected, got Proposal", build 40408): a refresh the game refuses
-	-- fails in the command's own answer instead (run).
-	return run(api.cmd.makeWorldBuildProposalCmd(refresh, nil, true, false))
+	return run(api.cmd.makeWorldBuildProposalCmd(refreshOf(con), nil, true, false))
 end
 
 -- ---------------------------------------------------------------- roads
@@ -592,9 +622,13 @@ end
 -- Adds the polyline's nodes and edges, and its removals, to `proposal`'s
 -- street proposal. `network`, `templateName` and `style` are the build's
 -- own kind, for the links that name none; nil for a construction's
--- streets, whose every link names its kind. With `dangling` true, peel
--- back complete branches ending at new vertices: the construction makes
--- its own entrance and internal track. Removing only the outermost links
+-- streets, whose every link names its kind. With `dangling` true (a
+-- construction's streets), peel back complete branches ending at new
+-- vertices: the construction makes its own entrance and internal track;
+-- and every edge it removes or splits must be the acting company's or no
+-- company's (D21), as a bulldozed one. `gone` names the edges an edit's old
+-- construction takes with it (its frozen edges): the polyline may not
+-- remove or split them, and no junction's settings may name them. Removing only the outermost links
 -- leaves duplicate track inside a branched depot (Steam 40408). Existing
 -- nodes and splits anchor the external network and are never peeled off.
 function apply.ownStreets(polyline)
@@ -630,7 +664,7 @@ function apply.ownStreets(polyline)
 	return links, skipped
 end
 
-function networkInto(proposal, network, templateName, style, polyline, dangling)
+function networkInto(proposal, network, templateName, style, polyline, dangling, gone)
 	local links, skipped = polyline.links, {}
 	local settings = polyline.junctions
 	if dangling then
@@ -748,6 +782,8 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 			local s = r.Split
 			local e = edgeBetween(nodes(s.network), s.network, arr(s.ends.a), arr(s.ends.b))
 			if e == nil then error("no " .. s.network .. " edge to split at vertex " .. i) end
+			if gone and gone[e.id] then error("vertex " .. i .. " splits the old construction's own edge", 0) end
+			if dangling then mine(e.id, "road or track") end
 			if #(e.comp.objects or {}) > 0 then
 				error("vertex " .. i .. " splits an edge with a stop or signal on it")
 			end
@@ -843,6 +879,8 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	for k, r in ipairs(polyline.removals or {}) do
 		local e = edgeBetween(nodes(r.network), r.network, arr(r.ends.a), arr(r.ends.b))
 		if e == nil then error("no " .. r.network .. " edge to remove (" .. k .. ")") end
+		if gone and gone[e.id] then error("removal " .. k .. " is the old construction's own edge", 0) end
+		if dangling then mine(e.id, "road or track") end
 		local objects = e.comp.objects or {}
 		if #objects > 0 then
 			local into
@@ -892,7 +930,12 @@ function networkInto(proposal, network, templateName, style, polyline, dangling)
 	-- A preview (dry) leaves the junctions' lane and light settings out:
 	-- they draw nothing, and a snapped build's may name a node only its
 	-- originator's tool has.
-	if not dry then junctions.into(proposal, polyline.junctions, ends, mine) end
+	if not dry then
+		local left = junctions.into(proposal, polyline.junctions, ends, mine, gone)
+		if left and #left > 0 then
+			log("left to the construction: the settings of " .. #left .. " junction(s) at its old edges")
+		end
+	end
 
 	-- What is sent, in the log before it goes: an exception from the game
 	-- does not always come back through pcall.

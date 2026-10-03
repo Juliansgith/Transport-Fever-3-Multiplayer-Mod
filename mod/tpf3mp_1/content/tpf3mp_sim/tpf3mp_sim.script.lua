@@ -161,7 +161,7 @@ function data()
 		end
 		local removes = type(proposal.toRemove) == "table" and #proposal.toRemove > 0
 		local ok, action, whyNot = true, nil, "an edit that replaces no construction"
-		if removes then ok, action, whyNot = pcall(capture.construction, proposal) end
+		if removes then ok, action, whyNot = pcall(capture.moduleEdit, proposal) end
 		if not ok then action, whyNot = nil, tostring(action) end
 		if action and action.BuildConstruction.replaces == nil then
 			action, whyNot = nil, "an edit that replaces no construction"
