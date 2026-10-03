@@ -102,6 +102,9 @@ function data()
 	-- The world's summary for the hook's test mode (tpf3mp/observe.lua):
 	-- loaded when first asked for, per state; false when it would not load.
 	local observer = nil
+	-- tpf3mp/subsidies.lua, loaded when first needed, per state (false when
+	-- it would not load), and the subsidies last said in the log.
+	local subsidiesModule, toldSubsidies = nil, nil
 
 	-- The events the script needs: its console event, and the build tools'
 	-- proposals. Each by name, since a save may carry an older mod's
@@ -598,6 +601,31 @@ function data()
 				end
 				local ok, why = l:lanes(read)
 				if not ok then l:log("the lanes were not taken: " .. tostring(why)) end
+				-- The subsidy script's offers and subsidies, said in the log
+				-- whenever they changed since the last checkpoint this state
+				-- saw: each with its number, kind, times and terms
+				-- (tpf3mp/subsidies.lua), so two games' logs show where their
+				-- offers part. The economy lane hashes the same rows.
+				if subsidiesModule == nil then
+					local okS, module = pcall(ug_require, MOD .. "::/scripts/tpf3mp/subsidies.lua")
+					subsidiesModule = okS and type(module) == "table" and module or false
+				end
+				if subsidiesModule then
+					local offers = companies.subsidyState(api)
+					local okRows, rows = pcall(subsidiesModule.rows, offers)
+					local clock = okRows and rows and subsidiesModule.clock(offers) or nil
+					local said = clock and (clock .. "|" .. table.concat(rows, "|")) or nil
+					if said and said ~= toldSubsidies then
+						toldSubsidies = said
+						local okT, now = pcall(function()
+							return api.engine.getComponent(api.engine.util.getWorld(),
+								api.type.ComponentType.GAME_TIME).gameTime
+						end)
+						l:log("subsidies at game time " .. tostring(okT and now or "?") .. ": " .. clock .. "; "
+							.. #rows .. " subsidies")
+						for _, row in ipairs(rows) do l:log("subsidy: " .. row) end
+					end
+				end
 				-- The hook's test mode asks for a summary of the world at some
 				-- checkpoints (crates/tpf3mp-hook/src/scenario.rs).
 				local observeStep, full = l:observe()

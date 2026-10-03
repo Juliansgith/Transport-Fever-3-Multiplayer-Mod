@@ -880,9 +880,11 @@ end
 -- ------------------------------------------------------------- subsidies
 --
 -- The game's subsidy script (::/game_mechanics/subventions/subventions.gs,
--- build 40408's subventions.script.tl) draws the offers in every game alike:
--- in its update, from the world and the game time, its math.random reseeded
--- per call by the hook (docs/HOOKS.md, "Seeds, as built"). It keeps them in
+-- build 40408's subventions.script.tl) draws the offers in its update, from
+-- the world and the game time, its math.random reseeded per call by the hook
+-- (docs/HOOKS.md, "Seeds, as built"): alike in every game only while their
+-- worlds and game times agree at every room step, which the economy lane
+-- checks (tpf3mp/lanes.lua, tpf3mp/subsidies.lua). It keeps them in
 -- its state, offered (`proposedSubventions`), taken (`activeSubventions`),
 -- completed and failed, each by its number (`uid`) and its kind (`id`, the
 -- subsidy resource). Accepting moves an offer to the taken and books its
@@ -895,7 +897,8 @@ end
 -- moves what the script booked to the first company on to the company that
 -- took it, as SUBSIDY journal entries (the first company's books show the
 -- money in and out again, so they net to nothing), at accepting and when the
--- script completes or fails it, at the same update in every game.
+-- script completes or fails it, at the same update in every game. Only the
+-- taker's transport counts towards it (tpf3mp/subsidies.lua).
 --
 --   roster.subsidies = { { uid =, kind =, company =, state = "taken" |
 --                          "completed" }, ... }
@@ -1050,8 +1053,11 @@ end
 -- Settles the subsidies the room keeps against the script's `state`: a
 -- subsidy another company took that the script completed has its reward
 -- moved on to that company, one that failed its penalty; one the script no
--- longer has, or one settled for good, is forgotten. Returns what it did,
--- as lines for the log.
+-- longer has, or one settled for good, is forgotten. A taker that is gone
+-- (dissolved) gets nothing and pays nothing: the first company gives back
+-- the reward, or gets back the penalty, the script booked to it, so it
+-- ends with nothing of a subsidy it did not take. Returns what it did, as
+-- lines for the log.
 function companies.settleSubsidies(roster, state, day, send, api)
 	if not acceptance.subsidies then return end
 	local said, kept = {}, {}
@@ -1061,17 +1067,34 @@ function companies.settleSubsidies(roster, state, day, send, api)
 		local where, s = companies.findSubsidy(state, r.uid)
 		local c = companies.find(roster, r.company)
 		local keep = s ~= nil and s.id == r.kind and where ~= "failed"
-		if s ~= nil and s.id == r.kind and c and not c.gone and c.id ~= 0 and r.state == "taken" then
+		if s ~= nil and s.id == r.kind and c and c.id ~= 0 and r.state == "taken" then
 			local data = type(s.data) == "table" and s.data or {}
+			local first = companies.find(roster, 0)
 			if where == "completed" then
 				local amount = companies.subsidyMoney(data.complete)
-				moveSubsidy(roster, c, amount, send, api)
 				r.state = "completed"
-				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name .. ": " .. amount
+				if not c.gone then
+					moveSubsidy(roster, c, amount, send, api)
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name .. ": " .. amount
+				elseif first and amount ~= 0 then
+					-- Its taker is gone: the reward is no one's, and the
+					-- first company gives back what the script booked it.
+					book(api, send, first.entity, -amount, "SUBSIDY")
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " completed for " .. c.name
+						.. ", gone: its reward of " .. amount .. " is no one's"
+				end
 			elseif where == "failed" then
 				local amount = companies.subsidyMoney(data.failure)
-				moveSubsidy(roster, c, -amount, send, api)
-				said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name .. ": -" .. amount
+				if not c.gone then
+					moveSubsidy(roster, c, -amount, send, api)
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name .. ": -" .. amount
+				elseif first and amount ~= 0 then
+					-- Its taker is gone: no one pays its penalty, and the
+					-- first company gets back what the script charged it.
+					book(api, send, first.entity, amount, "SUBSIDY")
+					said[#said + 1] = "subsidy " .. string.format("%d", r.uid) .. " failed for " .. c.name
+						.. ", gone: its penalty of " .. amount .. " is no one's"
+				end
 			end
 		end
 		-- Completed, it stays the company's in the script for years: kept
