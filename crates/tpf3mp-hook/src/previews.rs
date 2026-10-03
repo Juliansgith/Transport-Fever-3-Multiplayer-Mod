@@ -79,6 +79,9 @@ impl Out {
 
     /// The world's GUI is gone, and the tool that showed a preview with it:
     /// the others are told it shows nothing, rather than kept seeing it.
+    /// Where that hide is sent while the agent takes no previews (the world
+    /// loading), it is lost, and the others drop the preview once it is no
+    /// longer kept alive, six seconds on.
     pub fn world_gone(&mut self) {
         self.set(None);
     }

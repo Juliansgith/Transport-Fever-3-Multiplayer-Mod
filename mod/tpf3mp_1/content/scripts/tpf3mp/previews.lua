@@ -42,6 +42,10 @@ previews.SHOWN = { construction = true, street = true, track = true, stop = true
 
 -- Seconds between two looks at the game's active tools.
 local TOOL_EVERY = 0.25
+-- Seconds between two tries at drawing the previews the hook could not
+-- draw yet (all its renderers busy): a member's preview that does not
+-- change comes again as no change, so it is tried again from here.
+local RETRY_EVERY = 0.5
 -- Members whose first preview the log says, at most.
 local MAX_SAID = 16
 
@@ -61,6 +65,8 @@ local MAX_UNMADE = 20
 local unmade = 0
 -- What the log said of the active tools' list, once.
 local toldTools = false
+-- When the previews not drawn yet were last tried again.
+local retriedAt = nil
 
 -- The game's active tools, as one string, the same whatever their order,
 -- or nil where it cannot say.
@@ -164,6 +170,7 @@ function previews.take(link, make, draw)
 					if draw then
 						local called, drawn, why = pcall(draw, from, kept)
 						if called and drawn then
+							kept.undrawn = nil
 							if not drawnSaid[from] then
 								drawnSaid[from] = true
 								link:log("drawing another member's build preview: " .. tostring(kind)
@@ -171,12 +178,27 @@ function previews.take(link, make, draw)
 							end
 						else
 							if had then pcall(draw, from, nil) end
+							kept.undrawn = true
 							unshown(link, kind, called and why or drawn)
 						end
 					end
 				else
 					if had and draw then pcall(draw, from, nil) end
 					unshown(link, kind, ok and context or proposal)
+				end
+			end
+		end
+	end
+	-- The ones made but not drawn, tried again now and then: a renderer may
+	-- have come free since.
+	if draw then
+		local t = now()
+		if retriedAt == nil or t - retriedAt >= RETRY_EVERY or t < retriedAt then
+			retriedAt = t
+			for from, kept in pairs(remote) do
+				if kept.undrawn then
+					local called, drawn = pcall(draw, from, kept)
+					if called and drawn then kept.undrawn = nil end
 				end
 			end
 		end
@@ -192,6 +214,7 @@ end
 -- Forgets everything: a new world's GUI.
 function previews.reset()
 	showing, lookedAt, remote, said, saidCount, toldTools = nil, nil, {}, {}, 0, false
+	retriedAt = nil
 	made, unmade, drawnSaid = 0, 0, {}
 end
 

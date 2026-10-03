@@ -2693,6 +2693,42 @@ fn a_preview_hides_once_its_tool_is_no_longer_active() {
 }
 
 #[test]
+fn a_preview_the_hook_could_not_draw_is_drawn_once_a_renderer_frees() {
+    let (lua, _script) = engine();
+    // All the hook's renderers busy at first; one frees later. The member's
+    // preview does not change, so it never comes again as a change.
+    let (first, later, tries): (usize, usize, usize) = lua
+        .load(
+            "local previews = ug_require('tpf3mp_1::/scripts/tpf3mp/previews.lua') \
+             previews.reset() \
+             local incoming = { { from = string.rep('ab', 32), action = { BuildTrack = {} } } } \
+             local link = { previews = function() local c = incoming incoming = {} return c end, \
+                            log = function() end } \
+             local full, tries, drawn = true, 0, 0 \
+             local function make() return { track = true }, {}, 1 end \
+             local function draw(from, kept) \
+                 if kept == nil then return true end \
+                 tries = tries + 1 \
+                 if full then return nil, 'every renderer is busy' end \
+                 drawn = drawn + 1 return true \
+             end \
+             previews.take(link, make, draw) \
+             previews.take(link, make, draw) \
+             local first = drawn \
+             full = false \
+             local t0 = os.clock() while os.clock() - t0 < 0.6 do end \
+             previews.take(link, make, draw) \
+             previews.take(link, make, draw) \
+             return first, drawn, tries",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(first, 0, "nothing drawn while every renderer is busy");
+    assert_eq!(later, 1, "drawn once one frees, and only once");
+    assert!(tries <= 3, "tried again at most every half second: {tries}");
+}
+
+#[test]
 fn a_dry_run_makes_a_builds_proposal_and_sends_nothing() {
     let (lua, _script) = engine();
     lua.load(FAKE_STATION).exec().unwrap();
