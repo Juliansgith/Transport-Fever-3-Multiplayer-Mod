@@ -719,6 +719,12 @@ pub fn any_world_started() -> bool {
     shared().worlds > 0
 }
 
+/// How many worlds' GUIs have started in this process
+/// (`crate::step::WorldMark::started`).
+pub fn worlds_started() -> u64 {
+    shared().worlds
+}
+
 /// Forgets every world's GUI start (the menu frame's tests, which run
 /// only where the hook installs).
 #[cfg(all(test, windows, target_arch = "x86_64"))]

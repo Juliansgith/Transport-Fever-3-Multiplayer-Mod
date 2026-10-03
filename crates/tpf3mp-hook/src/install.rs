@@ -190,6 +190,12 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
         lines.push(format!(
             "menu: the world closed (CMenuUI::m_game cleared); the {forgotten} Lua state(s) its GUI was given are never used by the main menu"
         ));
+        // Closed by the player, not by a load of the room's the hook
+        // started: in a room's game, any world up after is none the room
+        // loaded, and the step gate holds it (crate::step, WorldMark).
+        if !lua::load_started() {
+            crate::menu::note_world_closed();
+        }
         // Its company's entity is no entity of the next world: forgotten
         // before the views' refresh below, so no GUI hands it on.
         let notes = lua::forget_world_notes();

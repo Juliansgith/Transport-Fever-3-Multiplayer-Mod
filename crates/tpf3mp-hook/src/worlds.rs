@@ -28,7 +28,7 @@ use tpf3mp_proto::PlayerId;
 
 use crate::{
     lua,
-    step::{GameControl, LoadFrom},
+    step::{GameControl, LoadFrom, WorldMark},
 };
 
 /// Transport Fever 3's Steam app.
@@ -339,6 +339,13 @@ impl GameControl for GuiWorlds {
 
     fn world_up(&mut self) -> Option<u64> {
         lua::take_world_up()
+    }
+
+    fn world_mark(&mut self) -> WorldMark {
+        WorldMark {
+            closed: crate::menu::world_closes(),
+            started: lua::worlds_started(),
+        }
     }
 }
 

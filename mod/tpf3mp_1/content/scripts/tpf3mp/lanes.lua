@@ -21,7 +21,11 @@
 --   path state as the frame began (dyn0), differed between two games in
 --   the same simulation update by millimetres (build 40408), the frames
 --   being their own; the simulation's state did not;
--- - ECONOMY: each player's balance;
+-- - ECONOMY: the save's own player's balance; with more than one company
+--   in the room's roster, each company's balance by its id; and where the
+--   game has the subsidy script, its offers, taken, completed and failed
+--   subsidies, each with its terms (tpf3mp/subsidies.lua, summary), so two
+--   games whose offers differ split here at the next checkpoint;
 -- - TOWNS: each town's number of buildings;
 -- - PEOPLE: the number of people.
 --
@@ -54,11 +58,13 @@
 -- Pure Lua over the `api` it is given; the tests hand it a fake.
 
 local lanes = {}
-local junctions
+local junctions, subsidies
 if type(ug_require) == "function" then
 	junctions = ug_require("tpf3mp_1::/scripts/tpf3mp/junctions.lua")
+	subsidies = ug_require("tpf3mp_1::/scripts/tpf3mp/subsidies.lua")
 else
 	junctions = require("tpf3mp.junctions")
+	subsidies = require("tpf3mp.subsidies")
 end
 
 lanes.NETWORK = 0
@@ -378,11 +384,63 @@ local function takings(api)
 	end
 end
 
+-- A game script's state as the game keeps it, by the script's file; nil
+-- where the game has no such script.
+local function scriptState(api, name)
+	local ok, state = pcall(function()
+		local entity = api.engine.system.gameScriptSystem.getEntityForGameScript(name)
+		if type(entity) ~= "number" or entity < 0 then return nil end
+		local c = api.engine.getComponent(entity, api.type.ComponentType.GAME_SCRIPT)
+		return c and c.state
+	end)
+	if ok and type(state) == "table" then return state end
+	return nil
+end
+
+-- The mod's own game script, under the names the game has given it.
+local MOD_SCRIPTS = { "tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs", "tpf3mp_1::/tpf3mp_sim.gs" }
+local SUBSIDY_SCRIPT = "::/game_mechanics/subventions/subventions.gs"
+
+-- Each company of the room's roster with its balance, "id=entity:balance",
+-- in the roster's order; nil with one company or none, or no roster.
+local function companyBalances(api)
+	local roster
+	for _, name in ipairs(MOD_SCRIPTS) do
+		local state = scriptState(api, name)
+		if state and type(state.companies) == "table" then roster = state.companies break end
+	end
+	local list = roster and type(roster.list) == "table" and roster.list or {}
+	if #list < 2 then return nil end
+	local out = {}
+	for _, c in ipairs(list) do
+		if type(c) == "table" and not c.gone then
+			local account = type(c.entity) == "number" and component(api, c.entity, "ACCOUNT")
+			local balance = account and account.balance
+			out[#out + 1] = tostring(c.id) .. "=" .. tostring(c.entity) .. ":"
+				.. (type(balance) == "number" and string.format("%d", balance) or "?")
+		end
+	end
+	return table.concat(out, ",")
+end
+
 readers[lanes.ECONOMY] = function(api, emit, ids)
 	local player = api.engine.util.getPlayer()
 	local account = component(api, player, "ACCOUNT")
 	local balance = account and account.balance
 	local text = tostring(player) .. ":" .. (balance ~= nil and string.format("%d", balance) or "?")
+	local okC, balances = pcall(companyBalances, api)
+	if okC and balances then text = text .. " companies " .. balances end
+	local offers = scriptState(api, SUBSIDY_SCRIPT)
+	local rows = offers and subsidies.rows(offers)
+	if rows then
+		text = text .. " subsidies " .. #rows .. ":" .. hashStr(subsidies.clock(offers) .. "\30" .. table.concat(rows, "\30"))
+	end
+	if emit and rows then
+		emit("subsidies", nil, "subsidies:clock", subsidies.clock(offers))
+		for i, row in ipairs(rows) do
+			emit("subsidies", nil, "subsidies:" .. i, row)
+		end
+	end
 	if emit then
 		-- Dump only: the loan, the player's income as the engine sums it,
 		-- the time of its last income and the finance table; then each
