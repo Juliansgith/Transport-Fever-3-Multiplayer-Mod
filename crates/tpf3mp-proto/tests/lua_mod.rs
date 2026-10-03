@@ -10808,6 +10808,383 @@ fn every_game_gives_a_subsidy_to_the_first_company_to_accept_it() {
     assert_eq!(founded, "Rival");
 }
 
+/// Stand-ins for the base game's subsidy kinds, as their scripts count
+/// progress (game_mechanics/subventions/*/*.script.tl, build 40408):
+/// deliver_cargo counts each cargo delivered to its industry by the line
+/// that carried it, and once completed doubles those lines' tickets;
+/// deliver_passengers completes on a person starting a line between its
+/// towns. Lines 31 and 33 are Rival's (901), 32 the first company's (25).
+const FAKE_SUBSIDY_KINDS: &str = r#"
+CT = { PLAYER_OWNED = 61, SIM_ENTITY_AT_VEHICLE = 62, SIM_ENTITY_AT_TERMINAL = 63 }
+OWNERS = { [31] = 901, [32] = 25, [33] = 901 }
+AT_VEHICLE = { [701] = 31, [702] = 32 }
+FAKE_API = {
+    type = { ComponentType = CT },
+    engine = { getComponent = function(e, kind)
+        if kind == CT.PLAYER_OWNED and OWNERS[e] then return { player = OWNERS[e] } end
+        if kind == CT.SIM_ENTITY_AT_VEHICLE and AT_VEHICLE[e] then return { line = AT_VEHICLE[e] } end
+    end },
+}
+local cargo = { handleEvent = function(_src, id, name, param, s)
+    if name ~= 'OnCalcTicketPrice' then return end
+    local changed, found = {}, false
+    for i = 1, #param do
+        local p = param[i]
+        if s.completedTime then
+            if s.data.affectedLines and s.data.affectedLines[p.lineEntity] then changed[i] = 2 found = true end
+        elseif s.acceptedTime and p.stockListEntity == s.data.industry then
+            s.data.affectedLines = s.data.affectedLines or {}
+            s.data.affectedLines[p.lineEntity] = true
+            s.data.delivered = (s.data.delivered or 0) + 1
+        end
+    end
+    if found then return changed end
+end, isComplete = function(s) return (s.data.delivered or 0) >= s.data.toDeliver end }
+local passengers = { handleEvent = function(_src, _id, name, param, s)
+    if name ~= 'OnStartedLineUsage' then return end
+    for _, entry in ipairs(param.entities) do
+        s.data.lineEntity = FAKE_API.engine.getComponent(entry[1], CT.SIM_ENTITY_AT_VEHICLE).line
+    end
+end }
+local workers = { isComplete = function() return true end }
+GAME_MODULES = {
+    ['::/game_mechanics/subventions/deliver_cargo/deliver_cargo.script.tl'] = { deliver_cargo = cargo },
+    ['::/game_mechanics/subventions/deliver_cargo_town/deliver_cargo_town.script.tl'] =
+        { deliver_cargo_town = cargo },
+    ['::/game_mechanics/subventions/deliver_passengers/deliver_passengers.script.tl'] =
+        { deliver_passengers = passengers },
+    ['::/game_mechanics/subventions/deliver_workers/deliver_workers.script.tl'] = { deliver_workers = workers },
+}
+SUBSIDIES = ug_require('tpf3mp_1::/scripts/tpf3mp/subsidies.lua')
+KINDS = SUBSIDIES.wrapAll(ug_require, FAKE_API)
+-- One cargo delivery at industry 50 by each of `lines`.
+function DELIVER(s, ...)
+    local params = {}
+    for i, line in ipairs({ ... }) do params[i] = { stockListEntity = 50, lineEntity = line } end
+    return KINDS.deliver_cargo.handleEvent('', 'TransportVehicleSystem', 'OnCalcTicketPrice', params, s)
+end
+"#;
+
+/// While subsidies are a room's channel, the mod's run script points the
+/// base game's subsidy resources at the mod's wrapper of their scripts, and
+/// leaves every other resource, and another mod's subsidy, as it is; while
+/// they are not, it changes nothing.
+#[test]
+fn the_run_script_points_the_base_subsidies_at_the_mods_wrapper() {
+    let lua = gui();
+    let run = |lua: &Lua| -> Vec<String> {
+        lua.load(
+            "MODIFIERS = {} \
+             function addModifier(kind, fn) MODIFIERS[#MODIFIERS + 1] = { kind = kind, fn = fn } end \
+             local source = mod_source('mod.script.lua') \
+             assert(loadstring(source, '@mod.script.lua'))() \
+             data().runFn({}, {})",
+        )
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}"));
+        lua.load(
+            "local out = {} for _, m in ipairs(MODIFIERS) do out[#out + 1] = m.kind end return out",
+        )
+        .eval()
+        .unwrap()
+    };
+    assert!(
+        run(&lua).is_empty(),
+        "subsidies are refused in a room: the game's own scripts stay"
+    );
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').subsidies = true")
+        .exec()
+        .unwrap();
+    assert_eq!(run(&lua), ["loadGameRes"]);
+    let scripts: Vec<String> = lua
+        .load(
+            "local redirect = MODIFIERS[1].fn \
+             local function res(t, ref) return { type = t, data = { scriptFile = ref, icons = {} } } end \
+             local base = '::/game_mechanics/subventions/' \
+             return { \
+                 redirect('a.res.lua', res('subvention', base .. 'deliver_passengers/deliver_passengers.script@deliver_passengers')).data.scriptFile, \
+                 redirect('b.res.lua', res('subvention', base .. 'deliver_workers/deliver_workers.script@deliver_workers')).data.scriptFile, \
+                 redirect('c.res.lua', res('subvention', 'other_mod::/mine.script@mine')).data.scriptFile, \
+                 redirect('d.res.lua', res('loan', base .. 'deliver_cargo/deliver_cargo.script@deliver_cargo')).data.scriptFile, \
+                 tostring(redirect('e.res.lua', nil)) }",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        scripts,
+        [
+            "tpf3mp_1::/tpf3mp_sim/subsidies.script@deliver_passengers",
+            "tpf3mp_1::/tpf3mp_sim/subsidies.script@deliver_workers",
+            "other_mod::/mine.script@mine",
+            "::/game_mechanics/subventions/deliver_cargo/deliver_cargo.script@deliver_cargo",
+            "nil",
+        ]
+    );
+    // The wrapper script hands the game each base kind under the name the
+    // resource reaches it by, every function the kind's own but its
+    // handleEvent.
+    lua.load(FAKE_SUBSIDY_KINDS).exec().unwrap();
+    let kinds: Vec<String> = lua
+        .load(
+            "assert(loadstring(mod_source('tpf3mp_sim/subsidies.script.lua'), '@subsidies.script.lua'))() \
+             local kinds = data() \
+             local out = {} \
+             for _, name in ipairs(SUBSIDIES.ORDER) do \
+                 local k = kinds[name] \
+                 out[#out + 1] = name .. ':' .. tostring(k ~= nil and k.handleEvent ~= nil) \
+                     .. ':' .. tostring(k and k.isComplete == GAME_MODULES[SUBSIDIES.KINDS[name].module][name].isComplete) \
+             end return out",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        kinds,
+        [
+            "deliver_cargo:true:true",
+            "deliver_cargo_town:true:true",
+            "deliver_passengers:true:true",
+            "deliver_workers:true:true",
+        ]
+    );
+}
+
+/// A subsidy a company took counts that company's transport only: the
+/// room's accept names the taker, the subsidy keeps it in its own data, and
+/// its kind hears only the deliveries and passengers of the taker's lines;
+/// the double tickets it pays once completed land on the event's own
+/// entries. A subsidy with no taker counts everyone's, as the game does.
+#[test]
+fn a_taken_subsidy_counts_its_takers_transport_only() {
+    let lua = gui();
+    lua.load(FAKE_SUBSIDY_KINDS).exec().unwrap();
+    let counted: Vec<String> = lua
+        .load(
+            r#"
+            local out = {}
+            -- Rival (901) takes cargo subsidy 7: the accept the room sends
+            -- reaches the subsidy's kind with the taker.
+            local s = { uid = 7, acceptedTime = 10, data = { industry = 50, toDeliver = 2 } }
+            KINDS.deliver_cargo.handleEvent('', 'Subvention', 'onAccept', { uid = 7, tpf3mpCompany = 901 }, s)
+            -- Another subsidy's accept names no taker for this one.
+            KINDS.deliver_cargo.handleEvent('', 'Subvention', 'onAccept', { uid = 8, tpf3mpCompany = 25 }, s)
+            out[#out + 1] = 'taker ' .. tostring(SUBSIDIES.taker(s))
+            -- The first company's line 32 delivers twice, Rival's 31 once.
+            DELIVER(s, 32, 31, 32)
+            out[#out + 1] = 'delivered ' .. s.data.delivered .. ' complete ' .. tostring(KINDS.deliver_cargo.isComplete(s))
+            DELIVER(s, 33)
+            out[#out + 1] = 'delivered ' .. s.data.delivered .. ' complete ' .. tostring(KINDS.deliver_cargo.isComplete(s))
+            -- Completed: Rival's lines' cargo pays double, by the event's
+            -- own entries.
+            s.completedTime = 20
+            local doubled = DELIVER(s, 32, 31, 32, 33)
+            local keys = {}
+            for i, m in pairs(doubled) do keys[#keys + 1] = i .. '=' .. m end
+            table.sort(keys)
+            out[#out + 1] = 'doubled ' .. table.concat(keys, ',')
+            -- A subsidy nobody took through the room counts every line.
+            local plain = { uid = 9, acceptedTime = 10, data = { industry = 50, toDeliver = 2 } }
+            DELIVER(plain, 32, 31)
+            out[#out + 1] = 'plain ' .. plain.data.delivered
+            -- Passengers: a person on the first company's line does not
+            -- connect Rival's towns; one on Rival's does.
+            local p = { uid = 11, acceptedTime = 10, data = {} }
+            KINDS.deliver_passengers.handleEvent('', 'Subvention', 'onAccept', { uid = 11, tpf3mpCompany = 901 }, p)
+            KINDS.deliver_passengers.handleEvent('', 'SimPersonSystem', 'OnStartedLineUsage', { entities = { { 702 } } }, p)
+            out[#out + 1] = 'line ' .. tostring(p.data.lineEntity)
+            KINDS.deliver_passengers.handleEvent('', 'SimPersonSystem', 'OnStartedLineUsage', { entities = { { 702 }, { 701 } } }, p)
+            out[#out + 1] = 'line ' .. tostring(p.data.lineEntity)
+            return out
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        counted,
+        [
+            "taker 901",
+            "delivered 1 complete false",
+            "delivered 2 complete true",
+            "doubled 2=2,4=2",
+            "plain 2",
+            "line nil",
+            "line 31",
+        ]
+    );
+}
+
+/// The money of a subsidy whose taker is gone is no one's: the first
+/// company, to whom the game's script books it, ends with nothing of it,
+/// neither the reward nor the penalty.
+#[test]
+fn a_gone_takers_subsidy_leaves_the_first_company_with_nothing() {
+    let (lua, _script) = engine();
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').subsidies = true")
+        .exec()
+        .unwrap();
+    lua.load(FAKE_SUBSIDIES).exec().unwrap();
+    lua.load(
+        r#"
+        A = string.rep("a", 64)
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A }
+        UPDATE({}, STATE, 0.2) BOOKED()
+        -- Rival takes 7 and 10; the accept names Rival's player entity.
+        HOOK.batch = { { Subsidy = { Accept = { uid = 7, kind = CARGO } } },
+                       { Subsidy = { Accept = { uid = 10, kind = CARGO } } } }
+        HOOK.origins = { A, A }
+        ACCEPTED = {}
+        for _, c in ipairs(SENT) do end
+        UPDATE({}, STATE, 0.2)
+        for _, c in ipairs(SENT) do
+            if c.event and c.event.name == 'onAccept' then
+                ACCEPTED[#ACCEPTED + 1] = c.event.param.uid .. '@' .. tostring(c.event.param.tpf3mpCompany)
+            end
+        end
+        BOOKED()
+        -- Then Rival is gone; the script completes 7 and fails 10.
+        for _, c in ipairs(STATE.value.companies.list) do if c.name == 'Rival' then c.gone = true end end
+        FINISH(7, 'complete') FINISH(10, 'fail')
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let accepted: Vec<String> = lua.load("return ACCEPTED").eval().unwrap();
+    assert_eq!(accepted, ["7@901", "10@901"]);
+    let script: String = lua.load("return BOOKED()").eval().unwrap();
+    assert_eq!(
+        script, "SUBSIDY2000@25,SUBSIDY-400@25",
+        "the script books both to the first company"
+    );
+    lua.load("HOOK.room = true GAME_T = 100 UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let settled: String = lua.load("return BOOKED()").eval().unwrap();
+    assert_eq!(
+        settled, "SUBSIDY-2000@25,SUBSIDY400@25",
+        "the first company gives the reward back and gets the penalty back"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for said in [
+        "subsidy 7 completed for Rival, gone: its reward of 2000 is no one's",
+        "subsidy 10 failed for Rival, gone: its penalty of 400 is no one's",
+    ] {
+        assert!(logged.iter().any(|l| l == said), "{said}: {logged:?}");
+    }
+    // Settled for good: nothing moves again.
+    lua.load("GAME_T = 200 UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let again: String = lua.load("return BOOKED()").eval().unwrap();
+    assert_eq!(again, "");
+}
+
+/// The economy lane carries every company's balance and the subsidy
+/// script's offers with their terms: two games whose offers differ, in a
+/// number, a kind or a sum, split there at the next checkpoint, and a dump
+/// lists each subsidy.
+#[test]
+fn the_economy_lane_carries_the_companies_and_the_subsidy_offers() {
+    let (lua, _) = engine();
+    lua.load(FAKE_WORLD).exec().unwrap();
+    let before = read_lanes(&lua);
+    lua.load(
+        r#"
+        local CT = api.type.ComponentType
+        CT.GAME_SCRIPT = 77
+        WORLD[CT.ACCOUNT][901] = { balance = 500 }
+        SUB = { lastSpawnTime = 1200, spawnIntervalModifier = 1,
+                proposedSubventions = { { uid = 53396, id = 'deliver_passengers.res', spawnTime = 1200,
+                    data = { upfront = { { type = 'Money', params = { amount = 4000 } } },
+                             expireDurationProposed = 18000 } } },
+                activeSubventions = {}, completedSubventions = {}, failedSubventions = {} }
+        MODSTATE = { companies = { list = { { id = 0, entity = 25 }, { id = 1, entity = 901 } } } }
+        api.engine.system.gameScriptSystem = { getEntityForGameScript = function(name)
+            if name == '::/game_mechanics/subventions/subventions.gs' then return 500 end
+            if name == 'tpf3mp_1::/tpf3mp_sim/tpf3mp_sim.gs' then return 501 end
+            return -1 end }
+        local get = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == 77 and e == 500 then return { state = SUB } end
+            if kind == 77 and e == 501 then return { state = MODSTATE } end
+            return get(e, kind)
+        end
+        "#,
+    )
+    .exec()
+    .unwrap();
+    let with = read_lanes(&lua);
+    for (a, b) in before.iter().zip(&with) {
+        assert_eq!(a.0 == 4, a.1 != b.1, "lane {}", a.0);
+    }
+    assert!(
+        with[4]
+            .1
+            .starts_with("25:1234567 companies 0=25:1234567,1=901:500 subsidies 1:"),
+        "{}",
+        with[4].1
+    );
+    // Another game's offer: the same number, another sum.
+    lua.load("SUB.proposedSubventions[1].data.upfront[1].params.amount = 4100")
+        .exec()
+        .unwrap();
+    let other = read_lanes(&lua);
+    assert_ne!(other[4], with[4]);
+    // Another company's balance.
+    lua.load("SUB.proposedSubventions[1].data.upfront[1].params.amount = 4000 WORLD[api.type.ComponentType.ACCOUNT][901].balance = 501")
+        .exec()
+        .unwrap();
+    assert_ne!(read_lanes(&lua)[4], with[4]);
+    let dump: Vec<String> = lua
+        .load("return ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua').dump(api, 4, nil)")
+        .eval()
+        .unwrap();
+    assert!(
+        dump.iter().any(|l| l.contains(
+            "offered 53396 deliver_passengers.res spawn=1200 accepted=- completed=- upfront=4000 \
+             complete=0 failure=0 deliver=- delivered=- lapses=18000 taker=-"
+        )),
+        "{dump:#?}"
+    );
+    assert!(
+        dump.iter()
+            .any(|l| l.contains("last=1200 modifier=1 pause=false")),
+        "{dump:#?}"
+    );
+}
+
+/// The mod's game script says the subsidy script's offers in the log at a
+/// checkpoint whenever they changed, each with its number, kind and terms:
+/// two games' logs show where their offers part.
+#[test]
+fn the_game_script_logs_the_subsidy_offers_when_they_change() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_SUBSIDIES).exec().unwrap();
+    lua.load(
+        "HOOK.checkpoint = true UPDATE({}, STATE, 0.2) \
+         HOOK.checkpoint = true UPDATE({}, STATE, 0.2) \
+         SUB.proposedSubventions[1].spawnTime = 1200 \
+         HOOK.checkpoint = true UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let heads: Vec<&String> = logged
+        .iter()
+        .filter(|l| l.starts_with("subsidies at game time "))
+        .collect();
+    assert_eq!(
+        heads.len(),
+        2,
+        "said once, then once more on a change: {logged:?}"
+    );
+    assert!(
+        logged.iter().any(|l| l
+            == "subsidy: offered 7 ::/game_mechanics/subventions/deliver_cargo/deliver_cargo.res \
+                spawn=1200 accepted=- completed=- upfront=100 complete=2000 failure=300 deliver=- \
+                delivered=- lapses=- taker=-"),
+        "{logged:?}"
+    );
+}
+
 /// The construction menu's perk tools, Industry Greenification and the
 /// marketing campaign, as they send the company script their events
 /// (`industry_greenify_tool.script.tl`, `marketing_campaign_tool.script.tl`).

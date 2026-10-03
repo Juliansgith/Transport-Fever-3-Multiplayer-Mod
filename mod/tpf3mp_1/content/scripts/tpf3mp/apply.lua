@@ -1899,7 +1899,10 @@ end
 -- game at the same update. Every game checks the offer against its own
 -- script's state first, alike: the first company in the room's order to
 -- accept an offer takes it, and every later one is refused, naming who took
--- it. The money goes to the acting player's company.
+-- it. The money goes to the acting player's company. The accept carries
+-- that company's player entity (`tpf3mpCompany`), which the subsidy's kind
+-- keeps as its taker: from then on only the taker's transport counts
+-- towards it (tpf3mp/subsidies.lua).
 function HANDLERS.Subsidy(op, ctx)
 	local roster = ctx and ctx.roster
 	if not roster then return false, "no roster to book the subsidy to" end
@@ -1908,7 +1911,9 @@ function HANDLERS.Subsidy(op, ctx)
 	local state = companiesModule.subsidyState(api)
 	local function event(name, ref)
 		return function()
-			send(api.cmd.makeScriptingSendEventCmd("", "Subvention", name, { uid = ref.uid }))
+			local param = { uid = ref.uid }
+			if name == "onAccept" then param.tpf3mpCompany = mine.entity end
+			send(api.cmd.makeScriptingSendEventCmd("", "Subvention", name, param))
 		end
 	end
 	if op.Accept then

@@ -955,7 +955,8 @@ money, ran in the game script's `postUpdate`.
   `startMarketingCampaign`, for the acting company, and for a campaign the
   price booked to it after ("Company perks" below);
 - `Subsidy`: the subsidy script's own event, `makeScriptingSendEventCmd("",
-  "Subvention", "onAccept" | "onDecline", { uid })`, once every game has
+  "Subvention", "onAccept" | "onDecline", { uid })`, the accept with the
+  taking company's player entity (`tpf3mpCompany`), once every game has
   checked the offer against its own script's state ("Subsidies" below).
 
 Every other action is refused with a line in `hook.log`, the same on every
@@ -1490,18 +1491,53 @@ state, which the game saves with the world:
   refused unless the amount is its own loan's too. The game script books the months since the last
   on the first update of a new month, in every game alike.
 - *Subsidies.* The game's subsidy script
-  (`::/game_mechanics/subventions/subventions.gs`) draws its offers in
-  every game alike: in its `update`, from the world and the game time,
-  with `math.random` reseeded per call ("Seeds, as built"); INFERRED from
-  its code (build 40408), not yet compared between games. Offers belong to
-  no company. Accepting one (`Subsidy::Accept`) is checked by every game
-  against its script's state first: the offer under that number must
-  still be offered, of the kind the action names, and the only offer under
-  that number; else it is refused, alike in every game, naming who took
-  it ("the subsidy was taken already, by Rival"). So when two companies
-  accept one offer in the same step, the first in the room's order gets
-  it. Then the script's own `onAccept` runs, which books the money up
-  front. The script books every amount, up front, the reward for
+  (`::/game_mechanics/subventions/subventions.gs`, `subventions.script.tl`
+  on build 40408) draws its offers in its `update`: once the last offer is
+  older than an interval that follows the first company's rank
+  (`subvention_util.getSpawnIntervalDuration`), it reseeds `math.random`
+  from the game time (`math.randomseed(gameTime + math.random(0, 1000))`,
+  after the hook's own reseed of the call, "Seeds, as built"), picks a kind
+  and lets the kind draw the offer from the world (towns and industries in
+  the engine's order, `gridCollision` weights, the first company's
+  balance). So two games draw the same offers only while their worlds and
+  **game times agree at every room step**. They did not in a room seen on
+  2026-10-02 (two games): its world was replaced while the room ran (a new
+  world from the lobby, not the room's load "from its save, from step N"),
+  each game closed the old world and stepped the new one from another room
+  step, so at room step 450 one game's new world had run 58 updates
+  (`ticks: step 450: tickCount=58`) and the other's 75, the same action
+  applied at game time 9800 in one and 13200 in the other, and even the
+  company the room founded got another entity in each (47426 and 47334).
+  The offers then differed, an accept applied in one game and was refused
+  in the other ("the subsidy is no longer offered"), and the room split,
+  noticed only at step 2250 (lane 3): the economy lane read the save's own
+  player alone, whose subsidy money nets to nothing. Two changes make such
+  a split show at once and say where: the economy lane carries every
+  company's balance and the subsidy script's offers, taken, completed and
+  failed subsidies with their terms (`tpf3mp/subsidies.lua`, `rows`), so
+  the first checkpoint after the offers part diverges in lane 4, and its
+  dump lists each subsidy; and the mod's game script says the offers in
+  `hook.log` at a checkpoint whenever they changed (`subsidies at game
+  time T: last=... modifier=... pause=...; N subsidies`, then one
+  `subsidy: <offered|taken|completed|failed> <uid> <kind> spawn= accepted=
+  completed= upfront= complete= failure= deliver= delivered= lapses=
+  taker=` line each), so two games' logs show where they part. A world
+  stepped from different room steps is the step gate's to hold, not the
+  subsidy script's. A world loaded from the room's save starts every game
+  at the same step and game time; that its offers agree there is INFERRED,
+  and these lines check it in the next two-game test with subsidies on.
+  Offers belong to no company. Accepting one (`Subsidy::Accept`) is
+  checked by every game against its script's state first: the offer under
+  that number must still be offered, of the kind the action names, and the
+  only offer under that number; else it is refused, alike in every game
+  whose world agrees, naming who took it ("the subsidy was taken already,
+  by Rival"). So when two companies accept one offer in the same step, the
+  first in the room's order gets it, and the offer leaves every company's
+  list. A game cannot refuse alike what only it lacks: its world already
+  differs from the others', and the economy lane reports that at the next
+  checkpoint. Then the script's own `onAccept` runs, with the taking
+  company's player entity (`{ uid, tpf3mpCompany }`), and books the money
+  up front. The script books every amount, up front, the reward for
   completing and the penalty for failing, to `getPlayer()`, the room's
   first company in a game script's state (`subvention_util.tl`,
   `applyBonusMalus`). For a subsidy another company took, every game moves
@@ -1509,12 +1545,43 @@ state, which the game saves with the world:
   first company's account and into the taker's): the money up front at
   once, and the reward or penalty on the first update of the game day
   after the script completed or failed it, while the room keeps a record
-  of who took which (`roster.subsidies`), saved with the world. Declining
-  (`Subsidy::Decline`) runs the script's `onDecline`: the offer is gone for
-  every company, as in single player. Not carried: the script counts any
-  company's deliveries towards a subsidy, and its reputation and town
-  growth bonuses are the towns', as the game has them; the pace of new
-  offers follows the first company's rank (`subventions.script.tl`).
+  of who took which (`roster.subsidies`), saved with the world. When the
+  taker is gone (dissolved) by then, its reward and its penalty are no
+  one's: the first company gives back the reward, or gets back the
+  penalty, the script booked to it, so it ends with nothing of a subsidy
+  it did not take. Companies do not merge in a room. Declining
+  (`Subsidy::Decline`) runs the script's `onDecline`: the offer is gone
+  for every company, as in single player.
+  *Progress is the taker's.* Each kind counts progress in its own
+  `handleEvent`, for anyone's transport: `deliver_passengers` completes
+  when a person starts a direct line between its towns
+  (`OnStartedLineUsage`, SimPersonSystem), then doubles that line's
+  tickets; `deliver_cargo` and `deliver_cargo_town` count each cargo
+  delivered to the industry, or to the town's buildings, by the line that
+  carried it (`OnCalcTicketPrice`, TransportVehicleSystem), then double
+  those lines' cargo. The subsidy script reaches a kind's functions
+  through the kind's resource at every call (`util.useFn(scriptFile ..
+  ".handleEvent")`). The mod's run script (`mod.script.lua`, `runScript`
+  in `mod.json`) adds a resource modifier (`addModifier("loadGameRes",
+  subsidies.redirect)`) that points the four base kinds' resources at
+  `tpf3mp_sim/subsidies.script.lua`, which wraps each kind's own table:
+  on the room's `onAccept` the wrapper keeps the taker in the subsidy's own
+  data (`tpf3mpTaker`, in the script's state, the same in every game), and
+  from then on hands the kind only the entries whose line the taker owns
+  (`PLAYER_OWNED`), mapping the ticket multipliers it answers back to the
+  event's own entries. Resources are the whole game's, so every Lua state
+  runs the same wrapper. A subsidy with no taker kept (single player, a
+  save from before) counts everyone's, as the game does. Only while
+  `acceptance.subsidies` is on. The modifier's name is read from the
+  binary (`loadGameRes`, beside `loadConstruction` and `loadGameScript`):
+  INFERRED to be the one for generic resources until a game shows
+  `taker=` on a taken subsidy and only the taker's deliveries in
+  `delivered=`. Not carried: `deliver_workers` completes when the
+  industry's workers are boosted (`industry_util.isPersonCapacityBoosted`),
+  a state of the industry the engine keeps for no company, so anyone's
+  commuters complete it; the reputation and town growth bonuses are the
+  towns', as the game has them; the pace of new offers follows the first
+  company's rank (`subventions.script.tl`).
 - *Colours.* With more than one company, a vehicle bought is painted in its
   company's colour (`makeEntitySetColorCmd`), and a new colour repaints the
   company's vehicles, in the engine's own order. With one company the
@@ -3171,7 +3238,7 @@ matter:
 | 1 constructions | every construction by its file and position (0.1 m) |
 | 2 lines | every line's number of stops |
 | 3 vehicles | each vehicle's state, stop and place on its path: the path edge, the distance along it (1 cm) and the speed (1 cm/s), the simulation's own (`MOVE_PATH.dyn`) |
-| 4 economy | the player's balance |
+| 4 economy | the save's own player's balance; with more than one company, each company's balance by its roster id; the subsidy script's offers, taken, completed and failed subsidies with their terms (`tpf3mp/subsidies.lua`, `rows`) |
 | 5 towns | each town's number of buildings |
 | 6 people | the number of people |
 
