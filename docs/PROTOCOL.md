@@ -393,8 +393,11 @@ These travel on the control stream.
   again every two seconds; a receiver forgets one not heard of again for
   six seconds. The server writes previews to a client's control stream
   only when nothing else waits for it, from a queue of their own (64
-  messages) that drops the newest when full: a slow client misses
-  previews and is never disconnected for them.
+  messages) that drops the newest when full, and at most 48 KiB of them a
+  second (a burst of 64 KiB; one that hides is never dropped for that): a
+  preview once written stays ahead of the client's own messages on the
+  stream, so a flood of them must not fill its window. A slow client
+  misses previews and is never disconnected for them.
 - **`Progress`**: the last step the client executed. It drives pacing.
 - **`Checkpoint`**: per-lane digests at every checkpoint step (a room
   setting). The server compares members' digests, as described in

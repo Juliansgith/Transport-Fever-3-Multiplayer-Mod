@@ -51,6 +51,13 @@ const TURN_QUEUE: usize = 1024;
 /// the newest: previews are advisory and sent again, so a slow client
 /// misses some and is never disconnected for them.
 const ADVISORY_QUEUE: usize = 64;
+/// Bytes of other members' previews written to one client per second, and
+/// the burst: a preview's bytes share the control stream with the client's
+/// own messages, and once written they stay ahead of them, so previews over
+/// this are dropped rather than let a flood of them (many members, 16 KiB
+/// each) fill the stream's window. A preview that hides costs nothing.
+const ADVISORY_BYTES_PER_SECOND: u32 = 48 * 1024;
+const ADVISORY_BYTES_BURST: u32 = 64 * 1024;
 /// Requests one connection may make per second, and the burst on top. A
 /// client makes a handful per game.
 const REQUESTS_PER_SECOND: u32 = 10;
@@ -890,6 +897,7 @@ async fn write_control(
     mut messages: mpsc::Receiver<ServerMessage>,
     mut advisory: mpsc::Receiver<ServerMessage>,
 ) {
+    let mut budget = TokenBucket::new(ADVISORY_BYTES_PER_SECOND, ADVISORY_BYTES_BURST);
     loop {
         let message = tokio::select! {
             biased;
@@ -897,7 +905,12 @@ async fn write_control(
                 Some(message) => message,
                 None => return,
             },
-            Some(message) = advisory.recv() => message,
+            Some(message) = advisory.recv() => {
+                if !budget.take(std::time::Instant::now(), advisory_cost(&message)) {
+                    continue;
+                }
+                message
+            }
         };
         if write_message(&mut send, &message, CONTROL_MAX_FRAME)
             .await
@@ -905,6 +918,19 @@ async fn write_control(
         {
             return;
         }
+    }
+}
+
+/// What a relayed preview costs a client's advisory byte budget: its
+/// payload. One that hides costs nothing, so the budget never keeps a
+/// preview drawn that its member's tool no longer shows.
+fn advisory_cost(message: &ServerMessage) -> u64 {
+    match message {
+        ServerMessage::Preview {
+            preview: Some(preview),
+            ..
+        } => u64::try_from(preview.len()).unwrap_or(u64::MAX),
+        _ => 0,
     }
 }
 
@@ -1118,5 +1144,44 @@ async fn forward_announcements(
             Err(RecvError::Lagged(_)) => {}
             Err(RecvError::Closed) => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tpf3mp_proto::{FixedBytes, MAX_PREVIEW, Payload, PlayerId, ServerMessage};
+
+    use super::*;
+
+    fn preview(len: usize) -> ServerMessage {
+        ServerMessage::Preview {
+            from: PlayerId(FixedBytes([7; 32])),
+            preview: (len > 0).then(|| Payload::new(vec![0; len]).unwrap()),
+        }
+    }
+
+    #[test]
+    fn a_flood_of_previews_is_cut_to_the_byte_budget_and_hides_always_pass() {
+        let now = std::time::Instant::now();
+        let mut budget = TokenBucket::new(ADVISORY_BYTES_PER_SECOND, ADVISORY_BYTES_BURST);
+        let largest = preview(MAX_PREVIEW);
+        let mut written = 0;
+        for _ in 0..20 {
+            if budget.take(now, advisory_cost(&largest)) {
+                written += 1;
+            }
+        }
+        assert_eq!(written, 4, "64 KiB of 16 KiB previews at once, no more");
+        assert!(
+            budget.take(now, advisory_cost(&preview(0))),
+            "a hide is never dropped for the budget"
+        );
+        assert_eq!(advisory_cost(&ServerMessage::Kicked), 0);
+        // A second on, three more fit.
+        let later = now + Duration::from_secs(1);
+        let refilled = (0..20)
+            .filter(|_| budget.take(later, advisory_cost(&largest)))
+            .count();
+        assert_eq!(refilled, 3);
     }
 }

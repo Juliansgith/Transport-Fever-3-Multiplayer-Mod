@@ -270,6 +270,12 @@ impl Table {
             return Ok(d.renderer);
         }
         if self.drawn.len() >= MAX_DRAWN {
+            // A renderer that shows nothing now (its member hid it, or left)
+            // is cleared already: it draws for this member instead.
+            if let Some(d) = self.drawn.iter_mut().find(|d| !d.shown) {
+                d.from = from;
+                return Ok(d.renderer);
+            }
             return Err(format!("{MAX_DRAWN} members' previews are drawn already"));
         }
         if factory == 0 || view == 0 {
@@ -537,8 +543,27 @@ unsafe extern "C-unwind" fn end_heights_detour(
 
 /// Any renderer's destructor, detoured: it is forgotten first.
 unsafe extern "C-unwind" fn destroy_detour(renderer: usize, flags: usize) -> usize {
-    locals().retain(|&r| r != renderer);
-    ours().retain(|&r| r != renderer);
+    let mut known = false;
+    locals().retain(|&r| {
+        known |= r == renderer;
+        r != renderer
+    });
+    ours().retain(|&r| {
+        known |= r == renderer;
+        r != renderer
+    });
+    // Composing reads these renderers on the GUI thread, from a copy of the
+    // lists: one destroyed on another thread could be read as it goes. Not
+    // seen on build 40408; said once if it ever happens.
+    if known && !on_gui_thread() {
+        static SAID: AtomicBool = AtomicBool::new(false);
+        if !SAID.swap(true, Ordering::AcqRel) {
+            crate::lua::log(
+                "build previews: a renderer whose terrain is composed was destroyed off the GUI thread"
+                    .to_string(),
+            );
+        }
+    }
     let original = DESTROY_ORIGINAL.load(Ordering::Acquire);
     // SAFETY: the destructor's trampoline, called as the game called it.
     unsafe { std::mem::transmute::<usize, DestroyFn>(original)(renderer, flags) }
@@ -780,6 +805,8 @@ unsafe extern "C-unwind" fn game_ui_dtor(this: usize, a: usize, b: usize, c: usi
             .collect();
         let gone = table.teardown(game, this, view);
         drop(table);
+        // The player's tool and what the GUI drew went with it.
+        crate::previews::world_gone();
         if gone > 0 {
             crate::lua::log(format!(
                 "build previews: {gone} member renderer(s) taken down with the world's GUI"
@@ -1130,10 +1157,12 @@ mod tests {
             *ops.calls.borrow(),
             ["create 0xf00 -> 0x200", "register 0xe00 0x200"]
         );
+        table.mark(player(1), true);
         for n in 2..=16 {
             table
                 .renderer_for(&ops, player(n), 0xb000, 0xf00, 0xe00)
                 .unwrap();
+            table.mark(player(n), true);
         }
         assert!(
             table
@@ -1146,6 +1175,34 @@ mod tests {
                 .is_err(),
             "no factory yet: nothing made"
         );
+    }
+
+    #[test]
+    fn a_full_table_draws_a_new_member_in_a_renderer_that_shows_nothing() {
+        let ops = Record::default();
+        let mut table = Table::default();
+        for n in 1..=16 {
+            table
+                .renderer_for(&ops, player(n), 0xa000, 0xf00, 0xe00)
+                .unwrap();
+            table.mark(player(n), true);
+        }
+        assert!(
+            table
+                .renderer_for(&ops, player(17), 0xa000, 0xf00, 0xe00)
+                .is_err(),
+            "all sixteen show a preview"
+        );
+        table.hide(&ops, player(3), 0xa000);
+        ops.calls.borrow_mut().clear();
+        let reused = table
+            .renderer_for(&ops, player(17), 0xa000, 0xf00, 0xe00)
+            .unwrap();
+        assert_eq!(reused, 0x300, "player 3's, cleared when hidden");
+        assert!(ops.calls.borrow().is_empty(), "nothing made or registered");
+        assert_eq!(table.drawn.len(), 16);
+        table.mark(player(17), true);
+        assert!(table.drawn.iter().all(|d| d.from != player(3)));
     }
 
     #[test]

@@ -76,6 +76,12 @@ impl Out {
     pub fn clear(&mut self) {
         *self = Self::default();
     }
+
+    /// The world's GUI is gone, and the tool that showed a preview with it:
+    /// the others are told it shows nothing, rather than kept seeing it.
+    pub fn world_gone(&mut self) {
+        self.set(None);
+    }
 }
 
 /// Another member's preview, as last heard.
@@ -155,6 +161,14 @@ impl In {
         changes
     }
 
+    /// The world's GUI is gone, and what it drew with it: every preview
+    /// still shown is given to the next GUI again, as a change.
+    pub fn world_gone(&mut self) {
+        for heard in self.members.values_mut() {
+            heard.taken = false;
+        }
+    }
+
     /// The room's game is over: every preview with it, each one shown told
     /// as gone, so the GUI clears what it drew.
     pub fn clear(&mut self) {
@@ -206,6 +220,14 @@ pub fn heard(from: PlayerId, preview: Option<Payload>, now: Instant) {
 /// The other members' previews that changed, for the GUI ([`In::take`]).
 pub fn take_in(now: Instant) -> Vec<Change> {
     previews().r#in.take(now)
+}
+
+/// The world's GUI is gone (a reload of the room's world): the player's
+/// preview is withdrawn and the others' are drawn again in the next one.
+pub fn world_gone() {
+    let mut previews = previews();
+    previews.out.world_gone();
+    previews.r#in.world_gone();
 }
 
 /// The room's game is over: no preview either way.
@@ -329,6 +351,36 @@ mod tests {
         assert!(
             heard.take(t0).is_empty(),
             "never shown, nothing to take away"
+        );
+    }
+
+    #[test]
+    fn a_reloaded_world_withdraws_the_players_preview_and_redraws_the_others() {
+        let t0 = Instant::now();
+        let mut out = Out::default();
+        out.set(Some(payload(1)));
+        assert_eq!(out.take(t0), Some(Some(payload(1))));
+        out.world_gone();
+        assert_eq!(
+            out.take(t0 + MIN_INTERVAL),
+            Some(None),
+            "the tool went with the world: the others are told"
+        );
+        assert_eq!(out.take(t0 + KEEPALIVE * 3), None, "and nothing kept alive");
+
+        let mut r#in = In::default();
+        r#in.heard(player(1), Some(payload(1)), t0);
+        assert_eq!(r#in.take(t0).len(), 1);
+        r#in.world_gone();
+        // The member's keepalive, unchanged, after a reload shorter than
+        // STALE: the new GUI still gets it to draw.
+        r#in.heard(player(1), Some(payload(1)), t0 + KEEPALIVE);
+        assert_eq!(
+            r#in.take(t0 + KEEPALIVE),
+            [Change {
+                from: player(1),
+                action: Some(Action::from_payload(&payload(1)).unwrap())
+            }]
         );
     }
 

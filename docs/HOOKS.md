@@ -401,7 +401,7 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     for the player's next room.
   - `Preview { from, preview }`: what another member's build tool shows
     now, an action's payload, or `None` once it shows nothing (bridge
-    version 23; "Build previews" below). Sent only while the game plays the
+    version 24; "Build previews" below). Sent only while the game plays the
     room's world, and only the latest of each member: one still waiting in
     the agent's queue is replaced. The gate drops one that arrives while a
     world loads.
@@ -466,7 +466,7 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   - `Log`: a line for the agent's log.
   - `Preview { preview }`: what the player's build tool shows now, for the
     other members, or `None` once it shows nothing (`Session::preview`;
-    bridge version 23). The agent sends it on in the room's game only, and
+    bridge version 24). The agent sends it on in the room's game only, and
     not one over `MAX_PREVIEW`.
 - **The step gate.** The game asks the hook's `Gate` before every step. Until
   the step is released, the hook reads messages and applies each event the
