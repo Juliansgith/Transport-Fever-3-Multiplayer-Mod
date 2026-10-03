@@ -2888,6 +2888,12 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   "variant-tracks", never by the event's id, so the list changing is the
   tool closing or another opening; where the game gives no list, the
   preview hides on its next proposal or click only).
+  A right-click abort can keep that tool list unchanged. On build 40408,
+  the hook also withdraws the street/track preview when the native
+  `StreetBuilder::ResetProposal` runs, before calling the game's original
+  reset. Both road and track tools use that builder. The target is checked
+  by the profile; without it this additional withdrawal is unavailable and
+  said in the hook log. A new proposal can publish a fresh preview.
   The hook converts it with the schema, refuses one over
   `tpf3mp_proto::MAX_PREVIEW` (16 KiB) and keeps the latest
   (`crate::previews`); the step driver sends it (`Session::preview`) at

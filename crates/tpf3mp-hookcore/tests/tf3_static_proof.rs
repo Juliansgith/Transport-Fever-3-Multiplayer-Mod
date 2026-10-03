@@ -196,6 +196,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("BuilderRenderer::EndHeightMod/upload flag", 0x7bbb6a),
     ("UI::BuilderRenderer::EndHeightMod", 0x7bbae0),
     ("terrain::ViewTerrain::ApplyBlocks", 0x396a00),
+    ("UI::StreetBuilder::ResetProposal", 0x576330),
 ];
 
 #[test]
