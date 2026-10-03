@@ -41,7 +41,12 @@ into the suspended game before any of its code runs (D11), detours that body
    value it always did.
 3. The mod's `main_page.tl` is the game's file with marked `TPF3-MP:`
    additions (below), and a `Tpf3mpLobbyWindow` opened through the menu's
-   own window container (as the Deluxe Edition window is).
+   own window container (as the Deluxe Edition window is). The same wrap
+   serves the mod's `gui/main/react.lua`, the game's file with one line
+   changed so the `WithComponentParams` layout child gets an id it is never
+   given (HOOKS.md, "The main menu's `WithComponentParams` banner";
+   `tools/lobby/make_react.py`). Both fall back to the game's own file where
+   a mod copy will not load.
 
 **Before the game runs.** The game loads its main menu within seconds of
 starting, so the entry must be armed first. The launcher starts the game

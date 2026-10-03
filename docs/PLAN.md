@@ -394,8 +394,45 @@ Dev C:
   The transport (protocol 17, bridge 24) and the hook's
   `UI::BuilderRenderer` for each other member on build 40408 are built
   (the game's own `ProposalViewer` fails fatally outside a tool's action)
-  (investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md). Tick once seen in the
-  real game.
+(investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md). Tick once seen in the
+    real game.
+  - [ ] *Added* (proposed by tearded, 2026-10-04, for the owner): the
+    bulldozer's removals in the same previews — what a player is taking out
+    with the bulldozer, the others see while the tool shows it, as the
+    build tools' proposals are (HOOKS.md, "Build previews", "The bulldozer's
+    removals"). Over the transport the build previews already use: no new
+    target, no protocol or bridge change, `Bulldoze` was already an action
+    the schema carries. Only the game script changed.
+    **A demolition is shown as a `SimpleProposal`** — the only thing
+    `makeProposalData` reads; the plain `Proposal` the game itself sends is
+    refused ("SimpleProposal expected, got Proposal"). **And a SimpleProposal
+    has to add what it removes back**, as the game states for constructions,
+    streets and edge objects alike (api/type.d.tl: "The general rule is that
+    the modification/upgrade of a construction entails removing it and adding
+    it anew"), or `makeProposalData` raises "Unknown exception". A
+    construction, a stop, a street and a track's removal are all shown;
+    the asset bulldozer's is a plain `Proposal` with no SimpleProposal form
+    and says so instead.
+    **Tick once seen in the real game.** Verified so far: each kind makes the
+    proposal the room orders and sends and logs nothing, in the game's own
+    words and in the tests; a street's removal evaluated in another game
+    (`as this game sees it: fine`) before one run ended in
+    `ecs::Replicator::Apply`, *"Assertion 'entity == c.entity' failed"*, on
+    the simulation thread through `followInGui` — the replication of the
+    room's own actions, which a preview never reaches, and not established
+    as this feature's. If it comes back, HOOKS.md "Build previews" says
+    where to look first.
+- [ ] *Added* (proposed by tearded, 2026-10-04, for the owner): the main
+    menu's `WithComponentParams` banner gone. The game declares that layout
+    child through a helper meant for the builtins the C++ side has already
+    registered, so it looked the name up, found nil, and registered the
+    wrapper with no id: every layout that needed it was never drawn, and the
+    game logged *"Missing builtin recipeId"* in every game, with or without
+    this mod (HOOKS.md, "The main menu's `WithComponentParams` banner").
+    Fixed by serving the game's `react.lua` with one line changed, through the
+    wrap that already serves the mod's `main_page.tl`; the builtins the game
+    does register keep their ids. **Tick once the banner is gone in a real
+    game.**
 - [ ] *Changed:* (D17, the hold lifted by the owner on 2026-09-30): the
   room in the game. The main menu's Multiplayer window connects, creates
   and joins rooms, shows the players and their ready marks, chats and

@@ -190,6 +190,89 @@ local function buildProposal(proposal, context)
 	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
 end
 
+-- Sends `proposal`, a removal (the bulldozer's), as its tools send one. The
+-- game's verdict takes simple proposals only, which a removal is not, so
+-- this asks it nothing and a removal it refuses fails in the command's own
+-- answer (run), as it did before.
+local function sendRemoval(proposal, context)
+	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+end
+
+-- What to stop at instead, dry: the removal as a SimpleProposal, which is
+-- what the game's own tools hand game scripts and what makeProposalData
+-- reads. A plain Proposal, which is what createProposalRemove and
+-- makeSegmentsRemoveProposal make, it refuses outright ("SimpleProposal
+-- expected, got Proposal", build 40408, in the room's other games on
+-- 2026-10-04), and the other members are shown what that call would make.
+-- Nothing to stop at outside a dry run.
+--
+-- `part` says what goes: `buildings` the entities to remove, `edges` the
+-- edges, `added` those edges again, `nodes` to remove, `configs` the node
+-- configurations to remove with them.
+--
+-- A SimpleProposal has to add what it removes back: "The general rule is
+-- that the modification/upgrade of a construction entails removing it and
+-- adding it anew. The same rule applies to streets and edgeobjects"
+-- (api/type.d.tl, build 40408). A street removal that only removed them was
+-- refused with "Unknown exception" out of makeProposalData, in every game
+-- of the room (2026-10-04); adding them again is what the game reads, and
+-- the preview is drawn (`as this game sees it: fine`).
+local function simpleRemoval(context, part)
+	if not dry then return end
+	local simple = api.type.SimpleProposal.new()
+	local street = simple.streetProposal
+	if part.buildings ~= nil and #part.buildings > 0 then simple.constructionsToRemove = part.buildings end
+	if part.edges ~= nil and #part.edges > 0 then street.edgesToRemove = part.edges end
+	if part.added ~= nil and #part.added > 0 then street.edgesToAdd = part.added end
+	if part.nodes ~= nil and #part.nodes > 0 then street.nodesToRemove = part.nodes end
+	if part.configs ~= nil and #part.configs > 0 then street.nodeConfigsToRemove = part.configs end
+	error({ dry = true, proposal = simple, context = context }, 0)
+end
+
+-- The edges `ids` again, as the SimpleProposal rule above asks: the same
+-- edges, with new negative ids, as the stop's rebuild does with the one it
+-- replaces (rebuildWith). A copy of each edge's own component, which is a
+-- copy the game hands out, so nothing here touches the world.
+local function edgesAddedBack(ids, network)
+	local BASE_EDGE = api.type.ComponentType.BASE_EDGE
+	local added, nextId = {}, -1
+	for _, id in ipairs(ids) do
+		local comp = api.engine.getComponent(id, BASE_EDGE)
+		if comp ~= nil then
+			local s = api.type.SegmentAndEntity.new()
+			s.entity = nextId
+			nextId = nextId - 1
+			s.comp = comp
+			s.type = network == "Track" and 1 or 0
+			added[#added + 1] = s
+		end
+	end
+	return added
+end
+
+-- The lane configurations at the ends of the edges `ids`, which go with
+-- them: a configuration names the edges at its node (build 40408, "Unknown
+-- exception" out of makeProposalData), and the game builds them again for
+-- the edges this proposal adds. The same set rebuildWith takes for the one
+-- edge it replaces, and networkInto for the edges a road splits.
+local function configsAtEndsOf(ids)
+	local BASE_EDGE = api.type.ComponentType.BASE_EDGE
+	local BASE_NODE_CONFIG = api.type.ComponentType.BASE_NODE_CONFIG
+	local configs, seen = {}, {}
+	for _, id in ipairs(ids) do
+		local e = api.engine.getComponent(id, BASE_EDGE)
+		for _, node in ipairs({ e and e.node0, e and e.node1 }) do
+			if node ~= nil and not seen[node] then
+				seen[node] = true
+				if api.engine.getComponent(node, BASE_NODE_CONFIG) ~= nil then
+					configs[#configs + 1] = node
+				end
+			end
+		end
+	end
+	return configs
+end
+
 local HANDLERS = {}
 
 -- Fills a SimpleProposal's street proposal from a polyline ("roads", below).
@@ -988,7 +1071,7 @@ local function removeAssets(a, context)
 	log(string.format("trees: asset group %d of %d assets, %d removed (%s at %.2f,%.2f), rebuilt with %d",
 		group.entity, #group.assets, #a.removed, tostring(a.removed[1].model), a.removed[1].at.x,
 		a.removed[1].at.y, #models))
-	run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	sendRemoval(proposal, context)
 	-- What stands now: the group that holds the first asset kept, and how
 	-- many it holds; with none kept, whether a group still holds the first
 	-- one removed (the same in every game, or the replay differed).
@@ -1022,10 +1105,10 @@ local function townBuildingsRemoved(proposal, named)
 	end)
 	if not ok or type(removed) ~= "table" then
 		if #named > 0 then error("the game's removal does not say which town buildings it takes", 0) end
-		return ""
+		return "", {}
 	end
 	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
-	local taken, ids = {}, {}
+	local taken, ids, entities = {}, {}, {}
 	for _, e in ipairs(removed) do
 		local c = api.engine.getComponent(e, CONSTRUCTION)
 		local file = c and tostring(c.fileName) or ("entity " .. tostring(e))
@@ -1043,11 +1126,12 @@ local function townBuildingsRemoved(proposal, named)
 		if best == nil then error("the game would also remove the town building " .. file .. ", which the player's did not", 0) end
 		taken[best] = true
 		ids[#ids + 1] = tostring(e)
+		entities[#entities + 1] = e
 	end
 	for i, ref in ipairs(named) do
 		if not taken[i] then error("no town building " .. tostring(ref.file) .. " there to remove", 0) end
 	end
-	return table.concat(ids, ",")
+	return table.concat(ids, ","), entities
 end
 
 -- The bulldozer's removals, as the game makes them itself: a construction
@@ -1059,6 +1143,10 @@ end
 -- buildings' demolition included; the town's reputation follows from the
 -- same proposal, as the player's own build (playerInitiated: the game's
 -- towns script, onPreBuildProposal), in every game at the same step.
+-- Dry (apply.proposalOf) it stops at the removal as a SimpleProposal
+-- (simpleRemoval), sending and logging nothing, so the other members see what
+-- this player is taking out. The asset bulldozer's is not shown: it is a
+-- plain Proposal, which makeProposalData cannot read.
 function HANDLERS.Bulldoze(b)
 	local context = api.type.Context.new()
 	context.player = company()
@@ -1067,6 +1155,8 @@ function HANDLERS.Bulldoze(b)
 	if b.Construction then
 		local con = constructionAt(b.Construction)
 		mine(con, "construction")
+		-- Dry: the removal as a SimpleProposal, for the other members to see.
+		simpleRemoval(context, { buildings = { con } })
 		proposal = proposals.createProposalRemove(con, context)
 		if proposal == nil then error("the game will not remove the " .. tostring(b.Construction.file), 0) end
 		log("removing " .. tostring(con) .. " " .. tostring(b.Construction.file))
@@ -1082,20 +1172,33 @@ function HANDLERS.Bulldoze(b)
 			ids[#ids + 1] = e.id
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
-		local gone = townBuildingsRemoved(proposal, b.Edges.buildings or {})
+		-- Checked against the game's own removal, as the room orders it, and
+		-- the town buildings come from that removal rather than a second
+		-- lookup.
+		local gone, buildings = townBuildingsRemoved(proposal, b.Edges.buildings or {})
+		if dry then
+			simpleRemoval(context, { buildings = buildings, edges = ids,
+				added = edgesAddedBack(ids, network), configs = configsAtEndsOf(ids) })
+		end
 		log("removing " .. network .. " edges " .. table.concat(ids, ",")
 			.. (gone ~= "" and (" and town buildings " .. gone) or ""))
 	elseif b.EdgeObject then
-		-- A simple proposal: the game's verdict first (buildProposal).
+		-- A SimpleProposal already: rebuildWith replaces the one edge with
+		-- itself, less the stop, which is the shape the game asks for
+		-- (simpleRemoval), and the one removal shown in the game on
+		-- 2026-10-04. The game's verdict comes first and a dry run stops
+		-- there (buildProposal).
 		return removeEdgeObject(b.EdgeObject, context)
 	elseif b.Assets then
+		-- The group removed and rebuilt without the assets taken is a plain
+		-- Proposal, which makeProposalData cannot read, and no SimpleProposal
+		-- says it. Said rather than shown wrong.
+		if dry then return false, "an asset group's rebuild, which a preview cannot show" end
 		return removeAssets(b.Assets, context)
 	else
 		return false, "a bulldoze of no kind"
 	end
-	-- The game's verdict takes simple proposals only: a removal it refuses
-	-- fails in the command's own answer (run).
-	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	return sendRemoval(proposal, context)
 end
 
 function HANDLERS.BuildTrack(track)
@@ -2104,16 +2207,16 @@ function apply.run(action, ctx)
 	return false, detail
 end
 
--- The actions whose proposal apply.proposalOf makes: the builds a player's
--- tool previews (tpf3mp/previews.lua).
-apply.PREVIEWS = { BuildConstruction = true, BuildRoad = true, BuildTrack = true, PlaceStop = true }
+-- The actions whose proposal apply.proposalOf makes: the builds and the
+-- removals a player's tool previews (tpf3mp/previews.lua).
+apply.PREVIEWS = { BuildConstruction = true, BuildRoad = true, BuildTrack = true, PlaceStop = true, Bulldoze = true }
 
 -- The proposal `action` would build in this game, and the context it would
 -- be built with, as apply.run would make them for `ctx`, without sending
 -- anything, building anything or writing the log: for showing another
 -- player's build preview (docs/HOOKS.md, "Build previews"). Or nil and why:
--- an action that is not a build, or one this game cannot make (a street
--- type it lacks, an edge it does not have).
+-- an action that is not a build or a removal, or one this game cannot make
+-- (a street type it lacks, an edge it does not have).
 function apply.proposalOf(action, ctx)
 	if type(action) ~= "table" then return nil, "an action is a table" end
 	local kind, body = next(action)
@@ -2122,12 +2225,15 @@ function apply.proposalOf(action, ctx)
 	local allowed, why = acceptance.check(action)
 	if not allowed then return nil, why end
 	dry, acting = true, ctx
-	local ok, stopped = pcall(HANDLERS[kind], body, ctx)
+	local ok, stopped, detail = pcall(HANDLERS[kind], body, ctx)
 	dry, acting = false, nil
 	if not ok and type(stopped) == "table" and stopped.proposal ~= nil then
 		return stopped.proposal, stopped.context
 	end
-	if ok then return nil, "the build made no proposal" end
+	-- A handler that made nothing of it says why (the asset bulldozer's
+	-- rebuild, which a preview cannot show); one that only answers that it
+	-- made nothing gets the plain reason.
+	if ok then return nil, detail or "the build made no proposal" end
 	if type(stopped) == "table" then return nil, tostring(stopped.dry) end
 	return nil, tostring(stopped)
 end
