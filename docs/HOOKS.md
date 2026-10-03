@@ -1761,7 +1761,7 @@ then in every game of the room, at the same step:
 ```
 prospecting for ::/cargos/coal/coal.cargo near town-3 (1234): coal_mine
 prospecting began: ::/cargos/coal/coal.cargo near town-3 at game time 5400000
-the game applied 1 action(s) the room ordered
+the game applied the room's actions between simulation updates
 ```
 
 and, one to six game months later, again in every game at the same step:
