@@ -320,6 +320,11 @@ api = {
             return {}
         end,
         getComponent = function(id, comp)
+            if (id == 11 or id == 12) and comp == CT.TRANSPORT_VEHICLE then
+                -- The state lane reads the native vehicle component as well
+                -- as its position; both fixtures represent active vehicles.
+                return { state = 1 }
+            end
             if id == 0 and comp == CT.GAME_TIME then
                 return { gameTime = s() * 200, updateCount = WITH_UPDATE_COUNT and s() or nil }
             end

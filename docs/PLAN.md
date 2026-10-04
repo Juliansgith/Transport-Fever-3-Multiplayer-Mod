@@ -80,6 +80,22 @@ before the rest ([DAY_ONE.md](DAY_ONE.md) §0).
   naming, the build diff and the profile, and holds the release until the
   hook matches. Expect a day-one patch.
 
+*Added (2026-10-04, patch tooling; ownership remains open):*
+
+- [x] Private source archives with executable/libraries, script/API sources,
+  Steam metadata when available, hashes and refusal of incomplete snapshots
+  (`tpfre archive`).
+- [x] Automated per-target signature/prologue and containing-function audit,
+  script diff and strict exact-build profile verification (`tpfre audit`,
+  `tpfre verify`; D14). Static results never replace real-game acceptance.
+- [x] Bundle reviewed profiles and other build-specific native data so a new
+  build's changes can be reviewed together.
+- [x] Integrate exact-build verification with private build inputs into the
+  update/release procedure (`tpfre build`, `verify-build`, and the release
+  workflow's private runner gate); retain every existing promotion gate.
+  Runner registration and `TPF3MP_GAME_ARCHIVE` configuration are operator
+  setup, not evidence that a GitHub verification run has passed.
+
 *Added* (2026-09-27, from third-party mods made for build 40391,
 [investigation/TF3_MODS_2026-09-27.md](../investigation/TF3_MODS_2026-09-27.md)):
 our mod and both probes are TPF2 mods and will not load in TF3 as they
@@ -110,7 +126,7 @@ Then:
   equivalents of TPF2's `GameSim::Step`, `CGame::Step`,
   `CommandList::Add`, save and load, into the recon log. TF3's names may
   differ from TPF2's. *Done* with `tpfre match` (TPF2's names carried
-  over); the targets are in `profiles/tf3_build40408_steam_windows.toml`,
+  over); the targets are in `profiles/tf3_build40408_steam_windows/hooks.toml`,
   proven against the installed game
   (`crates/tpf3mp-hookcore/tests/tf3_static_proof.rs`).
 - [x] `script_api_dump`: both state dumps (game script and GUI); every
@@ -339,7 +355,13 @@ Dev B:
 - [ ] Roadside stops and signals, the side included, never rebuilding an
   edge a line runs on.
 - [ ] The room's required mods from Mod Hub IDs; a missing mod is
-  installed from Mod Hub, never received from another player.
+  installed from Mod Hub, never received from another player. *Added (D28,
+  proposed):* built on `feat/lobby-mods`: the owner picks the room's save,
+  mods and settings on the game's Load Game page, the room tells every
+  member its mods (protocol 18), and a member installs a missing Mod Hub
+  mod from the lobby with their own game ([MODS.md](MODS.md),
+  [LOBBY.md](LOBBY.md)). Tick once the owner approves D28; the new world
+  path is still open.
 - [ ] *Added, open for the team:* a rule for mods that send commands from
   the GUI (GW Big City and Startup Fortune do, once per save). Every
   player's game sends them: forwarded, the room gets one city per player;

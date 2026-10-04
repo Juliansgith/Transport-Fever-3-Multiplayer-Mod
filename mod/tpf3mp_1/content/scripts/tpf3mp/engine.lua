@@ -824,6 +824,62 @@ local function isTownBuilding(c)
 	return #list(c and get(c, "townBuildings")) > 0
 end
 
+-- A stock airport demolition rebuilds its runway/taxiway signals as part of
+-- removing the construction. Permit that batch only when the proposal removes
+-- exactly every edge frozen into this construction and every removed object is
+-- a unique SIGNAL carried by one of those edges; external edges, stops, and
+-- unreadable carriers remain refused.
+local function airportRemovalSignals(construction, segments, removedObjects)
+	local file = get(construction, "fileName")
+	if file ~= "::/stations/air/airfield.con" and file ~= "::/stations/air/airport.con" then return false end
+	local types = api.type.enum and api.type.enum.EdgeObjectType
+	local signal = types and types.SIGNAL
+	if type(signal) ~= "number" or #removedObjects == 0 then return false end
+	local frozen, frozenList = {}, list(get(construction, "frozenEdges"))
+	local frozenCount = #frozenList
+	if frozenCount == 0 or #segments ~= frozenCount then return false end
+	for i = 1, frozenCount do
+		local edge = get(frozenList, i)
+		if type(edge) ~= "number" or edge ~= math.floor(edge) or edge <= 0 or frozen[edge] then return false end
+		frozen[edge] = true
+	end
+	local removed, occurrences = {}, {}
+	for i = 1, #removedObjects do
+		local row = removedObjects[i]
+		local entity = type(row) == "number" and row or get(row, "entity")
+		if type(entity) ~= "number" or entity ~= math.floor(entity) or entity <= 0 or removed[entity] then
+			return false
+		end
+		removed[entity] = true
+	end
+	local removedEdges = {}
+	for i = 1, #segments do
+		local segment = segments[i]
+		local edge, comp = get(segment, "entity"), get(segment, "comp")
+		if type(edge) ~= "number" or edge ~= math.floor(edge) or not frozen[edge] or removedEdges[edge] then
+			return false
+		end
+		removedEdges[edge] = true
+		local objects = list(get(comp, "objects"))
+		for k = 1, #objects do
+			local pair = objects[k]
+			local entity, kind = get(pair, 1), get(pair, 2)
+			if kind ~= signal or not removed[entity] then
+				return false
+			end
+			occurrences[entity] = (occurrences[entity] or 0) + 1
+			if occurrences[entity] ~= 1 then return false end
+		end
+	end
+	for edge in pairs(frozen) do
+		if not removedEdges[edge] then return false end
+	end
+	for entity in pairs(removed) do
+		if occurrences[entity] ~= 1 then return false end
+	end
+	return true
+end
+
 -- The bulldozer's proposal as a Bulldoze action (tpf3mp_proto
 -- action::Bulldoze): one construction, by its file and position, whose own
 -- entrance edge and node the game removes with it; or edges of one network,
@@ -845,12 +901,23 @@ function engine.bulldoze(proposal)
 			or #list(get(street, "addedNodes")) > 0 then
 			error("a bulldozer proposal that builds", 0)
 		end
-		for _, name in ipairs({ "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
-			local v = get(street, name)
-			if v ~= nil and #list(v) > 0 then error("removing a stop or signal", 0) end
-		end
 		local toRemove = list(get(proposal, "toRemove"))
 		local segments = list(get(street, "removedSegments"))
+		local objectsToAdd = list(get(street, "edgeObjectsToAdd"))
+		local objectsToRemove = list(get(street, "edgeObjectsToRemove"))
+		local airportSignals = false
+		for _, name in ipairs({ "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
+			local v = get(street, name)
+			if v ~= nil and #list(v) > 0 then
+				if name == "edgeObjectsToRemove" and #objectsToAdd == 0 and #toRemove == 1 then
+					local construction = api.engine.getComponent(toRemove[1], api.type.ComponentType.CONSTRUCTION)
+					if construction ~= nil and not isTownBuilding(construction) then
+						airportSignals = airportRemovalSignals(construction, segments, objectsToRemove)
+					end
+				end
+				if not airportSignals then error("removing a stop or signal", 0) end
+			end
+		end
 		-- The constructions it removes: town buildings, and any other.
 		local buildings, others = {}, 0
 		for _, e in ipairs(toRemove) do

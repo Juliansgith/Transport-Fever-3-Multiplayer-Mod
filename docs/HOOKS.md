@@ -318,7 +318,9 @@ and build profiles (`profiles/*.toml`) in the per-user `TPF3-MP` data
 folder. It also carries the release's own profiles, built in from the
 repository's `profiles/` folder (Transport Fever 3 Steam build 40408 on
 Windows, so far); a profile in the data folder for the same build comes
-first, so one can be tried there without a release. The game's environment says which, so several games on one PC each
+first, so one can be tried there without a release. Per-build directories
+with `hooks.toml` are supported too; flat custom profiles stay supported.
+The game's environment says which, so several games on one PC each
 reach their own agent:
 
 | variable | effect |
@@ -331,6 +333,45 @@ reach their own agent:
 command line. The multiplayer rig (`tpf3mp-rig`, in
 [DEVELOPMENT.md](DEVELOPMENT.md)) sets all three for every game it starts, and starts a real
 game with the hook in it as the launcher does.
+
+### Reviewing the native data for a game update
+
+The compiled Windows native data is grouped with its signature profile in
+`profiles/tf3_build40408_steam_windows/`: `hooks.toml` records the executable
+SHA-256, size and PE timestamp; `native.rs` records the game/Steam build and
+exports each subsystem's data file. Those files hold splice bytes, frame and
+field offsets, structure layouts and GUI register/site descriptions. The
+hook modules reexport the existing names, so their callers and behavioral
+tests use the same data. Algorithms, bounds, kill switches and generic x86
+instruction decoding remain in the hook modules.
+
+`profiles/native-build.txt` explicitly selects the one compiled native
+bundle. The hook build script generates `build_data.rs`'s native module and
+built-in profile from this same selection; the release check reads it too.
+Bootstrap checks its complete executable identity before
+installing the menu or step gate. A TOML profile for another executable is
+insufficient: it cannot enable that build with the previous build's native
+layouts. Custom profiles for the supported executable keep their priority.
+This release still supports only the existing Windows Steam build 40408;
+moving data does not approve the Preview or add another supported platform.
+
+A static signature candidate for Steam Preview 40418 is in
+`profiles/tf3_build40418_steam_windows/hooks.toml`. All 145 targets match its
+private archive, but its directory deliberately has no `native.rs` and is not
+selected. The Release bundle and release archive remain active. The changed
+splice bytes, script review and remaining ABI work are recorded in
+[the Preview investigation](../investigation/PREVIEW_40418_2026-10-04.md).
+
+For a new build, create a separate bundle directory, investigate the audit's
+signature/function/script changes, and review its native data alongside its
+`hooks.toml`. Select that reviewed bundle explicitly in `native-build.txt`.
+Also review the hook code's ABI assumptions (calling conventions and the
+instructions emitted by callbacks); grouping data does not prove those are
+unchanged. Use `tpfre build` for the checked local release build; the release
+workflow also requires `verify-build` against its private archive before
+packaging ([DEVELOPMENT.md](DEVELOPMENT.md#game-update-builds)). Run the normal
+tests and the authorized real-game acceptance before promotion. The archive and audit
+commands are described in [tpfre](../tools/tpfre/README.md#game-update-workflow-windows-pe-builds).
 
 ## The bridge: what travels over the link
 
@@ -462,7 +503,16 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     owner's pick of the save the room starts from, in its lobby (empty
     for none; LOBBY.md, "Changing the start save in the room"), and the
     lobby's room carries the save it starts from and the owner's upload
-    of it.
+    of it. Since version 25, `ChooseRoomMods { save, map, year, mods,
+    params }` is the owner's pick on the game's Load Game page: the save
+    (absent to keep the room's), the mods in the game's load order with
+    their names and sources, and the settings of the room's mods and the
+    game's own (id `""`) (LOBBY.md, "The room's save and mods"); and
+    `RescanMods` asks the launcher to find the installed mods again after
+    an install from Mod Hub. The lobby carries the room's mods with this
+    player's version of each and whether they have it (`LobbyRoomMod`),
+    and how each member's game differs (`LobbyMember::differs`); `Begin`'s
+    `ModLists` carry the room's settings of its mods.
   - `Log`: a line for the agent's log.
   - `Preview { preview }`: what the player's build tool shows now, for the
     other members, or `None` once it shows nothing (`Session::preview`;
@@ -586,7 +636,7 @@ by hand (see [DEVELOPMENT.md](DEVELOPMENT.md)). On release day, what remains for
 ### The main menu's Multiplayer window
 
 The room's lobby is in the game (D17, as amended on 2026-09-30): the
-Multiplayer entry on the game's main menu (docs/LOBBY.md) opens a window
+Multiplayer entry on the game's main menu (docs/LOBBY.md) opens a page
 that connects, creates or joins a room, shows its players and their ready
 marks, chats, gets ready and, for the owner, starts the room's game. It
 drives the launcher that started the game, which still holds the
@@ -2822,8 +2872,16 @@ construction's window its edits:
   other stops kept under their own entities, the new stop
   `edgeObjectsToAdd[1]` (edge -1, the parameter where it stands, `left`,
   the model, the player), named in the edge's objects as `{ -1, side }`,
-  the lane configurations at the edge's ends removed as for any edge a
-  replay removes; then the game's verdict, and the build as the player's
+  the lane configurations at the edge's ends replaced by the same turns,
+  crosswalks and light phases naming the rebuilt edge
+  (`junctions.renamed`: only references to the old edge change, the other
+  edges keep their entities, nothing is searched for by position; one
+  that no longer fits its lanes refuses the stop in every game). Removed
+  alone, a junction with traffic lights kept its lights with no
+  configuration, a fatal assert
+  (`ecs::Engine::GetComponentDataIndex`, `BaseNodeConfig`) that crashed
+  every game of a room on 2026-10-04 (build 40408). Then the game's
+  verdict, and the build as the player's
   own (`ignoreErrors`, `playerInitiated`), paid by the player. The
   rebuilt edge keeps its own `PlayerOwned` (a company's road stays the
   company's). Once built, the stop is settled as the acting company's
@@ -3154,8 +3212,10 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   it at the proposal it would send, so nothing is sent, built or logged
   (construction, road, track and stop builds only). One this game cannot
   make (a street type it lacks, an edge it has not) does not show, and the
-  log says why. Its junction settings are left out (`junctions.into` is
-  skipped in the dry run): they name nodes of the sender's game, and
+  log says why. A road or construction build's junction settings are left
+  out (`junctions.into` is skipped in the dry run; a stop's rebuild keeps
+  the settings at its own road's ends, which this game reads itself):
+  they name nodes of the sender's game, and
   checking them failed every station snapped to a street ("the junction
   no longer exists").
 - **Drawing them** (`crate::drawing`), as TpF2 Multiplayer did

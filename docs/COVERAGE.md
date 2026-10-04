@@ -82,6 +82,45 @@ Trees and rocks can be removed through the room only with
 Lua fixtures and native helper/static-profile checks cover this integration;
 no fresh ordinary two-player game acceptance is claimed.
 
+## Stock airports and airfields (2026-10-04)
+
+The stock airfield and airport generate runway and taxiway signals inside
+their construction proposals. Capture now recognizes those signals only when
+their native object batch has unique type-2 carriers on isolated new airport
+edges. A replacement or demolition may remove the old airport's signals only
+when each has one carrier on the old construction's frozen edges; demolition
+also requires the complete frozen-edge set. External stops, signals and
+mixed proposals remain refused. The action format and version are unchanged:
+both games regenerate the construction's own network during replay.
+
+The ordinary two-game run in
+[TF3_AIRPORT_SUPPORT_2026-10-04.md](../investigation/TF3_AIRPORT_SUPPORT_2026-10-04.md)
+used a stock loan to build two airfields and a large airport, buy and assign
+aircraft from both kinds of hangar, and fly a two-airfield and a mixed airport
+line. A separate ordinary run added an airfield terminal, removed its hangar
+with the module editor, connected two street segments toward it, removed the
+whole edited airfield with the main bulldozer, and rebuilt it. Both replicas
+had the same balance after demolition, and 70 overlapping determinism probes
+had already matched by then. At room end all seven probe lanes matched in
+138 comparable samples (two startup read errors). The rebuilt station's
+native catchment included external town-road edges, establishing network
+connection; no passenger ridership was observed at this distant site. In
+the earlier flying run, the aircraft-position probe had 59 read errors, so
+exact position agreement during those samples is unproven despite matching
+construction, network, money and vehicle-count lanes and no reported room
+divergence. A follow-up saved-game run corrected the probe's airport-hangar
+lookup and aircraft position/state lane, then exercised an active and a parked
+DC-3 while building and editing a stock large airport. The paired logs had
+111 matching common samples across steps 12000–23400 in all seven lanes,
+including real active-aircraft positions and explicit in-depot states, with
+zero read errors. Four asynchronously skipped sample steps are reported
+separately. The large-airport room added a passenger terminal, taxiway and
+second runway and removed the added terminal. The owner then took over the
+two running games for the remaining UI checks, reported "all works", and
+accepted the manual result on 2026-10-04. That confirmation is user-reported
+acceptance, not a separate automated demolition trace. Neither run establishes
+profitability or demand for a passenger service.
+
 ## Compatibility
 
 This selected combination is distinct from both the previous `dev` and PR #37:

@@ -96,6 +96,8 @@ jobs:
       - run: python tools/dayone/test_dayone.py
       - run: python tools/test_lane_diff.py
       - run: pip install lupa==2.8 && python tools/probe/check_lua.py
+      - run: python tools/probe/test_tf3_detprobe.py
+      - run: python tools/probe/test_compare_runs.py
 
   page:
     name: launcher page
