@@ -460,3 +460,15 @@ assign them, two or more games to a room, checked as they go (see
 ```sh
 cargo run --release -p tpf3mp-testkit --bin tpf3mp-regress
 ```
+
+### Owner-authorized fast-track releases
+
+A manual `release` workflow dispatch accepts `fast_track=true` to package an
+already validated native bundle without the private verification runner.
+This is an explicit owner override, not the default: pushes and ordinary
+manual runs still require private game verification. Package compilation,
+embedded update-key checks and release signing remain enabled. Version 1.2.5
+uses this override at the owner's request; its selected native bundle remains
+Steam Windows build 40408. The airport probe fixtures now include the active
+vehicle component state required by the probe, retaining unreadable-state
+refusal and full lane comparison assertions.

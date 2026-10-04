@@ -20,7 +20,8 @@ name: release
 #   drafted: manual runs still build packages to try.
 # - TPF3MP_GAME_ARCHIVE: a complete private tpfre archive on the dedicated
 #   self-hosted Windows runner labelled `tpf3mp-game-builds`. Missing input
-#   or a failed check stops every package, including manual workflow runs.
+#   or a failed check stops packages unless an owner explicitly dispatches
+#   a fast-track release of an already validated native bundle.
 # - TPF3MP_CANDIDATE_GAME_ARCHIVE: optional private archive for static candidate
 #   signature checks on update feature branches; never selects a native bundle.
 #
@@ -34,6 +35,10 @@ name: release
 on:
   workflow_dispatch:
     inputs:
+      fast_track:
+        description: Owner-authorized release without the private native verification runner
+        type: boolean
+        default: false
       verify_only:
         description: Check the selected game build without creating packages
         type: boolean
@@ -66,6 +71,7 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Require private game verification configuration
+        if: ${{ !inputs.fast_track }}
         env:
           TPF3MP_GAME_ARCHIVE: ${{ vars.TPF3MP_GAME_ARCHIVE }}
         run: |
@@ -76,6 +82,7 @@ jobs:
 
   game-build:
     name: verify selected game build
+    if: ${{ !inputs.fast_track }}
     needs: version
     runs-on: [self-hosted, Windows, X64, tpf3mp-game-builds]
     timeout-minutes: 30
@@ -161,7 +168,7 @@ jobs:
   package:
     name: package (${{ matrix.name }})
     needs: [version, game-build]
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && !inputs.verify_only)
+    if: ${{ always() && needs.version.result == 'success' && (needs.game-build.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.fast_track)) && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && !inputs.verify_only)) }}
     strategy:
       fail-fast: false
       matrix:
