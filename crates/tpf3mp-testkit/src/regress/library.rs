@@ -27,11 +27,14 @@ pub const TRACK: &str = "track/standard.lua";
 pub const BRIDGE: &str = "bridge/stone.lua";
 pub const BUS_STATION: &str = "station/street/bus_station.con";
 pub const TRAIN_STATION: &str = "station/rail/train_station.con";
+pub const AIRFIELD: &str = "station/air/airfield.con";
+pub const AIRPORT: &str = "station/air/airport.con";
 pub const BUS_DEPOT: &str = "depot/bus_depot.con";
 pub const TRAIN_DEPOT: &str = "depot/train_depot.con";
 pub const BUS: &str = "vehicle/bus/standard_bus.mdl";
 pub const LOCOMOTIVE: &str = "vehicle/train/standard_loco.mdl";
 pub const WAGON: &str = "vehicle/waggon/standard_coach.mdl";
+pub const SMALL_AIRCRAFT: &str = "vehicle/plane/f13.mdl";
 pub const STREET_STOP: &str = "station/street/street_stop.mdl";
 
 /// A point on the ground, in metres.
@@ -160,7 +163,7 @@ fn reference(file: &str, pos: Pos) -> ConstructionRef {
     }
 }
 
-pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
+pub fn buy_indexed(depot: &str, pos: Pos, depot_index: u8, consist: &[&str]) -> Action {
     Action::BuyVehicle(BuyVehicle {
         depot: reference(depot, pos),
         consist: list(
@@ -176,8 +179,12 @@ pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
         ),
         groups: list(vec![u8::try_from(consist.len()).expect("a short consist")]),
         multiple_units: list(vec![text("")]),
-        depot_index: 0,
+        depot_index,
     })
+}
+
+pub fn buy(depot: &str, pos: Pos, consist: &[&str]) -> Action {
+    buy_indexed(depot, pos, 0, consist)
 }
 
 /// A vehicle's consist replaced: each car a model and, for one the vehicle
@@ -651,6 +658,84 @@ fn two_companies_scenario() -> Scenario {
         )
 }
 
+fn airport_support_scenario() -> Scenario {
+    Script::default()
+        .act(0, construction(AIRFIELD, at(0, 0), "West Airfield"))
+        .act(0, construction(AIRPORT, at(5000, 0), "East Airport"))
+        .expect_all([Check::Constructions(2), Check::Stations(2), Check::Depots(2)])
+        // Each default construction has its hangar as depot 0. The airfield
+        // has no depot 1, and another company cannot buy or remove either.
+        .act(0, buy_indexed(AIRFIELD, at(0, 0), 1, &[SMALL_AIRCRAFT]))
+        .expect(Check::Ignored(1))
+        .act(1, buy_indexed(AIRFIELD, at(0, 0), 0, &[SMALL_AIRCRAFT]))
+        .act(1, bulldoze_construction(AIRPORT, at(5000, 0)))
+        .expect(Check::Ignored(3))
+        .act(0, buy_indexed(AIRFIELD, at(0, 0), 0, &[SMALL_AIRCRAFT]))
+        .act(0, buy_indexed(AIRPORT, at(5000, 0), 0, &[SMALL_AIRCRAFT]))
+        .expect_all([
+            Check::Vehicles(2),
+            Check::Idle(2),
+            Check::Ignored(3),
+            Check::MoneyBelow {
+                actor: 0,
+                money: START_MONEY,
+            },
+        ])
+        .act(0, line("Air shuttle", &[0, 1]))
+        .act(0, assign(&[0, 1], Some(0), Some(0)))
+        .expect_all([
+            Check::Line {
+                line: LineId(0),
+                stops: 2,
+                vehicles: 2,
+            },
+            Check::Idle(0),
+        ])
+        .act(0, edit(0, LineChange::Rename(text("Island air"))))
+        .expect(Check::LineName {
+            line: LineId(0),
+            name: "Island air".into(),
+        })
+        // A route edit naming a station that does not exist is refused and
+        // leaves both stops intact.
+        .act(0, edit(0, LineChange::Update(line_data(&[1, 9]))))
+        .expect(Check::Line {
+            line: LineId(0),
+            stops: 2,
+            vehicles: 2,
+        })
+        .expect(Check::Ignored(4))
+        // An airport still used by a line cannot be removed; neither can a
+        // company change another company's line.
+        .act(0, bulldoze_construction(AIRPORT, at(5000, 0)))
+        .act(1, edit(0, LineChange::Rename(text("Stolen"))))
+        .expect_all([
+            Check::Ignored(6),
+            Check::LineName {
+                line: LineId(0),
+                name: "Island air".into(),
+            },
+        ])
+        .act(0, edit(0, LineChange::Delete))
+        .expect_all([Check::Lines(0), Check::Idle(2)])
+        .act(0, sell(&[0, 1]))
+        .expect(Check::Vehicles(0))
+        .act(0, bulldoze_construction(AIRFIELD, at(0, 0)))
+        .act(0, bulldoze_construction(AIRPORT, at(5000, 0)))
+        .expect_all([
+            Check::Constructions(0),
+            Check::Stations(0),
+            Check::Depots(0),
+            Check::Ignored(6),
+        ])
+        .scenario(
+            "airport-support",
+            "build a default airfield and airport, buy aircraft through their hangars, edit and assign an air line, refuse invalid ownership and removal, then clean up",
+            true,
+            2,
+        )
+}
+
 fn line_editing_scenario() -> Scenario {
     bus_line(Script::default(), 0, 0, 2, (0, 0, 0))
         .act(0, construction(BUS_STATION, at(750, 400), "Middle"))
@@ -1115,6 +1200,7 @@ pub fn scenarios() -> Vec<Arc<Scenario>> {
         rail_line_scenario(),
         junctions_scenario(),
         two_companies_scenario(),
+        airport_support_scenario(),
         refusals_scenario(),
         prospecting_scenario(),
         line_editing_scenario(),

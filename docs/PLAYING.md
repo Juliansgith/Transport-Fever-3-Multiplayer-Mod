@@ -438,6 +438,18 @@ protected folder such as Program Files.
   a track's type and its decorations (seen with the road tools; the track
   tools are not yet tried in a real game). Remove them, and roads and
   tracks, with the bulldozer.
+- **Airfields and airports.** Build the game's stock airfield or airport
+  from **Air** with a hangar if you want to buy aircraft there. Place roads
+  near the passenger building as in the base game. Use **Configure** on
+  your own airport to add or remove its terminal, hangar and other modules;
+  the editor's bulldozer removes individual modules, while the main
+  bulldozer removes the whole airport. Buy aircraft in its hangar's depot
+  window, then add the airport's airplane terminal to a line and assign
+  the aircraft. An airport without a hangar cannot sell aircraft. The
+  game's line manager may offer a helicopter terminal at a large airport;
+  choose an airplane terminal for an airplane line. Another company's
+  airport follows its station-access policy for your lines, but only its
+  owner can change its modules or remove it.
 - **Terraforming** (not in multiplayer yet: it is switched off until a
   two-player game has shown it works; a stroke changes nothing, and the
   hook's log says why). Once on: raise, lower, smooth and flatten the ground,
