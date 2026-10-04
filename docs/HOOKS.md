@@ -3392,9 +3392,11 @@ would take most of the rest; the layouts it would need are in
 `TPF3MP_HOOK_STEP_TRACE=1` in the game's environment writes a
 `step-trace:` line for every call of the game's step
 (`crates/tpf3mp-hook/src/steptrace.rs`): when it came, how many updates it
-ran and why none (`wait` for the room's next step, `actions`/`replaying`
-for the room's actions, `save`, `hold`), the game's step and the whole
-call in milliseconds, and `lanes` on a checkpoint's batch.
+ran and why (`run`; `wait` for the room's next step, `actions`/`replaying`
+for the room's actions, `save`, `load` for the room's world, `hold`; `own`
+outside the room's game), the game's step and the whole call in
+milliseconds (timed for the trace even with `TPF3MP_HOOK_PERF=0`), and
+`lanes` on a checkpoint's batch.
 
 Vehicles are compared by their place on their paths, not in the world. On
 build 40408, with a bus running a line in two games in one room, the bus's

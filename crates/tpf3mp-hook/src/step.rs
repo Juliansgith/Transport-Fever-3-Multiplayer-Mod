@@ -406,11 +406,18 @@ pub trait StepHandler: Send {
     fn on_menu(&mut self);
     /// See [`StepDriver::lobby`].
     fn lobby(&mut self, actions: Vec<LobbyAction>) -> Option<LobbyView>;
+    /// See [`StepDriver::why`].
+    fn why(&self) -> &'static str {
+        "-"
+    }
 }
 
 impl<G: RoomGate + Send> StepHandler for StepDriver<G> {
     fn on_step(&mut self, commands: Vec<Handed>, run: &mut RunStep<'_>) -> Outcome {
         StepDriver::on_step(self, commands, run)
+    }
+    fn why(&self) -> &'static str {
+        StepDriver::why(self)
     }
     fn take_log(&mut self) -> Vec<String> {
         StepDriver::take_log(self)
@@ -527,6 +534,9 @@ pub struct StepDriver<G> {
     /// The batch chosen last ends at a checkpoint step, this one.
     lanes_due: bool,
     checkpoint_step: u64,
+    /// Why the last call of the step runs the updates it does, for the
+    /// step trace ([`crate::steptrace`]).
+    why: &'static str,
     /// The lane dumps to come ([`crate::lanedump`]).
     dumps: LaneDumps,
     /// The player's actions handed to the room and not yet ordered back:
@@ -571,6 +581,7 @@ impl<G: RoomGate> StepDriver<G> {
             checkpoint_interval: u64::MAX,
             lanes_due: false,
             checkpoint_step: 0,
+            why: "-",
             dumps: LaneDumps::default(),
             tickets: HashMap::new(),
             refused: Vec::new(),
@@ -926,6 +937,27 @@ impl<G: RoomGate> StepDriver<G> {
 
     /// How many updates this call of the game's step runs.
     fn updates(&mut self) -> Updates {
+        self.why = "-";
+        let updates = self.choose_updates();
+        if self.why == "-" {
+            // Every path that holds the world says so through `hold`.
+            self.why = match (updates, &self.phase) {
+                (Updates::Own, _) => "own",
+                (_, Phase::Holding(_)) => "hold",
+                _ => "-",
+            };
+        }
+        updates
+    }
+
+    /// Why the last call of the step runs the updates it does: `run`,
+    /// `wait` (the room's next step is not released), `actions` and
+    /// `replaying` (the room's actions), `save`, `load`, `hold`, `own`.
+    pub fn why(&self) -> &'static str {
+        self.why
+    }
+
+    fn choose_updates(&mut self) -> Updates {
         if self.phase == Phase::BeforeBegin {
             match self.gate.try_begin() {
                 Ok(Some(begin)) => self.began(&begin, ""),
@@ -940,10 +972,7 @@ impl<G: RoomGate> StepDriver<G> {
             }
         }
         match self.phase {
-            Phase::BeforeBegin | Phase::Holding(_) => {
-                crate::steptrace::why("hold");
-                return Updates::Exactly(0);
-            }
+            Phase::BeforeBegin | Phase::Holding(_) => return Updates::Exactly(0),
             Phase::Ended => return Updates::Own,
             Phase::Running => {}
         }
@@ -969,7 +998,7 @@ impl<G: RoomGate> StepDriver<G> {
                     if since.elapsed() >= Duration::from_secs(30) {
                         self.hold("the game did not finish the room's actions within 30 s".into());
                     }
-                    crate::steptrace::why("replaying");
+                    self.why = "replaying";
                     return Updates::Exactly(0);
                 }
             }
@@ -992,7 +1021,7 @@ impl<G: RoomGate> StepDriver<G> {
                     Ok(()) => self.replaying = Some(Instant::now()),
                     Err(why) => self.hold(format!("starting the room's actions: {why}")),
                 }
-                crate::steptrace::why("actions");
+                self.why = "actions";
                 return Updates::Exactly(0);
             }
             match gate {
@@ -1000,7 +1029,7 @@ impl<G: RoomGate> StepDriver<G> {
                     let first = self.gate.next_step();
                     return match self.gate.batch(&mut self.game, MAX_STEPS_PER_CALL) {
                         Ok(steps) => {
-                            crate::steptrace::why("run");
+                            self.why = "run";
                             let steps = steps.max(1);
                             let last = first.saturating_add(u64::from(steps) - 1);
                             self.lanes_due = last.is_multiple_of(self.checkpoint_interval);
@@ -1014,12 +1043,12 @@ impl<G: RoomGate> StepDriver<G> {
                     };
                 }
                 Ok(StepGate::Wait) => {
-                    crate::steptrace::why("wait");
+                    self.why = "wait";
                     return Updates::Exactly(0);
                 }
                 Ok(StepGate::Save(order)) => {
                     if !self.save(&order) {
-                        crate::steptrace::why("save");
+                        self.why = "save";
                         return Updates::Exactly(0);
                     }
                 }
@@ -1040,6 +1069,7 @@ impl<G: RoomGate> StepDriver<G> {
                     }
                     Some(file) => {
                         if !self.load(&file, load.next_step, LoadFrom::Gui) {
+                            self.why = "load";
                             return Updates::Exactly(0);
                         }
                     }
@@ -2819,6 +2849,41 @@ pub(crate) mod tests {
         assert_eq!(d.gate.loaded, vec![1, 2, 3]);
         assert_eq!(d.phase(), &Phase::Running);
         assert_eq!(d.gate.ran, 3);
+    }
+
+    /// The step trace says why each call ran what it did, a room's load
+    /// (a rejoin, a rebase) and a held world included.
+    #[test]
+    fn every_call_says_why_it_runs_the_updates_it_does() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        let file = PathBuf::from("worlds/room.sav");
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Wait,
+            StepGate::Load(Load {
+                file: Some(file),
+                next_step: 2,
+            }),
+        ]);
+        let (mut d, state) = driver_with(script);
+        state.lock().unwrap().mark = mark(0, 1);
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(d.why(), "run");
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert_eq!(d.why(), "wait");
+        assert_eq!(call(&mut d, &mut calls), PAUSED, "asked to load");
+        assert_eq!(d.why(), "load");
+        assert_eq!(call(&mut d, &mut calls), PAUSED, "still loading");
+        assert_eq!(d.why(), "load");
+        d.hold("a test's reason".into());
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert_eq!(d.why(), "hold");
     }
 
     /// Where the hook cannot see a world close (no `CMenuUI::m_game` in the

@@ -410,14 +410,17 @@ unsafe fn run_step(
     // Whatever the engine freed since the last step, no cached region
     // answers for it.
     crate::image::invalidate();
-    let started = crate::perf::start();
+    let perf = crate::perf::start();
+    let started = crate::steptrace::step_timer(perf, crate::steptrace::enabled());
     crate::order::set_in_step(true);
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
     crate::order::set_in_step(false);
     if let Some(started) = started {
         let nanos = crate::perf::nanos_since(started);
-        crate::perf::game_step(nanos);
+        if perf.is_some() {
+            crate::perf::game_step(nanos);
+        }
         STEP_GAME_NANOS.fetch_add(nanos, Ordering::Relaxed);
     }
     crate::ticks::set_room(false);
@@ -464,8 +467,9 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         return;
     }
     let mut ran = false;
-    // What this call answered, for the step trace.
+    // What this call answered, and why, for the step trace.
     let mut answered: Option<(Updates, bool)> = None;
+    let mut why: &'static str = "own";
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut driver = DRIVER.lock().unwrap_or_else(|poison| poison.into_inner());
         let Some(driver) = driver.as_mut() else {
@@ -498,6 +502,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
                 }
             }
         });
+        why = driver.why();
         for (ticket, why) in driver.take_refused() {
             lua::refused(ticket, &why);
         }
@@ -539,7 +544,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         };
         let game = STEP_GAME_NANOS.load(Ordering::Relaxed);
         let call = u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let lines = crate::steptrace::call(at, updates, lanes, game, call);
+        let lines = crate::steptrace::call(at, updates, why, lanes, game, call);
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
         {

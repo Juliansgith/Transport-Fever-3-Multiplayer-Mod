@@ -31,14 +31,12 @@ static ON: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<State> = Mutex::new(State {
     first: None,
     last: None,
-    why: "",
     lines: Vec::new(),
 });
 
 struct State {
     first: Option<Instant>,
     last: Option<Instant>,
-    why: &'static str,
     lines: Vec<String>,
 }
 
@@ -62,19 +60,21 @@ pub fn enabled() -> bool {
     ON.load(Ordering::Relaxed)
 }
 
-/// From the step driver: why this call runs the updates it answers.
-pub fn why(reason: &'static str) {
-    if enabled() {
-        STATE.lock().unwrap_or_else(|p| p.into_inner()).why = reason;
-    }
+/// The clock the game's own step is timed by: the timing's
+/// ([`crate::perf::start`]) when it is on, else one of its own while the
+/// trace is on, so the trace's `game=` is the step's time either way.
+pub fn step_timer(perf: Option<Instant>, trace: bool) -> Option<Instant> {
+    perf.or_else(|| trace.then(Instant::now))
 }
 
 /// One call of the step: begun at `started`, `updates` answered (`None`
-/// for the game's own speed), the game's step and the whole call in
+/// for the game's own speed) and why (the step driver's
+/// [`crate::step::StepDriver::why`]), the game's step and the whole call in
 /// nanoseconds. Returns the lines to write once enough have gathered.
 pub fn call(
     started: Instant,
     updates: Option<u32>,
+    why: &str,
     lanes: bool,
     game_nanos: u64,
     call_nanos: u64,
@@ -85,7 +85,6 @@ pub fn call(
         .last
         .map_or(0.0, |last| millis(started.saturating_duration_since(last)));
     state.last = Some(started);
-    let why = std::mem::take(&mut state.why);
     let line = format!(
         "step-trace: t={:.1} gap={gap:.1} u={} why={} game={:.1} call={:.1}{}",
         millis(started.saturating_duration_since(first)),
@@ -123,5 +122,15 @@ mod tests {
         assert!(!wanted(Some("")));
         assert!(wanted(Some("1")));
         assert!(wanted(Some(" On ")));
+    }
+
+    #[test]
+    fn the_game_step_is_timed_whenever_the_timing_or_the_trace_is_on() {
+        let perf = Instant::now();
+        assert_eq!(step_timer(Some(perf), false), Some(perf));
+        assert_eq!(step_timer(Some(perf), true), Some(perf));
+        // The timing off (TPF3MP_HOOK_PERF=0): the trace times it itself.
+        assert!(step_timer(None, true).is_some());
+        assert!(step_timer(None, false).is_none());
     }
 }
