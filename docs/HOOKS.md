@@ -3449,6 +3449,23 @@ still a visible stutter, about a quarter of it. Reading the network natively
 would take most of the rest; the layouts it would need are in
 `investigation/TF3_NATIVE_NETWORK_2026-10-04.md`.
 
+The follow-up shares the network lane's already-read edge components with
+junction rows and memoizes each node's street/track adjacency within that
+read. Counting lane configs also uses the already-read collection. No cache
+survives a checkpoint, and capture/replay continue to read fresh components.
+In the four-arm junction fixture, this reduces edge component reads from
+8 to 4, adjacency queries from 9 to 2, and lane-config field reads from
+8 to 4. These are API call counts, not a measured frame-time improvement.
+A comparison with PR #102's original head (`2039a96`) produced identical
+digests in 48 road/track cases with shifted entity IDs and successive
+geometry, lane-speed and traffic-light edits. Real-game timings above
+precede this follow-up. A missing diagnostic clock no longer prevents a
+checkpoint from being read.
+
+The Windows rig's successful injection tests use a test-only DLL that
+signals the normal hook-ready event. A system DLL is still used to test
+startup timeout cleanup; production readiness checks are unchanged.
+
 `TPF3MP_HOOK_STEP_TRACE=1` in the game's environment writes a
 `step-trace:` line for every call of the game's step
 (`crates/tpf3mp-hook/src/steptrace.rs`): when it came, how many updates it

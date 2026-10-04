@@ -1471,6 +1471,85 @@ fn junction_checkpoint_rows_ignore_entity_and_connection_order_but_detect_settin
 }
 
 #[test]
+fn checkpoint_reads_each_edge_and_node_adjacency_once_and_refreshes_next_time() {
+    let game = junction_game(0);
+    game.load(
+        r#"
+        COUNTS = { edges = {}, adjacency = {}, configs = {} }
+        local CT, get = api.type.ComponentType, api.engine.getComponent
+        api.engine.getComponent = function(id, kind)
+            local value = get(id, kind)
+            if kind == CT.BASE_EDGE then
+                COUNTS.edges[id] = (COUNTS.edges[id] or 0) + 1
+                if value then
+                    return setmetatable({}, { __index = function(_, key)
+                        if key == 'laneConfigs' then
+                            COUNTS.configs[id] = (COUNTS.configs[id] or 0) + 1
+                        end
+                        return value[key]
+                    end })
+                end
+            end
+            return value
+        end
+        local system = api.engine.system.streetSystem
+        for _, kind in ipairs({'Street', 'Track'}) do
+            local name = 'getNode' .. kind .. 'Segments'
+            local original = system[name]
+            system[name] = function(id)
+                local key = kind .. id
+                COUNTS.adjacency[key] = (COUNTS.adjacency[key] or 0) + 1
+                return original(id)
+            end
+        end
+    "#,
+    )
+    .exec()
+    .unwrap();
+    let before = read_lanes(&game)[0].clone();
+    assert_ne!(before.1, "err");
+    for round in 1..=2 {
+        game.globals().set("ROUND", round).unwrap();
+        game.load(
+            r#"
+            for _, group in pairs(COUNTS) do
+                for key, count in pairs(group) do
+                    assert(count == ROUND, tostring(key) .. ': ' .. count .. ' reads')
+                end
+            end
+            assert(COUNTS.edges[101] == ROUND and COUNTS.edges[104] == ROUND)
+            assert(COUNTS.adjacency.Street1 == ROUND and COUNTS.adjacency.Track1 == ROUND)
+            assert(COUNTS.configs[101] == ROUND)
+        "#,
+        )
+        .exec()
+        .unwrap();
+        if round == 1 {
+            game.load("CONFIGS[1].trafficLightPreference = 2; NODES[2].x = 103")
+                .exec()
+                .unwrap();
+            let after = read_lanes(&game)[0].clone();
+            assert_ne!(after.1, "err");
+            assert_ne!(before, after, "the next checkpoint must see edits");
+        }
+    }
+    game.load("EDGES[101] = nil").exec().unwrap();
+    assert_eq!(
+        read_lanes(&game)[0].1,
+        "err",
+        "missing junction edges still fail closed"
+    );
+}
+
+#[test]
+fn missing_diagnostic_clock_does_not_break_checkpoints() {
+    let game = junction_game(0);
+    let before = read_lanes(&game);
+    game.load("os = nil").exec().unwrap();
+    assert_eq!(before, read_lanes(&game));
+}
+
+#[test]
 fn every_junction_in_one_checkpoint_keeps_its_own_light_settings() {
     // One read names each light preference and resource once for all the
     // junctions after it; a second junction must still read as its own.

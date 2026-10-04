@@ -50,9 +50,23 @@ end
 -- A view including proposed geometry. Negative ids are used only while
 -- reading a proposal and are immediately replaced by portable references.
 local readComponent = component
-local function world(street, source)
+local function world(street, source, snapshot)
 	local api = source or api
-	local function component(id, kind) return readComponent(id, kind, api) end
+	local function component(id, kind)
+		if snapshot and kind == "BASE_EDGE" then
+			local c = snapshot.edges[id]
+			if c == nil then c = readComponent(id, kind, api) or false snapshot.edges[id] = c end
+			return c or nil
+		end
+		return readComponent(id, kind, api)
+	end
+	local function segments(id, kind)
+		local cache = snapshot and snapshot[kind]
+		if cache and cache[id] then return cache[id] end
+		local edges = list(api.engine.system.streetSystem["getNode" .. kind .. "Segments"](id))
+		if cache then cache[id] = edges end
+		return edges
+	end
 	local w = { nodes = {}, edges = {}, removed = {} }
 	for _, n in ipairs(list(get(street, "addedNodes") or get(street, "nodesToAdd"))) do
 		w.nodes[n.entity] = pos(n.comp.position)
@@ -68,23 +82,24 @@ local function world(street, source)
 		local proposed = w.edges[id]
 		local c = proposed and proposed.comp or component(id, "BASE_EDGE")
 		if not c then error("a junction edge no longer exists", 0) end
+		local node0, node1 = c.node0, c.node1
 		local network
 		if proposed then
 			if proposed.type == 0 then network = "Street" elseif proposed.type == 1 then network = "Track" end
 		else
 			for _, kind in ipairs({ "Street", "Track" }) do
-				for _, e in ipairs(list(api.engine.system.streetSystem["getNode" .. kind .. "Segments"](c.node0))) do
+				for _, e in ipairs(segments(node0, kind)) do
 					if e == id then network = kind end
 				end
 			end
 		end
 		if not network then error("a junction edge of unknown network", 0) end
-		return { network = network, ends = { a = w.position(c.node0), b = w.position(c.node1) } }, c
+		return { network = network, ends = { a = w.position(node0), b = w.position(node1) } }, c
 	end
 	function w.node(id)
 		local network
 		for _, kind in ipairs(id >= 0 and { "Street", "Track" } or {}) do
-			local edges = api.engine.system.streetSystem["getNode" .. kind .. "Segments"](id)
+			local edges = segments(id, kind)
 			if edges and #edges > 0 then network = kind break end
 		end
 		if not network then
@@ -105,8 +120,10 @@ end
 -- the engine once: for reading every junction at a checkpoint, where the
 -- world cannot change between the reads and every node's connections name
 -- the same few edges again and again.
-local function remembered(source)
-	local w = world(nil, source)
+local function remembered(source, baseEdges)
+	-- Lifetime is one rows() call. The network lane can lend the components
+	-- it just read on this same simulation step; never retain across steps.
+	local w = world(nil, source, { edges = baseEdges or {}, Street = {}, Track = {} })
 	local position, edge, node = w.position, w.edge, w.node
 	local positions, edges, nodes = {}, {}, {}
 	function w.position(id)
@@ -479,8 +496,8 @@ end
 
 -- Canonical, portable rows for checkpoints. Phase indices are expressed as
 -- the turns/crosswalks they lock, so local entity/vector ordering is irrelevant.
-function junctions.rows(api)
-	local w, rows, seen, memo = remembered(api), {}, {}, {}
+function junctions.rows(api, baseEdges)
+	local w, rows, seen, memo = remembered(api, baseEdges), {}, {}, {}
 	-- Each edge's key, made once: remembered() gives an edge the same table
 	-- every time, and every junction at its ends names it again.
 	local keys = {}

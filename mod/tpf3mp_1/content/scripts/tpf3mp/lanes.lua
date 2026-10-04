@@ -100,10 +100,12 @@ local function fastHash(s)
 	return hashStr(s)
 end
 
--- The wall clock in seconds, or nil where the state has none. For the
+-- The diagnostic clock in seconds, or nil where the state has none. For the
 -- lanes' cost in the log only: nothing read from it reaches the world.
 local function clock()
-	local ok, t = pcall(os.clock)
+	local readClock = type(os) == "table" and os.clock
+	if type(readClock) ~= "function" then return nil end
+	local ok, t = pcall(readClock)
 	if ok and type(t) == "number" then return t end
 	return nil
 end
@@ -204,7 +206,7 @@ end
 local readers = {}
 
 readers[lanes.NETWORK] = function(api, emit)
-	local rows, seen = {}, {}
+	local rows, seen, baseEdges = {}, {}, {}
 	local net = { map = 0, get = 0, lanes = 0, junctions = 0, edges = 0, laneConfigs = 0 }
 	lanes.cost.net = net
 	local t0 = clock()
@@ -217,6 +219,7 @@ readers[lanes.NETWORK] = function(api, emit)
 				seen[e] = true
 				local g0 = clock()
 				local edge = component(api, e, "BASE_EDGE")
+				baseEdges[e] = edge or false
 				local g1 = clock()
 				if g0 and g1 then net.get = net.get + (g1 - g0) end
 				net.edges = net.edges + 1
@@ -227,10 +230,10 @@ readers[lanes.NETWORK] = function(api, emit)
 					local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
 					local laneRows = {}
 					local l0 = clock()
-					net.laneConfigs = net.laneConfigs + #edge.laneConfigs
 					-- Each read of a component's field asks the engine again:
 					-- the lane configs and each one's modes are read once.
 					local configs = edge.laneConfigs
+					net.laneConfigs = net.laneConfigs + #configs
 					for i = 1, #configs do
 						local l, modes = configs[i], {}
 						local transportModes = l.transportModes
@@ -252,7 +255,7 @@ readers[lanes.NETWORK] = function(api, emit)
 		end
 	end
 	local j0 = clock()
-	local junctionRows = junctions.rows(api)
+	local junctionRows = junctions.rows(api, baseEdges)
 	local j1 = clock()
 	if j0 and j1 then net.junctions = j1 - j0 end
 	for _, row in ipairs(junctionRows) do
