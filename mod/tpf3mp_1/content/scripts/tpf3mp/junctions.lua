@@ -101,6 +101,32 @@ local function world(street, source)
 	return w
 end
 
+-- The live world (no proposal) with each node, edge and position read from
+-- the engine once: for reading every junction at a checkpoint, where the
+-- world cannot change between the reads and every node's connections name
+-- the same few edges again and again.
+local function remembered(source)
+	local w = world(nil, source)
+	local position, edge, node = w.position, w.edge, w.node
+	local positions, edges, nodes = {}, {}, {}
+	function w.position(id)
+		local p = positions[id]
+		if p == nil then p = position(id) positions[id] = p end
+		return p
+	end
+	function w.edge(id)
+		local e = edges[id]
+		if e == nil then e = { edge(id) } edges[id] = e end
+		return e[1], e[2]
+	end
+	function w.node(id)
+		local n = nodes[id]
+		if n == nil then n = node(id) nodes[id] = n end
+		return n
+	end
+	return w
+end
+
 local PREFERENCES = { Auto = "AUTO", Yes = "YES", No = "NO" }
 local function captureConfig(c, w, source)
 	local api = source or api
@@ -405,7 +431,7 @@ end
 -- Canonical, portable rows for checkpoints. Phase indices are expressed as
 -- the turns/crosswalks they lock, so local entity/vector ordering is irrelevant.
 function junctions.rows(api)
-	local w, rows, seen = world(nil, api), {}, {}
+	local w, rows, seen = remembered(api), {}, {}
 	for _, kind in ipairs({"Street", "Track"}) do
 		for node in pairs(api.engine.system.streetSystem["getNode2"..kind.."EdgeMap"]()) do
 			if not seen[node] then

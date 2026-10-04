@@ -88,10 +88,32 @@ local function hashStr(s)
 	return string.format("%010d-%010d", h1, h2)
 end
 
+-- The wall clock in seconds, or nil where the state has none. For the
+-- lanes' cost in the log only: nothing read from it reaches the world.
+local function clock()
+	local ok, t = pcall(os.clock)
+	if ok and type(t) == "number" then return t end
+	return nil
+end
+
+-- What the last lanes.read cost, in seconds: by lane, and the summaries'
+-- sorting and hashing (inside the lanes' times).
+lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
+
 -- A sorted list's count and hash.
 local function summary(rows)
+	local t0 = clock()
 	table.sort(rows)
-	return #rows .. ":" .. hashStr(table.concat(rows, "\30"))
+	local text = table.concat(rows, "\30")
+	local t1 = clock()
+	local hash = hashStr(text)
+	local t2 = clock()
+	if t0 and t1 and t2 then
+		lanes.cost.sort = lanes.cost.sort + (t1 - t0)
+		lanes.cost.hash = lanes.cost.hash + (t2 - t1)
+	end
+	lanes.cost.bytes = lanes.cost.bytes + #text
+	return #rows .. ":" .. hash
 end
 
 local function q01(v) return math.floor((v or 0) * 10 + 0.5) / 10 end
@@ -171,24 +193,42 @@ local readers = {}
 
 readers[lanes.NETWORK] = function(api, emit)
 	local rows, seen = {}, {}
-	for _, segments in pairs(api.engine.system.streetSystem.getNode2SegmentMap()) do
+	local net = { map = 0, get = 0, lanes = 0, junctions = 0, edges = 0, laneConfigs = 0 }
+	lanes.cost.net = net
+	local t0 = clock()
+	local map = api.engine.system.streetSystem.getNode2SegmentMap()
+	local t1 = clock()
+	if t0 and t1 then net.map = t1 - t0 end
+	for _, segments in pairs(map) do
 		for _, e in pairs(segments) do
 			if not seen[e] then
 				seen[e] = true
+				local g0 = clock()
 				local edge = component(api, e, "BASE_EDGE")
+				local g1 = clock()
+				if g0 and g1 then net.get = net.get + (g1 - g0) end
+				net.edges = net.edges + 1
 				if edge then
 					local a, b = vec01(edge.position0), vec01(edge.position1)
 					local reversed = a > b
 					if reversed then a, b = b, a end
 					local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
 					local laneRows = {}
-					for i = 1, #edge.laneConfigs do
-						local l, modes = edge.laneConfigs[i], {}
-						for m = 0, 15 do modes[#modes+1] = l.transportModes[m] == true and "1" or "0" end
+					local l0 = clock()
+					net.laneConfigs = net.laneConfigs + #edge.laneConfigs
+					-- Each read of a component's field asks the engine again:
+					-- the lane configs and each one's modes are read once.
+					local configs = edge.laneConfigs
+					for i = 1, #configs do
+						local l, modes = configs[i], {}
+						local transportModes = l.transportModes
+						for m = 0, 15 do modes[m + 1] = transportModes[m] == true and "1" or "0" end
 						laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
 							l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
 					end
 					table.sort(laneRows)
+					local l1 = clock()
+					if l0 and l1 then net.lanes = net.lanes + (l1 - l0) end
 					row = row .. "|lanes:" .. table.concat(laneRows,";")
 					rows[#rows + 1] = row
 					if emit then
@@ -199,7 +239,11 @@ readers[lanes.NETWORK] = function(api, emit)
 			end
 		end
 	end
-	for _, row in ipairs(junctions.rows(api)) do
+	local j0 = clock()
+	local junctionRows = junctions.rows(api)
+	local j1 = clock()
+	if j0 and j1 then net.junctions = j1 - j0 end
+	for _, row in ipairs(junctionRows) do
 		rows[#rows+1] = "junction:" .. row
 		if emit then emit(nil, nil, "junction:" .. row, "", false) end
 	end
@@ -508,8 +552,12 @@ end
 -- with why, from the `api` of the state the game script runs in.
 function lanes.read(api)
 	local out, failed = {}, {}
+	lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
 	for lane = lanes.NETWORK, lanes.PEOPLE do
+		local t0 = clock()
 		local ok, text = pcall(readers[lane], api)
+		local t1 = clock()
+		if t0 and t1 then lanes.cost.lanes[lane] = t1 - t0 end
 		if ok and type(text) == "string" then
 			out[lane] = text
 		else
@@ -518,6 +566,24 @@ function lanes.read(api)
 		end
 	end
 	return out, failed
+end
+
+-- The last read's cost as one line for the log, in milliseconds.
+function lanes.costLine()
+	local c, parts = lanes.cost, {}
+	local names = { [0] = "network", "constructions", "lines", "vehicles", "economy", "towns", "people" }
+	local total = 0
+	for lane = lanes.NETWORK, lanes.PEOPLE do
+		local t = c.lanes[lane]
+		if t then total = total + t end
+		parts[#parts + 1] = names[lane] .. " " .. (t and string.format("%.1f", t * 1000) or "?")
+	end
+	local n = c.net or {}
+	return string.format("lanes read in %.1f ms: %s; of it sort+concat %.1f ms, hash %.1f ms over %d bytes;"
+		.. " network: map %.1f ms, %d edges' getComponent %.1f ms, their %d lane configs %.1f ms, junctions %.1f ms",
+		total * 1000, table.concat(parts, ", "), c.sort * 1000, c.hash * 1000, c.bytes,
+		(n.map or 0) * 1000, n.edges or 0, (n.get or 0) * 1000, n.laneConfigs or 0, (n.lanes or 0) * 1000,
+		(n.junctions or 0) * 1000)
 end
 
 -- The registry's kinds as a dump names their ids.

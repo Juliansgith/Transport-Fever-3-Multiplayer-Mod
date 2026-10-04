@@ -940,7 +940,10 @@ impl<G: RoomGate> StepDriver<G> {
             }
         }
         match self.phase {
-            Phase::BeforeBegin | Phase::Holding(_) => return Updates::Exactly(0),
+            Phase::BeforeBegin | Phase::Holding(_) => {
+                crate::steptrace::why("hold");
+                return Updates::Exactly(0);
+            }
             Phase::Ended => return Updates::Own,
             Phase::Running => {}
         }
@@ -966,6 +969,7 @@ impl<G: RoomGate> StepDriver<G> {
                     if since.elapsed() >= Duration::from_secs(30) {
                         self.hold("the game did not finish the room's actions within 30 s".into());
                     }
+                    crate::steptrace::why("replaying");
                     return Updates::Exactly(0);
                 }
             }
@@ -988,6 +992,7 @@ impl<G: RoomGate> StepDriver<G> {
                     Ok(()) => self.replaying = Some(Instant::now()),
                     Err(why) => self.hold(format!("starting the room's actions: {why}")),
                 }
+                crate::steptrace::why("actions");
                 return Updates::Exactly(0);
             }
             match gate {
@@ -995,6 +1000,7 @@ impl<G: RoomGate> StepDriver<G> {
                     let first = self.gate.next_step();
                     return match self.gate.batch(&mut self.game, MAX_STEPS_PER_CALL) {
                         Ok(steps) => {
+                            crate::steptrace::why("run");
                             let steps = steps.max(1);
                             let last = first.saturating_add(u64::from(steps) - 1);
                             self.lanes_due = last.is_multiple_of(self.checkpoint_interval);
@@ -1007,9 +1013,13 @@ impl<G: RoomGate> StepDriver<G> {
                         }
                     };
                 }
-                Ok(StepGate::Wait) => return Updates::Exactly(0),
+                Ok(StepGate::Wait) => {
+                    crate::steptrace::why("wait");
+                    return Updates::Exactly(0);
+                }
                 Ok(StepGate::Save(order)) => {
                     if !self.save(&order) {
+                        crate::steptrace::why("save");
                         return Updates::Exactly(0);
                     }
                 }

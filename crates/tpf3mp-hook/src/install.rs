@@ -453,6 +453,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     // for this function, which keeps the game's own ABI.
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
     let started = crate::perf::start();
+    let traced_at = crate::steptrace::enabled().then(Instant::now);
     STEP_GAME_NANOS.store(0, Ordering::Relaxed);
     LAST_STEP.store(now_ms(), Ordering::Release);
     // The step's speed call sets it again for this call.
@@ -463,10 +464,13 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         return;
     }
     let mut ran = false;
+    // What this call answered, for the step trace.
+    let mut answered: Option<(Updates, bool)> = None;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut driver = DRIVER.lock().unwrap_or_else(|poison| poison.into_inner());
         let Some(driver) = driver.as_mut() else {
             ran = true;
+            answered = Some((Updates::Own, false));
             // SAFETY: the game's own step, called as the game called it.
             unsafe { run_step(original, Updates::Own, false, this, a, b, c) };
             return;
@@ -475,6 +479,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         // the batch's first update hands the mod the room's actions for it.
         driver.on_step(lua::take_commands(), &mut |batch| {
             ran = true;
+            answered = Some((batch.updates, batch.lanes));
             let updates = match batch.updates {
                 Updates::Exactly(updates) => updates,
                 Updates::Own => 0,
@@ -525,6 +530,20 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         if !ran {
             // SAFETY: as above.
             unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
+        }
+    }
+    if let (Some(at), Some((updates, lanes))) = (traced_at, answered) {
+        let updates = match updates {
+            Updates::Exactly(updates) => Some(updates),
+            Updates::Own => None,
+        };
+        let game = STEP_GAME_NANOS.load(Ordering::Relaxed);
+        let call = u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let lines = crate::steptrace::call(at, updates, lanes, game, call);
+        if !lines.is_empty()
+            && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
+        {
+            log.lines(&lines);
         }
     }
     if let Some(started) = started {
@@ -831,6 +850,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     } else {
         format!("perf: timing off ({} says so)", crate::perf::ENV)
     });
+    if let Some(line) = crate::steptrace::configure_from_env() {
+        log_line(&line);
+    }
     crate::seeds::install(&absolute);
     log_line(&crate::ticks::install(&absolute));
     for line in crate::roadtrace::configure_from_env() {

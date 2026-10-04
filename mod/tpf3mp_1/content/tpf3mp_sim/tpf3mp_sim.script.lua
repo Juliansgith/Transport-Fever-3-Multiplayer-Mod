@@ -650,6 +650,7 @@ function data()
 			end
 			if work.checkpoint then
 				local read, failed = lanes.read(api)
+				l:log(lanes.costLine())
 				if #failed > 0 and not told then
 					told = true
 					l:log("lanes read as err: " .. table.concat(failed, "; "))
