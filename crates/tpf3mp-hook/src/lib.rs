@@ -116,15 +116,10 @@ pub fn bootstrap() {
                 profile.targets.len(),
                 profiles.len()
             ));
-            // The main menu's Multiplayer entry first, and then the game may
-            // run: it loads its main menu soon after it starts, and a menu
-            // loaded before the entry is armed stays the game's own (seen
-            // 2026-09-30, when the slower installs below came first). The
-            // entry stands on its own: without the step gate it still
-            // opens, and says the launcher is not answering; without its
-            // own targets the menu is the game's.
+            // Arm the menu entry and every native hook while the game's main
+            // thread is suspended. RegisterAppUsertypes must not run before
+            // the world-loading hook can capture the menu's Lua state.
             install_menu(&profiles, &mut log, data_dir.as_deref());
-            ready.signal(&mut log);
             match install::install(&profile, &link_name, Logger::open(data_dir.as_deref())) {
                 install::Installed::Yes { step_rva } => log.line(&format!(
                     "step gate installed on {} at {step_rva:#x}; the session is attached to {link_name:?}",
@@ -141,6 +136,7 @@ pub fn bootstrap() {
     }
 
     log.line("hook bootstrap complete");
+    ready.signal(&mut log);
 }
 
 /// Arms the main-menu Multiplayer entry (docs/LOBBY.md) from the matched

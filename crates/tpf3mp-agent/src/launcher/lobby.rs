@@ -464,6 +464,18 @@ impl<L: HookLink> IdleLink<L> {
     /// `lobby` if the hook has not seen it yet. Returns the actions the
     /// player took in the menu's window.
     pub(crate) fn pump(&mut self, lobby: &LobbyView) -> Result<Vec<LobbyAction>, BridgeFault> {
+        self.pump_inner(lobby, false)
+    }
+
+    pub(crate) fn greet(&mut self, lobby: &LobbyView) -> Result<(), BridgeFault> {
+        self.pump_inner(lobby, true).map(|_| ())
+    }
+
+    fn pump_inner(
+        &mut self,
+        lobby: &LobbyView,
+        greeting: bool,
+    ) -> Result<Vec<LobbyAction>, BridgeFault> {
         self.link.heartbeat();
         let beat = self.link.peer_heartbeat();
         if self.hook_beat.is_none_or(|(last, _)| last != beat) {
@@ -487,6 +499,9 @@ impl<L: HookLink> IdleLink<L> {
                     })?)?;
                     self.build = Some(build.as_str().to_owned());
                     self.told = None;
+                    if greeting {
+                        break;
+                    }
                 }
                 ToAgent::Lobby(action) if self.build.is_some() => actions.push(action),
                 ToAgent::Log { message } => info!(hook = %message),
@@ -514,6 +529,23 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::launcher::{ChatLine, Differences, Game, Member, Room, RulesChoice};
+
+    #[test]
+    fn greeting_keeps_early_menu_actions_for_the_normal_loop() {
+        let wire = FakeLink::default();
+        wire.hook_says(&ToAgent::Hello {
+            version: BRIDGE_VERSION,
+            build: Text::new("40408").unwrap(),
+        });
+        wire.hook_says(&ToAgent::Lobby(LobbyAction::Leave));
+        let mut idle = IdleLink::new(wire);
+        idle.greet(&LobbyView::default()).unwrap();
+        assert_eq!(idle.build(), Some("40408"));
+        assert_eq!(
+            idle.pump(&LobbyView::default()).unwrap(),
+            vec![LobbyAction::Leave]
+        );
+    }
 
     /// Both ends of a link in memory: what each side sent the other.
     #[derive(Clone, Default)]
