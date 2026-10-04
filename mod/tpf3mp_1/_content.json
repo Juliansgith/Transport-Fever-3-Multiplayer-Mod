@@ -1,7 +1,6 @@
 {
     "archives": null,
     "files": [
-        "gui/main/react.lua",
         "gui/tpf3mp/icons/menu_multiplayer_50@2x.tga",
         "gui/tpf3mp/icons/menu_multiplayer_50.tga",
         "tpf3mp/act.lua",

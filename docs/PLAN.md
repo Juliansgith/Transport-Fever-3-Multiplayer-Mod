@@ -434,8 +434,12 @@ Dev C:
     this mod (HOOKS.md, "The main menu's `WithComponentParams` banner").
     Fixed by serving the game's `react.lua` with one line changed, through the
     wrap that already serves the mod's `main_page.tl`; the builtins the game
-    does register keep their ids. **Tick once the banner is gone in a real
-    game.**
+    does register keep their ids. **Given up again on 2026-10-04:** a fresh id
+    killed the main menu (`GetMat3() must not be called in the recipe
+    itself`), and taking only the error line out of the game's file still left
+    a game crashing in the menu four seconds after `Game is ready`, with
+    nothing in the logs. The banner is cosmetic and the fix belongs upstream
+    (HOOKS.md, "The main menu's `WithComponentParams` banner").
 - [ ] *Changed:* (D17, the hold lifted by the owner on 2026-09-30): the
   room in the game. The main menu's Multiplayer window connects, creates
   and joins rooms, shows the players and their ready marks, chats and

@@ -42,11 +42,11 @@ into the suspended game before any of its code runs (D11), detours that body
 3. The mod's `main_page.tl` is the game's file with marked `TPF3-MP:`
    additions (below), and a `Tpf3mpLobbyWindow` opened through the menu's
    own window container (as the Deluxe Edition window is). The same wrap
-   serves the mod's `gui/main/react.lua`, the game's file with one line
-   changed so the `WithComponentParams` layout child gets an id it is never
-   given (HOOKS.md, "The main menu's `WithComponentParams` banner";
-   `tools/lobby/make_react.py`). Both fall back to the game's own file where
-   a mod copy will not load.
+   falls back to the game's own file where a mod copy will not load. It once
+   also served a copy of the game's `gui/main/react.lua`, to take the game's
+   own `WithComponentParams` banner away; that is given up again, because
+   every version of it cost a player the main menu (HOOKS.md, "The main
+   menu's `WithComponentParams` banner").
 
 **Before the game runs.** The game loads its main menu within seconds of
 starting, so the entry must be armed first. The launcher starts the game

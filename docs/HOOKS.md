@@ -3275,8 +3275,8 @@ Both halves were found in the room's games on 2026-10-04, and the second
 
 ### The main menu's `WithComponentParams` banner
 
-The game wrote, on every load of `gui/main/react.lua` and so in every game
-of a room with the mod and in every game without it:
+The game writes, on every load of `gui/main/react.lua` and so in every game of
+a room with the mod and in every game without it:
 
 ```
 Error: Missing builtin recipeId for (::/gui/main/react.lua:433 in
@@ -3287,83 +3287,56 @@ It is a fault in the game's own script, read from `base/content/gui.zip`
 (build 40408):
 
 - `react.lua:430` `DeclareBuiltinLayoutChildWithUserdata(name, fn)` looks
-  `_react.builtin[name]` up and logs *"Missing builtin recipeId for"* when it
-  is nil (`react.lua:433`). It is meant for the builtins the C++ side has
-  already registered — `LayoutChild`, `FloatingLayoutChild`,
-  `AbsoluteLayoutChild`, `WindowContainerChild`, `TabWidgetChild`,
-  `ActionFn`, `DataTableCell`, `ReactAdapterGuest` (`builtin.lua:99..1081`).
+  `_react.builtin[name]` up and logs *"Missing builtin recipeId for"* when it is
+  nil (`react.lua:433`). It is meant for the builtins the C++ side has already
+  registered — `LayoutChild`, `FloatingLayoutChild`, `AbsoluteLayoutChild`,
+  `WindowContainerChild`, `TabWidgetChild`, `ActionFn`, `DataTableCell`,
+  `ReactAdapterGuest` (`builtin.lua:99..1081`).
 - `react.lua:658` uses it for `WithComponentParams`, which is **not** such a
   builtin: it starts as nil (`react.lua:210`) and is declared there. So the
   lookup misses, the line is logged, and `RegisterRecipeInner(nil, …)`
-  registers the wrapper with no id — every layout that needed it is never
-  drawn, which is the game's *"Preserved props … of an instance of
-  WithComponentParams"* and *"Entity does not create view N"* with it.
+  registers the wrapper with no id.
 - `builtin.lua:15` copies the same nil forward
   (`builtin.WithComponentParams = react.builtin.WithComponentParams`), and
   `gui/entity_window/entity_window_util.tl:404` and `:1008` are its users.
 
-**Fixed by serving the game's file with the error line taken out of it.** The
-mod has `content/gui/main/react.lua`, the game's file in which
+**The mod does not patch this, and here is why.** Three attempts were made and
+every one of them cost more than the banner is worth:
 
-```lua
-if not recipeId then
-	log.error("Missing builtin recipeId for", "name = " .. tostring(name))
-end
-```
+1. **The mod's copy of the file, giving the missing name a fresh `recipeId`**
+   (`api.gui.react.detail.makeRecipeId`, as `RegisterRecipe` makes one). The
+   banner went, and the main menu then died on it:
 
-is gone from `DeclareBuiltinLayoutChildWithUserdata`, and nothing else
-changed. The game declares `WithComponentParams` there with a helper meant
-for the builtins the C++ side has already registered, so the lookup misses;
-that is the game's own doing, and the registration that follows is its own.
-The line only put a red banner over the main menu of every game — the
-`Preserved props … of an instance of WithComponentParams` warning is the
-game's and stays. `tools/lobby/make_react.py` builds the copy from the game's
-file and fails loudly when the anchor is not there exactly once, so a game
-patch that moves the line is caught here and not in the game.
+   ```
+   Error message: GetMat3() must not be called in the recipe itself, only in
+   order0, onMatrix() etc.
+   Assertion Failure: Assertion `!identity->isIdentityMat4x4` failed.
+   While executing "zoom in" for MainMenu (1 children = 231)
+   <gui/tpf3mp/_tpf3mp/main/react.lua:336>: ?
+   ```
 
-**Giving the builtin a fresh id instead is worse, and was tried first.** With
-`_react.builtin[name] or api.gui.react.detail.makeRecipeId(name)` the banner
-was gone too, and the main menu then died on it:
+   An id the C++ side never handed out is a builtin that does not exist, and the
+   renderer tries to draw it.
+2. **The same copy with only the `log.error` line taken out.** The banner went
+   and the main menu came up — but a game still crashed four seconds after
+   `Game is ready`, in the menu, with a minidump the game fills in with nothing
+   (`stackTrace: null`) and not one line in either hook's log. Not attributable,
+   and a main-menu crash is not worth a red banner.
+3. **Serving that copy to `require` as well**, which the
+   `resolveutil.loadfile` wrap does not reach: the game's
+   `base/base.zip/base/init.lua` **requires** the file on its way out of
+   `base.zip` (init.lua:104 `require` → :83 `__require`). This worked — the
+   hook's log said `react.lua SERVED at the cache` and the `Missing builtin`
+   line was gone — and it brought the crash of (2) with it, so it bought
+   nothing.
 
-```
-Error message: GetMat3() must not be called in the recipe itself, only in
-order0, onMatrix() etc.
-Assertion Failure: Assertion `!identity->isIdentityMat4x4` failed.
-While executing "zoom in" for MainMenu (1 children = 231)
-<gui/tpf3mp/_tpf3mp/main/react.lua:336>: ?
-```
+`RegisterRecipeInner` could not be wrapped from outside either: it is a
+**local** function in `react.lua` (line 248), not a global.
 
-An id the C++ side never handed out is a builtin that does not exist, and the
-renderer tries to draw it. So the registration stays the game's, exactly as it
-was, and only the error line goes.
-
-**The copy has to be served to `require` as well, which the wrap alone does
-not reach.** The first attempt served it only through the
-`resolveutil.loadfile` wrap, and the banner stayed: the game's
-`base/content/base.zip/base/init.lua` **requires** `gui/main/react.lua` on its
-way out of `base.zip` (init.lua:104 `require` → :83 `__require`), and that
-call never goes through `resolveutil.loadfile`. The game's stack trace said so
-— `react.lua(658): chunk` under `init.lua(104): require`, at the line numbers
-of the **game's** file (433), where the mod's copy has 452:
-
-```
-::/gui/main/react.lua(658): chunk
-::/gui/main/react.lua(433): DeclareBuiltinLayoutChildWithUserdata
-base/content/base.zip/base/init.lua(104): require
-```
-
-So the loader's **cache lookup** rewrites the URI as well
-(`cached_loadfile`, `crates/tpf3mp-hook/src/menu_entry.rs`): a request for
-`::/gui/main/react.lua` is answered with the mod's path, and the mod's copy is
-loaded under the game's name — which is what the wrap already does for the
-requests it does see. Only the empty namespace is rewritten, so the mod's own
-copy is left alone and the wrap cannot loop. The hook's log says
-`react.lua SERVED at the cache: every caller gets tpf3mp_1::/gui/main/react.lua`
-for each of them.
-
-`RegisterRecipeInner` could not be wrapped instead: it is a **local** function
-in `react.lua` (line 248), not a global, so there is nothing to replace from
-outside.
+So the banner stays. It is cosmetic — the *"Preserved props … of an instance of
+WithComponentParams"* warning that goes with it is the game's own and was there
+before the mod existed — and the fix belongs upstream. A change in this repository
+must not cost a player their main menu.
 
 ### Terraforming
 

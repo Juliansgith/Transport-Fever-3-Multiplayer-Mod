@@ -49,24 +49,11 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
 use crate::lobby;
 
-/// The Lua run once in each of the game's Lua states, the first time the
-/// loader runs there. It wraps `resolveutil.loadfile` (the function
-/// `base/init.lua` calls for every `ug_require`) so that the game's
-/// `gui/menu/main_page.tl` is served from the mod's copy, and the game's
-/// `gui/main/react.lua` from the mod's. The mod's own copies are never
-/// redirected, so the wrap cannot loop, and the original resolved path stays
-/// the module's cache key, so the rest of the menu sees the same `MainPage`
-/// value it always did. Requests to the hook pass straight through to the
-/// original, where the detour answers them.
-///
-/// The `react.lua` copy carries one change: the game's own
-/// `log.error("Missing builtin recipeId for", …)`, which it logs for its own
-/// declaration of `WithComponentParams` and which puts a red banner over the
-/// main menu of every game, is gone; the registration behind it is the game's
-/// and is left as it is (docs/HOOKS.md, "The main menu's `WithComponentParams`
-/// banner"). It is built by `tools/lobby/make_react.py`; where the
-/// `main_page.tl` copy is the game's file unchanged but for the marked
-/// additions, this one is the game's file with an error line taken out of it.
+/// `gui/menu/main_page.tl` is served from the mod's copy. The mod's own
+/// copies are never redirected, so the wrap cannot loop, and the original
+/// resolved path stays the module's cache key, so the rest of the menu sees the
+/// same `MainPage` value it always did. Requests to the hook pass straight
+/// through to the original, where the detour answers them.
 const PATCH: &str = r#"
 local ru = resolveutil
 if type(ru) ~= "table" then
@@ -80,7 +67,6 @@ local orig = ru.loadfile
 -- with the mod's copy to serve instead.
 local OWN = {
 	["gui/menu/main_page.tl"] = "tpf3mp_1::/gui/menu/main_page.tl",
-	["gui/main/react.lua"] = "tpf3mp_1::/gui/main/react.lua",
 }
 ru.loadfile = function(path, ...)
 	if type(path) == "string" and not path:find("^tpf3mp_1::") then
@@ -100,25 +86,6 @@ ru.loadfile = function(path, ...)
 end
 pcall(debugPrint, "[tpf3mp] main menu: resolveutil.loadfile is wrapped")
 "#;
-
-/// The game's own `gui/main/react.lua`, and the mod's copy of it, which
-/// carries one change (see [`PATCH`]). The `resolveutil.loadfile` wrap
-/// serves the mod's copy, but the file is reached by `require` as well — the
-/// game's `base/init.lua` requires it while `base.zip` boots, on its way to the
-/// main menu — and that path does not go through the wrap. So the banner came
-/// up in every game, from a state whose first file was this one. The cache
-/// lookup sees those requests too, so the URI is rewritten there and the mod's
-/// file is loaded instead, under the game's name: the same thing the wrap does
-/// for the requests it does see. The namespace test keeps the wrap from
-/// looping.
-const REACT_FILE: &str = "gui/main/react.lua";
-const REACT_OURS: &std::ffi::CStr = c"tpf3mp_1::/gui/main/react.lua";
-
-/// Whether the loader is being asked for the game's own `react.lua`, which
-/// every caller then gets the mod's copy of instead.
-fn react_uri(uri: *const u8) -> bool {
-    uri_part(uri, 0x20).as_deref() == Some(REACT_FILE) && uri_part(uri, 0).as_deref() == Some("")
-}
 
 // Construction workers can load industryutil as their very first file.
 // Intercept at the native boundary: a Lua wrapper installed during that
@@ -316,13 +283,6 @@ unsafe extern "system" fn cached_loadfile(
             unsafe extern "system" fn(*mut c_void, *mut *mut c_void, *const u8) -> u8,
         >(original)
     };
-    if react_uri(uri) {
-        note(&format!(
-            "{REACT_FILE} SERVED at the cache: every caller gets {}",
-            REACT_OURS.to_str().unwrap_or(REACT_FILE)
-        ));
-        return unsafe { original(cache, holder, REACT_OURS.as_ptr().cast::<u8>()) };
-    }
     unsafe { original(cache, holder, uri) }
 }
 
@@ -843,13 +803,11 @@ mod tests {
     }
 
     #[test]
-    fn the_patch_redirects_only_the_games_own_copies() {
-        // The main page, and the react.lua that has to give `WithComponentParams`
-        // an id (docs/HOOKS.md, "The main menu's `WithComponentParams` banner").
+    fn the_patch_redirects_only_the_games_own_copy() {
+        // The main page, which the mod's copy adds the Multiplayer entry to.
         assert!(
             PATCH.contains(r#"["gui/menu/main_page.tl"] = "tpf3mp_1::/gui/menu/main_page.tl""#)
         );
-        assert!(PATCH.contains(r#"["gui/main/react.lua"] = "tpf3mp_1::/gui/main/react.lua""#));
         assert!(PATCH.contains(r#"path:find(tail .. "$")"#));
         // The mod's own copies are never redirected, so the wrap cannot loop.
         assert!(PATCH.contains(r#"not path:find("^tpf3mp_1::")"#));
@@ -915,12 +873,12 @@ mod tests {
         assert!(request_path(std::ptr::null()).is_none());
     }
 
-    /// The wrap answers a request for the game's `main_page.tl` and its
-    /// `react.lua` from the mod's copies, lets every other path through, does
-    /// not loop on the mod's own copies, and falls back to the game's file
-    /// where a mod copy will not load.
+    /// The wrap answers a request for the game's `main_page.tl` from the
+    /// mod's copy, lets every other path through, does not loop on the mod's
+    /// own copy, and falls back to the game's file where the mod's will not
+    /// load.
     #[test]
-    fn the_wrap_serves_the_games_main_page_and_react_from_the_mod() {
+    fn the_wrap_serves_the_games_main_page_from_the_mod() {
         let lua = mlua::Lua::new();
         lua.load(
             r#"
@@ -945,16 +903,14 @@ mod tests {
                 end
                 local out = {
                     ask('::/gui/menu/main_page.tl'),
-                    ask('::/gui/main/react.lua'),
                     ask('::/gui/main/builtin.lua'),
                     ask('::/scripts/table_util.tl'),
-                    -- the mod's own copies must not be redirected again
+                    -- the mod's own copy must not be redirected again
                     ask('tpf3mp_1::/gui/menu/main_page.tl'),
-                    ask('tpf3mp_1::/gui/main/react.lua'),
                 }
                 -- a mod copy that will not load falls back to the game's
-                MISSING = 'tpf3mp_1::/gui/main/react.lua'
-                out[7] = ask('::/gui/main/react.lua')
+                MISSING = 'tpf3mp_1::/gui/menu/main_page.tl'
+                out[5] = ask('::/gui/menu/main_page.tl')
                 return table.concat(out, '|')
             "#,
             )
@@ -963,53 +919,14 @@ mod tests {
         assert_eq!(
             asked,
             "tpf3mp_1::/gui/menu/main_page.tl\
-             |tpf3mp_1::/gui/main/react.lua\
              |::/gui/main/builtin.lua\
              |::/scripts/table_util.tl\
              |tpf3mp_1::/gui/menu/main_page.tl\
-             |tpf3mp_1::/gui/main/react.lua\
-             |::/gui/main/react.lua",
-            "both of the game's copies served, every other path through, the \
-             mod's own copies left alone, and the game's own used where the \
-             mod's will not load"
+             |::/gui/menu/main_page.tl",
+            "the game's copy served, every other path through, the mod's own \
+             copy left alone, and the game's own used where the mod's will not \
+             load"
         );
-    }
-
-    /// The game's `react.lua` is served the mod's copy to every caller, the
-    /// `require` from `base/init.lua` included, which never reaches the
-    /// `resolveutil.loadfile` wrap; the mod's own copy is left alone, so the
-    /// wrap cannot loop.
-    #[test]
-    fn the_games_react_lua_is_replaced_for_every_caller() {
-        fn uri(path: &[u8], namespace: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-            let mut object = vec![0u8; 0x40];
-            let heap = path.to_vec();
-            if path.len() < 16 {
-                object[0x20..0x20 + path.len()].copy_from_slice(path);
-                object[0x38..0x40].copy_from_slice(&15usize.to_ne_bytes());
-            } else {
-                object[0x20..0x28].copy_from_slice(&(heap.as_ptr() as usize).to_ne_bytes());
-                object[0x38..0x40].copy_from_slice(&heap.capacity().to_ne_bytes());
-            }
-            object[0x30..0x38].copy_from_slice(&path.len().to_ne_bytes());
-            object[..namespace.len().min(15)].copy_from_slice(namespace);
-            object[0x10..0x18].copy_from_slice(&namespace.len().to_ne_bytes());
-            object[0x18..0x20].copy_from_slice(&15usize.to_ne_bytes());
-            (object, heap, Vec::new())
-        }
-        let (object, _heap, _keep) = uri(REACT_FILE.as_bytes(), b"");
-        assert!(
-            react_uri(object.as_ptr()),
-            "the game's own react.lua, asked for by require as well as by loadfile"
-        );
-        let (object, _heap, _keep) = uri(REACT_FILE.as_bytes(), b"tpf3mp_1");
-        assert!(
-            !react_uri(object.as_ptr()),
-            "the mod's own copy, which the wrap asks for: left alone, or the \
-             wrap would loop"
-        );
-        let (object, _heap, _keep) = uri(b"gui/main/builtin.lua", b"");
-        assert!(!react_uri(object.as_ptr()), "every other file through");
     }
 
     /// A closure laid out as the loader's: the path object at +8 holding an
