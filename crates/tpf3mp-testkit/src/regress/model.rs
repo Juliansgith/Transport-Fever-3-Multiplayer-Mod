@@ -238,6 +238,9 @@ struct Construction {
     name: String,
     basis: [i32; 9],
     params: usize,
+    /// Depot indexes the construction exposes. Stock airfields and airports
+    /// expose their nested default hangar as index 0.
+    depot_count: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,11 +438,19 @@ impl State {
             Action::BuyVehicle(buy) => {
                 let key = self.find_construction(&buy.depot)?;
                 let depot = &self.constructions[&key];
-                if depot.kind != Kind::Depot {
+                if depot.depot_count == 0 {
                     refuse!("{} is not a depot", buy.depot.file);
                 }
                 if depot.owner != company {
                     refuse!("the depot is company-{}'s", depot.owner);
+                }
+                if buy.depot_index >= depot.depot_count {
+                    refuse!(
+                        "{} has {} depot(s), and no depot index {}",
+                        buy.depot.file,
+                        depot.depot_count,
+                        buy.depot_index
+                    );
                 }
                 if buy.consist.is_empty() {
                     refuse!("a vehicle of no cars");
@@ -1161,6 +1172,14 @@ impl State {
             Kind::Other => CONSTRUCTION_COST,
         };
         self.charge(company, cost)?;
+        let depot_count = if kind == Kind::Depot
+            || file.ends_with("/air/airfield.con")
+            || file.ends_with("/air/airport.con")
+        {
+            1
+        } else {
+            0
+        };
         self.constructions.insert(
             (file, origin),
             Construction {
@@ -1169,6 +1188,7 @@ impl State {
                 name: build.name.as_str().to_owned(),
                 basis: build.transform.basis,
                 params: build.params.len(),
+                depot_count,
             },
         );
         // The streets the tool built with it, in the same proposal: every
@@ -1681,8 +1701,8 @@ impl ModelWorld {
             depots: s
                 .constructions
                 .values()
-                .filter(|c| c.kind == Kind::Depot)
-                .count(),
+                .map(|construction| usize::from(construction.depot_count))
+                .sum(),
             edge_objects: s.objects.len(),
             lines,
             vehicles: s.vehicles.len(),

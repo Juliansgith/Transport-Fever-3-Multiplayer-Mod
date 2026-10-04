@@ -215,7 +215,8 @@ Run two instances from the same save with no input. Hash these lanes every
 100 steps for 60 in-game days (the TPF2 baseline):
 
 - vehicle count;
-- vehicle positions at 1 m;
+- vehicle state and positions at 1 m (or a stable construction/depot
+  location while parked); include flight state for active aircraft;
 - edge geometry at 0.1 m;
 - the construction list;
 - town building counts;

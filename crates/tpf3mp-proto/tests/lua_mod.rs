@@ -3444,7 +3444,8 @@ const NATIVE_OF: &str = "function NATIVE_OF(full) \
     return { toRemove = full.toRemove, toAdd = full.toAdd, proposal = { \
         addedNodes = blanks(#s.addedNodes), addedSegments = blanks(#s.addedSegments), \
         removedNodes = ids(s.removedNodes), removedSegments = ids(s.removedSegments), \
-        edgeObjectsToAdd = {}, edgeObjectsToRemove = {} } } \
+        edgeObjectsToAdd = blanks(#(s.edgeObjectsToAdd or {})), \
+        edgeObjectsToRemove = blanks(#(s.edgeObjectsToRemove or {})) } } \
 end";
 
 /// A module editor's edit that changes the streets around its station (a
@@ -3778,6 +3779,293 @@ const RAIL_STATION_OPEN: &str = "{ toRemove = {}, \
           tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
           roadTemplate = '::/track/standard.track_template', roadStyle = '' } } {JOIN} }, \
     removedSegments = {}, removedNodes = {}, edgeObjectsToAdd = {} } }";
+
+/// The native airfield proposal gives each signal row resultEntity=-1, but
+/// lists the real, reserved edge-object IDs on their carrier segments.
+const AIRFIELD_PROPOSAL: &str = r#"{ toRemove = {},
+    toAdd = { { fileName = '::/stations/air/airfield.con', name = 'Okehampton Airfield',
+        playerEntity = 25, transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 300,0,0,1 },
+        params = { seed = 7 } } },
+    proposal = {
+        addedNodes = { {NODES} },
+        addedSegments = { {SEGMENTS} },
+        removedSegments = {}, removedNodes = {},
+        edgeObjectsToAdd = { {OBJECT_ROWS} },
+        edgeObjectsToRemove = {}
+    }
+}"#;
+
+#[test]
+fn an_airfield_carries_only_its_internal_signals_and_keeps_its_road_connection() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load("api.type.enum.EdgeObjectType = { SIGNAL = 2 }")
+        .exec()
+        .unwrap();
+
+    let proposal = |external_road: bool, external_signal: bool| {
+        let nodes = (1..=10)
+            .map(|id| {
+                format!(
+                    "{{ entity = -{id}, comp = {{ position = {{ x = {id}, y = 0, z = 0 }} }} }}"
+                )
+            })
+            .chain(external_road.then(|| {
+                "{ entity = -11, comp = { position = { x = -100, y = 0, z = 0 } } }".to_owned()
+            }))
+            .collect::<Vec<_>>()
+            .join(",");
+        let object_ids = [1, 0, 2, 3, 4, 5, 6, 7, 8];
+        let mut segments = (0..9)
+            .map(|i| {
+                let entity = 101 + i;
+                let from = i + 1;
+                let to = i + 2;
+                let object = -400_000_000 - object_ids[i as usize];
+                format!(
+                    "{{ entity = -{entity}, type = 0, comp = {{ node0 = -{from}, node1 = -{to}, type = 0, typeIndex = -1, \
+                     tangent0 = {{ x = 1, y = 0, z = 0 }}, tangent1 = {{ x = 1, y = 0, z = 0 }}, \
+                     roadTemplate = '::/street/town_small.street_template', roadStyle = '', objects = {{ {{ {object}, 2 }} }} }} }}"
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut rows = (0..9)
+            .map(|_| {
+                "{ resultEntity = -1, category = 2, left = false, playerEntity = 25, name = 'Okehampton Airfield' }".to_owned()
+            })
+            .collect::<Vec<_>>();
+        if external_road {
+            let object = if external_signal {
+                "objects = { { -400000009, 2 } }"
+            } else {
+                "objects = {}"
+            };
+            segments.push(format!(
+                "{{ entity = -120, type = 0, comp = {{ node0 = -11, node1 = 10, type = 0, typeIndex = -1, \
+                 tangent0 = {{ x = 40, y = 0, z = 0 }}, tangent1 = {{ x = 40, y = 0, z = 0 }}, \
+                 roadTemplate = '::/street/town_small.street_template', roadStyle = '', {object} }} }}"
+            ));
+            if external_signal {
+                rows.push(
+                    "{ resultEntity = -1, category = 2, left = false, playerEntity = 25, name = 'Okehampton Airfield' }".to_owned(),
+                );
+            }
+        }
+        AIRFIELD_PROPOSAL
+            .replace("{NODES}", &nodes)
+            .replace("{SEGMENTS}", &segments.join(","))
+            .replace("{OBJECT_ROWS}", &rows.join(","))
+    };
+
+    // Internal runway/taxiway signals are recreated by the airfield
+    // construction itself; the isolated component contributes no road action.
+    let isolated = proposal(false, false);
+    let (connection, accepted): (String, bool) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action, why = capture.construction({isolated}) \
+             if not action then error(why) end \
+             return tostring(action.BuildConstruction.connection), schema_check(action)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(connection, "nil");
+    assert!(accepted, "the schema takes the construction action");
+
+    // The same airport proposal with an external road edge retains that one
+    // edge while the isolated internal signal and runway edges are omitted.
+    let mixed = proposal(true, false);
+    let (links, accepted): (usize, bool) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action, why = capture.construction({mixed}) \
+             if not action then error(why) end \
+             return #action.BuildConstruction.connection.links, schema_check(action)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(links, 1, "the external road remains in the action");
+    assert!(accepted);
+
+    // A signal attached to the external road is not an airport-internal
+    // object and the entire construction action stays refused.
+    let with_external_signal = proposal(true, true);
+    let refusal: String = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local _, why = capture.construction({with_external_signal}) return why"
+        ))
+        .eval()
+        .unwrap();
+    assert_eq!(refusal, "a build with a stop or signal");
+
+    // An airport module edit also replaces its generated runway signals. If
+    // the edit changes the surrounding road, carry the split and airport
+    // access branch, while omitting the old construction's own removals and
+    // the new construction's regenerated signal objects.
+    let edit = proposal(true, false);
+    let (links, removals, replaces, accepted): (usize, usize, String, bool) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local p = {edit} \
+             api.type.ComponentType.CONSTRUCTION = 2 \
+             local frozen = {{}} for edge = 7607, 7627 do frozen[#frozen+1] = edge end \
+             local old = {{ fileName = '::/stations/air/airfield.con', \
+                 transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 300,0,0,1 }}, \
+                 townBuildings = {{}}, frozenEdges = frozen, frozenNodes = {{}} }} \
+             CONSTRUCTIONS = {{ [77] = old }} \
+             local get = api.engine.getComponent \
+             api.engine.getComponent = function(e, k) \
+                 if e == 77 and k == 2 then return old end return get(e, k) end \
+             p.toRemove = {{ 77 }} \
+             p.proposal.addedNodes[#p.proposal.addedNodes + 1] = \
+                 {{ entity = -12, comp = {{ position = {{ x = 0, y = 0, z = 0 }} }} }} \
+             p.proposal.addedSegments[#p.proposal.addedSegments + 1] = \
+                 {{ entity = -121, type = 0, comp = {{ node0 = 7, node1 = -11, type = 0, typeIndex = -1, \
+                    tangent0 = {{ x = 0, y = 10, z = 0 }}, tangent1 = {{ x = 0, y = 10, z = 0 }}, \
+                    roadTemplate = '::/street/town_small.street_template', roadStyle = '', objects = {{}} }} }} \
+             p.proposal.addedSegments[#p.proposal.addedSegments + 1] = \
+                 {{ entity = -122, type = 0, comp = {{ node0 = -11, node1 = -12, type = 0, typeIndex = -1, \
+                    tangent0 = {{ x = 0, y = 10, z = 0 }}, tangent1 = {{ x = 0, y = 10, z = 0 }}, \
+                    roadTemplate = '::/street/town_small.street_template', roadStyle = '', objects = {{}} }} }} \
+             local signalIds = {{ 7091,7011,7109,6229,7296,6230,6948,7583,7229 }} \
+             local signalEdges = {{ 7613,7614,7616,7619,7620,7621,7624,7625,7626 }} \
+             local signals = {{}} for i, edge in ipairs(signalEdges) do signals[edge] = signalIds[i] end \
+             p.proposal.removedSegments = {{}} \
+             for edge = 7607, 7627 do \
+                 local id = signals[edge] local objects = id and {{ {{ id, 2 }} }} or {{}} \
+                 p.proposal.removedSegments[#p.proposal.removedSegments+1] = \
+                     {{ entity = edge, type = 0, comp = {{ objects = objects }} }} \
+             end \
+             p.proposal.removedSegments[#p.proposal.removedSegments+1] = \
+                 {{ entity = 101, type = 0, comp = {{ node0 = 10, node1 = 7, objects = {{}} }} }} \
+             p.proposal.edgeObjectsToRemove = signalIds \
+             local action, why = capture.construction(p) \
+             if not action then error(why) end \
+             local c = action.BuildConstruction.connection \
+             return #c.links, #c.removals, action.BuildConstruction.replaces.file, schema_check(action)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        links, 3,
+        "both sides of the road split and airport access stay linked"
+    );
+    assert_eq!(removals, 1, "the external road edge is carried once");
+    assert_eq!(
+        replaces, "::/stations/air/airfield.con",
+        "the signal-bearing airfield is still the construction being edited"
+    );
+    assert!(accepted, "the edited airport action fits the schema");
+}
+
+#[test]
+fn an_airfield_module_edit_rebuilds_only_its_frozen_runway_signals() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load("api.type.enum.EdgeObjectType = { SIGNAL = 2 }")
+        .exec()
+        .unwrap();
+
+    let nodes = (1..=10)
+        .map(|id| {
+            format!("{{ entity = -{id}, comp = {{ position = {{ x = {id}, y = 0, z = 0 }} }} }}")
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let signal_offsets = [1, 0, 2, 3, 4, 5, 6, 7, 8];
+    let added_segments = (0..9)
+        .map(|i| {
+            let object = -400_000_000 - signal_offsets[i];
+            format!(
+                "{{ entity = -{}, type = 0, comp = {{ node0 = -{}, node1 = -{}, type = 0, typeIndex = -1, \
+                 tangent0 = {{ x = 1, y = 0, z = 0 }}, tangent1 = {{ x = 1, y = 0, z = 0 }}, \
+                 roadTemplate = '::/street/town_small.street_template', roadStyle = '', objects = {{ {{ {object}, 2 }} }} }} }}",
+                101 + i,
+                i + 1,
+                i + 2
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let added_objects = (0..9)
+        .map(|_| {
+            "{ resultEntity = -1, category = 2, left = false, playerEntity = 25, name = 'Okehampton Airfield' }"
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let removed_ids = [7091, 7011, 7109, 6229, 7296, 6230, 6948, 7583, 7229];
+    let removed_edges = [7613, 7614, 7616, 7619, 7620, 7621, 7624, 7625, 7626];
+    let removed_segments = removed_edges
+        .iter()
+        .zip(removed_ids)
+        .map(|(edge, object)| {
+            format!(
+                "{{ entity = {edge}, type = 0, comp = {{ node0 = 500, node1 = 501, objects = {{ {{ {object}, 2 }} }} }} }}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let remove_rows = removed_ids
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let full = AIRFIELD_PROPOSAL
+        .replace("{NODES}", &nodes)
+        .replace("{SEGMENTS}", &added_segments)
+        .replace("{OBJECT_ROWS}", &added_objects)
+        .replace("toRemove = {}", "toRemove = { 77 }")
+        .replace(
+            "removedSegments = {}, removedNodes = {}",
+            &format!("removedSegments = {{ {removed_segments} }}, removedNodes = {{}}"),
+        )
+        .replace(
+            "edgeObjectsToRemove = {}",
+            &format!("edgeObjectsToRemove = {{ {remove_rows} }}"),
+        );
+    // Keep the fixture easy to inspect if the native proposal shape changes.
+    assert!(full.contains("edgeObjectsToRemove = { 7091,7011,7109"));
+
+    lua.load(NATIVE_OF).exec().unwrap();
+    let frozen = (7607..=7627)
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let action: (bool, String) = lua
+        .load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local full = {full} \
+             FULL = function() return full end \
+             api.type.ComponentType = {{ CONSTRUCTION = 2 }} \
+             local old = {{ fileName = '::/stations/air/airfield.con', \
+                 transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 300,0,0,1 }}, \
+                 townBuildings = {{}}, frozenEdges = {{ {frozen} }}, frozenNodes = {{}} }} \
+             api.engine.getComponent = function(entity, kind) \
+                 if entity == 77 and kind == 2 then return old end return nil end \
+             api.engine.util = {{ proposal = {{ createProposalReplaceConstruction = function() return FULL() end }} }} \
+             local action, why = capture.moduleEdit(NATIVE_OF(FULL())) \
+             if not action then return false, why end \
+             return schema_check(action), tostring(action.BuildConstruction.connection)"
+        ))
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(action, (true, "nil".to_owned()));
+
+    // One signal on a non-frozen edge makes the replacement external, even
+    // when its ID and type otherwise match the removed-object list.
+    let refusal: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local old = api.engine.getComponent(77, 2) \
+             old.frozenEdges = { 7607,7608,7609,7610,7611,7612,7613,7614,7616,7619,7620,7621,7624,7625 } \
+             local action, why = capture.construction(FULL()) \
+             return tostring(action) .. ' ' .. tostring(why)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(refusal, "nil a build with a removed stop or signal");
+}
 
 #[test]
 fn a_rail_station_on_open_ground_leaves_its_own_track_to_the_station() {
@@ -6118,6 +6406,125 @@ fn the_bulldozer_removes_a_construction_or_edges_in_every_game() {
         .eval()
         .unwrap();
     assert_eq!(why, "removing an edge with a stop or signal on it");
+}
+
+#[test]
+fn the_bulldozer_removes_only_a_stock_airports_frozen_runway_signals() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(
+        "api.type.enum.EdgeObjectType = { SIGNAL = 2 } \
+         api.type.ComponentType.CONSTRUCTION = 2 \
+         local ids = { 6454,6229,7011,7012,7091,7109,7165,7229,7286 } \
+         local carriers = { [7614] = 6454, [7615] = 6229, [7617] = 7011, \
+             [7620] = 7012, [7621] = 7091, [7622] = 7109, [7625] = 7165, \
+             [7626] = 7229, [7627] = 7286 } \
+         local frozen = {} for edge = 7608, 7628 do frozen[#frozen+1] = edge end \
+         CONSTRUCTIONS = { [77] = { fileName = '::/stations/air/airfield.con', \
+             transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 300,0,0,1 }, \
+             townBuildings = {}, frozenEdges = frozen } } \
+         local prior = api.engine.getComponent \
+         api.engine.getComponent = function(entity, kind) \
+             if kind == 2 then return CONSTRUCTIONS[entity] end return prior(entity, kind) end \
+         function AIRPORT_REMOVE() \
+             local segments, removed = {}, {} \
+             for i, id in ipairs(ids) do removed[i] = id end \
+             for edge = 7608, 7628 do \
+                 local id = carriers[edge] local objects = id and { { id, 2 } } or {} \
+                 segments[#segments+1] = { entity = edge, type = 0, comp = { objects = objects } } \
+             end \
+             return { toAdd = {}, toRemove = { 77 }, proposal = { \
+                 addedNodes = {}, addedSegments = {}, removedNodes = {}, removedSegments = segments, \
+                 edgeObjectsToAdd = {}, edgeObjectsToRemove = removed } } \
+         end",
+    )
+    .exec()
+    .unwrap();
+
+    let (accepted, file, at, schema): (bool, String, f64, bool) = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action, why = capture.bulldoze(AIRPORT_REMOVE()) \
+             if not action then error(why) end \
+             local c = action.Bulldoze.Construction \
+             return true, c.file, c.at.x, schema_check(action)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(accepted);
+    assert_eq!(file, "::/stations/air/airfield.con");
+    assert_eq!(at, 300.0);
+    assert!(schema);
+
+    let airport: bool = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             CONSTRUCTIONS[77].fileName = '::/stations/air/airport.con' \
+             local action = capture.bulldoze(AIRPORT_REMOVE()) return action ~= nil",
+        )
+        .eval()
+        .unwrap();
+    assert!(
+        airport,
+        "the stock large airport uses the same scoped signal batch"
+    );
+
+    // The same object rows on a non-stock construction stay refused.
+    let refusal: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             CONSTRUCTIONS[77].fileName = '::/stations/rail/rail_station.con' \
+             local _, why = capture.bulldoze(AIRPORT_REMOVE()) return why",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(refusal, "removing a stop or signal");
+
+    // Airport signals carried by an external edge are not its runway batch.
+    let refusal: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             CONSTRUCTIONS[77].fileName = '::/stations/air/airfield.con' \
+             local p = AIRPORT_REMOVE() p.proposal.removedSegments[7].entity = 9000 \
+             local _, why = capture.bulldoze(p) return why",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(refusal, "removing a stop or signal");
+
+    // Stops, unmatched objects, and duplicate carrier IDs remain refused.
+    for (mutation, expected) in [
+        (
+            "p.proposal.removedSegments[#p.proposal.removedSegments] = nil",
+            "removing a stop or signal",
+        ),
+        (
+            "p.proposal.removedSegments[#p.proposal.removedSegments+1] = { entity = 9000, type = 0, comp = { objects = {} } }",
+            "removing a stop or signal",
+        ),
+        (
+            "p.proposal.removedSegments[7].comp.objects[1][2] = 0",
+            "removing a stop or signal",
+        ),
+        (
+            "p.proposal.removedSegments[7].comp.objects[1][1] = 9900",
+            "removing a stop or signal",
+        ),
+        (
+            "p.proposal.removedSegments[8].comp.objects[1][1] = 6454",
+            "removing a stop or signal",
+        ),
+    ] {
+        let refusal: String = lua
+            .load(format!(
+                "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+                 local p = AIRPORT_REMOVE() {mutation} \
+                 local _, why = capture.bulldoze(p) return why"
+            ))
+            .eval()
+            .unwrap();
+        assert_eq!(refusal, expected);
+    }
 }
 
 /// Town buildings over FAKE_NETWORK, as the game has them: constructions
