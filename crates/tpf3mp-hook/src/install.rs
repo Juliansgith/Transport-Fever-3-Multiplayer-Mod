@@ -249,7 +249,10 @@ pub(crate) fn menu_frame(menu: usize) {
         }
         return;
     }
-    if !seen.allows() || !crate::menu::available() {
+    // Room control (including Leave) must progress even if the menu's
+    // Lua registration was missed. Only serving a load requires that state;
+    // `serve` reports its absence instead of freezing the room's message queue.
+    if !seen.allows() {
         for line in lines {
             log_line(&line);
         }
@@ -1174,6 +1177,46 @@ mod tests {
         CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 
+    #[test]
+    fn a_menu_without_its_lua_state_still_processes_start_and_leave() {
+        let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        lua::forget_worlds();
+        forget_menu_sight();
+        crate::menu::tests::menu51();
+        assert!(!crate::menu::available());
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.push_back(StepGate::Wait);
+        script.departure_done = true;
+        script.reset_ended = true;
+        *DRIVER.lock().unwrap() = Some(Box::new(StepDriver::new(
+            script,
+            Box::new(FakeControl::default()),
+        )));
+        let mut cmenu = [0usize; 3];
+        crate::menu::set_load_field(16);
+        let at = cmenu.as_mut_ptr() as usize;
+        menu_frame(at);
+        assert!(
+            DRIVER.lock().unwrap().as_ref().unwrap().in_room(),
+            "Begin must not block the lobby queue when menu Lua is missing"
+        );
+        DRIVER
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .lobby(vec![tpf3mp_bridge::LobbyAction::Leave]);
+        menu_frame(at);
+        assert!(
+            !DRIVER.lock().unwrap().as_ref().unwrap().in_room(),
+            "Leave must drain End and return to the lobby without menu Lua"
+        );
+        *DRIVER.lock().unwrap() = None;
+        IN_ROOM.store(false, Ordering::Release);
+        forget_menu_sight();
+    }
+
     /// A game at its main menu, no world up: the menu's frame follows the
     /// room into its game and has the menu's Lua load the room's save.
     #[test]
@@ -1197,7 +1240,7 @@ mod tests {
         )
         .unwrap();
         let mut script = Script::default();
-        script.begin.extend([None, Some(begin())]);
+        script.begin.extend([None, None, Some(begin())]);
         script.gates.push_back(StepGate::Load(Load {
             file: Some(room.clone()),
             next_step: 9,
