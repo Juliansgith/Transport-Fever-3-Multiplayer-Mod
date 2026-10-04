@@ -192,7 +192,7 @@ The local build uses the machine's `quiet-cargo` wrapper automatically when
 installed, so its build shares the queue and CPU cap with other sessions.
 
 The `release` workflow runs the same `verify-build` check on pushes to
-`feat/game-update-*`, `dev`, `acceptance` and `main`, and on manual runs.
+`feat/game-update-*`, `feat/upstream-update-*`, `dev`, `acceptance` and `main`, and on manual runs.
 Packages are built on `main` or
 manual runs with `verify_only` left off; a failed check blocks every package.
 Other feature branches can run it manually with `verify_only` enabled. Set up:
@@ -204,6 +204,11 @@ Other feature branches can run it manually with `verify_only` enabled. Set up:
 - the repository variable `TPF3MP_GAME_ARCHIVE`, an absolute path to the
   complete source archive readable by that runner, outside its checkout.
 
+Set up the runner and repository variable in each repository before merging
+these release-workflow changes there. A runner registered to a fork and the
+fork's variables do not configure upstream. Without the variable the workflow
+fails; with an offline runner the verification job waits and packaging stays
+blocked. Keep the gate enabled and complete the operator setup before using it.
 The workflow requires a clean checkout of the exact release commit and records
 it alongside the bundle file hashes and target results. Only
 `game-build-verification.json` is
@@ -223,7 +228,7 @@ non-admin machine it can start hidden at that account's Windows login instead
 of being installed as a service. Keep runner credentials and archives outside
 Git, and use the Release archive until a reviewed Preview bundle is selected.
 
-For static work on `feat/game-update-*`, the optional repository variable
+For static work on `feat/game-update-*` or `feat/upstream-update-*`, the optional repository variable
 `TPF3MP_CANDIDATE_GAME_ARCHIVE` names a second complete private archive.
 When configured, the same private job also runs `tpfre verify` against all
 candidate signatures, including optional targets, and uploads the separate

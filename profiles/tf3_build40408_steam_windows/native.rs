@@ -15,6 +15,7 @@ pub mod menu;
 pub mod modules;
 pub mod order;
 pub mod persons;
+pub mod previewcancel;
 pub mod probe;
 pub mod seeds;
 pub mod stoptool;

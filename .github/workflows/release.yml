@@ -22,7 +22,7 @@ name: release
 #   self-hosted Windows runner labelled `tpf3mp-game-builds`. Missing input
 #   or a failed check stops every package, including manual workflow runs.
 # - TPF3MP_CANDIDATE_GAME_ARCHIVE: optional private archive for static candidate
-#   signature checks on feat/game-update-*; never selects a native bundle.
+#   signature checks on update feature branches; never selects a native bundle.
 #
 # It signs nothing: publishing a release starts sign.yml, which signs it
 # for the updater in the protected `release` environment. Actions are
@@ -39,7 +39,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [dev, acceptance, main, 'feat/game-update-*']
+    branches: [dev, acceptance, main, 'feat/game-update-*', 'feat/upstream-update-*']
 
 permissions:
   contents: read
@@ -121,7 +121,7 @@ jobs:
             throw 'Verification must describe this exact checkout and its static check only'
           }
       - name: Verify all candidate signatures against the private archive
-        if: startsWith(github.ref, 'refs/heads/feat/game-update-') && env.TPF3MP_CANDIDATE_GAME_ARCHIVE != ''
+        if: (startsWith(github.ref, 'refs/heads/feat/game-update-') || startsWith(github.ref, 'refs/heads/feat/upstream-update-')) && env.TPF3MP_CANDIDATE_GAME_ARCHIVE != ''
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'

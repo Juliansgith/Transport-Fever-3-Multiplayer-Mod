@@ -31,7 +31,7 @@ fn preview_pins_its_exact_identity_and_preserves_release_target_coverage() {
     );
     assert_eq!(preview.build.size, Some(69_756_856));
     assert_eq!(preview.build.pe_timestamp, Some(1_790_974_087));
-    assert_eq!(preview.targets.len(), 143);
+    assert_eq!(preview.targets.len(), 145);
     let coverage = |profile: &Profile| {
         profile
             .targets
