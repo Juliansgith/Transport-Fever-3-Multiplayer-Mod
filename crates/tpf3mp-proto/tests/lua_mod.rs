@@ -5838,6 +5838,40 @@ fn a_town_building_bulldozed_goes_in_every_game_charged_to_the_players_company()
     );
 }
 
+/// Behind `TPF3MP_NO_BULLDOZE_PREVIEW=1` the demolition preview is not made at
+/// all, and says so: it is the one preview that has taken the game down, and
+/// the switch has to be usable without rebuilding the hook that carries every
+/// other flag.
+#[test]
+fn a_demolition_preview_can_be_turned_off_without_a_rebuild() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    let both = lua
+        .load(
+            "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+             local action = { Bulldoze = { Edges = { network = 'Street', \
+                 edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
+                 buildings = {} } } } \
+             os = { getenv = function(name) \
+                 if name == 'TPF3MP_NO_BULLDOZE_PREVIEW' then return '1' end return nil end } \
+             HOOK.logged = {} \
+             local p, why = apply.proposalOf(action, { company = 7 }) \
+             local a = tostring(p) .. '|' .. tostring(why) .. '|' .. #HOOK.logged .. '|' .. #SENT \
+             os.getenv = nil \
+             HOOK.logged = {} \
+             p, why = apply.proposalOf(action, { company = 7 }) \
+             return a .. '|' .. #p .. '|' .. type(why) .. '|' .. #HOOK.logged",
+        )
+        .eval::<String>()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        both, "nil|the demolition preview is off (TPF3MP_NO_BULLDOZE_PREVIEW)|0|0|2|table|0",
+        "with the flag set: nothing proposed, the reason said, nothing sent or \
+         logged; without it: the two forms again, and nothing said"
+    );
+}
+
 /// The demolition preview's proposal adds each removed edge back under a new
 /// negative id, as the applied path does — but the component copy still names
 /// the edge's own id, and the replicator asserts that the two are the same

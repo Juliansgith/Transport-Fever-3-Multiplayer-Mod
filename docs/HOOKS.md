@@ -3223,6 +3223,21 @@ Both halves were found in the room's games on 2026-10-04, and the second
   bulldozer took the game down (minidump, `stackTrace: null`, then a hang;
   2026-10-04). So `edgesAddedBack` gives the copy the segment's new id as well
   (`s.comp.entity = s.entity`), and the replicator finds them equal.
+- **…and the demolition preview still ends the game, so it can be turned off
+  without a rebuild.** With the assertion gone (no `Assertion` line is logged
+  any more), selecting the bulldozer took the game down anyway: a plain native
+  crash, minidump with `stackTrace: null`, then a hang, with nothing in either
+  hook's log and no preview line drawn at all. So the crash is not yet
+  explained, and there is no way to catch it from Lua.
+
+  `TPF3MP_NO_BULLDOZE_PREVIEW=1` therefore stops `apply.proposalOf` from
+  running the `Bulldoze` handler at all: the other member is shown nothing and
+  the game stays up. The env is read in `apply.lua` rather than through the
+  hook, so the switch needs no rebuild of the DLL that carries every other
+  flag. Run once with it and once without: if the game survives with it, the
+  demolition preview is where the crash is; if it does not, the cause is the
+  game's own bulldozer or the `UI::Bulldozer` detours, which
+  `TPF3MP_HOOK_TOOL_COMPANY=0` turns off on their own.
 - **Open.** One run of the room (2026-10-04) ended in
   `ecs::Replicator::Apply`, *"Assertion 'entity == c.entity' failed"*, on the
   simulation thread through `tpf3mp_sim.script.lua`'s `followInGui` — the

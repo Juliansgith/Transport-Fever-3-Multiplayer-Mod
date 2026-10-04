@@ -2265,11 +2265,28 @@ apply.PREVIEWS = { BuildConstruction = true, BuildRoad = true, BuildTrack = true
 -- (tpf3mp/bridge.lua, Link:drawPreview); a build's list has one entry. Or nil
 -- and why: an action that is not a build or a removal, or one this game
 -- cannot make (a street type it lacks, an edge it does not have).
+-- Whether the demolition preview is made at all. It is the one preview that
+-- has taken the game down on this build: the game's own assertion
+-- (`entity == c.entity`, ecs::Replicator::Apply) is gone since each added
+-- edge's copy was given the segment's new id, but selecting the bulldozer
+-- still ends the game, natively and past any pcall (docs/HOOKS.md, "Build
+-- previews"). Behind TPF3MP_NO_BULLDOZE_PREVIEW=1 the handler is not run, so
+-- the other member sees nothing and the game stays up while that is looked
+-- at; the env is read here because the switch has to be usable without a
+-- rebuild of the hook, which is where every other flag comes from.
+local function bulldozePreviewOn()
+	local ok, off = pcall(function() return os.getenv("TPF3MP_NO_BULLDOZE_PREVIEW") end)
+	return not (ok and off == "1")
+end
+
 function apply.proposalOf(action, ctx)
 	if type(action) ~= "table" then return nil, "an action is a table" end
 	local kind, body = next(action)
 	if kind == nil or next(action, kind) ~= nil then return nil, "an action is a table of one entry" end
 	if not apply.PREVIEWS[kind] then return nil, "no preview of " .. tostring(kind) end
+	if kind == "Bulldoze" and not bulldozePreviewOn() then
+		return nil, "the demolition preview is off (TPF3MP_NO_BULLDOZE_PREVIEW)"
+	end
 	local allowed, why = acceptance.check(action)
 	if not allowed then return nil, why end
 	dry, acting = true, ctx
