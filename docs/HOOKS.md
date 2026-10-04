@@ -5201,3 +5201,11 @@ Menu room control continues even if its Lua loading state is unavailable,
 provided the native checks establish that no world is loaded or loading.
 This keeps Start and Leave processing alive; entering menu Lua remains guarded
 by the loading API's state checks. No game simulation runs from this path.
+
+The launcher must continue servicing the shared-memory Hello handshake while
+Windows waits for readiness. Launch runs on a blocking worker; the async
+launcher pumps the idle link through Hello and keeps its heartbeat alive until
+startup completes. Otherwise hook attachment waits for a launcher reply while
+the launcher waits for hook attachment, causing multiplayer to disable itself.
+Menu actions after Hello stay queued for the normal launcher loop. An existing
+room session continues servicing its own link on the async runtime.
