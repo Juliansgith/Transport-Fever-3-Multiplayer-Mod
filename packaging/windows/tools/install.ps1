@@ -48,6 +48,18 @@ $Steps = New-Object System.Collections.Generic.List[hashtable]
 
 function Say([string]$Text) { Write-Host $Text }
 
+# Rust's canonical Steam paths use the Win32 extended namespace. Windows
+# PowerShell 5.1's FileSystem provider cannot create folders through that
+# spelling (New-Item reports a null drive). Keep local and UNC paths intact
+# while converting only these two equivalent namespace prefixes.
+function Convert-InstallerPath([string]$Path) {
+    if ($Path.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+        return '\\' + $Path.Substring(8)
+    }
+    if ($Path -match '^\\\\\?\\[A-Za-z]:\\') { return $Path.Substring(4) }
+    return $Path
+}
+
 function Get-Field($Object, [string]$Name) {
     if ($null -eq $Object) { return $null }
     $property = $Object.PSObject.Properties[$Name]
@@ -87,7 +99,7 @@ function On-Failure([string]$Undo, [string]$Path, $Back) {
 function Get-SteamRoots {
     $candidates = New-Object System.Collections.Generic.List[string]
     if ($SteamRoot) {
-        $candidates.Add($SteamRoot)
+        $candidates.Add((Convert-InstallerPath $SteamRoot))
     }
     else {
         try {
@@ -180,10 +192,11 @@ function Read-Record([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
     try { $record = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
     catch { throw "$Path is damaged." }
-    $mod = [string](Get-Field $record 'mod')
+    $mod = Convert-InstallerPath ([string](Get-Field $record 'mod'))
     if (-not [IO.Path]::IsPathRooted($mod) -or (Split-Path -Leaf $mod) -cne $ModName -or $mod -match '(^|[\\/])\.\.([\\/]|$)') {
         throw "$Path names something other than the TPF3-MP mod."
     }
+    $record.mod = $mod
     return $record
 }
 
@@ -225,7 +238,7 @@ function Install([string]$RecordPath, [string]$Backups) {
         return
     }
     $previous = Read-Record $RecordPath
-    $mods = $ModsDir
+    $mods = Convert-InstallerPath $ModsDir
     if (-not $mods -and $null -ne $previous) { $mods = Split-Path -Parent ([string](Get-Field $previous 'mod')) }
     if (-not $mods) { $mods = Find-ModsDir }
     if (-not $mods) {
