@@ -8,9 +8,11 @@
 //!   (`revyn112_towns_de` in `...\6414521`);
 //! - local mods: `<Steam>\userdata\<account>\3493540\local\staging_area\<modId>`
 //!   (investigation/TF3_MODS_2026-09-27.md), and `...\local\mods`;
-//! - the game's own: `<game>\mods`, `<game>\mods\release` (its built-in
-//!   mods, `urbangames_no_costs` among them) and `<game>\dlcs`.
-
+//! - the game's own: `<game>\mods`, `<game>\mods\release` and
+//!   `<game>\dlcs`. `release` holds the game's built-in mods, the ones a
+//!   save lists as `urbangames_no_costs_1`, `urbangames_sandbox_1` and so
+//!   on, and the campaign's (21 mods on one PC, 2026-10-04; the `mw_*` among
+//!   them were also in `<game>\mods`, with the same files).
 //!
 //! A mod is found by the id its `mod.json` gives, or else by its folder's
 //! name. A save lists a Mod Hub mod by the `modId` (`revyn112_towns_de`,
@@ -275,7 +277,8 @@ mod tests {
             &game.join("dlcs/urbangames_preorder_pack/mod.json"),
             r#"{"modId": "urbangames_preorder_pack"}"#,
         );
-        // The game's built-in mods, one folder down.
+        // The game's built-in mods, in a folder of their own; once taken
+        // for not a mod, as it has no mod.json itself (2026-10-04).
         write(
             &game.join("mods/release/urbangames_no_costs/mod.json"),
             r#"{"modId": "urbangames_no_costs_1"}"#,

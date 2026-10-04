@@ -103,6 +103,351 @@ end
 -- (capture.ownStreets, below), and the street part without them.
 local ownRemovals, withoutOwn
 
+local function stockAirport(file)
+	return file == "::/stations/air/airfield.con" or file == "::/stations/air/airport.con"
+end
+
+-- A stock airport's replacement proposal may remove its generated runway
+-- signals as well as the construction. Allow only signal IDs that occur once
+-- on removed segments frozen into the same old airport; every external object
+-- change stays refused. Return the removed segments with those internal
+-- signal references stripped, or nil and why.
+local function airportRemovalSegments(street, file, oldConstruction, signalType, removes, removeCount)
+	local oldFile = get(oldConstruction, "fileName")
+	if not stockAirport(file) or oldFile ~= file then return nil, "not a replacement of the same stock airport" end
+	local frozenEdges = {}
+	local frozen = get(oldConstruction, "frozenEdges")
+	local frozenCount = length(frozen)
+	if frozenCount == nil or frozenCount == 0 then return nil, "the old airport has no frozen edges" end
+	for i = 1, frozenCount do
+		local id = get(frozen, i)
+		if type(id) ~= "number" or id ~= math.floor(id) or id <= 0 or frozenEdges[id] then
+			return nil, "the old airport's frozen edges are unreadable"
+		end
+		frozenEdges[id] = true
+	end
+	local removedIds = {}
+	for i = 1, removeCount do
+		local row = get(removes, i)
+		local id = type(row) == "number" and row or get(row, "entity")
+		if type(id) ~= "number" or id ~= math.floor(id) or id <= 0 or removedIds[id] then
+			return nil, "the removed airport object IDs are unreadable or repeated"
+		end
+		removedIds[id] = true
+	end
+	local segments = get(street, "removedSegments")
+	local count = length(segments)
+	if count == nil then return nil, "the removed airport segments are unreadable" end
+	local occurrences, safe, signature = {}, {}, {}
+	for i = 1, count do
+		local segment = get(segments, i)
+		local edgeId, comp = get(segment, "entity"), get(segment, "comp")
+		local objects = get(comp, "objects")
+		local objectCount = length(objects)
+		if type(edgeId) ~= "number" or edgeId ~= math.floor(edgeId) or edgeId < 0 or objectCount == nil then
+			return nil, "a removed airport segment is unreadable"
+		end
+		local kept, filtered = {}, false
+		for k = 1, objectCount do
+			local pair = get(objects, k)
+			local objectId, kind = get(pair, 1), get(pair, 2)
+			if removedIds[objectId] then
+				if kind ~= signalType or not frozenEdges[edgeId] then
+					return nil, "a removed object is not a signal on an old airport edge"
+				end
+				occurrences[objectId] = (occurrences[objectId] or 0) + 1
+				if occurrences[objectId] ~= 1 then return nil, "a removed airport signal has more than one carrier" end
+				signature[#signature + 1] = table.concat({ objectId, edgeId, kind }, ":")
+				filtered = true
+			elseif objectCount > 0 then
+				-- The airport's own edge may carry only the signals named for
+				-- removal; an object on a road being split remains unsupported.
+				return nil, "a removed edge carries an object outside the airport signal batch"
+			end
+		end
+		if filtered then
+			local compView = setmetatable({ objects = kept }, {
+				__index = function(_, key) return get(comp, key) end,
+			})
+			safe[i] = setmetatable({ comp = compView }, {
+				__index = function(_, key) return get(segment, key) end,
+			})
+		else
+			safe[i] = segment
+		end
+	end
+	for id in pairs(removedIds) do
+		if occurrences[id] ~= 1 then return nil, "a removed airport signal has no unique old-edge carrier" end
+	end
+	table.sort(signature)
+	return safe, table.concat(signature, "|")
+end
+
+-- Airport constructions generate runway/taxiway signals as part of their
+-- own internal network. Construction replay regenerates that network, so
+-- those signal records must not be carried as a separate road action. The
+-- exception is limited to the stock airport signals: their proposal rows
+-- all use resultEntity=-1, while added-edge object IDs are the unique reserved
+-- range beginning at -400000000. Strip them only when the counts and signal
+-- types agree and each carrier's entire component uses newly added nodes.
+-- Other IDs, categories, and objects on external components stay refused.
+--
+-- Some builds expose the construction's frozen edge list on the proposal;
+-- when it is present, it further narrows the allowed carrier edges. The
+-- Steam 40408 airport proposal does not expose that list, so the all-new
+-- isolated-component check is the conservative fallback.
+local function constructionObjects(proposal, con, oldConstruction)
+	local function refuse(reason) return nil, reason end
+	local street = get(proposal, "proposal")
+	local adds = get(street, "edgeObjectsToAdd")
+	local removes = get(street, "edgeObjectsToRemove")
+	local addCount, removeCount = length(adds), length(removes)
+	if addCount == nil or removeCount == nil then
+		return refuse("a proposal it cannot read", "counts unreadable")
+	end
+	local file = get(con, "fileName")
+	local objectTypes = api.type.enum and api.type.enum.EdgeObjectType
+	local signalType = objectTypes and objectTypes.SIGNAL
+	if type(signalType) ~= "number" then
+		if removeCount > 0 or addCount > 0 then return refuse("a build with a stop or signal", "signal enum", signalType) end
+	end
+	local keptRemovedSegments = get(street, "removedSegments")
+	local removedSignature = ""
+	if removeCount > 0 then
+		local safe, why = airportRemovalSegments(street, file, oldConstruction, signalType, removes, removeCount)
+		if safe == nil then return refuse("a build with a removed stop or signal", "object removals", why) end
+		keptRemovedSegments = safe
+		removedSignature = why
+	end
+	if addCount == 0 and removeCount == 0 then return proposal, "" end
+	if not stockAirport(file) then
+		return refuse("a build with a stop or signal", "construction file", file)
+	end
+	if addCount == 0 then
+		local streetView = setmetatable({ removedSegments = keptRemovedSegments,
+			edgeObjectsToAdd = {}, edgeObjectsToRemove = {} }, {
+			__index = function(_, key) return get(street, key) end,
+		})
+		return setmetatable({ proposal = streetView }, { __index = function(_, key) return get(proposal, key) end }), ""
+	end
+
+	local addedNodes = get(street, "addedNodes")
+	local nodeCount = length(addedNodes)
+	local segments = get(street, "addedSegments")
+	local segmentCount = length(segments)
+	if nodeCount == nil or segmentCount == nil then
+		return refuse("a proposal it cannot read", "graph counts", tostring(nodeCount) .. "/" .. tostring(segmentCount))
+	end
+	local newNodes = {}
+	for i = 1, nodeCount do
+		local id = get(get(addedNodes, i), "entity")
+		if type(id) ~= "number" or id ~= math.floor(id) or id >= 0 or newNodes[id] then
+			return refuse("a build with a stop or signal", "added node id", i .. ":" .. tostring(id))
+		end
+		newNodes[id] = true
+	end
+
+	local segmentIds, segmentNodes, adjacent = {}, {}, {}
+	for i = 1, segmentCount do
+		local seg = get(segments, i)
+		local id, comp = get(seg, "entity"), get(seg, "comp")
+		local a, b = get(comp, "node0"), get(comp, "node1")
+		if type(id) ~= "number" or id ~= math.floor(id) or id >= 0 or segmentIds[id]
+			or type(a) ~= "number" or a ~= math.floor(a) or type(b) ~= "number" or b ~= math.floor(b)
+			or a == b then
+			return refuse("a build with a stop or signal", "added segment shape",
+				i .. ":" .. tostring(id) .. ":" .. tostring(a) .. ">" .. tostring(b))
+		end
+		segmentIds[id] = i
+		segmentNodes[i] = { a, b }
+		for _, node in ipairs({ a, b }) do
+			adjacent[node] = adjacent[node] or {}
+			adjacent[node][#adjacent[node] + 1] = i
+		end
+	end
+
+	-- IDs of frozen edges, where the builder exposes them. If the list exists
+	-- and is nonempty, an object carrier must be one of those edges as well.
+	local frozenEdges = {}
+	local construction = get(con, "construction")
+	local frozenList = get(construction, "frozenEdges")
+	local frozenCount = length(frozenList)
+	if frozenCount == nil then return refuse("a proposal it cannot read", "frozen edges unreadable") end
+	for i = 1, frozenCount do
+		local id = get(frozenList, i)
+		if type(id) ~= "number" or id ~= math.floor(id) then
+			return refuse("a proposal it cannot read", "frozen edge id", i .. ":" .. tostring(id))
+		end
+		frozenEdges[id] = true
+	end
+
+	local function isolated(edgeIndex)
+		local seenEdges, seenNodes, pending = {}, {}, { edgeIndex }
+		while #pending > 0 do
+			local current = table.remove(pending)
+			if not seenEdges[current] then
+				seenEdges[current] = true
+				for _, node in ipairs(segmentNodes[current]) do
+					if node >= 0 or not newNodes[node] then return false end
+					if not seenNodes[node] then
+						seenNodes[node] = true
+						for _, neighbor in ipairs(adjacent[node]) do pending[#pending + 1] = neighbor end
+					end
+				end
+			end
+		end
+		return true
+	end
+
+	local name, player = get(con, "name"), get(con, "playerEntity")
+	if type(name) ~= "string" or name == "" or type(player) ~= "number" then
+		return refuse("a build with a stop or signal", "construction owner/name",
+			tostring(name) .. "/" .. tostring(player))
+	end
+	local rows, seenIds, repeated, allPlaceholder = {}, {}, false, true
+	for i = 1, addCount do
+		local object = get(adds, i)
+		local id = get(object, "resultEntity")
+		if type(id) ~= "number" or id ~= math.floor(id) or id >= 0
+			or get(object, "category") ~= 2 or get(object, "name") ~= name
+			or get(object, "playerEntity") ~= player then
+			return refuse("a build with a stop or signal", "object row",
+				i .. ":id=" .. tostring(id) .. ",category=" .. tostring(get(object, "category"))
+					.. ",name=" .. tostring(get(object, "name")) .. ",player=" .. tostring(get(object, "playerEntity"))
+					.. "; construction=" .. tostring(name) .. "/" .. tostring(player))
+		end
+		if seenIds[id] then repeated = true end
+		if id ~= -1 then allPlaceholder = false end
+		seenIds[id] = true
+		rows[i] = object
+	end
+	if repeated and not allPlaceholder then
+		return refuse("a build with a stop or signal", "duplicate result ids")
+	end
+	local reservedObjects = allPlaceholder
+	local records, resultIds = {}, {}
+	if not reservedObjects then
+		for _, object in ipairs(rows) do
+			local id = get(object, "resultEntity")
+			records[id] = object
+			resultIds[id] = true
+		end
+	end
+
+	local occurrences, signature = {}, {}
+	if removedSignature ~= "" then signature[#signature + 1] = "removed:" .. removedSignature end
+	if reservedObjects then
+		for _, object in ipairs(rows) do
+			signature[#signature + 1] = table.concat({ tostring(get(object, "resultEntity")),
+				tostring(get(object, "category")), tostring(get(object, "left")), tostring(name), tostring(player) }, ":")
+		end
+	end
+	local keptSegments = {}
+	for i = 1, segmentCount do
+		local seg = get(segments, i)
+		local comp = get(seg, "comp")
+		local objects = get(comp, "objects")
+		local objectCount = length(objects)
+		if objectCount == nil then return refuse("a proposal it cannot read", "segment objects unreadable", i) end
+		local keptObjects = {}
+		local filtered = false
+		for k = 1, objectCount do
+			local pair = get(objects, k)
+			local objectId, kind = get(pair, 1), get(pair, 2)
+			if reservedObjects then
+				local offset = type(objectId) == "number" and objectId == math.floor(objectId)
+					and (-400000000 - objectId) or nil
+				if offset == nil or offset < 0 or offset >= addCount then
+					return refuse("a build with a stop or signal", "unreserved object",
+						tostring(objectId) .. ":" .. tostring(kind) .. " on edge " .. tostring(get(seg, "entity")))
+				end
+				if kind ~= signalType then
+					return refuse("a build with a stop or signal", "reserved object type",
+						tostring(objectId) .. ":" .. tostring(kind))
+				end
+				occurrences[objectId] = (occurrences[objectId] or 0) + 1
+				if occurrences[objectId] ~= 1 then
+					return refuse("a build with a stop or signal", "reserved object duplicate", tostring(objectId))
+				end
+				local edgeId = get(seg, "entity")
+				local isIsolated = isolated(i)
+				if not isIsolated or (frozenCount > 0 and not frozenEdges[edgeId]) then
+					return refuse("a build with a stop or signal", "reserved object carrier",
+						tostring(objectId) .. ":edge=" .. tostring(edgeId) .. ",isolated=" .. tostring(isIsolated)
+							.. ",frozen=" .. tostring(frozenCount == 0 or frozenEdges[edgeId]))
+				end
+				signature[#signature + 1] = table.concat({ objectId, edgeId,
+					segmentNodes[i][1], segmentNodes[i][2], kind }, ":")
+				filtered = true
+			elseif records[objectId] then
+				if kind ~= signalType then
+					return refuse("a build with a stop or signal", "object type", tostring(objectId) .. ":" .. tostring(kind))
+				end
+				occurrences[objectId] = (occurrences[objectId] or 0) + 1
+				if occurrences[objectId] ~= 1 then
+					return refuse("a build with a stop or signal", "object duplicate", tostring(objectId))
+				end
+				local edgeId = get(seg, "entity")
+				local object = records[objectId]
+				local namedEdge = get(object, "edgeEntity")
+				if (namedEdge ~= nil and namedEdge ~= edgeId) or not isolated(i)
+					or (frozenCount > 0 and not frozenEdges[edgeId]) then
+					return refuse("a build with a stop or signal", "object carrier",
+						tostring(objectId) .. ":edge=" .. tostring(edgeId) .. ",named=" .. tostring(namedEdge)
+							.. ",isolated=" .. tostring(isolated(i)) .. ",frozen=" .. tostring(frozenCount == 0 or frozenEdges[edgeId]))
+				end
+				signature[#signature + 1] = table.concat({ objectId, edgeId,
+					segmentNodes[i][1], segmentNodes[i][2], kind }, ":")
+				filtered = true
+			else
+				if type(objectId) == "number" and objectId < 0 then
+					return refuse("a build with a stop or signal", "unmatched negative object",
+						tostring(objectId) .. ":" .. tostring(kind) .. " on edge " .. tostring(get(seg, "entity")))
+				end
+				keptObjects[#keptObjects + 1] = pair
+			end
+		end
+		if filtered then
+			local compView = setmetatable({ objects = keptObjects }, {
+				__index = function(_, key) return get(comp, key) end,
+			})
+			keptSegments[i] = setmetatable({ comp = compView }, {
+				__index = function(_, key) return get(seg, key) end,
+			})
+		else
+			keptSegments[i] = seg
+		end
+	end
+	if reservedObjects then
+		for offset = 0, addCount - 1 do
+			local id = -400000000 - offset
+			if occurrences[id] ~= 1 then
+				return refuse("a build with a stop or signal", "reserved object without carrier",
+					tostring(id) .. ":" .. tostring(occurrences[id] or 0))
+			end
+		end
+	else
+		for id in pairs(resultIds) do
+			if occurrences[id] ~= 1 then
+				return refuse("a build with a stop or signal", "object without carrier",
+					tostring(id) .. ":" .. tostring(occurrences[id] or 0))
+			end
+		end
+	end
+	table.sort(signature)
+	local streetView = setmetatable({
+		addedSegments = keptSegments,
+		removedSegments = keptRemovedSegments,
+		edgeObjectsToAdd = {},
+		edgeObjectsToRemove = {},
+	}, { __index = function(_, key) return get(street, key) end })
+	local proposalView = setmetatable({ proposal = streetView }, {
+		__index = function(_, key) return get(proposal, key) end,
+	})
+	table.sort(signature)
+	return proposalView, table.concat(signature, "|")
+end
+
 -- One construction placed with the construction tool: stations, depots and
 -- the rest (tpf3mp_proto action::ConstructionBuild). Returns the action
 -- table, or nil and why the room cannot carry it yet.
@@ -165,6 +510,8 @@ function capture.construction(proposal)
 	if not list then return nil, why end
 	local ok, transform = pcall(capture.transform, get(con, "transf"))
 	if not ok then return nil, tostring(transform) end
+	local safeProposal, objectSignature = constructionObjects(proposal, con, replaced and replaced.component)
+	if safeProposal == nil then return nil, objectSignature end
 	if replaced then
 		-- The street part of an edit is mostly the construction's own: every
 		-- game makes the new one's again as it builds it, and removes the old
@@ -176,14 +523,15 @@ function capture.construction(proposal)
 			replaces = replaces } }
 		local ownSegments, ownNodes, others = ownRemovals(street, replaced.component)
 		if not others then return action end
-		local connection, whyNot = capture.connection(withoutOwn(street, ownSegments, ownNodes))
+		local safeStreet = get(safeProposal, "proposal")
+		local connection, whyNot = capture.connection(withoutOwn(safeStreet, ownSegments, ownNodes))
 		local around = "a construction edit that changes the streets around it"
 		if connection == nil then return nil, around .. ": " .. tostring(whyNot) end
 		if connection == false then return nil, around end
 		action.BuildConstruction.connection = connection
 		return action
 	end
-	local connection, whyNot = capture.connection(proposal)
+	local connection, whyNot = capture.connection(safeProposal)
 	if connection == nil then return nil, whyNot end
 	return { BuildConstruction = { file = file, transform = transform, params = list, name = name,
 		connection = connection or nil } }
@@ -297,8 +645,12 @@ function capture.moduleEdit(native)
 	local c = old and api.engine.getComponent(old, api.type.ComponentType.CONSTRUCTION)
 	if c == nil or (length(get(c, "townBuildings")) or 0) > 0 then return capture.construction(native) end
 	local _, _, others = ownRemovals(street, c)
-	if not others then return capture.construction(native) end
 	local con = get(get(native, "toAdd"), 1)
+	local airportSignalEdit = stockAirport(get(con, "fileName"))
+		and get(con, "fileName") == get(c, "fileName")
+		and ((length(get(street, "edgeObjectsToAdd")) or 0) > 0
+			or (length(get(street, "edgeObjectsToRemove")) or 0) > 0)
+	if not others and not airportSignalEdit then return capture.construction(native) end
 	local proposals = api.engine.util and api.engine.util.proposal
 	local make = proposals and proposals.createProposalReplaceConstruction
 	if make == nil then return nil, "a construction edit that changes the streets around it" end
@@ -323,10 +675,29 @@ function capture.moduleEdit(native)
 		local n = length(get(street, key))
 		if n == nil or length(get(fullStreet, key)) ~= n then return differs("what it adds") end
 	end
-	for _, key in ipairs({ "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
-		if (length(get(street, key)) or 0) ~= 0 or (length(get(fullStreet, key)) or 0) ~= 0 then
-			return nil, "a construction edit with a stop or signal"
+	local fullCon = get(fullAdd, 1)
+	local fullSafe = constructionObjects(full, fullCon, c)
+	if fullSafe == nil then return nil, "a construction edit with a stop or signal" end
+	-- This hook record contains counts but empty object rows and segment
+	-- placeholders, so the regenerated proposal supplies the carrier mapping.
+	-- Match its object counts and require every native object row to be empty.
+	local nativeAdds, nativeRemoves = get(street, "edgeObjectsToAdd"), get(street, "edgeObjectsToRemove")
+	local fullAdds, fullRemoves = get(fullStreet, "edgeObjectsToAdd"), get(fullStreet, "edgeObjectsToRemove")
+	if length(nativeAdds) ~= length(fullAdds) or length(nativeRemoves) ~= length(fullRemoves) then
+		return differs("its edge objects")
+	end
+	local function placeholders(items)
+		for i = 1, length(items) or 0 do
+			local row = get(items, i)
+			if type(row) ~= "table" then return false end
+			for _, key in ipairs({ "entity", "resultEntity", "category", "left", "playerEntity", "edgeEntity", "param", "model", "name" }) do
+				if get(row, key) ~= nil then return false end
+			end
 		end
+		return true
+	end
+	if not placeholders(nativeAdds) or not placeholders(nativeRemoves) then
+		return differs("its edge objects")
 	end
 	local function entities(list)
 		local out, seen = {}, {}
@@ -343,7 +714,7 @@ function capture.moduleEdit(native)
 		local mine, theirs = entities(get(street, key)), entities(get(fullStreet, key))
 		if mine == nil or theirs == nil or mine ~= theirs then return differs("what it removes") end
 	end
-	return capture.construction({ toRemove = toRemove, toAdd = get(native, "toAdd"), proposal = fullStreet })
+	return capture.construction(full)
 end
 
 -- Keeps of a construction's network part only the edges joined, through each
@@ -394,7 +765,12 @@ end
 -- the road through a new junction and adds an edge from the junction to the
 -- station's own street node), as a polyline whose every link names its
 -- kind; false when it makes none; nil and why the room cannot carry them.
-function capture.connection(proposal)
+function capture.connection(proposal, con)
+	if con ~= nil then
+		local safe, why = constructionObjects(proposal, con)
+		if safe == nil then return nil, why end
+		proposal = safe
+	end
 	local engine = module("engine")
 	local ok, part = pcall(engine.fromProposal, proposal, nil, true)
 	if not ok then return nil, tostring(part) end
