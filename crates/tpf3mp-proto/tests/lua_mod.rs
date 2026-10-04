@@ -1471,6 +1471,42 @@ fn junction_checkpoint_rows_ignore_entity_and_connection_order_but_detect_settin
 }
 
 #[test]
+fn every_junction_in_one_checkpoint_keeps_its_own_light_settings() {
+    // One read names each light preference and resource once for all the
+    // junctions after it; a second junction must still read as its own.
+    let game = junction_game(0);
+    let rows: Vec<String> = game
+        .load(
+            r#"
+            CONFIGS[2] = {laneConnections={}, crosswalks={}, trafficLightPreference=2,
+                trafficLightConfig={trafficLightType=-1, states={}},
+                doubleSlipSwitch=false, userModifiedTrafficLightStates=false}
+            CONFIGS[3] = {laneConnections={}, crosswalks={}, trafficLightPreference=1,
+                trafficLightConfig={trafficLightType=40, states={}},
+                doubleSlipSwitch=false, userModifiedTrafficLightStates=false}
+            return J.rows(api)
+        "#,
+        )
+        .eval()
+        .unwrap();
+    let settings: Vec<String> = rows
+        .iter()
+        .map(|row| row.split('|').skip(2).take(2).collect::<Vec<_>>().join("|"))
+        .collect();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(
+        settings.iter().filter(|s| *s == "Yes|::/traffic_light/standard.lua").count(),
+        2,
+        "{rows:?}"
+    );
+    assert_eq!(
+        settings.iter().filter(|s| *s == "No|default").count(),
+        1,
+        "{rows:?}"
+    );
+}
+
+#[test]
 fn junction_replay_refuses_ambiguous_stale_private_and_mixed_edits() {
     for (mutation, expected) in [
         (

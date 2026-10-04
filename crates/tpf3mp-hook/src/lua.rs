@@ -793,6 +793,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"world", native_world),
                 (b"room", native_room),
                 (b"checkpoint", native_checkpoint),
+                (b"hash", native_hash),
                 (b"seed", native_seed),
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
@@ -1965,6 +1966,32 @@ unsafe extern "C-unwind" fn native_copy(l: State) -> c_int {
             }
         }
     }
+}
+
+/// `hash(text)`: the lanes' text hash ([`crate::lanehash`]), exactly what
+/// the mod's Lua `hashStr` returns for the same bytes; nil without a string.
+unsafe extern "C-unwind" fn native_hash(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it,
+    // and a string's bytes stay valid while it is on the stack. A C
+    // function's stack has LUA_MINSTACK free slots for the result.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) != TSTRING {
+            (api.pushnil)(l);
+            return 1;
+        }
+        let mut len = 0;
+        let text = (api.tolstring)(l, 1, &raw mut len);
+        if text.is_null() {
+            (api.pushnil)(l);
+            return 1;
+        }
+        let hash = crate::lanehash::hash(std::slice::from_raw_parts(text.cast::<u8>(), len));
+        push_str(api, l, hash.as_bytes());
+    }
+    1
 }
 
 /// `checkpoint()`: whether the update running is the last of a batch that

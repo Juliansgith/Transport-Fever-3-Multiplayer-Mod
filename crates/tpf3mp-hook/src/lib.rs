@@ -44,6 +44,7 @@ pub mod image;
 mod install;
 pub mod junctions;
 pub mod lanedump;
+pub mod lanehash;
 pub mod log;
 pub mod lua;
 pub mod menu;

@@ -785,6 +785,9 @@ for the table (`bridge.find`). Its contract is in
   below).
 - `tpf3mp_native.lanes(t)`: the lanes read there, a table from lane
   numbers to strings. Returns `true`, or `false` and why.
+- `tpf3mp_native.hash(s)`: the lanes' text hash of `s`, exactly what the
+  mod's Lua `hashStr` returns (`crate::lanehash`), without a Lua loop over
+  every byte ("What the lanes cost" below); `nil` without a string.
 - `tpf3mp_native.clicks()`: the player's builds queued in the room's game
   so far, or `nil` where the hook cannot take them to the room ("The build
   tools" below).
@@ -3352,6 +3355,47 @@ A lane the engine cannot read is `err` on every game alike and says why in
 refuses `BASE_EDGE`, `LINE` and `PLAYER` ("Cannot loop over this component
 type"), hence the street and line systems.
 
+#### What the lanes cost
+
+The read runs inside the game's step, on its main thread, so the whole
+game stands still while it runs, and the step after it catches up with
+several updates at once: players see a stutter, and vehicles jump, at every
+checkpoint (every 10 s at 1x, every 2.5 s at 4x). The mod's game script
+logs what each read cost:
+
+```
+mod: lanes read in 201.0 ms: network 173.0, constructions 26.0, lines 0.0, vehicles 0.0, economy 1.0, towns 0.0, people 1.0; of it sort+concat 5.0 ms, hash 6.0 ms over 1905931 bytes; network: map 2.0 ms, 2212 edges' getComponent 3.0 ms, their 8836 lane configs 47.0 ms, junctions 85.0 ms
+```
+
+The network lane is most of it, and it grows with the map. Measured on
+build 40408 in a room of two games on a save with 2212 edges and 2126
+junction rows (`MP_crash_1004`), the checkpoint's step took about 950 ms
+(20 ms otherwise): the junction rows 290-460 ms, the edges' lane configs
+260-400 ms, the Lua hash over the lanes' 1.9 MB of text about 150 ms. What
+made them cheaper, with the lanes' text unchanged (checked in the game
+against the old read at every checkpoint):
+
+- `junctions.rows` reads each node, edge and position once per read
+  (`remembered` in `tpf3mp/junctions.lua`), makes each edge's key once and
+  names each light preference and light resource once: every junction at
+  an edge's ends named it again, each time from the engine.
+- An edge's lane configs and each config's modes are read once: every
+  field read of a component asks the engine again.
+- The hash runs in the hook (`tpf3mp_native.hash`), with the Lua `hashStr`
+  where a state has no hook: 5-12 ms instead of about 150.
+
+Together the read took 200-275 ms there, the checkpoint's step 240-300 ms:
+still a visible stutter, about a quarter of it. Reading the network natively
+would take most of the rest; the layouts it would need are in
+`investigation/TF3_NATIVE_NETWORK_2026-10-04.md`.
+
+`TPF3MP_HOOK_STEP_TRACE=1` in the game's environment writes a
+`step-trace:` line for every call of the game's step
+(`crates/tpf3mp-hook/src/steptrace.rs`): when it came, how many updates it
+ran and why none (`wait` for the room's next step, `actions`/`replaying`
+for the room's actions, `save`, `hold`), the game's step and the whole
+call in milliseconds, and `lanes` on a checkpoint's batch.
+
 Vehicles are compared by their place on their paths, not in the world. On
 build 40408, with a bus running a line in two games in one room, the bus's
 world position (`api.engine.util.vehicle.getPosition`) and its path state
@@ -4817,6 +4861,7 @@ nothing the game computes, so one game of a room may run them alone.
 |---|---|
 | `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (with `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to`) | the network lane (0) dumped at every checkpoint of those steps, only its edges with an end in the box, even with lane dumps off ("Lane dumps") |
 | `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump at every checkpoint ("The town trace") |
+| `TPF3MP_HOOK_STEP_TRACE` (`1` or `on`) | a `step-trace:` line for every call of the game's step ("What the lanes cost") |
 | `TPF3MP_HOOK_EDGE_WATCH=<e>,...` (with `TPF3MP_HOOK_EDGE_WATCH_STEPS=from-to`) | the `edge watch:` lines for those entities and an `apply:` line for every command applied ("The edge watch") |
 | `TPF3MP_HOOK_STREET_TRACE` (`1` or `on`; narrowed by `TPF3MP_HOOK_STREET_TRACE_STEPS` and `TPF3MP_HOOK_STREET_TRACE_BOX`) | the `street:` lines ("The street trace") |
 | `TPF3MP_HOOK_ROAD_ENTRY_TRACE=from-to` | a `road:` line for every in-step road edge append in those steps ("The road entry trace") |
@@ -5035,9 +5080,15 @@ never cancelled.
   `+0x28`/`+0x2c` (1 bridge, 2 tunnel), and an optional `PlayerOwned` as
   `{int32 player +0x70; uint8 present +0x74}`.
 - `TransportNetwork` and the other components are reached through the engine's
-  type index: `GetComponentDataIndex` (`0xd0920`) with the component's
-  `RTTI_Type_Descriptor`, then `engine+0x88[typeIndex]`, entries of 0x48
-  bytes, data at `+0x68` (indices below `0x40000000`) or paged at `+0x80`.
+  type index. *Corrected (2026-10-04, from the disassembly):* the type index
+  comes from `ComponentManager::GetComponentTypeIndex` (`0xa4cc0`, at
+  `engine+0x48`) with the component's `RTTI_Type_Descriptor`, the data
+  index from `Engine::GetComponentDataIndex` (`0xa4b90`; `0xd0920` is inside
+  a phmap rehash), the pool is `engine+0x78[typeIndex]` (not `+0x88`), and
+  its entries are `sizeof(T)` bytes (0x48 is `GameTime`'s), data at `+0x68`
+  (indices below `0x40000000`) or paged at `+0x80`. The details, with the
+  street network's layouts, are in
+  `investigation/TF3_NATIVE_NETWORK_2026-10-04.md`.
 
 ### The game has two engines
 

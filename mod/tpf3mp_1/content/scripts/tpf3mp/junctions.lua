@@ -128,11 +128,22 @@ local function remembered(source)
 end
 
 local PREFERENCES = { Auto = "AUTO", Yes = "YES", No = "NO" }
-local function captureConfig(c, w, source)
+-- `memo`, when given, keeps the preference and light names it looked up for
+-- the configs after this one (junctions.rows reads every junction at once).
+local function captureConfig(c, w, source, memo)
 	local api = source or api
 	local preference
-	local enums = api.type.enum.TrafficLightPreference
-	for name, key in pairs(PREFERENCES) do if c.trafficLightPreference == enums[key] then preference = name end end
+	local value = c.trafficLightPreference
+	if memo and memo.preferences then
+		preference = memo.preferences[value]
+	else
+		local enums = api.type.enum.TrafficLightPreference
+		for name, key in pairs(PREFERENCES) do if value == enums[key] then preference = name end end
+		if memo and preference then
+			memo.preferences = {}
+			for name, key in pairs(PREFERENCES) do memo.preferences[enums[key]] = name end
+		end
+	end
 	if not preference then error("unknown traffic light preference", 0) end
 	local config = { connections = {}, crosswalks = {}, preference = preference, phases = {},
 		double_slip = c.doubleSlipSwitch == true, custom_phases = c.userModifiedTrafficLightStates == true }
@@ -143,9 +154,15 @@ local function captureConfig(c, w, source)
 	for _, e in ipairs(list(c.crosswalks)) do config.crosswalks[#config.crosswalks+1] = w.edge(e) end
 	local lights = c.trafficLightConfig
 	if lights == nil then error("traffic light configuration did not read", 0) end
-	if lights.trafficLightType ~= -1 then
-		config.light = api.res.trafficLightTypeRep.getName(lights.trafficLightType)
+	local lightType = lights.trafficLightType
+	if lightType ~= -1 then
+		local names = memo and memo.lights
+		config.light = names and names[lightType] or api.res.trafficLightTypeRep.getName(lightType)
 		if type(config.light) ~= "string" or config.light == "" then error("unknown traffic light resource", 0) end
+		if memo then
+			memo.lights = names or {}
+			memo.lights[lightType] = config.light
+		end
 	end
 	for _, phase in ipairs(list(lights.states)) do
 		config.phases[#config.phases+1] = { locked = list(phase.lockedLanes), duration = phase.duration,
@@ -431,16 +448,24 @@ end
 -- Canonical, portable rows for checkpoints. Phase indices are expressed as
 -- the turns/crosswalks they lock, so local entity/vector ordering is irrelevant.
 function junctions.rows(api)
-	local w, rows, seen = remembered(api), {}, {}
+	local w, rows, seen, memo = remembered(api), {}, {}, {}
+	-- Each edge's key, made once: remembered() gives an edge the same table
+	-- every time, and every junction at its ends names it again.
+	local keys = {}
+	local function key(e)
+		local k = keys[e]
+		if k == nil then k = edgeKey(e) keys[e] = k end
+		return k
+	end
 	for _, kind in ipairs({"Street", "Track"}) do
 		for node in pairs(api.engine.system.streetSystem["getNode2"..kind.."EdgeMap"]()) do
 			if not seen[node] then
 				seen[node] = true
 				local c = component(node,"BASE_NODE_CONFIG",api)
 				if c then
-					local v, lanes = captureConfig(c,w,api), {}
-					for _, t in ipairs(v.connections) do lanes[#lanes+1] = edgeKey(t.incoming)..":"..t.lane_in..">"..edgeKey(t.outgoing)..":"..t.lane_out..":"..tostring(t.road)..":"..tostring(t.tram) end
-					for _, e in ipairs(v.crosswalks) do lanes[#lanes+1] = "walk:"..edgeKey(e) end
+					local v, lanes = captureConfig(c,w,api,memo), {}
+					for _, t in ipairs(v.connections) do lanes[#lanes+1] = key(t.incoming)..":"..t.lane_in..">"..key(t.outgoing)..":"..t.lane_out..":"..tostring(t.road)..":"..tostring(t.tram) end
+					for _, e in ipairs(v.crosswalks) do lanes[#lanes+1] = "walk:"..key(e) end
 					local sorted = list(lanes) table.sort(sorted)
 					local phases = {}
 					for _, phase in ipairs(v.phases) do

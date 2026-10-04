@@ -88,6 +88,18 @@ local function hashStr(s)
 	return string.format("%010d-%010d", h1, h2)
 end
 
+-- The same hash from the hook, `tpf3mp_native.hash`
+-- (crates/tpf3mp-hook/src/lanehash.rs), which does not loop over every byte
+-- in Lua; this Lua's own where the state has no hook.
+local function fastHash(s)
+	local ok, native = pcall(function() return tpf3mp_native end)
+	if ok and type(native) == "table" and type(native.hash) == "function" then
+		local done, hash = pcall(native.hash, s)
+		if done and type(hash) == "string" then return hash end
+	end
+	return hashStr(s)
+end
+
 -- The wall clock in seconds, or nil where the state has none. For the
 -- lanes' cost in the log only: nothing read from it reaches the world.
 local function clock()
@@ -106,7 +118,7 @@ local function summary(rows)
 	table.sort(rows)
 	local text = table.concat(rows, "\30")
 	local t1 = clock()
-	local hash = hashStr(text)
+	local hash = fastHash(text)
 	local t2 = clock()
 	if t0 and t1 and t2 then
 		lanes.cost.sort = lanes.cost.sort + (t1 - t0)
