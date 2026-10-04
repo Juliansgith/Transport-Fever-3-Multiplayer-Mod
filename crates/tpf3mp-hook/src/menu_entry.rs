@@ -49,13 +49,10 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
 use crate::lobby;
 
-/// The Lua run once in each of the game's Lua states, the first time the
-/// loader runs there. It wraps `resolveutil.loadfile` (the function
-/// `base/init.lua` calls for every `ug_require`) so that the game's
-/// `gui/menu/main_page.tl` is served from the mod's copy. The mod's own copy
-/// is never redirected, so the wrap cannot loop, and the original resolved
-/// path stays the module's cache key, so the rest of the menu sees the same
-/// `MainPage` value it always did. Requests to the hook pass straight
+/// `gui/menu/main_page.tl` is served from the mod's copy. The mod's own
+/// copies are never redirected, so the wrap cannot loop, and the original
+/// resolved path stays the module's cache key, so the rest of the menu sees the
+/// same `MainPage` value it always did. Requests to the hook pass straight
 /// through to the original, where the detour answers them.
 const PATCH: &str = r#"
 local ru = resolveutil
@@ -66,14 +63,24 @@ end
 if ru.__tpf3mp_menu then return end
 ru.__tpf3mp_menu = true
 local orig = ru.loadfile
+-- The game's files the mod has a copy of, by the tail of their path, each
+-- with the mod's copy to serve instead.
+local OWN = {
+	["gui/menu/main_page.tl"] = "tpf3mp_1::/gui/menu/main_page.tl",
+}
 ru.loadfile = function(path, ...)
-	if type(path) == "string" and path:find("gui/menu/main_page%.tl$") and not path:find("^tpf3mp_1::") then
-		local ok, chunk, err = pcall(orig, "tpf3mp_1::/gui/menu/main_page.tl", ...)
-		if ok and chunk then
-			pcall(debugPrint, "[tpf3mp] main menu: " .. path .. " is served from tpf3mp_1::/gui/menu/main_page.tl")
-			return chunk, err
+	if type(path) == "string" and not path:find("^tpf3mp_1::") then
+		for tail, ours in pairs(OWN) do
+			if path:find(tail .. "$") then
+				local ok, chunk, err = pcall(orig, ours, ...)
+				if ok and chunk then
+					pcall(debugPrint, "[tpf3mp] main menu: " .. path .. " is served from " .. ours)
+					return chunk, err
+				end
+				pcall(debugPrint, "[tpf3mp] main menu: the mod's " .. ours .. " is not loadable ("
+					.. tostring(ok and err or chunk) .. "); the game's own is used")
+			end
 		end
-		pcall(debugPrint, "[tpf3mp] main menu: the mod's main_page.tl is not loadable (" .. tostring(ok and err or chunk) .. "); the menu stays the game's")
 	end
 	return orig(path, ...)
 end
@@ -796,13 +803,18 @@ mod tests {
     }
 
     #[test]
-    fn the_patch_redirects_only_the_games_main_page() {
-        assert!(PATCH.contains(r#"path:find("gui/menu/main_page%.tl$")"#));
-        assert!(PATCH.contains(r#"not path:find("^tpf3mp_1::")"#));
-        assert!(PATCH.contains(r#"pcall(orig, "tpf3mp_1::/gui/menu/main_page.tl", ...)"#));
+    fn the_patch_redirects_only_the_games_own_copy() {
+        // The main page, which the mod's copy adds the Multiplayer entry to.
         assert!(
-            PATCH.contains("the menu stays the game's"),
-            "a missing mod copy must fall back"
+            PATCH.contains(r#"["gui/menu/main_page.tl"] = "tpf3mp_1::/gui/menu/main_page.tl""#)
+        );
+        assert!(PATCH.contains(r#"path:find(tail .. "$")"#));
+        // The mod's own copies are never redirected, so the wrap cannot loop.
+        assert!(PATCH.contains(r#"not path:find("^tpf3mp_1::")"#));
+        assert!(PATCH.contains("pcall(orig, ours, ...)"));
+        assert!(
+            PATCH.contains("the game's own is used"),
+            "a missing mod copy must fall back to the game's"
         );
         assert!(
             PATCH.contains("ru.__tpf3mp_menu"),
@@ -859,6 +871,62 @@ mod tests {
     fn nothing_is_read_from_a_null_closure() {
         assert!(lua_state_of(std::ptr::null()).is_none());
         assert!(request_path(std::ptr::null()).is_none());
+    }
+
+    /// The wrap answers a request for the game's `main_page.tl` from the
+    /// mod's copy, lets every other path through, does not loop on the mod's
+    /// own copy, and falls back to the game's file where the mod's will not
+    /// load.
+    #[test]
+    fn the_wrap_serves_the_games_main_page_from_the_mod() {
+        let lua = mlua::Lua::new();
+        lua.load(
+            r#"
+            debugPrint = function() end
+            MISSING = nil
+            resolveutil = {loadfile = function(path)
+                if MISSING and path == MISSING then return nil, 'not found' end
+                return function() return {path = path} end, nil
+            end}
+        "#,
+        )
+        .exec()
+        .unwrap();
+        lua.load(PATCH).exec().unwrap();
+        let asked: String = lua
+            .load(
+                r#"
+                local function ask(path)
+                    local chunk = resolveutil.loadfile(path)
+                    if not chunk then return 'no chunk' end
+                    return chunk().path or 'no path'
+                end
+                local out = {
+                    ask('::/gui/menu/main_page.tl'),
+                    ask('::/gui/main/builtin.lua'),
+                    ask('::/scripts/table_util.tl'),
+                    -- the mod's own copy must not be redirected again
+                    ask('tpf3mp_1::/gui/menu/main_page.tl'),
+                }
+                -- a mod copy that will not load falls back to the game's
+                MISSING = 'tpf3mp_1::/gui/menu/main_page.tl'
+                out[5] = ask('::/gui/menu/main_page.tl')
+                return table.concat(out, '|')
+            "#,
+            )
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            asked,
+            "tpf3mp_1::/gui/menu/main_page.tl\
+             |::/gui/main/builtin.lua\
+             |::/scripts/table_util.tl\
+             |tpf3mp_1::/gui/menu/main_page.tl\
+             |::/gui/menu/main_page.tl",
+            "the game's copy served, every other path through, the mod's own \
+             copy left alone, and the game's own used where the mod's will not \
+             load"
+        );
     }
 
     /// A closure laid out as the loader's: the path object at +8 holding an

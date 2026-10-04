@@ -2878,7 +2878,8 @@ fn the_players_build_preview_goes_to_the_room_until_the_tool_shows_nothing() {
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(previewed(&lua), ["BuildConstruction"]);
-    // The bulldozer's removals show nothing new: what showed is hidden.
+    // The bulldozer over nothing proposes removing nothing: there is nothing
+    // to show the others, so what showed is hidden.
     lua.load(
         "SCRIPT.guiHandleEvent({}, nil, nil, '', 'bulldozer', 'builder.proposalCreate', \
              { { proposal = { addedNodes = {}, addedSegments = {}, removedNodes = {}, \
@@ -2904,6 +2905,90 @@ fn the_players_build_preview_goes_to_the_room_until_the_tool_shows_nothing() {
     assert_eq!(
         handed, 1,
         "the click's build, and no preview, went to the room"
+    );
+}
+
+/// The bulldozer's removals go to the room as previews, as the build tools'
+/// builds do: what the tool shows while it shows, and the click's removal to
+/// the room to order, with the preview gone. A removal the room cannot carry
+/// shows nothing, and says why.
+#[test]
+fn the_players_bulldoze_preview_goes_to_the_room_until_the_tool_shows_nothing() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    // The depot, as the game has it, and the game's own remove proposals.
+    lua.load(
+        "api.type.ComponentType.CONSTRUCTION = 2 \
+         CONSTRUCTIONS = { [5000] = { fileName = '::/depots/road/road_depot/road_depot.con', \
+             transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 80,0,0,1 } } } \
+         local get = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 2 then return CONSTRUCTIONS[e] end return get(e, kind) end \
+         api.engine.getEntitiesWithComponent = function(kind) \
+             local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
+         api.engine.util.proposal = { \
+             createProposalRemove = function(e, context) return { removes = e, player = context.player } end, \
+             makeSegmentsRemoveProposal = function(ids) return { removesEdges = table.concat(ids, ',') } end } \
+         HOOK.room = true HOOK.clicks = 0 \
+         SCRIPT.guiUpdate({{}}, nil, nil)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    // The bulldozer over the street 8-9, which the game proposes as that
+    // edge removed and nothing added.
+    lua.load(
+        "SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'bulldozer', 'builder.proposalCreate', \
+             { { toRemove = {}, toAdd = {}, proposal = { addedNodes = {}, addedSegments = {}, \
+                 removedNodes = {}, edgeObjectsToAdd = {}, removedSegments = \
+                     { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, objects = {} } } } } } })",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        previewed(&lua),
+        ["Bulldoze"],
+        "the removal the player is hovering goes to the room"
+    );
+    // Clicked: the room orders the removal, the preview goes.
+    lua.load("HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil)")
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(previewed(&lua), ["Bulldoze", "none"]);
+    let handed: Vec<String> = lua
+        .load(
+            "local out = {} \
+             for i, c in ipairs(HOOK.commands) do out[i] = next(c) end return out",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        handed,
+        ["Bulldoze"],
+        "the click's removal went to the room, as a removal"
+    );
+    // A removal the room cannot carry shows nothing, and says why. The depot
+    // is gone here.
+    lua.load("CONSTRUCTIONS = {}").exec().unwrap();
+    lua.load(
+        "SCRIPT.guiHandleEvent({{}}, nil, nil, '', 'bulldozer', 'builder.proposalCreate', \
+             { { toRemove = { 5000 }, toAdd = {}, proposal = { addedNodes = {}, addedSegments = {}, \
+                 removedNodes = {}, edgeObjectsToAdd = {}, removedSegments = \
+                     { { entity = 6967, type = 0, comp = { node0 = 7, node1 = 2066, objects = {} } } } } } }) \
+         HOOK.clicks = 2 SCRIPT.guiUpdate({{}}, nil, nil)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|line| line.contains("the room cannot carry this bulldozer build")),
+        "the refusal is said: {logged:?}"
+    );
+    assert_eq!(
+        lua.load("return #HOOK.commands").eval::<usize>().unwrap(),
+        1,
+        "and the room is sent nothing for it"
     );
 }
 
@@ -3037,13 +3122,13 @@ fn a_dry_run_makes_a_builds_proposal_and_sends_nothing() {
     let (lua, _script) = engine();
     lua.load(FAKE_STATION).exec().unwrap();
     lua.load(format!(
-        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')          local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')          apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end          local action = assert(capture.construction({CONSTRUCTION_PROPOSAL}))          P, C = apply.proposalOf(action, {{ company = 31 }})          NOT, WHY = apply.proposalOf({{ Bulldoze = {{}} }}, {{}})"
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')          local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')          apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end          local action = assert(capture.construction({CONSTRUCTION_PROPOSAL}))          P, C = apply.proposalOf(action, {{ company = 31 }})          NOT, WHY = apply.proposalOf({{ Subsidy = {{}} }}, {{}})"
     ))
     .exec()
     .unwrap_or_else(|error| panic!("{error}
 {}", log(&lua)));
     let (file, player, sent, logged): (String, i64, usize, usize) = lua
-        .load("return P.constructionsToAdd[1].fileName, C.player, #SENT, #HOOK.logged")
+        .load("return P[1].constructionsToAdd[1].fileName, C.player, #SENT, #HOOK.logged")
         .eval()
         .unwrap_or_else(|error| {
             panic!(
@@ -3059,7 +3144,7 @@ fn a_dry_run_makes_a_builds_proposal_and_sends_nothing() {
         .load("return tostring(NOT) .. ' ' .. WHY")
         .eval()
         .unwrap();
-    assert_eq!(why, "nil no preview of Bulldoze");
+    assert_eq!(why, "nil no preview of Subsidy");
     // The next action applies as before: the dry run left nothing behind.
     lua.load(STATION_REFRESH).exec().unwrap();
     lua.load(format!(
@@ -3087,7 +3172,7 @@ fn the_plugin_has_the_hook_draw_each_other_members_preview_and_mounts_nothing() 
                  return {} \
              end } } } \
          package.loaded['tpf3mp.apply'] = { proposalOf = function(action) \
-             if action.BuildTrack then return { track = true }, { player = 25 } end \
+             if action.BuildTrack then return { { track = true } }, { player = 25 } end \
              return nil, 'this game has no such street' \
          end } \
          HOOK.room = true",
@@ -3106,7 +3191,7 @@ fn the_plugin_has_the_hook_draw_each_other_members_preview_and_mounts_nothing() 
         .load(
             "local kept = {} \
              for from, p in pairs(require('tpf3mp.previews').remote()) do \
-                 kept[#kept + 1] = from:sub(1, 2) .. ' ' .. p.kind .. ' ' .. tostring(p.proposal.track) \
+                 kept[#kept + 1] = from:sub(1, 2) .. ' ' .. p.kind .. ' ' .. tostring(p.proposal[1].track) \
              end \
              local mounted = 0 \
              for _, child in ipairs(M.layout.params.children) do \
@@ -3138,6 +3223,63 @@ fn the_plugin_has_the_hook_draw_each_other_members_preview_and_mounts_nothing() 
     ] {
         assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
     }
+    // The proposals are a list, because the game reads some shapes and
+    // refuses others: the first it reads is the one drawn, and where it reads
+    // none, every reason is said.
+    // A link of the test's own, so `drawPreview` can be driven directly.
+    lua.load(
+        "ARMED, REFUSE = nil, nil \
+         FAKE = setmetatable({ native = { draw = function(from) ARMED = from return true end, \
+             drawn = function() return ARMED ~= nil end } }, require('tpf3mp.bridge').Link) \
+         SEEN = {} \
+         function EVALUATE(p, c) SEEN[#SEEN + 1] = p.n \
+             if REFUSE == true or REFUSE == p.n then error('refused ' .. p.n, 0) end return {} end",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let forms: String = lua
+        .load(
+            "local Link = require('tpf3mp.bridge').Link \
+             REFUSE = 1 \
+             local ok = Link.drawPreview(FAKE, 'ab', { { n = 1 }, { n = 2 }, { n = 3 } }, {}, EVALUATE) \
+             local tried = table.concat(SEEN, ',') SEEN = {} \
+             REFUSE = nil \
+             local again = Link.drawPreview(FAKE, 'ab', { { n = 1 }, { n = 2 } }, {}, EVALUATE) \
+             return tried .. '|' .. tostring(ok) .. '|' .. table.concat(SEEN, ',') .. '|' .. tostring(again)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        forms, "1,2|true|1|true",
+        "the first form refused, so the second was tried and drawn and the \
+         third never reached; with nothing refused the first is drawn at once"
+    );
+    let refused: String = lua
+        .load(
+            "local Link = require('tpf3mp.bridge').Link \
+             REFUSE = true \
+             local ok, why = Link.drawPreview(FAKE, 'ab', { { n = 1 }, { n = 2 } }, {}, EVALUATE) \
+             return tostring(ok) .. '|' .. tostring(why)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(
+        refused.starts_with("nil|the game read none of 2 forms of it: refused 1 / refused 2"),
+        "every reason said: {refused}"
+    );
+    let one: String = lua
+        .load(
+            "local Link = require('tpf3mp.bridge').Link \
+             REFUSE = true \
+             local ok, why = Link.drawPreview(FAKE, 'ab', { { n = 1 } }, {}, EVALUATE) \
+             return tostring(ok) .. '|' .. tostring(why)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        one, "nil|the game did not evaluate it: refused 1",
+        "one form refused: the plain reason, as before"
+    );
     // The member's tool shows nothing now: the hook clears it.
     lua.load("HOOK.incoming = { { from = string.rep('ab', 32) } } M.step() M.render()")
         .exec()
@@ -3827,6 +3969,7 @@ fn a_snapped_stations_preview_leaves_its_junction_settings_out() {
                  node = {{ network = 'Street', at = {{ x = 999, y = 999, z = 0 }} }} }} }} \
              local p, why = apply.proposalOf(action, {{}}) \
              if not p then return 'none: ' .. tostring(why), #SENT end \
+             p = p[1] \
              return p.constructionsToAdd[1].fileName .. ' ' .. #p.streetProposal.edgesToAdd, #SENT"
         ))
         .eval()
@@ -4544,7 +4687,7 @@ fn a_roads_preview_is_the_proposal_its_build_would_send() {
     .unwrap_or_else(|error| panic!("{error}"));
     let (nodes, edges, removed, sent, logged): (usize, usize, String, usize, usize) = lua
         .load(
-            "local p = P.streetProposal              return #p.nodesToAdd, #p.edgesToAdd, table.concat(p.edgesToRemove, ','), #SENT, #HOOK.logged",
+            "local p = P[1].streetProposal              return #p.nodesToAdd, #p.edgesToAdd, table.concat(p.edgesToRemove, ','), #SENT, #HOOK.logged",
         )
         .eval()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -4552,6 +4695,139 @@ fn a_roads_preview_is_the_proposal_its_build_would_send() {
         (nodes, edges, removed.as_str(), sent, logged),
         (2, 4, "100", 0, 0),
         "the build's nodes and edges, the split street's edge removed, nothing sent or said"
+    );
+}
+
+/// The bulldozer's preview is the removal its build would send, as the road's
+/// preview is the road its build would send: the game makes the same
+/// proposal in the game showing it as in the game that clicked, and nothing
+/// goes out or into the log. A removal the game will not make here does not
+/// show, and says so.
+#[test]
+fn a_bulldozes_preview_is_the_removal_its_build_would_send() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    // The depot, as the game has it, and the game's own remove proposals.
+    lua.load(
+        "api.type.ComponentType.CONSTRUCTION = 2 \
+         CONSTRUCTIONS = { [5000] = { fileName = '::/depots/road/road_depot/road_depot.con', \
+             transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 80,0,0,1 } } } \
+         local get = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 2 then return CONSTRUCTIONS[e] end return get(e, kind) end \
+         api.engine.getEntitiesWithComponent = function(kind) \
+             local l = {} if kind == 2 then for e in pairs(CONSTRUCTIONS) do l[#l + 1] = e end end return l end \
+         api.engine.util.proposal = { \
+             createProposalRemove = function(e, context) return { removes = e, player = context.player } end, \
+             makeSegmentsRemoveProposal = function(ids) return { removesEdges = table.concat(ids, ',') } end }",
+    )
+    .exec()
+    .unwrap();
+    lua.load(
+        "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+         apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end \
+         DEPOT, C1 = apply.proposalOf({ Bulldoze = { Construction = \
+             { file = '::/depots/road/road_depot/road_depot.con', at = { x = 80, y = 0, z = 0 } } } }, \
+             { company = 31 }) \
+         STREET, C2 = apply.proposalOf({ Bulldoze = { Edges = { network = 'Street', \
+             edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
+             buildings = {} } } }, { company = 31 })",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let (removed, street, players, sent, logged): (String, String, String, usize, usize) = lua
+        .load(
+            "local first, second = STREET[1], STREET[2] \
+             local back = second.streetProposal.edgesToAdd[1] \
+             return tostring(DEPOT[1].constructionsToRemove[1]), \
+                 #STREET .. '|' .. table.concat(first.streetProposal.edgesToRemove, ',') \
+                     .. '|' .. tostring(first.streetProposal.edgesToAdd == nil) \
+                     .. '|' .. table.concat(second.streetProposal.edgesToRemove, ',') \
+                     .. '>' .. back.entity .. ':' .. back.comp.node0 .. '>' .. back.comp.node1, \
+                 tostring(C1.player) .. ',' .. tostring(C2.player), #SENT, #HOOK.logged",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        (
+            removed.as_str(),
+            street.as_str(),
+            players.as_str(),
+            sent,
+            logged
+        ),
+        (
+            "5000",
+            // two forms for the street: the first says only that the edge
+            // goes, the second adds the same edge back
+            "2|100|true|100>-1:8>9",
+            "31,31",
+            0,
+            0
+        ),
+        "the depot as a construction to remove and the street as the edge \
+         removed and added back, each for the sender's company, nothing sent \
+         or said"
+    );
+    // Not the plain Proposal the removal is really sent as: that is what
+    // makeProposalData refused ("SimpleProposal expected, got Proposal").
+    let shape: String = lua
+        .load(
+            "return tostring(DEPOT.removes) .. tostring(DEPOT.toRemove) \
+                 .. tostring(STREET.removesEdges) .. tostring(STREET.toRemove)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        shape, "nilnilnilnil",
+        "SimpleProposals, no Proposal of them"
+    );
+    assert_eq!(
+        (sent, logged),
+        (0, 0),
+        "the removal is made and nothing goes out or into the log"
+    );
+    // The same removals, applied, are what the room orders: the preview is
+    // the proposal, not a different one.
+    lua.load(
+        "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+         apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end \
+         local action = { Bulldoze = { Edges = { network = 'Street', \
+             edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
+             buildings = {} } } } \
+         SENT = {} \
+         apply.run(action, { company = 31 }) \
+         APPLIED = SENT[1].proposal.removesEdges .. '|' .. tostring(SENT[1].context.player)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let applied: String = lua
+        .load("return APPLIED")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        applied, "100|31",
+        "the applied removal, the preview's proposal"
+    );
+    // A removal this game cannot make does not show, and says why: the depot
+    // is gone here.
+    lua.load("CONSTRUCTIONS = {}").exec().unwrap();
+    lua.load(
+        "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+         NOT, WHY = apply.proposalOf({ Bulldoze = { Construction = \
+             { file = '::/depots/road/road_depot/road_depot.con', at = { x = 80, y = 0, z = 0 } } } }, \
+             { company = 31 })",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let (none, why): (bool, String) = lua
+        .load("return NOT == nil, tostring(WHY)")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(none, "no proposal where the depot is not");
+    assert!(
+        why.contains("no construction") || why.contains("road_depot"),
+        "said why: {why}"
     );
 }
 
@@ -6176,6 +6452,43 @@ fn a_town_building_bulldozed_goes_in_every_game_charged_to_the_players_company()
     let (lua, _script) = engine();
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(FAKE_TOWN).exec().unwrap();
+    // A street's removal has to add the edges it removes back: the game says
+    // so ("The general rule is that the modification/upgrade of a
+    // construction entails removing it and adding it anew. The same rule
+    // applies to streets and edgeobjects", api/type.d.tl), and refuses one
+    // that only removes them ("Unknown exception" out of makeProposalData).
+    // So the edges come back with new negative ids, and the lane
+    // configurations at their ends go with them, which is what rebuildWith
+    // does for the one edge a stop removal replaces.
+    lua.load(
+        "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+         apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end \
+         HOOK.logged = {} SENT = {} \
+         local p = apply.proposalOf({ Bulldoze = { Edges = { network = 'Street', \
+             edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
+             buildings = {} } } }, { company = 7 }) \
+         KEPT = table.concat({ #p, \
+             table.concat(p[1].streetProposal.edgesToRemove, ','), \
+             tostring(p[1].streetProposal.edgesToAdd == nil), \
+             table.concat(p[2].streetProposal.edgesToRemove, ',') \
+                 .. '>' .. p[2].streetProposal.edgesToAdd[1].entity \
+                 .. ':' .. p[2].streetProposal.edgesToAdd[1].comp.node0 \
+                 .. '>' .. p[2].streetProposal.edgesToAdd[1].comp.node1, \
+             table.concat(p[1].streetProposal.nodeConfigsToRemove or {}, ','), \
+             #SENT, #HOOK.logged }, '|')",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        lua.load("return KEPT").eval::<String>().unwrap(),
+        "2|100|true|100>-1:8>9|8,9|0|0",
+        "two forms: the first says only that the edge goes, the second adds \
+         it back with a new id. Neither takes a configuration: the street \
+         dead-ends at both its nodes, so the game would have none to build \
+         and its street shape factory asserts on the empty one \
+         (StreetShapeFactory::PrepareTransitions, \"!cc.empty()\"). Nothing \
+         sent or said"
+    );
     let eval = |code: &str| -> String {
         lua.load(code).eval::<String>().unwrap_or_else(|error| {
             panic!(
@@ -6234,6 +6547,121 @@ fn a_town_building_bulldozed_goes_in_every_game_charged_to_the_players_company()
     assert!(
         logged.contains("removing Street edges 100 and town buildings 5100"),
         "{logged}"
+    );
+}
+
+/// Behind `TPF3MP_NO_BULLDOZE_PREVIEW=1` the demolition preview is not made at
+/// all, and says so: it is the one preview that has taken the game down, and
+/// the switch has to be usable without rebuilding the hook that carries every
+/// other flag.
+#[test]
+fn a_demolition_preview_can_be_turned_off_without_a_rebuild() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    let both = lua
+        .load(
+            "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+             local action = { Bulldoze = { Edges = { network = 'Street', \
+                 edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
+                 buildings = {} } } } \
+             os = { getenv = function(name) \
+                 if name == 'TPF3MP_NO_BULLDOZE_PREVIEW' then return '1' end return nil end } \
+             HOOK.logged = {} \
+             local p, why = apply.proposalOf(action, { company = 7 }) \
+             local a = tostring(p) .. '|' .. tostring(why) .. '|' .. #HOOK.logged .. '|' .. #SENT \
+             os.getenv = nil \
+             HOOK.logged = {} \
+             p, why = apply.proposalOf(action, { company = 7 }) \
+             return a .. '|' .. #p .. '|' .. type(why) .. '|' .. #HOOK.logged",
+        )
+        .eval::<String>()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        both, "nil|the demolition preview is off (TPF3MP_NO_BULLDOZE_PREVIEW)|0|0|2|table|0",
+        "with the flag set: nothing proposed, the reason said, nothing sent or \
+         logged; without it: the two forms again, and nothing said"
+    );
+}
+
+/// The demolition preview's proposal adds each removed edge back under a new
+/// negative id, as the applied path does — but the component copy still names
+/// the edge's own id, and the replicator asserts that the two are the same
+/// (`entity == c.entity`, ecs::Replicator::Apply, build 40408). That is a
+/// native assertion no `pcall` catches, and the game goes down as soon as the
+/// proposal is only evaluated to draw another member's preview.
+#[test]
+fn a_demolition_preview_adds_each_edge_back_under_its_own_new_id() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    let ids: String = lua
+        .load(
+            "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+             HOOK.logged = {} \
+             local p = apply.proposalOf({ Bulldoze = { Edges = { network = 'Street', \
+                 edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
+                 buildings = {} } } }, { company = 7 }) \
+             local out = {} \
+             for _, s in ipairs(p[2].streetProposal.edgesToAdd) do \
+                 out[#out + 1] = s.entity .. ':' .. tostring(s.comp.entity) end \
+             return table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        ids, "-1:-1",
+        "the segment and the component copy it carries name the same new id, \
+         so the replicator finds them equal"
+    );
+}
+
+/// The demolition preview's proposal takes the lane configuration at **every**
+/// end of the removed edges, a dead end and an isolated segment included: a
+/// configuration that still names a removed edge's old id makes
+/// `makeProposalData` raise "Unknown exception", and the edge comes back under a
+/// new id anyway, so such a node is never left without an edge for the street
+/// shape factory to assert on an empty connection list
+/// ("!cc.empty()", `StreetShapeFactory::PrepareTransitions`, build 40408).
+///
+/// Skipping the dead ends is what left the last piece of a street or a track
+/// undrawn (2026-10-04, in the game): buildings, constructions and every segment
+/// with a neighbour drew, a segment with one connection or none did not.
+#[test]
+fn a_demolition_preview_takes_a_nodes_configuration_at_every_end() {
+    let configs = |extra: &str| -> String {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.load(FAKE_TOWN).exec().unwrap();
+        if !extra.is_empty() {
+            lua.load(extra).exec().unwrap();
+        }
+        lua.load(
+            "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+             HOOK.logged = {} \
+             local p = apply.proposalOf({ Bulldoze = { Edges = { network = 'Street', \
+                 edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
+                 buildings = {} } } }, { company = 7 }) \
+             return table.concat(p[2].streetProposal.nodeConfigsToRemove or {}, ',')",
+        )
+        .eval::<String>()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)))
+    };
+    assert_eq!(
+        configs("STREETS[9] = { 100, 101 } EDGES[101].node0 = 10 EDGES[101].node1 = 9"),
+        "8,9",
+        "both ends: the node that keeps an edge, and the dead-end"
+    );
+    assert_eq!(
+        configs(""),
+        "8,9",
+        "both ends even where the street dead-ends at both of them, so the \
+         shape factory has the added edge to build transitions from"
+    );
+    assert_eq!(
+        configs("CONFIGS[8] = nil"),
+        "9",
+        "a node with no configuration of its own contributes none"
     );
 }
 
@@ -6444,6 +6872,43 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
              local _, why = capture.bulldoze(p) return why"
         )),
         "the rebuilt group holds ::/assets/trees/fir.mdl at 99, 20, 3, which the group did not"
+    );
+    // With the town building the game takes with it: every form names it as
+    // a construction to remove, the very entity the removal itself takes,
+    // and the edge it removes.
+    lua.load("GATHER = { 5100 }").exec().unwrap();
+    lua.load(
+        "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+         apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end \
+         HOOK.logged = {} SENT = {} \
+         local p = apply.proposalOf({ Bulldoze = { Edges = { network = 'Street', \
+             edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
+             buildings = { { file = '::/buildings/a/c1/4x4_02/a_com_l1_4x4_02.con', \
+                 at = { x = 60, y = -10, z = 0 } } } } } }, { company = 7 }) \
+         BUILT = table.concat({ #p, table.concat(p[1].constructionsToRemove, ','), \
+             table.concat(p[1].streetProposal.edgesToRemove, ','), \
+             table.concat(p[1].streetProposal.nodeConfigsToRemove or {}, ','), \
+             #SENT, #HOOK.logged }, '|')",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        lua.load("return BUILT").eval::<String>().unwrap(),
+        "2|5100|100|8,9|0|0",
+        "both forms name the town building the game's own removal takes and \
+         the edge, and no node configuration: the street dead-ends at both its \
+         nodes, nothing sent or said"
+    );
+    let shown = eval(
+        "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+         apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end \
+         HOOK.logged = {} SENT = {} \
+         local p, why = apply.proposalOf(TREES, { company = 7 }) \
+         return table.concat({ tostring(p), tostring(why), #SENT, #HOOK.logged }, '|')",
+    );
+    assert_eq!(
+        shown, "nil|an asset group's rebuild, which a preview cannot show|0|0",
+        "not shown, said why, nothing sent and nothing said"
     );
     // Every game: a player of Rival bulldozes; the group is rebuilt with
     // the three firs kept, each where it stood and turned as it was.
@@ -7270,6 +7735,34 @@ fn the_bulldozer_removes_a_stop_in_every_game() {
     assert_eq!(
         removed, "1|1|556|100|555|25",
         "the other stop kept under its own entity"
+    );
+    // A stop's removal is shown: rebuildWith replaces the one edge with
+    // itself, less the stop, which is the shape a SimpleProposal has to
+    // have, and the same removal the room orders, made here and sent
+    // nowhere (tpf3mp/previews.lua, apply.proposalOf).
+    let previewed_stop: String = lua
+        .load(
+            "EDGES[100].objects = { { 555, 0 }, { 556, 1 } } \
+             local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+             apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end \
+             HOOK.logged = {} SENT = {} \
+             local p = apply.proposalOf(STOP, { company = 7 }) \
+             local e = p[1].streetProposal.edgesToAdd[1] \
+             return table.concat({ #e.comp.objects, e.comp.objects[1][1], \
+                 table.concat(p[1].streetProposal.edgesToRemove, ','), \
+                 table.concat(p[1].streetProposal.edgeObjectsToRemove, ','), \
+                 #SENT, #HOOK.logged }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        previewed_stop, "1|556|100|555|0|0",
+        "the same rebuild the room orders, with the stop gone, nothing sent or said"
     );
 }
 

@@ -402,27 +402,43 @@ function Link:previews()
 	return changes
 end
 
--- In the GUI: draws member `from`'s preview, the proposal `proposal` with
--- `context`, in the hook's renderer for them (docs/HOOKS.md, "Build
--- previews"): the hook draws what the game evaluates for it with `evaluate`
--- (api.engine.util.proposal.makeProposalData). True and what `evaluate`
--- answered (the ProposalData), or nil and why; nil from a hook that cannot
--- draw (`draw` is optional).
-function Link:drawPreview(from, proposal, context, evaluate)
+-- In the GUI: draws member `from`'s preview, `proposals` with `context`, in
+-- the hook's renderer for them (docs/HOOKS.md, "Build previews"): the hook
+-- draws what the game evaluates for it with `evaluate`
+-- (api.engine.util.proposal.makeProposalData). `proposals` is the list of the
+-- proposals it could be drawn as, best first, because the game reads some
+-- shapes and refuses others ("SimpleProposal expected, got Proposal",
+-- "Unknown exception", build 40408): each is tried in turn and the first the
+-- game reads is the one drawn. True and what `evaluate` answered (the
+-- ProposalData), or nil and why — where none was read, every reason; nil
+-- from a hook that cannot draw (`draw` is optional).
+function Link:drawPreview(from, proposals, context, evaluate)
 	local native = self.native
 	if type(native.draw) ~= "function" or type(native.drawn) ~= "function" then
 		return nil, "this hook draws no previews"
 	end
-	local ok, armed, why = pcall(native.draw, tostring(from))
-	if not ok then return nil, tostring(armed) end
-	if armed ~= true then return nil, tostring(why or "the hook did not arm") end
-	local evaluated, err = pcall(evaluate, proposal, context)
-	local okDrawn, drawn, whyNot = pcall(native.drawn)
-	if not evaluated then return nil, "the game did not evaluate it: " .. tostring(err) end
-	if not okDrawn then return nil, tostring(drawn) end
-	if drawn == nil then return nil, "the game made nothing to draw" end
-	if drawn ~= true then return nil, tostring(whyNot or "not drawn") end
-	return true, err
+	if type(proposals) ~= "table" then return nil, "a preview is a list of proposals" end
+	local refused = {}
+	for _, proposal in ipairs(proposals) do
+		local ok, armed, why = pcall(native.draw, tostring(from))
+		if not ok then return nil, tostring(armed) end
+		if armed ~= true then return nil, tostring(why or "the hook did not arm") end
+		local evaluated, err = pcall(evaluate, proposal, context)
+		local okDrawn, drawn, whyNot = pcall(native.drawn)
+		if not evaluated then
+			refused[#refused + 1] = tostring(err)
+		elseif not okDrawn then
+			return nil, tostring(drawn)
+		elseif drawn == nil then
+			refused[#refused + 1] = "the game made nothing to draw"
+		elseif drawn ~= true then
+			return nil, tostring(whyNot or "not drawn")
+		else
+			return true, err
+		end
+	end
+	if #refused == 1 then return nil, "the game did not evaluate it: " .. refused[1] end
+	return nil, "the game read none of " .. #refused .. " forms of it: " .. table.concat(refused, " / ")
 end
 
 -- In the GUI: member `from`'s preview goes.
@@ -506,5 +522,9 @@ function Link:room()
 	if not ok then return true end
 	return inRoom == true
 end
+
+-- The link class, so a link of the caller's own (the tests') can be made
+-- against it, and so `Link:drawPreview` is reachable without the hook.
+bridge.Link = Link
 
 return bridge

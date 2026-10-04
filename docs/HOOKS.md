@@ -3095,18 +3095,19 @@ that restriction before an agent runs it.
 ### Build previews
 
 What a player's build tool shows before the click, the road, track,
-station or building it would build, the other members see in their own
-games while it shows. Advisory: a preview is never applied, ordered,
-logged by the room or saved, and nothing of it reaches the world.
+station or building it would build, and what the bulldozer would take out,
+the other members see in their own games while it shows. Advisory: a
+preview is never applied, ordered, logged by the room or saved, and nothing
+of it reaches the world.
 Ported from TpF2 Multiplayer's shared build previews (`mp/previews.lua`
 and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
 
 - **What is shown.** The action the tool's proposal would build, as the
   capture makes it for the click (`tpf3mp/capture.lua`): the room's own
   action schema, in millimetres and resource names (D8), so no engine id
-  travels. Only the tools that build something new: constructions
-  (stations, depots, buildings, a station's edit), streets, tracks and
-  stops (`tpf3mp/previews.lua`, `SHOWN`). Not the bulldozer, the
+  travels. Only the tools that build something new or take something out:
+  constructions (stations, depots, buildings, a station's edit), streets,
+  tracks, stops and the bulldozer (`tpf3mp/previews.lua`, `SHOWN`). Not the
   modifiers or the junction tools; not the module editor or the terrain
   tools, which tell game scripts nothing of their proposals.
 - **Out.** The game script's GUI half (`guiHandleEvent`) hands each such
@@ -3145,12 +3146,16 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   (`tpf3mp/previews.lua`, `take`), and says each
   member's first in the log ("another member's build preview arrived:
   ...").
-- **Showing them.** Each preview is made into the proposal its action
+- **Showing them.** Each preview is made into the proposals its action
   would build in this game, for the sender's company:
   `apply.proposalOf(action, ctx)` runs the build's handler dry, stopping
   it at the proposal it would send, so nothing is sent, built or logged
-  (construction, road, track and stop builds only). One this game cannot
-  make (a street type it lacks, an edge it has not) does not show, and the
+  (construction, road, track and stop builds, and the bulldozer's
+  removals). It answers a **list**, because the game reads some shapes of a
+  proposal and refuses others, and the first it reads is the one drawn (see
+  `Link:drawPreview` and "The bulldozer's removals" below); a build's list
+  has one entry. One this game cannot make (a street type it lacks, an edge it
+  has not, a depot that is not there) does not show, and the
   log says why. Its junction settings are left out (`junctions.into` is
   skipped in the dry run): they name nodes of the sender's game, and
   checking them failed every station snapped to a street ("the junction
@@ -3222,6 +3227,272 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   preview stopped with the fatal assertion `!IsTransformWithContext`
   (`react_transform.cpp:97`). Inside the action slot it would take the
   player's own tool's place.
+- **The bulldozer's removals** (`Bulldoze`, 2026-10-04) ride the same
+  transport, the same per-member renderers and the same rate limits; no
+  target and no version changed, because `Bulldoze` was already an action
+  the schema carries. Two things in the game script make them:
+  - `previews.SHOWN` has the capture's `bulldoze` kind, so what the
+    bulldozer proposes goes out as the other tools' proposals do. A
+    proposal of nothing (`capture.bulldoze` answering `false`) and one the
+    room cannot carry (`nil`, with why) hide the preview, as they do for
+    every other tool.
+  - `apply.PREVIEWS` has `Bulldoze`, and the dry run stops at the removal
+    **as a SimpleProposal** (`apply.lua`, `simpleRemoval`).
+- **A removal has to be a SimpleProposal to be shown at all.** Confirmed in
+  the room's two real games on build 40408 (2026-10-04): with the plain
+  Proposal that `createProposalRemove` and `makeSegmentsRemoveProposal`
+  make, every preview failed with
+
+  ```
+  another member's Bulldoze preview does not show here: the game did not
+  evaluate it: bad argument #2 to 'makeProposalData' (SimpleProposal
+  expected, got Proposal)
+  ```
+
+  `makeProposalData` takes a `SimpleProposal` and nothing else
+  (investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md, "`makeProposalData`":
+  `scripting::Convert(&result, &toolkit, simpleProposal)`, and no result an
+  empty optional). The mod already knew this for the other direction and
+  refuses to ask for a verdict on a removal (`apply.lua`, "the game's
+  verdict takes simple proposals only"), so nothing was ever sent to a
+  game's `makeProposalData` with a removal before.
+  `simpleRemoval` builds one instead, the way the mod's own builds do:
+  - `Bulldoze::Construction` — `constructionsToRemove`, as the
+    construction edit does (`replaceConstruction`);
+- **A SimpleProposal has to add what it removes back — and that shape
+  crashes the game.** The game says so (`api/type.d.tl`, build 40408, above
+  `SimpleProposal`):
+
+  > The general rule is that the modification/upgrade of a construction
+  > entails removing it and adding it anew. The same rule applies to
+  > streets and edgeobjects.
+
+Both halves were found in the room's games on 2026-10-04, and the second
+  is why a street's removal needs two forms:
+  - A street removal that **only removed** the edges was refused with
+    **"Unknown exception"** out of `makeProposalData`, in every game of the
+    room — while a road build (which replaces the edges it removes) and a
+    building's removal went through.
+  - Adding the removed edges back (`edgesToAdd`, new negative ids, the same
+    shape `rebuildWith` gives the one edge a stop removal replaces, plus
+    `nodeConfigsToRemove` at their ends) makes `makeProposalData` accept it:
+    `another member's Bulldoze preview, as this game sees it: fine`. **And it
+    draws as the road that is there**: the same edge removed and added again
+    is no change at all, which is why a station's removal shows and a street's
+    did not. That was seen in the game, not reasoned out.
+- **Which forms the game reads is asked of it, not guessed.** So a preview is
+  a **list** of proposals and the one drawn is the first the game reads
+  (`Link:drawPreview`, `tpf3mp/bridge.lua`; the list comes from
+  `apply.proposalOf`). For a street or a track's removal, most visible first:
+  1. only what goes — `edgesToRemove` and the constructions beside them. It
+     says what is removed, so a form the game reads **draws the removal**.
+  2. the same, and the street itself again in `edgesToAdd` — the form the
+     game is known to read, and the one that draws nothing.
+  Where none is read, every reason is said. So the first run with this in it
+  says which form the game took, and the list shrinks to that one.
+  `Construction` and `EdgeObject` have one form each; `Assets` none (a plain
+  `Proposal`, and no `SimpleProposal` says it — the dry run says *"an asset
+  group's rebuild, which a preview cannot show"* rather than showing the
+  wrong thing, and `apply.proposalOf` keeps a handler's own reason where it
+  has one).
+- **A node's lane configuration is only taken while an edge is left there.**
+  The second form above takes the configurations at the ends of the edges it
+  removes, and the game builds each of them again from the edges that stay at
+  that node. A node whose every edge of the network the proposal removes is
+  left with none, and the game builds none for it — its street shape factory
+  asserts on the empty connection list, and the assertion is caught per task:
+
+  > `Assertion '!cc.empty()' failed` — `StreetShapeFactory::PrepareTransitions`,
+  > build 40408, `StreetShapeFactory.cpp:979`
+
+  So the shape of a street that **dead-ends** is never built, and nothing of it
+  is drawn: forty of these in one room on 2026-10-04, while every street with a
+  neighbour drew as it should. Such a node therefore **keeps** its
+  configuration (`configsAtEndsOf`, `apply.lua`), which is what the game needs
+  to build the shape at all; a node with an edge left keeps the removal of its
+  configuration, as before.
+- **An edge added back into a *preview* must carry its new id twice.** The
+  second form above adds each removed edge back under a fresh negative id, the
+  way the applied path does (`rebuildWith`, for the one edge a stop removal
+  replaces). But the component copy the game hands out still names the edge's
+  **own** id in its `entity`, and the replicator compares the two:
+
+  > `Assertion 'entity == c.entity' failed` — `ecs::Replicator::Apply`
+
+  The applied path never sees it, because there the ids are resolved on the way
+  in. A **preview** is only *evaluated* (`makeProposalData`, in the room's game,
+  to draw what another member is about to do), so the mismatch survives to the
+  replicator — and an assertion in C++ is past every `pcall`: selecting the
+  bulldozer took the game down (minidump, `stackTrace: null`, then a hang;
+  2026-10-04). So `edgesAddedBack` gives the copy the segment's new id as well
+  (`s.comp.entity = s.entity`), and the replicator finds them equal.
+- **Every node's lane configuration goes with the edges — a dead end
+  included.** A configuration names the edges at its node, and `makeProposalData`
+  raises "Unknown exception" if an edge is removed while a configuration still
+  names its old id, so every node at the ends of the removed edges takes the
+  removal of its configuration (`configsAtEndsOf`, `apply.lua`).
+
+  An earlier version **skipped** a node whose every edge of the network the
+  proposal removes went with them, to avoid the game's own assertion on a node
+  left with no edge:
+
+  > `Assertion '!cc.empty()' failed` — `StreetShapeFactory::PrepareTransitions`,
+  > build 40408, `StreetShapeFactory.cpp:979`
+
+  That skip is exactly what left the last piece of a street or a track undrawn
+  (2026-10-04, in the game): buildings, constructions and every segment **with a
+  neighbour** drew, a segment with **one connection or none** did not. The skip
+  was not needed, because the edge comes back under a new negative id — such a
+  node is never left without an edge, and the shape factory has a segment to
+  build transitions from. So every end takes its configuration again, and the
+  assertion is not asserted on.
+
+  Forty of those assertions were logged in one room on 2026-10-04, every one
+  from a dead end.
+- **An edge added back into a *preview* must carry its new id in its component
+  too.** The add-back form gives each removed edge a fresh negative id, the way
+  the applied path does (`rebuildWith`, for the one edge a stop removal
+  replaces). The component copy the game hands out still names the edge's **own**
+  id in its `entity`, and the replicator compares the two:
+
+  > `Assertion 'entity == c.entity' failed` — `ecs::Replicator::Apply`
+
+  The applied path never sees it, because there the ids are resolved on the way
+  in. A **preview** is only *evaluated* (`makeProposalData`, in the room's game,
+  to draw what another member is about to do), so the mismatch survives to the
+  replicator — and an assertion in C++ is past every `pcall`: selecting the
+  bulldozer took the game down (minidump, `stackTrace: null`, then a hang;
+  2026-10-04). So `edgesAddedBack` gives the copy the segment's new id as well
+  (`s.comp.entity = s.entity`), and the replicator finds them equal.
+
+  **Still open.** The same assertion was hit again afterwards, in a report whose
+  hierarchy was `CGameUI → MenuUI → NavWrap → IAProxy` — the main menu's own UI,
+  not the world — so it is **not** established as this feature's. It has been
+  seen on the simulation thread through `tpf3mp_sim.script.lua`'s `followInGui`
+  (the replication of the room's own actions, which a preview never reaches) and
+  from the menu. This area is assertion-live
+  (investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md, "Pitfalls"), and the game's
+  minidump names no symbol, so it cannot be ruled in or out from here.
+- **The game's own UI assertions are not this mod's.** Two reports are the
+  game's, not ours, and both name files and symbols that appear nowhere in this
+  repository:
+  - `framework/src/framework/core/map_util.h:22: Get: Assertion 'it != map.end()'`
+    in the main menu, alongside the `Missing builtin recipeId` line below;
+  - `IAProxy` in `CGameUI → MenuUI → NavWrap`, from the same run.
+
+  The mod's only game file in the main menu is `gui/menu/main_page.tl`
+  (`main_page.tl`, `make_main_page.py`), which adds the Multiplayer entry and
+  changes nothing else; `react.lua` is **not** overridden (the `OWN` table in
+  `crates/tpf3mp-hook/src/menu_entry.rs` lists `main_page.tl` alone, and a test
+  asserts `answer(…, "gui/main/react.lua")` is nil). `map_util`, `NavWrap` and
+  `IAProxy` occur nowhere in this repository.
+- **…and the demolition preview can be turned off without a rebuild.** An
+  earlier run took the game down in the main menu with the assertion above gone
+  (no `Assertion` line logged any more): a plain native crash, minidump with
+  `stackTrace: null`, then a hang, with nothing in either hook's log. Since a
+  native crash cannot be caught from Lua, the preview has to be *avoided* rather
+  than handled.
+
+  `TPF3MP_NO_BULLDOZE_PREVIEW=1` therefore stops `apply.proposalOf` from
+  running the `Bulldoze` handler at all: the other member is shown nothing and
+  the game stays up. The env is read in `apply.lua` rather than through the
+  hook, so the switch needs no rebuild of the DLL that carries every other flag.
+  Run once with it and once without: if the game survives with it, the demolition
+  preview is where the crash is; if it does not, the cause is the game's own
+  bulldozer or the `UI::Bulldozer` detours, which `TPF3MP_HOOK_TOOL_COMPANY=0`
+  turns off on their own.
+- **What else the log said, and what it means.** A member's preview that
+  does not show here is said with the reason, and the reasons separate the
+  causes:
+  - `the game did not evaluate it: bad argument #2 to 'makeProposalData'
+    (SimpleProposal expected, got Proposal)` — the proposal is not one the
+    game reads (see above);
+  - `... : Unknown exception` — a SimpleProposal that only removes. The game
+    asks a SimpleProposal to add what it removes back (see above), so this
+    is a proposal of ours that is not built that way;
+  - `the game did not evaluate the proposal` — an **old hook**, before the
+    game calls a preview critical it still drew it (2026-10-03,
+    `89064f5`); a hook.log saying it is a hook older than that commit, not
+    a mod at fault. Check the hook's timestamp against the branch;
+  - `no Street edge to remove (1)` — this game has no edge at the ends the
+    action names: the member's world and this one differ there, or the
+    removal has already gone through. Said, and nothing shown;
+  - `an asset group's rebuild, which a preview cannot show` — the asset
+    bulldozer's, below.
+- **Known limits.** None of its own: the room's largest removals fit a
+  preview with room to spare, measured by
+  `the_largest_removals_a_preview_can_carry_are_measured` (one street's
+  removal 14 bytes, the most a bulldoze can name at once — 256 edges with
+  64 town buildings — 6,681, the 64 assets an asset bulldoze can take
+  1,808, against the 16,384 of `MAX_PREVIEW`). The limits above are the
+  removals': the six seconds without a member, the retry every half second
+  while all sixteen renderers are busy, and a member's preview that hides
+  when their tool shows nothing.
+
+### The main menu's `WithComponentParams` banner
+
+The game writes, on every load of `gui/main/react.lua` and so in every game of
+a room with the mod and in every game without it:
+
+```
+Error: Missing builtin recipeId for (::/gui/main/react.lua:433 in
+DeclareBuiltinLayoutChildWithUserdata), name = WithComponentParams
+```
+
+It is a fault in the game's own script, read from `base/content/gui.zip`
+(build 40408):
+
+- `react.lua:430` `DeclareBuiltinLayoutChildWithUserdata(name, fn)` looks
+  `_react.builtin[name]` up and logs *"Missing builtin recipeId for"* when it is
+  nil (`react.lua:433`). It is meant for the builtins the C++ side has already
+  registered — `LayoutChild`, `FloatingLayoutChild`, `AbsoluteLayoutChild`,
+  `WindowContainerChild`, `TabWidgetChild`, `ActionFn`, `DataTableCell`,
+  `ReactAdapterGuest` (`builtin.lua:99..1081`).
+- `react.lua:658` uses it for `WithComponentParams`, which is **not** such a
+  builtin: it starts as nil (`react.lua:210`) and is declared there. So the
+  lookup misses, the line is logged, and `RegisterRecipeInner(nil, …)`
+  registers the wrapper with no id.
+- `builtin.lua:15` copies the same nil forward
+  (`builtin.WithComponentParams = react.builtin.WithComponentParams`), and
+  `gui/entity_window/entity_window_util.tl:404` and `:1008` are its users.
+
+**The mod does not patch this, and here is why.** Three attempts were made and
+every one of them cost more than the banner is worth:
+
+1. **The mod's copy of the file, giving the missing name a fresh `recipeId`**
+   (`api.gui.react.detail.makeRecipeId`, as `RegisterRecipe` makes one). The
+   banner went, and the main menu then died on it:
+
+   ```
+   Error message: GetMat3() must not be called in the recipe itself, only in
+   order0, onMatrix() etc.
+   Assertion Failure: Assertion `!identity->isIdentityMat4x4` failed.
+   While executing "zoom in" for MainMenu (1 children = 231)
+   <gui/tpf3mp/_tpf3mp/main/react.lua:336>: ?
+   ```
+
+   An id the C++ side never handed out is a builtin that does not exist, and the
+   renderer tries to draw it.
+2. **The same copy with only the `log.error` line taken out.** The banner went
+   and the main menu came up — but a game still crashed four seconds after
+   `Game is ready`, in the menu, with a minidump the game fills in with nothing
+   (`stackTrace: null`) and not one line in either hook's log. Not attributable,
+   and a main-menu crash is not worth a red banner.
+3. **Serving that copy to `require` as well**, which the
+   `resolveutil.loadfile` wrap does not reach: the game's
+   `base/base.zip/base/init.lua` **requires** the file on its way out of
+   `base.zip` (init.lua:104 `require` → :83 `__require`). This worked — the
+   hook's log said `react.lua SERVED at the cache` and the `Missing builtin`
+   line was gone — and it brought the crash of (2) with it, so it bought
+   nothing.
+
+`RegisterRecipeInner` could not be wrapped from outside either: it is a
+**local** function in `react.lua` (line 248), not a global.
+
+So the banner stays. It is cosmetic — the *"Preserved props … of an instance of
+WithComponentParams"* warning that goes with it is the game's own and was there
+before the mod existed — and the fix belongs upstream. A change in this repository
+must not cost a player their main menu.
 
 ### Terraforming
 
