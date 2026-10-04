@@ -2819,8 +2819,14 @@ construction's window its edits:
   other stops kept under their own entities, the new stop
   `edgeObjectsToAdd[1]` (edge -1, the parameter where it stands, `left`,
   the model, the player), named in the edge's objects as `{ -1, side }`,
-  the lane configurations at the edge's ends removed as for any edge a
-  replay removes; then the game's verdict, and the build as the player's
+  the lane configurations at the edge's ends replaced by the same turns,
+  crosswalks and light phases naming the rebuilt edge (`junctions.into`,
+  as for any edge a replay removes; one that cannot be carried over
+  refuses the stop in every game). Removed alone, a junction with traffic
+  lights kept its lights with no configuration, a fatal assert
+  (`ecs::Engine::GetComponentDataIndex`, `BaseNodeConfig`) that crashed
+  every game of a room on 2026-10-04 (build 40408). Then the game's
+  verdict, and the build as the player's
   own (`ignoreErrors`, `playerInitiated`), paid by the player. The
   rebuilt edge keeps its own `PlayerOwned` (a company's road stays the
   company's). Once built, the stop is settled as the acting company's
