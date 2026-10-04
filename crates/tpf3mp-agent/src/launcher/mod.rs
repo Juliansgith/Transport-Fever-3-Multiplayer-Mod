@@ -987,7 +987,7 @@ async fn act(
             forward(session, Control::Chat(text)).await
         }
         Action::Leave => leave(session),
-        Action::LaunchGame => launch_game(shared, config, session, game, idle),
+        Action::LaunchGame => launch_game(shared, config, session, game, idle).await,
         Action::ChooseMod { id, chosen } => {
             let chosen_now = {
                 let mut mods = shared
@@ -1087,7 +1087,7 @@ fn other_hook_message(version: u32) -> String {
 /// the only way the hook runs (D11). A game started from Steam is the plain
 /// game. It may start before a room is chosen: its main menu's Multiplayer
 /// window connects, creates and joins through this launcher (D17).
-fn launch_game(
+async fn launch_game(
     shared: &Arc<Shared>,
     config: &LauncherConfig,
     session: &Option<Session>,
@@ -1159,7 +1159,7 @@ fn launch_game(
     if session.is_none() {
         renew_unused_link(&config.link, game, idle)?;
     }
-    let started = tpf3mp_launch::start(&tpf3mp_launch::Launch {
+    let launch = tpf3mp_launch::Launch {
         exe,
         args: Vec::new(),
         hook,
@@ -1174,12 +1174,48 @@ fn launch_game(
         .chain(config.game_env.iter().cloned())
         .collect(),
         ready_wait: tpf3mp_launch::HOOK_READY_WAIT,
-    })
+    };
+    let view = lobby::view(&api::snapshot(&shared.view(), &shared.status()));
+    let started = wait_for_launch(
+        tokio::task::spawn_blocking(move || tpf3mp_launch::start(&launch)),
+        idle,
+        &view,
+    )
+    .await?
     .map_err(|error| error.to_string())?;
     info!(pid = started.pid, "started the game with the hook");
     *game = Some(started);
     shared.status().notice(GAME_STARTED);
     Ok(())
+}
+
+/// Bootstrap waits for the agent's Hello before signalling readiness. Keep
+/// answering that handshake while the blocking Windows launch waits for it.
+/// Once greeted, leave menu actions queued for the normal launcher loop.
+async fn wait_for_launch<T: Send + 'static>(
+    mut launch: JoinHandle<T>,
+    idle: &mut Idle,
+    view: &LobbyView,
+) -> Result<T, String> {
+    let mut tick = tokio::time::interval(LOBBY_TICK);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut launch => return result.map_err(|error| error.to_string()),
+            _ = tick.tick() => {
+                if let Some(link) = idle {
+                    link.link().heartbeat();
+                    if link.build().is_none() {
+                        // Only read through Hello: a fast-starting game's first
+                        // UI actions must remain for the normal event loop.
+                        if let Err(error) = link.greet(view) {
+                            warn!(%error, "greeting the game's hook during startup failed");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The save a room this player creates starts from: the one `picked` names,
@@ -2580,6 +2616,22 @@ mod tests {
             Ok("play.example.net:29470".into())
         );
         assert!(connect(None, code).is_err(), "an invite needs its server");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn suspended_startup_can_finish_its_hook_handshake() {
+        let name = format!("test.launcher.bootstrap.{}", std::process::id());
+        let mut idle = Some(open_link(&name).unwrap());
+        // Stand in for Windows launch: it cannot finish until the hook's
+        // blocking attach receives Hello. No game or relay is started.
+        let launch = tokio::task::spawn_blocking(move || {
+            tpf3mp_bridge::Session::attach(&name, "40408", Duration::from_secs(2))
+        });
+        let attached = wait_for_launch(launch, &mut idle, &LobbyView::default())
+            .await
+            .unwrap();
+        assert!(attached.is_ok(), "{:?}", attached.err());
+        assert_eq!(idle.as_ref().unwrap().build(), Some("40408"));
     }
 
     /// A game started again after the first one closed: the hook of the
