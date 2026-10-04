@@ -5838,6 +5838,38 @@ fn a_town_building_bulldozed_goes_in_every_game_charged_to_the_players_company()
     );
 }
 
+/// The demolition preview's proposal adds each removed edge back under a new
+/// negative id, as the applied path does — but the component copy still names
+/// the edge's own id, and the replicator asserts that the two are the same
+/// (`entity == c.entity`, ecs::Replicator::Apply, build 40408). That is a
+/// native assertion no `pcall` catches, and the game goes down as soon as the
+/// proposal is only evaluated to draw another member's preview.
+#[test]
+fn a_demolition_preview_adds_each_edge_back_under_its_own_new_id() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    let ids: String = lua
+        .load(
+            "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+             HOOK.logged = {} \
+             local p = apply.proposalOf({ Bulldoze = { Edges = { network = 'Street', \
+                 edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
+                 buildings = {} } } }, { company = 7 }) \
+             local out = {} \
+             for _, s in ipairs(p[2].streetProposal.edgesToAdd) do \
+                 out[#out + 1] = s.entity .. ':' .. tostring(s.comp.entity) end \
+             return table.concat(out, ',')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        ids, "-1:-1",
+        "the segment and the component copy it carries name the same new id, \
+         so the replicator finds them equal"
+    );
+}
+
 /// The demolition preview's proposal takes the lane configuration at a node
 /// only while an edge of the network is left there: the game builds the
 /// configuration again from the edges that stay, and its street shape factory

@@ -3208,6 +3208,21 @@ Both halves were found in the room's games on 2026-10-04, and the second
   configuration (`configsAtEndsOf`, `apply.lua`), which is what the game needs
   to build the shape at all; a node with an edge left keeps the removal of its
   configuration, as before.
+- **An edge added back into a *preview* must carry its new id twice.** The
+  second form above adds each removed edge back under a fresh negative id, the
+  way the applied path does (`rebuildWith`, for the one edge a stop removal
+  replaces). But the component copy the game hands out still names the edge's
+  **own** id in its `entity`, and the replicator compares the two:
+
+  > `Assertion 'entity == c.entity' failed` — `ecs::Replicator::Apply`
+
+  The applied path never sees it, because there the ids are resolved on the way
+  in. A **preview** is only *evaluated* (`makeProposalData`, in the room's game,
+  to draw what another member is about to do), so the mismatch survives to the
+  replicator — and an assertion in C++ is past every `pcall`: selecting the
+  bulldozer took the game down (minidump, `stackTrace: null`, then a hang;
+  2026-10-04). So `edgesAddedBack` gives the copy the segment's new id as well
+  (`s.comp.entity = s.entity`), and the replicator finds them equal.
 - **Open.** One run of the room (2026-10-04) ended in
   `ecs::Replicator::Apply`, *"Assertion 'entity == c.entity' failed"*, on the
   simulation thread through `tpf3mp_sim.script.lua`'s `followInGui` — the

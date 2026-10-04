@@ -249,6 +249,16 @@ local function edgesAddedBack(ids, network)
 			s.entity = nextId
 			nextId = nextId - 1
 			s.comp = comp
+			-- The copy carries the edge's own id in `entity`, and that is not
+			-- the new negative one this segment is added under. The
+			-- replicator compares the two and asserts that they are the same
+			-- (`entity == c.entity`, ecs::Replicator::Apply, build 40408),
+			-- which takes the game down — a native assertion, past any
+			-- pcall — as soon as the proposal is only *evaluated* for a
+			-- preview. The applied path never sees it: there the ids are
+			-- resolved on the way in (rebuildWith adds its edge the same
+			-- way, and that removal works).
+			pcall(function() s.comp.entity = s.entity end)
 			s.type = network == "Track" and 1 or 0
 			added[#added + 1] = s
 		end
