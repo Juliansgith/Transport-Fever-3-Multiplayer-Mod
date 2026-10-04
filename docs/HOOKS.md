@@ -3192,6 +3192,22 @@ Both halves were found in the room's games on 2026-10-04, and the second
   group's rebuild, which a preview cannot show"* rather than showing the
   wrong thing, and `apply.proposalOf` keeps a handler's own reason where it
   has one).
+- **A node's lane configuration is only taken while an edge is left there.**
+  The second form above takes the configurations at the ends of the edges it
+  removes, and the game builds each of them again from the edges that stay at
+  that node. A node whose every edge of the network the proposal removes is
+  left with none, and the game builds none for it — its street shape factory
+  asserts on the empty connection list, and the assertion is caught per task:
+
+  > `Assertion '!cc.empty()' failed` — `StreetShapeFactory::PrepareTransitions`,
+  > build 40408, `StreetShapeFactory.cpp:979`
+
+  So the shape of a street that **dead-ends** is never built, and nothing of it
+  is drawn: forty of these in one room on 2026-10-04, while every street with a
+  neighbour drew as it should. Such a node therefore **keeps** its
+  configuration (`configsAtEndsOf`, `apply.lua`), which is what the game needs
+  to build the shape at all; a node with an edge left keeps the removal of its
+  configuration, as before.
 - **Open.** One run of the room (2026-10-04) ended in
   `ecs::Replicator::Apply`, *"Assertion 'entity == c.entity' failed"*, on the
   simulation thread through `tpf3mp_sim.script.lua`'s `followInGui` — the
