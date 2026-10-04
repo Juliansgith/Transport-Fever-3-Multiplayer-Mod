@@ -5187,3 +5187,17 @@ with `TPF3MP_TREE_BULLDOZE=1`; brushes remain refused. Action schema 25 adds
 renumbering its perk or preservation actions. Native playtest observations
 above are the contributor's evidence; this integration has no new live-game
 acceptance run.
+
+### Startup readiness and stalled menu recovery
+
+On Windows the launcher keeps the main thread suspended until hook bootstrap
+finishes, including the main-menu `RegisterAppUsertypes` and world-loading
+detours. Installing only the lobby entry before resuming can miss the menu's
+Lua state: the save downloads, but the game never loads it. The launcher waits
+up to 120 seconds; a missing readiness event or timeout stops the suspended
+process with an error instead of running with incomplete hooks.
+
+Menu room control continues even if its Lua loading state is unavailable,
+provided the native checks establish that no world is loaded or loading.
+This keeps Start and Leave processing alive; entering menu Lua remains guarded
+by the loading API's state checks. No game simulation runs from this path.

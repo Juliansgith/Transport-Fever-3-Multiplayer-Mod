@@ -56,7 +56,7 @@ mod windows {
 
 /// Tells the launcher, which keeps the game suspended meanwhile, that the
 /// hook has armed what must be in place before the game runs (the main
-/// menu's entry): it sets the event `tpf3mp_ipc::hook_ready_event` names
+/// entry and native hooks): it sets the event `tpf3mp_ipc::hook_ready_event` names
 /// for this process. Set once, by [`Ready::signal`] or when dropped, so
 /// every way out of the bootstrap lets the game run.
 pub(crate) struct Ready {

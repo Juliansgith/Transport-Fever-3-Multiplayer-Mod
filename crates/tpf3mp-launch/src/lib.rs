@@ -45,8 +45,8 @@ pub const HOOK_FILE: &str = if cfg!(windows) {
 };
 
 /// How long a game started on Windows stays suspended for TPF3-MP's hook
-/// to say it is ready, before it is let run anyway.
-pub const HOOK_READY_WAIT: Duration = Duration::from_secs(30);
+/// to finish installing its hooks. A timeout stops the launch.
+pub const HOOK_READY_WAIT: Duration = Duration::from_secs(120);
 
 /// A game to start, and the hook to start it with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +60,7 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
     /// How long the game stays suspended for the hook to say it is ready
     /// (Windows): [`HOOK_READY_WAIT`] for TPF3-MP's hook. Test rigs that
-    /// load a stand-in library, which never says so, give it less.
+    /// exercise timeout failures can give it less.
     pub ready_wait: Duration,
 }
 

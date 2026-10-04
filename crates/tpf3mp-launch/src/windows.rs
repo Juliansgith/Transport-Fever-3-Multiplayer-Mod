@@ -131,17 +131,26 @@ impl Drop for Process {
 }
 
 pub(crate) fn start(launch: &Launch, env: &[(String, String)]) -> Result<Started, LaunchError> {
+    start_with_ready(launch, env, |ready| ready.wait(millis(launch.ready_wait)))
+}
+
+fn start_with_ready(
+    launch: &Launch,
+    env: &[(String, String)],
+    wait: impl FnOnce(&ReadyEvent) -> bool,
+) -> Result<Started, LaunchError> {
     let mut process = create_suspended(launch, env)?;
     // Made before the hook loads, so the hook finds it however fast it is.
-    let ready = ReadyEvent::create(process.info.dwProcessId);
+    let ready = ReadyEvent::create(process.info.dwProcessId).ok_or_else(|| {
+        LaunchError::HookNotLoaded("could not create the hook readiness event".into())
+    })?;
     load_hook(&process, &launch.hook)?;
-    // The game stays suspended until the hook has armed what must be in
-    // place before the game runs its first line (the main menu's entry):
-    // otherwise the game could load its main menu first, and it would be
-    // the game's own. A hook that never says so lets the game run anyway,
-    // after the wait.
-    if let Some(ready) = &ready {
-        ready.wait(millis(launch.ready_wait));
+    // Never run the game with half-installed hooks. The suspended process
+    // is terminated by its guard if bootstrap times out.
+    if !wait(&ready) {
+        return Err(LaunchError::HookNotLoaded(
+            "multiplayer initialization timed out; the game was stopped before startup. Try launching again".into(),
+        ));
     }
     // SAFETY: the main thread's handle, from CreateProcessW.
     if unsafe { ResumeThread(process.info.hThread) } == u32::MAX {
@@ -523,7 +532,7 @@ mod tests {
         // version.dll stands in for the hook; cmd waits a second, then exits
         // with the code given.
         let args = "/c ping -n 2 127.0.0.1 >nul & exit 7";
-        let mut started = start(
+        let mut started = start_with_ready(
             &Launch {
                 exe: system("cmd.exe"),
                 args: args.split(' ').map(str::to_owned).collect(),
@@ -532,6 +541,12 @@ mod tests {
                 ready_wait: STAND_IN_READY_WAIT,
             },
             &[],
+            |ready| {
+                // The system DLL stands in for a hook: explicitly acknowledge
+                // readiness, while exercising the real Windows event wait.
+                unsafe { windows_sys::Win32::System::Threading::SetEvent(ready.0) };
+                ready.wait(300)
+            },
         )
         .unwrap();
         assert!(started.is_running(), "it runs");
@@ -544,7 +559,7 @@ mod tests {
     #[test]
     fn a_rig_can_end_what_it_started() {
         let args = "/c ping -n 30 127.0.0.1 >nul";
-        let mut started = start(
+        let mut started = start_with_ready(
             &Launch {
                 exe: system("cmd.exe"),
                 args: args.split(' ').map(str::to_owned).collect(),
@@ -553,6 +568,12 @@ mod tests {
                 ready_wait: STAND_IN_READY_WAIT,
             },
             &[],
+            |ready| {
+                // The system DLL stands in for a hook: explicitly acknowledge
+                // readiness, while exercising the real Windows event wait.
+                unsafe { windows_sys::Win32::System::Threading::SetEvent(ready.0) };
+                ready.wait(300)
+            },
         )
         .unwrap();
         assert!(started.is_running());
@@ -561,10 +582,10 @@ mod tests {
     }
 
     #[test]
-    fn the_game_stays_suspended_for_as_long_as_the_launch_says() {
+    fn a_hook_that_never_signals_readiness_stops_the_launch() {
         let wait = std::time::Duration::from_secs(2);
         let begun = std::time::Instant::now();
-        let started = start(
+        let refused = start(
             &Launch {
                 exe: system("cmd.exe"),
                 args: vec!["/c".into(), "exit".into(), "0".into()],
@@ -574,9 +595,9 @@ mod tests {
             },
             &[],
         )
-        .unwrap();
+        .expect_err("a missing readiness signal must not resume the game");
         assert!(begun.elapsed() >= wait, "held for the wait it was given");
-        assert_eq!(wait_for_exit(started.pid), Some(0));
+        assert!(refused.to_string().contains("initialization timed out"));
     }
 
     #[test]
