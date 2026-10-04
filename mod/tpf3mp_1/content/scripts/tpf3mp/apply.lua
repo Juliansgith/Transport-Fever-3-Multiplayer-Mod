@@ -198,35 +198,41 @@ local function sendRemoval(proposal, context)
 	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
 end
 
--- What to stop at instead, dry: the removal as a SimpleProposal, which is
+-- What to stop at instead, dry: the removals as SimpleProposals, which is
 -- what the game's own tools hand game scripts and what makeProposalData
 -- reads. A plain Proposal, which is what createProposalRemove and
 -- makeSegmentsRemoveProposal make, it refuses outright ("SimpleProposal
 -- expected, got Proposal", build 40408, in the room's other games on
--- 2026-10-04), and the other members are shown what that call would make.
--- Nothing to stop at outside a dry run.
+-- 2026-10-04).
 --
 -- `part` says what goes: `buildings` the entities to remove, `edges` the
--- edges, `added` those edges again, `nodes` to remove, `configs` the node
--- configurations to remove with them.
+-- edges, `added` those edges again, `configs` the node configurations to
+-- remove with them.
 --
 -- A SimpleProposal has to add what it removes back: "The general rule is
 -- that the modification/upgrade of a construction entails removing it and
 -- adding it anew. The same rule applies to streets and edgeobjects"
 -- (api/type.d.tl, build 40408). A street removal that only removed them was
--- refused with "Unknown exception" out of makeProposalData, in every game
--- of the room (2026-10-04); adding them again is what the game reads, and
--- the preview is drawn (`as this game sees it: fine`).
-local function simpleRemoval(context, part)
+-- refused with "Unknown exception" out of makeProposalData, in every game of
+-- the room (2026-10-04); adding them again is read ("as this game sees it:
+-- fine"), but draws as the road that is there now and never changes, so the
+-- other member sees nothing. Which shapes the game reads is therefore asked
+-- of it at draw time (bridge.lua, Link:drawPreview), and the forms are tried
+-- most visible first: `bare` says only what goes, so a form that is read
+-- draws the removal itself.
+local function removals(context, part)
 	if not dry then return end
-	local simple = api.type.SimpleProposal.new()
-	local street = simple.streetProposal
-	if part.buildings ~= nil and #part.buildings > 0 then simple.constructionsToRemove = part.buildings end
-	if part.edges ~= nil and #part.edges > 0 then street.edgesToRemove = part.edges end
-	if part.added ~= nil and #part.added > 0 then street.edgesToAdd = part.added end
-	if part.nodes ~= nil and #part.nodes > 0 then street.nodesToRemove = part.nodes end
-	if part.configs ~= nil and #part.configs > 0 then street.nodeConfigsToRemove = part.configs end
-	error({ dry = true, proposal = simple, context = context }, 0)
+	local function form(added)
+		local simple = api.type.SimpleProposal.new()
+		if part.buildings ~= nil and #part.buildings > 0 then simple.constructionsToRemove = part.buildings end
+		if part.edges ~= nil and #part.edges > 0 then simple.streetProposal.edgesToRemove = part.edges end
+		if added ~= nil and #added > 0 then simple.streetProposal.edgesToAdd = added end
+		if part.configs ~= nil and #part.configs > 0 then simple.streetProposal.nodeConfigsToRemove = part.configs end
+		return simple
+	end
+	local out = { form(nil) }
+	if part.added ~= nil and #part.added > 0 then out[#out + 1] = form(part.added) end
+	error({ dry = true, proposals = out, context = context }, 0)
 end
 
 -- The edges `ids` again, as the SimpleProposal rule above asks: the same
@@ -1144,7 +1150,7 @@ end
 -- same proposal, as the player's own build (playerInitiated: the game's
 -- towns script, onPreBuildProposal), in every game at the same step.
 -- Dry (apply.proposalOf) it stops at the removal as a SimpleProposal
--- (simpleRemoval), sending and logging nothing, so the other members see what
+-- (removals), sending and logging nothing, so the other members see what
 -- this player is taking out. The asset bulldozer's is not shown: it is a
 -- plain Proposal, which makeProposalData cannot read.
 function HANDLERS.Bulldoze(b)
@@ -1156,7 +1162,7 @@ function HANDLERS.Bulldoze(b)
 		local con = constructionAt(b.Construction)
 		mine(con, "construction")
 		-- Dry: the removal as a SimpleProposal, for the other members to see.
-		simpleRemoval(context, { buildings = { con } })
+		removals(context, { buildings = { con } })
 		proposal = proposals.createProposalRemove(con, context)
 		if proposal == nil then error("the game will not remove the " .. tostring(b.Construction.file), 0) end
 		log("removing " .. tostring(con) .. " " .. tostring(b.Construction.file))
@@ -1177,7 +1183,7 @@ function HANDLERS.Bulldoze(b)
 		-- lookup.
 		local gone, buildings = townBuildingsRemoved(proposal, b.Edges.buildings or {})
 		if dry then
-			simpleRemoval(context, { buildings = buildings, edges = ids,
+			removals(context, { buildings = buildings, edges = ids,
 				added = edgesAddedBack(ids, network), configs = configsAtEndsOf(ids) })
 		end
 		log("removing " .. network .. " edges " .. table.concat(ids, ",")
@@ -1185,7 +1191,7 @@ function HANDLERS.Bulldoze(b)
 	elseif b.EdgeObject then
 		-- A SimpleProposal already: rebuildWith replaces the one edge with
 		-- itself, less the stop, which is the shape the game asks for
-		-- (simpleRemoval), and the one removal shown in the game on
+		-- (removals), and the one removal shown in the game on
 		-- 2026-10-04. The game's verdict comes first and a dry run stops
 		-- there (buildProposal).
 		return removeEdgeObject(b.EdgeObject, context)
@@ -2211,12 +2217,15 @@ end
 -- removals a player's tool previews (tpf3mp/previews.lua).
 apply.PREVIEWS = { BuildConstruction = true, BuildRoad = true, BuildTrack = true, PlaceStop = true, Bulldoze = true }
 
--- The proposal `action` would build in this game, and the context it would
+-- The proposals `action` would build in this game, and the context it would
 -- be built with, as apply.run would make them for `ctx`, without sending
 -- anything, building anything or writing the log: for showing another
--- player's build preview (docs/HOOKS.md, "Build previews"). Or nil and why:
--- an action that is not a build or a removal, or one this game cannot make
--- (a street type it lacks, an edge it does not have).
+-- player's build preview (docs/HOOKS.md, "Build previews"). The proposals
+-- are a list, best first, because the game reads some shapes and refuses
+-- others and which is which is asked of it where it is drawn
+-- (tpf3mp/bridge.lua, Link:drawPreview); a build's list has one entry. Or nil
+-- and why: an action that is not a build or a removal, or one this game
+-- cannot make (a street type it lacks, an edge it does not have).
 function apply.proposalOf(action, ctx)
 	if type(action) ~= "table" then return nil, "an action is a table" end
 	local kind, body = next(action)
@@ -2227,8 +2236,11 @@ function apply.proposalOf(action, ctx)
 	dry, acting = true, ctx
 	local ok, stopped, detail = pcall(HANDLERS[kind], body, ctx)
 	dry, acting = false, nil
+	if not ok and type(stopped) == "table" and stopped.proposals ~= nil then
+		return stopped.proposals, stopped.context
+	end
 	if not ok and type(stopped) == "table" and stopped.proposal ~= nil then
-		return stopped.proposal, stopped.context
+		return { stopped.proposal }, stopped.context
 	end
 	-- A handler that made nothing of it says why (the asset bulldozer's
 	-- rebuild, which a preview cannot show); one that only answers that it

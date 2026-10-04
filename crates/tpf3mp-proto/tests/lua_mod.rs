@@ -2872,7 +2872,7 @@ fn a_dry_run_makes_a_builds_proposal_and_sends_nothing() {
     .unwrap_or_else(|error| panic!("{error}
 {}", log(&lua)));
     let (file, player, sent, logged): (String, i64, usize, usize) = lua
-        .load("return P.constructionsToAdd[1].fileName, C.player, #SENT, #HOOK.logged")
+        .load("return P[1].constructionsToAdd[1].fileName, C.player, #SENT, #HOOK.logged")
         .eval()
         .unwrap_or_else(|error| {
             panic!(
@@ -2915,7 +2915,7 @@ fn the_plugin_has_the_hook_draw_each_other_members_preview_and_mounts_nothing() 
                  return {} \
              end } } } \
          package.loaded['tpf3mp.apply'] = { proposalOf = function(action) \
-             if action.BuildTrack then return { track = true }, { player = 25 } end \
+             if action.BuildTrack then return { { track = true } }, { player = 25 } end \
              return nil, 'this game has no such street' \
          end } \
          HOOK.room = true",
@@ -2934,7 +2934,7 @@ fn the_plugin_has_the_hook_draw_each_other_members_preview_and_mounts_nothing() 
         .load(
             "local kept = {} \
              for from, p in pairs(require('tpf3mp.previews').remote()) do \
-                 kept[#kept + 1] = from:sub(1, 2) .. ' ' .. p.kind .. ' ' .. tostring(p.proposal.track) \
+                 kept[#kept + 1] = from:sub(1, 2) .. ' ' .. p.kind .. ' ' .. tostring(p.proposal[1].track) \
              end \
              local mounted = 0 \
              for _, child in ipairs(M.layout.params.children) do \
@@ -2966,6 +2966,63 @@ fn the_plugin_has_the_hook_draw_each_other_members_preview_and_mounts_nothing() 
     ] {
         assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
     }
+    // The proposals are a list, because the game reads some shapes and
+    // refuses others: the first it reads is the one drawn, and where it reads
+    // none, every reason is said.
+    // A link of the test's own, so `drawPreview` can be driven directly.
+    lua.load(
+        "ARMED, REFUSE = nil, nil \
+         FAKE = setmetatable({ native = { draw = function(from) ARMED = from return true end, \
+             drawn = function() return ARMED ~= nil end } }, require('tpf3mp.bridge').Link) \
+         SEEN = {} \
+         function EVALUATE(p, c) SEEN[#SEEN + 1] = p.n \
+             if REFUSE == true or REFUSE == p.n then error('refused ' .. p.n, 0) end return {} end",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let forms: String = lua
+        .load(
+            "local Link = require('tpf3mp.bridge').Link \
+             REFUSE = 1 \
+             local ok = Link.drawPreview(FAKE, 'ab', { { n = 1 }, { n = 2 }, { n = 3 } }, {}, EVALUATE) \
+             local tried = table.concat(SEEN, ',') SEEN = {} \
+             REFUSE = nil \
+             local again = Link.drawPreview(FAKE, 'ab', { { n = 1 }, { n = 2 } }, {}, EVALUATE) \
+             return tried .. '|' .. tostring(ok) .. '|' .. table.concat(SEEN, ',') .. '|' .. tostring(again)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        forms, "1,2|true|1|true",
+        "the first form refused, so the second was tried and drawn and the \
+         third never reached; with nothing refused the first is drawn at once"
+    );
+    let refused: String = lua
+        .load(
+            "local Link = require('tpf3mp.bridge').Link \
+             REFUSE = true \
+             local ok, why = Link.drawPreview(FAKE, 'ab', { { n = 1 }, { n = 2 } }, {}, EVALUATE) \
+             return tostring(ok) .. '|' .. tostring(why)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(
+        refused.starts_with("nil|the game read none of 2 forms of it: refused 1 / refused 2"),
+        "every reason said: {refused}"
+    );
+    let one: String = lua
+        .load(
+            "local Link = require('tpf3mp.bridge').Link \
+             REFUSE = true \
+             local ok, why = Link.drawPreview(FAKE, 'ab', { { n = 1 } }, {}, EVALUATE) \
+             return tostring(ok) .. '|' .. tostring(why)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        one, "nil|the game did not evaluate it: refused 1",
+        "one form refused: the plain reason, as before"
+    );
     // The member's tool shows nothing now: the hook clears it.
     lua.load("HOOK.incoming = { { from = string.rep('ab', 32) } } M.step() M.render()")
         .exec()
@@ -3234,6 +3291,7 @@ fn a_snapped_stations_preview_leaves_its_junction_settings_out() {
                  node = {{ network = 'Street', at = {{ x = 999, y = 999, z = 0 }} }} }} }} \
              local p, why = apply.proposalOf(action, {{}}) \
              if not p then return 'none: ' .. tostring(why), #SENT end \
+             p = p[1] \
              return p.constructionsToAdd[1].fileName .. ' ' .. #p.streetProposal.edgesToAdd, #SENT"
         ))
         .eval()
@@ -3977,7 +4035,7 @@ fn a_roads_preview_is_the_proposal_its_build_would_send() {
     .unwrap_or_else(|error| panic!("{error}"));
     let (nodes, edges, removed, sent, logged): (usize, usize, String, usize, usize) = lua
         .load(
-            "local p = P.streetProposal              return #p.nodesToAdd, #p.edgesToAdd, table.concat(p.edgesToRemove, ','), #SENT, #HOOK.logged",
+            "local p = P[1].streetProposal              return #p.nodesToAdd, #p.edgesToAdd, table.concat(p.edgesToRemove, ','), #SENT, #HOOK.logged",
         )
         .eval()
         .unwrap_or_else(|error| panic!("{error}"));
@@ -4027,10 +4085,13 @@ fn a_bulldozes_preview_is_the_removal_its_build_would_send() {
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     let (removed, street, players, sent, logged): (String, String, String, usize, usize) = lua
         .load(
-            "local a = STREET.streetProposal.edgesToAdd[1] \
-             return tostring(DEPOT.constructionsToRemove[1]), \
-                 table.concat(STREET.streetProposal.edgesToRemove, ',') .. '>' .. a.entity \
-                     .. ':' .. a.type .. ':' .. a.comp.node0 .. '>' .. a.comp.node1, \
+            "local first, second = STREET[1], STREET[2] \
+             local back = second.streetProposal.edgesToAdd[1] \
+             return tostring(DEPOT[1].constructionsToRemove[1]), \
+                 #STREET .. '|' .. table.concat(first.streetProposal.edgesToRemove, ',') \
+                     .. '|' .. tostring(first.streetProposal.edgesToAdd == nil) \
+                     .. '|' .. table.concat(second.streetProposal.edgesToRemove, ',') \
+                     .. '>' .. back.entity .. ':' .. back.comp.node0 .. '>' .. back.comp.node1, \
                  tostring(C1.player) .. ',' .. tostring(C2.player), #SENT, #HOOK.logged",
         )
         .eval()
@@ -4045,8 +4106,9 @@ fn a_bulldozes_preview_is_the_removal_its_build_would_send() {
         ),
         (
             "5000",
-            // the edge removed and the same edge added back at its own ends
-            "100>-1:0:8>9",
+            // two forms for the street: the first says only that the edge
+            // goes, the second adds the same edge back
+            "2|100|true|100>-1:8>9",
             "31,31",
             0,
             0
@@ -5693,21 +5755,24 @@ fn a_town_building_bulldozed_goes_in_every_game_charged_to_the_players_company()
          local p = apply.proposalOf({ Bulldoze = { Edges = { network = 'Street', \
              edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
              buildings = {} } } }, { company = 7 }) \
-         local a = p.streetProposal.edgesToAdd[1] \
-         KEPT = table.concat({ table.concat(p.streetProposal.edgesToRemove, ','), \
-             #p.streetProposal.edgesToAdd, a.entity, a.type, a.comp.node0, a.comp.node1, \
-             table.concat(p.streetProposal.nodeConfigsToRemove or {}, ','), \
-             tostring(p.streetProposal.nodesToRemove and #p.streetProposal.nodesToRemove or 0), \
+         KEPT = table.concat({ #p, \
+             table.concat(p[1].streetProposal.edgesToRemove, ','), \
+             tostring(p[1].streetProposal.edgesToAdd == nil), \
+             table.concat(p[2].streetProposal.edgesToRemove, ',') \
+                 .. '>' .. p[2].streetProposal.edgesToAdd[1].entity \
+                 .. ':' .. p[2].streetProposal.edgesToAdd[1].comp.node0 \
+                 .. '>' .. p[2].streetProposal.edgesToAdd[1].comp.node1, \
+             table.concat(p[1].streetProposal.nodeConfigsToRemove or {}, ','), \
              #SENT, #HOOK.logged }, '|')",
     )
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(
         lua.load("return KEPT").eval::<String>().unwrap(),
-        "100|1|-1|0|8|9|8,9|0|0|0",
-        "the edge removed and the same edge added back at its own ends with a \
-         new id, the configurations at those ends going with it, no node \
-         removed, nothing sent or said"
+        "2|100|true|100>-1:8>9|8,9|0|0",
+        "two forms: the first says only that the edge goes, the second adds \
+         it back with a new id, both taking the configurations at its ends, \
+         nothing sent or said"
     );
     let eval = |code: &str| -> String {
         lua.load(code).eval::<String>().unwrap_or_else(|error| {
@@ -5978,9 +6043,9 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
         )),
         "the rebuilt group holds ::/assets/trees/fir.mdl at 99, 20, 3, which the group did not"
     );
-    // With the town building the game takes with it: the preview names it as
+    // With the town building the game takes with it: every form names it as
     // a construction to remove, the very entity the removal itself takes,
-    // and the edge removed and added back.
+    // and the edge it removes.
     lua.load("GATHER = { 5100 }").exec().unwrap();
     lua.load(
         "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
@@ -5990,18 +6055,18 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
              edges = { { a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 } } }, \
              buildings = { { file = '::/buildings/a/c1/4x4_02/a_com_l1_4x4_02.con', \
                  at = { x = 60, y = -10, z = 0 } } } } } }, { company = 7 }) \
-         BUILT = table.concat({ table.concat(p.constructionsToRemove, ','), \
-             table.concat(p.streetProposal.edgesToRemove, ','), \
-             table.concat(p.streetProposal.nodeConfigsToRemove or {}, ','), \
+         BUILT = table.concat({ #p, table.concat(p[1].constructionsToRemove, ','), \
+             table.concat(p[1].streetProposal.edgesToRemove, ','), \
+             table.concat(p[1].streetProposal.nodeConfigsToRemove or {}, ','), \
              #SENT, #HOOK.logged }, '|')",
     )
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(
         lua.load("return BUILT").eval::<String>().unwrap(),
-        "5100|100|8,9|0|0",
-        "the town building the game's own removal takes, the edge, and the \
-         node configurations naming it, nothing sent or said"
+        "2|5100|100|8,9|0|0",
+        "both forms name the town building the game's own removal takes, the \
+         edge, and the node configurations naming it, nothing sent or said"
     );
     let shown = eval(
         "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
@@ -6851,10 +6916,10 @@ fn the_bulldozer_removes_a_stop_in_every_game() {
              apply.log = function(line) HOOK.logged[#HOOK.logged + 1] = line end \
              HOOK.logged = {} SENT = {} \
              local p = apply.proposalOf(STOP, { company = 7 }) \
-             local e = p.streetProposal.edgesToAdd[1] \
+             local e = p[1].streetProposal.edgesToAdd[1] \
              return table.concat({ #e.comp.objects, e.comp.objects[1][1], \
-                 table.concat(p.streetProposal.edgesToRemove, ','), \
-                 table.concat(p.streetProposal.edgeObjectsToRemove, ','), \
+                 table.concat(p[1].streetProposal.edgesToRemove, ','), \
+                 table.concat(p[1].streetProposal.edgeObjectsToRemove, ','), \
                  #SENT, #HOOK.logged }, '|')",
         )
         .eval()

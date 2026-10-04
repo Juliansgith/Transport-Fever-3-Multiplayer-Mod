@@ -409,19 +409,22 @@ Dev C:
     has to add what it removes back**, as the game states for constructions,
     streets and edge objects alike (api/type.d.tl: "The general rule is that
     the modification/upgrade of a construction entails removing it and adding
-    it anew"), or `makeProposalData` raises "Unknown exception". A
-    construction, a stop, a street and a track's removal are all shown;
-    the asset bulldozer's is a plain `Proposal` with no SimpleProposal form
-    and says so instead.
-    **Tick once seen in the real game.** Verified so far: each kind makes the
-    proposal the room orders and sends and logs nothing, in the game's own
-    words and in the tests; a street's removal evaluated in another game
-    (`as this game sees it: fine`) before one run ended in
-    `ecs::Replicator::Apply`, *"Assertion 'entity == c.entity' failed"*, on
-    the simulation thread through `followInGui` — the replication of the
-    room's own actions, which a preview never reaches, and not established
-    as this feature's. If it comes back, HOOKS.md "Build previews" says
-    where to look first.
+    it anew"), or `makeProposalData` raises "Unknown exception". Adding the
+    edges back is read but **draws nothing** — the same edge removed and
+    added again is no change — which is why a station showed and a street did
+    not. So which shapes the game reads is **asked of it where it is drawn**
+    rather than guessed at: a preview is a list of proposals and the first
+    the game reads is the one drawn, most visible form first. **Tick once
+    seen in the real game** — the first run with the list says in the log
+    which form the game took, and the list shrinks to that one. Verified so
+    far: each kind makes the proposal the room orders and sends, builds and
+    logs nothing, in the game's own words and in the tests; a street's
+    removal evaluated in another game ("as this game sees it: fine") before
+    one run ended in `ecs::Replicator::Apply`, *"Assertion 'entity == c.entity'
+    failed"*, on the simulation thread through `followInGui` — the
+    replication of the room's own actions, which a preview never reaches, and
+    not established as this feature's. If it comes back, HOOKS.md "Build
+    previews" says where to look first.
 - [ ] *Added* (proposed by tearded, 2026-10-04, for the owner): the main
     menu's `WithComponentParams` banner gone. The game declares that layout
     child through a helper meant for the builtins the C++ side has already

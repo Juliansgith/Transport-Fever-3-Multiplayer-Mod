@@ -3043,12 +3043,15 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   (`tpf3mp/previews.lua`, `take`), and says each
   member's first in the log ("another member's build preview arrived:
   ...").
-- **Showing them.** Each preview is made into the proposal its action
+- **Showing them.** Each preview is made into the proposals its action
   would build in this game, for the sender's company:
   `apply.proposalOf(action, ctx)` runs the build's handler dry, stopping
   it at the proposal it would send, so nothing is sent, built or logged
   (construction, road, track and stop builds, and the bulldozer's
-  removals). One this game cannot make (a street type it lacks, an edge it
+  removals). It answers a **list**, because the game reads some shapes of a
+  proposal and refuses others, and the first it reads is the one drawn (see
+  `Link:drawPreview` and "The bulldozer's removals" below); a build's list
+  has one entry. One this game cannot make (a street type it lacks, an edge it
   has not, a depot that is not there) does not show, and the
   log says why. Its junction settings are left out (`junctions.into` is
   skipped in the dry run): they name nodes of the sender's game, and
@@ -3161,8 +3164,8 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   > entails removing it and adding it anew. The same rule applies to
   > streets and edgeobjects.
 
-Both halves were found in the room's games on 2026-10-04, and together
-  they are what a street's removal needs:
+Both halves were found in the room's games on 2026-10-04, and the second
+  is why a street's removal needs two forms:
   - A street removal that **only removed** the edges was refused with
     **"Unknown exception"** out of `makeProposalData`, in every game of the
     room — while a road build (which replaces the edges it removes) and a
@@ -3170,30 +3173,25 @@ Both halves were found in the room's games on 2026-10-04, and together
   - Adding the removed edges back (`edgesToAdd`, new negative ids, the same
     shape `rebuildWith` gives the one edge a stop removal replaces, plus
     `nodeConfigsToRemove` at their ends) makes `makeProposalData` accept it:
-    `another member's Bulldoze preview, as this game sees it: fine`, and the
-    preview is drawn.
-  So `simpleRemoval` builds the removal as the tools hand it out:
-  - `Bulldoze::Construction` — `constructionsToRemove`. Drawn without being
-    added back, which the game accepts.
-  - `Bulldoze::Edges` — `streetProposal.edgesToRemove` **and** the same
-    edges in `edgesToAdd` with new negative ids (`edgesAddedBack`), the lane
-    configurations at their ends in `nodeConfigsToRemove`
-    (`configsAtEndsOf`, as `rebuildWith` and `networkInto` do), and the town
-    buildings in `constructionsToRemove` — the very entities the game's own
-    removal takes, read off `proposal.toRemove` after `townBuildingsRemoved`
-    has checked them against what the player's bulldoze named. No node is
-    removed: the added edges keep their ends alive.
-  - `Bulldoze::EdgeObject` — `removeEdgeObject` and `rebuildWith`, which
-    replaces the one edge with itself, less the stop; the game's verdict
-    comes first and a dry run stops there (`buildProposal`).
-- **Not shown.** The asset bulldozer's (`Bulldoze::Assets`): its group
-  removed and rebuilt without the assets taken is a plain `Proposal`, and no
-  SimpleProposal says it. The dry run says so and shows nothing, rather than
-  showing the wrong thing: "an asset group's rebuild, which a preview cannot
-  show". (On this build the asset channel is refused at the capture anyway
-  unless `TPF3MP_TREE_BULLDOZE=1`, so no action reaches here for it.)
-  `apply.proposalOf` keeps a handler's own reason where it has one, so that
-  reason is what the log says.
+    `another member's Bulldoze preview, as this game sees it: fine`. **And it
+    draws as the road that is there**: the same edge removed and added again
+    is no change at all, which is why a station's removal shows and a street's
+    did not. That was seen in the game, not reasoned out.
+- **Which forms the game reads is asked of it, not guessed.** So a preview is
+  a **list** of proposals and the one drawn is the first the game reads
+  (`Link:drawPreview`, `tpf3mp/bridge.lua`; the list comes from
+  `apply.proposalOf`). For a street or a track's removal, most visible first:
+  1. only what goes — `edgesToRemove` and the constructions beside them. It
+     says what is removed, so a form the game reads **draws the removal**.
+  2. the same, and the street itself again in `edgesToAdd` — the form the
+     game is known to read, and the one that draws nothing.
+  Where none is read, every reason is said. So the first run with this in it
+  says which form the game took, and the list shrinks to that one.
+  `Construction` and `EdgeObject` have one form each; `Assets` none (a plain
+  `Proposal`, and no `SimpleProposal` says it — the dry run says *"an asset
+  group's rebuild, which a preview cannot show"* rather than showing the
+  wrong thing, and `apply.proposalOf` keeps a handler's own reason where it
+  has one).
 - **Open.** One run of the room (2026-10-04) ended in
   `ecs::Replicator::Apply`, *"Assertion 'entity == c.entity' failed"*, on the
   simulation thread through `tpf3mp_sim.script.lua`'s `followInGui` — the
