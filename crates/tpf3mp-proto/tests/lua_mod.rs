@@ -1495,7 +1495,10 @@ fn every_junction_in_one_checkpoint_keeps_its_own_light_settings() {
         .collect();
     assert_eq!(rows.len(), 3, "{rows:?}");
     assert_eq!(
-        settings.iter().filter(|s| *s == "Yes|::/traffic_light/standard.lua").count(),
+        settings
+            .iter()
+            .filter(|s| *s == "Yes|::/traffic_light/standard.lua")
+            .count(),
         2,
         "{rows:?}"
     );

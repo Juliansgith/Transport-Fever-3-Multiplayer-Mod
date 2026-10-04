@@ -939,22 +939,22 @@ impl<G: RoomGate> StepDriver<G> {
     fn updates(&mut self) -> Updates {
         self.why = "-";
         let updates = self.choose_updates();
-        if self.why == "-" {
-            // Every path that holds the world says so through `hold`.
-            self.why = match (updates, &self.phase) {
-                (Updates::Own, _) => "own",
-                (_, Phase::Holding(_)) => "hold",
-                _ => "-",
-            };
+        if matches!(updates, Updates::Own) {
+            self.why = "own";
         }
         updates
     }
 
-    /// Why the last call of the step runs the updates it does: `run`,
-    /// `wait` (the room's next step is not released), `actions` and
-    /// `replaying` (the room's actions), `save`, `load`, `hold`, `own`.
+    /// Why the last call of the step ran the updates it did: `run`, `wait`
+    /// (the room's next step is not released), `actions` and `replaying`
+    /// (the room's actions), `save`, `load`, `own`; `hold` whenever the
+    /// world is held once the call is done, whatever the call was doing.
     pub fn why(&self) -> &'static str {
-        self.why
+        if matches!(self.phase, Phase::Holding(_)) {
+            "hold"
+        } else {
+            self.why
+        }
     }
 
     fn choose_updates(&mut self) -> Updates {
@@ -2883,6 +2883,36 @@ pub(crate) mod tests {
         assert_eq!(d.why(), "load");
         d.hold("a test's reason".into());
         assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert_eq!(d.why(), "hold");
+    }
+
+    /// A call that ends holding the world says `hold`, not what it was
+    /// doing when it held: here a room's load the game could not start.
+    #[test]
+    fn a_call_that_holds_the_world_says_hold() {
+        let mut script = Script::default();
+        script.begin.push_back(Some(begin()));
+        script.gates.extend([
+            StepGate::Load(Load {
+                file: None,
+                next_step: 1,
+            }),
+            StepGate::Run,
+            StepGate::Load(Load {
+                file: Some(PathBuf::from("worlds/room.sav")),
+                next_step: 2,
+            }),
+        ]);
+        let (mut d, state) = driver_with(script);
+        state.lock().unwrap().mark = mark(0, 1);
+        let mut calls = Vec::new();
+        assert_eq!(call(&mut d, &mut calls), Updates::Exactly(1));
+        assert_eq!(call(&mut d, &mut calls), PAUSED, "asked to load");
+        assert_eq!(d.why(), "load");
+        // The game says the load failed: this call, a load's, holds.
+        state.lock().unwrap().load_failure = Some("this Lua state has no app".into());
+        assert_eq!(call(&mut d, &mut calls), PAUSED);
+        assert!(matches!(d.phase(), Phase::Holding(_)), "{:?}", d.phase());
         assert_eq!(d.why(), "hold");
     }
 
