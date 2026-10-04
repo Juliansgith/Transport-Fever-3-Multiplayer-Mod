@@ -3,17 +3,36 @@
 # later is left running and reported as a failure. Only named games are
 # touched; this helper never force-kills a game.
 #   quit.ps1 -GamePids 1234,5678
-# -QuitAt / -DesktopAt: the two buttons in capture coordinates, when the
-# window's size differs from the one they were read on (docs/GAME_TESTING.md).
-param([string[]]$GamePids, [string]$QuitAt = "214,508", [string]$DesktopAt = "793,508")
+# The two buttons are found where they are on the game's window as it is
+# now: the pause menu scales with the window, so they sit at the same
+# fraction of its capture whatever its size (a capture of the window before
+# the clicks, <work>\quit-<pid>.png, says what was on it). -QuitAt /
+# -DesktopAt give them in capture coordinates instead (docs/GAME_TESTING.md).
+param([string[]]$GamePids, [string]$QuitAt = "", [string]$DesktopAt = "")
 . "$PSScriptRoot\env.ps1"
 # "1234,5678" from powershell -File, or an array from a script.
 $GamePids = @($GamePids | ForEach-Object { $_ -split "," } | Where-Object { $_ } | ForEach-Object { [int]$_ })
 $g = "$PSScriptRoot\gamewin.ps1"
-$q = $QuitAt -split ","; $d = $DesktopAt -split ","
+# Where the buttons are, as fractions of the capture: measured on captures
+# of 1291x748 and 1280x678 (the Quit button spans 0.10-0.34 across and
+# 0.64-0.72 down, Return to Desktop 0.52-0.69 across).
+$quitFraction = @(0.19, 0.68); $desktopFraction = @(0.605, 0.68)
 foreach ($gp in $GamePids) {
   $p = Get-Process -Id $gp -ErrorAction SilentlyContinue
   if (-not $p -or $p.ProcessName -ne "TransportFever3") { continue }
+  $q = $QuitAt -split ","; $d = $DesktopAt -split ","
+  if (-not $QuitAt -or -not $DesktopAt) {
+    $said = (& $g shot "quit-$gp" -GamePid $gp | Out-String)
+    if ($said -match "window (\d+)x(\d+)") {
+      $cw = [int]$Matches[1] / 2; $ch = [int]$Matches[2] / 2
+      if (-not $QuitAt) { $q = @([int]($cw * $quitFraction[0]), [int]($ch * $quitFraction[1])) }
+      if (-not $DesktopAt) { $d = @([int]($cw * $desktopFraction[0]), [int]($ch * $desktopFraction[1])) }
+    } else {
+      # The window's size did not read: the coordinates of a 1291x748 capture.
+      if (-not $QuitAt) { $q = @(214, 508) }
+      if (-not $DesktopAt) { $d = @(793, 508) }
+    }
+  }
   [void]$p.CloseMainWindow()
   Start-Sleep -Seconds 2
   try { & $g click $q[0] $q[1] -GamePid $gp | Out-Null } catch {}

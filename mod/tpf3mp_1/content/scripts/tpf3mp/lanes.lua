@@ -203,56 +203,144 @@ end
 -- it was made from. Without `emit` it builds no fields.
 local readers = {}
 
+-- An edge's row in the network lane, from its BASE_EDGE component (or a
+-- table with the same fields): its ends to 0.1 m, in order, its road
+-- template, and its lane settings, sorted. `net`, when given, counts the
+-- lane configs. The hook makes the same text from the engine's memory
+-- (crates/tpf3mp-hook/src/netread.rs), whose tests run this function.
+function lanes.edgeRow(edge, net)
+	local a, b = vec01(edge.position0), vec01(edge.position1)
+	local reversed = a > b
+	if reversed then a, b = b, a end
+	local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
+	local laneRows = {}
+	-- Each read of a component's field asks the engine again: the lane
+	-- configs and each one's modes are read once.
+	local configs = edge.laneConfigs
+	if net then net.laneConfigs = net.laneConfigs + #configs end
+	for i = 1, #configs do
+		local l, modes = configs[i], {}
+		local transportModes = l.transportModes
+		for m = 0, 15 do modes[m + 1] = transportModes[m] == true and "1" or "0" end
+		laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
+			l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
+	end
+	table.sort(laneRows)
+	return row .. "|lanes:" .. table.concat(laneRows,";")
+end
+
+-- The hook's own read of the edge rows (crates/tpf3mp-hook/src/netread.rs,
+-- docs/HOOKS.md, "The network lane read natively"): nil where the state has
+-- no hook or the hook leaves it off, else { mode = "compare" | "on", rows =
+-- { row, ... } }, or { mode =, why = } when they did not read.
+local function nativeEdges()
+	local ok, native = pcall(function() return tpf3mp_native end)
+	if not ok or type(native) ~= "table" or type(native.network) ~= "function" then return nil end
+	local done, result = pcall(native.network)
+	if done and type(result) == "table" and (result.mode == "compare" or result.mode == "on") then
+		return result
+	end
+	return nil
+end
+
+-- How the mod's edge rows and the hook's compare: { agree =, lua =,
+-- native =, onlyLua = { row, ... }, onlyNative = { row, ... } }, at most
+-- three rows each way.
+local function compareRows(own, theirs)
+	local a, b = {}, {}
+	for i, r in ipairs(own) do a[i] = r end
+	for i, r in ipairs(theirs) do b[i] = tostring(r) end
+	table.sort(a)
+	table.sort(b)
+	local out = { lua = #a, native = #b, onlyLua = {}, onlyNative = {} }
+	local i, j = 1, 1
+	while i <= #a or j <= #b do
+		if j > #b or (i <= #a and a[i] < b[j]) then
+			if #out.onlyLua < 3 then out.onlyLua[#out.onlyLua + 1] = a[i] end
+			i = i + 1
+		elseif i > #a or b[j] < a[i] then
+			if #out.onlyNative < 3 then out.onlyNative[#out.onlyNative + 1] = b[j] end
+			j = j + 1
+		else
+			i, j = i + 1, j + 1
+		end
+	end
+	out.agree = #out.onlyLua == 0 and #out.onlyNative == 0
+	return out
+end
+
 readers[lanes.NETWORK] = function(api, emit)
 	local rows, seen = {}, {}
 	local net = { map = 0, get = 0, lanes = 0, junctions = 0, edges = 0, laneConfigs = 0 }
 	lanes.cost.net = net
-	local t0 = clock()
-	local map = api.engine.system.streetSystem.getNode2SegmentMap()
-	local t1 = clock()
-	if t0 and t1 then net.map = t1 - t0 end
-	for _, segments in pairs(map) do
-		for _, e in pairs(segments) do
-			if not seen[e] then
-				seen[e] = true
-				local g0 = clock()
-				local edge = component(api, e, "BASE_EDGE")
-				local g1 = clock()
-				if g0 and g1 then net.get = net.get + (g1 - g0) end
-				net.edges = net.edges + 1
-				if edge then
-					local a, b = vec01(edge.position0), vec01(edge.position1)
-					local reversed = a > b
-					if reversed then a, b = b, a end
-					local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
-					local laneRows = {}
-					local l0 = clock()
-					net.laneConfigs = net.laneConfigs + #edge.laneConfigs
-					-- Each read of a component's field asks the engine again:
-					-- the lane configs and each one's modes are read once.
-					local configs = edge.laneConfigs
-					for i = 1, #configs do
-						local l, modes = configs[i], {}
-						local transportModes = l.transportModes
-						for m = 0, 15 do modes[m + 1] = transportModes[m] == true and "1" or "0" end
-						laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
-							l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
-					end
-					table.sort(laneRows)
-					local l1 = clock()
-					if l0 and l1 then net.lanes = net.lanes + (l1 - l0) end
-					row = row .. "|lanes:" .. table.concat(laneRows,";")
-					rows[#rows + 1] = row
-					if emit then
-						emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)
-							.. " template=" .. tostring(edge.roadTemplate), { edge.position0, edge.position1 })
+	-- A dump needs each edge's entity and values: always the mod's own.
+	local native
+	if not emit then
+		local n0 = clock()
+		native = nativeEdges()
+		local n1 = clock()
+		if native then
+			net.native = { mode = native.mode, why = native.why,
+				rows = type(native.rows) == "table" and #native.rows or nil,
+				time = (n0 and n1) and (n1 - n0) or nil }
+		end
+	end
+	if native and native.mode == "on" and type(native.rows) == "table" then
+		for i, row in ipairs(native.rows) do rows[i] = row end
+		net.edges = #rows
+	else
+		local t0 = clock()
+		local map = api.engine.system.streetSystem.getNode2SegmentMap()
+		local t1 = clock()
+		if t0 and t1 then net.map = t1 - t0 end
+		for _, segments in pairs(map) do
+			for _, e in pairs(segments) do
+				if not seen[e] then
+					seen[e] = true
+					local g0 = clock()
+					local edge = component(api, e, "BASE_EDGE")
+					local g1 = clock()
+					if g0 and g1 then net.get = net.get + (g1 - g0) end
+					net.edges = net.edges + 1
+					if edge then
+						local l0 = clock()
+						local row = lanes.edgeRow(edge, net)
+						local l1 = clock()
+						if l0 and l1 then net.lanes = net.lanes + (l1 - l0) end
+						rows[#rows + 1] = row
+						if emit then
+							emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)
+								.. " template=" .. tostring(edge.roadTemplate), { edge.position0, edge.position1 })
+						end
 					end
 				end
 			end
 		end
+		if native and native.mode == "compare" and type(native.rows) == "table" then
+			net.native.compare = compareRows(rows, native.rows)
+		end
 	end
+	-- The junctions: the hook's when it is on and they read, made into rows
+	-- with the names only this Lua gives; else the mod's own.
 	local j0 = clock()
-	local junctionRows = junctions.rows(api)
+	local junctionRows
+	local parts = native and native.junctions
+	if native and native.junctionsWhy then net.native.junctionsWhy = tostring(native.junctionsWhy) end
+	if native and native.mode == "on" and type(parts) == "table" then
+		local ok, made = pcall(junctions.rowsFromParts, api, parts)
+		if ok then junctionRows = made else net.native.junctionsWhy = tostring(made) end
+	end
+	if not junctionRows then
+		junctionRows = junctions.rows(api)
+		if native and native.mode == "compare" and type(parts) == "table" then
+			local ok, made = pcall(junctions.rowsFromParts, api, parts)
+			if ok then
+				net.native.junctions = compareRows(junctionRows, made)
+			else
+				net.native.junctionsWhy = tostring(made)
+			end
+		end
+	end
 	local j1 = clock()
 	if j0 and j1 then net.junctions = j1 - j0 end
 	for _, row in ipairs(junctionRows) do
@@ -591,11 +679,31 @@ function lanes.costLine()
 		parts[#parts + 1] = names[lane] .. " " .. (t and string.format("%.1f", t * 1000) or "?")
 	end
 	local n = c.net or {}
-	return string.format("lanes read in %.1f ms: %s; of it sort+concat %.1f ms, hash %.1f ms over %d bytes;"
+	local line = string.format("lanes read in %.1f ms: %s; of it sort+concat %.1f ms, hash %.1f ms over %d bytes;"
 		.. " network: map %.1f ms, %d edges' getComponent %.1f ms, their %d lane configs %.1f ms, junctions %.1f ms",
 		total * 1000, table.concat(parts, ", "), c.sort * 1000, c.hash * 1000, c.bytes,
 		(n.map or 0) * 1000, n.edges or 0, (n.get or 0) * 1000, n.laneConfigs or 0, (n.lanes or 0) * 1000,
 		(n.junctions or 0) * 1000)
+	local native = n.native
+	if native then
+		line = line .. string.format("; native edges (%s) %s ms", tostring(native.mode),
+			native.time and string.format("%.1f", native.time * 1000) or "?")
+		if native.why then line = line .. ": did not read: " .. tostring(native.why) end
+		if native.rows then line = line .. ", " .. native.rows .. " rows" end
+		local function said(cmp)
+			if cmp.agree then return ", agree with the mod's " .. cmp.lua end
+			local function cut(r) return #r > 300 and (r:sub(1, 300) .. "...") or r end
+			local own, theirs = {}, {}
+			for i, r in ipairs(cmp.onlyLua) do own[i] = cut(r) end
+			for i, r in ipairs(cmp.onlyNative) do theirs[i] = cut(r) end
+			return string.format(", DIFFER from the mod's %d (native %d): the mod's only: [%s]; native only: [%s]",
+				cmp.lua, cmp.native, table.concat(own, " | "), table.concat(theirs, " | "))
+		end
+		if native.compare then line = line .. said(native.compare) end
+		if native.junctions then line = line .. "; native junctions" .. said(native.junctions) end
+		if native.junctionsWhy then line = line .. "; native junctions did not read: " .. native.junctionsWhy end
+	end
+	return line
 end
 
 -- The registry's kinds as a dump names their ids.

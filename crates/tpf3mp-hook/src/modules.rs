@@ -161,7 +161,7 @@ pub(crate) fn ids(
 }
 
 /// One MSVC `std::string` at `address`, at most `max` bytes.
-fn string(memory: &dyn Memory, address: usize, max: usize, what: &str) -> Result<String, String> {
+pub(crate) fn string(memory: &dyn Memory, address: usize, max: usize, what: &str) -> Result<String, String> {
     let raw = read(memory, address, layout::STRING_SIZE, what)?;
     let len = u64_at(&raw, layout::STRING_LEN);
     let capacity = u64_at(&raw, layout::STRING_CAPACITY);
@@ -186,7 +186,7 @@ fn string(memory: &dyn Memory, address: usize, max: usize, what: &str) -> Result
 
 /// A `ResName` as the game names it to scripts: `first + "::/" + second`
 /// (`::/depot/...` for the base game's), "" when `second` is empty.
-fn res_name(memory: &dyn Memory, address: usize, what: &str) -> Result<String, String> {
+pub(crate) fn res_name(memory: &dyn Memory, address: usize, what: &str) -> Result<String, String> {
     let first = string(memory, address, MAX_TEXT, what)?;
     let second = string(memory, address + layout::STRING_SIZE, MAX_TEXT, what)?;
     if second.is_empty() {

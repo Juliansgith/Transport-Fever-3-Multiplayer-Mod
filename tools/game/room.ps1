@@ -81,7 +81,13 @@ if (-not ((Test-Path $out) -and (Select-String -Path $out -Pattern "game started
   Get-Content $out, "$runDir\rig.err" -ErrorAction SilentlyContinue | Select-Object -Last 15
   exit 1
 }
-$pids = @(Select-String -Path $out -Pattern "\(game pid (\d+)\)" | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
+# The rig can say the game started before it writes the last game's PID.
+$pidDeadline = (Get-Date).AddSeconds(30)
+do {
+  $pids = @(Select-String -Path $out -Pattern "\(game pid (\d+)\)" | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
+  if ($pids.Count -eq $Players -or $proc.HasExited) { break }
+  Start-Sleep -Seconds 1
+} while ((Get-Date) -lt $pidDeadline)
 if ($pids.Count -ne $Players) { throw 'Rig did not report every game PID' }
 
 $load = 'local ns=app.SaveGameNamespace.getSavegame() for _,i in ipairs(app.findAllSavegames(ns)) do ' +

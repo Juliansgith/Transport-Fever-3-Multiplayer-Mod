@@ -518,6 +518,33 @@ function junctions.rows(api)
 	return rows
 end
 
+-- The rows junctions.rows makes, from the hook's own read of the junctions
+-- (crates/tpf3mp-hook/src/netread.rs, docs/HOOKS.md, "The network lane read
+-- natively"): each row's head and tail as the hook made them, and between
+-- them the two names only the game's Lua gives, the traffic light
+-- preference and the light's resource, as captureConfig names them.
+function junctions.rowsFromParts(api, parts)
+	local preferences, lights, rows = {}, {}, {}
+	local enums = api.type.enum.TrafficLightPreference
+	for name, key in pairs(PREFERENCES) do preferences[enums[key]] = name end
+	for i, head in ipairs(parts.heads) do
+		local preference = preferences[parts.preferences[i]]
+		if not preference then error("unknown traffic light preference", 0) end
+		local lightType, light = parts.lights[i], "default"
+		if lightType ~= -1 then
+			light = lights[lightType]
+			if light == nil then
+				light = api.res.trafficLightTypeRep.getName(lightType)
+				if type(light) ~= "string" or light == "" then error("unknown traffic light resource", 0) end
+				lights[lightType] = light
+			end
+		end
+		rows[i] = head .. "|" .. preference .. "|" .. light .. "|" .. tostring(parts.tails[i])
+	end
+	table.sort(rows)
+	return rows
+end
+
 function junctions.summary(action)
 	if type(action) ~= "table" then return nil end
 	local changes

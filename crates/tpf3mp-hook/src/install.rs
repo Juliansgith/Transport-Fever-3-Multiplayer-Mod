@@ -126,6 +126,12 @@ pub(crate) fn update_count_now() -> Option<u32> {
         .map(|c| c.update_count)
 }
 
+/// The `CGameTime` the game's step running now called its speed getter on,
+/// 0 outside the step ([`crate::netread`]).
+pub(crate) fn game_time_now() -> usize {
+    GAME_TIME.load(Ordering::Acquire)
+}
+
 /// Writes `line` to the hook's log, if it has one.
 pub(crate) fn log_line(line: &str) {
     if let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {

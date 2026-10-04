@@ -794,6 +794,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"room", native_room),
                 (b"checkpoint", native_checkpoint),
                 (b"hash", native_hash),
+                (b"network", native_network),
                 (b"seed", native_seed),
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
@@ -2029,6 +2030,111 @@ unsafe extern "C-unwind" fn native_hash(l: State) -> c_int {
         push_str(api, l, hash.as_bytes());
     }
     1
+}
+
+/// `network()`: in a game script's `postUpdate` at a checkpoint, the
+/// network lane read natively ([`crate::netread`]): `nil` when
+/// [`crate::netread::ENV`] leaves it off, else `{ mode = "compare" | "on",
+/// rows = { row, ... }, junctions = { heads =, preferences =, lights =,
+/// tails = } }`, with `why` in place of `rows` when the edges did not read
+/// and `junctionsWhy` in place of `junctions` when the junctions did not.
+unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let mode = crate::netread::mode();
+    // SAFETY: a C function's stack has LUA_MINSTACK free slots; each push
+    // below is covered by the checkstack before it.
+    unsafe {
+        if mode == crate::netread::Mode::Off || (api.checkstack)(l, 8) == 0 {
+            (api.pushnil)(l);
+            return 1;
+        }
+    }
+    let read = std::panic::catch_unwind(crate::netread::read_now)
+        .unwrap_or_else(|_| Err("the native read panicked".to_owned()));
+    // SAFETY: as above.
+    unsafe {
+        (api.createtable)(l, 0, 3);
+        let table = (api.gettop)(l);
+        push_str(api, l, b"mode");
+        push_str(api, l, mode.name().as_bytes());
+        (api.rawset)(l, table);
+        match read {
+            Ok(network) => {
+                push_str(api, l, b"rows");
+                push_strings(api, l, network.edges.iter().map(String::as_bytes));
+                (api.rawset)(l, table);
+                match network.junctions {
+                    Ok(junctions) => {
+                        push_str(api, l, b"junctions");
+                        (api.createtable)(l, 0, 4);
+                        let parts = (api.gettop)(l);
+                        push_str(api, l, b"heads");
+                        push_strings(api, l, junctions.iter().map(|j| j.head.as_bytes()));
+                        (api.rawset)(l, parts);
+                        push_str(api, l, b"tails");
+                        push_strings(api, l, junctions.iter().map(|j| j.tail.as_bytes()));
+                        (api.rawset)(l, parts);
+                        push_str(api, l, b"preferences");
+                        push_numbers(api, l, junctions.iter().map(|j| f64::from(j.preference)));
+                        (api.rawset)(l, parts);
+                        push_str(api, l, b"lights");
+                        push_numbers(api, l, junctions.iter().map(|j| f64::from(j.light)));
+                        (api.rawset)(l, parts);
+                        (api.rawset)(l, table);
+                    }
+                    Err(why) => {
+                        push_str(api, l, b"junctionsWhy");
+                        push_str(api, l, why.as_bytes());
+                        (api.rawset)(l, table);
+                    }
+                }
+            }
+            Err(why) => {
+                push_str(api, l, b"why");
+                push_str(api, l, why.as_bytes());
+                (api.rawset)(l, table);
+            }
+        }
+    }
+    1
+}
+
+/// Pushes a list of strings, `{ s1, s2, ... }`.
+///
+/// # Safety
+///
+/// As [`register`], with three free slots.
+unsafe fn push_strings<'a>(api: &LuaApi, l: State, items: impl ExactSizeIterator<Item = &'a [u8]>) {
+    // SAFETY: the caller's.
+    unsafe {
+        (api.createtable)(l, c_int::try_from(items.len()).unwrap_or(0), 0);
+        let list = (api.gettop)(l);
+        for (i, item) in items.enumerate() {
+            (api.pushnumber)(l, (i + 1) as f64);
+            push_str(api, l, item);
+            (api.rawset)(l, list);
+        }
+    }
+}
+
+/// Pushes a list of numbers, `{ n1, n2, ... }`.
+///
+/// # Safety
+///
+/// As [`register`], with three free slots.
+unsafe fn push_numbers(api: &LuaApi, l: State, items: impl ExactSizeIterator<Item = f64>) {
+    // SAFETY: the caller's.
+    unsafe {
+        (api.createtable)(l, c_int::try_from(items.len()).unwrap_or(0), 0);
+        let list = (api.gettop)(l);
+        for (i, item) in items.enumerate() {
+            (api.pushnumber)(l, (i + 1) as f64);
+            (api.pushnumber)(l, item);
+            (api.rawset)(l, list);
+        }
+    }
 }
 
 /// `checkpoint()`: whether the update running is the last of a batch that
