@@ -101,6 +101,25 @@ end
 pcall(debugPrint, "[tpf3mp] main menu: resolveutil.loadfile is wrapped")
 "#;
 
+/// The game's own `gui/main/react.lua`, and the mod's copy of it, which
+/// carries one changed line (see [`PATCH`]). The `resolveutil.loadfile` wrap
+/// serves the mod's copy, but the file is reached by `require` as well — the
+/// game's `base/init.lua` requires it while `base.zip` boots, on its way to the
+/// main menu — and that path does not go through the wrap. So the banner came
+/// up in every game, from a state whose first file was this one. The cache
+/// lookup sees those requests too, so the URI is rewritten there and the mod's
+/// file is loaded instead, under the game's name: the same thing the wrap does
+/// for the requests it does see. The namespace test keeps the wrap from
+/// looping.
+const REACT_FILE: &str = "gui/main/react.lua";
+const REACT_OURS: &std::ffi::CStr = c"tpf3mp_1::/gui/main/react.lua";
+
+/// Whether the loader is being asked for the game's own `react.lua`, which
+/// every caller then gets the mod's copy of instead.
+fn react_uri(uri: *const u8) -> bool {
+    uri_part(uri, 0x20).as_deref() == Some(REACT_FILE) && uri_part(uri, 0).as_deref() == Some("")
+}
+
 // Construction workers can load industryutil as their very first file.
 // Intercept at the native boundary: a Lua wrapper installed during that
 // first call cannot wrap the call already in progress.
@@ -297,6 +316,13 @@ unsafe extern "system" fn cached_loadfile(
             unsafe extern "system" fn(*mut c_void, *mut *mut c_void, *const u8) -> u8,
         >(original)
     };
+    if react_uri(uri) {
+        note(&format!(
+            "{REACT_FILE} SERVED at the cache: every caller gets {}",
+            REACT_OURS.to_str().unwrap_or(REACT_FILE)
+        ));
+        return unsafe { original(cache, holder, REACT_OURS.as_ptr().cast::<u8>()) };
+    }
     unsafe { original(cache, holder, uri) }
 }
 
@@ -947,6 +973,43 @@ mod tests {
              mod's own copies left alone, and the game's own used where the \
              mod's will not load"
         );
+    }
+
+    /// The game's `react.lua` is served the mod's copy to every caller, the
+    /// `require` from `base/init.lua` included, which never reaches the
+    /// `resolveutil.loadfile` wrap; the mod's own copy is left alone, so the
+    /// wrap cannot loop.
+    #[test]
+    fn the_games_react_lua_is_replaced_for_every_caller() {
+        fn uri(path: &[u8], namespace: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+            let mut object = vec![0u8; 0x40];
+            let heap = path.to_vec();
+            if path.len() < 16 {
+                object[0x20..0x20 + path.len()].copy_from_slice(path);
+                object[0x38..0x40].copy_from_slice(&15usize.to_ne_bytes());
+            } else {
+                object[0x20..0x28].copy_from_slice(&(heap.as_ptr() as usize).to_ne_bytes());
+                object[0x38..0x40].copy_from_slice(&heap.capacity().to_ne_bytes());
+            }
+            object[0x30..0x38].copy_from_slice(&path.len().to_ne_bytes());
+            object[..namespace.len().min(15)].copy_from_slice(namespace);
+            object[0x10..0x18].copy_from_slice(&namespace.len().to_ne_bytes());
+            object[0x18..0x20].copy_from_slice(&15usize.to_ne_bytes());
+            (object, heap, Vec::new())
+        }
+        let (object, _heap, _keep) = uri(REACT_FILE.as_bytes(), b"");
+        assert!(
+            react_uri(object.as_ptr()),
+            "the game's own react.lua, asked for by require as well as by loadfile"
+        );
+        let (object, _heap, _keep) = uri(REACT_FILE.as_bytes(), b"tpf3mp_1");
+        assert!(
+            !react_uri(object.as_ptr()),
+            "the mod's own copy, which the wrap asks for: left alone, or the \
+             wrap would loop"
+        );
+        let (object, _heap, _keep) = uri(b"gui/main/builtin.lua", b"");
+        assert!(!react_uri(object.as_ptr()), "every other file through");
     }
 
     /// A closure laid out as the loader's: the path object at +8 holding an

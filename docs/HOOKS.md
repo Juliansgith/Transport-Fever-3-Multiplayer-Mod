@@ -3284,11 +3284,35 @@ table has not got gets a fresh id, made as `RegisterRecipe` makes one
 (`react.lua:410`). The builtins the C++ side does register keep the ids they
 have, so nothing else changes. `tools/lobby/make_react.py` builds the copy
 from the game's file and fails loudly when the anchor is not there exactly
-once, so a game patch that moves the line is caught here and not in the
-game. The hook serves it by the same `resolveutil.loadfile` wrap that serves
-`main_page.tl` (`crates/tpf3mp-hook/src/menu_entry.rs`, "The game's own
-copies"), which now answers two paths and falls back to the game's own file
-where a mod copy will not load.
+once, so a game patch that moves the line is caught here and not in the game.
+
+**The copy has to be served to `require` as well, which the wrap alone does
+not reach.** The first attempt served it only through the
+`resolveutil.loadfile` wrap, and the banner stayed: the game's
+`base/content/base.zip/base/init.lua` **requires** `gui/main/react.lua` on its
+way out of `base.zip` (init.lua:104 `require` → :83 `__require`), and that
+call never goes through `resolveutil.loadfile`. The game's stack trace said so
+— `react.lua(658): chunk` under `init.lua(104): require`, at the line numbers
+of the **game's** file (433), where the mod's copy has 452:
+
+```
+::/gui/main/react.lua(658): chunk
+::/gui/main/react.lua(433): DeclareBuiltinLayoutChildWithUserdata
+base/content/base.zip/base/init.lua(104): require
+```
+
+So the loader's **cache lookup** rewrites the URI as well
+(`cached_loadfile`, `crates/tpf3mp-hook/src/menu_entry.rs`): a request for
+`::/gui/main/react.lua` is answered with the mod's path, and the mod's copy is
+loaded under the game's name — which is what the wrap already does for the
+requests it does see. Only the empty namespace is rewritten, so the mod's own
+copy is left alone and the wrap cannot loop. The hook's log says
+`react.lua SERVED at the cache: every caller gets tpf3mp_1::/gui/main/react.lua`
+for each of them.
+
+`RegisterRecipeInner` could not be wrapped instead: it is a **local** function
+in `react.lua` (line 248), not a global, so there is nothing to replace from
+outside.
 
 ### Terraforming
 
