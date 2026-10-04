@@ -1313,13 +1313,12 @@ local function rebuildWith(e, network, objects)
 	proposal.streetProposal.edgesToRemove = { e.id }
 	-- The lane configurations at its ends name the edge, so they go and come
 	-- back naming the rebuilt one, their turns, crosswalks and lights as they
-	-- were (junctions.into, as networkInto keeps them); one that cannot fails
-	-- the stop in every game. Removed alone, a junction with traffic lights
-	-- kept its lights with no configuration: a fatal assert in every game
-	-- (build 40408, 2026-10-04: a stop on a town road between two traffic
-	-- lights crashed a room, ecs::Engine::GetComponentDataIndex,
-	-- BaseNodeConfig).
-	junctions.into(proposal, nil, { e.comp.node0, e.comp.node1 })
+	-- were (junctions.renamed); one that cannot fails the stop in every game.
+	-- Removed alone, a junction with traffic lights kept its lights with no
+	-- configuration: a fatal assert in every game (build 40408, 2026-10-04: a
+	-- stop on a town road between two traffic lights crashed a room,
+	-- ecs::Engine::GetComponentDataIndex, BaseNodeConfig).
+	junctions.renamed(proposal, { e.comp.node0, e.comp.node1 }, e.id, -1, s.comp)
 	return proposal
 end
 
