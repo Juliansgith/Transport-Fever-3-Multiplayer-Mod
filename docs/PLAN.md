@@ -414,16 +414,24 @@ Dev C:
     added again is no change — which is why a station showed and a street did
     not. So which shapes the game reads is **asked of it where it is drawn**
     rather than guessed at: a preview is a list of proposals and the first
-    the game reads is the one drawn, most visible form first. **Tick once
-    seen in the real game** — the first run with the list says in the log
-    which form the game took, and the list shrinks to that one. Verified so
-    far: each kind makes the proposal the room orders and sends, builds and
-    logs nothing, in the game's own words and in the tests; a street's
-    removal evaluated in another game ("as this game sees it: fine") before
-    one run ended in `ecs::Replicator::Apply`, *"Assertion 'entity == c.entity'
-    failed"*, on the simulation thread through `followInGui` — the
-    replication of the room's own actions, which a preview never reaches, and
-    not established as this feature's. If it comes back, HOOKS.md "Build
+    the game reads is the one drawn, most visible form first.
+    **Tick once seen in the real game.** Verified in the game on 2026-10-04:
+    buildings, constructions and every street or track segment **with a
+    neighbour on both ends** are drawn; **a segment with one connection or
+    none (a dead end, an isolated segment) is not**. That was this branch's
+    own doing — `configsAtEndsOf` skipped the configuration of a node whose
+    every edge the proposal removed, to dodge the game's
+    `StreetShapeFactory::PrepareTransitions` assert (`!cc.empty()`), and that
+    skip removed the shape instead. The edge comes back under a new id, so
+    the node is never left without one; every end takes its configuration
+    again, dead ends included, and the assert is not asserted on
+    (HOOKS.md, "Build previews"). **Untested in the game since the fix.**
+    Behind `TPF3MP_NO_BULLDOZE_PREVIEW=1` the handler does not run at all,
+    so a player can keep the room without the preview; see the known
+    failures below. Also open: one run ended in `ecs::Replicator::Apply`,
+    *"Assertion 'entity == c.entity' failed"* — since also reported from the
+    main menu's own UI (`CGameUI → MenuUI → NavWrap → IAProxy`), and not
+    established as this feature's. If it comes back, HOOKS.md "Build
     previews" says where to look first.
 - [ ] *Added* (proposed by tearded, 2026-10-04, for the owner): the main
     menu's `WithComponentParams` banner gone. The game declares that layout
@@ -432,14 +440,25 @@ Dev C:
     wrapper with no id: every layout that needed it was never drawn, and the
     game logged *"Missing builtin recipeId"* in every game, with or without
     this mod (HOOKS.md, "The main menu's `WithComponentParams` banner").
-    Fixed by serving the game's `react.lua` with one line changed, through the
-    wrap that already serves the mod's `main_page.tl`; the builtins the game
-    does register keep their ids. **Given up again on 2026-10-04:** a fresh id
-    killed the main menu (`GetMat3() must not be called in the recipe
-    itself`), and taking only the error line out of the game's file still left
-    a game crashing in the menu four seconds after `Game is ready`, with
-    nothing in the logs. The banner is cosmetic and the fix belongs upstream
-    (HOOKS.md, "The main menu's `WithComponentParams` banner").
+    **Given up on 2026-10-04, out of scope here:** three attempts, each of
+    which cost a player the main menu —
+    1. serving the game's `react.lua` with a fresh id for the missing name:
+       the banner went, the menu then died on
+       `GetMat3() must not be called in the recipe itself` /
+       `!identity->isIdentityMat4x4`, because an id the C++ side never
+       handed out is a builtin that does not exist and the renderer tries to
+       draw it;
+    2. serving it with only the game's own `log.error` line taken out: the
+       banner went, the menu came up, and a game still crashed four seconds
+       after `Game is ready` — minidump, `stackTrace: null`, nothing in
+       either hook's log;
+    3. serving that copy to `require()` as well, past the `loadfile` wrap:
+       it worked and brought the crash of (2) with it.
+
+    The banner is **cosmetic**, it is the game's own fault, and it is there
+    with or without this mod; the fix belongs upstream. Carrying a patched
+    copy of the most central GUI file in the repository is not worth a red
+    banner, and a change here must not cost a player their main menu.
 - [ ] *Changed:* (D17, the hold lifted by the owner on 2026-09-30): the
   room in the game. The main menu's Multiplayer window connects, creates
   and joins rooms, shows the players and their ready marks, chats and

@@ -3223,28 +3223,81 @@ Both halves were found in the room's games on 2026-10-04, and the second
   bulldozer took the game down (minidump, `stackTrace: null`, then a hang;
   2026-10-04). So `edgesAddedBack` gives the copy the segment's new id as well
   (`s.comp.entity = s.entity`), and the replicator finds them equal.
-- **…and the demolition preview still ends the game, so it can be turned off
-  without a rebuild.** With the assertion gone (no `Assertion` line is logged
-  any more), selecting the bulldozer took the game down anyway: a plain native
-  crash, minidump with `stackTrace: null`, then a hang, with nothing in either
-  hook's log and no preview line drawn at all. So the crash is not yet
-  explained, and there is no way to catch it from Lua.
+- **Every node's lane configuration goes with the edges — a dead end
+  included.** A configuration names the edges at its node, and `makeProposalData`
+  raises "Unknown exception" if an edge is removed while a configuration still
+  names its old id, so every node at the ends of the removed edges takes the
+  removal of its configuration (`configsAtEndsOf`, `apply.lua`).
+
+  An earlier version **skipped** a node whose every edge of the network the
+  proposal removes went with them, to avoid the game's own assertion on a node
+  left with no edge:
+
+  > `Assertion '!cc.empty()' failed` — `StreetShapeFactory::PrepareTransitions`,
+  > build 40408, `StreetShapeFactory.cpp:979`
+
+  That skip is exactly what left the last piece of a street or a track undrawn
+  (2026-10-04, in the game): buildings, constructions and every segment **with a
+  neighbour** drew, a segment with **one connection or none** did not. The skip
+  was not needed, because the edge comes back under a new negative id — such a
+  node is never left without an edge, and the shape factory has a segment to
+  build transitions from. So every end takes its configuration again, and the
+  assertion is not asserted on.
+
+  Forty of those assertions were logged in one room on 2026-10-04, every one
+  from a dead end.
+- **An edge added back into a *preview* must carry its new id in its component
+  too.** The add-back form gives each removed edge a fresh negative id, the way
+  the applied path does (`rebuildWith`, for the one edge a stop removal
+  replaces). The component copy the game hands out still names the edge's **own**
+  id in its `entity`, and the replicator compares the two:
+
+  > `Assertion 'entity == c.entity' failed` — `ecs::Replicator::Apply`
+
+  The applied path never sees it, because there the ids are resolved on the way
+  in. A **preview** is only *evaluated* (`makeProposalData`, in the room's game,
+  to draw what another member is about to do), so the mismatch survives to the
+  replicator — and an assertion in C++ is past every `pcall`: selecting the
+  bulldozer took the game down (minidump, `stackTrace: null`, then a hang;
+  2026-10-04). So `edgesAddedBack` gives the copy the segment's new id as well
+  (`s.comp.entity = s.entity`), and the replicator finds them equal.
+
+  **Still open.** The same assertion was hit again afterwards, in a report whose
+  hierarchy was `CGameUI → MenuUI → NavWrap → IAProxy` — the main menu's own UI,
+  not the world — so it is **not** established as this feature's. It has been
+  seen on the simulation thread through `tpf3mp_sim.script.lua`'s `followInGui`
+  (the replication of the room's own actions, which a preview never reaches) and
+  from the menu. This area is assertion-live
+  (investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md, "Pitfalls"), and the game's
+  minidump names no symbol, so it cannot be ruled in or out from here.
+- **The game's own UI assertions are not this mod's.** Two reports are the
+  game's, not ours, and both name files and symbols that appear nowhere in this
+  repository:
+  - `framework/src/framework/core/map_util.h:22: Get: Assertion 'it != map.end()'`
+    in the main menu, alongside the `Missing builtin recipeId` line below;
+  - `IAProxy` in `CGameUI → MenuUI → NavWrap`, from the same run.
+
+  The mod's only game file in the main menu is `gui/menu/main_page.tl`
+  (`main_page.tl`, `make_main_page.py`), which adds the Multiplayer entry and
+  changes nothing else; `react.lua` is **not** overridden (the `OWN` table in
+  `crates/tpf3mp-hook/src/menu_entry.rs` lists `main_page.tl` alone, and a test
+  asserts `answer(…, "gui/main/react.lua")` is nil). `map_util`, `NavWrap` and
+  `IAProxy` occur nowhere in this repository.
+- **…and the demolition preview can be turned off without a rebuild.** An
+  earlier run took the game down in the main menu with the assertion above gone
+  (no `Assertion` line logged any more): a plain native crash, minidump with
+  `stackTrace: null`, then a hang, with nothing in either hook's log. Since a
+  native crash cannot be caught from Lua, the preview has to be *avoided* rather
+  than handled.
 
   `TPF3MP_NO_BULLDOZE_PREVIEW=1` therefore stops `apply.proposalOf` from
   running the `Bulldoze` handler at all: the other member is shown nothing and
   the game stays up. The env is read in `apply.lua` rather than through the
-  hook, so the switch needs no rebuild of the DLL that carries every other
-  flag. Run once with it and once without: if the game survives with it, the
-  demolition preview is where the crash is; if it does not, the cause is the
-  game's own bulldozer or the `UI::Bulldozer` detours, which
-  `TPF3MP_HOOK_TOOL_COMPANY=0` turns off on their own.
-- **Open.** One run of the room (2026-10-04) ended in
-  `ecs::Replicator::Apply`, *"Assertion 'entity == c.entity' failed"*, on the
-  simulation thread through `tpf3mp_sim.script.lua`'s `followInGui` — the
-  replication of the room's own actions, which a preview never reaches. Not
-  established whether the add-back shape is involved; it is assertion-live
-  here (investigation/TPF3_BUILD_PREVIEWS_2026-10-02.md, "Pitfalls"). If it
-  comes back, that line is where to look first.
+  hook, so the switch needs no rebuild of the DLL that carries every other flag.
+  Run once with it and once without: if the game survives with it, the demolition
+  preview is where the crash is; if it does not, the cause is the game's own
+  bulldozer or the `UI::Bulldozer` detours, which `TPF3MP_HOOK_TOOL_COMPANY=0`
+  turns off on their own.
 - **What else the log said, and what it means.** A member's preview that
   does not show here is said with the reason, and the reasons separate the
   causes:

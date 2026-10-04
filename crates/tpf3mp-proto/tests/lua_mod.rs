@@ -5769,7 +5769,7 @@ fn a_town_building_bulldozed_goes_in_every_game_charged_to_the_players_company()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(
         lua.load("return KEPT").eval::<String>().unwrap(),
-        "2|100|true|100>-1:8>9||0|0",
+        "2|100|true|100>-1:8>9|8,9|0|0",
         "two forms: the first says only that the edge goes, the second adds \
          it back with a new id. Neither takes a configuration: the street \
          dead-ends at both its nodes, so the game would have none to build \
@@ -5904,16 +5904,19 @@ fn a_demolition_preview_adds_each_edge_back_under_its_own_new_id() {
     );
 }
 
-/// The demolition preview's proposal takes the lane configuration at a node
-/// only while an edge of the network is left there: the game builds the
-/// configuration again from the edges that stay, and its street shape factory
-/// asserts on the empty connection list of a node left with none
-/// ("!cc.empty()", StreetShapeFactory::PrepareTransitions, build 40408). The
-/// shape of a street that dead-ends is never built that way, and nothing of
-/// it is drawn. A node with a neighbour keeps its configuration, so a street
-/// between two others is drawn as before.
+/// The demolition preview's proposal takes the lane configuration at **every**
+/// end of the removed edges, a dead end and an isolated segment included: a
+/// configuration that still names a removed edge's old id makes
+/// `makeProposalData` raise "Unknown exception", and the edge comes back under a
+/// new id anyway, so such a node is never left without an edge for the street
+/// shape factory to assert on an empty connection list
+/// ("!cc.empty()", `StreetShapeFactory::PrepareTransitions`, build 40408).
+///
+/// Skipping the dead ends is what left the last piece of a street or a track
+/// undrawn (2026-10-04, in the game): buildings, constructions and every segment
+/// with a neighbour drew, a segment with one connection or none did not.
 #[test]
-fn a_demolition_preview_takes_a_nodes_configuration_only_while_an_edge_is_left() {
+fn a_demolition_preview_takes_a_nodes_configuration_at_every_end() {
     let configs = |extra: &str| -> String {
         let (lua, _script) = engine();
         lua.load(FAKE_NETWORK).exec().unwrap();
@@ -5934,15 +5937,19 @@ fn a_demolition_preview_takes_a_nodes_configuration_only_while_an_edge_is_left()
     };
     assert_eq!(
         configs("STREETS[9] = { 100, 101 } EDGES[101].node0 = 10 EDGES[101].node1 = 9"),
-        "9",
-        "the configuration of the node that keeps an edge, and not the \
-         dead-end's"
+        "8,9",
+        "both ends: the node that keeps an edge, and the dead-end"
     );
     assert_eq!(
         configs(""),
-        "",
-        "no configuration taken: the street dead-ends at both its nodes, and \
-         the game builds none for a node left with no edge"
+        "8,9",
+        "both ends even where the street dead-ends at both of them, so the \
+         shape factory has the added edge to build transitions from"
+    );
+    assert_eq!(
+        configs("CONFIGS[8] = nil"),
+        "9",
+        "a node with no configuration of its own contributes none"
     );
 }
 
@@ -6175,7 +6182,7 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     assert_eq!(
         lua.load("return BUILT").eval::<String>().unwrap(),
-        "2|5100|100||0|0",
+        "2|5100|100|8,9|0|0",
         "both forms name the town building the game's own removal takes and \
          the edge, and no node configuration: the street dead-ends at both its \
          nodes, nothing sent or said"

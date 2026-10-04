@@ -272,44 +272,32 @@ end
 -- the edges this proposal adds. The same set rebuildWith takes for the one
 -- edge it replaces, and networkInto for the edges a road splits.
 --
--- A node whose every edge of `network` this proposal removes keeps its
--- configuration. The game builds none for a node left with no edge, and its
--- street shape factory asserts on the empty connection list it then has
--- ("!cc.empty()", StreetShapeFactory::PrepareTransitions, build 40408):
--- caught per task, so the shape of a street that dead-ends is never built
--- and the preview draws nothing there (2026-10-04, forty such assertions in
--- one room, while every street with a neighbour drew).
+-- **Every** end takes it, a dead end and an isolated segment included. The
+-- earlier version skipped a node whose every edge of the network the proposal
+-- removes went with them, and that is exactly what left the last piece of a
+-- street or a track undrawn (2026-10-04, in the game: buildings and
+-- constructions and every segment with a neighbour drew, a segment with one
+-- connection or none did not). It was written that way to avoid the game's
+-- own assertion on a node left with no edge:
+--
+--   Assertion '!cc.empty()' failed -- StreetShapeFactory::PrepareTransitions,
+--   build 40408, StreetShapeFactory.cpp:979
+--
+-- But the edge comes back under a new negative id, so such a node is never
+-- left without an edge: it has the one this proposal adds, and the shape
+-- factory has a segment to build transitions from. Dropping the configuration
+-- there removed the shape rather than keeping the game happy, so every end
+-- takes it again.
 local function configsAtEndsOf(ids, network)
 	local BASE_EDGE = api.type.ComponentType.BASE_EDGE
 	local BASE_NODE_CONFIG = api.type.ComponentType.BASE_NODE_CONFIG
-	local streets = api.engine.system.streetSystem
-	local function segmentsAt(node)
-		local ok, list = pcall(function()
-			if network == "Track" then return streets.getNodeTrackSegments(node) end
-			return streets.getNodeStreetSegments(node)
-		end)
-		return ok and list or nil
-	end
-	local going = {}
-	for _, id in ipairs(ids) do going[id] = true end
 	local configs, seen = {}, {}
 	for _, id in ipairs(ids) do
 		local e = api.engine.getComponent(id, BASE_EDGE)
 		for _, node in ipairs({ e and e.node0, e and e.node1 }) do
 			if node ~= nil and not seen[node] then
 				seen[node] = true
-				-- How many of the node's edges stay: none of them, and the
-				-- game has no list to rebuild a configuration from.
-				local at = segmentsAt(node)
-				local left = 0
-				if at == nil then
-					left = 1 -- the game will not say: as it was before
-				else
-					for _, other in ipairs(at) do
-						if not going[other] then left = left + 1 end
-					end
-				end
-				if left > 0 and api.engine.getComponent(node, BASE_NODE_CONFIG) ~= nil then
+				if api.engine.getComponent(node, BASE_NODE_CONFIG) ~= nil then
 					configs[#configs + 1] = node
 				end
 			end
