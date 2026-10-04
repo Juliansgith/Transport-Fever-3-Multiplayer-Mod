@@ -50,6 +50,11 @@ offline. An initial install needs an internet connection and a signed
 published release. A failed download can be retried; a failed mod install
 shows its error and keeps Play unavailable until setup succeeds.
 
+The Windows installer accepts detected paths beginning with `\\?\` as well
+as ordinary drive and UNC paths. If an older release reports that argument
+`drive` is null, remove the leading `\\?\` from the mods-folder field (so a
+local Steam path begins with `C:\`, for example) and retry installation.
+
 **Settings → Repair installation** restores a managed installation from
 the latest signed package and reinstalls its mod. In a portable package it
 reinstalls the bundled mod. **Uninstall** removes the mod, and for managed

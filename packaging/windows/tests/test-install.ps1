@@ -120,6 +120,44 @@ Test 'installs into a mods folder given' {
     Check (Test-Path "$elsewhere\tpf3mp_1\mod.lua") 'the mod where it was told'
 }
 
+Test 'installs, repairs and uninstalls with a canonical Windows mods path' {
+    $s = New-Setup 'canonical path with spaces'
+    $canonical = '\\?\' + $s.Mods
+    Assert-Code (Invoke-Installer $s @('-ModsDir', $canonical)) 0
+    Check ((Read-File "$($s.Mods)\tpf3mp_1\res\x.lua") -eq '-- x') 'canonical path installed'
+    $record = Read-File $s.Record | ConvertFrom-Json
+    Check ($record.mod -eq "$($s.Mods)\tpf3mp_1") 'record uses a provider-compatible path'
+
+    # Older records and explicitly provided Steam roots can also be canonical.
+    $record.mod = '\\?\' + $record.mod
+    Write-File $s.Record ($record | ConvertTo-Json)
+    Write-File "$($s.Package)\mod\tpf3mp_1\res\x.lua" '-- repaired'
+    $s.Steam = '\\?\' + $s.Steam
+    Assert-Code (Invoke-Installer $s @()) 0
+    Check ((Read-File "$($s.Mods)\tpf3mp_1\res\x.lua") -eq '-- repaired') 'repair uses recorded canonical path'
+    $record = Read-File $s.Record | ConvertFrom-Json
+    $record.mod = '\\?\' + $record.mod
+    Write-File $s.Record ($record | ConvertTo-Json)
+    Assert-Code (Invoke-Installer $s @('-Uninstall')) 0
+    Check (-not (Test-Path "$($s.Mods)\tpf3mp_1")) 'canonical recorded mod uninstalled'
+    Assert-GameUntouched $s
+}
+
+Test 'converts extended UNC paths without dropping the server or share' {
+    # Load just the pure helper; do not execute the installer or touch a share.
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$tokens, [ref]$parseErrors)
+    $helper = $ast.Find({ param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Convert-InstallerPath'
+    }, $true)
+    . ([scriptblock]::Create($helper.Extent.Text))
+    Check ((Convert-InstallerPath '\\?\UNC\server\share\staging_area') -eq '\\server\share\staging_area') 'UNC server and share preserved'
+    Check ((Convert-InstallerPath '\\server\share\staging_area') -eq '\\server\share\staging_area') 'ordinary UNC unchanged'
+    Check ((Convert-InstallerPath 'C:\Steam\staging_area') -eq 'C:\Steam\staging_area') 'ordinary drive unchanged'
+}
+
 Test 'refuses a record that names anything but the mod' {
     $s = New-Setup 'record'
     Assert-Code (Invoke-Installer $s @()) 0
