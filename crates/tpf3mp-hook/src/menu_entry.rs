@@ -59,14 +59,14 @@ use crate::lobby;
 /// value it always did. Requests to the hook pass straight through to the
 /// original, where the detour answers them.
 ///
-/// The `react.lua` copy carries one changed line: the game declares the
-/// `WithComponentParams` layout child through a helper meant for the builtins
-/// the C++ side has already registered, so it looked the name up, found nil
-/// and registered the wrapper with no id (docs/HOOKS.md, "The main menu's
-/// `WithComponentParams` banner"). It is built by
-/// `tools/lobby/make_react.py`; where the `main_page.tl` copy is the game's
-/// file unchanged but for the marked additions, this one is the game's file
-/// with a lookup that no longer misses.
+/// The `react.lua` copy carries one change: the game's own
+/// `log.error("Missing builtin recipeId for", …)`, which it logs for its own
+/// declaration of `WithComponentParams` and which puts a red banner over the
+/// main menu of every game, is gone; the registration behind it is the game's
+/// and is left as it is (docs/HOOKS.md, "The main menu's `WithComponentParams`
+/// banner"). It is built by `tools/lobby/make_react.py`; where the
+/// `main_page.tl` copy is the game's file unchanged but for the marked
+/// additions, this one is the game's file with an error line taken out of it.
 const PATCH: &str = r#"
 local ru = resolveutil
 if type(ru) ~= "table" then
@@ -102,7 +102,7 @@ pcall(debugPrint, "[tpf3mp] main menu: resolveutil.loadfile is wrapped")
 "#;
 
 /// The game's own `gui/main/react.lua`, and the mod's copy of it, which
-/// carries one changed line (see [`PATCH`]). The `resolveutil.loadfile` wrap
+/// carries one change (see [`PATCH`]). The `resolveutil.loadfile` wrap
 /// serves the mod's copy, but the file is reached by `require` as well — the
 /// game's `base/init.lua` requires it while `base.zip` boots, on its way to the
 /// main menu — and that path does not go through the wrap. So the banner came

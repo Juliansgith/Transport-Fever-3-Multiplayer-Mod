@@ -3302,19 +3302,40 @@ It is a fault in the game's own script, read from `base/content/gui.zip`
   (`builtin.WithComponentParams = react.builtin.WithComponentParams`), and
   `gui/entity_window/entity_window_util.tl:404` and `:1008` are its users.
 
-**Fixed by serving the game's file with that one line changed.** The mod has
-`content/gui/main/react.lua`, the game's file with
+**Fixed by serving the game's file with the error line taken out of it.** The
+mod has `content/gui/main/react.lua`, the game's file in which
 
 ```lua
-local recipeId = _react.builtin[name] or api.gui.react.detail.makeRecipeId(name)
+if not recipeId then
+	log.error("Missing builtin recipeId for", "name = " .. tostring(name))
+end
 ```
 
-where the game has `local recipeId = _react.builtin[name]`: a builtin the
-table has not got gets a fresh id, made as `RegisterRecipe` makes one
-(`react.lua:410`). The builtins the C++ side does register keep the ids they
-have, so nothing else changes. `tools/lobby/make_react.py` builds the copy
-from the game's file and fails loudly when the anchor is not there exactly
-once, so a game patch that moves the line is caught here and not in the game.
+is gone from `DeclareBuiltinLayoutChildWithUserdata`, and nothing else
+changed. The game declares `WithComponentParams` there with a helper meant
+for the builtins the C++ side has already registered, so the lookup misses;
+that is the game's own doing, and the registration that follows is its own.
+The line only put a red banner over the main menu of every game — the
+`Preserved props … of an instance of WithComponentParams` warning is the
+game's and stays. `tools/lobby/make_react.py` builds the copy from the game's
+file and fails loudly when the anchor is not there exactly once, so a game
+patch that moves the line is caught here and not in the game.
+
+**Giving the builtin a fresh id instead is worse, and was tried first.** With
+`_react.builtin[name] or api.gui.react.detail.makeRecipeId(name)` the banner
+was gone too, and the main menu then died on it:
+
+```
+Error message: GetMat3() must not be called in the recipe itself, only in
+order0, onMatrix() etc.
+Assertion Failure: Assertion `!identity->isIdentityMat4x4` failed.
+While executing "zoom in" for MainMenu (1 children = 231)
+<gui/tpf3mp/_tpf3mp/main/react.lua:336>: ?
+```
+
+An id the C++ side never handed out is a builtin that does not exist, and the
+renderer tries to draw it. So the registration stays the game's, exactly as it
+was, and only the error line goes.
 
 **The copy has to be served to `require` as well, which the wrap alone does
 not reach.** The first attempt served it only through the

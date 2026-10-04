@@ -440,17 +440,12 @@ local function DeclareBuiltinWithUserdata(name, fn)
 end
 
 local function DeclareBuiltinLayoutChildWithUserdata(name, fn)
-	-- TPF3-MP: was `local recipeId = _react.builtin[name]`, which is nil for
-	-- `WithComponentParams`: the game declares it here with a helper meant for
-	-- the builtins the C++ side has already registered, so it looked up the
-	-- name it was about to declare, logged "Missing builtin recipeId", and
-	-- registered the wrapper with no id -- every layout that needed it was
-	-- never drawn. A builtin the table has not got gets a fresh id, made as
-	-- RegisterRecipe makes one (react.lua:410).
-	local recipeId = _react.builtin[name] or api.gui.react.detail.makeRecipeId(name)
-	if not recipeId then
-		log.error("Missing builtin recipeId for", "name = " .. tostring(name))
-	end
+	-- TPF3-MP: the game declares `WithComponentParams` here, through a helper
+	-- meant for the builtins the C++ side has already registered, so the lookup
+	-- misses. That is the game's own doing and the registration is its own:
+	-- only the `log.error` line for it is gone, which put a red banner over the
+	-- main menu of every game. Everything else is left as it was.
+	local recipeId = _react.builtin[name]
 	return RegisterRecipeInner(recipeId, name, fn, true, true)
 end
 
