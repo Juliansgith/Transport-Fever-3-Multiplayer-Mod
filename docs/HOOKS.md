@@ -3548,11 +3548,11 @@ Measured on build 40408, two games on `MP_crash_1004` (2212-2214 edges,
 2126-2127 junction rows, 1857-1863 constructions, about 140 000 entities):
 compared, the hook's rows and texts agreed with the mod's at every
 checkpoint of eight rooms, towns growing streets and buildings meanwhile.
-On, the lanes read in 33-41 ms instead of 200-310, and the checkpoint's
-step took 46-64 ms (the median of 62 checkpoints a game) instead of
-240-340, the other steps 12-16 ms. Of it the hook's network read took
-19-20 ms (edges 9, junctions 9), its summary of the lane about 6, the
-constructions 4-5.
+On, the lanes read in 26-30 ms (the median of 62 checkpoints a game; at
+most 39) instead of 200-310, and the checkpoint's step took 42-53 ms
+instead of 240-340, the other steps 14-18 ms. Of it the hook's network
+read took 12-15 ms (edges about 5, junctions about 7), its summary of the
+lane about 6, the constructions 4-5.
 
 `TPF3MP_HOOK_STEP_TRACE=1` in the game's environment writes a
 `step-trace:` line for every call of the game's step
