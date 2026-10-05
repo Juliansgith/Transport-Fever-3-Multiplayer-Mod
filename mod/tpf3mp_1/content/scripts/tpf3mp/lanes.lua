@@ -3,8 +3,8 @@
 --
 -- A lane is one part of the world summed up in a short text: the same text
 -- on two games means that part of their worlds is the same. The mod's game
--- script reads them in its postUpdate, right after the last update of a
--- batch that ends at a checkpoint step, and hands them to the hook, which
+-- script reads rolling observations in each postUpdate, accumulating a
+-- window that ends at a checkpoint step, and hands them to the hook, which
 -- reports their digests to the room; the room compares them between
 -- players. The numbers follow the regression harness's model
 -- (crates/tpf3mp-testkit/src/regress/model.rs, `lane`), with two more.
@@ -31,8 +31,8 @@
 --
 -- Nothing is read by an entity's id where an id could differ between two
 -- games that agree on the world, except where the save carries it (towns and
--- players). Each lane is read on its own: one that cannot be read is
--- "err" on every game alike, and the others still count.
+-- players). The diagnostic full reader represents a failed lane as "err";
+-- the rolling room reader instead refuses failed reads and holds the game.
 --
 -- The engine lists the entities of some components only
 -- (getEntitiesWithComponent refuses BASE_EDGE, LINE and PLAYER on build
@@ -40,6 +40,7 @@
 -- street system's node map, lines from the line system, and the player
 -- from the engine's util.
 --
+-- The full synchronous reader remains for diagnostics and stand-in engines.
 -- A lane can also be dumped (`lanes.dump`): its full text, entry by entry,
 -- read by the same reader that sums it up, with the raw values it rounds
 -- (`%.17g`), keyed by the registry's id where there is one (vehicle-N,
@@ -88,10 +89,46 @@ local function hashStr(s)
 	return string.format("%010d-%010d", h1, h2)
 end
 
+-- The same hash from the hook, `tpf3mp_native.hash`
+-- (crates/tpf3mp-hook/src/lanehash.rs), which does not loop over every byte
+-- in Lua; this Lua's own where the state has no hook.
+local function fastHash(s)
+	local ok, native = pcall(function() return tpf3mp_native end)
+	if ok and type(native) == "table" and type(native.hash) == "function" then
+		local done, hash = pcall(native.hash, s)
+		if done and type(hash) == "string" then return hash end
+	end
+	return hashStr(s)
+end
+
+-- The diagnostic clock in seconds, or nil where the state has none. For the
+-- lanes' cost in the log only: nothing read from it reaches the world.
+local function clock()
+	local readClock = type(os) == "table" and os.clock
+	if type(readClock) ~= "function" then return nil end
+	local ok, t = pcall(readClock)
+	if ok and type(t) == "number" then return t end
+	return nil
+end
+
+-- What the last lanes.read cost, in seconds: by lane, and the summaries'
+-- sorting and hashing (inside the lanes' times).
+lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
+
 -- A sorted list's count and hash.
 local function summary(rows)
+	local t0 = clock()
 	table.sort(rows)
-	return #rows .. ":" .. hashStr(table.concat(rows, "\30"))
+	local text = table.concat(rows, "\30")
+	local t1 = clock()
+	local hash = fastHash(text)
+	local t2 = clock()
+	if t0 and t1 and t2 then
+		lanes.cost.sort = lanes.cost.sort + (t1 - t0)
+		lanes.cost.hash = lanes.cost.hash + (t2 - t1)
+	end
+	lanes.cost.bytes = lanes.cost.bytes + #text
+	return #rows .. ":" .. hash
 end
 
 local function q01(v) return math.floor((v or 0) * 10 + 0.5) / 10 end
@@ -169,27 +206,55 @@ end
 -- it was made from. Without `emit` it builds no fields.
 local readers = {}
 
-readers[lanes.NETWORK] = function(api, emit)
-	local rows, seen = {}, {}
-	for _, segments in pairs(api.engine.system.streetSystem.getNode2SegmentMap()) do
+readers[lanes.NETWORK] = function(api, emit, ids, selected)
+	local rows, seen, baseEdges = {}, {}, selected and selected.baseEdges or {}
+	local net = { map = 0, get = 0, lanes = 0, junctions = 0, edges = 0, laneConfigs = 0 }
+	lanes.cost.net = net
+	local t0 = clock()
+	local map = selected and { selected.edges } or api.engine.system.streetSystem.getNode2SegmentMap()
+	local t1 = clock()
+	if t0 and t1 then net.map = t1 - t0 end
+	for _, segments in pairs(map) do
 		for _, e in pairs(segments) do
 			if not seen[e] then
 				seen[e] = true
-				local edge = component(api, e, "BASE_EDGE")
+				local g0 = clock()
+				local edge = baseEdges[e] or component(api, e, "BASE_EDGE")
+				baseEdges[e] = edge or false
+				local g1 = clock()
+				if g0 and g1 then net.get = net.get + (g1 - g0) end
+				net.edges = net.edges + 1
 				if edge then
 					local a, b = vec01(edge.position0), vec01(edge.position1)
 					local reversed = a > b
 					if reversed then a, b = b, a end
 					local row = a .. ">" .. b .. ":" .. tostring(edge.roadTemplate)
-					local laneRows = {}
-					for i = 1, #edge.laneConfigs do
-						local l, modes = edge.laneConfigs[i], {}
-						for m = 0, 15 do modes[#modes+1] = l.transportModes[m] == true and "1" or "0" end
-						laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
-							l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
+					local l0 = clock()
+					local native = tpf3mp_native
+					local laneText, count
+					local copy = api.type.BaseEdge and api.type.BaseEdge.new
+					if native and type(native.laneRows) == "function" and type(copy) == "function" then
+						-- getComponent returns a borrowed reference. Copy once;
+						-- Rust reads the owned snapshot, including nested vectors.
+						laneText, count = native.laneRows(copy(edge), reversed)
 					end
-					table.sort(laneRows)
-					row = row .. "|lanes:" .. table.concat(laneRows,";")
+					if laneText == nil then
+						local laneRows, configs = {}, edge.laneConfigs
+						count = #configs
+						for i = 1, count do
+							local l, modes = configs[i], {}
+							local transportModes = l.transportModes
+							for m = 0, 15 do modes[m + 1] = transportModes[m] == true and "1" or "0" end
+							laneRows[#laneRows+1] = string.format("%.3f/%.3f/%.3f/%.3f/%s/%s", l.speed,l.width,l.height,
+								l.offset * (reversed and -1 or 1), tostring(l.forward ~= reversed), table.concat(modes))
+						end
+						table.sort(laneRows)
+						laneText = table.concat(laneRows,";")
+					end
+					net.laneConfigs = net.laneConfigs + count
+					local l1 = clock()
+					if l0 and l1 then net.lanes = net.lanes + (l1 - l0) end
+					row = row .. "|lanes:" .. laneText
 					rows[#rows + 1] = row
 					if emit then
 						emit(nil, e, row, "p0=" .. vecFull(edge.position0) .. " p1=" .. vecFull(edge.position1)
@@ -199,16 +264,20 @@ readers[lanes.NETWORK] = function(api, emit)
 			end
 		end
 	end
-	for _, row in ipairs(junctions.rows(api)) do
+	local j0 = clock()
+	local junctionRows = junctions.rows(api, baseEdges, selected and selected.nodes)
+	local j1 = clock()
+	if j0 and j1 then net.junctions = j1 - j0 end
+	for _, row in ipairs(junctionRows) do
 		rows[#rows+1] = "junction:" .. row
 		if emit then emit(nil, nil, "junction:" .. row, "", false) end
 	end
 	return summary(rows)
 end
 
-readers[lanes.CONSTRUCTIONS] = function(api, emit)
+readers[lanes.CONSTRUCTIONS] = function(api, emit, ids, selected)
 	local rows = {}
-	for _, e in ipairs(entities(api, "CONSTRUCTION")) do
+	for _, e in ipairs(selected and selected.constructions or entities(api, "CONSTRUCTION")) do
 		local c = component(api, e, "CONSTRUCTION")
 		if c then
 			local t = c.transf
@@ -508,8 +577,12 @@ end
 -- with why, from the `api` of the state the game script runs in.
 function lanes.read(api)
 	local out, failed = {}, {}
+	lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
 	for lane = lanes.NETWORK, lanes.PEOPLE do
+		local t0 = clock()
 		local ok, text = pcall(readers[lane], api)
+		local t1 = clock()
+		if t0 and t1 then lanes.cost.lanes[lane] = t1 - t0 end
 		if ok and type(text) == "string" then
 			out[lane] = text
 		else
@@ -518,6 +591,143 @@ function lanes.read(api)
 		end
 	end
 	return out, failed
+end
+lanes.clock = clock
+
+-- Read just the static world intersecting a box. All engine references have
+-- this call's lifetime; nothing borrowed is kept for the next simulation step.
+-- Junctions at either end of intersecting edges are included even when their
+-- position is outside the box. This also covers long edges and tile borders.
+function lanes.spatial(api, box, limit)
+	local found, selected = {}, { edges = {}, nodes = {}, baseEdges = {}, constructions = {} }
+	api.engine.system.octreeSystem.findIntersectingEntities(box, function(e)
+		-- Only collect IDs in the engine's callback. Component access and all
+		-- fallible canonicalization happen after the callback has returned.
+		found[e] = true
+	end)
+	for e in pairs(found) do
+		local edge = component(api, e, "BASE_EDGE")
+		if edge then
+			selected.edges[#selected.edges + 1] = e
+			selected.baseEdges[e] = edge
+			selected.nodes[edge.node0], selected.nodes[edge.node1] = true, true
+		end
+		if component(api, e, "CONSTRUCTION") then
+			selected.constructions[#selected.constructions + 1] = e
+		end
+	end
+	if limit and #selected.edges + #selected.constructions > limit then
+		local nodes = 0
+		for _ in pairs(selected.nodes) do nodes = nodes + 1 end
+		-- The split decision itself is compared. If replicas have different
+		-- static inventories, they cannot silently follow different schedules.
+		return { [lanes.NETWORK] = "split:" .. #selected.edges .. ":" .. nodes,
+			[lanes.CONSTRUCTIONS] = "split:" .. #selected.constructions }, selected, true
+	end
+	local out = {
+		[lanes.NETWORK] = readers[lanes.NETWORK](api, nil, nil, selected),
+		[lanes.CONSTRUCTIONS] = readers[lanes.CONSTRUCTIONS](api, nil, nil, selected),
+	}
+	return out, selected
+end
+
+-- A rolling observation window, saved with the world so a joining/rebased
+-- game resumes the exact same window. Only numbers and digest strings survive
+-- an update. Samples use absolute room steps, never frame rate or a stopwatch.
+-- Busy cells subdivide before canonicalizing their components; empty countryside
+-- advances without spending hundreds of steps there. The split counts are part
+-- of the observations, so a divergent world cannot choose a different schedule
+-- unnoticed. Dynamic lanes are read once every five updates.
+function lanes.rolling(api, previous, step, checkpoint)
+	if type(step) ~= "number" or step < 1 or step % 1 ~= 0 then error("invalid world-check step", 0) end
+	local scan = previous
+	if step == 1 then scan = { version = 1, step = 0, first = 1, hashes = {}, counts = {},
+		tile = 0, pending = {}, sweepStart = 1, sweeps = 0 } end
+	if type(scan) ~= "table" or scan.version ~= 1 or scan.step ~= step - 1 then
+		error("the rolling world-check history is missing or skipped an update", 0)
+	end
+	local t0 = clock()
+	lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
+	local bounds = api.engine.terrain.getBoundingBox()
+	local x0, y0, x1, y1 = bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y
+	for _, n in ipairs({x0, y0, x1, y1}) do
+		if type(n) ~= "number" or n ~= n or math.abs(n) >= 1000000 then error("invalid world-check bounds", 0) end
+	end
+	if x1 <= x0 or y1 <= y0 then error("empty world-check bounds", 0) end
+	local side = 1024
+	local nx, ny = math.ceil((x1 - x0) / side), math.ceil((y1 - y0) / side)
+	local total = nx * ny
+	local region = table.remove(scan.pending)
+	if not region then
+		local x, y = scan.tile % nx, math.floor(scan.tile / nx)
+		region = { x0 + side * x, y0 + side * y, math.min(x1, x0 + side * (x + 1)), math.min(y1, y0 + side * (y + 1)) }
+		scan.tile = (scan.tile + 1) % total
+	end
+	local minX = region[1] == x0 and -1000000 or region[1]
+	local minY = region[2] == y0 and -1000000 or region[2]
+	local maxX = region[3] == x1 and 1000000 or region[3]
+	local maxY = region[4] == y1 and 1000000 or region[4]
+	local box = api.type.Box3.new(api.type.Vec3f.new(minX, minY, -1000000),
+		api.type.Vec3f.new(maxX, maxY, 1000000))
+	local canSplit = region[3] - region[1] > 32 and region[4] - region[2] > 32
+	local values, _, split = lanes.spatial(api, box, canSplit and 32 or nil)
+	if split then
+		local mx, my = (region[1] + region[3]) / 2, (region[2] + region[4]) / 2
+		for _, child in ipairs({ { mx, my, region[3], region[4] }, { region[1], my, mx, region[4] },
+			{ mx, region[2], region[3], my }, { region[1], region[2], mx, my } }) do
+			scan.pending[#scan.pending + 1] = child
+		end
+	end
+	local dynamic = lanes.LINES + (step - 1) % 5
+	values[dynamic] = readers[dynamic](api)
+	local context = string.format("%d|%.3f,%.3f,%.3f,%.3f|%.3f,%.3f,%.3f,%.3f|", step,
+		x0, y0, x1, y1, region[1], region[2], region[3], region[4])
+	for lane, text in pairs(values) do
+		if type(text) ~= "string" or text == "err" then error("world-check lane " .. lane .. " was not read", 0) end
+		scan.hashes[lane] = fastHash((scan.hashes[lane] or "rolling-v1") .. context .. text)
+		scan.counts[lane] = (scan.counts[lane] or 0) + 1
+	end
+	scan.step = step
+	local t1 = clock()
+	local ms = t0 and t1 and (t1 - t0) * 1000 or 0
+	local out, report
+	if scan.tile == 0 and #scan.pending == 0 then
+		scan.sweeps = scan.sweeps + 1
+		report = string.format("rolling world sweep: cycle=%d steps=%d-%d samples=%d",
+			scan.sweeps, scan.sweepStart, step, step - scan.sweepStart + 1)
+		scan.sweepStart = step + 1
+	end
+	if checkpoint then
+		out = {}
+		local texts = {}
+		for lane = lanes.NETWORK, lanes.PEOPLE do
+			out[lane] = string.format("rolling-v1:%d-%d:%d:%s", scan.first, step,
+				scan.counts[lane] or 0, scan.hashes[lane] or "empty")
+			texts[#texts + 1] = out[lane]
+		end
+		local checkpointReport = string.format("rolling world check: steps=%d-%d tile=%d/%d pending=%d last_ms=%.3f signature=%s", scan.first, step, scan.tile, total, #scan.pending, ms, fastHash(table.concat(texts, "\n")))
+		report = report and (report .. "; " .. checkpointReport) or checkpointReport
+		scan.first, scan.hashes, scan.counts = step + 1, {}, {}
+	end
+	return scan, out, report, ms
+end
+
+-- The last read's cost as one line for the log, in milliseconds.
+function lanes.costLine()
+	local c, parts = lanes.cost, {}
+	local names = { [0] = "network", "constructions", "lines", "vehicles", "economy", "towns", "people" }
+	local total = 0
+	for lane = lanes.NETWORK, lanes.PEOPLE do
+		local t = c.lanes[lane]
+		if t then total = total + t end
+		parts[#parts + 1] = names[lane] .. " " .. (t and string.format("%.1f", t * 1000) or "?")
+	end
+	local n = c.net or {}
+	return string.format("lanes read in %.1f ms: %s; of it sort+concat %.1f ms, hash %.1f ms over %d bytes;"
+		.. " network: map %.1f ms, %d edges' getComponent %.1f ms, their %d lane configs %.1f ms, junctions %.1f ms",
+		total * 1000, table.concat(parts, ", "), c.sort * 1000, c.hash * 1000, c.bytes,
+		(n.map or 0) * 1000, n.edges or 0, (n.get or 0) * 1000, n.laneConfigs or 0, (n.lanes or 0) * 1000,
+		(n.junctions or 0) * 1000)
 end
 
 -- The registry's kinds as a dump names their ids.

@@ -50,9 +50,28 @@ end
 -- A view including proposed geometry. Negative ids are used only while
 -- reading a proposal and are immediately replaced by portable references.
 local readComponent = component
-local function world(street, source)
+local function world(street, source, snapshot)
 	local api = source or api
-	local function component(id, kind) return readComponent(id, kind, api) end
+	local function component(id, kind)
+		if snapshot and kind == "BASE_EDGE" then
+			local c = snapshot.edges[id]
+			if c == nil then c = readComponent(id, kind, api) or false snapshot.edges[id] = c end
+			return c or nil
+		end
+		return readComponent(id, kind, api)
+	end
+	local function segments(id, kind)
+		local cache = snapshot and snapshot[kind]
+		if cache and cache[id] then return cache[id] end
+		local edges
+		if snapshot and snapshot.maps then
+			edges = list(snapshot.maps[kind][id])
+		else
+			edges = list(api.engine.system.streetSystem["getNode" .. kind .. "Segments"](id))
+		end
+		if cache then cache[id] = edges end
+		return edges
+	end
 	local w = { nodes = {}, edges = {}, removed = {} }
 	for _, n in ipairs(list(get(street, "addedNodes") or get(street, "nodesToAdd"))) do
 		w.nodes[n.entity] = pos(n.comp.position)
@@ -68,23 +87,24 @@ local function world(street, source)
 		local proposed = w.edges[id]
 		local c = proposed and proposed.comp or component(id, "BASE_EDGE")
 		if not c then error("a junction edge no longer exists", 0) end
+		local node0, node1 = c.node0, c.node1
 		local network
 		if proposed then
 			if proposed.type == 0 then network = "Street" elseif proposed.type == 1 then network = "Track" end
 		else
 			for _, kind in ipairs({ "Street", "Track" }) do
-				for _, e in ipairs(list(api.engine.system.streetSystem["getNode" .. kind .. "Segments"](c.node0))) do
+				for _, e in ipairs(segments(node0, kind)) do
 					if e == id then network = kind end
 				end
 			end
 		end
 		if not network then error("a junction edge of unknown network", 0) end
-		return { network = network, ends = { a = w.position(c.node0), b = w.position(c.node1) } }, c
+		return { network = network, ends = { a = w.position(node0), b = w.position(node1) } }, c
 	end
 	function w.node(id)
 		local network
 		for _, kind in ipairs(id >= 0 and { "Street", "Track" } or {}) do
-			local edges = api.engine.system.streetSystem["getNode" .. kind .. "Segments"](id)
+			local edges = segments(id, kind)
 			if edges and #edges > 0 then network = kind break end
 		end
 		if not network then
@@ -101,12 +121,51 @@ local function world(street, source)
 	return w
 end
 
+-- The live world (no proposal) with each node, edge and position read from
+-- the engine once: for reading every junction at a checkpoint, where the
+-- world cannot change between the reads and every node's connections name
+-- the same few edges again and again.
+local function remembered(source, baseEdges, maps)
+	-- Lifetime is one rows() call. The network lane can lend the components
+	-- it just read on this same simulation step; never retain across steps.
+	local w = world(nil, source, { edges = baseEdges or {}, Street = {}, Track = {}, maps = maps })
+	local position, edge, node = w.position, w.edge, w.node
+	local positions, edges, nodes = {}, {}, {}
+	function w.position(id)
+		local p = positions[id]
+		if p == nil then p = position(id) positions[id] = p end
+		return p
+	end
+	function w.edge(id)
+		local e = edges[id]
+		if e == nil then e = { edge(id) } edges[id] = e end
+		return e[1], e[2]
+	end
+	function w.node(id)
+		local n = nodes[id]
+		if n == nil then n = node(id) nodes[id] = n end
+		return n
+	end
+	return w
+end
+
 local PREFERENCES = { Auto = "AUTO", Yes = "YES", No = "NO" }
-local function captureConfig(c, w, source)
+-- `memo`, when given, keeps the preference and light names it looked up for
+-- the configs after this one (junctions.rows reads every junction at once).
+local function captureConfig(c, w, source, memo)
 	local api = source or api
 	local preference
-	local enums = api.type.enum.TrafficLightPreference
-	for name, key in pairs(PREFERENCES) do if c.trafficLightPreference == enums[key] then preference = name end end
+	local value = c.trafficLightPreference
+	if memo and memo.preferences then
+		preference = memo.preferences[value]
+	else
+		local enums = api.type.enum.TrafficLightPreference
+		for name, key in pairs(PREFERENCES) do if value == enums[key] then preference = name end end
+		if memo and preference then
+			memo.preferences = {}
+			for name, key in pairs(PREFERENCES) do memo.preferences[enums[key]] = name end
+		end
+	end
 	if not preference then error("unknown traffic light preference", 0) end
 	local config = { connections = {}, crosswalks = {}, preference = preference, phases = {},
 		double_slip = c.doubleSlipSwitch == true, custom_phases = c.userModifiedTrafficLightStates == true }
@@ -117,9 +176,15 @@ local function captureConfig(c, w, source)
 	for _, e in ipairs(list(c.crosswalks)) do config.crosswalks[#config.crosswalks+1] = w.edge(e) end
 	local lights = c.trafficLightConfig
 	if lights == nil then error("traffic light configuration did not read", 0) end
-	if lights.trafficLightType ~= -1 then
-		config.light = api.res.trafficLightTypeRep.getName(lights.trafficLightType)
+	local lightType = lights.trafficLightType
+	if lightType ~= -1 then
+		local names = memo and memo.lights
+		config.light = names and names[lightType] or api.res.trafficLightTypeRep.getName(lightType)
 		if type(config.light) ~= "string" or config.light == "" then error("unknown traffic light resource", 0) end
+		if memo then
+			memo.lights = names or {}
+			memo.lights[lightType] = config.light
+		end
 	end
 	for _, phase in ipairs(list(lights.states)) do
 		config.phases[#config.phases+1] = { locked = list(phase.lockedLanes), duration = phase.duration,
@@ -436,17 +501,37 @@ end
 
 -- Canonical, portable rows for checkpoints. Phase indices are expressed as
 -- the turns/crosswalks they lock, so local entity/vector ordering is irrelevant.
-function junctions.rows(api)
-	local w, rows, seen = world(nil, api), {}, {}
-	for _, kind in ipairs({"Street", "Track"}) do
-		for node in pairs(api.engine.system.streetSystem["getNode2"..kind.."EdgeMap"]()) do
+function junctions.rows(api, baseEdges, selectedNodes)
+	-- These complete maps already contain the adjacency needed below. Fetching
+	-- each node's segments again crosses the engine boundary thousands of times.
+	local maps
+	if not selectedNodes then
+		maps = { Street = api.engine.system.streetSystem.getNode2StreetEdgeMap(),
+			Track = api.engine.system.streetSystem.getNode2TrackEdgeMap() }
+	end
+	local w, rows, seen, memo = remembered(api, baseEdges, maps), {}, {}, {}
+	-- Each edge's key, made once: remembered() gives an edge the same table
+	-- every time, and every junction at its ends names it again.
+	local keys = {}
+	local function key(e)
+		local k = keys[e]
+		if k == nil then k = edgeKey(e) keys[e] = k end
+		return k
+	end
+	for _, kind in ipairs(selectedNodes and {"Selected"} or {"Street", "Track"}) do
+		for node in pairs(selectedNodes or maps[kind]) do
 			if not seen[node] then
 				seen[node] = true
 				local c = component(node,"BASE_NODE_CONFIG",api)
 				if c then
-					local v, lanes = captureConfig(c,w,api), {}
-					for _, t in ipairs(v.connections) do lanes[#lanes+1] = edgeKey(t.incoming)..":"..t.lane_in..">"..edgeKey(t.outgoing)..":"..t.lane_out..":"..tostring(t.road)..":"..tostring(t.tram) end
-					for _, e in ipairs(v.crosswalks) do lanes[#lanes+1] = "walk:"..edgeKey(e) end
+					local native = tpf3mp_native
+					local copy = api.type.BaseNodeConfig and api.type.BaseNodeConfig.new
+					if native and type(native.junctionConfig) == "function" and type(copy) == "function" then
+						c = native.junctionConfig(copy(c)) or c
+					end
+					local v, lanes = captureConfig(c,w,api,memo), {}
+					for _, t in ipairs(v.connections) do lanes[#lanes+1] = key(t.incoming)..":"..t.lane_in..">"..key(t.outgoing)..":"..t.lane_out..":"..tostring(t.road)..":"..tostring(t.tram) end
+					for _, e in ipairs(v.crosswalks) do lanes[#lanes+1] = "walk:"..key(e) end
 					local sorted = list(lanes) table.sort(sorted)
 					local phases = {}
 					for _, phase in ipairs(v.phases) do

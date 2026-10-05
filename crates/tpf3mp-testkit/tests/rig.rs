@@ -274,6 +274,40 @@ fn stand_in_hook() -> Option<String> {
         .map(|path| path.display().to_string())
 }
 
+/// Successful Windows launches need a DLL that participates in readiness.
+/// Keep version.dll above for the test that intentionally never becomes ready.
+fn ready_stand_in_hook() -> Option<String> {
+    #[cfg(windows)]
+    {
+        static FIXTURE: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let root = FIXTURE.get_or_init(|| {
+            let root = tempfile::tempdir().unwrap();
+            let event = tpf3mp_ipc::hook_ready_event(0);
+            let pattern = format!("{}{{pid}}", event.strip_suffix('0').unwrap());
+            let source = include_str!("fixtures/ready_hook.rs")
+                .replace("__EVENT_PATTERN__", &format!("{pattern:?}"));
+            let file = root.path().join("ready_hook.rs");
+            std::fs::write(&file, source).unwrap();
+            let output = Command::new("rustc")
+                .args(["--crate-type", "cdylib", "--edition", "2024"])
+                .arg(&file)
+                .arg("-o")
+                .arg(root.path().join("ready_hook.dll"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            root
+        });
+        Some(root.path().join("ready_hook.dll").display().to_string())
+    }
+    #[cfg(not(windows))]
+    stand_in_hook()
+}
+
 /// A game given by path, as the real one will be, is started as the
 /// launcher starts it: with a library loaded into it, and told its link in
 /// the environment. The fake game stands in for the game; it finds its
@@ -282,7 +316,7 @@ fn stand_in_hook() -> Option<String> {
 fn a_game_by_path_starts_with_the_hook_and_finds_its_link() {
     let root = tempfile::tempdir().unwrap();
     let fakegame = env!("CARGO_BIN_EXE_tpf3mp-fakegame");
-    let hook = stand_in_hook();
+    let hook = ready_stand_in_hook();
     let mut args = vec![
         "--players",
         "2",
@@ -292,9 +326,8 @@ fn a_game_by_path_starts_with_the_hook_and_finds_its_link() {
         "--steps",
         "--game-arg",
         "60",
-        // The stand-in never says it is ready.
         "--hook-ready-wait",
-        "0",
+        "10",
     ];
     if let Some(hook) = &hook {
         args.extend(["--hook", hook]);
@@ -340,7 +373,7 @@ fn a_rig_out_of_time_ends_what_it_started_and_fails() {
     }
     let root = tempfile::tempdir().unwrap();
     let fakegame = env!("CARGO_BIN_EXE_tpf3mp-fakegame");
-    let hook = stand_in_hook().expect("a library to stand in for the hook");
+    let hook = ready_stand_in_hook().expect("a library to stand in for the hook");
     // Without --steps the fake game plays on until it is ended.
     let args = [
         "--players",
@@ -350,7 +383,7 @@ fn a_rig_out_of_time_ends_what_it_started_and_fails() {
         "--hook",
         &hook,
         "--hook-ready-wait",
-        "0",
+        "10",
     ];
     let run = run_rig_within(root.path(), &args, "5");
     assert!(!run.status.success(), "{}", run.output);

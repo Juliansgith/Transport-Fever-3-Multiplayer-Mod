@@ -151,7 +151,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 13.0;
+pub const VERSION: f64 = 14.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -215,6 +215,7 @@ pub struct LuaApi {
     pub toboolean: unsafe extern "C-unwind" fn(State, c_int) -> c_int,
     pub tonumberx: unsafe extern "C-unwind" fn(State, c_int, *mut c_int) -> f64,
     pub tolstring: unsafe extern "C-unwind" fn(State, c_int, *mut usize) -> *const c_char,
+    pub touserdata: Option<unsafe extern "C-unwind" fn(State, c_int) -> *mut c_void>,
     pub next: unsafe extern "C-unwind" fn(State, c_int) -> c_int,
     pub pushnil: unsafe extern "C-unwind" fn(State),
     pub pushnumber: unsafe extern "C-unwind" fn(State, f64),
@@ -282,6 +283,10 @@ struct Batch {
     /// update.
     lanes_wanted: bool,
     lanes: Option<Vec<(u16, String)>>,
+    /// Rolling world reads requested/completed by the game script this batch.
+    scan_requested: u32,
+    scan_done: u32,
+    scan_error: Option<String>,
     /// The lanes to dump at its checkpoint.
     dump: Option<Dump>,
 }
@@ -318,6 +323,8 @@ struct Shared {
     answers: VecDeque<Answer>,
     /// The batch running.
     batch: Batch,
+    /// Diagnostic timer costs only; never part of a saved world or checksum.
+    scan_cost: (u64, f64, f64),
     replay: Option<Replay>,
     next_replay: u64,
     /// Lines for the hook's log.
@@ -390,9 +397,13 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
         begun: 0,
         lanes_wanted: false,
         lanes: None,
+        scan_requested: 0,
+        scan_done: 0,
+        scan_error: None,
         dump: None,
     },
     replay: None,
+    scan_cost: (0, 0.0, 0.0),
     next_replay: 0,
     log: VecDeque::new(),
     dumped: Vec::new(),
@@ -553,6 +564,9 @@ pub fn begin_batch(
         begun: 0,
         lanes_wanted: lanes,
         lanes: None,
+        scan_requested: 0,
+        scan_done: 0,
+        scan_error: None,
         dump: dump.filter(|_| lanes).map(|order| Dump {
             step: order.step,
             lanes: order.lanes.clone(),
@@ -596,6 +610,15 @@ pub fn end_batch() -> Result<Option<Vec<(u16, String)>>, String> {
         shared.dumped.push(line);
     }
     let batch = &mut shared.batch;
+    if let Some(why) = batch.scan_error.take() {
+        return Err(format!("rolling world check failed: {why}"));
+    }
+    if batch.scan_requested > 0 && batch.scan_done != batch.updates {
+        return Err(format!(
+            "the mod checked {} of this batch's {} updates",
+            batch.scan_done, batch.updates
+        ));
+    }
     batch.lanes_wanted = false;
     batch.updates = 0;
     batch.begun = 0;
@@ -793,6 +816,10 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"world", native_world),
                 (b"room", native_room),
                 (b"checkpoint", native_checkpoint),
+                (b"scanned", native_scanned),
+                (b"hash", native_hash),
+                (b"laneRows", native_lane_rows),
+                (b"junctionConfig", native_junction_config),
                 (b"seed", native_seed),
                 (b"lanes", native_lanes),
                 (b"clicks", native_clicks),
@@ -821,6 +848,9 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"drawn", native_drawn),
                 (b"undraw", native_undraw),
             ] {
+                if api.touserdata.is_none() && matches!(name, b"laneRows" | b"junctionConfig") {
+                    continue;
+                }
                 push_str(api, l, name);
                 (api.pushcclosure)(l, function, 0);
                 (api.rawset)(l, table);
@@ -2004,18 +2034,156 @@ unsafe extern "C-unwind" fn native_copy(l: State) -> c_int {
     }
 }
 
+/// `hash(text)`: the lanes' text hash ([`crate::lanehash`]), exactly what
+/// the mod's Lua `hashStr` returns for the same bytes; nil without a string.
+unsafe extern "C-unwind" fn native_hash(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state; its arguments are on it,
+    // and a string's bytes stay valid while it is on the stack. A C
+    // function's stack has LUA_MINSTACK free slots for the result.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) != TSTRING {
+            (api.pushnil)(l);
+            return 1;
+        }
+        let mut len = 0;
+        let text = (api.tolstring)(l, 1, &raw mut len);
+        if text.is_null() {
+            (api.pushnil)(l);
+            return 1;
+        }
+        let hash = crate::lanehash::hash(std::slice::from_raw_parts(text.cast::<u8>(), len));
+        push_str(api, l, hash.as_bytes());
+    }
+    1
+}
+
+/// Only full userdata is eligible. Tables, light userdata and foreign classes
+/// use the Lua fallback; network additionally checks the exact owned vtable.
+unsafe fn component_userdata(api: &LuaApi, l: State) -> Option<usize> {
+    // SAFETY: called by Lua with its argument stack; conversion does not pop it.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) != 7 {
+            return None;
+        }
+        let address = (api.touserdata?)(l, 1) as usize;
+        (address != 0).then_some(address)
+    }
+}
+
+unsafe extern "C-unwind" fn native_lane_rows(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua's callback stack holds its arguments and has room for results.
+    unsafe {
+        let result = component_userdata(api, l).and_then(|address| {
+            if (api.type_of)(l, 2) != TBOOLEAN {
+                return None;
+            }
+            crate::network::lanes(address, (api.toboolean)(l, 2) != 0).ok()
+        });
+        if let Some((rows, count)) = result {
+            push_str(api, l, rows.as_bytes());
+            (api.pushnumber)(l, count as f64);
+            return 2;
+        }
+        (api.pushnil)(l);
+    }
+    1
+}
+
+unsafe extern "C-unwind" fn native_junction_config(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua owns and retains the snapshot while decoding and pushing.
+    unsafe {
+        let top = (api.gettop)(l);
+        if let Some(config) =
+            component_userdata(api, l).and_then(|address| crate::network::junction(address).ok())
+            && push(api, l, &config, 0).is_ok()
+        {
+            return 1;
+        }
+        (api.settop)(l, top);
+        (api.pushnil)(l);
+    }
+    1
+}
+
 /// `checkpoint()`: whether the update running is the last of a batch that
 /// ends at a checkpoint step, and its lanes are not read yet.
 unsafe extern "C-unwind" fn native_checkpoint(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
     };
+    let step = crate::seeds::current_step();
     let due = {
-        let batch = &shared().batch;
+        let batch = &mut shared().batch;
+        if step.is_some() && batch.begun > 0 && batch.begun <= batch.updates {
+            batch.scan_requested = batch.begun;
+        }
         batch.lanes_wanted && batch.begun == batch.updates && batch.lanes.is_none()
     };
     // SAFETY: a C function's stack has LUA_MINSTACK free slots.
-    unsafe { (api.pushboolean)(l, c_int::from(due)) };
+    unsafe {
+        (api.pushboolean)(l, c_int::from(due));
+        match step {
+            Some(step) => (api.pushnumber)(l, step as f64),
+            None => return 1,
+        }
+    };
+    2
+}
+
+/// A failed or missing rolling read holds the game; it is never a matching
+/// "err" checksum on all players. Called once per simulation postUpdate.
+unsafe extern "C-unwind" fn native_scanned(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: arguments belong to this Lua callback; string_arg bounds copies.
+    let ok = unsafe { (api.type_of)(l, 1) == 1 && (api.toboolean)(l, 1) != 0 };
+    let why = if ok {
+        None
+    } else {
+        Some(
+            unsafe { string_arg(api, l, 2, MAX_LOG_LINE) }
+                .unwrap_or_else(|| "the mod could not read the world".into()),
+        )
+    };
+    let mut shared = shared();
+    let batch = &mut shared.batch;
+    if batch.scan_requested == 0 || batch.scan_requested != batch.scan_done + 1 {
+        batch
+            .scan_error
+            .get_or_insert_with(|| "world checks were skipped or repeated".into());
+    } else {
+        batch.scan_done += 1;
+        if let Some(why) = why {
+            batch.scan_error.get_or_insert(why);
+        }
+    }
+    let accepted = batch.scan_error.is_none();
+    let checkpoint = batch.lanes_wanted && batch.begun == batch.updates;
+    // SAFETY: an optional number is read only after checking its Lua type.
+    let ms = unsafe { number_arg(api, l, 3) };
+    if let Some(ms) = ms.filter(|ms| ms.is_finite() && *ms >= 0.0) {
+        shared.scan_cost.0 += 1;
+        shared.scan_cost.1 += ms;
+        shared.scan_cost.2 = shared.scan_cost.2.max(ms);
+    }
+    if checkpoint && shared.scan_cost.0 > 0 {
+        let (count, total, max) = std::mem::replace(&mut shared.scan_cost, (0, 0.0, 0.0));
+        if shared.log.len() < MAX_LOG_LINES {
+            shared.log.push_back(format!("rolling-check-cost: samples={count} mean_ms={:.3} max_ms={max:.3} total_ms={total:.3}", total / count as f64));
+        }
+    }
+    // SAFETY: one result fits the callback stack.
+    unsafe { (api.pushboolean)(l, c_int::from(accepted)) };
     1
 }
 
@@ -2705,6 +2873,7 @@ pub(crate) mod tests {
             toboolean,
             tonumberx,
             tolstring,
+            touserdata: Some(test_touserdata),
             next,
             pushnil,
             pushnumber,
@@ -2718,6 +2887,32 @@ pub(crate) mod tests {
             globals: Globals::Pseudo(ffi::LUA_GLOBALSINDEX),
         });
         api().unwrap()
+    }
+
+    unsafe extern "C-unwind" fn test_touserdata(l: State, index: c_int) -> *mut c_void {
+        unsafe { ffi::lua_touserdata(l.cast(), index) }
+    }
+
+    #[test]
+    fn native_snapshots_fall_back_for_non_component_arguments() {
+        let _serial = SERIAL.lock().unwrap();
+        let lua = Lua::new();
+        lua.register();
+        assert_eq!(
+            lua.run(
+                r#"
+            local n = tpf3mp_native
+            for _, value in ipairs({false, 42, 'text', {}, newproxy(true)}) do
+                assert(n.laneRows(value, false) == nil)
+                assert(n.junctionConfig(value) == nil)
+            end
+            assert(n.laneRows() == nil and n.junctionConfig() == nil)
+            return 'fallback'
+        "#
+            )
+            .unwrap(),
+            "fallback"
+        );
     }
 
     /// A Lua state with its libraries, closed when dropped.
@@ -3152,6 +3347,47 @@ my_timetables";
         assert_eq!(end_batch(), Ok(None));
     }
 
+    #[test]
+    fn rolling_reads_are_numbered_and_missing_or_failed_reads_hold_the_batch() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let lua = Lua::new();
+        lua.register();
+        let previous = crate::seeds::command_step(Some(20));
+        begin_batch(&[], 2, false, None).unwrap();
+        lua.run("tpf3mp_native.take()").unwrap();
+        assert_eq!(
+            lua.run("return tpf3mp_native.checkpoint()"),
+            Ok("false|20".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.scanned(true)"),
+            Ok("true".into())
+        );
+        crate::seeds::command_step(Some(21));
+        lua.run("tpf3mp_native.take() tpf3mp_native.checkpoint()")
+            .unwrap();
+        assert!(
+            end_batch()
+                .unwrap_err()
+                .contains("checked 1 of this batch's 2")
+        );
+
+        begin_batch(&[], 1, false, None).unwrap();
+        lua.run("tpf3mp_native.take() tpf3mp_native.checkpoint() tpf3mp_native.scanned(false, 'no spatial index')").unwrap();
+        assert!(end_batch().unwrap_err().contains("no spatial index"));
+
+        begin_batch(&[], 1, false, None).unwrap();
+        lua.run("tpf3mp_native.take() tpf3mp_native.checkpoint() tpf3mp_native.scanned(true)")
+            .unwrap();
+        assert_eq!(end_batch(), Ok(None));
+
+        begin_batch(&[], 1, false, None).unwrap();
+        lua.run("tpf3mp_native.take() tpf3mp_native.checkpoint() tpf3mp_native.scanned(true) tpf3mp_native.scanned(true)").unwrap();
+        assert!(end_batch().unwrap_err().contains("skipped or repeated"));
+        crate::seeds::command_step(previous);
+    }
+
     /// What `dump()` hands the mod, as text.
     const DUMP: &str = "local d = tpf3mp_native.dump() \
                         if d == nil then return 'nil' end \
@@ -3347,7 +3583,7 @@ my_timetables";
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
                  type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note)"
             ),
-            Ok("13|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("14|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();

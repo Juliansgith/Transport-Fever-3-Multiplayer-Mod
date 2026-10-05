@@ -413,14 +413,17 @@ unsafe fn run_step(
     // Whatever the engine freed since the last step, no cached region
     // answers for it.
     crate::image::invalidate();
-    let started = crate::perf::start();
+    let perf = crate::perf::start();
+    let started = crate::steptrace::step_timer(perf, crate::steptrace::enabled());
     crate::order::set_in_step(true);
     // SAFETY: the caller's.
     unsafe { original(this, a, b, c) };
     crate::order::set_in_step(false);
     if let Some(started) = started {
         let nanos = crate::perf::nanos_since(started);
-        crate::perf::game_step(nanos);
+        if perf.is_some() {
+            crate::perf::game_step(nanos);
+        }
         STEP_GAME_NANOS.fetch_add(nanos, Ordering::Relaxed);
     }
     crate::ticks::set_room(false);
@@ -456,6 +459,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     // for this function, which keeps the game's own ABI.
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
     let started = crate::perf::start();
+    let traced_at = crate::steptrace::enabled().then(Instant::now);
     STEP_GAME_NANOS.store(0, Ordering::Relaxed);
     LAST_STEP.store(now_ms(), Ordering::Release);
     // The step's speed call sets it again for this call.
@@ -466,10 +470,14 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         return;
     }
     let mut ran = false;
+    // What this call answered, and why, for the step trace.
+    let mut answered: Option<(Updates, bool)> = None;
+    let mut why: &'static str = "own";
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut driver = DRIVER.lock().unwrap_or_else(|poison| poison.into_inner());
         let Some(driver) = driver.as_mut() else {
             ran = true;
+            answered = Some((Updates::Own, false));
             // SAFETY: the game's own step, called as the game called it.
             unsafe { run_step(original, Updates::Own, false, this, a, b, c) };
             return;
@@ -478,6 +486,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         // the batch's first update hands the mod the room's actions for it.
         driver.on_step(lua::take_commands(), &mut |batch| {
             ran = true;
+            answered = Some((batch.updates, batch.lanes));
             let updates = match batch.updates {
                 Updates::Exactly(updates) => updates,
                 Updates::Own => 0,
@@ -496,6 +505,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
                 }
             }
         });
+        why = driver.why();
         for (ticket, why) in driver.take_refused() {
             lua::refused(ticket, &why);
         }
@@ -528,6 +538,20 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         if !ran {
             // SAFETY: as above.
             unsafe { run_step(original, Updates::Exactly(0), false, this, a, b, c) };
+        }
+    }
+    if let (Some(at), Some((updates, lanes))) = (traced_at, answered) {
+        let updates = match updates {
+            Updates::Exactly(updates) => Some(updates),
+            Updates::Own => None,
+        };
+        let game = STEP_GAME_NANOS.load(Ordering::Relaxed);
+        let call = u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let lines = crate::steptrace::call(at, updates, why, lanes, game, call);
+        if !lines.is_empty()
+            && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
+        {
+            log.lines(&lines);
         }
     }
     if let Some(started) = started {
@@ -664,6 +688,7 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     let session = tpf3mp_bridge::Session::attach(link_name, &profile.name, Duration::from_secs(30))
         .map_err(|error| format!("the agent's link: {error}"))?;
     lua::install_api(api);
+    crate::network::install(base);
     let mut driver = crate::step::StepDriver::new(
         session,
         Box::new(crate::worlds::GuiWorlds::in_steam_folder()),
@@ -834,6 +859,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     } else {
         format!("perf: timing off ({} says so)", crate::perf::ENV)
     });
+    if let Some(line) = crate::steptrace::configure_from_env() {
+        log_line(&line);
+    }
     crate::seeds::install(&absolute);
     log_line(&crate::ticks::install(&absolute));
     for line in crate::roadtrace::configure_from_env() {
@@ -892,6 +920,11 @@ unsafe fn lua_api(at: &dyn Fn(&str) -> Result<usize, String>) -> Result<lua::Lua
         toboolean: function!("lua_toboolean"),
         tonumberx: function!("lua_tonumberx"),
         tolstring: function!("lua_tolstring"),
+        // Optional on older external profiles; Lua keeps its existing reader.
+        touserdata: at("lua_touserdata").ok().map(|address| {
+            // SAFETY: signature/prologue resolution identifies this Lua API.
+            unsafe { std::mem::transmute::<usize, _>(address) }
+        }),
         next: function!("lua_next"),
         pushnil: function!("lua_pushnil"),
         pushnumber: function!("lua_pushnumber"),
@@ -1493,7 +1526,7 @@ mod tests {
         let results = unsafe { print_detour(state.state()) };
         assert_eq!(results, 0);
         assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
-        assert_eq!(state.run("return tpf3mp_native.version"), Ok("13".into()));
+        assert_eq!(state.run("return tpf3mp_native.version"), Ok("14".into()));
         PRINT_ORIGINAL.store(0, Ordering::Release);
     }
 }
