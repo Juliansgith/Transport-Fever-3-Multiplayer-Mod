@@ -2062,6 +2062,9 @@ unsafe extern "C-unwind" fn native_network(l: State) -> c_int {
         (api.rawset)(l, table);
         match read {
             Ok(network) => {
+                push_str(api, l, b"timing");
+                push_str(api, l, network.timing.as_bytes());
+                (api.rawset)(l, table);
                 push_str(api, l, b"rows");
                 push_strings(api, l, network.edges.iter().map(String::as_bytes));
                 (api.rawset)(l, table);

@@ -161,7 +161,12 @@ pub(crate) fn ids(
 }
 
 /// One MSVC `std::string` at `address`, at most `max` bytes.
-pub(crate) fn string(memory: &dyn Memory, address: usize, max: usize, what: &str) -> Result<String, String> {
+pub(crate) fn string(
+    memory: &dyn Memory,
+    address: usize,
+    max: usize,
+    what: &str,
+) -> Result<String, String> {
     let raw = read(memory, address, layout::STRING_SIZE, what)?;
     let len = u64_at(&raw, layout::STRING_LEN);
     let capacity = u64_at(&raw, layout::STRING_CAPACITY);

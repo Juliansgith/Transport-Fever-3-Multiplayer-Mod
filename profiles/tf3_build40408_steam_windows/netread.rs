@@ -25,7 +25,6 @@ pub const BITS_PER_ENTITY: usize = 16;
 pub const POOL_HEAD: usize = 0xa0;
 pub const POOL_DENSE: usize = 0x68;
 pub const POOL_PAGES: usize = 0x80;
-pub const POOL_PAGED_SLOTS: usize = 0x98;
 pub const PAGE_ENTRY: usize = 16;
 pub const PAGE_SLOTS: usize = 32;
 /// A data index at or above it is a paged slot's.

@@ -838,6 +838,12 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.hash(s)`: the lanes' text hash of `s`, exactly what the
   mod's Lua `hashStr` returns (`crate::lanehash`), without a Lua loop over
   every byte ("What the lanes cost" below); `nil` without a string.
+- `tpf3mp_native.network()`: in a game script's `postUpdate`, the network
+  lane read by the hook ("The network lane read natively" below): `nil`
+  when `TPF3MP_HOOK_NATIVE_NETWORK` leaves it off, else `{ mode = "compare"
+  | "on", rows = { ... }, junctions = { heads, preferences, lights, tails }
+  }`, with `why` for `rows` and `junctionsWhy` for `junctions` when they
+  did not read. Optional: the mod reads its own without it.
 - `tpf3mp_native.clicks()`: the player's builds queued in the room's game
   so far, or `nil` where the hook cannot take them to the room ("The build
   tools" below).
@@ -3446,8 +3452,72 @@ against the old read at every checkpoint):
 
 Together the read took 200-275 ms there, the checkpoint's step 240-300 ms:
 still a visible stutter, about a quarter of it. Reading the network natively
-would take most of the rest; the layouts it would need are in
-`investigation/TF3_NATIVE_NETWORK_2026-10-04.md`.
+takes most of the rest (below).
+
+The mod logs, at each checkpoint, what applying the room's actions cost
+since the last one, when it applied any: the actions themselves, every
+`registry.sync` (once before the actions of an update and once after each
+action, each walking every vehicle, line, station group, town and
+industry) and reading and writing the game script's state:
+
+```
+mod: actions since the last checkpoint: 3 in 2 updates, applied in 4.0 ms (longest 2.0), registry.sync 21.0 ms over 5 calls (longest 5.0), state 3.0 ms
+```
+
+#### The network lane read natively
+
+`TPF3MP_HOOK_NATIVE_NETWORK` in the game's environment lets the hook read
+the network lane's rows from the engine's memory
+(`crates/tpf3mp-hook/src/netread.rs`; the build's offsets in its native
+bundle, `profiles/<build>/netread.rs`; the layouts in
+`investigation/TF3_NATIVE_NETWORK_2026-10-04.md`):
+
+| value | the mod |
+|---|---|
+| unset, `off` | reads its own, as before |
+| `compare` | reads both, hashes its own, and logs whether they agree |
+| `on` | hashes the hook's rows; reads its own where they did not read |
+
+The hook makes the same text the mod's Lua makes: each edge's row as
+`lanes.edgeRow` makes it, numbers printed as the game's Lua 5.2 prints
+them (`%.14g`, `%.3f`, `%.0f`, checked against a real Lua in the tests),
+and each junction's row as `junctions.rows` makes it, but for its traffic
+light preference and its light's resource name, which only the game's Lua
+names: the hook hands their values, and `junctions.rowsFromParts` puts the
+names in. So the lane's digest is the same whichever reads it, and games
+of one room may differ in the setting.
+
+What it reads, only while the game's step runs (the engine is
+`[CGameTime+8]` of the `CGameTime` the step called its speed getter on, so
+only inside the game script's `postUpdate`, where the mod reads its
+lanes):
+
+- the pools of `BaseEdge`, `BaseNode` and `BaseNodeConfig`, each the one
+  of the engine's pools (`engine+0x78`) whose vtable is its `CompVec`'s;
+  its index there is its type id;
+- every entity whose component bits (`engine+0xc0`, 16 bytes an entity)
+  hold that type id, its data index from its component list
+  (`engine+0x90`, which must list the type id), its component from the
+  pool's dense vector or its pages; a removed entity is skipped;
+- each edge's ends, lane configs, road template, nodes and network; each
+  node's position; each junction's turns, crosswalk set, phases, flags,
+  preference and light type.
+
+Anything that does not read as the layout says fails the read with why:
+a pointer out of order, a count past its bound, an entity whose bits and
+list disagree, a flag that is not 0 or 1, a number that is not finite, a
+turn naming an edge that is not there. The edges and the junctions fail
+apart; the mod then reads its own and the cost line says why. Nothing is
+written, and nothing of the game's is called.
+
+The cost line ends with what the hook did:
+
+```
+...; native edges (compare) 4.0 ms, 2212 rows, agree with the mod's 2212; native junctions, agree with the mod's 2126
+```
+
+`DIFFER` in its place names the first rows each side has that the other
+has not.
 
 `TPF3MP_HOOK_STEP_TRACE=1` in the game's environment writes a
 `step-trace:` line for every call of the game's step

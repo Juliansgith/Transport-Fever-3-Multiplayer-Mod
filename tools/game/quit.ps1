@@ -20,6 +20,8 @@ $quitFraction = @(0.19, 0.68); $desktopFraction = @(0.605, 0.68)
 foreach ($gp in $GamePids) {
   $p = Get-Process -Id $gp -ErrorAction SilentlyContinue
   if (-not $p -or $p.ProcessName -ne "TransportFever3") { continue }
+  # A hung window takes no clicks, and capturing it waits for it.
+  if (-not $p.Responding) { "game $gp is not responding: nothing sent to it"; continue }
   $q = $QuitAt -split ","; $d = $DesktopAt -split ","
   if (-not $QuitAt -or -not $DesktopAt) {
     $said = (& $g shot "quit-$gp" -GamePid $gp | Out-String)

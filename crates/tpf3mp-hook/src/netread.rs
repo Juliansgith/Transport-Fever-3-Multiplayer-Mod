@@ -96,19 +96,71 @@ pub fn mode() -> Mode {
     })
 }
 
-/// The running game's memory, each range checked through the per-thread
-/// region cache ([`crate::image::Readable`]) before it is copied.
-pub struct Process;
+/// The running game's memory, each range checked before it is copied,
+/// through a cache of its own: the read jumps between many more heap
+/// regions (the components' strings, lane configs and lists) than the
+/// shared per-thread cache keeps ([`crate::image::Readable`], 8), and each
+/// region it forgets is a `VirtualQuery` again. One lives for one read, in
+/// which the engine frees nothing.
+#[derive(Default)]
+pub struct Process {
+    /// Readable regions `[base, end)`, sorted and apart.
+    regions: std::cell::RefCell<Vec<(usize, usize)>>,
+}
+
+impl Process {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether `len` bytes at `address` are readable, asking the system
+    /// only for the parts no region known covers.
+    fn readable(&self, address: usize, len: usize) -> bool {
+        let Some(end) = address.checked_add(len) else {
+            return false;
+        };
+        let mut regions = self.regions.borrow_mut();
+        let mut at = address;
+        while at < end {
+            // The last region beginning at or before `at`.
+            let i = regions.partition_point(|(base, _)| *base <= at);
+            if i > 0 && at < regions[i - 1].1 {
+                at = regions[i - 1].1;
+                continue;
+            }
+            let Some((base, region_end)) = crate::image::region(at) else {
+                return false;
+            };
+            if base > at || region_end <= at {
+                return false;
+            }
+            // Merge it with every known region it touches.
+            let (mut lo, mut hi) = (base, region_end);
+            regions.retain(|(b, e)| {
+                let apart = *e < lo || hi < *b;
+                if !apart {
+                    lo = lo.min(*b);
+                    hi = hi.max(*e);
+                }
+                apart
+            });
+            let j = regions.partition_point(|(b, _)| *b < lo);
+            regions.insert(j, (lo, hi));
+            at = hi;
+        }
+        true
+    }
+}
 
 impl Memory for Process {
     fn read(&self, address: usize, len: usize) -> Option<Vec<u8>> {
-        if address == 0 || !crate::image::readable_cached(address, len) {
+        if address == 0 || cfg!(not(windows)) || !self.readable(address, len) {
             return None;
         }
         let mut bytes = vec![0u8; len];
         // SAFETY: `len` bytes at `address` are committed readable memory,
-        // checked just above in this update's epoch, and `bytes` has room
-        // for them.
+        // checked just above in this read, in which the engine frees
+        // nothing, and `bytes` has room for them.
         unsafe { std::ptr::copy_nonoverlapping(address as *const u8, bytes.as_mut_ptr(), len) };
         Some(bytes)
     }
@@ -126,8 +178,13 @@ pub fn read_now() -> Result<Network, String> {
     if image == 0 {
         return Err("the game's image was not found".into());
     }
-    let memory = Process;
-    let head = read(&memory, game_time, layout::GAME_TIME_ENGINE + 8, "the CGameTime")?;
+    let memory = Process::new();
+    let head = read(
+        &memory,
+        game_time,
+        layout::GAME_TIME_ENGINE + 8,
+        "the CGameTime",
+    )?;
     let engine = usize::try_from(u64_at(&head, layout::GAME_TIME_ENGINE))
         .map_err(|_| "the engine's address".to_string())?;
     network(&memory, engine, image)
@@ -157,7 +214,13 @@ fn read(memory: &dyn Memory, address: usize, len: usize, what: &str) -> Result<V
 
 /// A `std::vector`'s `{begin, end}` at `offset` of `head`: its begin and
 /// its count of `stride`-byte elements, at most `max`.
-fn vector(head: &[u8], offset: usize, stride: usize, max: usize, what: &str) -> Result<(usize, usize), String> {
+fn vector(
+    head: &[u8],
+    offset: usize,
+    stride: usize,
+    max: usize,
+    what: &str,
+) -> Result<(usize, usize), String> {
     let begin = u64_at(head, offset);
     let end = u64_at(head, offset + 8);
     if end < begin {
@@ -168,7 +231,9 @@ fn vector(head: &[u8], offset: usize, stride: usize, max: usize, what: &str) -> 
     }
     let bytes = usize::try_from(end - begin).map_err(|_| format!("{what}: its size"))?;
     if bytes % stride != 0 {
-        return Err(format!("{what}: a size that is not a whole number of elements"));
+        return Err(format!(
+            "{what}: a size that is not a whole number of elements"
+        ));
     }
     let count = bytes / stride;
     if count > max {
@@ -194,7 +259,6 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 struct Pool {
     dense: (usize, usize),
     pages: (usize, usize),
-    paged_slots: usize,
     size: usize,
 }
 
@@ -202,17 +266,14 @@ impl Pool {
     fn read(memory: &dyn Memory, pool: usize, size: usize, what: &str) -> Result<Self, String> {
         let head = read(memory, pool, layout::POOL_HEAD, what)?;
         let dense = vector(&head, layout::POOL_DENSE, size, MAX_ENTITIES, what)?;
-        let pages = vector(&head, layout::POOL_PAGES, layout::PAGE_ENTRY, MAX_ENTITIES, what)?;
-        let paged_slots = usize::try_from(u64_at(&head, layout::POOL_PAGED_SLOTS))
-            .ok()
-            .filter(|n| *n <= MAX_ENTITIES)
-            .ok_or_else(|| format!("{what}: its paged slots"))?;
-        Ok(Self {
-            dense,
-            pages,
-            paged_slots,
-            size,
-        })
+        let pages = vector(
+            &head,
+            layout::POOL_PAGES,
+            layout::PAGE_ENTRY,
+            MAX_ENTITIES,
+            what,
+        )?;
+        Ok(Self { dense, pages, size })
     }
 
     /// The address of the element at data index `index`.
@@ -221,17 +282,28 @@ impl Pool {
         if index < layout::PAGED_FROM {
             let i = index as usize;
             if i >= self.dense.1 {
-                return Err(format!("data index {i} past the pool's {} elements", self.dense.1));
+                return Err(format!(
+                    "data index {i} past the pool's {} elements",
+                    self.dense.1
+                ));
             }
             return Ok(self.dense.0 + i * self.size);
         }
         let i = (index - layout::PAGED_FROM) as usize;
         let page = i / layout::PAGE_SLOTS;
-        if i >= self.paged_slots || page >= self.pages.1 {
+        // The game's own accessor (`sub_2806a0`) bounds nothing; the page
+        // table's length does here.
+        if page >= self.pages.1 {
             return Err(format!("paged slot {i} past the pool's pages"));
         }
-        let entry = read(memory, self.pages.0 + page * layout::PAGE_ENTRY, 8, "a pool page")?;
-        let data = usize::try_from(u64_at(&entry, 0)).map_err(|_| "a pool page's address".to_string())?;
+        let entry = read(
+            memory,
+            self.pages.0 + page * layout::PAGE_ENTRY,
+            8,
+            "a pool page",
+        )?;
+        let data =
+            usize::try_from(u64_at(&entry, 0)).map_err(|_| "a pool page's address".to_string())?;
         if data == 0 {
             return Err(format!("paged slot {i} on a page that is not there"));
         }
@@ -239,11 +311,16 @@ impl Pool {
     }
 }
 
-//// The type id of the pool whose vtable is at `vtable`: its index among
+/// The type id of the pool whose vtable is at `vtable`: its index among
 /// the engine's pools (`sub_94770` appends a type's pool as it registers
 /// the type with the id `pools.size() + 1`, stored less one). Every entity
 /// read through it must list that id ([`Store::index`]).
-fn type_id(memory: &dyn Memory, engine: usize, vtable: usize, what: &str) -> Result<(usize, usize), String> {
+fn type_id(
+    memory: &dyn Memory,
+    engine: usize,
+    vtable: usize,
+    what: &str,
+) -> Result<(usize, usize), String> {
     let head = read(memory, engine + layout::POOLS, 16, "the engine's pools")?;
     let (begin, count) = vector(&head, 0, 8, MAX_POOLS, "the engine's pools")?;
     let pools = read(memory, begin, count * 8, "the engine's pools")?;
@@ -300,7 +377,8 @@ impl<'m> Store<'m> {
             MAX_ENTITIES,
             "the entity table",
         )?;
-        let bits = usize::try_from(u64_at(&head, layout::BITS)).map_err(|_| "the component bits".to_string())?;
+        let bits = usize::try_from(u64_at(&head, layout::BITS))
+            .map_err(|_| "the component bits".to_string())?;
         if entities > 0 && bits == 0 {
             return Err("entities without component bits".into());
         }
@@ -338,7 +416,12 @@ impl<'m> Store<'m> {
             MAX_COMPONENTS,
             "an entity's components",
         )?;
-        let list = read(self.memory, pairs, count * layout::COMPONENT_PAIR, "an entity's components")?;
+        let list = read(
+            self.memory,
+            pairs,
+            count * layout::COMPONENT_PAIR,
+            "an entity's components",
+        )?;
         // A removed entity keeps one pair {-1, -1} (`sub_4f7db0`).
         if count == 1 && i32_at(&list, 0) < 0 {
             return Ok(None);
@@ -422,6 +505,9 @@ struct EdgeEnds {
 pub struct Network {
     pub edges: Vec<String>,
     pub junctions: Result<Vec<Junction>, String>,
+    /// What the read took, for the log: the entities, and the time of its
+    /// parts.
+    pub timing: String,
 }
 
 /// A junction's row but for the two names only the game's Lua gives: its
@@ -441,7 +527,11 @@ pub struct Junction {
 /// loaded.
 pub fn edge_rows(memory: &dyn Memory, engine: usize, image: usize) -> Result<Vec<String>, String> {
     let store = Store::new(memory, engine, image)?;
-    let edges = store.kind(layout::BASE_EDGE_POOL_VTABLE, layout::BASE_EDGE_SIZE, "BaseEdge")?;
+    let edges = store.kind(
+        layout::BASE_EDGE_POOL_VTABLE,
+        layout::BASE_EDGE_SIZE,
+        "BaseEdge",
+    )?;
     Ok(read_edges(&store, &edges)?.0)
 }
 
@@ -451,15 +541,20 @@ type Ends = HashMap<usize, EdgeEnds>;
 fn read_edges(store: &Store, kind: &Kind) -> Result<(Vec<String>, Ends), String> {
     let mut rows = Vec::new();
     let mut ends = HashMap::new();
+    let mut memo = Memo::default();
     for entity in store.with(kind)? {
         let Some(index) = store.index(entity, kind)? else {
             continue;
         };
         let at = kind.pool.element(store.memory, index)?;
         let edge = read(store.memory, at, layout::BASE_EDGE_SIZE, "a BaseEdge")?;
-        rows.push(edge_row(store.memory, &edge, at).map_err(|why| format!("entity {entity}: {why}"))?);
+        rows.push(
+            edge_row(store.memory, &edge, at, &mut memo)
+                .map_err(|why| format!("entity {entity}: {why}"))?,
+        );
         let node = |offset: usize| {
-            usize::try_from(i32_at(&edge, offset)).map_err(|_| format!("entity {entity}: a negative node"))
+            usize::try_from(i32_at(&edge, offset))
+                .map_err(|_| format!("entity {entity}: a negative node"))
         };
         let street = match i32_at(&edge, layout::EDGE_ROAD_TYPE) {
             layout::ROAD_TYPE_STREET => true,
@@ -481,13 +576,29 @@ fn read_edges(store: &Store, kind: &Kind) -> Result<(Vec<String>, Ends), String>
 /// The network lane of the world in `engine`, read natively: `Err` when
 /// the edges did not read, the junctions' own `Err` when only they did not.
 pub fn network(memory: &dyn Memory, engine: usize, image: usize) -> Result<Network, String> {
+    let t0 = std::time::Instant::now();
     let store = Store::new(memory, engine, image)?;
-    let edges = store.kind(layout::BASE_EDGE_POOL_VTABLE, layout::BASE_EDGE_SIZE, "BaseEdge")?;
+    let edges = store.kind(
+        layout::BASE_EDGE_POOL_VTABLE,
+        layout::BASE_EDGE_SIZE,
+        "BaseEdge",
+    )?;
+    let t1 = std::time::Instant::now();
     let (rows, ends) = read_edges(&store, &edges)?;
+    let t2 = std::time::Instant::now();
     let junctions = read_junctions(&store, &ends);
+    let t3 = std::time::Instant::now();
+    let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1000.0;
     Ok(Network {
         edges: rows,
         junctions,
+        timing: format!(
+            "{} entities; pools {:.1} ms, edges {:.1} ms, junctions {:.1} ms",
+            store.entities,
+            ms(t0, t1),
+            ms(t1, t2),
+            ms(t2, t3)
+        ),
     })
 }
 
@@ -495,6 +606,16 @@ pub fn network(memory: &dyn Memory, engine: usize, image: usize) -> Result<Netwo
 pub fn fixed0(v: f64) -> Result<String, String> {
     if !v.is_finite() {
         return Err(format!("a number that is not finite ({v})"));
+    }
+    // C rounds the exact value, ties to even, and keeps a negative zero's
+    // sign: below 2^52 that is `round_ties_even`, without the slow exact
+    // formatting.
+    if v.abs() < 4.0e15 {
+        let r = v.round_ties_even();
+        if r == 0.0 && v.is_sign_negative() {
+            return Ok("-0".into());
+        }
+        return Ok((r as i64).to_string());
     }
     Ok(format!("{v:.0}"))
 }
@@ -572,7 +693,11 @@ impl Junctions<'_, '_> {
 /// Every junction's row parts, as junctions.lua's `rows` makes them: the
 /// nodes of the edges in `ends` that have a `BaseNodeConfig`, in id order.
 fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
-    let nodes = store.kind(layout::BASE_NODE_POOL_VTABLE, layout::BASE_NODE_SIZE, "BaseNode")?;
+    let nodes = store.kind(
+        layout::BASE_NODE_POOL_VTABLE,
+        layout::BASE_NODE_SIZE,
+        "BaseNode",
+    )?;
     let configs = store.kind(
         layout::BASE_NODE_CONFIG_POOL_VTABLE,
         layout::BASE_NODE_CONFIG_SIZE,
@@ -610,7 +735,12 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
             MAX_LANES,
             "a junction's turns",
         )?;
-        let turn_bytes = read(store.memory, turns_at, turns * layout::TURN_SIZE, "a junction's turns")?;
+        let turn_bytes = read(
+            store.memory,
+            turns_at,
+            turns * layout::TURN_SIZE,
+            "a junction's turns",
+        )?;
         for t in 0..turns {
             let turn = &turn_bytes[t * layout::TURN_SIZE..(t + 1) * layout::TURN_SIZE];
             let incoming = j.edge_key(i32_at(turn, layout::TURN_SEGMENT0))?;
@@ -635,11 +765,22 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
             MAX_LANES,
             "a junction's phases",
         )?;
-        let phase_bytes = read(store.memory, phases_at, phases * layout::PHASE_SIZE, "a junction's phases")?;
+        let phase_bytes = read(
+            store.memory,
+            phases_at,
+            phases * layout::PHASE_SIZE,
+            "a junction's phases",
+        )?;
         let mut phase_rows = Vec::with_capacity(phases);
         for i in 0..phases {
             let phase = &phase_bytes[i * layout::PHASE_SIZE..(i + 1) * layout::PHASE_SIZE];
-            let (locked_at, count) = vector(phase, layout::PHASE_LOCKED, 4, MAX_LANES, "a phase's locked lanes")?;
+            let (locked_at, count) = vector(
+                phase,
+                layout::PHASE_LOCKED,
+                4,
+                MAX_LANES,
+                "a phase's locked lanes",
+            )?;
             let locked_bytes = read(store.memory, locked_at, count * 4, "a phase's locked lanes")?;
             let mut locked = Vec::with_capacity(count);
             for k in 0..count {
@@ -666,8 +807,16 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
         );
         let tail = format!(
             "{}|{}|{}",
-            flag(&raw, layout::CONFIG_DOUBLE_SLIP, "a junction's double slip flag")?,
-            flag(&raw, layout::CONFIG_CUSTOM_PHASES, "a junction's custom phases flag")?,
+            flag(
+                &raw,
+                layout::CONFIG_DOUBLE_SLIP,
+                "a junction's double slip flag"
+            )?,
+            flag(
+                &raw,
+                layout::CONFIG_CUSTOM_PHASES,
+                "a junction's custom phases flag"
+            )?,
             phase_rows.join(";")
         );
         out.push(Junction {
@@ -681,20 +830,33 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
 }
 
 /// One edge's row from its `BaseEdge` (`edge`, read at `at`).
-fn edge_row(memory: &dyn Memory, edge: &[u8], at: usize) -> Result<String, String> {
+fn edge_row(
+    memory: &dyn Memory,
+    edge: &[u8],
+    at: usize,
+    memo: &mut Memo,
+) -> Result<String, String> {
     let point = |offset: usize| -> Result<String, String> {
         let mut parts = Vec::with_capacity(3);
         for k in 0..3 {
-            parts.push(lua_number(q01(f32_at(edge, offset + 4 * k)))?);
+            parts.push(q01_text(f32_at(edge, offset + 4 * k))?);
         }
         Ok(parts.join(","))
     };
-    let (mut a, mut b) = (point(layout::EDGE_POSITION0)?, point(layout::EDGE_POSITION1)?);
+    let (mut a, mut b) = (
+        point(layout::EDGE_POSITION0)?,
+        point(layout::EDGE_POSITION1)?,
+    );
     let reversed = a.as_bytes() > b.as_bytes();
     if reversed {
         std::mem::swap(&mut a, &mut b);
     }
-    let template = res_name(memory, at + layout::EDGE_ROAD_TEMPLATE, "the edge's road template")?;
+    let template = memo.name(
+        memory,
+        edge,
+        layout::EDGE_ROAD_TEMPLATE,
+        at + layout::EDGE_ROAD_TEMPLATE,
+    )?;
     let (lanes_at, lanes) = vector(
         edge,
         layout::EDGE_LANE_CONFIGS,
@@ -702,7 +864,12 @@ fn edge_row(memory: &dyn Memory, edge: &[u8], at: usize) -> Result<String, Strin
         MAX_LANES,
         "the edge's lane configs",
     )?;
-    let configs = read(memory, lanes_at, lanes * layout::LANE_CONFIG_SIZE, "the edge's lane configs")?;
+    let configs = read(
+        memory,
+        lanes_at,
+        lanes * layout::LANE_CONFIG_SIZE,
+        "the edge's lane configs",
+    )?;
     let mut lane_rows = Vec::with_capacity(lanes);
     for i in 0..lanes {
         let c = &configs[i * layout::LANE_CONFIG_SIZE..(i + 1) * layout::LANE_CONFIG_SIZE];
@@ -713,13 +880,15 @@ fn edge_row(memory: &dyn Memory, edge: &[u8], at: usize) -> Result<String, Strin
             other => return Err(format!("a lane's forward flag reads {other}")),
         };
         let modes = u32_at(c, layout::LANE_MODES);
-        let modes: String = (0..16).map(|m| if modes >> m & 1 == 1 { '1' } else { '0' }).collect();
+        let modes: String = (0..16)
+            .map(|m| if modes >> m & 1 == 1 { '1' } else { '0' })
+            .collect();
         lane_rows.push(format!(
             "{}/{}/{}/{}/{}/{modes}",
-            fixed3(f64::from(f32_at(c, layout::LANE_SPEED)))?,
-            fixed3(f64::from(f32_at(c, layout::LANE_WIDTH)))?,
-            fixed3(f64::from(f32_at(c, layout::LANE_HEIGHT)))?,
-            fixed3(f64::from(f32_at(c, layout::LANE_OFFSET)) * sign)?,
+            memo.fixed3(f64::from(f32_at(c, layout::LANE_SPEED)))?,
+            memo.fixed3(f64::from(f32_at(c, layout::LANE_WIDTH)))?,
+            memo.fixed3(f64::from(f32_at(c, layout::LANE_HEIGHT)))?,
+            memo.fixed3(f64::from(f32_at(c, layout::LANE_OFFSET)) * sign)?,
             forward != reversed,
         ));
     }
@@ -727,7 +896,69 @@ fn edge_row(memory: &dyn Memory, edge: &[u8], at: usize) -> Result<String, Strin
     Ok(format!("{a}>{b}:{template}|lanes:{}", lane_rows.join(";")))
 }
 
+/// What one read makes again and again, made once: the few lane values
+/// (speeds, widths, offsets) as `%.3f` text, by their bits, and the road
+/// templates' names, by their `ResName`'s bytes (two `std::string`s: the
+/// same bytes are the same text while the engine frees nothing).
+#[derive(Default)]
+struct Memo {
+    fixed3: HashMap<u64, String>,
+    names: HashMap<[u8; 0x40], String>,
+}
+
+impl Memo {
+    fn fixed3(&mut self, v: f64) -> Result<String, String> {
+        if let Some(text) = self.fixed3.get(&v.to_bits()) {
+            return Ok(text.clone());
+        }
+        let text = fixed3(v)?;
+        self.fixed3.insert(v.to_bits(), text.clone());
+        Ok(text)
+    }
+
+    /// The `ResName` at `offset` of `bytes`, read at `at`.
+    fn name(
+        &mut self,
+        memory: &dyn Memory,
+        bytes: &[u8],
+        offset: usize,
+        at: usize,
+    ) -> Result<String, String> {
+        let mut key = [0u8; 0x40];
+        key.copy_from_slice(&bytes[offset..offset + 0x40]);
+        if let Some(text) = self.names.get(&key) {
+            return Ok(text.clone());
+        }
+        let text = res_name(memory, at, "the edge's road template")?;
+        self.names.insert(key, text.clone());
+        Ok(text)
+    }
+}
+
+/// `tostring(q01(v))`: a value to 0.1 as the game's Lua prints it. For the
+/// tenths of anything below 10^12 that is the integer of tenths with its
+/// last digit after a point (`%.14g` of the double nearest k/10 rounds to
+/// it exactly); [`lua_number`] for anything else.
+fn q01_text(v: f32) -> Result<String, String> {
+    let tenths = (f64::from(v) * 10.0 + 0.5).floor();
+    if !tenths.is_finite() {
+        return Err(format!("a number that is not finite ({v})"));
+    }
+    if tenths.abs() >= 1e13 {
+        return lua_number(tenths / 10.0);
+    }
+    let k = tenths as i64;
+    let (whole, tenth) = (k.unsigned_abs() / 10, k.unsigned_abs() % 10);
+    let sign = if k < 0 { "-" } else { "" };
+    Ok(if tenth == 0 {
+        format!("{sign}{whole}")
+    } else {
+        format!("{sign}{whole}.{tenth}")
+    })
+}
+
 /// lanes.lua's `q01`: `math.floor(v * 10 + 0.5) / 10`, in doubles.
+#[cfg(test)]
 fn q01(v: f32) -> f64 {
     (f64::from(v) * 10.0 + 0.5).floor() / 10.0
 }
@@ -751,7 +982,12 @@ pub fn lua_number(v: f64) -> Result<String, String> {
         let precision = usize::try_from(P - 1 - x).unwrap_or(0);
         trim_zeros(format!("{v:.precision$}"))
     } else {
-        format!("{}e{}{:02}", trim_zeros(mantissa.to_string()), if x < 0 { '-' } else { '+' }, x.abs())
+        format!(
+            "{}e{}{:02}",
+            trim_zeros(mantissa.to_string()),
+            if x < 0 { '-' } else { '+' },
+            x.abs()
+        )
     };
     Ok(text)
 }
@@ -874,7 +1110,8 @@ mod tests {
                 put_f32(c, layout::LANE_WIDTH, l.width);
                 put_f32(c, layout::LANE_HEIGHT, l.height);
                 c[layout::LANE_FORWARD] = u8::from(l.forward);
-                c[layout::LANE_MODES..layout::LANE_MODES + 4].copy_from_slice(&l.modes.to_le_bytes());
+                c[layout::LANE_MODES..layout::LANE_MODES + 4]
+                    .copy_from_slice(&l.modes.to_le_bytes());
                 put_f32(c, layout::LANE_OFFSET, l.offset);
             }
             let len = configs.len();
@@ -884,14 +1121,17 @@ mod tests {
             put_u64(&mut b, layout::EDGE_LANE_CONFIGS + 16, (at + len) as u64);
             let first = string(fake, e.template.0);
             let second = string(fake, e.template.1);
-            b[layout::EDGE_ROAD_TEMPLATE..layout::EDGE_ROAD_TEMPLATE + 0x20].copy_from_slice(&first);
-            b[layout::EDGE_ROAD_TEMPLATE + 0x20..layout::EDGE_ROAD_TEMPLATE + 0x40].copy_from_slice(&second);
+            b[layout::EDGE_ROAD_TEMPLATE..layout::EDGE_ROAD_TEMPLATE + 0x20]
+                .copy_from_slice(&first);
+            b[layout::EDGE_ROAD_TEMPLATE + 0x20..layout::EDGE_ROAD_TEMPLATE + 0x40]
+                .copy_from_slice(&second);
             if i < paged {
                 indices.push((data.len() / layout::BASE_EDGE_SIZE) as u32);
                 data.extend_from_slice(&b);
             } else {
                 let slot = i - paged;
-                page[slot * layout::BASE_EDGE_SIZE..(slot + 1) * layout::BASE_EDGE_SIZE].copy_from_slice(&b);
+                page[slot * layout::BASE_EDGE_SIZE..(slot + 1) * layout::BASE_EDGE_SIZE]
+                    .copy_from_slice(&b);
                 indices.push(layout::PAGED_FROM + slot as u32);
             }
         }
@@ -904,10 +1144,20 @@ mod tests {
         let mut pool = vec![0u8; layout::POOL_HEAD];
         put_u64(&mut pool, 0, (IMAGE + layout::BASE_EDGE_POOL_VTABLE) as u64);
         put_u64(&mut pool, layout::POOL_DENSE, dense as u64);
-        put_u64(&mut pool, layout::POOL_DENSE + 8, (dense + dense_len) as u64);
+        put_u64(
+            &mut pool,
+            layout::POOL_DENSE + 8,
+            (dense + dense_len) as u64,
+        );
         put_u64(&mut pool, layout::POOL_PAGES, page_table_at as u64);
-        put_u64(&mut pool, layout::POOL_PAGES + 8, (page_table_at + layout::PAGE_ENTRY) as u64);
-        put_u64(&mut pool, layout::POOL_PAGED_SLOTS, (edges.len() - paged) as u64);
+        put_u64(
+            &mut pool,
+            layout::POOL_PAGES + 8,
+            (page_table_at + layout::PAGE_ENTRY) as u64,
+        );
+        // What the game keeps at +0x98 is no slot count it bounds by
+        // (seen in the game: values past any count): never read.
+        put_u64(&mut pool, 0x98, 0xd66b_0d48_0000_0001);
         let pool_at = fake.alloc(pool);
         // Another pool, of something else, before it.
         let mut other = vec![0u8; layout::POOL_HEAD];
@@ -951,7 +1201,11 @@ mod tests {
         put_u64(&mut head, layout::POOLS, pools_at as u64);
         put_u64(&mut head, layout::POOLS + 8, (pools_at + pools_len) as u64);
         put_u64(&mut head, layout::ENTITIES, table_at as u64);
-        put_u64(&mut head, layout::ENTITIES + 8, (table_at + table_len) as u64);
+        put_u64(
+            &mut head,
+            layout::ENTITIES + 8,
+            (table_at + table_len) as u64,
+        );
         put_u64(&mut head, layout::BITS, bits_at as u64);
         fake.alloc(head)
     }
@@ -973,13 +1227,19 @@ mod tests {
                 p0: [10.04, -3.06, 0.0],
                 p1: [100.0, 2.25, 1.0],
                 template: ("", "street/town_medium_new.lua"),
-                lanes: vec![lane(13.888_889, -2.0, false, 0b1), lane(13.888_889, 2.0, true, 0b11)],
+                lanes: vec![
+                    lane(13.888_889, -2.0, false, 0b1),
+                    lane(13.888_889, 2.0, true, 0b11),
+                ],
             },
             Edge {
                 p0: [500.15, 200.0, 12.3456],
                 p1: [400.0, 199.95, 12.0],
                 template: ("mymod_1", "street/x.lua"),
-                lanes: vec![lane(0.0625, 0.0, true, 0x8000), lane(22.2, 1.0625, false, 0)],
+                lanes: vec![
+                    lane(0.0625, 0.0, true, 0x8000),
+                    lane(22.2, 1.0625, false, 0),
+                ],
             },
             Edge {
                 p0: [-0.04, 0.05, -0.05],
@@ -999,10 +1259,16 @@ mod tests {
     /// lanes.lua's own row, run in Lua, for each of `edges`.
     fn lua_rows(edges: &[Edge]) -> Vec<String> {
         let lua = mlua::Lua::new();
-        let scripts = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mod/tpf3mp_1/content/scripts/");
-        lua.load(format!("package.path = {:?} .. '?.lua;' .. package.path", scripts))
-            .exec()
-            .unwrap();
+        let scripts = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../mod/tpf3mp_1/content/scripts/"
+        );
+        lua.load(format!(
+            "package.path = {:?} .. '?.lua;' .. package.path",
+            scripts
+        ))
+        .exec()
+        .unwrap();
         let lanes: mlua::Table = lua.load("return require('tpf3mp.lanes')").eval().unwrap();
         let row: mlua::Function = lanes.get("edgeRow").unwrap();
         let mut out = Vec::new();
@@ -1051,22 +1317,54 @@ mod tests {
             let mut fake = Fake::new();
             let engine = engine(&mut fake, &edges, edge_type, paged);
             let native = edge_rows(&fake, engine, IMAGE).unwrap();
-            assert_eq!(native, lua_rows(&edges), "type {edge_type}, paged from {paged}");
+            assert_eq!(
+                native,
+                lua_rows(&edges),
+                "type {edge_type}, paged from {paged}"
+            );
         }
     }
 
     #[test]
     fn numbers_print_as_lua_prints_them() {
         let lua = mlua::Lua::new();
-        let g: mlua::Function = lua.load("return function(v) return tostring(v) end").eval().unwrap();
+        let g: mlua::Function = lua
+            .load("return function(v) return tostring(v) end")
+            .eval()
+            .unwrap();
         let f: mlua::Function = lua
             .load("return function(v) return string.format('%.3f', v) end")
             .eval()
             .unwrap();
         let mut samples = vec![
-            0.0, -0.0, 0.1, -0.1, 1.0, 12.5, -3.1, 1e-5, 1.25e-5, 123_456.7, -98_765.4, 1e14, 1e15,
-            123_456_789_012_345.0, 0.000_1, 0.000_099_99, 0.0625, 1.0625, 2.5, 0.0005, 0.0015, 0.0025,
-            -0.0005, 13.888_889_312_744_14, 83.333_33, 1e100, -1e-100, 5e-324,
+            0.0,
+            -0.0,
+            0.1,
+            -0.1,
+            1.0,
+            12.5,
+            -3.1,
+            1e-5,
+            1.25e-5,
+            123_456.7,
+            -98_765.4,
+            1e14,
+            1e15,
+            123_456_789_012_345.0,
+            0.000_1,
+            0.000_099_99,
+            0.0625,
+            1.0625,
+            2.5,
+            0.0005,
+            0.0015,
+            0.0025,
+            -0.0005,
+            13.888_889_312_744_14,
+            83.333_33,
+            1e100,
+            -1e-100,
+            5e-324,
         ];
         // Every float32 lanes.lua reads at 0.1 m, and many others.
         let mut x: u32 = 12345;
@@ -1078,7 +1376,13 @@ mod tests {
             if v.is_finite() {
                 samples.push(f64::from(v));
                 samples.push(q01(v));
+                let lua_q: String = g.call(q01(v)).unwrap();
+                assert_eq!(q01_text(v).unwrap(), lua_q, "tostring(q01({v:e}))");
             }
+            // Positions as a map has them.
+            let p = (x % 4_000_000) as f32 / 97.0 - 20_000.0;
+            let lua_q: String = g.call(q01(p)).unwrap();
+            assert_eq!(q01_text(p).unwrap(), lua_q, "tostring(q01({p:e}))");
             samples.push(f64::from(x % 100_000) / 16.0 - 3000.0);
         }
         let z: mlua::Function = lua
@@ -1087,7 +1391,12 @@ mod tests {
             .unwrap();
         for v in samples {
             let lua_z: String = z.call(v * 1000.0).unwrap();
-            assert_eq!(fixed0(v * 1000.0).unwrap(), lua_z, "%.0f of {:e}", v * 1000.0);
+            assert_eq!(
+                fixed0(v * 1000.0).unwrap(),
+                lua_z,
+                "%.0f of {:e}",
+                v * 1000.0
+            );
             let lua_g: String = g.call(v).unwrap();
             assert_eq!(lua_number(v).unwrap(), lua_g, "tostring({v:e})");
             let lua_f: String = f.call(v).unwrap();
@@ -1101,7 +1410,11 @@ mod tests {
         // No pool of BaseEdge: another image.
         let mut fake = Fake::new();
         let at = engine(&mut fake, &edges, 5, 4);
-        assert!(edge_rows(&fake, at, IMAGE + 0x1000).unwrap_err().contains("no pool"));
+        assert!(
+            edge_rows(&fake, at, IMAGE + 0x1000)
+                .unwrap_err()
+                .contains("no pool")
+        );
         // A lane's flag that is no bool.
         let mut fake = Fake::new();
         let mut odd = sample();
@@ -1115,19 +1428,31 @@ mod tests {
         let mut c = fake.read(configs, 2 * layout::LANE_CONFIG_SIZE).unwrap();
         c[layout::LANE_FORWARD] = 7;
         fake.put(configs, c);
-        assert!(edge_rows(&fake, at, IMAGE).unwrap_err().contains("forward flag"));
+        assert!(
+            edge_rows(&fake, at, IMAGE)
+                .unwrap_err()
+                .contains("forward flag")
+        );
         // A number that is not finite.
         let mut fake = Fake::new();
         let mut nan = sample();
         nan[0].p1[1] = f32::NAN;
         let at = engine(&mut fake, &nan, 5, 4);
-        assert!(edge_rows(&fake, at, IMAGE).unwrap_err().contains("not finite"));
+        assert!(
+            edge_rows(&fake, at, IMAGE)
+                .unwrap_err()
+                .contains("not finite")
+        );
         // An entity whose bits say BaseEdge and whose list does not.
         let mut fake = Fake::new();
         let at = engine(&mut fake, &edges, 5, 4);
         let bits = u64_at(&fake.read(at + layout::BITS, 8).unwrap(), 0) as usize;
         fake.blocks.get_mut(&bits).unwrap()[0] |= 1 << 5;
-        assert!(edge_rows(&fake, at, IMAGE).unwrap_err().contains("no BaseEdge"));
+        assert!(
+            edge_rows(&fake, at, IMAGE)
+                .unwrap_err()
+                .contains("no BaseEdge")
+        );
     }
 
     /// One pool of a world built for a test: its vtable, type id, element
@@ -1184,7 +1509,11 @@ mod tests {
         put_u64(&mut head, layout::POOLS, pools_at as u64);
         put_u64(&mut head, layout::POOLS + 8, (pools_at + pools_len) as u64);
         put_u64(&mut head, layout::ENTITIES, table_at as u64);
-        put_u64(&mut head, layout::ENTITIES + 8, (table_at + table_len) as u64);
+        put_u64(
+            &mut head,
+            layout::ENTITIES + 8,
+            (table_at + table_len) as u64,
+        );
         put_u64(&mut head, layout::BITS, bits_at as u64);
         fake.alloc(head)
     }
@@ -1218,7 +1547,14 @@ mod tests {
 
     /// Nodes 10-13 and 20 (by position), edges 1-3 (1 and 2 streets, 3 a
     /// track) and 4 (a track from 13 to 20), and the junction configs.
-    fn junction_world() -> (Vec<(usize, [f32; 3])>, Vec<(usize, usize, usize, bool)>, Vec<Config>) {
+    /// Nodes by entity and position; edges as entity, node0, node1, street.
+    type World = (
+        Vec<(usize, [f32; 3])>,
+        Vec<(usize, usize, usize, bool)>,
+        Vec<Config>,
+    );
+
+    fn junction_world() -> World {
         let nodes = vec![
             (10, [0.0, 0.0, 0.0]),
             (11, [100.0004, -20.0005, 3.25]),
@@ -1227,13 +1563,32 @@ mod tests {
             (20, [-50.0, 7.0, 0.0]),
             (30, [9.0, 9.0, 9.0]),
         ];
-        let edges = vec![(1, 10, 11, true), (2, 11, 12, true), (3, 12, 13, false), (4, 20, 13, false)];
+        let edges = vec![
+            (1, 10, 11, true),
+            (2, 11, 12, true),
+            (3, 12, 13, false),
+            (4, 20, 13, false),
+        ];
         let configs = vec![
             Config {
                 node: 11,
                 turns: vec![
-                    Turn { from: 1, lane_in: 0, to: 2, lane_out: 1, road: true, tram: false },
-                    Turn { from: 2, lane_in: 1, to: 1, lane_out: 0, road: true, tram: true },
+                    Turn {
+                        from: 1,
+                        lane_in: 0,
+                        to: 2,
+                        lane_out: 1,
+                        road: true,
+                        tram: false,
+                    },
+                    Turn {
+                        from: 2,
+                        lane_in: 1,
+                        to: 1,
+                        lane_out: 0,
+                        road: true,
+                        tram: true,
+                    },
                 ],
                 crosswalks: vec![2, 1],
                 preference: 2,
@@ -1241,8 +1596,18 @@ mod tests {
                 double_slip: false,
                 custom: true,
                 phases: vec![
-                    Phase { locked: vec![2, 0], duration: 30.0, minimum: 5.5, skip: true },
-                    Phase { locked: vec![3, 1], duration: 25.0625, minimum: 0.0, skip: false },
+                    Phase {
+                        locked: vec![2, 0],
+                        duration: 30.0,
+                        minimum: 5.5,
+                        skip: true,
+                    },
+                    Phase {
+                        locked: vec![3, 1],
+                        duration: 25.0625,
+                        minimum: 0.0,
+                        skip: false,
+                    },
                 ],
             },
             Config {
@@ -1257,7 +1622,14 @@ mod tests {
             },
             Config {
                 node: 13,
-                turns: vec![Turn { from: 3, lane_in: 0, to: 4, lane_out: 0, road: false, tram: false }],
+                turns: vec![Turn {
+                    from: 3,
+                    lane_in: 0,
+                    to: 4,
+                    lane_out: 0,
+                    road: false,
+                    tram: false,
+                }],
                 crosswalks: vec![],
                 preference: 1,
                 light: -1,
@@ -1313,10 +1685,17 @@ mod tests {
         let mut edge_elements = Vec::new();
         for (entity, n0, n1, street) in &edges {
             let mut b = vec![0u8; layout::BASE_EDGE_SIZE];
-            b[layout::EDGE_NODE0..layout::EDGE_NODE0 + 4].copy_from_slice(&(*n0 as i32).to_le_bytes());
-            b[layout::EDGE_NODE1..layout::EDGE_NODE1 + 4].copy_from_slice(&(*n1 as i32).to_le_bytes());
-            let road = if *street { layout::ROAD_TYPE_STREET } else { layout::ROAD_TYPE_TRACK };
-            b[layout::EDGE_ROAD_TYPE..layout::EDGE_ROAD_TYPE + 4].copy_from_slice(&road.to_le_bytes());
+            b[layout::EDGE_NODE0..layout::EDGE_NODE0 + 4]
+                .copy_from_slice(&(*n0 as i32).to_le_bytes());
+            b[layout::EDGE_NODE1..layout::EDGE_NODE1 + 4]
+                .copy_from_slice(&(*n1 as i32).to_le_bytes());
+            let road = if *street {
+                layout::ROAD_TYPE_STREET
+            } else {
+                layout::ROAD_TYPE_TRACK
+            };
+            b[layout::EDGE_ROAD_TYPE..layout::EDGE_ROAD_TYPE + 4]
+                .copy_from_slice(&road.to_le_bytes());
             let p = |n: usize| nodes.iter().find(|(e, _)| *e == n).unwrap().1;
             for k in 0..3 {
                 put_f32(&mut b, layout::EDGE_POSITION0 + 4 * k, p(*n0)[k]);
@@ -1328,8 +1707,8 @@ mod tests {
             .iter()
             .map(|(entity, p)| {
                 let mut b = vec![0u8; layout::BASE_NODE_SIZE];
-                for k in 0..3 {
-                    put_f32(&mut b, layout::NODE_POSITION + 4 * k, p[k]);
+                for (k, v) in p.iter().enumerate() {
+                    put_f32(&mut b, layout::NODE_POSITION + 4 * k, *v);
                 }
                 (*entity, b)
             })
@@ -1353,7 +1732,12 @@ mod tests {
             let mut phases = Vec::new();
             for p in &c.phases {
                 let mut b = vec![0u8; layout::PHASE_SIZE];
-                vector_of(fake, &mut b, layout::PHASE_LOCKED, p.locked.iter().flat_map(|l| l.to_le_bytes()).collect());
+                vector_of(
+                    fake,
+                    &mut b,
+                    layout::PHASE_LOCKED,
+                    p.locked.iter().flat_map(|l| l.to_le_bytes()).collect(),
+                );
                 put_f32(&mut b, layout::PHASE_DURATION, p.duration);
                 put_f32(&mut b, layout::PHASE_MINIMUM, p.minimum);
                 b[layout::PHASE_SKIP] = u8::from(p.skip);
@@ -1367,8 +1751,18 @@ mod tests {
             config_elements.push((c.node, raw));
         }
         let specs = [
-            Spec { vtable: layout::BASE_EDGE_POOL_VTABLE, id: 3, size: layout::BASE_EDGE_SIZE, elements: edge_elements },
-            Spec { vtable: layout::BASE_NODE_POOL_VTABLE, id: 9, size: layout::BASE_NODE_SIZE, elements: node_elements },
+            Spec {
+                vtable: layout::BASE_EDGE_POOL_VTABLE,
+                id: 3,
+                size: layout::BASE_EDGE_SIZE,
+                elements: edge_elements,
+            },
+            Spec {
+                vtable: layout::BASE_NODE_POOL_VTABLE,
+                id: 9,
+                size: layout::BASE_NODE_SIZE,
+                elements: node_elements,
+            },
             Spec {
                 vtable: layout::BASE_NODE_CONFIG_POOL_VTABLE,
                 id: 70,
@@ -1384,10 +1778,16 @@ mod tests {
     fn lua_junctions(parts: &[Junction]) -> (Vec<String>, Vec<String>) {
         let (nodes, edges, configs) = junction_world();
         let lua = mlua::Lua::new();
-        let scripts = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mod/tpf3mp_1/content/scripts/");
-        lua.load(format!("package.path = {:?} .. '?.lua;' .. package.path", scripts))
-            .exec()
-            .unwrap();
+        let scripts = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../mod/tpf3mp_1/content/scripts/"
+        );
+        lua.load(format!(
+            "package.path = {:?} .. '?.lua;' .. package.path",
+            scripts
+        ))
+        .exec()
+        .unwrap();
         let mut world = String::from("local nodes, edges, configs = {}, {}, {}\n");
         for (e, p) in &nodes {
             world += &format!(
@@ -1480,22 +1880,61 @@ api = {
 }
 "#;
         lua.load(&world).exec().unwrap();
-        let junctions: mlua::Table = lua.load("return require('tpf3mp.junctions')").eval().unwrap();
+        let junctions: mlua::Table = lua
+            .load("return require('tpf3mp.junctions')")
+            .eval()
+            .unwrap();
         let api: mlua::Table = lua.globals().get("api").unwrap();
-        let rows: Vec<String> = junctions.get::<mlua::Function>("rows").unwrap().call(api.clone()).unwrap();
+        let rows: Vec<String> = junctions
+            .get::<mlua::Function>("rows")
+            .unwrap()
+            .call(api.clone())
+            .unwrap();
         let table = lua.create_table().unwrap();
         let list = |items: Vec<mlua::Value>| lua.create_sequence_from(items).unwrap();
         table
-            .set("heads", list(parts.iter().map(|j| mlua::Value::String(lua.create_string(&j.head).unwrap())).collect()))
+            .set(
+                "heads",
+                list(
+                    parts
+                        .iter()
+                        .map(|j| mlua::Value::String(lua.create_string(&j.head).unwrap()))
+                        .collect(),
+                ),
+            )
             .unwrap();
         table
-            .set("tails", list(parts.iter().map(|j| mlua::Value::String(lua.create_string(&j.tail).unwrap())).collect()))
+            .set(
+                "tails",
+                list(
+                    parts
+                        .iter()
+                        .map(|j| mlua::Value::String(lua.create_string(&j.tail).unwrap()))
+                        .collect(),
+                ),
+            )
             .unwrap();
         table
-            .set("preferences", list(parts.iter().map(|j| mlua::Value::Number(f64::from(j.preference))).collect()))
+            .set(
+                "preferences",
+                list(
+                    parts
+                        .iter()
+                        .map(|j| mlua::Value::Number(f64::from(j.preference)))
+                        .collect(),
+                ),
+            )
             .unwrap();
         table
-            .set("lights", list(parts.iter().map(|j| mlua::Value::Number(f64::from(j.light))).collect()))
+            .set(
+                "lights",
+                list(
+                    parts
+                        .iter()
+                        .map(|j| mlua::Value::Number(f64::from(j.light)))
+                        .collect(),
+                ),
+            )
             .unwrap();
         let made: Vec<String> = junctions
             .get::<mlua::Function>("rowsFromParts")
@@ -1526,7 +1965,12 @@ api = {
         let pool = u64_at(&fake.read(pools + 3 * 8, 8).unwrap(), 0) as usize;
         let dense = u64_at(&fake.read(pool + layout::POOL_DENSE, 8).unwrap(), 0) as usize;
         fake.blocks.get_mut(&dense).unwrap()[layout::BASE_EDGE_SIZE + layout::EDGE_ROAD_TYPE] = 7;
-        assert!(network(&fake, engine, IMAGE).err().unwrap().contains("road type 7"));
+        assert!(
+            network(&fake, engine, IMAGE)
+                .err()
+                .unwrap()
+                .contains("road type 7")
+        );
         // A phase locking a lane its junction does not have.
         let mut fake = Fake::new();
         let engine = junction_engine(&mut fake);
@@ -1539,7 +1983,37 @@ api = {
         fake.blocks.get_mut(&locked).unwrap()[0] = 9;
         let network = network(&fake, engine, IMAGE).unwrap();
         assert_eq!(network.edges.len(), 4);
-        assert!(network.junctions.unwrap_err().contains("references no lane"));
+        assert!(
+            network
+                .junctions
+                .unwrap_err()
+                .contains("references no lane")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_process_reads_its_own_memory_and_not_beyond() {
+        let process = Process::new();
+        let blocks: Vec<Vec<u8>> = (0..64).map(|i| vec![i as u8; 4096 + i]).collect();
+        for _ in 0..2 {
+            for (i, block) in blocks.iter().enumerate() {
+                let at = block.as_ptr() as usize;
+                assert_eq!(process.read(at, block.len()).unwrap(), *block);
+                assert_eq!(process.read(at + 7, 9).unwrap(), vec![i as u8; 9]);
+            }
+        }
+        assert!(process.read(0, 8).is_none());
+        assert!(
+            process.read(16, 8).is_none(),
+            "the first page is never readable"
+        );
+        assert!(process.read(usize::MAX - 4, 8).is_none());
+        let regions = process.regions.borrow();
+        assert!(
+            regions.windows(2).all(|w| w[0].1 < w[1].0),
+            "sorted and apart"
+        );
     }
 
     #[test]

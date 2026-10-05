@@ -280,7 +280,7 @@ readers[lanes.NETWORK] = function(api, emit)
 		native = nativeEdges()
 		local n1 = clock()
 		if native then
-			net.native = { mode = native.mode, why = native.why,
+			net.native = { mode = native.mode, why = native.why, timing = native.timing,
 				rows = type(native.rows) == "table" and #native.rows or nil,
 				time = (n0 and n1) and (n1 - n0) or nil }
 		end
@@ -690,6 +690,7 @@ function lanes.costLine()
 			native.time and string.format("%.1f", native.time * 1000) or "?")
 		if native.why then line = line .. ": did not read: " .. tostring(native.why) end
 		if native.rows then line = line .. ", " .. native.rows .. " rows" end
+		if native.timing then line = line .. " (" .. tostring(native.timing) .. ")" end
 		local function said(cmp)
 			if cmp.agree then return ", agree with the mod's " .. cmp.lua end
 			local function cut(r) return #r > 300 and (r:sub(1, 300) .. "...") or r end
