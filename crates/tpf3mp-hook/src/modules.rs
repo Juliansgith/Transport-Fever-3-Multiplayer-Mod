@@ -68,6 +68,18 @@ pub const KEPT: usize = 16;
 pub trait Memory {
     /// `len` bytes at `address`, or `None` when they are not all readable.
     fn read(&self, address: usize, len: usize) -> Option<Vec<u8>>;
+
+    /// `out.len()` bytes at `address` into `out`, without allocating where
+    /// the memory can; `false` when they are not all readable.
+    fn read_into(&self, address: usize, out: &mut [u8]) -> bool {
+        match self.read(address, out.len()) {
+            Some(bytes) => {
+                out.copy_from_slice(&bytes);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// The running game's memory, read only where [`crate::image::readable`]

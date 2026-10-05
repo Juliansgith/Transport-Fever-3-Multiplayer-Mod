@@ -154,15 +154,19 @@ impl Process {
 
 impl Memory for Process {
     fn read(&self, address: usize, len: usize) -> Option<Vec<u8>> {
-        if address == 0 || cfg!(not(windows)) || !self.readable(address, len) {
-            return None;
-        }
         let mut bytes = vec![0u8; len];
-        // SAFETY: `len` bytes at `address` are committed readable memory,
-        // checked just above in this read, in which the engine frees
-        // nothing, and `bytes` has room for them.
-        unsafe { std::ptr::copy_nonoverlapping(address as *const u8, bytes.as_mut_ptr(), len) };
-        Some(bytes)
+        self.read_into(address, &mut bytes).then_some(bytes)
+    }
+
+    fn read_into(&self, address: usize, out: &mut [u8]) -> bool {
+        if address == 0 || cfg!(not(windows)) || !self.readable(address, out.len()) {
+            return false;
+        }
+        // SAFETY: `out.len()` bytes at `address` are committed readable
+        // memory, checked just above in this read, in which the engine
+        // frees nothing, and `out` has room for them.
+        unsafe { std::ptr::copy_nonoverlapping(address as *const u8, out.as_mut_ptr(), out.len()) };
+        true
     }
 }
 
@@ -216,6 +220,20 @@ fn read(memory: &dyn Memory, address: usize, len: usize, what: &str) -> Result<V
         return Ok(Vec::new());
     }
     crate::modules::read(memory, address, len, what)
+}
+
+/// `N` bytes at `address`, or why not, without allocating.
+fn read_array<const N: usize>(
+    memory: &dyn Memory,
+    address: usize,
+    what: &str,
+) -> Result<[u8; N], String> {
+    let mut out = [0u8; N];
+    if memory.read_into(address, &mut out) {
+        Ok(out)
+    } else {
+        Err(format!("{what} does not read"))
+    }
 }
 
 /// A `std::vector`'s `{begin, end}` at `offset` of `head`: its begin and
@@ -302,10 +320,9 @@ impl Pool {
         if page >= self.pages.1 {
             return Err(format!("paged slot {i} past the pool's pages"));
         }
-        let entry = read(
+        let entry: [u8; 8] = read_array(
             memory,
             self.pages.0 + page * layout::PAGE_ENTRY,
-            8,
             "a pool page",
         )?;
         let data =
@@ -409,10 +426,9 @@ impl<'m> Store<'m> {
     /// The data index of `kind` in `entity`'s component list: `None` for a
     /// removed entity, `Err` when the list lacks it or lists it twice.
     fn index(&self, entity: usize, kind: &Kind) -> Result<Option<i32>, String> {
-        let record = read(
+        let record: [u8; layout::ENTITY_RECORD] = read_array(
             self.memory,
             self.records + entity * layout::ENTITY_RECORD,
-            layout::ENTITY_RECORD,
             "an entity's record",
         )?;
         let (pairs, count) = vector(
@@ -422,24 +438,24 @@ impl<'m> Store<'m> {
             MAX_COMPONENTS,
             "an entity's components",
         )?;
-        let list = read(
-            self.memory,
-            pairs,
-            count * layout::COMPONENT_PAIR,
-            "an entity's components",
-        )?;
+        let mut buffer = [0u8; MAX_COMPONENTS * layout::COMPONENT_PAIR];
+        let list = &mut buffer[..count * layout::COMPONENT_PAIR];
+        if count > 0 && !self.memory.read_into(pairs, list) {
+            return Err("an entity's components does not read".into());
+        }
+        let list = &*list;
         // A removed entity keeps one pair {-1, -1} (`sub_4f7db0`).
-        if count == 1 && i32_at(&list, 0) < 0 {
+        if count == 1 && i32_at(list, 0) < 0 {
             return Ok(None);
         }
         let mut index = None;
         for p in 0..count {
-            let id = i32_at(&list, p * layout::COMPONENT_PAIR);
+            let id = i32_at(list, p * layout::COMPONENT_PAIR);
             if usize::try_from(id).ok() == Some(kind.id) {
                 if index.is_some() {
                     return Err(format!("entity {entity} lists {} twice", kind.name));
                 }
-                index = Some(i32_at(&list, p * layout::COMPONENT_PAIR + 4));
+                index = Some(i32_at(list, p * layout::COMPONENT_PAIR + 4));
             }
         }
         index
@@ -452,25 +468,31 @@ impl<'m> Store<'m> {
         if entity >= self.entities {
             return Ok(false);
         }
-        let word = read(
+        let word: [u8; 8] = read_array(
             self.memory,
             self.bits + entity * layout::BITS_PER_ENTITY + (kind.id / 64) * 8,
-            8,
             "the component bits",
         )?;
         Ok(u64_at(&word, 0) >> (kind.id % 64) & 1 == 1)
     }
 
-    /// `entity`'s `kind`, its bytes; `None` when it has none or is removed.
-    fn component(&self, entity: usize, kind: &Kind) -> Result<Option<Vec<u8>>, String> {
+    /// `entity`'s `kind` into `out` (its first `out.len()` bytes): `false`
+    /// when it has none or is removed.
+    fn component_into(&self, entity: usize, kind: &Kind, out: &mut [u8]) -> Result<bool, String> {
+        if out.len() > kind.pool.size {
+            return Err(format!("more of {} than it has", kind.name));
+        }
         if !self.has(entity, kind)? {
-            return Ok(None);
+            return Ok(false);
         }
         let Some(index) = self.index(entity, kind)? else {
-            return Ok(None);
+            return Ok(false);
         };
         let at = kind.pool.element(self.memory, index)?;
-        Ok(Some(read(self.memory, at, kind.pool.size, kind.name)?))
+        if !self.memory.read_into(at, out) {
+            return Err(format!("{} does not read", kind.name));
+        }
+        Ok(true)
     }
 
     /// Every entity whose component bits hold `kind`, in id order.
@@ -553,7 +575,7 @@ fn read_edges(store: &Store, kind: &Kind) -> Result<(Vec<String>, Ends), String>
             continue;
         };
         let at = kind.pool.element(store.memory, index)?;
-        let edge = read(store.memory, at, layout::BASE_EDGE_SIZE, "a BaseEdge")?;
+        let edge: [u8; layout::BASE_EDGE_SIZE] = read_array(store.memory, at, "a BaseEdge")?;
         rows.push(
             edge_row(store.memory, &edge, at, &mut memo)
                 .map_err(|why| format!("entity {entity}: {why}"))?,
@@ -764,7 +786,7 @@ struct Junctions<'s, 'm> {
     ends: &'s Ends,
     nodes: Kind,
     positions: HashMap<usize, [f32; 3]>,
-    keys: HashMap<usize, String>,
+    keys: HashMap<usize, std::rc::Rc<str>>,
 }
 
 impl Junctions<'_, '_> {
@@ -772,10 +794,10 @@ impl Junctions<'_, '_> {
         if let Some(p) = self.positions.get(&node) {
             return Ok(*p);
         }
-        let raw = self
-            .store
-            .component(node, &self.nodes)?
-            .ok_or_else(|| format!("node {node} has no position"))?;
+        let mut raw = [0u8; layout::BASE_NODE_SIZE];
+        if !self.store.component_into(node, &self.nodes, &mut raw)? {
+            return Err(format!("node {node} has no position"));
+        }
         let p = [
             f32_at(&raw, layout::NODE_POSITION),
             f32_at(&raw, layout::NODE_POSITION + 4),
@@ -789,7 +811,7 @@ impl Junctions<'_, '_> {
     }
 
     /// junctions.lua's `edgeKey`: the edge's network and its nodes' places.
-    fn edge_key(&mut self, edge: i32) -> Result<String, String> {
+    fn edge_key(&mut self, edge: i32) -> Result<std::rc::Rc<str>, String> {
         let edge = usize::try_from(edge).map_err(|_| format!("a junction names edge {edge}"))?;
         if let Some(k) = self.keys.get(&edge) {
             return Ok(k.clone());
@@ -803,7 +825,8 @@ impl Junctions<'_, '_> {
         if a.as_bytes() > b.as_bytes() {
             std::mem::swap(&mut a, &mut b);
         }
-        let k = format!("{}:{a}>{b}", if e.street { "Street" } else { "Track" });
+        let k: std::rc::Rc<str> =
+            format!("{}:{a}>{b}", if e.street { "Street" } else { "Track" }).into();
         self.keys.insert(edge, k.clone());
         Ok(k)
     }
@@ -843,9 +866,10 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
             // In neither network's node map: junctions.lua never reads it.
             continue;
         };
-        let Some(raw) = store.component(node, &configs)? else {
+        let mut raw = [0u8; layout::BASE_NODE_CONFIG_SIZE];
+        if !store.component_into(node, &configs, &mut raw)? {
             continue;
-        };
+        }
         let mut lanes = Vec::new();
         let (turns_at, turns) = vector(
             &raw,
@@ -864,18 +888,30 @@ fn read_junctions(store: &Store, ends: &Ends) -> Result<Vec<Junction>, String> {
             let turn = &turn_bytes[t * layout::TURN_SIZE..(t + 1) * layout::TURN_SIZE];
             let incoming = j.edge_key(i32_at(turn, layout::TURN_SEGMENT0))?;
             let outgoing = j.edge_key(i32_at(turn, layout::TURN_SEGMENT1))?;
-            lanes.push(format!(
-                "{incoming}:{}>{outgoing}:{}:{}:{}",
-                i32_at(turn, layout::TURN_LANE0),
-                i32_at(turn, layout::TURN_LANE1),
-                flag(turn, layout::TURN_ROAD, "a turn's road flag")?,
-                flag(turn, layout::TURN_TRAM, "a turn's tram flag")?,
-            ));
+            let mut lane = String::with_capacity(incoming.len() + outgoing.len() + 32);
+            lane.push_str(&incoming);
+            lane.push(':');
+            lane.push_str(&i32_at(turn, layout::TURN_LANE0).to_string());
+            lane.push('>');
+            lane.push_str(&outgoing);
+            lane.push(':');
+            lane.push_str(&i32_at(turn, layout::TURN_LANE1).to_string());
+            lane.push_str(if flag(turn, layout::TURN_ROAD, "a turn's road flag")? {
+                ":true"
+            } else {
+                ":false"
+            });
+            lane.push_str(if flag(turn, layout::TURN_TRAM, "a turn's tram flag")? {
+                ":true"
+            } else {
+                ":false"
+            });
+            lanes.push(lane);
         }
         for e in crate::junctions::crosswalk_ids(store.memory, &raw)? {
             lanes.push(format!("walk:{}", j.edge_key(e)?));
         }
-        let mut sorted = lanes.clone();
+        let mut sorted: Vec<&str> = lanes.iter().map(String::as_str).collect();
         sorted.sort_unstable();
         let (phases_at, phases) = vector(
             &raw,
@@ -984,58 +1020,83 @@ fn edge_row(
         MAX_LANES,
         "the edge's lane configs",
     )?;
-    let configs = read(
-        memory,
-        lanes_at,
-        lanes * layout::LANE_CONFIG_SIZE,
-        "the edge's lane configs",
-    )?;
-    let mut lane_rows = Vec::with_capacity(lanes);
+    let mut buffer = [0u8; MAX_LANES * layout::LANE_CONFIG_SIZE];
+    let configs = &mut buffer[..lanes * layout::LANE_CONFIG_SIZE];
+    if lanes > 0 && !memory.read_into(lanes_at, configs) {
+        return Err("the edge's lane configs does not read".into());
+    }
+    let mut lane_rows: Vec<&str> = Vec::with_capacity(lanes);
+    // Each distinct config made once a read: the same few repeat over and
+    // over (a road type's lanes).
     for i in 0..lanes {
-        let c = &configs[i * layout::LANE_CONFIG_SIZE..(i + 1) * layout::LANE_CONFIG_SIZE];
-        let sign = if reversed { -1.0 } else { 1.0 };
-        let forward = match c[layout::LANE_FORWARD] {
-            0 => false,
-            1 => true,
-            other => return Err(format!("a lane's forward flag reads {other}")),
-        };
-        let modes = u32_at(c, layout::LANE_MODES);
-        let modes: String = (0..16)
-            .map(|m| if modes >> m & 1 == 1 { '1' } else { '0' })
-            .collect();
-        lane_rows.push(format!(
-            "{}/{}/{}/{}/{}/{modes}",
-            memo.fixed3(f64::from(f32_at(c, layout::LANE_SPEED)))?,
-            memo.fixed3(f64::from(f32_at(c, layout::LANE_WIDTH)))?,
-            memo.fixed3(f64::from(f32_at(c, layout::LANE_HEIGHT)))?,
-            memo.fixed3(f64::from(f32_at(c, layout::LANE_OFFSET)) * sign)?,
-            forward != reversed,
-        ));
+        let mut key = [0u8; layout::LANE_CONFIG_SIZE];
+        key.copy_from_slice(
+            &configs[i * layout::LANE_CONFIG_SIZE..(i + 1) * layout::LANE_CONFIG_SIZE],
+        );
+        if let std::collections::hash_map::Entry::Vacant(entry) = memo.lanes.entry((key, reversed))
+        {
+            entry.insert(lane_row(&key, reversed)?);
+        }
+    }
+    for i in 0..lanes {
+        let mut key = [0u8; layout::LANE_CONFIG_SIZE];
+        key.copy_from_slice(
+            &configs[i * layout::LANE_CONFIG_SIZE..(i + 1) * layout::LANE_CONFIG_SIZE],
+        );
+        lane_rows.push(memo.lanes[&(key, reversed)].as_str());
     }
     lane_rows.sort_unstable();
-    Ok(format!("{a}>{b}:{template}|lanes:{}", lane_rows.join(";")))
+    let mut row = String::with_capacity(a.len() + b.len() + template.len() + 8 + lanes * 48);
+    row.push_str(&a);
+    row.push('>');
+    row.push_str(&b);
+    row.push(':');
+    row.push_str(&template);
+    row.push_str("|lanes:");
+    for (i, lane) in lane_rows.iter().enumerate() {
+        if i > 0 {
+            row.push(';');
+        }
+        row.push_str(lane);
+    }
+    Ok(row)
 }
 
-/// What one read makes again and again, made once: the few lane values
-/// (speeds, widths, offsets) as `%.3f` text, by their bits, and the road
+/// One lane config's text, as lanes.edgeRow makes it: its speed, width,
+/// height and offset (turned with a `reversed` edge) to 1 mm, whether it
+/// runs forward along the row, and its 16 transport modes.
+fn lane_row(c: &[u8], reversed: bool) -> Result<String, String> {
+    let sign = if reversed { -1.0 } else { 1.0 };
+    let forward = match c[layout::LANE_FORWARD] {
+        0 => false,
+        1 => true,
+        other => return Err(format!("a lane's forward flag reads {other}")),
+    };
+    let modes = u32_at(c, layout::LANE_MODES);
+    let modes: String = (0..16)
+        .map(|m| if modes >> m & 1 == 1 { '1' } else { '0' })
+        .collect();
+    Ok(format!(
+        "{}/{}/{}/{}/{}/{modes}",
+        fixed3(f64::from(f32_at(c, layout::LANE_SPEED)))?,
+        fixed3(f64::from(f32_at(c, layout::LANE_WIDTH)))?,
+        fixed3(f64::from(f32_at(c, layout::LANE_HEIGHT)))?,
+        fixed3(f64::from(f32_at(c, layout::LANE_OFFSET)) * sign)?,
+        forward != reversed,
+    ))
+}
+
+/// What one read makes again and again, made once: each distinct lane
+/// config's text, by its bytes and the edge's direction, and the road
 /// templates' names, by their `ResName`'s bytes (two `std::string`s: the
 /// same bytes are the same text while the engine frees nothing).
 #[derive(Default)]
 struct Memo {
-    fixed3: HashMap<u64, String>,
+    lanes: HashMap<([u8; layout::LANE_CONFIG_SIZE], bool), String>,
     names: HashMap<[u8; 0x40], String>,
 }
 
 impl Memo {
-    fn fixed3(&mut self, v: f64) -> Result<String, String> {
-        if let Some(text) = self.fixed3.get(&v.to_bits()) {
-            return Ok(text.clone());
-        }
-        let text = fixed3(v)?;
-        self.fixed3.insert(v.to_bits(), text.clone());
-        Ok(text)
-    }
-
     /// The `ResName` at `offset` of `bytes`, read at `at`.
     fn name(
         &mut self,
